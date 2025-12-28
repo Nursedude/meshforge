@@ -68,10 +68,99 @@ Interactive configuration for all Meshtastic modules:
 
 ## Installation
 
+Choose your preferred installation method:
+
+### 🚀 Quick Install (Recommended)
+
+**One-liner installation** - Downloads and installs everything automatically:
+
 ```bash
+curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_IU/main/install.sh | sudo bash
+```
+
+This will:
+- Update package lists (`apt-get update`)
+- Install all required dependencies
+- Clone the repository to `/opt/meshtasticd-installer`
+- Install Python dependencies
+- Create the `meshtasticd-installer` command
+
+**To include system upgrade (recommended for fresh installs):**
+```bash
+curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_IU/main/install.sh | sudo UPGRADE_SYSTEM=yes bash
+```
+
+After installation, run:
+```bash
+sudo meshtasticd-installer
+```
+
+---
+
+### 🌐 Web-Based Installer
+
+**Perfect for beginners** - Install through your browser:
+
+```bash
+# Clone the repository
 git clone https://github.com/Nursedude/Meshtasticd_interactive_IU.git
 cd Meshtasticd_interactive_IU
+
+# Start web installer
+sudo python3 web_installer.py
+```
+
+Then open your browser and visit: `http://<raspberry-pi-ip>:8080`
+
+The web interface provides:
+- Visual system information
+- One-click installation buttons
+- Real-time installation progress
+- Easy access from any device on your network
+
+---
+
+### 🐳 Docker Installation
+
+**For containerized deployments**:
+
+```bash
+# Clone repository
+git clone https://github.com/Nursedude/Meshtasticd_interactive_IU.git
+cd Meshtasticd_interactive_IU
+
+# Build and run with Docker Compose
+docker-compose up -d
+
+# Or build and run manually
+docker build -t meshtasticd-installer .
+docker run -it --privileged -v /dev:/dev meshtasticd-installer
+```
+
+**Docker Web Installer:**
+```bash
+docker run -d -p 8080:8080 --privileged -v /dev:/dev meshtasticd-installer web
+```
+
+---
+
+### 📦 Manual Installation
+
+**For advanced users who want full control**:
+
+```bash
+# 1. Install system dependencies
+sudo apt-get update
+sudo apt-get install -y python3 python3-pip git
+
+# 2. Clone repository
+git clone https://github.com/Nursedude/Meshtasticd_interactive_IU.git
+cd Meshtasticd_interactive_IU
+
+# 3. Install Python dependencies
 sudo python3 -m pip install -r requirements.txt
+
+# 4. Run installer
 sudo python3 src/main.py
 ```
 

@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  meshtasticd-installer:
+    build: .
+    container_name: meshtasticd-installer
+    privileged: true
+    stdin_open: true
+    tty: true
+    volumes:
+      - /dev:/dev
+      - /etc/meshtasticd:/etc/meshtasticd
+      - installer-logs:/var/log
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - meshtastic-net
+
+  # Web installer service
+  web-installer:
+    build: .
+    container_name: meshtasticd-web-installer
+    privileged: true
+    command: web
+    ports:
+      - "8080:8080"
+    volumes:
+      - /dev:/dev
+      - /etc/meshtasticd:/etc/meshtasticd
+    networks:
+      - meshtastic-net
+
+networks:
+  meshtastic-net:
+    driver: bridge
+
+volumes:
+  installer-logs:
