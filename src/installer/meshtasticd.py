@@ -25,6 +25,7 @@ class MeshtasticdInstaller:
         self.system_info = get_system_info()
         self.os_type = get_os_type()
         self.scripts_dir = Path(__file__).parent.parent.parent / 'scripts'
+        self.templates_dir = Path(__file__).parent.parent.parent / 'templates'
 
     def check_prerequisites(self):
         """Check if system meets prerequisites"""
@@ -110,6 +111,9 @@ class MeshtasticdInstaller:
             # Setup permissions
             self._setup_permissions()
 
+            # Install configuration templates
+            self.install_config_templates()
+
             # Enable and start service
             if self._setup_service():
                 console.print("[bold green]Service enabled and started[/bold green]")
@@ -146,6 +150,9 @@ class MeshtasticdInstaller:
 
             # Setup permissions
             self._setup_permissions()
+
+            # Install configuration templates
+            self.install_config_templates()
 
             # Enable and start service
             if self._setup_service():
@@ -227,3 +234,50 @@ class MeshtasticdInstaller:
         """Check if meshtasticd is installed"""
         result = run_command('which meshtasticd')
         return result['success']
+
+    def install_config_templates(self):
+        """Install configuration templates to /etc/meshtasticd"""
+        import shutil
+
+        log("Installing configuration templates")
+        console.print("\n[cyan]Installing configuration templates...[/cyan]")
+
+        # Define target directories
+        config_base = Path('/etc/meshtasticd')
+        available_d = config_base / 'available.d'
+        config_d = config_base / 'config.d'
+
+        # Create directories if they don't exist
+        for dir_path in [config_base, available_d, config_d]:
+            dir_path.mkdir(parents=True, exist_ok=True)
+            log(f"Created directory: {dir_path}")
+
+        # Copy templates from available.d
+        src_available = self.templates_dir / 'available.d'
+        if src_available.exists():
+            for template_file in src_available.glob('*.yaml'):
+                dest_file = available_d / template_file.name
+                try:
+                    shutil.copy2(template_file, dest_file)
+                    console.print(f"  [green]Installed: {dest_file}[/green]")
+                    log(f"Copied template: {template_file} -> {dest_file}")
+                except Exception as e:
+                    console.print(f"  [yellow]Warning: Could not copy {template_file.name}: {e}[/yellow]")
+                    log(f"Failed to copy template {template_file}: {e}", 'warning')
+
+        # Copy main config.yaml template if it doesn't exist
+        main_config = config_base / 'config.yaml'
+        src_config = self.templates_dir / 'config.yaml'
+        if not main_config.exists() and src_config.exists():
+            try:
+                shutil.copy2(src_config, main_config)
+                console.print(f"  [green]Installed: {main_config}[/green]")
+                log(f"Installed main config: {main_config}")
+            except Exception as e:
+                console.print(f"  [yellow]Warning: Could not copy config.yaml: {e}[/yellow]")
+                log(f"Failed to copy config.yaml: {e}", 'warning')
+        elif main_config.exists():
+            console.print(f"  [dim]Skipped (exists): {main_config}[/dim]")
+
+        console.print("[green]Configuration templates installed![/green]")
+        return True

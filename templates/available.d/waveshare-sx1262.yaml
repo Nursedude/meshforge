@@ -1,0 +1,21 @@
+# Waveshare SX1262 LoRa HAT Configuration Template
+# https://www.waveshare.com/wiki/SX1262_868M_LoRa_HAT
+
+Lora:
+  # SPI Chip Select - GPIO 21
+  CS: 21
+
+  # Interrupt Request (DIO1) - GPIO 16
+  IRQ: 16
+
+  # Busy signal - GPIO 20
+  Busy: 20
+
+  # Reset pin - GPIO 18
+  Reset: 18
+
+  # Use DIO2 as RF switch control
+  DIO2_AS_RF_SWITCH: true
+
+Webserver:
+  Port: 443

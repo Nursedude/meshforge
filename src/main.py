@@ -146,9 +146,10 @@ def configure_device():
         console.print("4. Module Configuration (MQTT, Serial, etc.)")
         console.print("5. Device Settings (Name, WiFi, etc.)")
         console.print("6. Hardware Detection")
-        console.print("7. Back to Main Menu")
+        console.print("7. SPI HAT Configuration (MeshAdv-Mini, etc.)")
+        console.print("8. Back to Main Menu")
 
-        choice = Prompt.ask("\nSelect configuration option", choices=["1", "2", "3", "4", "5", "6", "7"], default="1")
+        choice = Prompt.ask("\nSelect configuration option", choices=["1", "2", "3", "4", "5", "6", "7", "8"], default="1")
 
         if choice == "1":
             configure_radio_complete()
@@ -163,7 +164,24 @@ def configure_device():
         elif choice == "6":
             detect_hardware()
         elif choice == "7":
+            configure_spi_hat()
+        elif choice == "8":
             break
+
+
+def configure_spi_hat():
+    """Configure SPI HAT devices (MeshAdv-Mini, etc.)"""
+    console.print("\n[bold cyan]SPI HAT Configuration[/bold cyan]\n")
+
+    from config.spi_hats import SPIHatConfigurator
+
+    spi_config = SPIHatConfigurator()
+    config = spi_config.interactive_configure()
+
+    if config:
+        console.print("\n[green]SPI HAT configuration complete![/green]")
+    else:
+        console.print("\n[yellow]Configuration cancelled[/yellow]")
 
 
 def configure_radio_complete():

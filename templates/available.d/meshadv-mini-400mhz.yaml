@@ -1,0 +1,40 @@
+# MeshAdv-Mini Configuration Template (400 MHz Variant)
+# LoRa/GPS Raspberry Pi HAT with SX1268 (E22-400M22S)
+# For use in EU 433 MHz and China 470-510 MHz regions
+# https://github.com/chrismyers2000/MeshAdv-Mini
+#
+# Hardware: SX1268 (E22-400M22S)
+# Frequency Range: 410-510 MHz
+# Features: +22dBm LoRa, GPS (ATGM336H), TMP102 Temp Sensor, PWM Fan
+
+Lora:
+  # SPI Chip Select - GPIO 8
+  CS: 8
+
+  # Interrupt Request (DIO1) - GPIO 16
+  IRQ: 16
+
+  # Busy signal - GPIO 20
+  Busy: 20
+
+  # Reset pin - GPIO 24
+  Reset: 24
+
+  # RX Enable - GPIO 12
+  RXen: 12
+
+  # Use DIO2 as RF switch control (required for SX1268)
+  DIO2_AS_RF_SWITCH: true
+
+  # Enable DIO3 TCXO voltage control
+  DIO3_TCXO_VOLTAGE: true
+
+GPS:
+  SerialPath: /dev/ttyS0
+  GPSEnableGpio: 4
+
+I2C:
+  I2CDevice: /dev/i2c-1
+
+Webserver:
+  Port: 443

@@ -53,14 +53,121 @@ class HardwareDetector:
         }
     }
 
-    # Known SPI LoRa HATs
-    KNOWN_SPI_HATS = [
-        'MeshAdv-Pi v1.1',
-        'Adafruit RFM9x',
-        'Elecrow LoRa RFM95',
-        'Waveshare SX126X',
-        'PiTx LoRa',
-    ]
+    # Known SPI LoRa HATs with detailed configuration
+    KNOWN_SPI_HATS = {
+        'MeshAdv-Mini': {
+            'name': 'MeshAdv-Mini',
+            'manufacturer': 'chrismyers2000',
+            'description': 'LoRa/GPS Raspberry Pi HAT with SX1262/SX1268',
+            'radio_module': 'SX1262',  # or SX1268 for 400MHz version
+            'power_output': '+22dBm',
+            'features': ['GPS', 'Temperature Sensor', 'PWM Fan', 'I2C/Qwiic'],
+            'compatible_boards': ['Pi 2', 'Pi 3', 'Pi 4', 'Pi 5', 'Pi Zero', 'Zero W', 'Zero 2 W'],
+            'meshtastic_compatible': True,
+            'gpio_config': {
+                'CS': 8,      # SPI Chip Select
+                'IRQ': 16,    # Interrupt Request (DIO1)
+                'Busy': 20,   # Busy signal
+                'Reset': 24,  # Reset pin
+                'RXen': 12,   # RX Enable
+            },
+            'spi_config': {
+                'MOSI': 10,   # GPIO 10, Pin 19
+                'MISO': 9,    # GPIO 9, Pin 21
+                'CLK': 11,    # GPIO 11, Pin 23
+            },
+            'gps_config': {
+                'module': 'ATGM336H-5NR32',
+                'serial_path': '/dev/ttyS0',
+                'serial_path_alt': '/dev/ttyAMA0',
+                'enable_gpio': 4,
+                'pps_gpio': 17,
+            },
+            'i2c_config': {
+                'SDA': 2,     # GPIO 2, Pin 3 (I2C1)
+                'SCL': 3,     # GPIO 3, Pin 5 (I2C1)
+                'temp_sensor_addr': '0x48',  # TMP102
+            },
+            'lora_options': {
+                'DIO2_AS_RF_SWITCH': True,
+                'DIO3_TCXO_VOLTAGE': True,
+            },
+            'notes': 'HAT+ EEPROM enabled, supports 5V PWM fans on GPIO 18'
+        },
+        'MeshAdv-Pi v1.1': {
+            'name': 'MeshAdv-Pi v1.1',
+            'manufacturer': 'MeshAdv',
+            'description': 'MeshAdv Pi HAT for Meshtastic',
+            'radio_module': 'SX1262',
+            'meshtastic_compatible': True,
+            'gpio_config': {
+                'CS': 8,
+                'IRQ': 22,
+                'Busy': 23,
+                'Reset': 24,
+            },
+            'lora_options': {
+                'DIO2_AS_RF_SWITCH': True,
+            },
+            'notes': 'Standard MeshAdv Pi HAT'
+        },
+        'Adafruit RFM9x': {
+            'name': 'Adafruit RFM9x',
+            'manufacturer': 'Adafruit',
+            'description': 'Adafruit RFM9x LoRa Radio Bonnet',
+            'radio_module': 'SX1276',
+            'meshtastic_compatible': True,
+            'gpio_config': {
+                'CS': 7,
+                'IRQ': 25,
+                'Reset': 17,
+            },
+            'notes': 'Adafruit LoRa Bonnet for Raspberry Pi'
+        },
+        'Waveshare SX126X': {
+            'name': 'Waveshare SX126X',
+            'manufacturer': 'Waveshare',
+            'description': 'Waveshare SX1262 LoRa HAT',
+            'radio_module': 'SX1262',
+            'meshtastic_compatible': True,
+            'gpio_config': {
+                'CS': 21,
+                'IRQ': 16,
+                'Busy': 20,
+                'Reset': 18,
+            },
+            'lora_options': {
+                'DIO2_AS_RF_SWITCH': True,
+            },
+            'notes': 'Waveshare LoRa HAT'
+        },
+        'Elecrow LoRa RFM95': {
+            'name': 'Elecrow LoRa RFM95',
+            'manufacturer': 'Elecrow',
+            'description': 'Elecrow RFM95 LoRa HAT',
+            'radio_module': 'SX1276',
+            'meshtastic_compatible': True,
+            'gpio_config': {
+                'CS': 25,
+                'IRQ': 5,
+                'Reset': 17,
+            },
+            'notes': 'Elecrow RFM95 HAT'
+        },
+        'PiTx LoRa': {
+            'name': 'PiTx LoRa',
+            'manufacturer': 'PiTx',
+            'description': 'PiTx LoRa HAT',
+            'radio_module': 'SX1276',
+            'meshtastic_compatible': True,
+            'gpio_config': {
+                'CS': 8,
+                'IRQ': 22,
+                'Reset': 27,
+            },
+            'notes': 'PiTx LoRa HAT for Raspberry Pi'
+        },
+    }
 
     def __init__(self):
         self.detected_hardware = {}

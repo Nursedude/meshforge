@@ -1,0 +1,15 @@
+# Adafruit RFM9x LoRa Radio Bonnet Configuration Template
+# https://www.adafruit.com/product/4074
+
+Lora:
+  # SPI Chip Select - GPIO 7 (CE1)
+  CS: 7
+
+  # Interrupt Request - GPIO 25
+  IRQ: 25
+
+  # Reset pin - GPIO 17
+  Reset: 17
+
+Webserver:
+  Port: 443

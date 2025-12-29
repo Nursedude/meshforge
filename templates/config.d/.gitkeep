@@ -1,0 +1,2 @@
+# This directory contains symlinks to enabled device configurations
+# Example: ln -s ../available.d/meshadv-mini.yaml meshadv-mini.yaml

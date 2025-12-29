@@ -1,0 +1,56 @@
+# MeshAdv-Mini Configuration Template
+# LoRa/GPS Raspberry Pi HAT with SX1262/SX1268
+# https://github.com/chrismyers2000/MeshAdv-Mini
+#
+# Hardware: SX1262 (E22-900M22S) or SX1268 (E22-400M22S)
+# Features: +22dBm LoRa, GPS (ATGM336H), TMP102 Temp Sensor, PWM Fan
+# Compatible: Raspberry Pi 2/3/4/5, Zero, Zero W, Zero 2 W
+
+Lora:
+  # SPI Chip Select - GPIO 8
+  CS: 8
+
+  # Interrupt Request (DIO1) - GPIO 16
+  IRQ: 16
+
+  # Busy signal - GPIO 20
+  Busy: 20
+
+  # Reset pin - GPIO 24
+  Reset: 24
+
+  # RX Enable - GPIO 12
+  RXen: 12
+
+  # Use DIO2 as RF switch control (required for SX1262/SX1268)
+  DIO2_AS_RF_SWITCH: true
+
+  # Enable DIO3 TCXO voltage control
+  DIO3_TCXO_VOLTAGE: true
+
+  # SPI bus configuration
+  # SPISpeed: 2000000
+
+  # Optional: Set transmit power (default: 22 dBm for MeshAdv-Mini)
+  # TXpower: 22
+
+GPS:
+  # GPS module: ATGM336H-5NR32 (GPS/BeiDou capable)
+  # Use /dev/ttyS0 for Pi 3/4/5, /dev/ttyAMA0 for older Pi
+  SerialPath: /dev/ttyS0
+
+  # GPS enable pin - GPIO 4
+  GPSEnableGpio: 4
+
+  # PPS (Pulse Per Second) available on GPIO 17
+
+I2C:
+  # I2C bus for temperature sensor (TMP102 at 0x48)
+  I2CDevice: /dev/i2c-1
+
+Webserver:
+  Port: 443
+
+# Optional: Logging configuration
+# Logging:
+#   LogLevel: info
