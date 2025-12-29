@@ -60,6 +60,7 @@ Interactive configuration for all Meshtastic modules:
 - FT232-based modules (FTDI)
 
 ### SPI LoRa HATs
+- **MeshAdv-Mini** - LoRa/GPS HAT with SX1262/SX1268, +22dBm, GPS, Temp Sensor ([GitHub](https://github.com/chrismyers2000/MeshAdv-Mini))
 - MeshAdv-Pi v1.1
 - Adafruit RFM9x
 - Elecrow LoRa RFM95
