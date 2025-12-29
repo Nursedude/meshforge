@@ -62,6 +62,7 @@ def check_dependencies():
         'rich': 'rich>=13.0.0',
         'yaml': 'pyyaml>=6.0',
         'requests': 'requests>=2.31.0',
+        'packaging': 'packaging>=21.0',
         'psutil': 'psutil>=5.9.0',
         'distro': 'distro>=1.8.0',
         'dotenv': 'python-dotenv>=1.0.0'

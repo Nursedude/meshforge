@@ -70,6 +70,7 @@ click>=8.0.0          ✅ CLI framework
 rich>=13.0.0          ✅ Rich terminal output
 pyyaml>=6.0           ✅ YAML config files
 requests>=2.31.0      ✅ HTTP requests
+packaging>=21.0       ✅ Version comparison
 psutil>=5.9.0         ✅ System monitoring
 distro>=1.8.0         ✅ OS detection
 python-dotenv>=1.0.0  ✅ Environment config

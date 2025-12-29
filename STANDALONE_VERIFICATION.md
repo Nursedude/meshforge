@@ -51,6 +51,7 @@ Searched for:
 - `rich>=13.0.0`
 - `pyyaml>=6.0`
 - `requests>=2.31.0`
+- `packaging>=21.0`
 - `psutil>=5.9.0`
 - `distro>=1.8.0`
 - `python-dotenv>=1.0.0`
