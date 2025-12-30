@@ -1,6 +1,7 @@
 """SPI HAT configuration module for LoRa devices"""
 
 import os
+import subprocess
 from pathlib import Path
 from rich.console import Console
 from rich.prompt import Prompt, Confirm, IntPrompt
@@ -11,6 +12,10 @@ from config.hardware import HardwareDetector
 from utils.logger import log
 
 console = Console()
+
+# Path for auto-resume after reboot
+RESUME_FLAG_FILE = "/tmp/meshtasticd-installer-resume"
+AUTOSTART_SERVICE = "/etc/systemd/system/meshtasticd-installer-resume.service"
 
 
 class SPIHatConfigurator:
@@ -457,3 +462,68 @@ class SPIHatConfigurator:
         if 'gpio_config' in hat_info:
             console.print("\n[cyan]GPIO Configuration:[/cyan]")
             self._display_gpio_config(hat_info['gpio_config'])
+
+    def prompt_reboot_for_spi(self):
+        """Prompt user to reboot for SPI/I2C changes with auto-return to installer"""
+        console.print("\n[bold yellow]SPI/I2C Configuration Changed[/bold yellow]")
+        console.print("[dim]A reboot is required for SPI/I2C changes to take effect.[/dim]\n")
+
+        if Confirm.ask("Would you like to reboot now?", default=True):
+            # Set up auto-resume service
+            self._setup_resume_service()
+            console.print("\n[green]Rebooting system...[/green]")
+            console.print("[cyan]The installer will automatically restart after reboot.[/cyan]\n")
+
+            # Give user time to read
+            import time
+            time.sleep(2)
+
+            # Reboot
+            subprocess.run(['reboot'], check=False)
+        else:
+            console.print("\n[yellow]Please reboot manually when ready:[/yellow]")
+            console.print("  [cyan]sudo reboot[/cyan]\n")
+            console.print("[dim]After reboot, run: sudo meshtasticd-installer[/dim]")
+
+    def _setup_resume_service(self):
+        """Create a one-shot systemd service to resume installer after reboot"""
+        service_content = """[Unit]
+Description=Resume Meshtasticd Installer after reboot
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/meshtasticd-installer
+ExecStartPost=/bin/rm -f /etc/systemd/system/meshtasticd-installer-resume.service
+ExecStartPost=/bin/systemctl daemon-reload
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+
+[Install]
+WantedBy=multi-user.target
+"""
+        try:
+            # Write service file
+            with open(AUTOSTART_SERVICE, 'w') as f:
+                f.write(service_content)
+
+            # Enable the service for next boot
+            subprocess.run(['systemctl', 'daemon-reload'], check=False)
+            subprocess.run(['systemctl', 'enable', 'meshtasticd-installer-resume.service'], check=False)
+
+            log("Resume service created for post-reboot installer start")
+        except PermissionError:
+            console.print("[yellow]Could not set up auto-resume (permission denied)[/yellow]")
+            console.print("[dim]Run 'sudo meshtasticd-installer' after reboot[/dim]")
+        except Exception as e:
+            log(f"Error setting up resume service: {e}", 'error')
+
+
+def prompt_reboot_if_needed(changes_made=False):
+    """Utility function to prompt for reboot if SPI/I2C changes were made"""
+    if changes_made:
+        configurator = SPIHatConfigurator()
+        configurator.prompt_reboot_for_spi()

@@ -1,5 +1,6 @@
 """Version management for meshtasticd"""
 
+import re
 import requests
 from packaging import version
 from rich.console import Console
@@ -9,6 +10,56 @@ from utils.system import run_command
 from utils.logger import log, log_exception
 
 console = Console()
+
+
+def sanitize_version(ver_str):
+    """Sanitize version string to be PEP 440 compatible
+
+    Handles non-standard versions like '2.7.15.567b8ea' by:
+    1. Removing git hashes (hex strings after version numbers)
+    2. Keeping only major.minor.patch format
+
+    Args:
+        ver_str: Version string that may be non-standard
+
+    Returns:
+        Sanitized version string or None if unparseable
+    """
+    if not ver_str:
+        return None
+
+    # Remove 'v' prefix if present
+    ver_str = ver_str.lstrip('v')
+
+    # Try to extract semantic version (X.Y.Z) pattern
+    # This handles versions like "2.7.15.567b8ea" -> "2.7.15"
+    match = re.match(r'^(\d+\.\d+\.\d+)', ver_str)
+    if match:
+        return match.group(1)
+
+    # Try simpler patterns (X.Y)
+    match = re.match(r'^(\d+\.\d+)', ver_str)
+    if match:
+        return match.group(1)
+
+    # Return original if no pattern matches
+    return ver_str
+
+
+def safe_version_parse(ver_str):
+    """Safely parse a version string, handling non-standard formats
+
+    Returns:
+        Parsed version object or None if parsing fails
+    """
+    sanitized = sanitize_version(ver_str)
+    if not sanitized:
+        return None
+
+    try:
+        return version.parse(sanitized)
+    except Exception:
+        return None
 
 
 class VersionManager:
@@ -115,8 +166,19 @@ class VersionManager:
             return None
 
         try:
-            current_ver = version.parse(current.lstrip('v'))
-            latest_ver = version.parse(latest['version'].lstrip('v'))
+            # Use safe version parsing to handle non-standard versions
+            current_ver = safe_version_parse(current)
+            latest_ver = safe_version_parse(latest['version'])
+
+            if current_ver is None or latest_ver is None:
+                log(f"Could not parse versions: current={current}, latest={latest['version']}", 'warning')
+                # Return info without comparison if parsing fails
+                return {
+                    'update_available': False,
+                    'current': current,
+                    'latest': latest['version'],
+                    'parse_error': True
+                }
 
             if latest_ver > current_ver:
                 return {
@@ -134,7 +196,12 @@ class VersionManager:
 
         except Exception as e:
             log_exception(e, "Version comparison")
-            return None
+            return {
+                'update_available': False,
+                'current': current,
+                'latest': latest['version'] if latest else 'Unknown',
+                'error': str(e)
+            }
 
     def show_version_info(self):
         """Display version information"""

@@ -1,11 +1,23 @@
 """Version information for Meshtasticd Interactive Installer"""
 
-__version__ = "2.1.0"
-__version_info__ = (2, 1, 0)
+__version__ = "2.1.1"
+__version_info__ = (2, 1, 1)
 __release_date__ = "2025-12-30"
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "2.1.1",
+        "date": "2025-12-30",
+        "changes": [
+            "Fixed version comparison for non-standard versions (e.g., 2.7.15.567b8ea)",
+            "Improved emoji detection for Raspberry Pi local console with UTF-8",
+            "Updated config.yaml template with complete meshtasticd configuration",
+            "Added reboot prompt after SPI/I2C changes with auto-return to installer",
+            "Added all config sections: GPS, I2C, Display, Touchscreen, Logging, etc.",
+            "Better locale detection for emoji support on Pi"
+        ]
+    },
     {
         "version": "2.1.0",
         "date": "2025-12-30",

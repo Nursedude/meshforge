@@ -24,7 +24,12 @@ class EmojiHelper:
         if os.environ.get('ENABLE_EMOJI', '').lower() in ('1', 'true', 'yes'):
             return True
 
-        # Check for SSH or limited terminals that don't support emoji well
+        # Check if running on Raspberry Pi with a local console
+        # The 'linux' terminal on Pi often supports UTF-8/emoji
+        if self._is_raspberry_pi_console():
+            return True
+
+        # Check for SSH connections
         if os.environ.get('SSH_CONNECTION'):
             # SSH connections may have issues with emojis
             # But allow override with ENABLE_EMOJI=true
@@ -32,12 +37,29 @@ class EmojiHelper:
 
         # Check for minimum terminal capability
         term = os.environ.get('TERM', 'xterm').lower()
-        # Disable on dumb terminals and basic ones
-        if term in ('dumb', 'linux', 'vt100', 'vt220'):
+        # Disable only on truly limited terminals
+        if term in ('dumb', 'vt100', 'vt220'):
             return False
 
-        # Enable by default for modern terminals
+        # Enable by default for modern terminals (including 'linux' on Pi)
         return True
+
+    def _is_raspberry_pi_console(self):
+        """Check if running on Raspberry Pi local console"""
+        try:
+            # Check if this is a Raspberry Pi
+            if os.path.exists('/proc/device-tree/model'):
+                with open('/proc/device-tree/model', 'r') as f:
+                    model = f.read().lower()
+                    if 'raspberry' in model:
+                        # Check if locale supports UTF-8
+                        import locale
+                        encoding = locale.getpreferredencoding(False)
+                        if encoding and 'utf' in encoding.lower():
+                            return True
+        except Exception:
+            pass
+        return False
 
     # Emoji mappings with ASCII fallbacks
     EMOJI_MAP = {

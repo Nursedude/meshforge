@@ -5,15 +5,23 @@
 # Device-specific configurations are stored in /etc/meshtasticd/available.d/
 # and enabled via symlinks in /etc/meshtasticd/config.d/
 #
-# For MeshAdv-Mini, see: templates/available.d/meshadv-mini.yaml
+# Documentation: https://meshtastic.org/docs/software/linux-native/
+#
+# For hardware-specific templates, see: templates/available.d/
 
+# ============================================================================
 # LoRa Radio Configuration
+# ============================================================================
 Lora:
   # === GPIO Pin Configuration ===
   # Set these based on your specific HAT/hardware
+  # Common configurations:
+  #   MeshAdv-Mini:    CS=8,  IRQ=16, Busy=20, Reset=24
+  #   Waveshare:       CS=21, IRQ=16, Busy=20, Reset=18
+  #   Adafruit RFM9x:  CS=7,  IRQ=25, Reset=17
 
   # SPI Chip Select (CS) pin
-  CS: 8
+  CS: 21
 
   # Interrupt Request pin (DIO1)
   IRQ: 16
@@ -22,59 +30,191 @@ Lora:
   Busy: 20
 
   # Reset pin
-  Reset: 24
+  Reset: 18
 
-  # RX Enable pin (if applicable)
-  # RXen: 12
+  # TX/RX Enable pins (if applicable)
+#  TXen: 6
+#  RXen: 12
 
   # === SX126x Specific Options ===
   # Enable DIO2 as RF switch control (required for most SX1262/SX1268 modules)
-  DIO2_AS_RF_SWITCH: true
+#  DIO2_AS_RF_SWITCH: true
 
   # Enable DIO3 TCXO voltage control
-  DIO3_TCXO_VOLTAGE: true
+  # Required for Waveshare Core1262 and similar modules
+#  DIO3_TCXO_VOLTAGE: true
 
-  # === Radio Parameters ===
-  # Transmit power in dBm (0-30)
-  # TXpower: 22
+  # === Power Settings ===
+  # Limit output power in dBm (useful for amplified nodes)
+#  SX126X_MAX_POWER: 8
 
-  # Bandwidth in kHz (125, 250, 500)
-  # Bandwidth: 250
+  # === SPI Configuration ===
+  # SPI bus speed in Hz (default: 2000000)
+#  spiSpeed: 2000000
 
-  # Spreading Factor (7-12)
-  # SpreadFactor: 11
+  # Specify SPI device (default: spidev0.0)
+  # Some devices like PinePhone may need spidev0.1
+#  spidev: spidev0.0
 
-  # Coding Rate (5-8 for 4/5 to 4/8)
-  # CodingRate: 8
+  # GPIO chip for Raspberry Pi 5 (uses gpiochip4)
+  # Uncomment for Pi 5
+#  gpiochip: 4
 
-  # Hop limit for mesh network (0-7)
-  # HopLimit: 3
-
-  # Channel slot number
-  # ChannelNum: 20
-
+# ============================================================================
 # GPS Configuration
-# Uncomment and configure if your device has GPS
-# GPS:
-#   SerialPath: /dev/ttyS0
-#   GPSEnableGpio: 4
+# ============================================================================
+GPS:
+  # Serial port for GPS module
+#  SerialPath: /dev/ttyS0
 
-# I2C Configuration (for temperature sensors, etc.)
-# I2C:
-#   I2CDevice: /dev/i2c-1
+  # GPS enable GPIO pin
+#  GPSEnableGpio: 4
 
-# Web Server Configuration
-Webserver:
-  Port: 443
-  # RootPath: /usr/share/meshtasticd/web
+# ============================================================================
+# I2C Configuration (sensors, displays)
+# ============================================================================
+I2C:
+  # I2C device path
+#  I2CDevice: /dev/i2c-1
 
+# ============================================================================
+# Display Configuration
+# ============================================================================
+Display:
+  # SPI displays must be configured here
+  # I2C displays are generally auto-detected
+
+  # --- Adafruit PiTFT 2.8 TFT+Touchscreen ---
+#  Panel: ILI9341
+#  CS: 8
+#  DC: 25
+#  Width: 240
+#  Height: 320
+#  Rotate: true
+
+  # --- SHCHV 3.5 RPi TFT+Touchscreen ---
+#  Panel: ILI9486
+#  spidev: spidev0.0
+#  BusFrequency: 30000000
+#  DC: 24
+#  Reset: 25
+#  Width: 320
+#  Height: 480
+#  OffsetRotate: 2
+
+  # --- TZT 2.0 Inch ST7789V 240x320 ---
+#  Panel: ST7789
+#  spidev: spidev0.0
+#  BusFrequency: 80000000
+#  DC: 24
+#  Width: 320
+#  Height: 240
+#  Reset: 25
+#  Rotate: true
+#  OffsetRotate: 1
+#  Invert: true
+
+# ============================================================================
+# Touchscreen Configuration
+# ============================================================================
+Touchscreen:
+  # Note: touchscreen must have a CS pin defined
+
+  # --- STMPE610 (Adafruit PiTFT) ---
+#  Module: STMPE610
+#  CS: 7
+#  IRQ: 24
+
+  # --- FT5x06 (Adafruit PiTFT alternative) ---
+#  Module: FT5x06
+#  IRQ: 24
+#  I2CAddr: 0x38
+
+# ============================================================================
+# Input Configuration
+# ============================================================================
+Input:
+  # Keyboard device for direct input
+#  KeyboardDevice: /dev/input/by-id/usb-_Raspberry_Pi_Internal_Keyboard-event-kbd
+
+  # User button GPIO
+#  UserButton: 6
+
+  # Trackball/Joystick input
+#  TrackballUp: 6
+#  TrackballDown: 19
+#  TrackballLeft: 5
+#  TrackballRight: 26
+#  TrackballPress: 13
+
+# ============================================================================
 # Logging Configuration
-# Logging:
-#   LogLevel: info
-#   LogFile: /var/log/meshtasticd.log
+# ============================================================================
+Logging:
+  # Log level: debug, info, warn, error
+  LogLevel: info
 
-# Channel Configuration
-# Channels:
-#   - name: "LongFast"
-#     psk: "AQ=="
-#     role: "PRIMARY"
+  # JSON trace file for debugging
+#  TraceFile: /var/log/meshtasticd.json
+
+  # JSON file for decoded packets
+#  JSONFile: /packets.json
+
+  # Filter for JSON packet logging
+#  JSONFilter: position
+
+  # Force ASCII logs (default: auto-detect based on terminal)
+#  AsciiLogs: true
+
+# ============================================================================
+# Web Server Configuration
+# ============================================================================
+Webserver:
+  # HTTPS port for web interface
+  Port: 9443
+
+  # Web interface root directory
+  RootPath: /usr/share/meshtasticd/web
+
+  # SSL certificate paths (auto-generated if not present)
+#  SSLKey: /etc/meshtasticd/ssl/private_key.pem
+#  SSLCert: /etc/meshtasticd/ssl/certificate.pem
+
+# ============================================================================
+# Host Metrics Configuration
+# ============================================================================
+HostMetrics:
+  # Interval in minutes between HostMetrics packets (0 to disable)
+#  ReportInterval: 30
+
+  # Channel for sending host metrics
+#  Channel: 0
+
+  # Command to get device serial number for userString
+#  UserStringCommand: cat /sys/firmware/devicetree/base/serial-number
+
+# ============================================================================
+# General Configuration
+# ============================================================================
+Config:
+  # Display mode: TWOCOLOR (BaseUI) or COLOR (MUI)
+#  DisplayMode: TWOCOLOR
+
+General:
+  # Maximum number of nodes to track
+  MaxNodes: 200
+
+  # Maximum message queue size
+  MaxMessageQueue: 100
+
+  # Directory for additional config files
+  ConfigDirectory: /etc/meshtasticd/config.d/
+
+  # Directory for available hardware templates
+  AvailableDirectory: /etc/meshtasticd/available.d/
+
+  # Custom MAC address (optional)
+#  MACAddress: AA:BB:CC:DD:EE:FF
+
+  # Get MAC from network interface
+#  MACAddressSource: eth0
