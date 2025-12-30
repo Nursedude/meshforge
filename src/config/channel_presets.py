@@ -528,6 +528,11 @@ class ChannelPresetManager:
                     'role': channel.get('role', 'SECONDARY')
                 })
 
+            # Ensure parent directory exists
+            from pathlib import Path
+            output_path = Path(output_file)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
             # Write config
             with open(output_file, 'w') as f:
                 yaml.dump(yaml_config, f, default_flow_style=False)

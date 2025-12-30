@@ -53,6 +53,13 @@ class MeshtasticdInstaller:
 
     def install(self, version_type='stable'):
         """Install meshtasticd"""
+        # Validate version_type to prevent shell injection
+        VALID_VERSION_TYPES = ['stable', 'beta', 'daily', 'alpha']
+        if version_type not in VALID_VERSION_TYPES:
+            console.print(f"[bold red]Invalid version type: {version_type}[/bold red]")
+            log(f"Invalid version type attempted: {version_type}", 'error')
+            return False
+
         log(f"Starting meshtasticd installation (version: {version_type})")
         console.print(f"\n[cyan]Installing meshtasticd ({version_type} version)...[/cyan]")
 
@@ -101,8 +108,8 @@ class MeshtasticdInstaller:
         # Make script executable
         os.chmod(script_path, 0o755)
 
-        # Run installation script
-        result = run_command(f'bash {script_path} {version_type}', shell=True)
+        # Run installation script (using list form to avoid shell injection)
+        result = run_command(['bash', str(script_path), version_type])
         log_command(f'bash {script_path}', result)
 
         if result['success']:
@@ -141,8 +148,8 @@ class MeshtasticdInstaller:
         # Make script executable
         os.chmod(script_path, 0o755)
 
-        # Run installation script
-        result = run_command(f'bash {script_path} {version_type}', shell=True)
+        # Run installation script (using list form to avoid shell injection)
+        result = run_command(['bash', str(script_path), version_type])
         log_command(f'bash {script_path}', result)
 
         if result['success']:

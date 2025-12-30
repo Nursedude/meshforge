@@ -94,12 +94,15 @@ class ModuleConfigurator:
                 default=""
             )
 
-            # Password
+            # Password with confirmation
             if mqtt_config['username']:
-                mqtt_config['password'] = Prompt.ask(
-                    "MQTT Password",
-                    password=True
-                )
+                while True:
+                    password = Prompt.ask("MQTT Password", password=True)
+                    confirm = Prompt.ask("Confirm password", password=True)
+                    if password == confirm:
+                        mqtt_config['password'] = password
+                        break
+                    console.print("[red]Passwords don't match. Try again.[/red]")
 
             # Encryption
             mqtt_config['encryption_enabled'] = Confirm.ask(

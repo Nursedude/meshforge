@@ -14,6 +14,7 @@ Features:
 
 import os
 import sys
+import subprocess
 import click
 from rich.console import Console
 from rich.panel import Panel
@@ -299,8 +300,12 @@ def apply_template(template_name):
             console.print(f"[green]Template applied successfully![/green]")
 
             if Confirm.ask("\nRestart meshtasticd service?", default=True):
-                os.system("systemctl restart meshtasticd")
-                console.print("[green]Service restarted![/green]")
+                result = subprocess.run(['systemctl', 'restart', 'meshtasticd'],
+                                      capture_output=True, text=True)
+                if result.returncode == 0:
+                    console.print("[green]Service restarted![/green]")
+                else:
+                    console.print(f"[red]Failed to restart service: {result.stderr}[/red]")
 
         except Exception as e:
             console.print(f"[red]Failed to apply template: {e}[/red]")
@@ -584,7 +589,12 @@ def view_logs():
     log_file = "/var/log/meshtasticd-installer.log"
     if os.path.exists(log_file):
         console.print(f"\n[cyan]Showing last 50 lines of {log_file}:[/cyan]\n")
-        os.system(f"tail -n 50 {log_file}")
+        try:
+            result = subprocess.run(['tail', '-n', '50', log_file],
+                                  capture_output=True, text=True, check=True)
+            console.print(result.stdout)
+        except subprocess.CalledProcessError as e:
+            console.print(f"[red]Error reading log file: {e}[/red]")
     else:
         console.print("\n[yellow]No log file found[/yellow]")
 
@@ -592,7 +602,11 @@ def view_logs():
 def test_service():
     """Test meshtasticd service"""
     console.print("\n[cyan]Testing meshtasticd service...[/cyan]\n")
-    os.system("systemctl status meshtasticd")
+    result = subprocess.run(['systemctl', 'status', 'meshtasticd'],
+                          capture_output=True, text=True)
+    console.print(result.stdout)
+    if result.stderr:
+        console.print(result.stderr)
 
 
 def check_permissions():
