@@ -11,50 +11,18 @@ class EmojiHelper:
         self.emoji_enabled = self._detect_emoji_support()
 
     def _detect_emoji_support(self):
-        """Detect if terminal supports emoji"""
-        # Check environment variables
-        term = os.environ.get('TERM', '').lower()
-        lang = os.environ.get('LANG', '').lower()
-        ssh_connection = os.environ.get('SSH_CONNECTION', '')
-        ssh_tty = os.environ.get('SSH_TTY', '')
+        """Detect if terminal supports emoji
 
-        # Force enable if explicitly requested
+        Emojis are DISABLED by default for better CLI compatibility.
+        Only enable if explicitly requested via ENABLE_EMOJI=true
+        """
+        # Force enable ONLY if explicitly requested
         if os.environ.get('ENABLE_EMOJI', '').lower() in ('1', 'true', 'yes'):
             return True
 
-        # Disable emojis if explicitly requested
-        if os.environ.get('DISABLE_EMOJI', '').lower() in ('1', 'true', 'yes'):
-            return False
-
-        # Disable emojis if running over SSH (common on Raspberry Pi)
-        if ssh_connection or ssh_tty:
-            return False
-
-        # Check if running on Raspberry Pi OS
-        try:
-            with open('/etc/os-release', 'r') as f:
-                os_release = f.read().lower()
-                if 'raspbian' in os_release or 'raspberry' in os_release:
-                    # Default to ASCII on Raspberry Pi OS unless forced
-                    return False
-        except (FileNotFoundError, PermissionError, OSError):
-            pass
-
-        # Basic terminals that don't render emojis well
-        basic_terms = ['linux', 'dumb', 'unknown', 'cons25', 'vt100', 'vt220', 'screen']
-        if any(t in term for t in basic_terms):
-            return False
-
-        # Check for UTF-8 support
-        if 'utf' not in lang and 'utf' not in term:
-            return False
-
-        # Only enable for known good terminals
-        good_terms = ['xterm-256color', 'alacritty', 'kitty', 'iterm', 'konsole', 'gnome']
-        if any(t in term for t in good_terms) and 'utf' in lang:
-            return True
-
-        # Default to disabled for safety (especially on embedded systems)
+        # Everything else: DISABLED by default
+        # Emojis render poorly in most terminals, especially over SSH
+        # Use ASCII fallbacks for consistent, readable output
         return False
 
     # Emoji mappings with ASCII fallbacks

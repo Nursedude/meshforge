@@ -100,7 +100,15 @@ apt-get update
 echo -e "\n${CYAN}Checking for packaging conflicts...${NC}"
 if dpkg -l | grep -q python3-packaging; then
     echo -e "${YELLOW}Detected python3-packaging (Debian package) - removing to prevent conflicts${NC}"
+
+    # Remove python3-packaging (this may also remove pip)
     apt-get remove --purge python3-packaging -y || true
+
+    # Ensure pip is installed
+    echo -e "${GREEN}Ensuring pip is available...${NC}"
+    apt-get install -y python3-pip python3-setuptools python3-wheel
+
+    # Now install packaging via pip
     echo -e "${GREEN}Installing packaging via pip${NC}"
     python3 -m pip install --upgrade --force-reinstall packaging --break-system-packages || true
 fi
