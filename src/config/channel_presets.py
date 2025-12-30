@@ -187,32 +187,52 @@ class ChannelPresetManager:
         self.user_presets_dir = Path.home() / '.config' / 'meshtasticd' / 'presets'
         self.user_presets_dir.mkdir(parents=True, exist_ok=True)
 
+    # Emoji icons for presets
+    PRESET_ICONS = {
+        'default': '📡',
+        'mtnmesh': '🏔️',
+        'emergency': '🚨',
+        'urban': '🏙️',
+        'private_group': '🔐',
+        'multi_channel': '📻',
+        'long_range': '📶',
+        'repeater': '🔄'
+    }
+
     def show_presets(self):
         """Display available channel presets"""
-        console.print("\n[bold cyan]Available Channel Presets[/bold cyan]\n")
+        console.print("\n[bold cyan]═══════════════ Channel Presets ═══════════════[/bold cyan]\n")
 
         table = Table(show_header=True, header_style="bold magenta")
         table.add_column("#", style="cyan", width=3)
+        table.add_column("", width=3)  # Icon column
         table.add_column("Name", style="green", width=20)
         table.add_column("Description", style="white", width=35)
         table.add_column("Use Case", style="yellow", width=30)
 
         for idx, (key, preset) in enumerate(self.CHANNEL_PRESETS.items(), 1):
+            icon = self.PRESET_ICONS.get(key, '📻')
+            # Add star for recommended presets
+            name = preset['name']
+            if key == 'mtnmesh':
+                name = f"[yellow]{name}[/yellow] ⭐"
             table.add_row(
                 str(idx),
-                preset['name'],
+                icon,
+                name,
                 preset['description'],
                 preset['use_case'][:30] + '...' if len(preset['use_case']) > 30 else preset['use_case']
             )
 
         console.print(table)
+        console.print("\n[dim]⭐ = Recommended for community networks[/dim]")
 
         # Show user presets if any
         user_presets = self.load_user_presets()
         if user_presets:
-            console.print("\n[cyan]User-saved presets:[/cyan]")
+            console.print("\n[cyan]📁 User-saved presets:[/cyan]")
             for name in user_presets.keys():
-                console.print(f"  - {name}")
+                console.print(f"  • {name}")
 
     def select_preset(self):
         """Interactive preset selection"""
@@ -222,14 +242,18 @@ class ChannelPresetManager:
 
         console.print("\n[cyan]Select a preset:[/cyan]")
         for idx, key in enumerate(preset_keys, 1):
-            console.print(f"  {idx}. {self.CHANNEL_PRESETS[key]['name']}")
-        console.print(f"  {len(preset_keys) + 1}. Custom Configuration")
-        console.print(f"  {len(preset_keys) + 2}. Load Saved Preset")
+            icon = self.PRESET_ICONS.get(key, '📻')
+            name = self.CHANNEL_PRESETS[key]['name']
+            extra = " [yellow]⭐ Recommended[/yellow]" if key == 'mtnmesh' else ""
+            console.print(f"  [bold]{idx}[/bold]. {icon} {name}{extra}")
+
+        console.print(f"\n  [bold]{len(preset_keys) + 1}[/bold]. ✏️  Custom Configuration")
+        console.print(f"  [bold]{len(preset_keys) + 2}[/bold]. 📂 Load Saved Preset")
 
         choice = Prompt.ask(
-            "\nEnter selection",
+            "\n[cyan]Enter selection[/cyan]",
             choices=[str(i) for i in range(1, len(preset_keys) + 3)],
-            default="1"
+            default="2"  # Default to MtnMesh (option 2)
         )
 
         choice_idx = int(choice) - 1

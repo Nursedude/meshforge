@@ -33,8 +33,10 @@ console = Console()
 
 BANNER = f"""
 ╔═══════════════════════════════════════════════════════════╗
-║   Meshtasticd Interactive Installer & Manager             ║
+║   🌐 Meshtasticd Interactive Installer & Manager          ║
 ║   For Raspberry Pi OS                          v{__version__}   ║
+╠═══════════════════════════════════════════════════════════╣
+║   📡 Install • Configure • Monitor • Update               ║
 ╚═══════════════════════════════════════════════════════════╝
 """
 
@@ -42,6 +44,7 @@ BANNER = f"""
 def show_banner():
     """Display application banner"""
     console.print(BANNER, style="bold cyan")
+    console.print("[dim]Type '?' for help at any menu prompt[/dim]\n")
 
 
 def show_system_info():
@@ -106,19 +109,33 @@ def interactive_menu():
         # Show quick status
         show_quick_status()
 
-        console.print("\n[bold cyan]Main Menu:[/bold cyan]")
-        console.print("1. [green]Quick Status Dashboard[/green]")
-        console.print("2. Install meshtasticd")
-        console.print("3. Update meshtasticd")
-        console.print("4. Configure device")
-        console.print("5. [yellow]Channel Presets[/yellow]")
-        console.print("6. Configuration Templates")
-        console.print("7. Check dependencies")
-        console.print("8. Hardware detection")
-        console.print("9. Debug & troubleshooting")
-        console.print("0. Exit")
+        console.print("\n[bold cyan]═══════════════════ Main Menu ═══════════════════[/bold cyan]")
 
-        choice = Prompt.ask("\nSelect an option", choices=["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"], default="1")
+        # Status & Monitoring Section
+        console.print("\n[dim cyan]── Status & Monitoring ──[/dim cyan]")
+        console.print("  [bold]1[/bold]. 📊 [green]Quick Status Dashboard[/green]")
+
+        # Installation Section
+        console.print("\n[dim cyan]── Installation ──[/dim cyan]")
+        console.print("  [bold]2[/bold]. 📦 Install meshtasticd")
+        console.print("  [bold]3[/bold]. ⬆️  Update meshtasticd")
+
+        # Configuration Section
+        console.print("\n[dim cyan]── Configuration ──[/dim cyan]")
+        console.print("  [bold]4[/bold]. ⚙️  Configure device")
+        console.print("  [bold]5[/bold]. 📻 [yellow]Channel Presets[/yellow] [dim](Quick Setup)[/dim]")
+        console.print("  [bold]6[/bold]. 📋 Configuration Templates")
+
+        # System Section
+        console.print("\n[dim cyan]── System ──[/dim cyan]")
+        console.print("  [bold]7[/bold]. 🔍 Check dependencies")
+        console.print("  [bold]8[/bold]. 🔌 Hardware detection")
+        console.print("  [bold]9[/bold]. 🐛 Debug & troubleshooting")
+
+        console.print("\n  [bold]0[/bold]. 🚪 Exit")
+        console.print("  [bold]?[/bold]. ❓ Help")
+
+        choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "?"], default="1")
 
         if choice == "1":
             show_dashboard()
@@ -138,8 +155,10 @@ def interactive_menu():
             detect_hardware()
         elif choice == "9":
             debug_menu()
+        elif choice == "?":
+            show_help()
         elif choice == "0":
-            console.print("\n[green]Goodbye![/green]")
+            console.print("\n[green]👋 Goodbye! Happy meshing![/green]")
             sys.exit(0)
 
 
@@ -148,6 +167,46 @@ def show_dashboard():
     from dashboard import StatusDashboard
     dashboard = StatusDashboard()
     dashboard.interactive_dashboard()
+
+
+def show_help():
+    """Display help information"""
+    from rich.box import ROUNDED
+
+    help_content = """
+[bold cyan]Meshtasticd Interactive Installer & Manager[/bold cyan]
+[dim]A comprehensive tool for installing and managing meshtasticd on Raspberry Pi[/dim]
+
+[bold yellow]Quick Start Guide:[/bold yellow]
+
+  [bold]1. First-time setup:[/bold]
+     • Run option [cyan]8[/cyan] (Hardware detection) to verify your LoRa hardware
+     • Run option [cyan]7[/cyan] (Check dependencies) to ensure all requirements are met
+     • Run option [cyan]2[/cyan] (Install) to install meshtasticd
+
+  [bold]2. Configuration:[/bold]
+     • Use option [cyan]5[/cyan] (Channel Presets) for quick, pre-configured setups
+     • Use option [cyan]4[/cyan] (Configure device) for detailed configuration
+     • Use option [cyan]6[/cyan] (Templates) for hardware-specific configurations
+
+  [bold]3. Monitoring:[/bold]
+     • Option [cyan]1[/cyan] shows real-time status of your meshtasticd service
+
+[bold yellow]Keyboard Shortcuts:[/bold yellow]
+  • [cyan]Ctrl+C[/cyan] - Cancel current operation
+  • [cyan]Enter[/cyan] - Accept default value (shown in brackets)
+
+[bold yellow]Common Tasks:[/bold yellow]
+  • [bold]Join MtnMesh network:[/bold] Use Channel Preset → MtnMesh Community
+  • [bold]Maximum range:[/bold] Use Channel Preset → Emergency/SAR or Long Range
+  • [bold]Urban deployment:[/bold] Use Channel Preset → Urban High-Density
+
+[bold yellow]Getting More Help:[/bold yellow]
+  • Documentation: https://meshtastic.org/docs
+  • GitHub Issues: https://github.com/Nursedude/Meshtasticd_interactive_UI/issues
+"""
+    console.print(Panel(help_content, title="[bold cyan]❓ Help[/bold cyan]", border_style="cyan", box=ROUNDED))
+    Prompt.ask("\n[dim]Press Enter to return to menu[/dim]")
 
 
 def configure_channel_presets():
@@ -169,20 +228,23 @@ def configure_channel_presets():
 
 def manage_templates():
     """Manage configuration templates"""
-    console.print("\n[bold cyan]Configuration Templates[/bold cyan]\n")
+    console.print("\n[bold cyan]═══════════════ Configuration Templates ═══════════════[/bold cyan]\n")
 
-    console.print("[cyan]Available Templates:[/cyan]")
-    console.print("1. MeshAdv-Mini (SX1262/SX1268 HAT)")
-    console.print("2. MeshAdv-Mini 400MHz variant")
-    console.print("3. Waveshare SX1262")
-    console.print("4. Adafruit RFM9x")
-    console.print("5. [yellow]MtnMesh Community[/yellow]")
-    console.print("6. [yellow]Emergency/SAR[/yellow]")
-    console.print("7. [yellow]Urban High-Speed[/yellow]")
-    console.print("8. [yellow]Repeater Node[/yellow]")
-    console.print("9. Back to Main Menu")
+    console.print("[dim cyan]── Hardware Templates ──[/dim cyan]")
+    console.print("  [bold]1[/bold]. 🔧 MeshAdv-Mini (SX1262/SX1268 HAT)")
+    console.print("  [bold]2[/bold]. 🔧 MeshAdv-Mini 400MHz variant")
+    console.print("  [bold]3[/bold]. 🔧 Waveshare SX1262")
+    console.print("  [bold]4[/bold]. 🔧 Adafruit RFM9x")
 
-    choice = Prompt.ask("\nSelect template", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9"], default="9")
+    console.print("\n[dim cyan]── Network Presets ──[/dim cyan]")
+    console.print("  [bold]5[/bold]. 🏔️  [yellow]MtnMesh Community[/yellow] [dim](Slot 20, MediumFast)[/dim]")
+    console.print("  [bold]6[/bold]. 🚨 [yellow]Emergency/SAR[/yellow] [dim](Maximum Range)[/dim]")
+    console.print("  [bold]7[/bold]. 🏙️  [yellow]Urban High-Speed[/yellow] [dim](Fast, Short Range)[/dim]")
+    console.print("  [bold]8[/bold]. 📡 [yellow]Repeater Node[/yellow] [dim](Router Mode)[/dim]")
+
+    console.print("\n  [bold]9[/bold]. ⬅️  Back to Main Menu")
+
+    choice = Prompt.ask("\n[cyan]Select template[/cyan]", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9"], default="9")
 
     template_map = {
         "1": "meshadv-mini.yaml",
@@ -318,21 +380,26 @@ def update_meshtasticd():
 
 def configure_device():
     """Configure meshtastic device"""
-    console.print("\n[bold cyan]Device Configuration[/bold cyan]\n")
+    console.print("\n[bold cyan]═══════════════ Device Configuration ═══════════════[/bold cyan]\n")
 
     while True:
-        console.print("\n[cyan]Configuration Options:[/cyan]")
-        console.print("1. Complete Radio Setup (Modem Preset + Channel Slot)")
-        console.print("2. LoRa Settings (Region, Preset)")
-        console.print("3. Channel Configuration")
-        console.print("4. [yellow]Channel Presets[/yellow] (New!)")
-        console.print("5. Module Configuration (MQTT, Serial, etc.)")
-        console.print("6. Device Settings (Name, WiFi, etc.)")
-        console.print("7. Hardware Detection")
-        console.print("8. SPI HAT Configuration (MeshAdv-Mini, etc.)")
-        console.print("9. Back to Main Menu")
+        console.print("\n[dim cyan]── Radio Settings ──[/dim cyan]")
+        console.print("  [bold]1[/bold]. 📻 Complete Radio Setup [dim](Recommended)[/dim]")
+        console.print("  [bold]2[/bold]. 🌐 LoRa Settings [dim](Region, Preset)[/dim]")
+        console.print("  [bold]3[/bold]. 📢 Channel Configuration")
+        console.print("  [bold]4[/bold]. ⚡ [yellow]Channel Presets[/yellow] [dim](Quick Setup)[/dim]")
 
-        choice = Prompt.ask("\nSelect configuration option", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9"], default="1")
+        console.print("\n[dim cyan]── Device & Modules ──[/dim cyan]")
+        console.print("  [bold]5[/bold]. 🔌 Module Configuration [dim](MQTT, Serial, etc.)[/dim]")
+        console.print("  [bold]6[/bold]. 📝 Device Settings [dim](Name, WiFi, etc.)[/dim]")
+
+        console.print("\n[dim cyan]── Hardware ──[/dim cyan]")
+        console.print("  [bold]7[/bold]. 🔍 Hardware Detection")
+        console.print("  [bold]8[/bold]. 🎛️  SPI HAT Configuration [dim](MeshAdv-Mini, etc.)[/dim]")
+
+        console.print("\n  [bold]9[/bold]. ⬅️  Back to Main Menu")
+
+        choice = Prompt.ask("\n[cyan]Select configuration option[/cyan]", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9"], default="1")
 
         if choice == "1":
             configure_radio_complete()
@@ -482,16 +549,21 @@ def detect_hardware():
 
 def debug_menu():
     """Debug and troubleshooting menu"""
-    console.print("\n[bold cyan]Debug & Troubleshooting[/bold cyan]\n")
-    console.print("1. View logs")
-    console.print("2. Test meshtasticd service")
-    console.print("3. Check permissions")
-    console.print("4. [yellow]Check for updates[/yellow]")
-    console.print("5. [yellow]Version history[/yellow]")
-    console.print("6. [yellow]Show version info[/yellow]")
-    console.print("7. Back to main menu")
+    console.print("\n[bold cyan]═══════════════ Debug & Troubleshooting ═══════════════[/bold cyan]\n")
 
-    choice = Prompt.ask("\nSelect an option", choices=["1", "2", "3", "4", "5", "6", "7"], default="7")
+    console.print("[dim cyan]── Diagnostics ──[/dim cyan]")
+    console.print("  [bold]1[/bold]. 📜 View logs")
+    console.print("  [bold]2[/bold]. 🔄 Test meshtasticd service")
+    console.print("  [bold]3[/bold]. 🔐 Check permissions")
+
+    console.print("\n[dim cyan]── Updates & Version ──[/dim cyan]")
+    console.print("  [bold]4[/bold]. ⬆️  [yellow]Check for updates[/yellow]")
+    console.print("  [bold]5[/bold]. 📋 [yellow]Version history[/yellow]")
+    console.print("  [bold]6[/bold]. ℹ️  [yellow]Show version info[/yellow]")
+
+    console.print("\n  [bold]7[/bold]. ⬅️  Back to main menu")
+
+    choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["1", "2", "3", "4", "5", "6", "7"], default="7")
 
     if choice == "1":
         view_logs()
