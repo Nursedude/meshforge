@@ -1,16 +1,16 @@
 # Meshtasticd Interactive Installer & Manager
 
-An interactive installer, updater, and comprehensive configuration tool for meshtasticd on Raspberry Pi OS.
+An interactive installer, updater, and comprehensive configuration tool for meshtasticd on Raspberry Pi OS and compatible Linux systems.
 
-**Version 2.0.0** | [Changelog](#version-history)
+**Version 2.0.2** | [Changelog](#version-history)
 
-## What's New in v2.0.0
+## What's New in v2.0.2
 
-- **Quick Status Dashboard** - Real-time monitoring of service, system health, and network status
-- **Interactive Channel Presets** - Pre-configured channel setups for common use cases
-- **Automatic Update Notifications** - Get notified when new versions are available
-- **Configuration Templates** - Ready-to-use templates for Emergency/SAR, Urban, MtnMesh, and Repeater setups
-- **Version Control** - Track installer version history and changes
+- **Enhanced Raspberry Pi Compatibility** - Perfect emoji fallback for all terminal types
+- **Improved Hardware Detection** - Auto-detects all Meshtastic Linux native compatible devices
+- **Better OS Detection** - Accurate board model detection from device tree
+- **SSH-Friendly** - Automatically uses ASCII mode in SSH sessions
+- **Terminal Compatibility** - Works flawlessly on console, SSH, and basic terminals
 
 ## Features
 
@@ -18,10 +18,13 @@ An interactive installer, updater, and comprehensive configuration tool for mesh
 - **Interactive Installation**: Guided setup for meshtasticd daemon
 - **Version Management**: Install/update stable, beta, daily, or alpha builds
 - **Official Repositories**: Uses OpenSUSE Build Service for latest builds
-- **OS Detection**: Automatic detection of 32-bit/64-bit Raspberry Pi OS
+- **Virtual Environment**: Isolated Python dependencies (fixes PEP 668 errors)
+- **OS Detection**: Automatic detection of 32-bit/64-bit Raspberry Pi OS and other Linux boards
+- **Board Detection**: Reads exact model from device tree (Pi 2/3/4/5/Zero/Zero 2W/etc.)
 - **Dependency Management**: Automatically fix deprecated dependencies
 - **Error Handling**: Comprehensive debugging and troubleshooting tools
 - **Automatic Update Notifications**: Get notified when updates are available
+- **Terminal Compatibility**: Works on all terminals with automatic emoji/ASCII fallback
 
 #### Available Build Channels
 - **stable/beta** - Latest stable releases from `network:Meshtastic:beta` (recommended)
@@ -89,14 +92,27 @@ Interactive configuration for all Meshtastic modules:
 
 ## Supported Platforms
 
-- Raspberry Pi OS (32-bit armhf)
-- Raspberry Pi OS (64-bit arm64)
-- Raspbian Bookworm and newer
+- **Raspberry Pi OS** (32-bit armhf)
+- **Raspberry Pi OS** (64-bit arm64)
+- **Raspbian** Bookworm and newer
+- **Debian-based** Linux distributions on ARM/x86_64
+- **Terminal Compatibility**: Works perfectly on:
+  - Direct console (HDMI/serial)
+  - SSH sessions (automatic ASCII mode)
+  - Screen/tmux
+  - Any terminal emulator
 
 ## Supported Hardware
 
 ### Raspberry Pi Models
-- Raspberry Pi Zero 2W, 3, 4, Pi 400, Pi 5
+- **Raspberry Pi 5** (Latest model with full support)
+- **Raspberry Pi 4** (All memory variants)
+- **Raspberry Pi 3** (B, B+, A+)
+- **Raspberry Pi 2**
+- **Raspberry Pi Zero 2 W** (Recommended for portable nodes)
+- **Raspberry Pi Zero W**
+- **Raspberry Pi Zero**
+- **Raspberry Pi 400** (Desktop all-in-one)
 
 ### USB LoRa Modules
 - **MeshToad** (CH341, 1W, 900mA peak) - MtnMesh device
@@ -107,12 +123,15 @@ Interactive configuration for all Meshtastic modules:
 - FT232-based modules (FTDI)
 
 ### SPI LoRa HATs
-- MeshAdv-Mini
-- MeshAdv-Pi v1.1
-- Adafruit RFM9x
-- Elecrow LoRa RFM95
-- Waveshare SX126X
-- PiTx LoRa
+- **MeshAdv-Mini** (SX1262/SX1268, +22dBm, GPS, Temp sensor, PWM fan)
+- **MeshAdv-Pi-Hat** (1W High Power, SX1262/SX1268, +33dBm, GPS)
+- **MeshAdv-Pi v1.1** (Standard HAT)
+- **Waveshare SX126X** (SX1262)
+- **Adafruit RFM9x** (SX1276)
+- **Elecrow LoRa RFM95** (SX1276)
+- **PiTx LoRa** (SX1276)
+
+All HATs include complete GPIO pin configurations and hardware-specific settings.
 
 ## Installation
 
@@ -131,7 +150,8 @@ This will:
 - Prompt for optional system upgrade (you can respond with y/n)
 - Install all required dependencies
 - Clone the repository to `/opt/meshtasticd-installer`
-- Install Python dependencies
+- **Create Python virtual environment** (fixes PEP 668 externally-managed-environment errors)
+- Install Python dependencies in isolated venv
 - Create the `meshtasticd-installer` command
 - **Automatically launch the interactive installer**
 
@@ -208,17 +228,23 @@ docker run -d -p 8080:8080 --privileged -v /dev:/dev meshtasticd-installer web
 ```bash
 # 1. Install system dependencies
 sudo apt-get update
-sudo apt-get install -y python3 python3-pip git
+sudo apt-get install -y python3 python3-pip python3-venv git
 
 # 2. Clone repository
 git clone https://github.com/Nursedude/Meshtasticd_interactive_UI.git
 cd Meshtasticd_interactive_UI
 
-# 3. Install Python dependencies
-sudo python3 -m pip install -r requirements.txt
+# 3. Create virtual environment and install dependencies (Recommended)
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 
 # 4. Run installer
-sudo python3 src/main.py
+sudo ./venv/bin/python src/main.py
+
+# Alternative: Install system-wide (not recommended on modern systems)
+# sudo python3 -m pip install -r requirements.txt --break-system-packages
+# sudo python3 src/main.py
 ```
 
 ## Usage
@@ -342,6 +368,7 @@ Meshtasticd_interactive_UI/
 │   └── utils/
 │       ├── __init__.py
 │       ├── system.py             # System utilities
+│       ├── emoji.py              # Emoji/ASCII fallback (NEW v2.0.1)
 │       ├── logger.py             # Logging and debugging
 │       └── cli.py                # CLI interface
 ├── templates/
@@ -366,6 +393,20 @@ Meshtasticd_interactive_UI/
 ```
 
 ## Version History
+
+### v2.0.2 (2025-12-30)
+- **Enhanced Raspberry Pi OS compatibility** - Default to ASCII on Raspberry Pi OS
+- **Improved emoji detection** - Automatic SSH session detection for emoji fallback
+- **Better OS and board detection** - Reads exact model from device tree
+- **Meshtastic Linux native compatibility check** - Detects compatible boards
+- **Complete emoji mapping** - Comprehensive ASCII fallbacks for all terminals
+- **Terminal auto-detection** - Works perfectly on console, SSH, screen, tmux
+
+### v2.0.1 (2025-12-30)
+- **Fixed Python externally-managed-environment error** - PEP 668 compliance
+- **Virtual environment support** - Isolated Python dependencies
+- **Emoji fallback system** - ASCII alternatives for terminals without UTF-8
+- **Better terminal detection** - Improved support for SSH and basic terminals
 
 ### v2.0.0 (2025-12-29)
 - Added Quick Status Dashboard

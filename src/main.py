@@ -26,20 +26,27 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from utils.system import check_root, get_system_info
 from utils.logger import setup_logger, log
+from utils import emoji as em
 from installer.meshtasticd import MeshtasticdInstaller
 from config.device import DeviceConfigurator
 from __version__ import __version__, get_full_version
 
 console = Console()
 
-BANNER = f"""
+def get_banner():
+    """Generate banner with emoji support"""
+    mesh = em.get('🌐', '[MESH]')
+    ant = em.get('📡', '[ANT]')
+    return f"""
 ╔═══════════════════════════════════════════════════════════╗
-║   🌐 Meshtasticd Interactive Installer & Manager          ║
+║   {mesh} Meshtasticd Interactive Installer & Manager          ║
 ║   For Raspberry Pi OS                          v{__version__}   ║
 ╠═══════════════════════════════════════════════════════════╣
-║   📡 Install • Configure • Monitor • Update               ║
+║   {ant} Install • Configure • Monitor • Update               ║
 ╚═══════════════════════════════════════════════════════════╝
 """
+
+BANNER = get_banner()
 
 
 def show_banner():
@@ -114,27 +121,27 @@ def interactive_menu():
 
         # Status & Monitoring Section
         console.print("\n[dim cyan]── Status & Monitoring ──[/dim cyan]")
-        console.print("  [bold]1[/bold]. 📊 [green]Quick Status Dashboard[/green]")
+        console.print(f"  [bold]1[/bold]. {em.get('📊')} [green]Quick Status Dashboard[/green]")
 
         # Installation Section
         console.print("\n[dim cyan]── Installation ──[/dim cyan]")
-        console.print("  [bold]2[/bold]. 📦 Install meshtasticd")
-        console.print("  [bold]3[/bold]. ⬆️  Update meshtasticd")
+        console.print(f"  [bold]2[/bold]. {em.get('📦')} Install meshtasticd")
+        console.print(f"  [bold]3[/bold]. {em.get('⬆️')}  Update meshtasticd")
 
         # Configuration Section
         console.print("\n[dim cyan]── Configuration ──[/dim cyan]")
-        console.print("  [bold]4[/bold]. ⚙️  Configure device")
-        console.print("  [bold]5[/bold]. 📻 [yellow]Channel Presets[/yellow] [dim](Quick Setup)[/dim]")
-        console.print("  [bold]6[/bold]. 📋 Configuration Templates")
+        console.print(f"  [bold]4[/bold]. {em.get('⚙️')}  Configure device")
+        console.print(f"  [bold]5[/bold]. {em.get('📻')} [yellow]Channel Presets[/yellow] [dim](Quick Setup)[/dim]")
+        console.print(f"  [bold]6[/bold]. {em.get('📋')} Configuration Templates")
 
         # System Section
         console.print("\n[dim cyan]── System ──[/dim cyan]")
-        console.print("  [bold]7[/bold]. 🔍 Check dependencies")
-        console.print("  [bold]8[/bold]. 🔌 Hardware detection")
-        console.print("  [bold]9[/bold]. 🐛 Debug & troubleshooting")
+        console.print(f"  [bold]7[/bold]. {em.get('🔍')} Check dependencies")
+        console.print(f"  [bold]8[/bold]. {em.get('🔌')} Hardware detection")
+        console.print(f"  [bold]9[/bold]. {em.get('🐛')} Debug & troubleshooting")
 
-        console.print("\n  [bold]0[/bold]. 🚪 Exit")
-        console.print("  [bold]?[/bold]. ❓ Help")
+        console.print(f"\n  [bold]0[/bold]. {em.get('🚪')} Exit")
+        console.print(f"  [bold]?[/bold]. {em.get('❓')} Help")
 
         choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "?"], default="1")
 
@@ -159,7 +166,7 @@ def interactive_menu():
         elif choice == "?":
             show_help()
         elif choice == "0":
-            console.print("\n[green]👋 Goodbye! Happy meshing![/green]")
+            console.print(f"\n[green]{em.get('👋')} Goodbye! Happy meshing![/green]")
             sys.exit(0)
 
 
@@ -206,7 +213,7 @@ def show_help():
   • Documentation: https://meshtastic.org/docs
   • GitHub Issues: https://github.com/Nursedude/Meshtasticd_interactive_UI/issues
 """
-    console.print(Panel(help_content, title="[bold cyan]❓ Help[/bold cyan]", border_style="cyan", box=ROUNDED))
+    console.print(Panel(help_content, title=f"[bold cyan]{em.get('❓')} Help[/bold cyan]", border_style="cyan", box=ROUNDED))
     Prompt.ask("\n[dim]Press Enter to return to menu[/dim]")
 
 
@@ -232,18 +239,18 @@ def manage_templates():
     console.print("\n[bold cyan]═══════════════ Configuration Templates ═══════════════[/bold cyan]\n")
 
     console.print("[dim cyan]── Hardware Templates ──[/dim cyan]")
-    console.print("  [bold]1[/bold]. 🔧 MeshAdv-Mini (SX1262/SX1268 HAT)")
-    console.print("  [bold]2[/bold]. 🔧 MeshAdv-Mini 400MHz variant")
-    console.print("  [bold]3[/bold]. 🔧 Waveshare SX1262")
-    console.print("  [bold]4[/bold]. 🔧 Adafruit RFM9x")
+    console.print(f"  [bold]1[/bold]. {em.get('🔧')} MeshAdv-Mini (SX1262/SX1268 HAT)")
+    console.print(f"  [bold]2[/bold]. {em.get('🔧')} MeshAdv-Mini 400MHz variant")
+    console.print(f"  [bold]3[/bold]. {em.get('🔧')} Waveshare SX1262")
+    console.print(f"  [bold]4[/bold]. {em.get('🔧')} Adafruit RFM9x")
 
     console.print("\n[dim cyan]── Network Presets ──[/dim cyan]")
-    console.print("  [bold]5[/bold]. 🏔️  [yellow]MtnMesh Community[/yellow] [dim](Slot 20, MediumFast)[/dim]")
-    console.print("  [bold]6[/bold]. 🚨 [yellow]Emergency/SAR[/yellow] [dim](Maximum Range)[/dim]")
-    console.print("  [bold]7[/bold]. 🏙️  [yellow]Urban High-Speed[/yellow] [dim](Fast, Short Range)[/dim]")
-    console.print("  [bold]8[/bold]. 📡 [yellow]Repeater Node[/yellow] [dim](Router Mode)[/dim]")
+    console.print(f"  [bold]5[/bold]. {em.get('🏔️')}  [yellow]MtnMesh Community[/yellow] [dim](Slot 20, MediumFast)[/dim]")
+    console.print(f"  [bold]6[/bold]. {em.get('🚨')} [yellow]Emergency/SAR[/yellow] [dim](Maximum Range)[/dim]")
+    console.print(f"  [bold]7[/bold]. {em.get('🏙️')}  [yellow]Urban High-Speed[/yellow] [dim](Fast, Short Range)[/dim]")
+    console.print(f"  [bold]8[/bold]. {em.get('📡')} [yellow]Repeater Node[/yellow] [dim](Router Mode)[/dim]")
 
-    console.print("\n  [bold]9[/bold]. ⬅️  Back to Main Menu")
+    console.print(f"\n  [bold]9[/bold]. {em.get('⬅️')}  Back to Main Menu")
 
     choice = Prompt.ask("\n[cyan]Select template[/cyan]", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9"], default="9")
 
@@ -330,7 +337,7 @@ def install_meshtasticd():
     )
 
     if version_type in ["daily", "alpha"]:
-        console.print(f"\n[yellow]⚠ Warning: {version_type} builds may be unstable[/yellow]")
+        console.print(f"\n[yellow]{em.get('⚠')} Warning: {version_type} builds may be unstable[/yellow]")
         if not Confirm.ask(f"Continue with {version_type} version?", default=False):
             console.print("[yellow]Installation cancelled[/yellow]")
             return
@@ -389,20 +396,20 @@ def configure_device():
 
     while True:
         console.print("\n[dim cyan]── Radio Settings ──[/dim cyan]")
-        console.print("  [bold]1[/bold]. 📻 Complete Radio Setup [dim](Recommended)[/dim]")
-        console.print("  [bold]2[/bold]. 🌐 LoRa Settings [dim](Region, Preset)[/dim]")
-        console.print("  [bold]3[/bold]. 📢 Channel Configuration")
-        console.print("  [bold]4[/bold]. ⚡ [yellow]Channel Presets[/yellow] [dim](Quick Setup)[/dim]")
+        console.print(f"  [bold]1[/bold]. {em.get('📻')} Complete Radio Setup [dim](Recommended)[/dim]")
+        console.print(f"  [bold]2[/bold]. {em.get('🌐')} LoRa Settings [dim](Region, Preset)[/dim]")
+        console.print(f"  [bold]3[/bold]. {em.get('📢')} Channel Configuration")
+        console.print(f"  [bold]4[/bold]. {em.get('⚡')} [yellow]Channel Presets[/yellow] [dim](Quick Setup)[/dim]")
 
         console.print("\n[dim cyan]── Device & Modules ──[/dim cyan]")
-        console.print("  [bold]5[/bold]. 🔌 Module Configuration [dim](MQTT, Serial, etc.)[/dim]")
-        console.print("  [bold]6[/bold]. 📝 Device Settings [dim](Name, WiFi, etc.)[/dim]")
+        console.print(f"  [bold]5[/bold]. {em.get('🔌')} Module Configuration [dim](MQTT, Serial, etc.)[/dim]")
+        console.print(f"  [bold]6[/bold]. {em.get('📝')} Device Settings [dim](Name, WiFi, etc.)[/dim]")
 
         console.print("\n[dim cyan]── Hardware ──[/dim cyan]")
-        console.print("  [bold]7[/bold]. 🔍 Hardware Detection")
-        console.print("  [bold]8[/bold]. 🎛️  SPI HAT Configuration [dim](MeshAdv-Mini, etc.)[/dim]")
+        console.print(f"  [bold]7[/bold]. {em.get('🔍')} Hardware Detection")
+        console.print(f"  [bold]8[/bold]. {em.get('🎛️')}  SPI HAT Configuration [dim](MeshAdv-Mini, etc.)[/dim]")
 
-        console.print("\n  [bold]9[/bold]. ⬅️  Back to Main Menu")
+        console.print(f"\n  [bold]9[/bold]. {em.get('⬅️')}  Back to Main Menu")
 
         choice = Prompt.ask("\n[cyan]Select configuration option[/cyan]", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9"], default="1")
 
@@ -557,16 +564,16 @@ def debug_menu():
     console.print("\n[bold cyan]═══════════════ Debug & Troubleshooting ═══════════════[/bold cyan]\n")
 
     console.print("[dim cyan]── Diagnostics ──[/dim cyan]")
-    console.print("  [bold]1[/bold]. 📜 View logs")
-    console.print("  [bold]2[/bold]. 🔄 Test meshtasticd service")
-    console.print("  [bold]3[/bold]. 🔐 Check permissions")
+    console.print(f"  [bold]1[/bold]. {em.get('📜')} View logs")
+    console.print(f"  [bold]2[/bold]. {em.get('🔄')} Test meshtasticd service")
+    console.print(f"  [bold]3[/bold]. {em.get('🔐')} Check permissions")
 
     console.print("\n[dim cyan]── Updates & Version ──[/dim cyan]")
-    console.print("  [bold]4[/bold]. ⬆️  [yellow]Check for updates[/yellow]")
-    console.print("  [bold]5[/bold]. 📋 [yellow]Version history[/yellow]")
-    console.print("  [bold]6[/bold]. ℹ️  [yellow]Show version info[/yellow]")
+    console.print(f"  [bold]4[/bold]. {em.get('⬆️')}  [yellow]Check for updates[/yellow]")
+    console.print(f"  [bold]5[/bold]. {em.get('📋')} [yellow]Version history[/yellow]")
+    console.print(f"  [bold]6[/bold]. {em.get('ℹ️')}  [yellow]Show version info[/yellow]")
 
-    console.print("\n  [bold]7[/bold]. ⬅️  Back to main menu")
+    console.print(f"\n  [bold]7[/bold]. {em.get('⬅️')}  Back to main menu")
 
     choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["1", "2", "3", "4", "5", "6", "7"], default="7")
 

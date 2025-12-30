@@ -17,9 +17,9 @@ def get_system_info():
     info = {}
 
     # OS information
-    info['os'] = distro.name()
-    info['os_version'] = distro.version()
-    info['os_codename'] = distro.codename()
+    info['os'] = distro.name() or 'Unknown Linux'
+    info['os_version'] = distro.version() or 'Unknown'
+    info['os_codename'] = distro.codename() or ''
 
     # Architecture
     info['arch'] = platform.machine()
@@ -34,6 +34,14 @@ def get_system_info():
     # Check if Raspberry Pi
     info['is_pi'] = is_raspberry_pi()
 
+    # Get detailed board model
+    board_model = get_board_model()
+    if board_model:
+        info['board_model'] = board_model
+
+    # Check Linux native compatibility
+    info['meshtastic_compatible'] = is_linux_native_compatible()
+
     # Determine if 32-bit or 64-bit
     info['bits'] = get_architecture_bits()
 
@@ -43,11 +51,51 @@ def get_system_info():
 def is_raspberry_pi():
     """Check if system is a Raspberry Pi"""
     try:
+        # Check device tree model first (most reliable)
+        with open('/proc/device-tree/model', 'r') as f:
+            model = f.read().strip('\x00').lower()
+            if 'raspberry' in model:
+                return True
+    except FileNotFoundError:
+        pass
+
+    try:
+        # Fallback to cpuinfo
         with open('/proc/cpuinfo', 'r') as f:
             cpuinfo = f.read()
             return 'Raspberry Pi' in cpuinfo or 'BCM' in cpuinfo
     except FileNotFoundError:
-        return False
+        pass
+
+    return False
+
+
+def get_board_model():
+    """Get detailed board model information"""
+    try:
+        with open('/proc/device-tree/model', 'r') as f:
+            model = f.read().strip('\x00').strip()
+            return model
+    except FileNotFoundError:
+        return None
+
+
+def is_linux_native_compatible():
+    """Check if system is compatible with Meshtastic Linux native"""
+    # Raspberry Pi is always compatible
+    if is_raspberry_pi():
+        return True
+
+    # Check for other compatible boards
+    arch = platform.machine().lower()
+    compatible_arches = ['aarch64', 'arm64', 'armv7', 'armhf', 'armv6', 'x86_64', 'amd64']
+
+    if any(a in arch for a in compatible_arches):
+        # Check if it's a Linux system
+        if platform.system() == 'Linux':
+            return True
+
+    return False
 
 
 def get_architecture_bits():

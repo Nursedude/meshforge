@@ -1,6 +1,7 @@
 """Quick Status Dashboard for Meshtasticd"""
 
 import os
+import sys
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,10 @@ from rich.tree import Tree
 from rich.box import ROUNDED, DOUBLE, HEAVY
 import time
 import logging
+
+# Add src to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils import emoji as em
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -245,21 +250,21 @@ class StatusDashboard:
 
         # Service status with icon and box
         if service['running']:
-            status_text = Text("✓ RUNNING", style="bold green on dark_green")
-            status_icon = "🟢"
+            status_text = Text(f"{em.get('✓')} RUNNING", style="bold green on dark_green")
+            status_icon = em.get('🟢')
         else:
-            status_text = Text("✗ STOPPED", style="bold red on dark_red")
-            status_icon = "🔴"
+            status_text = Text(f"{em.get('✗')} STOPPED", style="bold red on dark_red")
+            status_icon = em.get('🔴')
 
         content = Text()
         content.append(f"{status_icon} Status:  ")
         content.append(status_text)
-        content.append("\n\n📦 Version: ", style="bold")
+        content.append(f"\n\n{em.get('📦')} Version: ", style="bold")
         content.append(f"{version}")
-        content.append("\n\n⏰ Started: ", style="bold")
+        content.append(f"\n\n{em.get('⏰', '[TIME]')} Started: ", style="bold")
         content.append(f"{uptime}")
 
-        return Panel(content, title="[bold cyan]📡 Meshtasticd Service[/bold cyan]", border_style="cyan", box=ROUNDED)
+        return Panel(content, title=f"[bold cyan]{em.get('📡')} Meshtasticd Service[/bold cyan]", border_style="cyan", box=ROUNDED)
 
     def create_system_panel(self):
         """Create system information panel with progress bars"""
@@ -270,7 +275,7 @@ class StatusDashboard:
 
         # Create rich content with progress bars
         content = Text()
-        content.append("🌡️  CPU Temp: ")
+        content.append(f"{em.get('🌡️')}  CPU Temp: ")
         content.append(info['cpu_temp'], style=f"bold {temp_color}")
         content.append("\n")
 
@@ -278,27 +283,27 @@ class StatusDashboard:
         if info.get('memory_used_mb') and info.get('memory_total_mb'):
             mem_pct = (info['memory_used_mb'] / info['memory_total_mb']) * 100
             mem_color = 'green' if mem_pct < 80 else ('yellow' if mem_pct < 90 else 'red')
-            content.append("\n💾 Memory:   ")
+            content.append(f"\n{em.get('💾')} Memory:   ")
             content.append(info['memory'], style=f"bold {mem_color}")
             content.append(f" ({info['memory_used_mb']:.0f}/{info['memory_total_mb']:.0f} MB)")
             content.append("\n" + self._create_progress_bar(mem_pct, mem_color))
         else:
-            content.append(f"\n💾 Memory:   {info['memory']}")
+            content.append(f"\n{em.get('💾')} Memory:   {info['memory']}")
 
         # Disk progress bar
         if info.get('disk_used_gb') and info.get('disk_total_gb'):
             disk_pct = (info['disk_used_gb'] / info['disk_total_gb']) * 100
             disk_color = 'green' if disk_pct < 90 else ('yellow' if disk_pct < 95 else 'red')
-            content.append("\n\n💿 Disk:     ")
+            content.append(f"\n\n{em.get('💿', '[DISK]')} Disk:     ")
             content.append(info['disk'], style=f"bold {disk_color}")
             content.append(f" ({info['disk_used_gb']:.1f}/{info['disk_total_gb']:.1f} GB)")
             content.append("\n" + self._create_progress_bar(disk_pct, disk_color))
         else:
-            content.append(f"\n\n💿 Disk:     {info['disk']}")
+            content.append(f"\n\n{em.get('💿', '[DISK]')} Disk:     {info['disk']}")
 
-        content.append(f"\n\n⏱️  Uptime:   {info['uptime']}")
+        content.append(f"\n\n{em.get('⏱️', '[TIME]')}  Uptime:   {info['uptime']}")
 
-        return Panel(content, title="[bold magenta]⚙️  System Health[/bold magenta]", border_style="magenta", box=ROUNDED)
+        return Panel(content, title=f"[bold magenta]{em.get('⚙️')}  System Health[/bold magenta]", border_style="magenta", box=ROUNDED)
 
     def _create_progress_bar(self, percentage, color):
         """Create a text-based progress bar"""
@@ -312,41 +317,41 @@ class StatusDashboard:
         info = self.get_network_info()
 
         if info['internet']:
-            internet_status = Text("✓ Connected", style="bold green on dark_green")
-            internet_icon = "🌐"
+            internet_status = Text(f"{em.get('✓')} Connected", style="bold green on dark_green")
+            internet_icon = em.get('🌐')
         else:
-            internet_status = Text("✗ Offline", style="bold red on dark_red")
-            internet_icon = "📡"
+            internet_status = Text(f"{em.get('✗')} Offline", style="bold red on dark_red")
+            internet_icon = em.get('📡')
 
         content = Text()
-        content.append("🔗 IP Address: ", style="bold")
+        content.append(f"{em.get('🔗', '[NET]')} IP Address: ", style="bold")
         content.append(f"{info['ip']}\n\n")
         content.append(f"{internet_icon} Internet:  ")
         content.append(internet_status)
 
-        return Panel(content, title="[bold yellow]🌍 Network Status[/bold yellow]", border_style="yellow", box=ROUNDED)
+        return Panel(content, title=f"[bold yellow]{em.get('🌍', '[WRLD]')} Network Status[/bold yellow]", border_style="yellow", box=ROUNDED)
 
     def create_config_panel(self):
         """Create configuration status panel with enhanced visuals"""
         status = self.get_config_status()
 
         if status['config_exists']:
-            config_status = Text("✓ Found", style="bold green on dark_green")
-            config_icon = "📝"
+            config_status = Text(f"{em.get('✓')} Found", style="bold green on dark_green")
+            config_icon = em.get('📝')
         else:
-            config_status = Text("✗ Missing", style="bold red on dark_red")
-            config_icon = "⚠️"
+            config_status = Text(f"{em.get('✗')} Missing", style="bold red on dark_red")
+            config_icon = em.get('⚠')
 
         content = Text()
         content.append(f"{config_icon} Config:   ")
         content.append(config_status)
-        content.append("\n\n📂 Path: ", style="bold")
+        content.append(f"\n\n{em.get('📂', '[DIR]')} Path: ", style="bold")
         content.append(f"\n   {status['config_path']}", style="dim")
         if status['active_template']:
-            content.append("\n\n📄 Template: ", style="bold")
+            content.append(f"\n\n{em.get('📄', '[FILE]')} Template: ", style="bold")
             content.append(f"{status['active_template']}")
 
-        return Panel(content, title="[bold blue]⚙️  Configuration[/bold blue]", border_style="blue", box=ROUNDED)
+        return Panel(content, title=f"[bold blue]{em.get('⚙️')}  Configuration[/bold blue]", border_style="blue", box=ROUNDED)
 
     def show_dashboard(self):
         """Display the complete status dashboard with rich visuals"""
@@ -376,7 +381,7 @@ class StatusDashboard:
         # Recent logs section with enhanced styling
         console.print()
         logs_header = Panel(
-            Text("📋 Recent Activity", style="bold cyan"),
+            Text(f"{em.get('📋')} Recent Activity", style="bold cyan"),
             box=ROUNDED,
             border_style="cyan",
             padding=(0, 1)
@@ -390,12 +395,12 @@ class StatusDashboard:
         # Quick actions with enhanced formatting
         console.print()
         actions_panel = Panel(
-            "[bold cyan]1[/bold cyan] 🔄 Refresh  │  "
-            "[bold cyan]2[/bold cyan] 📜 View Full Logs  │  "
-            "[bold cyan]3[/bold cyan] 🔁 Restart Service  │  "
-            "[bold cyan]4[/bold cyan] ⬆️  Check Updates  │  "
-            "[bold cyan]5[/bold cyan] ⬅️  Back",
-            title="[bold yellow]⚡ Quick Actions[/bold yellow]",
+            f"[bold cyan]1[/bold cyan] {em.get('🔄')} Refresh  │  "
+            f"[bold cyan]2[/bold cyan] {em.get('📜')} View Full Logs  │  "
+            f"[bold cyan]3[/bold cyan] {em.get('🔁', '[RST]')} Restart Service  │  "
+            f"[bold cyan]4[/bold cyan] {em.get('⬆️')}  Check Updates  │  "
+            f"[bold cyan]5[/bold cyan] {em.get('⬅️')}  Back",
+            title=f"[bold yellow]{em.get('⚡')} Quick Actions[/bold yellow]",
             box=ROUNDED,
             border_style="yellow"
         )
@@ -457,17 +462,17 @@ class StatusDashboard:
                     capture_output=True, text=True, timeout=30
                 )
                 if result.returncode == 0:
-                    console.print("[green]✓ Service restarted successfully![/green]")
+                    console.print(f"[green]{em.get('✓')} Service restarted successfully![/green]")
                 else:
-                    console.print(f"[red]✗ Failed to restart: {result.stderr}[/red]")
+                    console.print(f"[red]{em.get('✗')} Failed to restart: {result.stderr}[/red]")
             except Exception as e:
                 logger.error(f"Failed to restart service: {e}")
-                console.print(f"[red]✗ Error: {str(e)}[/red]")
+                console.print(f"[red]{em.get('✗')} Error: {str(e)}[/red]")
             time.sleep(2)
 
     def check_updates(self):
         """Check for available updates with enhanced visuals"""
-        console.print("\n[cyan]🔍 Checking for updates...[/cyan]")
+        console.print(f"\n[cyan]{em.get('🔍')} Checking for updates...[/cyan]")
 
         from installer.version import VersionManager
         vm = VersionManager()
@@ -479,8 +484,8 @@ class StatusDashboard:
                 update_panel = Panel(
                     f"[bold]Current:[/bold] {update_info['current']}\n"
                     f"[bold]Latest:[/bold]  [green]{update_info['latest']}[/green]\n\n"
-                    "[yellow]⬆️  An update is available![/yellow]",
-                    title="[bold green]🎉 Update Available[/bold green]",
+                    f"[yellow]{em.get('⬆️')}  An update is available![/yellow]",
+                    title=f"[bold green]{em.get('🎉', '[!]')} Update Available[/bold green]",
                     border_style="green",
                     box=ROUNDED
                 )
@@ -488,15 +493,15 @@ class StatusDashboard:
             else:
                 success_panel = Panel(
                     f"[bold]Version:[/bold] {update_info['current']}\n\n"
-                    "[green]✓ You're running the latest version![/green]",
-                    title="[bold cyan]✨ Up to Date[/bold cyan]",
+                    f"[green]{em.get('✓')} You're running the latest version![/green]",
+                    title=f"[bold cyan]{em.get('✨', '[*]')} Up to Date[/bold cyan]",
                     border_style="cyan",
                     box=ROUNDED
                 )
                 console.print(success_panel)
         else:
             error_panel = Panel(
-                "[yellow]⚠️  Could not check for updates\n"
+                f"[yellow]{em.get('⚠')}  Could not check for updates\n"
                 "Please check your internet connection[/yellow]",
                 title="[bold red]Update Check Failed[/bold red]",
                 border_style="red",
@@ -513,11 +518,11 @@ class StatusDashboard:
         info = self.get_system_info()
 
         if service['running']:
-            status = "[green]🟢 Running[/green]"
+            status = f"[green]{em.get('🟢')} Running[/green]"
         else:
-            status = "[red]🔴 Stopped[/red]"
+            status = f"[red]{em.get('🔴')} Stopped[/red]"
 
         # Color code temperature
         temp_color = 'green' if info['temp_status'] == 'normal' else ('yellow' if info['temp_status'] == 'warning' else 'red')
 
-        return f"{status} │ 📦 {version} │ 🌡️  [{temp_color}]{info['cpu_temp']}[/{temp_color}] │ 💾 {info['memory']}"
+        return f"{status} │ {em.get('📦')} {version} │ {em.get('🌡️')}  [{temp_color}]{info['cpu_temp']}[/{temp_color}] │ {em.get('💾')} {info['memory']}"
