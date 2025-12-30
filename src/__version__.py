@@ -1,11 +1,26 @@
 """Version information for Meshtasticd Interactive Installer"""
 
-__version__ = "2.0.2"
-__version_info__ = (2, 0, 2)
+__version__ = "2.1.0"
+__version_info__ = (2, 1, 0)
 __release_date__ = "2025-12-30"
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "2.1.0",
+        "date": "2025-12-30",
+        "changes": [
+            "Fixed packaging 25.0 conflict - use pipx for meshtastic CLI isolation",
+            "Added pipx support for isolated meshtastic CLI installation",
+            "Added .env configuration file support",
+            "Improved debugging with DEBUG_MODE environment variable",
+            "Added --show-config CLI option to display configuration",
+            "Enhanced error handling in installation scripts",
+            "Removed meshtastic from pip requirements (now installed via pipx)",
+            "Added configuration validation and summary display",
+            "Debug menu now shows environment configuration"
+        ]
+    },
     {
         "version": "2.0.2",
         "date": "2025-12-30",

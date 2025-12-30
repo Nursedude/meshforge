@@ -1,14 +1,21 @@
 #!/bin/bash
 # Meshtasticd installation script for 64-bit Raspberry Pi OS (arm64)
 # Uses official OpenSUSE Build Service repositories
+#
+# This script:
+# 1. Installs meshtasticd daemon from official repos
+# 2. Installs meshtastic CLI via pipx (isolated environment)
+# 3. Configures SPI/I2C for LoRa HAT communication
 
 set -e
 
 VERSION_TYPE="${1:-stable}"
+DEBUG_MODE="${DEBUG_MODE:-false}"
 
 echo "========================================="
 echo "Meshtasticd Installer for Debian arm64"
 echo "Version: $VERSION_TYPE"
+echo "Debug: $DEBUG_MODE"
 echo "========================================="
 
 # Colors for output
@@ -17,6 +24,24 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
+
+# Debug logging function
+debug_log() {
+    if [ "$DEBUG_MODE" = "true" ]; then
+        echo -e "${CYAN}[DEBUG] $1${NC}"
+    fi
+}
+
+# Error handling function
+handle_error() {
+    local exit_code=$?
+    local line_number=$1
+    echo -e "${RED}Error occurred on line $line_number (exit code: $exit_code)${NC}"
+    echo -e "${YELLOW}Check /var/log/meshtasticd-installer-error.log for details${NC}"
+    exit $exit_code
+}
+
+trap 'handle_error $LINENO' ERR
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
@@ -30,13 +55,14 @@ if [ -f /etc/os-release ]; then
     OS_VERSION="${VERSION_ID}"
     OS_NAME="${ID}"
     echo -e "${CYAN}Detected: ${NAME} ${VERSION}${NC}"
+    debug_log "OS_NAME=$OS_NAME, OS_VERSION=$OS_VERSION"
 else
     echo -e "${RED}Cannot detect OS version${NC}"
     exit 1
 fi
 
-# Install dependencies
-echo -e "\n${GREEN}Installing dependencies...${NC}"
+# Install dependencies including pipx
+echo -e "\n${GREEN}Installing system dependencies...${NC}"
 apt-get install -y \
     curl \
     gnupg \
@@ -46,7 +72,11 @@ apt-get install -y \
     build-essential \
     python3 \
     python3-pip \
+    python3-venv \
+    pipx \
     git
+
+debug_log "System dependencies installed"
 
 # Determine repository based on version type
 # Official repositories: https://download.opensuse.org/repositories/network:/Meshtastic:/
@@ -96,30 +126,49 @@ curl -fsSL "${KEY_URL}" | gpg --dearmor | tee /etc/apt/trusted.gpg.d/network_Mes
 echo -e "\n${GREEN}Updating package lists...${NC}"
 apt-get update
 
-# Pre-emptively fix common packaging conflicts
-echo -e "\n${CYAN}Checking for packaging conflicts...${NC}"
-if dpkg -l | grep -q python3-packaging; then
-    echo -e "${YELLOW}Detected python3-packaging (Debian package) - removing to prevent conflicts${NC}"
-
-    # Remove python3-packaging (this may also remove pip)
-    apt-get remove --purge python3-packaging -y || true
-
-    # Ensure pip is installed
-    echo -e "${GREEN}Ensuring pip is available...${NC}"
-    apt-get install -y python3-pip python3-setuptools python3-wheel
-
-    # Now install packaging via pip
-    echo -e "${GREEN}Installing packaging via pip${NC}"
-    python3 -m pip install --upgrade --force-reinstall packaging --break-system-packages || true
-fi
-
-# Install meshtasticd
+# Install meshtasticd from official repository
 echo -e "\n${GREEN}Installing meshtasticd from official repository...${NC}"
 apt-get install -y meshtasticd
 
-# Install Python meshtastic library with force-reinstall for packaging conflicts
-echo -e "\n${GREEN}Installing meshtastic Python library...${NC}"
-python3 -m pip install --upgrade --force-reinstall --break-system-packages meshtastic click rich pyyaml requests packaging psutil distro python-dotenv
+debug_log "meshtasticd package installed"
+
+# Install meshtastic CLI via pipx (isolated environment - avoids packaging conflicts)
+echo -e "\n${GREEN}Installing meshtastic CLI via pipx...${NC}"
+echo -e "${CYAN}Using pipx for isolated installation (avoids system package conflicts)${NC}"
+
+# Ensure pipx path is set up
+pipx ensurepath 2>/dev/null || true
+
+# Install meshtastic with CLI extras using pipx
+# This creates an isolated environment, avoiding the packaging 25.0 conflict
+if pipx list 2>/dev/null | grep -q "meshtastic"; then
+    echo -e "${CYAN}Upgrading existing meshtastic CLI...${NC}"
+    pipx upgrade meshtastic 2>&1 || pipx reinstall meshtastic
+else
+    echo -e "${GREEN}Installing meshtastic CLI...${NC}"
+    # Use --force to handle any previous partial installs
+    pipx install "meshtastic[cli]" --force 2>&1 || {
+        echo -e "${YELLOW}Retrying with basic meshtastic package...${NC}"
+        pipx install meshtastic --force 2>&1
+    }
+fi
+
+# Verify meshtastic CLI installation
+if command -v meshtastic &> /dev/null || [ -f "$HOME/.local/bin/meshtastic" ] || [ -f "/root/.local/bin/meshtastic" ]; then
+    echo -e "${GREEN}✓ meshtastic CLI installed successfully${NC}"
+    debug_log "meshtastic CLI location: $(which meshtastic 2>/dev/null || echo '/root/.local/bin/meshtastic')"
+else
+    echo -e "${YELLOW}⚠ meshtastic CLI may not be in PATH. Add ~/.local/bin to your PATH${NC}"
+    echo -e "${CYAN}Run: export PATH=\"\$PATH:\$HOME/.local/bin\"${NC}"
+fi
+
+# Also install essential Python packages for the installer UI
+# Use --break-system-packages since we're running as root
+echo -e "\n${GREEN}Installing installer UI dependencies...${NC}"
+python3 -m pip install --quiet --break-system-packages \
+    click rich pyyaml requests psutil distro python-dotenv 2>&1 || {
+    echo -e "${YELLOW}Note: Some packages may already be satisfied by system packages${NC}"
+}
 
 # Enable SPI and I2C
 echo -e "\n${GREEN}Enabling SPI and I2C...${NC}"
@@ -146,13 +195,26 @@ fi
 echo -e "\n${GREEN}Loading SPI kernel module...${NC}"
 modprobe spi_bcm2835 || true
 
-# Show installed version
+# Show installed version and status
 INSTALLED_VERSION=$(dpkg -l | grep meshtasticd | awk '{print $3}')
+MESHTASTIC_CLI_VERSION=$(pipx list 2>/dev/null | grep meshtastic | head -1 || echo "Check with: pipx list")
+
 echo -e "\n${GREEN}=========================================${NC}"
 echo -e "${GREEN}Installation completed successfully!${NC}"
 echo -e "${GREEN}=========================================${NC}"
-echo -e "${CYAN}Installed version: ${INSTALLED_VERSION}${NC}"
+echo -e "${CYAN}Installed versions:${NC}"
+echo -e "  meshtasticd (daemon): ${INSTALLED_VERSION}"
+echo -e "  meshtastic CLI: ${MESHTASTIC_CLI_VERSION}"
 echo -e "${CYAN}Repository: network:Meshtastic:${REPO_CHANNEL}${NC}"
+echo ""
+echo -e "${CYAN}Useful commands:${NC}"
+echo -e "  meshtastic --info       # Show connected device info"
+echo -e "  meshtastic --nodes      # Show nodes in mesh"
+echo -e "  systemctl status meshtasticd  # Check daemon status"
+echo ""
 echo -e "${YELLOW}Note: A reboot may be required for SPI/I2C changes to take effect${NC}"
+echo -e "${YELLOW}If meshtastic command not found, run: export PATH=\"\$PATH:\$HOME/.local/bin\"${NC}"
+
+debug_log "Installation complete. Debug mode was enabled."
 
 exit 0

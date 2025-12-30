@@ -10,6 +10,7 @@ Features:
 - Automatic Update Notifications
 - Configuration Templates for Common Setups
 - Version Control
+- Environment Configuration (.env support)
 """
 
 import os
@@ -27,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from utils.system import check_root, get_system_info
 from utils.logger import setup_logger, log
 from utils import emoji as em
+from utils.env_config import initialize_config, get_config_bool
 from installer.meshtasticd import MeshtasticdInstaller
 from config.device import DeviceConfigurator
 from __version__ import __version__, get_full_version
@@ -593,9 +595,12 @@ def debug_menu():
     console.print(f"  [bold]6[/bold]. {em.get('📋')} [yellow]Version history[/yellow]")
     console.print(f"  [bold]7[/bold]. {em.get('ℹ️')}  [yellow]Show version info[/yellow]")
 
+    console.print("\n[dim cyan]── Configuration ──[/dim cyan]")
+    console.print(f"  [bold]8[/bold]. {em.get('⚙️')}  [yellow]Show environment config[/yellow]")
+
     console.print(f"\n  [bold]0[/bold]. {em.get('⬅️')}  Back to main menu")
 
-    choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["0", "1", "2", "3", "4", "5", "6", "7"], default="0")
+    choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["0", "1", "2", "3", "4", "5", "6", "7", "8"], default="0")
 
     if choice == "1":
         view_logs()
@@ -611,6 +616,30 @@ def debug_menu():
         show_version_history()
     elif choice == "7":
         show_version_info()
+    elif choice == "8":
+        show_environment_config()
+
+
+def show_environment_config():
+    """Show current environment configuration"""
+    console.print("\n[bold cyan]Environment Configuration[/bold cyan]\n")
+
+    from utils.env_config import show_config_summary, validate_config
+    show_config_summary()
+
+    # Also show validation results
+    validation = validate_config()
+    if validation['warnings']:
+        console.print("\n[yellow]Warnings:[/yellow]")
+        for warning in validation['warnings']:
+            console.print(f"  [yellow]⚠ {warning}[/yellow]")
+
+    if validation['errors']:
+        console.print("\n[red]Errors:[/red]")
+        for error in validation['errors']:
+            console.print(f"  [red]✗ {error}[/red]")
+
+    Prompt.ask("\n[dim]Press Enter to return[/dim]")
 
 
 def view_logs():
@@ -739,18 +768,32 @@ def show_version_info():
 
 
 @click.command()
-@click.option('--install', type=click.Choice(['stable', 'beta']), help='Install meshtasticd')
+@click.option('--install', type=click.Choice(['stable', 'beta', 'daily', 'alpha']), help='Install meshtasticd')
 @click.option('--update', is_flag=True, help='Update meshtasticd')
 @click.option('--configure', is_flag=True, help='Configure device')
 @click.option('--check', is_flag=True, help='Check dependencies')
 @click.option('--dashboard', is_flag=True, help='Show status dashboard')
 @click.option('--version', is_flag=True, help='Show version information')
 @click.option('--debug', is_flag=True, help='Enable debug logging')
-def main(install, update, configure, check, dashboard, version, debug):
+@click.option('--show-config', is_flag=True, help='Show current configuration')
+def main(install, update, configure, check, dashboard, version, debug, show_config):
     """Meshtasticd Interactive Installer & Manager"""
+
+    # Initialize configuration from .env file
+    config_result = initialize_config()
+
+    # Enable debug from environment if not set via CLI
+    if not debug and get_config_bool('DEBUG_MODE'):
+        debug = True
 
     # Setup logging
     setup_logger(debug=debug)
+
+    # Show configuration if requested
+    if show_config:
+        from utils.env_config import show_config_summary
+        show_config_summary()
+        return
 
     # Show version and exit
     if version:
