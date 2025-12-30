@@ -8,8 +8,10 @@ For headless/SSH access, use main_tui.py instead.
 
 import os
 import sys
+import shutil
+import subprocess
 
-# Check for display
+
 def check_display():
     """Check if a display is available"""
     display = os.environ.get('DISPLAY')
@@ -81,12 +83,63 @@ def check_root():
         sys.exit(1)
 
 
+def check_meshtastic_cli():
+    """Check if meshtastic CLI is installed"""
+    cli_paths = [
+        'meshtastic',
+        '/root/.local/bin/meshtastic',
+        '/home/pi/.local/bin/meshtastic',
+        os.path.expanduser('~/.local/bin/meshtastic'),
+    ]
+
+    for path in cli_paths:
+        if shutil.which(path):
+            return True
+
+    # CLI not found - warn user
+    print("=" * 60)
+    print("WARNING: Meshtastic CLI not found")
+    print("=" * 60)
+    print()
+    print("The meshtastic CLI is recommended for full functionality.")
+    print()
+    print("Install with:")
+    print("  sudo apt install pipx")
+    print("  pipx install 'meshtastic[cli]'")
+    print("  pipx ensurepath")
+    print()
+    print("Or with pip:")
+    print("  sudo pip install --break-system-packages meshtastic")
+    print()
+
+    try:
+        response = input("Continue without CLI? [y/n] (y): ").strip().lower()
+        if response in ('', 'y', 'yes'):
+            return False
+        else:
+            response = input("Install CLI now with pipx? [y/n] (y): ").strip().lower()
+            if response in ('', 'y', 'yes'):
+                print("\nInstalling pipx...")
+                subprocess.run(['sudo', 'apt', 'install', '-y', 'pipx'], capture_output=False)
+                print("\nInstalling meshtastic CLI...")
+                subprocess.run(['pipx', 'install', 'meshtastic[cli]'], capture_output=False)
+                subprocess.run(['pipx', 'ensurepath'], capture_output=False)
+                print("\nCLI installed!")
+                return True
+            else:
+                return False
+    except (KeyboardInterrupt, EOFError):
+        print("\n")
+        return False
+
+
 def main():
     """Main entry point"""
     # Check prerequisites
     check_root()
     check_display()
     check_gtk()
+    check_meshtastic_cli()
 
     # Add src to path
     src_dir = os.path.dirname(os.path.abspath(__file__))

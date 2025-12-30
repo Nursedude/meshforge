@@ -148,10 +148,10 @@ def interactive_menu():
         console.print(f"  [bold]h[/bold]. {em.get('🔌')} Hardware detection")
         console.print(f"  [bold]d[/bold]. {em.get('🐛')} Debug & troubleshooting")
 
-        console.print(f"\n  [bold]0[/bold]. {em.get('🚪')} Exit")
+        console.print(f"\n  [bold]q[/bold]. {em.get('🚪')} Exit")
         console.print(f"  [bold]?[/bold]. {em.get('❓')} Help")
 
-        choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "c", "h", "d", "?"], default="1")
+        choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["q", "1", "2", "3", "4", "5", "6", "7", "8", "9", "c", "h", "d", "?"], default="1")
 
         if choice == "1":
             show_dashboard()
@@ -179,7 +179,7 @@ def interactive_menu():
             debug_menu()
         elif choice == "?":
             show_help()
-        elif choice == "0":
+        elif choice == "q":
             console.print(f"\n[green]{em.get('👋')} Goodbye! Happy meshing![/green]")
             sys.exit(0)
 

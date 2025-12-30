@@ -335,10 +335,10 @@ class ServicePanel(Gtk.Box):
         lines = int(self.log_lines_spin.get_value())
         since_options = {
             0: None,  # All
-            1: "1h",
-            2: "6h",
-            3: "1d",
-            4: "1w"
+            1: "1 hour ago",
+            2: "6 hours ago",
+            3: "1 day ago",
+            4: "1 week ago"
         }
         since = since_options.get(self.since_dropdown.get_selected())
 
@@ -346,7 +346,7 @@ class ServicePanel(Gtk.Box):
             try:
                 cmd = ['journalctl', '-u', 'meshtasticd', '-n', str(lines), '--no-pager']
                 if since:
-                    cmd.extend(['--since', f"-{since}"])
+                    cmd.extend(['--since', since])
 
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 logs = result.stdout if result.stdout else "No logs available"
@@ -362,6 +362,9 @@ class ServicePanel(Gtk.Box):
         """Update log view"""
         buffer = self.log_view.get_buffer()
         buffer.set_text(text)
+        # Auto-scroll to bottom
+        end_iter = buffer.get_end_iter()
+        self.log_view.scroll_to_iter(end_iter, 0.0, False, 0.0, 1.0)
         return False
 
     def _on_follow_toggled(self, button):

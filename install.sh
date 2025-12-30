@@ -124,27 +124,41 @@ echo "  Installing packages in virtual environment..."
 echo -e "${GREEN}  ✓ Python dependencies installed${NC}"
 
 # Create symlink for easy access
-echo -e "${CYAN}[7/7] Creating system command...${NC}"
+echo -e "${CYAN}[7/7] Creating system commands...${NC}"
+
+# Main launcher wizard (default)
 cat > /usr/local/bin/meshtasticd-installer << 'EOF'
+#!/bin/bash
+cd /opt/meshtasticd-installer
+exec sudo /opt/meshtasticd-installer/venv/bin/python src/launcher.py "$@"
+EOF
+chmod +x /usr/local/bin/meshtasticd-installer
+
+# Direct CLI access
+cat > /usr/local/bin/meshtasticd-cli << 'EOF'
 #!/bin/bash
 cd /opt/meshtasticd-installer
 exec sudo /opt/meshtasticd-installer/venv/bin/python src/main.py "$@"
 EOF
-chmod +x /usr/local/bin/meshtasticd-installer
-echo -e "${GREEN}  ✓ Command 'meshtasticd-installer' created${NC}"
+chmod +x /usr/local/bin/meshtasticd-cli
+
+echo -e "${GREEN}  ✓ Commands created: meshtasticd-installer, meshtasticd-cli${NC}"
 
 # Success message
 echo ""
 echo -e "${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║            Installation Complete!                         ║${NC}"
+echo -e "${GREEN}║            Installation Complete!  v3.0.1                 ║${NC}"
 echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${CYAN}Quick Start:${NC}"
-echo "  1. Run interactively:  ${GREEN}sudo meshtasticd-installer${NC}"
-echo "  2. Install meshtasticd: ${GREEN}sudo meshtasticd-installer --install stable${NC}"
-echo "  3. Configure device:    ${GREEN}sudo meshtasticd-installer --configure${NC}"
+echo "  ${GREEN}sudo meshtasticd-installer${NC}  - Launch interface wizard"
 echo ""
-echo -e "${CYAN}Would you like to start the interactive installer now? [Y/n]${NC}"
+echo -e "${CYAN}Direct UI Access:${NC}"
+echo "  ${GREEN}sudo python3 /opt/meshtasticd-installer/src/main_gtk.py${NC}  - GTK4 GUI"
+echo "  ${GREEN}sudo python3 /opt/meshtasticd-installer/src/main_tui.py${NC}  - Textual TUI"
+echo "  ${GREEN}sudo meshtasticd-cli${NC}  - Rich CLI (original)"
+echo ""
+echo -e "${CYAN}Would you like to start the interface wizard now? [Y/n]${NC}"
 
 # Try to read from TTY if available for interactive prompt
 if [[ -c /dev/tty ]]; then
@@ -158,6 +172,6 @@ fi
 
 # Launch installer (default action)
 echo ""
-echo -e "${GREEN}Starting interactive installer...${NC}"
+echo -e "${GREEN}Starting interface wizard...${NC}"
 echo ""
 exec /usr/local/bin/meshtasticd-installer

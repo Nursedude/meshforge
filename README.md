@@ -2,25 +2,32 @@
 
 An interactive installer, updater, and comprehensive configuration tool for meshtasticd on Raspberry Pi OS and compatible Linux systems.
 
-**Version 3.0.0** | [Changelog](#version-history)
+**Version 3.0.1** | [Changelog](#version-history)
+
+## What's New in v3.0.1
+
+- **Launcher Wizard** - Interactive wizard to select your preferred interface
+- **Fixed Log Following** - Logs now update properly in GTK4 and TUI
+- **Improved Navigation** - All menus have Back (0) and Main Menu (m) options
+- **Better Shortcuts** - Logical keyboard shortcuts (q=quit, ?=help)
+- **RPi Compatibility** - Proper pip install with --break-system-packages
 
 ## What's New in v3.0.0
 
 - **GTK4 Graphical Interface** - Modern desktop UI with libadwaita design
-- **Textual TUI** - Full-featured terminal UI for SSH/headless access (Raspberry Pi Connect friendly)
-- **Config File Manager** - Select YAML from `/etc/meshtasticd/available.d`, edit with nano
+- **Textual TUI** - Full-featured terminal UI for SSH/headless access
+- **Config File Manager** - Select YAML from `/etc/meshtasticd/available.d`
 - **Service Management** - Start/stop/restart with live log viewing
-- **Meshtastic CLI Integration** - Run CLI commands from the UI
-- **Reboot Persistence** - Installer auto-restarts after system reboot
-- **Three UI Options** - Choose GTK4, Textual TUI, or Rich CLI based on your setup
+- **Three UI Options** - Choose GTK4, Textual TUI, or Rich CLI
 
 ## UI Options
 
 | Interface | Command | Best For |
 |-----------|---------|----------|
-| **GTK4 GUI** | `sudo python3 src/main_gtk.py` | Pi with display, Raspberry Pi Connect desktop |
-| **Textual TUI** | `sudo python3 src/main_tui.py` | SSH, headless, Raspberry Pi Connect terminal |
-| **Rich CLI** | `sudo python3 src/main.py` | Fallback, minimal environments |
+| **Wizard** | `sudo meshtasticd-installer` | Auto-detect and select best interface |
+| **GTK4 GUI** | `sudo python3 src/main_gtk.py` | Pi with display, VNC, desktop |
+| **Textual TUI** | `sudo python3 src/main_tui.py` | SSH, headless, Raspberry Pi Connect |
+| **Rich CLI** | `sudo meshtasticd-cli` | Fallback, minimal environments |
 
 ## Features
 

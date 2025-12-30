@@ -11,6 +11,8 @@ full graphical interface.
 
 import os
 import sys
+import shutil
+import subprocess
 from pathlib import Path
 
 
@@ -29,28 +31,111 @@ def check_root():
 
 
 def check_textual():
-    """Check if Textual is available"""
+    """Check if Textual is available and offer to install"""
     try:
         import textual
         return True
     except ImportError:
         print("=" * 60)
-        print("ERROR: Textual not installed")
+        print("Textual TUI framework not installed")
         print("=" * 60)
         print()
-        print("Install Textual with:")
-        print("  pip install textual")
+        print("Install options:")
         print()
-        print("Or use the original Rich-based UI:")
-        print("  sudo python3 src/main.py")
-        print("=" * 60)
-        sys.exit(1)
+        print("  Option 1 - With sudo (recommended for Raspberry Pi):")
+        print("    sudo pip install --break-system-packages textual")
+        print()
+        print("  Option 2 - Without sudo:")
+        print("    pip install --break-system-packages textual")
+        print()
+        print("  Option 3 - In a virtual environment:")
+        print("    python3 -m venv venv && source venv/bin/activate")
+        print("    pip install textual")
+        print()
+
+        # Offer to install
+        try:
+            response = input("Install now with sudo? [y/n] (y): ").strip().lower()
+            if response in ('', 'y', 'yes'):
+                print("\nInstalling textual...")
+                result = subprocess.run(
+                    ['sudo', 'pip', 'install', '--break-system-packages', 'textual'],
+                    capture_output=False
+                )
+                if result.returncode == 0:
+                    print("\nTextual installed successfully! Restarting...")
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
+                else:
+                    print("\nInstallation failed. Please install manually.")
+                    sys.exit(1)
+            else:
+                print("\nAlternatively, use the Rich-based CLI:")
+                print("  sudo python3 src/main.py")
+                sys.exit(1)
+        except (KeyboardInterrupt, EOFError):
+            print("\n\nCancelled. Use the Rich-based CLI instead:")
+            print("  sudo python3 src/main.py")
+            sys.exit(1)
+
+
+def check_meshtastic_cli():
+    """Check if meshtastic CLI is installed"""
+    # Check various locations
+    cli_paths = [
+        'meshtastic',
+        '/root/.local/bin/meshtastic',
+        '/home/pi/.local/bin/meshtastic',
+        os.path.expanduser('~/.local/bin/meshtastic'),
+    ]
+
+    for path in cli_paths:
+        if shutil.which(path):
+            return True
+
+    # CLI not found - warn user
+    print("=" * 60)
+    print("WARNING: Meshtastic CLI not found")
+    print("=" * 60)
+    print()
+    print("The meshtastic CLI is recommended for full functionality.")
+    print()
+    print("Install with:")
+    print("  sudo apt install pipx")
+    print("  pipx install 'meshtastic[cli]'")
+    print("  pipx ensurepath")
+    print()
+    print("Or with pip:")
+    print("  sudo pip install --break-system-packages meshtastic")
+    print()
+
+    try:
+        response = input("Continue without CLI? [y/n] (y): ").strip().lower()
+        if response in ('', 'y', 'yes'):
+            return False  # Continue without CLI
+        else:
+            # Offer to install
+            response = input("Install CLI now with pipx? [y/n] (y): ").strip().lower()
+            if response in ('', 'y', 'yes'):
+                print("\nInstalling pipx...")
+                subprocess.run(['sudo', 'apt', 'install', '-y', 'pipx'], capture_output=False)
+                print("\nInstalling meshtastic CLI...")
+                subprocess.run(['pipx', 'install', 'meshtastic[cli]'], capture_output=False)
+                subprocess.run(['pipx', 'ensurepath'], capture_output=False)
+                print("\nCLI installed! You may need to restart your shell or run:")
+                print("  source ~/.bashrc")
+                return True
+            else:
+                return False
+    except (KeyboardInterrupt, EOFError):
+        print("\n")
+        return False
 
 
 def main():
     """Main entry point"""
     check_root()
     check_textual()
+    check_meshtastic_cli()
 
     # Add src to path
     src_dir = Path(__file__).parent

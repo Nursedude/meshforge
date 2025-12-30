@@ -170,6 +170,11 @@ class DashboardPane(Container):
 class ServicePane(Container):
     """Service management pane"""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._following = False
+        self._follow_task = None
+
     def compose(self) -> ComposeResult:
         yield Static("# Service Management", classes="title")
         yield Rule()
@@ -194,12 +199,15 @@ class ServicePane(Container):
         with Horizontal(classes="button-row"):
             yield Button("Fetch Logs", id="svc-logs")
             yield Button("Follow Logs", id="svc-follow")
+            yield Button("Stop Follow", id="svc-stop-follow")
             yield Button("Clear", id="svc-clear")
 
         yield Log(id="svc-log", classes="log-panel")
 
     async def on_mount(self):
         self.refresh_status()
+        # Hide stop follow button initially
+        self.query_one("#svc-stop-follow", Button).display = False
 
     @work(exclusive=True)
     async def refresh_status(self):
@@ -262,6 +270,12 @@ class ServicePane(Container):
         elif button_id == "svc-logs":
             await self.fetch_logs()
 
+        elif button_id == "svc-follow":
+            await self.start_following()
+
+        elif button_id == "svc-stop-follow":
+            self.stop_following()
+
         elif button_id == "svc-clear":
             log.clear()
 
@@ -307,6 +321,40 @@ class ServicePane(Container):
         )
         stdout, _ = await result.communicate()
         log.write(stdout.decode())
+
+    async def start_following(self):
+        """Start following logs"""
+        self._following = True
+        self.query_one("#svc-follow", Button).display = False
+        self.query_one("#svc-stop-follow", Button).display = True
+        log = self.query_one("#svc-log", Log)
+        log.write("[yellow]Following logs... Press 'Stop Follow' to stop[/yellow]\n")
+        self._follow_logs()
+
+    def stop_following(self):
+        """Stop following logs"""
+        self._following = False
+        self.query_one("#svc-follow", Button).display = True
+        self.query_one("#svc-stop-follow", Button).display = False
+        log = self.query_one("#svc-log", Log)
+        log.write("[yellow]Log following stopped[/yellow]\n")
+
+    @work(exclusive=True)
+    async def _follow_logs(self):
+        """Worker that follows logs"""
+        log = self.query_one("#svc-log", Log)
+        while self._following:
+            try:
+                result = await asyncio.create_subprocess_exec(
+                    'journalctl', '-u', 'meshtasticd', '-n', '20', '--no-pager',
+                    stdout=asyncio.subprocess.PIPE
+                )
+                stdout, _ = await result.communicate()
+                log.clear()
+                log.write(stdout.decode())
+            except Exception as e:
+                log.write(f"[red]Error fetching logs: {e}[/red]")
+            await asyncio.sleep(2)  # Refresh every 2 seconds
 
 
 class ConfigPane(Container):

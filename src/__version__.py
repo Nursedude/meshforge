@@ -1,11 +1,26 @@
 """Version information for Meshtasticd Interactive Installer"""
 
-__version__ = "3.0.0"
-__version_info__ = (3, 0, 0)
+__version__ = "3.0.1"
+__version_info__ = (3, 0, 1)
 __release_date__ = "2025-12-30"
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "3.0.1",
+        "date": "2025-12-30",
+        "changes": [
+            "NEW: Launcher wizard for selecting interface (GTK4/TUI/CLI)",
+            "FIX: Log following now updates properly in GTK4 and TUI",
+            "FIX: Journalctl --since parameter format corrected",
+            "FIX: Channel configuration now has proper back navigation",
+            "FIX: pip install uses --break-system-packages for RPi",
+            "FIX: Meshtastic CLI detection checks multiple paths",
+            "IMPROVED: All Rich CLI menus have Back (0) and Main Menu (m) options",
+            "IMPROVED: Auto-scroll in log views",
+            "IMPROVED: TUI follow logs with proper start/stop toggle"
+        ]
+    },
     {
         "version": "3.0.0",
         "date": "2025-12-30",

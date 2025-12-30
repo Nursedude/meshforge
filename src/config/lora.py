@@ -617,51 +617,136 @@ class LoRaConfigurator:
             return self.configure_modem_preset()
 
     def configure_channels(self):
-        """Configure channel settings"""
-        console.print("\n[bold cyan]Channel Configuration[/bold cyan]\n")
-
+        """Configure channel settings with interactive menu"""
         channels = []
 
-        # Primary channel
-        console.print("[cyan]Primary Channel (0):[/cyan]")
-        console.print("This is the main communication channel for your mesh network.\n")
+        while True:
+            console.print("\n[bold cyan]═══════════════ Channel Configuration ═══════════════[/bold cyan]\n")
 
-        primary = {}
-        primary['name'] = Prompt.ask("Channel name", default="LongFast")
-        primary['psk'] = Prompt.ask("Pre-shared key (base64, or press Enter for default)", default="AQ==")
+            # Show current channels if any
+            if channels:
+                console.print("[dim]Current configured channels:[/dim]")
+                for idx, ch in enumerate(channels):
+                    role = ch.get('role', 'SECONDARY')
+                    console.print(f"  Channel {idx}: {ch.get('name', 'Unnamed')} ({role})")
+                console.print()
 
-        # Role
-        console.print("\n[cyan]Channel role:[/cyan]")
-        console.print("1. Primary (default)")
-        console.print("2. Secondary")
-        role_choice = Prompt.ask("Select role", choices=["1", "2"], default="1")
-        primary['role'] = "PRIMARY" if role_choice == "1" else "SECONDARY"
+            console.print("[dim cyan]── Actions ──[/dim cyan]")
+            console.print("  [bold]1[/bold]. Configure Primary Channel (0)")
+            console.print("  [bold]2[/bold]. Add/Edit Secondary Channel")
+            console.print("  [bold]3[/bold]. View Channel Summary")
+            console.print("  [bold]4[/bold]. Clear All Channels")
+            console.print("  [bold]5[/bold]. Done - Save Configuration")
+            console.print("\n  [bold]0[/bold]. Back")
+            console.print("  [bold]m[/bold]. Main Menu")
 
-        channels.append(primary)
+            choice = Prompt.ask("\n[cyan]Select option[/cyan]",
+                              choices=["0", "1", "2", "3", "4", "5", "m"], default="0")
 
-        # Additional channels
-        if Confirm.ask("\nAdd additional channels?", default=False):
-            for i in range(1, 8):  # Max 8 channels (0-7)
-                if Confirm.ask(f"\nConfigure channel {i}?", default=False):
-                    channel = {}
-                    channel['index'] = i
-                    channel['name'] = Prompt.ask(f"Channel {i} name", default=f"Channel{i}")
-                    channel['psk'] = Prompt.ask("Pre-shared key (base64)", default="AQ==")
-                    channels.append(channel)
+            if choice == "0":
+                return channels if channels else None
+            elif choice == "m":
+                return None  # Signal to return to main menu
+            elif choice == "1":
+                primary = self._configure_single_channel(0, "Primary")
+                if primary:
+                    # Replace or add primary channel
+                    if channels:
+                        channels[0] = primary
+                    else:
+                        channels.append(primary)
+            elif choice == "2":
+                if not channels:
+                    console.print("[yellow]Please configure the primary channel first[/yellow]")
+                    continue
+                # Ask which channel slot
+                slot = Prompt.ask("Channel slot (1-7)", default="1")
+                try:
+                    slot_num = int(slot)
+                    if 1 <= slot_num <= 7:
+                        secondary = self._configure_single_channel(slot_num, "Secondary")
+                        if secondary:
+                            # Find and replace or append
+                            found = False
+                            for i, ch in enumerate(channels):
+                                if ch.get('index', i) == slot_num:
+                                    channels[i] = secondary
+                                    found = True
+                                    break
+                            if not found:
+                                secondary['index'] = slot_num
+                                channels.append(secondary)
+                    else:
+                        console.print("[red]Invalid slot. Use 1-7 for secondary channels.[/red]")
+                except ValueError:
+                    console.print("[red]Invalid input. Enter a number 1-7.[/red]")
+            elif choice == "3":
+                self._show_channel_summary(channels)
+                Prompt.ask("\n[dim]Press Enter to continue[/dim]")
+            elif choice == "4":
+                if Confirm.ask("[yellow]Clear all channel configuration?[/yellow]", default=False):
+                    channels = []
+                    console.print("[green]Channels cleared[/green]")
+            elif choice == "5":
+                if channels:
+                    self._show_channel_summary(channels)
+                    if Confirm.ask("\n[cyan]Save this configuration?[/cyan]", default=True):
+                        return channels
                 else:
-                    break
+                    console.print("[yellow]No channels configured[/yellow]")
 
-        # Display summary
+        return channels
+
+    def _configure_single_channel(self, slot, role_type):
+        """Configure a single channel with back option"""
+        console.print(f"\n[bold cyan]Configure {role_type} Channel (Slot {slot})[/bold cyan]\n")
+        console.print("[dim]Enter values or press Enter for defaults. Type 'back' to cancel.[/dim]\n")
+
+        channel = {'index': slot}
+
+        name = Prompt.ask("Channel name", default="LongFast" if slot == 0 else f"Channel{slot}")
+        if name.lower() == 'back':
+            return None
+        channel['name'] = name
+
+        psk = Prompt.ask("Pre-shared key (base64, or 'default')", default="AQ==")
+        if psk.lower() == 'back':
+            return None
+        channel['psk'] = psk if psk.lower() != 'default' else "AQ=="
+
+        if slot == 0:
+            channel['role'] = "PRIMARY"
+        else:
+            console.print("\n[cyan]Channel role:[/cyan]")
+            console.print("1. Secondary (receives messages)")
+            console.print("2. Disabled")
+            role_choice = Prompt.ask("Select role", choices=["1", "2", "back"], default="1")
+            if role_choice == "back":
+                return None
+            channel['role'] = "SECONDARY" if role_choice == "1" else "DISABLED"
+
+        console.print(f"\n[green]Channel {slot} configured: {channel['name']} ({channel['role']})[/green]")
+        return channel
+
+    def _show_channel_summary(self, channels):
+        """Display channel configuration summary"""
+        if not channels:
+            console.print("[yellow]No channels configured[/yellow]")
+            return
+
         table = Table(title="Channel Summary", show_header=True, header_style="bold magenta")
-        table.add_column("Index", style="cyan")
-        table.add_column("Name", style="green")
-        table.add_column("Role", style="yellow")
+        table.add_column("Slot", style="cyan", width=6)
+        table.add_column("Name", style="green", width=20)
+        table.add_column("Role", style="yellow", width=12)
+        table.add_column("PSK", style="dim", width=20)
 
         for idx, ch in enumerate(channels):
+            slot = ch.get('index', idx)
             role = ch.get('role', 'SECONDARY')
-            table.add_row(str(idx), ch['name'], role)
+            psk = ch.get('psk', 'default')
+            # Truncate PSK for display
+            psk_display = psk[:15] + "..." if len(psk) > 15 else psk
+            table.add_row(str(slot), ch.get('name', 'Unnamed'), role, psk_display)
 
         console.print("\n")
         console.print(table)
-
-        return channels
