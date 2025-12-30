@@ -2,9 +2,9 @@
 meshtastic>=2.5.0
 click>=8.0.0
 rich>=13.0.0
-pyyaml>=6.0
-requests>=2.31.0
-packaging>=21.0
+pyyaml>=6.0,<7.0.0
+requests>=2.31.0,<3.0.0
+packaging>=24.0,<25.0
 
 # System utilities
 psutil>=5.9.0
