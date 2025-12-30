@@ -96,11 +96,15 @@ echo -e "${CYAN}[5/7] Setting up installer...${NC}"
 
 if [[ -d "$INSTALL_DIR" ]]; then
     echo "  Updating existing installation..."
+    # Fix git safe directory issue (required when running as root)
+    git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
     cd "$INSTALL_DIR"
     git pull -q
 else
     echo "  Cloning repository..."
     git clone -q https://github.com/Nursedude/Meshtasticd_interactive_UI.git "$INSTALL_DIR"
+    # Fix git safe directory issue for future updates
+    git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
     cd "$INSTALL_DIR"
 fi
 
