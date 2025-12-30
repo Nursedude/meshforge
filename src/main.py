@@ -320,24 +320,29 @@ def apply_template(template_name):
 
 def install_meshtasticd():
     """Install meshtasticd"""
-    console.print("\n[bold cyan]Installing meshtasticd[/bold cyan]\n")
+    from rich.box import ROUNDED
 
-    # Display version information
-    console.print("[cyan]Available versions:[/cyan]")
-    console.print("  [green]stable/beta[/green] - Latest stable releases (recommended)")
-    console.print("  [yellow]daily[/yellow]      - Cutting-edge daily builds")
-    console.print("  [yellow]alpha[/yellow]      - Experimental alpha builds")
-    console.print()
+    help_panel = Panel(
+        "[cyan]Available versions:[/cyan]\n"
+        "  [green]stable[/green]  - Latest stable releases (recommended)\n"
+        "  [green]beta[/green]    - Latest beta releases\n"
+        "  [yellow]daily[/yellow]  - Cutting-edge daily builds\n"
+        "  [yellow]alpha[/yellow]  - Experimental alpha builds",
+        title="[bold cyan]Installation Versions[/bold cyan]",
+        border_style="cyan",
+        box=ROUNDED
+    )
+    console.print(help_panel)
 
     # Ask for version preference
     version_type = Prompt.ask(
-        "Select version",
+        "[cyan]Select version[/cyan]",
         choices=["stable", "beta", "daily", "alpha"],
         default="stable"
     )
 
     if version_type in ["daily", "alpha"]:
-        console.print(f"\n[yellow]{em.get('⚠')} Warning: {version_type} builds may be unstable[/yellow]")
+        console.print(f"\n[bold yellow]{em.get('⚠')} Warning:[/bold yellow] {version_type} builds may be unstable")
         if not Confirm.ask(f"Continue with {version_type} version?", default=False):
             console.print("[yellow]Installation cancelled[/yellow]")
             return
@@ -348,13 +353,26 @@ def install_meshtasticd():
     success = installer.install(version_type=version_type)
 
     if success:
-        console.print("\n[bold green]✓ Installation completed successfully![/bold green]")
+        success_panel = Panel(
+            f"[green]meshtasticd {version_type} installation complete![/green]\n"
+            f"\n[cyan]Next steps:[/cyan]\n"
+            f"  1. Configure LoRa radio and channels\n"
+            f"  2. Enable required modules (MQTT, Serial, etc.)\n"
+            f"  3. Monitor service with Dashboard",
+            title="[bold green]✓ Installation Complete[/bold green]",
+            border_style="green",
+            box=ROUNDED
+        )
+        console.print(success_panel)
 
         if Confirm.ask("\nWould you like to configure the device now?"):
             configure_device()
     else:
         console.print("\n[bold red]✗ Installation failed![/bold red]")
-        console.print("[yellow]Use Debug menu → View error logs for detailed information[/yellow]")
+        console.print("[cyan]For help:[/cyan]")
+        console.print("  • Check logs: Debug menu → View error logs")
+        console.print("  • Re-run: Use the Install option again")
+        console.print("  • Check connection: Ensure internet is working")
 
 
 def update_meshtasticd():

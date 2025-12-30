@@ -184,10 +184,11 @@ class MeshtasticdInstaller:
             # Enable and start service
             if self._setup_service():
                 console.print("[bold green]✓ Service enabled and started[/bold green]")
+                # Test service after startup
+                return self._test_installation()
             else:
                 console.print("[bold yellow]⚠ Service setup had issues (check logs)[/bold yellow]")
-
-            return True
+                return False
         else:
             # Log detailed error information
             error_msg = "Installation script failed"
@@ -199,10 +200,19 @@ class MeshtasticdInstaller:
             console.print("\n[bold red]✗ Installation failed![/bold red]")
 
             if result['stderr']:
+                # Display error with intelligent word-wrapping
+                error_lines = result['stderr'].split('\n')
+                # Show last 50 lines or entire output if shorter
+                display_lines = error_lines[-50:] if len(error_lines) > 50 else error_lines
+                display_text = '\n'.join(display_lines).strip()
+
+                from rich.text import Text
+                error_text = Text(display_text)
                 console.print(Panel(
-                    result['stderr'][-500:],  # Show last 500 chars of error
-                    title="[red]Error Output[/red]",
-                    border_style="red"
+                    error_text,
+                    title="[red]Error Output (Last 50 lines)[/red]",
+                    border_style="red",
+                    expand=True
                 ))
 
             if suggestions:
@@ -249,10 +259,11 @@ class MeshtasticdInstaller:
             # Enable and start service
             if self._setup_service():
                 console.print("[bold green]✓ Service enabled and started[/bold green]")
+                # Test service after startup
+                return self._test_installation()
             else:
                 console.print("[bold yellow]⚠ Service setup had issues (check logs)[/bold yellow]")
-
-            return True
+                return False
         else:
             # Log detailed error information
             error_msg = "Installation script failed"
@@ -264,10 +275,19 @@ class MeshtasticdInstaller:
             console.print("\n[bold red]✗ Installation failed![/bold red]")
 
             if result['stderr']:
+                # Display error with intelligent word-wrapping
+                error_lines = result['stderr'].split('\n')
+                # Show last 50 lines or entire output if shorter
+                display_lines = error_lines[-50:] if len(error_lines) > 50 else error_lines
+                display_text = '\n'.join(display_lines).strip()
+
+                from rich.text import Text
+                error_text = Text(display_text)
                 console.print(Panel(
-                    result['stderr'][-500:],  # Show last 500 chars of error
-                    title="[red]Error Output[/red]",
-                    border_style="red"
+                    error_text,
+                    title="[red]Error Output (Last 50 lines)[/red]",
+                    border_style="red",
+                    expand=True
                 ))
 
             if suggestions:
@@ -301,6 +321,52 @@ class MeshtasticdInstaller:
         console.print("\n[cyan]Setting up meshtasticd service...[/cyan]")
 
         return enable_service('meshtasticd')
+
+    def _test_installation(self):
+        """Test if installation was successful"""
+        log("Testing meshtasticd installation")
+        console.print("\n[cyan]Testing installation...[/cyan]")
+
+        tests_passed = 0
+        tests_total = 3
+
+        # Test 1: Check if binary exists
+        console.print("  [dim]Test 1: Checking meshtasticd binary...[/dim]")
+        result = run_command('which meshtasticd')
+        if result['success']:
+            console.print("    [green]✓ meshtasticd binary found[/green]")
+            tests_passed += 1
+        else:
+            console.print("    [red]✗ meshtasticd binary not found[/red]")
+
+        # Test 2: Check if service is running
+        console.print("  [dim]Test 2: Checking service status...[/dim]")
+        result = run_command('systemctl is-active meshtasticd')
+        if result['success'] and 'active' in result['stdout']:
+            console.print("    [green]✓ meshtasticd service is running[/green]")
+            tests_passed += 1
+        else:
+            console.print("    [yellow]⚠ meshtasticd service not running yet (may start shortly)[/yellow]")
+
+        # Test 3: Check version
+        console.print("  [dim]Test 3: Checking version...[/dim]")
+        result = run_command('meshtasticd --version')
+        if result['success']:
+            version = result['stdout'].strip()
+            console.print(f"    [green]✓ Version: {version}[/green]")
+            tests_passed += 1
+        else:
+            console.print("    [yellow]⚠ Could not retrieve version[/yellow]")
+
+        # Summary
+        console.print(f"\n[cyan]Installation tests: {tests_passed}/{tests_total} passed[/cyan]")
+
+        if tests_passed >= 2:
+            console.print("[bold green]✓ Installation verification successful![/bold green]")
+            return True
+        else:
+            console.print("[bold yellow]⚠ Some tests failed. Check logs for details.[/bold yellow]")
+            return False
 
     def update(self):
         """Update meshtasticd"""
