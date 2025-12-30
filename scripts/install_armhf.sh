@@ -120,9 +120,9 @@ fi
 echo -e "\n${GREEN}Installing meshtasticd from official repository...${NC}"
 apt-get install -y meshtasticd
 
-# Install Python meshtastic library
+# Install Python meshtastic library with force-reinstall for packaging conflicts
 echo -e "\n${GREEN}Installing meshtastic Python library...${NC}"
-python3 -m pip install --upgrade meshtastic --break-system-packages
+python3 -m pip install --upgrade --force-reinstall --break-system-packages meshtastic click rich pyyaml requests packaging psutil distro python-dotenv
 
 # Enable SPI and I2C
 echo -e "\n${GREEN}Enabling SPI and I2C...${NC}"

@@ -20,8 +20,23 @@ class EmojiHelper:
         if os.environ.get('DISABLE_EMOJI', '').lower() in ('1', 'true', 'yes'):
             return False
 
-        # Emojis enabled by default for better UI
-        # Fallbacks are available for terminals without emoji support
+        # Check for explicit enable
+        if os.environ.get('ENABLE_EMOJI', '').lower() in ('1', 'true', 'yes'):
+            return True
+
+        # Check for SSH or limited terminals that don't support emoji well
+        if os.environ.get('SSH_CONNECTION'):
+            # SSH connections may have issues with emojis
+            # But allow override with ENABLE_EMOJI=true
+            return False
+
+        # Check for minimum terminal capability
+        term = os.environ.get('TERM', 'xterm').lower()
+        # Disable on dumb terminals and basic ones
+        if term in ('dumb', 'linux', 'vt100', 'vt220'):
+            return False
+
+        # Enable by default for modern terminals
         return True
 
     # Emoji mappings with ASCII fallbacks

@@ -285,8 +285,8 @@ class StatusDashboard:
             mem_color = 'green' if mem_pct < 80 else ('yellow' if mem_pct < 90 else 'red')
             content.append(f"\n{em.get('💾')} Memory:   ")
             content.append(info['memory'], style=f"bold {mem_color}")
-            content.append(f" ({info['memory_used_mb']:.0f}/{info['memory_total_mb']:.0f} MB)")
-            content.append("\n" + self._create_progress_bar(mem_pct, mem_color))
+            content.append(f" ({info['memory_used_mb']:.0f}/{info['memory_total_mb']:.0f} MB)\n")
+            content.append(self._create_progress_bar(mem_pct, mem_color))
         else:
             content.append(f"\n{em.get('💾')} Memory:   {info['memory']}")
 
@@ -296,8 +296,8 @@ class StatusDashboard:
             disk_color = 'green' if disk_pct < 90 else ('yellow' if disk_pct < 95 else 'red')
             content.append(f"\n\n{em.get('💿', '[DISK]')} Disk:     ")
             content.append(info['disk'], style=f"bold {disk_color}")
-            content.append(f" ({info['disk_used_gb']:.1f}/{info['disk_total_gb']:.1f} GB)")
-            content.append("\n" + self._create_progress_bar(disk_pct, disk_color))
+            content.append(f" ({info['disk_used_gb']:.1f}/{info['disk_total_gb']:.1f} GB)\n")
+            content.append(self._create_progress_bar(disk_pct, disk_color))
         else:
             content.append(f"\n\n{em.get('💿', '[DISK]')} Disk:     {info['disk']}")
 
