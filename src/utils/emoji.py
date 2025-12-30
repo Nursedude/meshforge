@@ -33,7 +33,7 @@ class EmojiHelper:
                 if 'raspbian' in os_release or 'raspberry' in os_release:
                     # Default to ASCII on Raspberry Pi OS
                     return False
-        except:
+        except (FileNotFoundError, PermissionError, OSError):
             pass
 
         # Basic terminals that don't render emojis well
