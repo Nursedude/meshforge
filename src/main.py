@@ -124,47 +124,56 @@ def interactive_menu():
         # Status & Monitoring Section
         console.print("\n[dim cyan]── Status & Monitoring ──[/dim cyan]")
         console.print(f"  [bold]1[/bold]. {em.get('📊')} [green]Quick Status Dashboard[/green]")
+        console.print(f"  [bold]2[/bold]. {em.get('🔧')} [green]Service Management[/green] [dim](Start/Stop/Logs)[/dim]")
 
         # Installation Section
         console.print("\n[dim cyan]── Installation ──[/dim cyan]")
-        console.print(f"  [bold]2[/bold]. {em.get('📦')} Install meshtasticd")
-        console.print(f"  [bold]3[/bold]. {em.get('⬆️')}  Update meshtasticd")
+        console.print(f"  [bold]3[/bold]. {em.get('📦')} Install meshtasticd")
+        console.print(f"  [bold]4[/bold]. {em.get('⬆️')}  Update meshtasticd")
 
         # Configuration Section
         console.print("\n[dim cyan]── Configuration ──[/dim cyan]")
-        console.print(f"  [bold]4[/bold]. {em.get('⚙️')}  Configure device")
-        console.print(f"  [bold]5[/bold]. {em.get('📻')} [yellow]Channel Presets[/yellow] [dim](Quick Setup)[/dim]")
-        console.print(f"  [bold]6[/bold]. {em.get('📋')} Configuration Templates")
-        console.print(f"  [bold]7[/bold]. {em.get('📝')} [green]Edit config.yaml[/green] [dim](Detailed)[/dim]")
+        console.print(f"  [bold]5[/bold]. {em.get('⚙️')}  Configure device")
+        console.print(f"  [bold]6[/bold]. {em.get('📻')} [yellow]Channel Presets[/yellow] [dim](Quick Setup)[/dim]")
+        console.print(f"  [bold]7[/bold]. {em.get('📋')} Configuration Templates")
+        console.print(f"  [bold]8[/bold]. {em.get('📝')} [green]Edit config.yaml[/green] [dim](Detailed)[/dim]")
+
+        # Meshtastic CLI Section
+        console.print("\n[dim cyan]── Meshtastic CLI ──[/dim cyan]")
+        console.print(f"  [bold]c[/bold]. {em.get('💻')} [yellow]Meshtastic CLI Commands[/yellow]")
 
         # System Section
         console.print("\n[dim cyan]── System ──[/dim cyan]")
-        console.print(f"  [bold]8[/bold]. {em.get('🔍')} Check dependencies")
-        console.print(f"  [bold]9[/bold]. {em.get('🔌')} Hardware detection")
+        console.print(f"  [bold]9[/bold]. {em.get('🔍')} Check dependencies")
+        console.print(f"  [bold]h[/bold]. {em.get('🔌')} Hardware detection")
         console.print(f"  [bold]d[/bold]. {em.get('🐛')} Debug & troubleshooting")
 
         console.print(f"\n  [bold]0[/bold]. {em.get('🚪')} Exit")
         console.print(f"  [bold]?[/bold]. {em.get('❓')} Help")
 
-        choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "d", "?"], default="1")
+        choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "c", "h", "d", "?"], default="1")
 
         if choice == "1":
             show_dashboard()
         elif choice == "2":
-            install_meshtasticd()
+            service_management_menu()
         elif choice == "3":
-            update_meshtasticd()
+            install_meshtasticd()
         elif choice == "4":
-            configure_device()
+            update_meshtasticd()
         elif choice == "5":
-            configure_channel_presets()
+            configure_device()
         elif choice == "6":
-            manage_templates()
+            configure_channel_presets()
         elif choice == "7":
-            edit_config_yaml()
+            manage_templates()
         elif choice == "8":
-            check_dependencies()
+            edit_config_yaml()
+        elif choice == "c":
+            meshtastic_cli_menu()
         elif choice == "9":
+            check_dependencies()
+        elif choice == "h":
             detect_hardware()
         elif choice == "d":
             debug_menu()
@@ -228,6 +237,22 @@ def edit_config_yaml():
 
     editor = ConfigYamlEditor()
     editor.interactive_menu()
+
+
+def service_management_menu():
+    """Service management menu"""
+    from services.service_manager import ServiceManager
+
+    manager = ServiceManager()
+    manager.interactive_menu()
+
+
+def meshtastic_cli_menu():
+    """Meshtastic CLI commands menu"""
+    from cli.meshtastic_cli import MeshtasticCLI
+
+    cli = MeshtasticCLI()
+    cli.interactive_menu()
 
 
 def configure_channel_presets():

@@ -1,11 +1,25 @@
 """Version information for Meshtasticd Interactive Installer"""
 
-__version__ = "2.1.2"
-__version_info__ = (2, 1, 2)
+__version__ = "2.2.0"
+__version_info__ = (2, 2, 0)
 __release_date__ = "2025-12-30"
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "2.2.0",
+        "date": "2025-12-30",
+        "changes": [
+            "Added Service Management menu (start/stop/restart/status/logs)",
+            "Added Meshtastic CLI commands menu with full CLI integration",
+            "Enhanced config.yaml editor with all hardware sections",
+            "Added LoRa module presets (MeshAdv-Mini, Waveshare, Ebyte E22, etc.)",
+            "Added Touchscreen, Input, HostMetrics configuration",
+            "All submenus now have Back (0) and Main Menu (m) navigation",
+            "Added connection configuration for CLI (localhost, serial, BLE)",
+            "Service management: view logs by time, follow logs, boot control"
+        ]
+    },
     {
         "version": "2.1.2",
         "date": "2025-12-30",
