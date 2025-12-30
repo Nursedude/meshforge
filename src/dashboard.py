@@ -12,9 +12,14 @@ from rich.text import Text
 from rich.layout import Layout
 from rich.live import Live
 from rich.prompt import Prompt, Confirm
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
+from rich.tree import Tree
+from rich.box import ROUNDED, DOUBLE, HEAVY
 import time
+import logging
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 
 class StatusDashboard:
@@ -37,7 +42,8 @@ class StatusDashboard:
                 'running': status == 'active',
                 'color': 'green' if status == 'active' else 'red'
             }
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to get service status: {e}")
             return {'status': 'unknown', 'running': False, 'color': 'yellow'}
 
     def get_service_uptime(self):
@@ -54,7 +60,8 @@ class StatusDashboard:
                     if timestamp_str:
                         return timestamp_str
             return 'N/A'
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to get service uptime: {e}")
             return 'N/A'
 
     def get_installed_version(self):
@@ -69,7 +76,8 @@ class StatusDashboard:
             return 'Not installed'
         except FileNotFoundError:
             return 'Not installed'
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to get installed version: {e}")
             return 'Unknown'
 
     def get_system_info(self):
@@ -82,7 +90,8 @@ class StatusDashboard:
                 temp = int(f.read().strip()) / 1000
                 info['cpu_temp'] = f'{temp:.1f}°C'
                 info['temp_status'] = 'normal' if temp < 70 else ('warning' if temp < 80 else 'critical')
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get CPU temperature: {e}")
             info['cpu_temp'] = 'N/A'
             info['temp_status'] = 'unknown'
 
@@ -103,10 +112,13 @@ class StatusDashboard:
                     usage_pct = (used / total) * 100
                     info['memory'] = f'{usage_pct:.1f}%'
                     info['memory_status'] = 'normal' if usage_pct < 80 else 'warning'
+                    info['memory_used_mb'] = used / 1024  # Store for progress bar
+                    info['memory_total_mb'] = total / 1024
                 else:
                     info['memory'] = 'N/A'
                     info['memory_status'] = 'unknown'
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get memory usage: {e}")
             info['memory'] = 'N/A'
             info['memory_status'] = 'unknown'
 
@@ -120,10 +132,13 @@ class StatusDashboard:
                 usage_pct = (used / total) * 100
                 info['disk'] = f'{usage_pct:.1f}%'
                 info['disk_status'] = 'normal' if usage_pct < 90 else 'warning'
+                info['disk_used_gb'] = used / (1024**3)  # Store for progress bar
+                info['disk_total_gb'] = total / (1024**3)
             else:
                 info['disk'] = 'N/A'
                 info['disk_status'] = 'unknown'
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get disk usage: {e}")
             info['disk'] = 'N/A'
             info['disk_status'] = 'unknown'
 
@@ -140,7 +155,8 @@ class StatusDashboard:
                     info['uptime'] = f'{hours}h {minutes}m'
                 else:
                     info['uptime'] = f'{minutes}m'
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get system uptime: {e}")
             info['uptime'] = 'N/A'
 
         return info
@@ -160,7 +176,8 @@ class StatusDashboard:
                 info['ip'] = ips[0] if ips else 'No IP'
             else:
                 info['ip'] = 'N/A'
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to get IP address: {e}")
             info['ip'] = 'N/A'
 
         # Check internet connectivity
@@ -170,7 +187,8 @@ class StatusDashboard:
                 capture_output=True, timeout=5
             )
             info['internet'] = result.returncode == 0
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to check internet connectivity: {e}")
             info['internet'] = False
 
         return info
@@ -211,7 +229,8 @@ class StatusDashboard:
                         for line in result.stdout.strip().split('\n'):
                             if 'meshtasticd' in line.lower():
                                 logs.append(line[:100])
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Failed to read log file {log_file}: {e}")
                     pass
                 if logs:
                     break
@@ -219,73 +238,129 @@ class StatusDashboard:
         return logs[-lines:] if logs else ['No recent logs available']
 
     def create_status_panel(self):
-        """Create the main status panel"""
+        """Create the main status panel with enhanced visuals"""
         service = self.get_service_status()
+        version = self.get_installed_version()
+        uptime = self.get_service_uptime()
 
-        # Service status with icon
+        # Service status with icon and box
         if service['running']:
-            status_text = Text("● RUNNING", style="bold green")
+            status_text = Text("✓ RUNNING", style="bold green on dark_green")
+            status_icon = "🟢"
         else:
-            status_text = Text("● STOPPED", style="bold red")
+            status_text = Text("✗ STOPPED", style="bold red on dark_red")
+            status_icon = "🔴"
 
         content = Text()
-        content.append("Service Status: ")
+        content.append(f"{status_icon} Status:  ")
         content.append(status_text)
-        content.append(f"\nVersion: {self.get_installed_version()}")
-        content.append(f"\nStarted: {self.get_service_uptime()}")
+        content.append("\n\n📦 Version: ", style="bold")
+        content.append(f"{version}")
+        content.append("\n\n⏰ Started: ", style="bold")
+        content.append(f"{uptime}")
 
-        return Panel(content, title="[bold cyan]Meshtasticd Service[/bold cyan]", border_style="cyan")
+        return Panel(content, title="[bold cyan]📡 Meshtasticd Service[/bold cyan]", border_style="cyan", box=ROUNDED)
 
     def create_system_panel(self):
-        """Create system information panel"""
+        """Create system information panel with progress bars"""
         info = self.get_system_info()
 
         # Format temperature with color
         temp_color = 'green' if info['temp_status'] == 'normal' else ('yellow' if info['temp_status'] == 'warning' else 'red')
 
+        # Create rich content with progress bars
         content = Text()
-        content.append("CPU Temp: ")
-        content.append(info['cpu_temp'], style=temp_color)
-        content.append(f"\nMemory:   {info['memory']}")
-        content.append(f"\nDisk:     {info['disk']}")
-        content.append(f"\nUptime:   {info['uptime']}")
+        content.append("🌡️  CPU Temp: ")
+        content.append(info['cpu_temp'], style=f"bold {temp_color}")
+        content.append("\n")
 
-        return Panel(content, title="[bold magenta]System Health[/bold magenta]", border_style="magenta")
+        # Memory progress bar
+        if info.get('memory_used_mb') and info.get('memory_total_mb'):
+            mem_pct = (info['memory_used_mb'] / info['memory_total_mb']) * 100
+            mem_color = 'green' if mem_pct < 80 else ('yellow' if mem_pct < 90 else 'red')
+            content.append("\n💾 Memory:   ")
+            content.append(info['memory'], style=f"bold {mem_color}")
+            content.append(f" ({info['memory_used_mb']:.0f}/{info['memory_total_mb']:.0f} MB)")
+            content.append("\n" + self._create_progress_bar(mem_pct, mem_color))
+        else:
+            content.append(f"\n💾 Memory:   {info['memory']}")
+
+        # Disk progress bar
+        if info.get('disk_used_gb') and info.get('disk_total_gb'):
+            disk_pct = (info['disk_used_gb'] / info['disk_total_gb']) * 100
+            disk_color = 'green' if disk_pct < 90 else ('yellow' if disk_pct < 95 else 'red')
+            content.append("\n\n💿 Disk:     ")
+            content.append(info['disk'], style=f"bold {disk_color}")
+            content.append(f" ({info['disk_used_gb']:.1f}/{info['disk_total_gb']:.1f} GB)")
+            content.append("\n" + self._create_progress_bar(disk_pct, disk_color))
+        else:
+            content.append(f"\n\n💿 Disk:     {info['disk']}")
+
+        content.append(f"\n\n⏱️  Uptime:   {info['uptime']}")
+
+        return Panel(content, title="[bold magenta]⚙️  System Health[/bold magenta]", border_style="magenta", box=ROUNDED)
+
+    def _create_progress_bar(self, percentage, color):
+        """Create a text-based progress bar"""
+        width = 30
+        filled = int((percentage / 100) * width)
+        bar = '█' * filled + '░' * (width - filled)
+        return Text(f"   [{bar}]", style=color)
 
     def create_network_panel(self):
-        """Create network information panel"""
+        """Create network information panel with enhanced visuals"""
         info = self.get_network_info()
 
-        internet_status = Text("● Connected", style="green") if info['internet'] else Text("● Offline", style="red")
+        if info['internet']:
+            internet_status = Text("✓ Connected", style="bold green on dark_green")
+            internet_icon = "🌐"
+        else:
+            internet_status = Text("✗ Offline", style="bold red on dark_red")
+            internet_icon = "📡"
 
         content = Text()
-        content.append(f"IP Address: {info['ip']}\n")
-        content.append("Internet:   ")
+        content.append("🔗 IP Address: ", style="bold")
+        content.append(f"{info['ip']}\n\n")
+        content.append(f"{internet_icon} Internet:  ")
         content.append(internet_status)
 
-        return Panel(content, title="[bold yellow]Network[/bold yellow]", border_style="yellow")
+        return Panel(content, title="[bold yellow]🌍 Network Status[/bold yellow]", border_style="yellow", box=ROUNDED)
 
     def create_config_panel(self):
-        """Create configuration status panel"""
+        """Create configuration status panel with enhanced visuals"""
         status = self.get_config_status()
 
-        config_status = Text("● Found", style="green") if status['config_exists'] else Text("● Missing", style="red")
+        if status['config_exists']:
+            config_status = Text("✓ Found", style="bold green on dark_green")
+            config_icon = "📝"
+        else:
+            config_status = Text("✗ Missing", style="bold red on dark_red")
+            config_icon = "⚠️"
 
         content = Text()
-        content.append("Config: ")
+        content.append(f"{config_icon} Config:   ")
         content.append(config_status)
-        content.append(f"\nPath: {status['config_path']}")
+        content.append("\n\n📂 Path: ", style="bold")
+        content.append(f"\n   {status['config_path']}", style="dim")
         if status['active_template']:
-            content.append(f"\nTemplate: {status['active_template']}")
+            content.append("\n\n📄 Template: ", style="bold")
+            content.append(f"{status['active_template']}")
 
-        return Panel(content, title="[bold blue]Configuration[/bold blue]", border_style="blue")
+        return Panel(content, title="[bold blue]⚙️  Configuration[/bold blue]", border_style="blue", box=ROUNDED)
 
     def show_dashboard(self):
-        """Display the complete status dashboard"""
+        """Display the complete status dashboard with rich visuals"""
         console.clear()
-        console.print("\n[bold cyan]═══════════════════════════════════════════════════════════[/bold cyan]")
-        console.print("[bold cyan]           MESHTASTICD QUICK STATUS DASHBOARD              [/bold cyan]")
-        console.print("[bold cyan]═══════════════════════════════════════════════════════════[/bold cyan]\n")
+
+        # Enhanced header with box
+        header = Panel(
+            Text("MESHTASTICD QUICK STATUS DASHBOARD", style="bold cyan", justify="center"),
+            box=DOUBLE,
+            border_style="bright_cyan",
+            padding=(0, 2)
+        )
+        console.print(header)
+        console.print()
 
         # Create panels
         service_panel = self.create_status_panel()
@@ -298,15 +373,33 @@ class StatusDashboard:
         console.print()
         console.print(Columns([network_panel, config_panel], equal=True, expand=True))
 
-        # Recent logs section
-        console.print("\n[bold cyan]─── Recent Activity ───[/bold cyan]")
-        logs = self.get_recent_logs(3)
-        for log in logs:
-            console.print(f"[dim]{log}[/dim]")
+        # Recent logs section with enhanced styling
+        console.print()
+        logs_header = Panel(
+            Text("📋 Recent Activity", style="bold cyan"),
+            box=ROUNDED,
+            border_style="cyan",
+            padding=(0, 1)
+        )
+        console.print(logs_header)
 
-        # Quick actions
-        console.print("\n[bold cyan]─── Quick Actions ───[/bold cyan]")
-        console.print("[1] Refresh  [2] View Full Logs  [3] Restart Service  [4] Check Updates  [5] Back")
+        logs = self.get_recent_logs(3)
+        for i, log in enumerate(logs, 1):
+            console.print(f"  [dim cyan]{i}.[/dim cyan] [dim]{log}[/dim]")
+
+        # Quick actions with enhanced formatting
+        console.print()
+        actions_panel = Panel(
+            "[bold cyan]1[/bold cyan] 🔄 Refresh  │  "
+            "[bold cyan]2[/bold cyan] 📜 View Full Logs  │  "
+            "[bold cyan]3[/bold cyan] 🔁 Restart Service  │  "
+            "[bold cyan]4[/bold cyan] ⬆️  Check Updates  │  "
+            "[bold cyan]5[/bold cyan] ⬅️  Back",
+            title="[bold yellow]⚡ Quick Actions[/bold yellow]",
+            box=ROUNDED,
+            border_style="yellow"
+        )
+        console.print(actions_panel)
 
     def interactive_dashboard(self):
         """Interactive dashboard with auto-refresh option"""
@@ -332,13 +425,27 @@ class StatusDashboard:
                 break
 
     def show_full_logs(self):
-        """Show full logs"""
-        console.print("\n[cyan]Recent meshtasticd logs (last 30 lines):[/cyan]\n")
-        logs = self.get_recent_logs(30)
-        for log in logs:
-            console.print(f"[dim]{log}[/dim]")
+        """Show full logs with enhanced formatting"""
+        console.clear()
+        header = Panel(
+            Text("📜 RECENT MESHTASTICD LOGS (LAST 30 LINES)", style="bold cyan", justify="center"),
+            box=DOUBLE,
+            border_style="bright_cyan"
+        )
+        console.print(header)
         console.print()
-        Prompt.ask("Press Enter to continue")
+
+        logs = self.get_recent_logs(30)
+        log_table = Table(show_header=False, box=ROUNDED, border_style="dim")
+        log_table.add_column("#", style="dim cyan", width=4)
+        log_table.add_column("Log Entry", style="dim")
+
+        for i, log in enumerate(logs, 1):
+            log_table.add_row(str(i), log)
+
+        console.print(log_table)
+        console.print()
+        Prompt.ask("\n[bold yellow]Press Enter to continue[/bold yellow]")
 
     def restart_service(self):
         """Restart meshtasticd service"""
@@ -350,16 +457,17 @@ class StatusDashboard:
                     capture_output=True, text=True, timeout=30
                 )
                 if result.returncode == 0:
-                    console.print("[green]Service restarted successfully![/green]")
+                    console.print("[green]✓ Service restarted successfully![/green]")
                 else:
-                    console.print(f"[red]Failed to restart: {result.stderr}[/red]")
+                    console.print(f"[red]✗ Failed to restart: {result.stderr}[/red]")
             except Exception as e:
-                console.print(f"[red]Error: {str(e)}[/red]")
+                logger.error(f"Failed to restart service: {e}")
+                console.print(f"[red]✗ Error: {str(e)}[/red]")
             time.sleep(2)
 
     def check_updates(self):
-        """Check for available updates"""
-        console.print("\n[cyan]Checking for updates...[/cyan]")
+        """Check for available updates with enhanced visuals"""
+        console.print("\n[cyan]🔍 Checking for updates...[/cyan]")
 
         from installer.version import VersionManager
         vm = VersionManager()
@@ -368,25 +476,48 @@ class StatusDashboard:
 
         if update_info:
             if update_info.get('update_available'):
-                console.print(f"\n[bold green]Update available![/bold green]")
-                console.print(f"  Current: {update_info['current']}")
-                console.print(f"  Latest:  {update_info['latest']}")
+                update_panel = Panel(
+                    f"[bold]Current:[/bold] {update_info['current']}\n"
+                    f"[bold]Latest:[/bold]  [green]{update_info['latest']}[/green]\n\n"
+                    "[yellow]⬆️  An update is available![/yellow]",
+                    title="[bold green]🎉 Update Available[/bold green]",
+                    border_style="green",
+                    box=ROUNDED
+                )
+                console.print(update_panel)
             else:
-                console.print(f"\n[green]You're running the latest version ({update_info['current']})[/green]")
+                success_panel = Panel(
+                    f"[bold]Version:[/bold] {update_info['current']}\n\n"
+                    "[green]✓ You're running the latest version![/green]",
+                    title="[bold cyan]✨ Up to Date[/bold cyan]",
+                    border_style="cyan",
+                    box=ROUNDED
+                )
+                console.print(success_panel)
         else:
-            console.print("[yellow]Could not check for updates[/yellow]")
+            error_panel = Panel(
+                "[yellow]⚠️  Could not check for updates\n"
+                "Please check your internet connection[/yellow]",
+                title="[bold red]Update Check Failed[/bold red]",
+                border_style="red",
+                box=ROUNDED
+            )
+            console.print(error_panel)
 
-        Prompt.ask("\nPress Enter to continue")
+        Prompt.ask("\n[bold yellow]Press Enter to continue[/bold yellow]")
 
     def get_quick_status_line(self):
-        """Get a single-line status summary for the main menu"""
+        """Get a single-line status summary for the main menu with enhanced visuals"""
         service = self.get_service_status()
         version = self.get_installed_version()
         info = self.get_system_info()
 
         if service['running']:
-            status = "[green]●[/green] Running"
+            status = "[green]🟢 Running[/green]"
         else:
-            status = "[red]●[/red] Stopped"
+            status = "[red]🔴 Stopped[/red]"
 
-        return f"{status} | {version} | CPU: {info['cpu_temp']} | Mem: {info['memory']}"
+        # Color code temperature
+        temp_color = 'green' if info['temp_status'] == 'normal' else ('yellow' if info['temp_status'] == 'warning' else 'red')
+
+        return f"{status} │ 📦 {version} │ 🌡️  [{temp_color}]{info['cpu_temp']}[/{temp_color}] │ 💾 {info['memory']}"
