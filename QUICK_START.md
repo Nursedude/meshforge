@@ -4,21 +4,21 @@
 
 ### ⚡ Fastest: One-Liner Install
 ```bash
-curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_IU/main/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_UI/main/install.sh | sudo bash
 ```
 
 ### 🌐 Easiest: Web Interface
 ```bash
-git clone https://github.com/Nursedude/Meshtasticd_interactive_IU.git
-cd Meshtasticd_interactive_IU
+git clone https://github.com/Nursedude/Meshtasticd_interactive_UI.git
+cd Meshtasticd_interactive_UI
 sudo python3 web_installer.py
 # Visit http://<your-pi-ip>:8080
 ```
 
 ### 🐳 Most Isolated: Docker
 ```bash
-git clone https://github.com/Nursedude/Meshtasticd_interactive_IU.git
-cd Meshtasticd_interactive_IU
+git clone https://github.com/Nursedude/Meshtasticd_interactive_UI.git
+cd Meshtasticd_interactive_UI
 docker-compose run meshtasticd-installer
 ```
 
@@ -75,4 +75,4 @@ sudo meshtasticd-installer --check
 - 🔧 [Installation Options](INSTALL_OPTIONS.md)
 - ✅ [Verification Guide](STANDALONE_VERIFICATION.md)
 - 🐛 [Debug Guide](DEBUG_VALIDATION.md)
-- 💬 [Report Issues](https://github.com/Nursedude/Meshtasticd_interactive_IU/issues)
+- 💬 [Report Issues](https://github.com/Nursedude/Meshtasticd_interactive_UI/issues)

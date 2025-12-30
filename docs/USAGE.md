@@ -5,8 +5,8 @@
 ### Quick Start
 
 ```bash
-git clone https://github.com/Nursedude/Meshtasticd_interactive_IU.git
-cd Meshtasticd_interactive_IU
+git clone https://github.com/Nursedude/Meshtasticd_interactive_UI.git
+cd Meshtasticd_interactive_UI
 sudo python3 -m pip install -r requirements.txt
 sudo python3 src/main.py
 ```

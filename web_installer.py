@@ -218,11 +218,11 @@ HTML_TEMPLATE = """
             <p>Copy and paste these commands to install manually:</p>
             <div class="command">
 # Quick install (one-liner)<br>
-curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_IU/main/install.sh | sudo bash<br>
+curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_UI/main/install.sh | sudo bash<br>
 <br>
 # Or manual clone and install<br>
-git clone https://github.com/Nursedude/Meshtasticd_interactive_IU.git<br>
-cd Meshtasticd_interactive_IU<br>
+git clone https://github.com/Nursedude/Meshtasticd_interactive_UI.git<br>
+cd Meshtasticd_interactive_UI<br>
 sudo bash install.sh
             </div>
         </div>

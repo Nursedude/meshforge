@@ -1,6 +1,6 @@
 # Repeater/Router Node Configuration Template
 # Optimized for dedicated infrastructure repeater nodes
-# https://github.com/Nursedude/Meshtasticd_interactive_IU
+# https://github.com/Nursedude/Meshtasticd_interactive_UI
 #
 # Use case: Fixed infrastructure nodes, hilltop repeaters, relay stations
 # Features: High power, extended hop limit, router mode

@@ -123,7 +123,7 @@ Choose your preferred installation method:
 **One-liner installation** - Downloads, installs, and launches the interactive installer automatically:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_IU/main/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_UI/main/install.sh | sudo bash
 ```
 
 This will:
@@ -139,12 +139,12 @@ This will:
 
 Skip the interactive prompts and automatically upgrade system packages:
 ```bash
-curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_IU/main/install.sh | sudo UPGRADE_SYSTEM=yes bash
+curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_UI/main/install.sh | sudo UPGRADE_SYSTEM=yes bash
 ```
 
 Skip the system upgrade entirely (faster installation):
 ```bash
-curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_IU/main/install.sh | sudo SKIP_UPGRADE=yes bash
+curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_UI/main/install.sh | sudo SKIP_UPGRADE=yes bash
 ```
 
 **To run the installer later manually:**
@@ -160,8 +160,8 @@ sudo meshtasticd-installer
 
 ```bash
 # Clone the repository
-git clone https://github.com/Nursedude/Meshtasticd_interactive_IU.git
-cd Meshtasticd_interactive_IU
+git clone https://github.com/Nursedude/Meshtasticd_interactive_UI.git
+cd Meshtasticd_interactive_UI
 
 # Start web installer
 sudo python3 web_installer.py
@@ -183,8 +183,8 @@ The web interface provides:
 
 ```bash
 # Clone repository
-git clone https://github.com/Nursedude/Meshtasticd_interactive_IU.git
-cd Meshtasticd_interactive_IU
+git clone https://github.com/Nursedude/Meshtasticd_interactive_UI.git
+cd Meshtasticd_interactive_UI
 
 # Build and run with Docker Compose
 docker-compose up -d
@@ -211,8 +211,8 @@ sudo apt-get update
 sudo apt-get install -y python3 python3-pip git
 
 # 2. Clone repository
-git clone https://github.com/Nursedude/Meshtasticd_interactive_IU.git
-cd Meshtasticd_interactive_IU
+git clone https://github.com/Nursedude/Meshtasticd_interactive_UI.git
+cd Meshtasticd_interactive_UI
 
 # 3. Install Python dependencies
 sudo python3 -m pip install -r requirements.txt
@@ -319,7 +319,7 @@ sudo python3 src/main.py
 ## Project Structure
 
 ```
-Meshtasticd_interactive_IU/
+Meshtasticd_interactive_UI/
 ├── src/
 │   ├── main.py                    # Main entry point
 │   ├── __version__.py             # Version control (NEW)

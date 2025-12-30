@@ -32,7 +32,7 @@ Single command that does everything automatically.
 
 ### Installation Command
 ```bash
-curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_IU/main/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_UI/main/install.sh | sudo bash
 ```
 
 ### What It Does
@@ -82,8 +82,8 @@ Browser-based interface for installation with real-time progress monitoring.
 
 1. **Clone the repository:**
 ```bash
-git clone https://github.com/Nursedude/Meshtasticd_interactive_IU.git
-cd Meshtasticd_interactive_IU
+git clone https://github.com/Nursedude/Meshtasticd_interactive_UI.git
+cd Meshtasticd_interactive_UI
 ```
 
 2. **Start the web installer:**
@@ -138,8 +138,8 @@ sudo usermod -aG docker $USER
 
 ```bash
 # Clone repository
-git clone https://github.com/Nursedude/Meshtasticd_interactive_IU.git
-cd Meshtasticd_interactive_IU
+git clone https://github.com/Nursedude/Meshtasticd_interactive_UI.git
+cd Meshtasticd_interactive_UI
 
 # Start interactive installer
 docker-compose run meshtasticd-installer
@@ -207,8 +207,8 @@ sudo apt-get install -y python3 python3-pip python3-venv git wget curl
 **Step 3: Clone repository**
 ```bash
 cd ~
-git clone https://github.com/Nursedude/Meshtasticd_interactive_IU.git
-cd Meshtasticd_interactive_IU
+git clone https://github.com/Nursedude/Meshtasticd_interactive_UI.git
+cd Meshtasticd_interactive_UI
 ```
 
 **Step 4: (Optional) Create virtual environment**
@@ -232,7 +232,7 @@ sudo python3 src/main.py
 ```bash
 sudo tee /usr/local/bin/meshtasticd-installer > /dev/null << 'EOF'
 #!/bin/bash
-cd ~/Meshtasticd_interactive_IU
+cd ~/Meshtasticd_interactive_UI
 exec sudo python3 src/main.py "$@"
 EOF
 
@@ -265,7 +265,7 @@ sudo meshtasticd-installer
 **Problem:** "Permission denied"
 ```bash
 # Make sure you're using sudo
-curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_IU/main/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_UI/main/install.sh | sudo bash
 ```
 
 **Problem:** "Command not found: curl"
@@ -360,4 +360,4 @@ sudo python3 src/main.py
 
 ## 🤝 Contributing
 
-Found an issue with one of the installation methods? Please [open an issue](https://github.com/Nursedude/Meshtasticd_interactive_IU/issues) or submit a pull request.
+Found an issue with one of the installation methods? Please [open an issue](https://github.com/Nursedude/Meshtasticd_interactive_UI/issues) or submit a pull request.

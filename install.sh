@@ -5,7 +5,7 @@
 # Downloads, installs, and launches the interactive installer automatically.
 #
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_IU/main/install.sh | sudo bash
+#   curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_UI/main/install.sh | sudo bash
 #
 # Options:
 #   UPGRADE_SYSTEM=yes  - Automatically upgrade all system packages
@@ -13,10 +13,10 @@
 #
 # Examples:
 #   # Install with system upgrade
-#   curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_IU/main/install.sh | sudo UPGRADE_SYSTEM=yes bash
+#   curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_UI/main/install.sh | sudo UPGRADE_SYSTEM=yes bash
 #
 #   # Install without upgrade prompt
-#   curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_IU/main/install.sh | sudo SKIP_UPGRADE=yes bash
+#   curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_UI/main/install.sh | sudo SKIP_UPGRADE=yes bash
 #
 
 set -e
@@ -100,7 +100,7 @@ if [[ -d "$INSTALL_DIR" ]]; then
     git pull -q
 else
     echo "  Cloning repository..."
-    git clone -q https://github.com/Nursedude/Meshtasticd_interactive_IU.git "$INSTALL_DIR"
+    git clone -q https://github.com/Nursedude/Meshtasticd_interactive_UI.git "$INSTALL_DIR"
     cd "$INSTALL_DIR"
 fi
 

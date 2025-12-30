@@ -1,7 +1,7 @@
 # Standalone Project Verification
 
 ## Project: Meshtasticd Interactive Installer & Manager
-**Location:** `/home/user/Meshtasticd_interactive_IU`
+**Location:** `/home/user/Meshtasticd_interactive_UI`
 
 ## Verification Date
 2025-12-27
@@ -10,8 +10,8 @@
 
 ### Git Configuration ✅
 ```
-Remote: https://github.com/Nursedude/Meshtasticd_interactive_IU.git
-Root:   /home/user/Meshtasticd_interactive_IU
+Remote: https://github.com/Nursedude/Meshtasticd_interactive_UI.git
+Root:   /home/user/Meshtasticd_interactive_UI
 ```
 **Status:** Completely independent repository
 
@@ -66,7 +66,7 @@ Searched for:
 
 ### Project Root
 ```
-/home/user/Meshtasticd_interactive_IU/
+/home/user/Meshtasticd_interactive_UI/
 ├── .git/                    # Independent git repository
 ├── .gitignore
 ├── LICENSE                  # GPL-3.0
@@ -98,8 +98,8 @@ Searched for:
 ### Standalone Installation
 ```bash
 # Complete installation from scratch
-git clone https://github.com/Nursedude/Meshtasticd_interactive_IU.git
-cd Meshtasticd_interactive_IU
+git clone https://github.com/Nursedude/Meshtasticd_interactive_UI.git
+cd Meshtasticd_interactive_UI
 sudo python3 -m pip install -r requirements.txt
 sudo python3 src/main.py
 ```
@@ -118,9 +118,9 @@ sudo python3 src/main.py
 - **Location:** `/home/user/RNS-updater`
 - **Target:** RNS/Reticulum networking
 
-### Meshtasticd_interactive_IU (This Project)
+### Meshtasticd_interactive_UI (This Project)
 - **Purpose:** Meshtastic daemon installer/configurator
-- **Location:** `/home/user/Meshtasticd_interactive_IU`
+- **Location:** `/home/user/Meshtasticd_interactive_UI`
 - **Target:** Meshtastic mesh networking
 
 **Result:** Completely different projects with different purposes
