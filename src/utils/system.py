@@ -130,26 +130,60 @@ def get_os_type():
         return 'unknown'
 
 
-def run_command(command, shell=False, capture_output=True):
-    """Run a system command and return the result"""
+def run_command(command, shell=False, capture_output=True, stream_output=False):
+    """Run a system command and return the result
+
+    Args:
+        command: Command to run (string or list)
+        shell: Use shell execution
+        capture_output: Capture stdout/stderr
+        stream_output: Print output in real-time (for interactive commands)
+    """
     try:
         if isinstance(command, str) and not shell:
             command = command.split()
 
-        result = subprocess.run(
-            command,
-            shell=shell,
-            capture_output=capture_output,
-            text=True,
-            timeout=300
-        )
+        if stream_output:
+            # Stream output in real-time for better user feedback
+            process = subprocess.Popen(
+                command,
+                shell=shell,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
 
-        return {
-            'returncode': result.returncode,
-            'stdout': result.stdout,
-            'stderr': result.stderr,
-            'success': result.returncode == 0
-        }
+            stdout_lines = []
+            for line in process.stdout:
+                print(line, end='')
+                stdout_lines.append(line)
+
+            process.wait(timeout=300)
+            stdout = ''.join(stdout_lines)
+
+            return {
+                'returncode': process.returncode,
+                'stdout': stdout,
+                'stderr': '',
+                'success': process.returncode == 0
+            }
+        else:
+            result = subprocess.run(
+                command,
+                shell=shell,
+                capture_output=capture_output,
+                text=True,
+                timeout=300
+            )
+
+            return {
+                'returncode': result.returncode,
+                'stdout': result.stdout,
+                'stderr': result.stderr,
+                'success': result.returncode == 0
+            }
     except subprocess.TimeoutExpired:
         return {
             'returncode': -1,

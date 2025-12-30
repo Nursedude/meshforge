@@ -344,16 +344,17 @@ def install_meshtasticd():
 
     installer = MeshtasticdInstaller()
 
-    with console.status("[bold green]Installing..."):
-        success = installer.install(version_type=version_type)
+    # Run installation (output will be streamed in real-time)
+    success = installer.install(version_type=version_type)
 
     if success:
-        console.print("\n[bold green]Installation completed successfully![/bold green]")
+        console.print("\n[bold green]✓ Installation completed successfully![/bold green]")
 
         if Confirm.ask("\nWould you like to configure the device now?"):
             configure_device()
     else:
-        console.print("\n[bold red]Installation failed. Check logs for details.[/bold red]")
+        console.print("\n[bold red]✗ Installation failed![/bold red]")
+        console.print("[yellow]Use Debug menu → View error logs for detailed information[/yellow]")
 
 
 def update_meshtasticd():
@@ -564,30 +565,33 @@ def debug_menu():
     console.print("\n[bold cyan]═══════════════ Debug & Troubleshooting ═══════════════[/bold cyan]\n")
 
     console.print("[dim cyan]── Diagnostics ──[/dim cyan]")
-    console.print(f"  [bold]1[/bold]. {em.get('📜')} View logs")
-    console.print(f"  [bold]2[/bold]. {em.get('🔄')} Test meshtasticd service")
-    console.print(f"  [bold]3[/bold]. {em.get('🔐')} Check permissions")
+    console.print(f"  [bold]1[/bold]. {em.get('📜')} View installation logs")
+    console.print(f"  [bold]2[/bold]. {em.get('⚠️')} View error logs")
+    console.print(f"  [bold]3[/bold]. {em.get('🔄')} Test meshtasticd service")
+    console.print(f"  [bold]4[/bold]. {em.get('🔐')} Check permissions")
 
     console.print("\n[dim cyan]── Updates & Version ──[/dim cyan]")
-    console.print(f"  [bold]4[/bold]. {em.get('⬆️')}  [yellow]Check for updates[/yellow]")
-    console.print(f"  [bold]5[/bold]. {em.get('📋')} [yellow]Version history[/yellow]")
-    console.print(f"  [bold]6[/bold]. {em.get('ℹ️')}  [yellow]Show version info[/yellow]")
+    console.print(f"  [bold]5[/bold]. {em.get('⬆️')}  [yellow]Check for updates[/yellow]")
+    console.print(f"  [bold]6[/bold]. {em.get('📋')} [yellow]Version history[/yellow]")
+    console.print(f"  [bold]7[/bold]. {em.get('ℹ️')}  [yellow]Show version info[/yellow]")
 
-    console.print(f"\n  [bold]7[/bold]. {em.get('⬅️')}  Back to main menu")
+    console.print(f"\n  [bold]0[/bold]. {em.get('⬅️')}  Back to main menu")
 
-    choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["1", "2", "3", "4", "5", "6", "7"], default="7")
+    choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["0", "1", "2", "3", "4", "5", "6", "7"], default="0")
 
     if choice == "1":
         view_logs()
     elif choice == "2":
-        test_service()
+        view_error_logs()
     elif choice == "3":
-        check_permissions()
+        test_service()
     elif choice == "4":
-        check_updates_manual()
+        check_permissions()
     elif choice == "5":
-        show_version_history()
+        check_updates_manual()
     elif choice == "6":
+        show_version_history()
+    elif choice == "7":
         show_version_info()
 
 
@@ -599,11 +603,70 @@ def view_logs():
         try:
             result = subprocess.run(['tail', '-n', '50', log_file],
                                   capture_output=True, text=True, check=True)
-            console.print(result.stdout)
+            from rich.panel import Panel
+            console.print(Panel(result.stdout, title="[cyan]Installation Log[/cyan]", border_style="cyan"))
         except subprocess.CalledProcessError as e:
             console.print(f"[red]Error reading log file: {e}[/red]")
     else:
-        console.print("\n[yellow]No log file found[/yellow]")
+        console.print("\n[yellow]No installation log file found[/yellow]")
+        console.print("[dim]Log will be created on first installation[/dim]")
+
+
+def view_error_logs():
+    """View detailed error logs"""
+    error_log_file = "/var/log/meshtasticd-installer-error.log"
+
+    if os.path.exists(error_log_file):
+        console.print(f"\n[red bold]Installation Error Log[/red bold]\n")
+
+        # Check file size
+        file_size = os.path.getsize(error_log_file)
+
+        if file_size == 0:
+            console.print("[green]No errors logged - installation has been successful![/green]")
+            return
+
+        try:
+            # Read the entire error log
+            with open(error_log_file, 'r') as f:
+                error_content = f.read()
+
+            from rich.panel import Panel
+            from rich.syntax import Syntax
+
+            # Show last 100 lines to avoid overwhelming output
+            lines = error_content.split('\n')
+            if len(lines) > 100:
+                display_content = '\n'.join(lines[-100:])
+                console.print(f"[dim]Showing last 100 lines (file has {len(lines)} total lines)[/dim]\n")
+            else:
+                display_content = error_content
+
+            console.print(Panel(
+                display_content,
+                title="[red]Error Details[/red]",
+                border_style="red",
+                expand=False
+            ))
+
+            console.print(f"\n[dim]Full error log location: {error_log_file}[/dim]")
+            console.print(f"[dim]File size: {file_size} bytes[/dim]")
+
+            # Offer to clear the log
+            from rich.prompt import Confirm
+            if Confirm.ask("\n[yellow]Clear error log?[/yellow]", default=False):
+                try:
+                    with open(error_log_file, 'w') as f:
+                        f.write("")
+                    console.print("[green]Error log cleared[/green]")
+                except Exception as e:
+                    console.print(f"[red]Failed to clear log: {e}[/red]")
+
+        except Exception as e:
+            console.print(f"[red]Error reading error log file: {e}[/red]")
+    else:
+        console.print("\n[green]No error log found - no errors have been recorded![/green]")
+        console.print("[dim]Error log will be created if installation fails[/dim]")
 
 
 def test_service():

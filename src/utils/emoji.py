@@ -18,6 +18,10 @@ class EmojiHelper:
         ssh_connection = os.environ.get('SSH_CONNECTION', '')
         ssh_tty = os.environ.get('SSH_TTY', '')
 
+        # Force enable if explicitly requested
+        if os.environ.get('ENABLE_EMOJI', '').lower() in ('1', 'true', 'yes'):
+            return True
+
         # Disable emojis if explicitly requested
         if os.environ.get('DISABLE_EMOJI', '').lower() in ('1', 'true', 'yes'):
             return False
@@ -31,9 +35,9 @@ class EmojiHelper:
             with open('/etc/os-release', 'r') as f:
                 os_release = f.read().lower()
                 if 'raspbian' in os_release or 'raspberry' in os_release:
-                    # Default to ASCII on Raspberry Pi OS
+                    # Default to ASCII on Raspberry Pi OS unless forced
                     return False
-        except:
+        except (FileNotFoundError, PermissionError, OSError):
             pass
 
         # Basic terminals that don't render emojis well

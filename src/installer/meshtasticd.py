@@ -3,7 +3,9 @@
 import os
 import subprocess
 from pathlib import Path
+from datetime import datetime
 from rich.console import Console
+from rich.panel import Panel
 
 from utils.system import (
     get_system_info,
@@ -17,6 +19,10 @@ from utils.logger import log, log_command, log_exception
 
 console = Console()
 
+# Log file location
+INSTALL_LOG = Path('/var/log/meshtasticd-installer.log')
+ERROR_LOG = Path('/var/log/meshtasticd-installer-error.log')
+
 
 class MeshtasticdInstaller:
     """Handles meshtasticd installation and updates"""
@@ -26,6 +32,56 @@ class MeshtasticdInstaller:
         self.os_type = get_os_type()
         self.scripts_dir = Path(__file__).parent.parent.parent / 'scripts'
         self.templates_dir = Path(__file__).parent.parent.parent / 'templates'
+
+    def _log_error(self, error_msg, stderr='', stdout=''):
+        """Log detailed error information to error log file"""
+        try:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            with open(ERROR_LOG, 'a') as f:
+                f.write(f"\n{'='*80}\n")
+                f.write(f"Timestamp: {timestamp}\n")
+                f.write(f"Error: {error_msg}\n")
+                if stdout:
+                    f.write(f"\nStdout:\n{stdout}\n")
+                if stderr:
+                    f.write(f"\nStderr:\n{stderr}\n")
+                f.write(f"{'='*80}\n")
+        except Exception as e:
+            log(f"Failed to write error log: {e}", 'error')
+
+    def _detect_error_type(self, stderr, stdout):
+        """Detect common error patterns and provide helpful suggestions"""
+        combined_output = f"{stderr}\n{stdout}".lower()
+
+        suggestions = []
+
+        # Packaging/pip errors
+        if 'packaging' in combined_output and 'uninstall' in combined_output:
+            suggestions.append("Python packaging conflict detected. Try:")
+            suggestions.append("  sudo apt-get remove --purge python3-packaging")
+            suggestions.append("  sudo python3 -m pip install --upgrade --force-reinstall packaging")
+
+        # Disk space errors
+        if 'no space left' in combined_output or 'disk full' in combined_output:
+            suggestions.append("Insufficient disk space. Free up space with:")
+            suggestions.append("  sudo apt-get clean")
+            suggestions.append("  sudo apt-get autoremove")
+
+        # Network/repository errors
+        if 'unable to fetch' in combined_output or 'failed to fetch' in combined_output:
+            suggestions.append("Repository access failed. Try:")
+            suggestions.append("  sudo apt-get update")
+            suggestions.append("  Check your internet connection")
+
+        # Permission errors
+        if 'permission denied' in combined_output:
+            suggestions.append("Permission error. Make sure you're running with sudo")
+
+        # GPG key errors
+        if 'gpg' in combined_output or 'key' in combined_output:
+            suggestions.append("GPG key issue. The repository key may need updating.")
+
+        return suggestions
 
     def check_prerequisites(self):
         """Check if system meets prerequisites"""
@@ -98,22 +154,26 @@ class MeshtasticdInstaller:
         """Install on 32-bit Raspberry Pi OS"""
         log("Installing on armhf (32-bit)")
         console.print("\n[cyan]Installing for 32-bit Raspberry Pi OS...[/cyan]")
+        console.print("[dim]Streaming installation output...[/dim]\n")
 
         script_path = self.scripts_dir / 'install_armhf.sh'
 
         if not script_path.exists():
-            console.print(f"[bold red]Installation script not found: {script_path}[/bold red]")
+            error_msg = f"Installation script not found: {script_path}"
+            console.print(f"[bold red]{error_msg}[/bold red]")
+            self._log_error(error_msg)
             return False
 
         # Make script executable
         os.chmod(script_path, 0o755)
 
-        # Run installation script (using list form to avoid shell injection)
-        result = run_command(['bash', str(script_path), version_type])
+        # Run installation script with streaming output for better user feedback
+        console.print("[dim]Running installation script (this may take a few minutes)...[/dim]\n")
+        result = run_command(['bash', str(script_path), version_type], stream_output=True)
         log_command(f'bash {script_path}', result)
 
         if result['success']:
-            console.print("\n[bold green]Installation completed successfully![/bold green]")
+            console.print("\n[bold green]✓ Installation completed successfully![/bold green]")
 
             # Setup permissions
             self._setup_permissions()
@@ -123,37 +183,62 @@ class MeshtasticdInstaller:
 
             # Enable and start service
             if self._setup_service():
-                console.print("[bold green]Service enabled and started[/bold green]")
+                console.print("[bold green]✓ Service enabled and started[/bold green]")
             else:
-                console.print("[bold yellow]Service setup had issues (check logs)[/bold yellow]")
+                console.print("[bold yellow]⚠ Service setup had issues (check logs)[/bold yellow]")
 
             return True
         else:
-            console.print("\n[bold red]Installation failed![/bold red]")
+            # Log detailed error information
+            error_msg = "Installation script failed"
+            self._log_error(error_msg, result.get('stderr', ''), result.get('stdout', ''))
+
+            # Detect and display error type with suggestions
+            suggestions = self._detect_error_type(result.get('stderr', ''), result.get('stdout', ''))
+
+            console.print("\n[bold red]✗ Installation failed![/bold red]")
+
             if result['stderr']:
-                console.print(f"Error: {result['stderr']}")
+                console.print(Panel(
+                    result['stderr'][-500:],  # Show last 500 chars of error
+                    title="[red]Error Output[/red]",
+                    border_style="red"
+                ))
+
+            if suggestions:
+                console.print("\n[bold yellow]Troubleshooting Suggestions:[/bold yellow]")
+                for suggestion in suggestions:
+                    console.print(f"  {suggestion}")
+
+            console.print(f"\n[dim]Full error log saved to: {ERROR_LOG}[/dim]")
+            console.print(f"[dim]Installation log: {INSTALL_LOG}[/dim]")
+
             return False
 
     def _install_arm64(self, version_type):
         """Install on 64-bit Raspberry Pi OS"""
         log("Installing on arm64 (64-bit)")
         console.print("\n[cyan]Installing for 64-bit Raspberry Pi OS...[/cyan]")
+        console.print("[dim]Streaming installation output...[/dim]\n")
 
         script_path = self.scripts_dir / 'install_arm64.sh'
 
         if not script_path.exists():
-            console.print(f"[bold red]Installation script not found: {script_path}[/bold red]")
+            error_msg = f"Installation script not found: {script_path}"
+            console.print(f"[bold red]{error_msg}[/bold red]")
+            self._log_error(error_msg)
             return False
 
         # Make script executable
         os.chmod(script_path, 0o755)
 
-        # Run installation script (using list form to avoid shell injection)
-        result = run_command(['bash', str(script_path), version_type])
+        # Run installation script with streaming output for better user feedback
+        console.print("[dim]Running installation script (this may take a few minutes)...[/dim]\n")
+        result = run_command(['bash', str(script_path), version_type], stream_output=True)
         log_command(f'bash {script_path}', result)
 
         if result['success']:
-            console.print("\n[bold green]Installation completed successfully![/bold green]")
+            console.print("\n[bold green]✓ Installation completed successfully![/bold green]")
 
             # Setup permissions
             self._setup_permissions()
@@ -163,15 +248,36 @@ class MeshtasticdInstaller:
 
             # Enable and start service
             if self._setup_service():
-                console.print("[bold green]Service enabled and started[/bold green]")
+                console.print("[bold green]✓ Service enabled and started[/bold green]")
             else:
-                console.print("[bold yellow]Service setup had issues (check logs)[/bold yellow]")
+                console.print("[bold yellow]⚠ Service setup had issues (check logs)[/bold yellow]")
 
             return True
         else:
-            console.print("\n[bold red]Installation failed![/bold red]")
+            # Log detailed error information
+            error_msg = "Installation script failed"
+            self._log_error(error_msg, result.get('stderr', ''), result.get('stdout', ''))
+
+            # Detect and display error type with suggestions
+            suggestions = self._detect_error_type(result.get('stderr', ''), result.get('stdout', ''))
+
+            console.print("\n[bold red]✗ Installation failed![/bold red]")
+
             if result['stderr']:
-                console.print(f"Error: {result['stderr']}")
+                console.print(Panel(
+                    result['stderr'][-500:],  # Show last 500 chars of error
+                    title="[red]Error Output[/red]",
+                    border_style="red"
+                ))
+
+            if suggestions:
+                console.print("\n[bold yellow]Troubleshooting Suggestions:[/bold yellow]")
+                for suggestion in suggestions:
+                    console.print(f"  {suggestion}")
+
+            console.print(f"\n[dim]Full error log saved to: {ERROR_LOG}[/dim]")
+            console.print(f"[dim]Installation log: {INSTALL_LOG}[/dim]")
+
             return False
 
     def _setup_permissions(self):
