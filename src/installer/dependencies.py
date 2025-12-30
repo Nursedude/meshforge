@@ -153,7 +153,7 @@ class DependencyManager:
         """Install missing Python packages"""
         console.print("\n[cyan]Installing missing Python packages...[/cyan]")
 
-        result = run_command('pip3 install --upgrade meshtastic click rich pyyaml requests packaging psutil distro python-dotenv')
+        result = run_command('pip3 install --upgrade --break-system-packages meshtastic click rich pyyaml requests packaging psutil distro python-dotenv')
         log_command('pip3 install packages', result)
 
         if result['success']:

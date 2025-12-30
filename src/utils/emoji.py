@@ -13,17 +13,16 @@ class EmojiHelper:
     def _detect_emoji_support(self):
         """Detect if terminal supports emoji
 
-        Emojis are DISABLED by default for better CLI compatibility.
-        Only enable if explicitly requested via ENABLE_EMOJI=true
+        Emojis are ENABLED by default for better visual experience.
+        Can be disabled via DISABLE_EMOJI=true environment variable
         """
-        # Force enable ONLY if explicitly requested
-        if os.environ.get('ENABLE_EMOJI', '').lower() in ('1', 'true', 'yes'):
-            return True
+        # Allow explicit disable if requested
+        if os.environ.get('DISABLE_EMOJI', '').lower() in ('1', 'true', 'yes'):
+            return False
 
-        # Everything else: DISABLED by default
-        # Emojis render poorly in most terminals, especially over SSH
-        # Use ASCII fallbacks for consistent, readable output
-        return False
+        # Emojis enabled by default for better UI
+        # Fallbacks are available for terminals without emoji support
+        return True
 
     # Emoji mappings with ASCII fallbacks
     EMOJI_MAP = {
