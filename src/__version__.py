@@ -1,11 +1,22 @@
 """Version information for Meshtasticd Interactive Installer"""
 
-__version__ = "2.1.1"
-__version_info__ = (2, 1, 1)
+__version__ = "2.1.2"
+__version_info__ = (2, 1, 2)
 __release_date__ = "2025-12-30"
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "2.1.2",
+        "date": "2025-12-30",
+        "changes": [
+            "Added interactive config.yaml editor (option 7 in main menu)",
+            "Simplified emoji detection - uses stdout UTF-8 encoding",
+            "All menus now have Back option to return to previous menu",
+            "Main menu reorganized: d for Debug menu",
+            "Config editor supports: LoRa, GPS, I2C, Display, Logging, Webserver, General"
+        ]
+    },
     {
         "version": "2.1.1",
         "date": "2025-12-30",

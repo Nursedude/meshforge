@@ -14,52 +14,36 @@ class EmojiHelper:
         """Detect if terminal supports emoji
 
         Emojis are ENABLED by default for better visual experience.
-        Can be disabled via DISABLE_EMOJI=true environment variable
+        Use DISABLE_EMOJI=true to force ASCII mode.
+        Use ENABLE_EMOJI=true to force emoji mode.
         """
         # Allow explicit disable if requested
         if os.environ.get('DISABLE_EMOJI', '').lower() in ('1', 'true', 'yes'):
             return False
 
-        # Check for explicit enable
+        # Allow explicit enable - overrides all other checks
         if os.environ.get('ENABLE_EMOJI', '').lower() in ('1', 'true', 'yes'):
             return True
 
-        # Check if running on Raspberry Pi with a local console
-        # The 'linux' terminal on Pi often supports UTF-8/emoji
-        if self._is_raspberry_pi_console():
-            return True
-
-        # Check for SSH connections
-        if os.environ.get('SSH_CONNECTION'):
-            # SSH connections may have issues with emojis
-            # But allow override with ENABLE_EMOJI=true
-            return False
-
-        # Check for minimum terminal capability
-        term = os.environ.get('TERM', 'xterm').lower()
-        # Disable only on truly limited terminals
-        if term in ('dumb', 'vt100', 'vt220'):
-            return False
-
-        # Enable by default for modern terminals (including 'linux' on Pi)
-        return True
-
-    def _is_raspberry_pi_console(self):
-        """Check if running on Raspberry Pi local console"""
+        # Check stdout encoding - if it supports UTF-8, enable emojis
         try:
-            # Check if this is a Raspberry Pi
-            if os.path.exists('/proc/device-tree/model'):
-                with open('/proc/device-tree/model', 'r') as f:
-                    model = f.read().lower()
-                    if 'raspberry' in model:
-                        # Check if locale supports UTF-8
-                        import locale
-                        encoding = locale.getpreferredencoding(False)
-                        if encoding and 'utf' in encoding.lower():
-                            return True
+            encoding = getattr(sys.stdout, 'encoding', None)
+            if encoding and 'utf' in encoding.lower():
+                return True
         except Exception:
             pass
-        return False
+
+        # Check for SSH connections - disable by default (can override with ENABLE_EMOJI)
+        if os.environ.get('SSH_CONNECTION'):
+            return False
+
+        # Check terminal type - disable only for truly limited terminals
+        term = os.environ.get('TERM', '').lower()
+        if term in ('dumb', 'vt100', 'vt220', ''):
+            return False
+
+        # Enable by default for all other cases
+        return True
 
     # Emoji mappings with ASCII fallbacks
     EMOJI_MAP = {

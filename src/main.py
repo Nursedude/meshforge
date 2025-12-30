@@ -135,17 +135,18 @@ def interactive_menu():
         console.print(f"  [bold]4[/bold]. {em.get('⚙️')}  Configure device")
         console.print(f"  [bold]5[/bold]. {em.get('📻')} [yellow]Channel Presets[/yellow] [dim](Quick Setup)[/dim]")
         console.print(f"  [bold]6[/bold]. {em.get('📋')} Configuration Templates")
+        console.print(f"  [bold]7[/bold]. {em.get('📝')} [green]Edit config.yaml[/green] [dim](Detailed)[/dim]")
 
         # System Section
         console.print("\n[dim cyan]── System ──[/dim cyan]")
-        console.print(f"  [bold]7[/bold]. {em.get('🔍')} Check dependencies")
-        console.print(f"  [bold]8[/bold]. {em.get('🔌')} Hardware detection")
-        console.print(f"  [bold]9[/bold]. {em.get('🐛')} Debug & troubleshooting")
+        console.print(f"  [bold]8[/bold]. {em.get('🔍')} Check dependencies")
+        console.print(f"  [bold]9[/bold]. {em.get('🔌')} Hardware detection")
+        console.print(f"  [bold]d[/bold]. {em.get('🐛')} Debug & troubleshooting")
 
         console.print(f"\n  [bold]0[/bold]. {em.get('🚪')} Exit")
         console.print(f"  [bold]?[/bold]. {em.get('❓')} Help")
 
-        choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "?"], default="1")
+        choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "d", "?"], default="1")
 
         if choice == "1":
             show_dashboard()
@@ -160,10 +161,12 @@ def interactive_menu():
         elif choice == "6":
             manage_templates()
         elif choice == "7":
-            check_dependencies()
+            edit_config_yaml()
         elif choice == "8":
-            detect_hardware()
+            check_dependencies()
         elif choice == "9":
+            detect_hardware()
+        elif choice == "d":
             debug_menu()
         elif choice == "?":
             show_help()
@@ -217,6 +220,14 @@ def show_help():
 """
     console.print(Panel(help_content, title=f"[bold cyan]{em.get('❓')} Help[/bold cyan]", border_style="cyan", box=ROUNDED))
     Prompt.ask("\n[dim]Press Enter to return to menu[/dim]")
+
+
+def edit_config_yaml():
+    """Interactive config.yaml editor"""
+    from config.yaml_editor import ConfigYamlEditor
+
+    editor = ConfigYamlEditor()
+    editor.interactive_menu()
 
 
 def configure_channel_presets():
