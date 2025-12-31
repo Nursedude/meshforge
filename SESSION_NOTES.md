@@ -1,6 +1,6 @@
 # Meshtasticd Installer - Development Session Notes
 
-## Session Date: 2025-12-31 (v3.0.4)
+## Session Date: 2025-12-31 (v3.0.5)
 
 ### Branch: `claude/review-meshtasticd-installer-52ENu`
 ### PR: https://github.com/Nursedude/Meshtasticd_interactive_UI/pull/37
@@ -9,42 +9,48 @@
 
 ## PERPETUAL MEMORY - Pick Up Here
 
-### ✅ COMPLETED This Session (v3.0.4)
+### ✅ COMPLETED This Session (v3.0.5)
 
-1. **Uninstaller** (`src/installer/uninstaller.py`)
+1. **Emoji Font Detection** (`src/utils/emoji.py`)
+   - NEW: Checks if `fonts-noto-color-emoji` is installed
+   - NEW: `check_emoji_status()` returns detailed support info
+   - NEW: `setup_emoji_support()` shows status and fix instructions
+   - NEW: `install_emoji_fonts()` helper for RPi
+   - NEW: Debug menu option 9 for emoji diagnostics
+   - FIX: Emojis only enabled when proper fonts are installed
+   - FIX: SSH sessions properly detect font availability
+   - To enable: `sudo apt install fonts-noto-color-emoji && fc-cache -f`
+
+2. **Uninstaller** (`src/installer/uninstaller.py`)
    - NEW: Interactive uninstall menu (option 'u' in main menu)
    - Detects installed components (service, package, config, symlinks, logs)
    - Prompts for each component removal
    - Creates backup before removing config files
    - Removes: service, package, config, symlinks, user prefs, logs
 
-2. **Progress Indicators** (`src/utils/progress.py`)
+3. **Progress Indicators** (`src/utils/progress.py`)
    - `run_with_progress()` - Spinner for simple commands
    - `run_with_live_progress()` - Progress bar with apt-get parsing
    - `multi_step_progress()` - Multi-step installation tracking
    - `InstallProgress` - Context manager for custom progress
 
-3. **Launcher Saves UI Preference** (`src/launcher.py`)
+4. **Launcher Saves UI Preference** (`src/launcher.py`)
    - Saves to ~/.config/meshtasticd-installer/preferences.json
    - Auto-launches saved preference (with dependency check)
    - Press 's' to save preference, 'c' to clear
    - Use `--wizard` flag to force wizard and reset
    - Shows [saved] marker on saved preference in menu
 
-4. **Edit Existing Channels** (`src/config/lora.py`)
+5. **Edit Existing Channels** (`src/config/lora.py`)
    - New menu option "Edit Existing Channel"
    - Pre-fills current values when editing
    - Shows [current] markers on role options
    - "Keep current PSK" option when editing
 
-5. **Consistent Menu Navigation**
+6. **Consistent Menu Navigation**
    - All menus now use `m` for Main Menu
    - All menus have `0` for Back
    - Region selection updated with back/menu options
-
-6. **Improved Emoji Detection** (`src/utils/emoji.py`)
-   - Better SSH terminal detection
-   - Checks locale for UTF-8 support
 
 ### ✅ COMPLETED Previously (v3.0.2)
 
@@ -61,7 +67,8 @@
 1. ~~**UI Selection Not Working**~~ - ✅ FIXED: Launcher now saves preference
 2. ~~**Add Uninstaller Option**~~ - ✅ DONE: `src/installer/uninstaller.py` + main menu 'u'
 3. ~~**Progress Indicators**~~ - ✅ DONE: `src/utils/progress.py`
-4. **Device Configuration Wizard** - May need more back options
+4. ~~**Emoji Issues**~~ - ✅ DONE: Font detection + diagnostic in Debug menu
+5. **Device Configuration Wizard** - May need more back options
 
 ---
 
@@ -160,20 +167,20 @@ sudo python3 src/main.py        # Rich CLI
 claude/review-meshtasticd-installer-52ENu
 
 # Last commits (as of 2025-12-31)
+ee525cc v3.0.5: Improved emoji detection with font checking
+f09a956 docs: Update session notes for v3.0.4 release
 234a62a v3.0.4: Uninstaller, progress indicators, launcher preferences
 b06495a feat: Add progress indicator utilities
 3ab4a8b feat: Add uninstaller functionality
-96b4efb docs: Update README and session notes with launcher preference feature
-e21ccbd feat: Launcher saves UI preference with auto-launch option
-4d38c37 v3.0.3: Edit existing channels, consistent navigation, better emoji detection
 
-# PR Status: ✅ PUSHED & READY FOR MERGE - v3.0.4 with uninstaller + progress
+# PR Status: ✅ PUSHED & READY FOR MERGE - v3.0.5 with emoji font detection
 ```
 
 ---
 
 ## Version History
 
+- **v3.0.5** (2025-12-31) - Emoji font detection, diagnostic in Debug menu
 - **v3.0.4** (2025-12-31) - Uninstaller, progress indicators, launcher preferences
 - **v3.0.3** (2025-12-31) - Edit channels, consistent navigation, emoji detection
 - **v3.0.2** (2025-12-31) - Channel config, CLI auto-install, PSK generation
@@ -186,7 +193,7 @@ e21ccbd feat: Launcher saves UI preference with auto-launch option
 
 - GitHub: https://github.com/Nursedude/Meshtasticd_interactive_UI
 - Branch: claude/review-meshtasticd-installer-52ENu
-- PR #37: ✅ Pushed & ready for merge (v3.0.4 - uninstaller + progress indicators)
+- PR #37: ✅ Pushed & ready for merge (v3.0.5 - emoji font detection)
 
 ---
 
