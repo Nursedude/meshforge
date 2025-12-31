@@ -863,9 +863,16 @@ class LoRaConfigurator:
                         console.print(f"[yellow]  Warning: Could not set name[/yellow]")
                         success = False
 
-                # Set PSK
+                # Set PSK - meshtastic CLI format: "base64:XXX", "random", "none", "default"
                 if psk:
-                    psk_value = psk if psk else "none"
+                    if psk == "AQ==":
+                        psk_value = "default"
+                    elif psk == "":
+                        psk_value = "none"
+                    else:
+                        # Use base64 prefix for custom PSK
+                        psk_value = f"base64:{psk}"
+
                     result = subprocess.run(
                         [meshtastic_cmd, '--host', 'localhost',
                          '--ch-index', str(idx), '--ch-set', 'psk', psk_value],
@@ -875,28 +882,40 @@ class LoRaConfigurator:
                         psk_display = "default" if psk == "AQ==" else "custom" if psk else "none"
                         console.print(f"[green]  PSK: {psk_display}[/green]")
                     else:
-                        console.print(f"[yellow]  Warning: Could not set PSK[/yellow]")
+                        console.print(f"[yellow]  Warning: Could not set PSK - {result.stderr.strip() if result.stderr else 'unknown error'}[/yellow]")
                         success = False
 
                 # Set uplink enabled
-                if uplink:
-                    result = subprocess.run(
-                        [meshtastic_cmd, '--host', 'localhost',
-                         '--ch-index', str(idx), '--ch-set', 'uplink_enabled', 'true'],
-                        capture_output=True, text=True, timeout=30
-                    )
-                    if result.returncode == 0:
-                        console.print(f"[green]  MQTT Uplink: enabled[/green]")
+                result = subprocess.run(
+                    [meshtastic_cmd, '--host', 'localhost',
+                     '--ch-index', str(idx), '--ch-set', 'uplink_enabled', 'true' if uplink else 'false'],
+                    capture_output=True, text=True, timeout=30
+                )
+                if result.returncode == 0:
+                    console.print(f"[green]  MQTT Uplink: {'enabled' if uplink else 'disabled'}[/green]")
 
                 # Set downlink enabled
-                if downlink:
+                result = subprocess.run(
+                    [meshtastic_cmd, '--host', 'localhost',
+                     '--ch-index', str(idx), '--ch-set', 'downlink_enabled', 'true' if downlink else 'false'],
+                    capture_output=True, text=True, timeout=30
+                )
+                if result.returncode == 0:
+                    console.print(f"[green]  MQTT Downlink: {'enabled' if downlink else 'disabled'}[/green]")
+
+                # Set position precision if specified
+                position_precision = channel.get('position_precision')
+                if position_precision is not None:
                     result = subprocess.run(
                         [meshtastic_cmd, '--host', 'localhost',
-                         '--ch-index', str(idx), '--ch-set', 'downlink_enabled', 'true'],
+                         '--ch-index', str(idx), '--ch-set', 'module_settings.position_precision', str(position_precision)],
                         capture_output=True, text=True, timeout=30
                     )
                     if result.returncode == 0:
-                        console.print(f"[green]  MQTT Downlink: enabled[/green]")
+                        precision_names = {0: "Disabled", 32: "Low", 16: "Medium", 13: "High", 12: "Full"}
+                        console.print(f"[green]  Position Precision: {precision_names.get(position_precision, position_precision)}[/green]")
+                    else:
+                        console.print(f"[yellow]  Warning: Could not set position precision[/yellow]")
 
             except subprocess.TimeoutExpired:
                 console.print(f"[red]Timeout configuring channel {idx}[/red]")
@@ -1115,6 +1134,30 @@ class LoRaConfigurator:
             channel['uplink_enabled'] = False
             channel['downlink_enabled'] = False
 
+        # --- POSITION PRECISION (Location Sharing) ---
+        console.print("\n[bold]5. Position Precision (Location Sharing)[/bold]")
+        console.print("[dim]Controls how precisely your location is shared on this channel[/dim]\n")
+
+        console.print("  [bold]1[/bold]. Disabled - No location sharing")
+        console.print("  [bold]2[/bold]. Low (32 bits) - ~1.1km accuracy")
+        console.print("  [bold]3[/bold]. Medium (16 bits) - ~350m accuracy [green](default)[/green]")
+        console.print("  [bold]4[/bold]. High (13 bits) - ~100m accuracy")
+        console.print("  [bold]5[/bold]. Full (12 bits) - ~50m accuracy")
+        console.print("\n  [bold]0[/bold]. Skip (use device default)")
+
+        precision_choice = Prompt.ask("\n[cyan]Select precision[/cyan]",
+                                       choices=["0", "1", "2", "3", "4", "5"], default="0")
+
+        precision_map = {
+            "0": None,      # Skip/default
+            "1": 0,         # Disabled
+            "2": 32,        # Low
+            "3": 16,        # Medium (default)
+            "4": 13,        # High
+            "5": 12         # Full
+        }
+        channel['position_precision'] = precision_map.get(precision_choice)
+
         # --- SUMMARY ---
         console.print("\n[bold cyan]Channel Configuration Summary:[/bold cyan]")
         console.print(f"  Slot: {slot}")
@@ -1124,6 +1167,9 @@ class LoRaConfigurator:
         console.print(f"  PSK:  {psk_display or '(none)'}")
         if channel.get('uplink_enabled') or channel.get('downlink_enabled'):
             console.print(f"  MQTT: Uplink={channel['uplink_enabled']}, Downlink={channel['downlink_enabled']}")
+        if channel.get('position_precision') is not None:
+            precision_names = {0: "Disabled", 32: "Low", 16: "Medium", 13: "High", 12: "Full"}
+            console.print(f"  Location: {precision_names.get(channel['position_precision'], channel['position_precision'])}")
 
         if Confirm.ask("\n[cyan]Accept this configuration?[/cyan]", default=True):
             console.print(f"\n[green]Channel {slot} configured successfully![/green]")
@@ -1138,11 +1184,14 @@ class LoRaConfigurator:
             return
 
         table = Table(title="Channel Summary", show_header=True, header_style="bold magenta")
-        table.add_column("Slot", style="cyan", width=6)
-        table.add_column("Name", style="green", width=16)
-        table.add_column("Role", style="yellow", width=12)
-        table.add_column("PSK", style="dim", width=16)
-        table.add_column("MQTT", style="blue", width=12)
+        table.add_column("Slot", style="cyan", width=4)
+        table.add_column("Name", style="green", width=14)
+        table.add_column("Role", style="yellow", width=10)
+        table.add_column("PSK", style="dim", width=10)
+        table.add_column("MQTT", style="blue", width=10)
+        table.add_column("Location", style="magenta", width=8)
+
+        precision_names = {0: "Off", 32: "Low", 16: "Med", 13: "High", 12: "Full", None: "-"}
 
         for idx, ch in enumerate(channels):
             slot = ch.get('index', idx)
@@ -1151,12 +1200,15 @@ class LoRaConfigurator:
             mqtt_info = ""
             if ch.get('uplink_enabled') or ch.get('downlink_enabled'):
                 up = "Up" if ch.get('uplink_enabled') else ""
-                down = "Down" if ch.get('downlink_enabled') else ""
+                down = "Dn" if ch.get('downlink_enabled') else ""
                 mqtt_info = f"{up}/{down}".strip("/")
             psk = ch.get('psk', 'default')
             # Truncate PSK for display
-            psk_display = psk[:15] + "..." if len(psk) > 15 else psk
-            table.add_row(str(slot), ch.get('name', 'Unnamed'), role, psk_display, mqtt_info or "-")
+            psk_display = "custom" if psk and psk != "AQ==" else "default" if psk == "AQ==" else "none"
+            # Position precision
+            pos_prec = ch.get('position_precision')
+            pos_display = precision_names.get(pos_prec, str(pos_prec) if pos_prec else "-")
+            table.add_row(str(slot), ch.get('name', 'Unnamed'), role, psk_display, mqtt_info or "-", pos_display)
 
         console.print("\n")
         console.print(table)
