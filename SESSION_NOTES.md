@@ -1,150 +1,187 @@
 # Meshtasticd Installer - Development Session Notes
 
-## Session Date: 2025-12-30/31
+## Session Date: 2025-12-30/31 (Updated)
 
 ### Branch: `claude/review-meshtasticd-installer-52ENu`
+### PR: https://github.com/Nursedude/Meshtasticd_interactive_UI/pull/36
 
 ---
 
-## Summary of Changes (v3.0.1)
+## PERPETUAL MEMORY - Pick Up Here
 
-### New Features Added
-1. **Launcher Wizard** (`src/launcher.py`)
-   - Detects environment (display, SSH, GTK4/Textual availability)
-   - Recommends best interface based on environment
-   - Offers to install missing dependencies
-   - Launches selected UI (GTK4, TUI, or CLI)
+### ✅ COMPLETED This Session
 
-### Bug Fixes
-1. **GTK4 Log Following** (`src/gtk_ui/panels/service.py`)
-   - Fixed `--since` parameter: was `-1h`, now `"1 hour ago"`
-   - Added auto-scroll to bottom when logs update
+1. **Modem Presets Updated** (`src/config/lora.py`)
+   - Added SHORT_TURBO with legal warning (500kHz)
+   - Reordered: Fastest → Slowest (official Meshtastic order)
+   - Order: SHORT_TURBO → SHORT_FAST → SHORT_SLOW → MEDIUM_FAST → MEDIUM_SLOW → LONG_FAST → LONG_MODERATE → LONG_SLOW → VERY_LONG_SLOW
+   - Added back options (0, m) to preset selection
 
-2. **TUI Log Following** (`src/tui/app.py`)
-   - Added `start_following()` and `stop_following()` methods
-   - Added "Stop Follow" button that toggles with "Follow Logs"
-   - Worker refreshes every 2 seconds while following
-
-3. **Channel Configuration** (`src/config/lora.py`)
-   - Complete rewrite of `configure_channels()`
-   - Now has interactive menu with options 1-5
+2. **Channel Configuration Rewritten** (`src/config/lora.py`)
+   - Full interactive menu with back navigation
+   - Options: Primary, Secondary, View, Clear, Save
    - Back (0) and Main Menu (m) options
-   - Can configure primary, add secondary, view summary, clear all
 
-4. **pip Install for RPi** (`src/main_tui.py`, `src/main_gtk.py`)
-   - Uses `--break-system-packages` flag
-   - Offers sudo option for installation
-   - Better error messages
+3. **Goodbye Message Changed**
+   - Now says "A Hui Hou! Happy meshing!" (was "Goodbye!")
 
-5. **Meshtastic CLI Detection**
-   - Checks multiple paths: `meshtastic`, `/root/.local/bin/meshtastic`,
-     `/home/pi/.local/bin/meshtastic`, `~/.local/bin/meshtastic`
-   - Offers to install via pipx if not found
+4. **Launcher Wizard** (`src/launcher.py`)
+   - Environment detection (display, GTK4, Textual)
+   - Interface selection with recommendations
 
-### UI Improvements
-1. **Main Menu Shortcuts** (`src/main.py`)
-   - Changed exit from `0` to `q`
-   - Help is `?`
-   - More intuitive keyboard navigation
+5. **Log Following Fixed**
+   - GTK4: Fixed journalctl --since format, auto-scroll
+   - TUI: Added start/stop toggle
 
-2. **install.sh Updates**
-   - Now launches `launcher.py` by default
-   - Creates both `meshtasticd-installer` (wizard) and `meshtasticd-cli` (direct CLI)
-   - Shows v3.0.1 in banner
+### ⏳ STILL PENDING (For Wednesday)
+
+1. **Add back options to ALL menus** - Many submenus still missing
+   - Region selection (line-by-line, no back)
+   - Device configuration wizard
+   - Template manager
+   - Check all Prompt.ask() calls
+
+2. **Remove MeshAdv-Mini 400MHz variant** - Find and remove this option
+
+3. **Service Management Live Logs** - User reports logs not updating, can't quit
+
+4. **UI Selection Not Working** - "Same look every time" - investigate launcher
+
+5. **Add Uninstaller Option** - Create uninstall functionality
+
+6. **Progress Indicators** - Show progress during installs/updates
 
 ---
 
-## Files Modified
+## User's Exact Feedback (Verbatim)
+
+```
+- always have a back option and back to main option in a menu
+- verify UI interface is working as expected
+- pip install --break-system-packages textual for RPI
+- provide sudo as an option when you have pip install textual
+- check and verify if the meshtastic cli is installed
+- emojis not working (less priority)
+- error checking and version control, test and push to repo
+
+PR #36 issues:
+- Presets: SHORT_TURBO, SHORT_FAST, SHORT_SLOW, MEDIUM_FAST, MEDIUM_SLOW,
+  LONG_FAST (Default), LONG_MODERATE, LONG_SLOW, VERY_LONG_SLOW
+- Channel Configuration should be fully configurable
+- offer a back out quit instead of Aborted!
+- remove MeshAdv-Mini 400MHz variant
+- back button/main menu in every window
+- show progress of installs/updates
+- Region selection needs back option
+- goodbye should say "A Hui Hou! Happy meshing!"
+- Service Management live logs not updating, can't quit
+- UI selection not working (same look every time)
+- have an uninstaller option
+```
+
+---
+
+## Files Modified This Session
 
 | File | Changes |
 |------|---------|
-| `src/launcher.py` | **NEW** - Wizard interface selector |
-| `src/main.py` | Exit shortcut changed to `q` |
-| `src/main_gtk.py` | Added CLI detection with multiple paths |
-| `src/main_tui.py` | Added CLI detection, pip `--break-system-packages` |
-| `src/tui/app.py` | Log following with start/stop toggle |
+| `src/launcher.py` | NEW - Wizard interface selector |
+| `src/main.py` | Exit=q, goodbye="A Hui Hou!" |
+| `src/main_gtk.py` | CLI detection |
+| `src/main_tui.py` | CLI detection, pip --break-system-packages |
+| `src/tui/app.py` | Log following toggle |
 | `src/gtk_ui/panels/service.py` | Fixed journalctl, auto-scroll |
-| `src/config/lora.py` | Rewrote channel config with back options |
-| `src/__version__.py` | Bumped to 3.0.1 with changelog |
-| `install.sh` | Uses launcher wizard, creates both commands |
-| `README.md` | Updated to v3.0.1 |
+| `src/config/lora.py` | **MAJOR**: Presets reordered, SHORT_TURBO added, channel config rewrite |
+| `src/__version__.py` | v3.0.1 |
+| `install.sh` | Launcher wizard default |
+| `README.md` | v3.0.1 |
 
 ---
 
-## Testing Checklist
+## Code Locations for Pending Work
 
-### Launcher Wizard
-- [ ] `sudo meshtasticd-installer` shows wizard
-- [ ] Correctly detects display availability
-- [ ] Correctly detects GTK4 availability
-- [ ] Correctly detects Textual availability
-- [ ] Offers to install missing dependencies
-- [ ] Launches correct UI when selected
+### Back Options Needed
+- `src/config/device.py` - Device configuration wizard
+- `src/config/lora.py:configure_region()` - Region selection
+- `src/installer/meshtasticd.py` - Install process
+- Search: `Prompt.ask` without choices including "0" or "m"
 
-### GTK4 GUI
-- [ ] Service panel loads
-- [ ] "Fetch Logs" works
-- [ ] "Follow" toggle works (updates every 2s)
-- [ ] "Since" dropdown filters correctly
-- [ ] Logs auto-scroll to bottom
+### MeshAdv-Mini 400MHz
+- Search for "400MHz" or "MeshAdv-Mini 400" in templates/
 
-### Textual TUI
-- [ ] App launches without errors
-- [ ] Service tab works
-- [ ] "Follow Logs" / "Stop Follow" toggles
-- [ ] Logs refresh while following
+### Live Logs Fix
+- `src/services/service_manager.py` - Rich CLI service menu
+- `src/gtk_ui/panels/service.py` - GTK4 logs (partially fixed)
+- `src/tui/app.py` - TUI logs (partially fixed)
 
-### Rich CLI
-- [ ] Main menu displays correctly
-- [ ] `q` exits
-- [ ] `?` shows help
-- [ ] Channel config has back options (0, m)
-- [ ] All submenus have back navigation
-
-### Meshtastic CLI Detection
-- [ ] Detects if CLI is installed
-- [ ] Offers to install if missing
-- [ ] Works with pipx installation
+### Uninstaller
+- Create `src/installer/uninstaller.py`
+- Add option to main menu
 
 ---
 
-## Known Issues / TODO
-
-1. **Emojis** - May not display correctly on all terminals (low priority)
-2. **More menu back options** - Some submenus may still need review
-
----
-
-## Commands for Testing
+## Testing Commands
 
 ```bash
 # Switch to feature branch
 git checkout claude/review-meshtasticd-installer-52ENu
 
-# Run launcher wizard
+# Test launcher wizard
 sudo python3 src/launcher.py
 
-# Run specific UIs directly
+# Test specific UIs
 sudo python3 src/main_gtk.py    # GTK4
 sudo python3 src/main_tui.py    # Textual TUI
 sudo python3 src/main.py        # Rich CLI
+
+# Test modem preset selection
+# In Rich CLI: 6 → Channel Presets → should show new order
+
+# Test channel config
+# In Rich CLI: 5 → Configure device → should have back options
 ```
 
 ---
 
-## Git History
+## Git Status
 
-```
+```bash
+# Current branch
+claude/review-meshtasticd-installer-52ENu
+
+# Last commits
+28e1852 docs: Add session notes for development continuity
 cf43bd4 v3.0.1: Add launcher wizard, fix logging, improve navigation
-58ebf8d docs: Update README for v3.0.0 - GTK4 and Textual TUI
-c9e8a8d v3.0.0: GTK4 Graphical UI + Textual TUI for Headless Access (#34)
+
+# Uncommitted changes (as of session end):
+# - Modem presets update (SHORT_TURBO, order)
+# - Goodbye message change
 ```
 
 ---
 
-## Next Steps (Wednesday)
+## Version History
 
-1. Test all changes on actual Raspberry Pi
-2. Review any issues found during testing
-3. Merge to main if tests pass
-4. Consider additional improvements based on testing notes
+- **v3.0.1** (2025-12-30) - Launcher wizard, bug fixes, navigation improvements
+- **v3.0.0** (2025-12-30) - GTK4 GUI, Textual TUI, Config File Manager
+- **v2.3.0** - Config File Manager
+- **v2.2.0** - Service management, meshtastic CLI
+
+---
+
+## Contact / Collaboration
+
+- GitHub: https://github.com/Nursedude/Meshtasticd_interactive_UI
+- Branch: claude/review-meshtasticd-installer-52ENu
+- PR #36: Ready for review after Wednesday testing
+
+---
+
+## Resume Instructions
+
+When resuming:
+1. `git checkout claude/review-meshtasticd-installer-52ENu`
+2. `git status` to see any uncommitted work
+3. Review "STILL PENDING" section above
+4. Check user's testing notes
+5. Continue with pending items

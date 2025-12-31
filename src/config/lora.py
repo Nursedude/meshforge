@@ -73,58 +73,26 @@ class LoRaConfigurator:
     # Coding rates
     CODING_RATES = [5, 6, 7, 8]  # Represented as 4/5, 4/6, 4/7, 4/8
 
-    # Official Meshtastic Modem Presets
+    # Official Meshtastic Modem Presets (ordered Fastest to Slowest)
     MODEM_PRESETS = {
-        'LONG_FAST': {
-            'name': 'Long Fast',
-            'bandwidth': 250,
-            'spreading_factor': 11,
+        'SHORT_TURBO': {
+            'name': 'Short Turbo',
+            'bandwidth': 500,
+            'spreading_factor': 7,
             'coding_rate': 8,
-            'description': 'Long range, moderate speed',
-            'use_case': 'Best for most deployments, good range with acceptable speed',
-            'air_time': '~1.3s per message',
-            'range': 'Very Long (10-30+ km)',
-            'recommended_by': 'Default Meshtastic preset'
-        },
-        'LONG_MODERATE': {
-            'name': 'Long Moderate',
-            'bandwidth': 125,
-            'spreading_factor': 11,
-            'coding_rate': 8,
-            'description': 'Maximum range, slower speed',
-            'use_case': 'Maximum range when speed is not critical',
-            'air_time': '~2.6s per message',
-            'range': 'Maximum (15-40+ km)',
-            'recommended_by': 'For extreme range needs'
-        },
-        'MEDIUM_FAST': {
-            'name': 'Medium Fast',
-            'bandwidth': 250,
-            'spreading_factor': 10,
-            'coding_rate': 8,
-            'description': 'Balanced range and speed',
-            'use_case': 'Good for busy networks, faster than LongFast',
-            'air_time': '~0.65s per message',
-            'range': 'Medium-Long (5-20 km)',
-            'recommended_by': 'MtnMesh community standard (Oct 2025)'
-        },
-        'MEDIUM_SLOW': {
-            'name': 'Medium Slow',
-            'bandwidth': 125,
-            'spreading_factor': 10,
-            'coding_rate': 8,
-            'description': 'Medium range, better than MediumFast in congested areas',
-            'use_case': 'Good balance of range and reliability',
-            'air_time': '~1.3s per message',
-            'range': 'Medium-Long (5-20 km)',
-            'recommended_by': 'Alternative to MediumFast'
+            'description': 'Fastest, highest bandwidth, lowest airtime',
+            'use_case': 'Very high speed, very short range. Check local regulations!',
+            'air_time': '~0.04s per message',
+            'range': 'Very Short (<1 km)',
+            'recommended_by': 'Speed-critical, may be illegal in some regions (500kHz BW)',
+            'legal_warning': True
         },
         'SHORT_FAST': {
             'name': 'Short Fast',
             'bandwidth': 250,
             'spreading_factor': 7,
             'coding_rate': 8,
-            'description': 'Fastest speed, shortest range',
+            'description': 'Very fast, short range',
             'use_case': 'High-density areas, rapid messaging',
             'air_time': '~0.08s per message',
             'range': 'Short (1-5 km)',
@@ -135,33 +103,77 @@ class LoRaConfigurator:
             'bandwidth': 125,
             'spreading_factor': 7,
             'coding_rate': 8,
-            'description': 'Short range, reliable',
+            'description': 'Short range, more reliable than Short Fast',
             'use_case': 'Close-range reliable communication',
             'air_time': '~0.16s per message',
             'range': 'Short (1-5 km)',
             'recommended_by': 'Reliable short-range'
+        },
+        'MEDIUM_FAST': {
+            'name': 'Medium Fast',
+            'bandwidth': 250,
+            'spreading_factor': 10,
+            'coding_rate': 8,
+            'description': 'Good balance of speed and range (~3.5kbps)',
+            'use_case': 'Popular for community meshes, faster than LongFast',
+            'air_time': '~0.65s per message',
+            'range': 'Medium-Long (5-20 km)',
+            'recommended_by': 'MtnMesh community standard'
+        },
+        'MEDIUM_SLOW': {
+            'name': 'Medium Slow',
+            'bandwidth': 125,
+            'spreading_factor': 10,
+            'coding_rate': 8,
+            'description': 'Medium range, better reliability in congested areas',
+            'use_case': 'Good balance of range and reliability',
+            'air_time': '~1.3s per message',
+            'range': 'Medium-Long (5-20 km)',
+            'recommended_by': 'Alternative to MediumFast'
+        },
+        'LONG_FAST': {
+            'name': 'Long Fast',
+            'bandwidth': 250,
+            'spreading_factor': 11,
+            'coding_rate': 8,
+            'description': 'Default preset - great range, ~1kbps',
+            'use_case': 'Best for most deployments, good range with acceptable speed',
+            'air_time': '~1.3s per message',
+            'range': 'Very Long (10-30+ km)',
+            'recommended_by': 'Default Meshtastic preset'
+        },
+        'LONG_MODERATE': {
+            'name': 'Long Moderate',
+            'bandwidth': 125,
+            'spreading_factor': 11,
+            'coding_rate': 8,
+            'description': 'Longer range than Long Fast, slower',
+            'use_case': 'Extended range when speed is not critical',
+            'air_time': '~2.6s per message',
+            'range': 'Maximum (15-40+ km)',
+            'recommended_by': 'For extended range needs'
         },
         'LONG_SLOW': {
             'name': 'Long Slow',
             'bandwidth': 125,
             'spreading_factor': 12,
             'coding_rate': 8,
-            'description': 'Absolute maximum range',
-            'use_case': 'Extreme range, very slow',
+            'description': 'Very long range, slow speed',
+            'use_case': 'Extreme range scenarios',
             'air_time': '~5.2s per message',
             'range': 'Extreme (20-50+ km)',
-            'recommended_by': 'Only for extreme range scenarios'
+            'recommended_by': 'Long-range point-to-point'
         },
         'VERY_LONG_SLOW': {
             'name': 'Very Long Slow',
             'bandwidth': 62.5,
             'spreading_factor': 12,
             'coding_rate': 8,
-            'description': 'Experimental extreme range',
-            'use_case': 'Experimental, extremely slow',
+            'description': 'Slowest, longest range - not recommended for meshes',
+            'use_case': 'Experimental, extremely slow, poor mesh performance',
             'air_time': '~10.4s per message',
             'range': 'Experimental (30-60+ km)',
-            'recommended_by': 'Experimental only'
+            'recommended_by': 'Experimental only - does not mesh well'
         }
     }
 
@@ -521,100 +533,124 @@ class LoRaConfigurator:
         return presets.get(use_case, presets['general'])
 
     def show_modem_presets(self):
-        """Display available modem presets"""
-        console.print("\n[bold cyan]Meshtastic Modem Presets[/bold cyan]\n")
+        """Display available modem presets (ordered Fastest to Slowest)"""
+        console.print("\n[bold cyan]Meshtastic Modem Presets (Fastest → Slowest)[/bold cyan]\n")
 
         table = Table(show_header=True, header_style="bold magenta")
-        table.add_column("Preset", style="cyan", width=15)
-        table.add_column("Range", style="green", width=20)
+        table.add_column("Preset", style="cyan", width=16)
+        table.add_column("Range", style="green", width=22)
         table.add_column("Air Time", style="yellow", width=15)
-        table.add_column("Use Case", style="blue", width=40)
+        table.add_column("Use Case", style="blue", width=45)
 
-        # Sort by typical usage order
-        preset_order = ['MEDIUM_FAST', 'LONG_FAST', 'SHORT_FAST', 'MEDIUM_SLOW', 'LONG_MODERATE', 'SHORT_SLOW', 'LONG_SLOW', 'VERY_LONG_SLOW']
+        # Order: Fastest to Slowest (official Meshtastic order)
+        preset_order = [
+            'SHORT_TURBO', 'SHORT_FAST', 'SHORT_SLOW',
+            'MEDIUM_FAST', 'MEDIUM_SLOW',
+            'LONG_FAST', 'LONG_MODERATE', 'LONG_SLOW',
+            'VERY_LONG_SLOW'
+        ]
 
         for preset_key in preset_order:
             if preset_key in self.MODEM_PRESETS:
                 preset = self.MODEM_PRESETS[preset_key]
-                marker = " ⭐" if preset_key == 'MEDIUM_FAST' else ""
-                table.add_row(
-                    preset['name'] + marker,
-                    preset['range'],
-                    preset['air_time'],
-                    preset['use_case']
-                )
+                name = preset['name']
+                if preset_key == 'LONG_FAST':
+                    name += " [Default]"
+                elif preset_key == 'MEDIUM_FAST':
+                    name += " ⭐"
+                elif preset_key == 'SHORT_TURBO':
+                    name += " ⚠️"
+                table.add_row(name, preset['range'], preset['air_time'], preset['use_case'])
 
         console.print(table)
-        console.print("\n[yellow]⭐ MediumFast is the current MtnMesh community standard (Oct 2025)[/yellow]")
+        console.print("\n[yellow]⭐ MediumFast = MtnMesh community standard[/yellow]")
+        console.print("[red]⚠️ SHORT_TURBO uses 500kHz - may be illegal in some regions![/red]")
 
     def configure_modem_preset(self):
-        """Configure using a modem preset"""
-        console.print("\n[bold cyan]Modem Preset Selection[/bold cyan]\n")
+        """Configure using a modem preset with back option"""
+        while True:
+            console.print("\n[bold cyan]═══════════════ Modem Preset Selection ═══════════════[/bold cyan]\n")
 
-        self.show_modem_presets()
+            self.show_modem_presets()
 
-        console.print("\n[cyan]Select a modem preset:[/cyan]")
-        console.print("1. Medium Fast [yellow](MtnMesh standard)[/yellow]")
-        console.print("2. Long Fast [yellow](Default Meshtastic)[/yellow]")
-        console.print("3. Short Fast")
-        console.print("4. Medium Slow")
-        console.print("5. Long Moderate")
-        console.print("6. Short Slow")
-        console.print("7. Long Slow")
-        console.print("8. Very Long Slow [yellow](Experimental)[/yellow]")
-        console.print("9. Custom (Advanced)")
+            console.print("\n[dim cyan]── Select Preset (Fastest → Slowest) ──[/dim cyan]")
+            console.print("  [bold]1[/bold]. Short Turbo [red](⚠️ Check local laws - 500kHz)[/red]")
+            console.print("  [bold]2[/bold]. Short Fast")
+            console.print("  [bold]3[/bold]. Short Slow")
+            console.print("  [bold]4[/bold]. Medium Fast [yellow](⭐ MtnMesh standard)[/yellow]")
+            console.print("  [bold]5[/bold]. Medium Slow")
+            console.print("  [bold]6[/bold]. Long Fast [green](Default)[/green]")
+            console.print("  [bold]7[/bold]. Long Moderate")
+            console.print("  [bold]8[/bold]. Long Slow")
+            console.print("  [bold]9[/bold]. Very Long Slow [dim](Not recommended for mesh)[/dim]")
+            console.print("  [bold]c[/bold]. Custom (Advanced)")
+            console.print("\n  [bold]0[/bold]. Back")
+            console.print("  [bold]m[/bold]. Main Menu")
 
-        choice = Prompt.ask("\nSelect preset", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9"], default="1")
+            choice = Prompt.ask("\n[cyan]Select preset[/cyan]",
+                              choices=["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "c", "m"], default="6")
 
-        preset_map = {
-            "1": "MEDIUM_FAST",
-            "2": "LONG_FAST",
-            "3": "SHORT_FAST",
-            "4": "MEDIUM_SLOW",
-            "5": "LONG_MODERATE",
-            "6": "SHORT_SLOW",
-            "7": "LONG_SLOW",
-            "8": "VERY_LONG_SLOW"
-        }
+            if choice == "0":
+                return None
+            if choice == "m":
+                return None  # Signal to return to main menu
 
-        if choice == "9":
-            # Custom configuration
-            return self.configure_advanced()
+            preset_map = {
+                "1": "SHORT_TURBO",
+                "2": "SHORT_FAST",
+                "3": "SHORT_SLOW",
+                "4": "MEDIUM_FAST",
+                "5": "MEDIUM_SLOW",
+                "6": "LONG_FAST",
+                "7": "LONG_MODERATE",
+                "8": "LONG_SLOW",
+                "9": "VERY_LONG_SLOW"
+            }
 
-        preset_key = preset_map[choice]
-        preset = self.MODEM_PRESETS[preset_key]
+            if choice == "c":
+                return self.configure_advanced()
 
-        config = {
-            'preset': preset_key,
-            'preset_name': preset['name'],
-            'bandwidth': preset['bandwidth'],
-            'spreading_factor': preset['spreading_factor'],
-            'coding_rate': preset['coding_rate']
-        }
+            preset_key = preset_map[choice]
+            preset = self.MODEM_PRESETS[preset_key]
 
-        # Display selected preset details
-        console.print(f"\n[bold green]Selected: {preset['name']}[/bold green]")
-        console.print(f"[cyan]Description:[/cyan] {preset['description']}")
-        console.print(f"[cyan]Range:[/cyan] {preset['range']}")
-        console.print(f"[cyan]Air Time:[/cyan] {preset['air_time']}")
-        console.print(f"[cyan]Recommended by:[/cyan] {preset['recommended_by']}")
+            # Legal warning for SHORT_TURBO
+            if preset.get('legal_warning'):
+                console.print("\n[bold red]⚠️  LEGAL WARNING ⚠️[/bold red]")
+                console.print("[red]SHORT_TURBO uses 500kHz bandwidth which may not be legal in all regions.[/red]")
+                console.print("[red]Please verify local regulations before using this preset.[/red]")
+                if not Confirm.ask("\n[yellow]Do you understand and accept this risk?[/yellow]", default=False):
+                    continue
 
-        # Show technical details
-        table = Table(title="Technical Settings", show_header=True, header_style="bold magenta")
-        table.add_column("Parameter", style="cyan")
-        table.add_column("Value", style="green")
+            config = {
+                'preset': preset_key,
+                'preset_name': preset['name'],
+                'bandwidth': preset['bandwidth'],
+                'spreading_factor': preset['spreading_factor'],
+                'coding_rate': preset['coding_rate']
+            }
 
-        table.add_row("Bandwidth", f"{preset['bandwidth']} kHz")
-        table.add_row("Spreading Factor", str(preset['spreading_factor']))
-        table.add_row("Coding Rate", f"4/{preset['coding_rate']}")
+            # Display selected preset details
+            console.print(f"\n[bold green]Selected: {preset['name']}[/bold green]")
+            console.print(f"[cyan]Description:[/cyan] {preset['description']}")
+            console.print(f"[cyan]Range:[/cyan] {preset['range']}")
+            console.print(f"[cyan]Air Time:[/cyan] {preset['air_time']}")
+            console.print(f"[cyan]Recommended by:[/cyan] {preset['recommended_by']}")
 
-        console.print("\n")
-        console.print(table)
+            # Show technical details
+            table = Table(title="Technical Settings", show_header=True, header_style="bold magenta")
+            table.add_column("Parameter", style="cyan")
+            table.add_column("Value", style="green")
 
-        if Confirm.ask("\nUse this preset?", default=True):
-            return config
-        else:
-            return self.configure_modem_preset()
+            table.add_row("Bandwidth", f"{preset['bandwidth']} kHz")
+            table.add_row("Spreading Factor", str(preset['spreading_factor']))
+            table.add_row("Coding Rate", f"4/{preset['coding_rate']}")
+
+            console.print("\n")
+            console.print(table)
+
+            if Confirm.ask("\nUse this preset?", default=True):
+                return config
+            # If user says no, loop continues to show menu again
 
     def configure_channels(self):
         """Configure channel settings with interactive menu"""

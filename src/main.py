@@ -180,7 +180,7 @@ def interactive_menu():
         elif choice == "?":
             show_help()
         elif choice == "q":
-            console.print(f"\n[green]{em.get('👋')} Goodbye! Happy meshing![/green]")
+            console.print(f"\n[green]{em.get('🤙')} A Hui Hou! Happy meshing![/green]")
             sys.exit(0)
 
 
