@@ -1,6 +1,6 @@
 # Meshtasticd Installer - Development Session Notes
 
-## Session Date: 2025-12-31 (v3.0.5)
+## Session Date: 2026-01-01 (v3.1.1)
 
 ### Branch: `claude/review-meshtasticd-installer-52ENu`
 ### PR: https://github.com/Nursedude/Meshtasticd_interactive_UI/pull/37
@@ -9,66 +9,63 @@
 
 ## PERPETUAL MEMORY - Pick Up Here
 
-### ✅ COMPLETED This Session (v3.0.5)
+### ✅ COMPLETED This Session (v3.1.1)
+
+1. **Textual TUI Bug Fixes** (`src/tui/app.py`)
+   - FIX: Widget IDs now handle dots in filenames (e.g., `display-waveshare-2.8.yaml`)
+   - FIX: Dots replaced with underscores in IDs, filename retrieved from Label
+   - FIX: Config activate/deactivate/edit now work correctly
+   - FIX: Menu updates properly after tasks complete
+
+2. **GTK4 Bug Fix** (`src/gtk_ui/app.py`)
+   - FIX: `content_stack` initialization race condition
+   - FIX: Stack and pages created BEFORE sidebar to avoid callback issues
+
+3. **pip Install Fix** (`src/main_tui.py`, `src/launcher.py`, `README.md`)
+   - FIX: Added `--ignore-installed` flag for Textual install
+   - FIX: Avoids Debian package conflicts (e.g., Pygments)
+   - Updated all pip install commands and documentation
+
+### ✅ COMPLETED (v3.1.0)
+
+1. **System Diagnostics** (`src/diagnostics/system_diagnostics.py`)
+   - NEW: Network connectivity tests (ping, DNS, HTTPS, gateway)
+   - NEW: Mesh network diagnostics (API, node count, activity)
+   - NEW: MQTT connection testing
+   - NEW: System health (CPU, memory, temp, disk, load, throttling)
+   - NEW: LoRa/Radio diagnostics with SPI device detection
+   - NEW: GPIO/SPI/I2C interface status
+   - NEW: Service diagnostics with error detection
+   - NEW: Log analysis with pattern matching
+   - NEW: Full diagnostic report with health score
+
+2. **Site Planner** (`src/diagnostics/site_planner.py`)
+   - NEW: Integration with Meshtastic Site Planner
+   - NEW: RF coverage tools (Radio Mobile, HeyWhatsThat, Splat!)
+   - NEW: Interactive link budget calculator with FSPL formula
+   - NEW: Preset range estimates for all modem configurations
+   - NEW: Location management (GPS/manual)
+   - NEW: Antenna selection guidelines
+   - NEW: Frequency and power reference by region
+
+3. **Main Menu Updates** (`src/main.py`)
+   - NEW: Tools section with 't' (System Diagnostics) and 'p' (Site Planner)
+
+### ✅ COMPLETED (v3.0.5-3.0.6)
 
 1. **Emoji Font Detection** (`src/utils/emoji.py`)
-   - NEW: Checks if `fonts-noto-color-emoji` is installed
-   - NEW: `check_emoji_status()` returns detailed support info
-   - NEW: `setup_emoji_support()` shows status and fix instructions
-   - NEW: `install_emoji_fonts()` helper for RPi
-   - NEW: Debug menu option 9 for emoji diagnostics
-   - FIX: Emojis only enabled when proper fonts are installed
-   - FIX: SSH sessions properly detect font availability
+   - Checks if `fonts-noto-color-emoji` is installed
+   - Debug menu option 9 for emoji diagnostics
    - To enable: `sudo apt install fonts-noto-color-emoji && fc-cache -f`
 
-2. **Uninstaller** (`src/installer/uninstaller.py`)
-   - NEW: Interactive uninstall menu (option 'u' in main menu)
-   - Detects installed components (service, package, config, symlinks, logs)
-   - Prompts for each component removal
-   - Creates backup before removing config files
-   - Removes: service, package, config, symlinks, user prefs, logs
-
-3. **Progress Indicators** (`src/utils/progress.py`)
-   - `run_with_progress()` - Spinner for simple commands
-   - `run_with_live_progress()` - Progress bar with apt-get parsing
-   - `multi_step_progress()` - Multi-step installation tracking
-   - `InstallProgress` - Context manager for custom progress
-
-4. **Launcher Saves UI Preference** (`src/launcher.py`)
-   - Saves to ~/.config/meshtasticd-installer/preferences.json
-   - Auto-launches saved preference (with dependency check)
-   - Press 's' to save preference, 'c' to clear
-   - Use `--wizard` flag to force wizard and reset
-   - Shows [saved] marker on saved preference in menu
-
-5. **Edit Existing Channels** (`src/config/lora.py`)
-   - New menu option "Edit Existing Channel"
-   - Pre-fills current values when editing
-   - Shows [current] markers on role options
-   - "Keep current PSK" option when editing
-
-6. **Consistent Menu Navigation**
-   - All menus now use `m` for Main Menu
-   - All menus have `0` for Back
-   - Region selection updated with back/menu options
-
-### ✅ COMPLETED Previously (v3.0.2)
-
-1. **Modem Presets Updated** - SHORT_TURBO added, Fastest→Slowest order
-2. **Channel Configuration Saves** - meshtastic CLI integration
-3. **Auto-Install Meshtastic CLI** - via pipx with PATH auto-add
-4. **PSK Key Generation** - 256-bit, 128-bit, custom, none options
-5. **MQTT Settings** - uplink/downlink per channel
-6. **Position Precision** - location sharing accuracy settings
-7. **Live Log Exit Fixed** - Popen with proper terminate()
+2. **Meshtastic CLI Detection** (`src/utils/cli.py`)
+   - Works with pipx installations
+   - Checks /root/.local/bin, /home/pi/.local/bin, ~/.local/bin
 
 ### ⏳ STILL PENDING
 
-1. ~~**UI Selection Not Working**~~ - ✅ FIXED: Launcher now saves preference
-2. ~~**Add Uninstaller Option**~~ - ✅ DONE: `src/installer/uninstaller.py` + main menu 'u'
-3. ~~**Progress Indicators**~~ - ✅ DONE: `src/utils/progress.py`
-4. ~~**Emoji Issues**~~ - ✅ DONE: Font detection + diagnostic in Debug menu
-5. **Device Configuration Wizard** - May need more back options
+1. **Device Configuration Wizard** - May need more back options
+2. **Additional TUI/GTK4 testing** - User testing in progress
 
 ---
 

@@ -1,11 +1,22 @@
 """Version information for Meshtasticd Interactive Installer"""
 
-__version__ = "3.1.0"
-__version_info__ = (3, 1, 0)
+__version__ = "3.1.1"
+__version_info__ = (3, 1, 1)
 __release_date__ = "2026-01-01"
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "3.1.1",
+        "date": "2026-01-01",
+        "changes": [
+            "FIX: Textual TUI - Widget IDs now handle dots in filenames (e.g., display-waveshare-2.8.yaml)",
+            "FIX: Textual TUI - Config activate/deactivate/edit now work correctly",
+            "FIX: GTK4 - Fixed content_stack initialization race condition",
+            "FIX: pip install uses --ignore-installed to avoid Debian package conflicts",
+            "IMPROVED: README updated with correct pip install flags for Raspberry Pi"
+        ]
+    },
     {
         "version": "3.1.0",
         "date": "2026-01-01",
