@@ -137,6 +137,7 @@ def interactive_menu():
         console.print(f"  [bold]6[/bold]. {em.get('📻')} [yellow]Channel Presets[/yellow] [dim](Quick Setup)[/dim]")
         console.print(f"  [bold]7[/bold]. {em.get('📋')} Configuration Templates")
         console.print(f"  [bold]8[/bold]. {em.get('📁')} [green]Config File Manager[/green] [dim](Select YAML + nano)[/dim]")
+        console.print(f"  [bold]f[/bold]. {em.get('📶')} [yellow]Full Radio Config[/yellow] [dim](Mesh, MQTT, Position)[/dim]")
 
         # Meshtastic CLI Section
         console.print("\n[dim cyan]── Meshtastic CLI ──[/dim cyan]")
@@ -162,7 +163,7 @@ def interactive_menu():
         console.print(f"\n  [bold]q[/bold]. {em.get('🚪')} Exit")
         console.print(f"  [bold]?[/bold]. {em.get('❓')} Help")
 
-        choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["q", "1", "2", "3", "4", "5", "6", "7", "8", "9", "c", "t", "p", "n", "r", "m", "g", "h", "w", "d", "u", "?"], default="1")
+        choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["q", "1", "2", "3", "4", "5", "6", "7", "8", "9", "c", "f", "t", "p", "n", "r", "m", "g", "h", "w", "d", "u", "?"], default="1")
 
         if choice == "1":
             show_dashboard()
@@ -182,6 +183,8 @@ def interactive_menu():
             config_file_manager_menu()
         elif choice == "c":
             meshtastic_cli_menu()
+        elif choice == "f":
+            full_radio_config_menu()
         elif choice == "t":
             system_diagnostics_menu()
         elif choice == "p":
@@ -283,6 +286,14 @@ def hardware_config_menu():
 
     configurator = HardwareConfigurator()
     configurator.interactive_menu()
+
+
+def full_radio_config_menu():
+    """Full radio configuration (Mesh, MQTT, Channel, Position)"""
+    from config.radio_config import RadioConfig
+
+    config = RadioConfig()
+    config.interactive_menu()
 
 
 def show_dashboard():

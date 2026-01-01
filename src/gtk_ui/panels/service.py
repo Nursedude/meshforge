@@ -267,7 +267,7 @@ class ServicePanel(Gtk.Box):
         def do_action():
             try:
                 result = subprocess.run(
-                    ['systemctl', action, 'meshtasticd'],
+                    ['sudo', 'systemctl', action, 'meshtasticd'],
                     capture_output=True, text=True
                 )
                 success = result.returncode == 0
@@ -293,7 +293,7 @@ class ServicePanel(Gtk.Box):
         """Reload systemd daemon"""
         def do_reload():
             try:
-                subprocess.run(['systemctl', 'daemon-reload'], check=True)
+                subprocess.run(['sudo', 'systemctl', 'daemon-reload'], check=True)
                 GLib.idle_add(
                     self.main_window.set_status_message,
                     "Daemon reloaded successfully"
@@ -314,7 +314,7 @@ class ServicePanel(Gtk.Box):
 
         def do_toggle():
             try:
-                subprocess.run(['systemctl', action, 'meshtasticd'], check=True)
+                subprocess.run(['sudo', 'systemctl', action, 'meshtasticd'], check=True)
                 GLib.idle_add(self._refresh_status)
                 GLib.idle_add(
                     self.main_window.set_status_message,
