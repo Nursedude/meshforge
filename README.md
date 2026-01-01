@@ -2,20 +2,29 @@
 
 An interactive installer, updater, and comprehensive configuration tool for meshtasticd on Raspberry Pi OS and compatible Linux systems.
 
-**Version 3.0.6** | [Changelog](#version-history)
+**Version 3.1.0** | [Changelog](#version-history)
+
+## What's New in v3.1.0
+
+### System Diagnostics (Main Menu → `t`)
+- **Network Connectivity** - Ping tests, DNS resolution, internet/HTTPS checks
+- **Mesh Network Diagnostics** - Node count, activity, API status
+- **System Health** - CPU, memory, disk, temperature monitoring
+- **LoRa/Radio Diagnostics** - SPI, device detection, radio status
+- **GPIO/SPI/I2C Status** - Interface availability and device scanning
+- **Service Diagnostics** - Installation status, logs, error detection
+- **Full Diagnostic Report** - Comprehensive health score
+
+### Site Planner (Main Menu → `p`)
+- **Coverage Tools** - Links to Meshtastic Site Planner, Radio Mobile, HeyWhatsThat
+- **Link Budget Calculator** - Calculate theoretical range with custom parameters
+- **Preset Range Estimates** - Expected ranges for all modem presets
+- **Antenna Guidelines** - Selection guide with gain and mounting tips
+- **Frequency/Power Reference** - Regional bands, power limits, conversions
 
 ## What's New in v3.0.6
 
 - **Fixed Meshtastic CLI Detection** - Now properly finds CLI installed via pipx
-- **Checks Multiple Paths** - `/root/.local/bin`, `/home/pi/.local/bin`, `~/.local/bin`
-- **SUDO_USER Support** - Detects CLI when running with sudo from user account
-- **Centralized Detection** - All modules use the same `find_meshtastic_cli()` utility
-
-## What's New in v3.0.5
-
-- **Emoji Font Detection** - Now checks if `fonts-noto-color-emoji` is installed
-- **Emoji Diagnostic** - Debug menu option 9 shows emoji support status
-- To enable emojis: `sudo apt install fonts-noto-color-emoji && fc-cache -f`
 
 ## What's New in v3.0.4
 

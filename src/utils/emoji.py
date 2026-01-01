@@ -218,6 +218,11 @@ class EmojiHelper:
         '✨': '[STAR]',     # Sparkle/Star
         '🎨': '[EMJ]',      # Emoji/Color
         '🗑️': '[DEL]',      # Delete/Trash
+        '💻': '[CLI]',      # CLI/Terminal
+        '📍': '[LOC]',      # Location/Pin
+        '🗺️': '[MAP]',      # Map
+        '🤙': '[SHAKA]',    # Shaka/Hang loose
+        '📁': '[FOLDER]',   # Folder
     }
 
     def get(self, emoji, fallback=None):

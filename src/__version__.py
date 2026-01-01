@@ -1,11 +1,25 @@
 """Version information for Meshtasticd Interactive Installer"""
 
-__version__ = "3.0.6"
-__version_info__ = (3, 0, 6)
-__release_date__ = "2025-12-31"
+__version__ = "3.1.0"
+__version_info__ = (3, 1, 0)
+__release_date__ = "2026-01-01"
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "3.1.0",
+        "date": "2026-01-01",
+        "changes": [
+            "NEW: System Diagnostics - Network, hardware, and health checks",
+            "NEW: Site Planner integration - Coverage analysis and link budget calculator",
+            "NEW: RF coverage tools - Links to Radio Mobile, HeyWhatsThat, Splat!",
+            "NEW: Preset range estimates for all modem presets",
+            "NEW: Antenna guidelines and frequency/power reference",
+            "NEW: Mesh network diagnostics - Node count, activity, API status",
+            "NEW: Full system diagnostic report with health score",
+            "IMPROVED: Main menu reorganized with new Tools section"
+        ]
+    },
     {
         "version": "3.0.6",
         "date": "2025-12-31",

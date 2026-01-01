@@ -142,6 +142,11 @@ def interactive_menu():
         console.print("\n[dim cyan]── Meshtastic CLI ──[/dim cyan]")
         console.print(f"  [bold]c[/bold]. {em.get('💻')} [yellow]Meshtastic CLI Commands[/yellow]")
 
+        # Tools Section
+        console.print("\n[dim cyan]── Tools ──[/dim cyan]")
+        console.print(f"  [bold]t[/bold]. {em.get('🔧')} [cyan]System Diagnostics[/cyan] [dim](Network, Hardware, Health)[/dim]")
+        console.print(f"  [bold]p[/bold]. {em.get('📡')} [cyan]Site Planner[/cyan] [dim](Coverage, Link Budget)[/dim]")
+
         # System Section
         console.print("\n[dim cyan]── System ──[/dim cyan]")
         console.print(f"  [bold]9[/bold]. {em.get('🔍')} Check dependencies")
@@ -152,7 +157,7 @@ def interactive_menu():
         console.print(f"\n  [bold]q[/bold]. {em.get('🚪')} Exit")
         console.print(f"  [bold]?[/bold]. {em.get('❓')} Help")
 
-        choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["q", "1", "2", "3", "4", "5", "6", "7", "8", "9", "c", "h", "d", "u", "?"], default="1")
+        choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["q", "1", "2", "3", "4", "5", "6", "7", "8", "9", "c", "t", "p", "h", "d", "u", "?"], default="1")
 
         if choice == "1":
             show_dashboard()
@@ -172,6 +177,10 @@ def interactive_menu():
             config_file_manager_menu()
         elif choice == "c":
             meshtastic_cli_menu()
+        elif choice == "t":
+            system_diagnostics_menu()
+        elif choice == "p":
+            site_planner_menu()
         elif choice == "9":
             check_dependencies()
         elif choice == "h":
@@ -203,6 +212,22 @@ def uninstall_menu():
     uninstaller.uninstall(interactive=True)
 
     Prompt.ask("\n[dim]Press Enter to return to menu[/dim]")
+
+
+def system_diagnostics_menu():
+    """System diagnostics menu"""
+    from diagnostics.system_diagnostics import SystemDiagnostics
+
+    diagnostics = SystemDiagnostics()
+    diagnostics.interactive_menu()
+
+
+def site_planner_menu():
+    """Site planner and coverage tools menu"""
+    from diagnostics.site_planner import SitePlanner
+
+    planner = SitePlanner()
+    planner.interactive_menu()
 
 
 def show_dashboard():
