@@ -1,11 +1,25 @@
 """Version information for Meshtasticd Interactive Installer"""
 
-__version__ = "3.2.3"
-__version_info__ = (3, 2, 3)
+__version__ = "3.2.4"
+__version_info__ = (3, 2, 4)
 __release_date__ = "2026-01-02"
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "3.2.4",
+        "date": "2026-01-02",
+        "changes": [
+            "NEW: Connected Radio info section in Radio Config panel",
+            "NEW: Daemon mode for GTK app - `--daemon` or `-d` flag returns terminal control",
+            "NEW: MQTT settings parsing - server, username, encryption, JSON, TLS status",
+            "FIX: Radio info JSON parsing - Extract firmware/hardware from JSON correctly",
+            "FIX: Firmware field no longer shows entire JSON object",
+            "FIX: Skip JSON lines in fallback radio info parsing",
+            "IMPROVED: Radio config auto-loads radio info and current settings",
+            "IMPROVED: Rebroadcast mode parsing in config loader"
+        ]
+    },
     {
         "version": "3.2.3",
         "date": "2026-01-02",

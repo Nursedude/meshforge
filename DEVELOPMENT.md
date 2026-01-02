@@ -361,10 +361,112 @@ This allows running lightweight monitoring on any user account.
 
 ---
 
+## Daemon Mode Pattern
+
+To run GTK applications in background while returning terminal control:
+
+```python
+def daemonize():
+    """Fork process to run in background and return terminal control"""
+    # First fork
+    pid = os.fork()
+    if pid > 0:
+        # Parent exits, returning terminal to user
+        print(f"App started in background (PID: {pid})")
+        sys.exit(0)
+
+    # Create new session
+    os.setsid()
+
+    # Second fork to prevent zombie processes
+    pid = os.fork()
+    if pid > 0:
+        sys.exit(0)
+
+    # Redirect standard file descriptors to /dev/null
+    sys.stdout.flush()
+    sys.stderr.flush()
+    with open('/dev/null', 'r') as devnull:
+        os.dup2(devnull.fileno(), sys.stdin.fileno())
+```
+
+**Usage**: `sudo python3 src/main_gtk.py --daemon` or `-d`
+
+**Location**: `src/main_gtk.py`
+
+---
+
+## Parsing Meshtastic CLI JSON Output
+
+**CRITICAL**: The meshtastic CLI outputs JSON in Python dict format (single quotes, True/False).
+
+### Extracting Values from JSON Output
+
+Use direct regex extraction BEFORE fallback line-by-line parsing:
+
+```python
+import re
+import json
+
+def _parse_radio_info(self, output):
+    """Parse --info output correctly"""
+
+    # 1. Try direct regex extraction for JSON values first
+    # This handles: { "firmwareVersion": "2.7.15", "hwModel": "PORTDUINO", ... }
+    fw_match = re.search(r'"firmwareVersion":\s*"([^"]+)"', output)
+    if fw_match:
+        firmware = fw_match.group(1)  # Returns "2.7.15"
+
+    hw_match = re.search(r'"hwModel":\s*"([^"]+)"', output)
+    if hw_match:
+        hardware = hw_match.group(1)  # Returns "PORTDUINO"
+
+    # 2. Try parsing Python dict format JSON blocks
+    metadata_match = re.search(r"Metadata:\s*(\{[^}]+\})", output, re.DOTALL)
+    if metadata_match:
+        try:
+            # Convert Python dict format to JSON
+            meta_str = metadata_match.group(1)
+            meta_str = meta_str.replace("'", '"')
+            meta_str = meta_str.replace("True", "true")
+            meta_str = meta_str.replace("False", "false")
+            meta = json.loads(meta_str)
+        except json.JSONDecodeError:
+            pass
+
+    # 3. Fallback line-by-line parsing - SKIP JSON lines!
+    for line in output.strip().split('\n'):
+        # Skip lines that look like JSON
+        if line.strip().startswith('{') or '"firmwareVersion"' in line:
+            continue
+
+        # Now safe to parse key: value format
+        if 'firmware' in line.lower() and 'version' in line.lower():
+            match = re.search(r':\s*(.+)', line)
+            if match:
+                firmware = match.group(1).strip()
+```
+
+### Common Parsing Mistakes
+
+1. **JSON in Field Display**: If regex extracts entire JSON line `{ "firmwareVersion": "2.7.15", ... }`
+   - Solution: Use specific pattern `r'"key":\s*"([^"]+)"'` to extract just the value
+
+2. **Fallback Overwrites Good Data**: Line-by-line fallback runs after JSON extraction
+   - Solution: Check if value already set before fallback: `if self.field.get_label() == "--"`
+
+3. **Python Dict vs JSON**: Meshtastic outputs `{'key': 'value', 'bool': True}`
+   - Solution: Replace `'` with `"`, `True/False` with `true/false` before `json.loads()`
+
+**Location**: `src/gtk_ui/panels/radio_config.py`
+
+---
+
 ## Version History
 
 | Date | Version | Changes |
 |------|---------|---------|
+| 2026-01-02 | 3.2.4 | JSON parsing patterns, daemon mode, Connected Radio section |
 | 2026-01-02 | 3.2.3 | Added Node Monitoring module, @work decorator patterns |
 | 2026-01-02 | 3.2.2 | Initial development guide |
 

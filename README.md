@@ -2,7 +2,23 @@
 
 An interactive installer, updater, and comprehensive configuration tool for meshtasticd on Raspberry Pi OS and compatible Linux systems.
 
-**Version 3.2.3** | [Changelog](#version-history)
+**Version 3.2.4** | [Changelog](#version-history)
+
+## What's New in v3.2.4
+
+### Radio Configuration Improvements (GTK UI)
+- **Connected Radio Info** - Shows Node ID, Name, Hardware, Firmware, Region, Modem Preset
+- **Daemon Mode** - Run GTK app in background with `--daemon` or `-d` flag
+- **MQTT Settings Display** - Shows server, username, encryption, JSON, TLS status
+- **JSON Parsing Fixes** - Firmware/hardware fields now extract values correctly
+
+```bash
+# Run GTK app in background (returns terminal control)
+sudo python3 src/main_gtk.py --daemon
+
+# Or use short flag
+sudo python3 src/main_gtk.py -d
+```
 
 ## What's New in v3.2.3
 
@@ -177,6 +193,7 @@ python3 -m src.monitor --json       # JSON output for scripts
 |-----------|---------|----------|
 | **Wizard** | `sudo meshtasticd-installer` | Auto-detect and select best interface |
 | **GTK4 GUI** | `sudo python3 src/main_gtk.py` | Pi with display, VNC, Raspberry Pi Connect desktop |
+| **GTK4 GUI (Background)** | `sudo python3 src/main_gtk.py -d` | Same as above, but returns terminal control |
 | **Textual TUI** | `sudo python3 src/main_tui.py` | SSH, headless, Raspberry Pi Connect terminal |
 | **Rich CLI** | `sudo meshtasticd-cli` | Fallback, minimal environments |
 | **Node Monitor** | `python3 -m src.monitor` | Lightweight monitoring (no sudo required) |
@@ -559,6 +576,14 @@ Meshtasticd_interactive_UI/
 ```
 
 ## Version History
+
+### v3.2.4 (2026-01-02)
+- **Connected Radio Info** - New section showing node details in Radio Config panel
+- **Daemon Mode** - `--daemon`/`-d` flag for GTK app to run in background
+- **MQTT Settings** - Parses and displays server, username, encryption status
+- **FIX**: Radio info JSON parsing extracts firmware/hardware correctly
+- **FIX**: Firmware field no longer shows entire JSON object
+- **FIX**: Rebroadcast mode parsing in config loader
 
 ### v3.2.3 (2026-01-02)
 - **Node Monitoring Module** - Sudo-free monitoring via TCP interface
