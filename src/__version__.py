@@ -1,11 +1,27 @@
 """Version information for Meshtasticd Interactive Installer"""
 
-__version__ = "3.2.6"
-__version_info__ = (3, 2, 6)
+__version__ = "3.2.7"
+__version_info__ = (3, 2, 7)
 __release_date__ = "2026-01-02"
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "3.2.7",
+        "date": "2026-01-02",
+        "changes": [
+            "NEW: Web UI - Browser-based interface accessible via http://ip:8080/",
+            "NEW: Dashboard with live CPU, Memory, Disk, Temperature stats",
+            "NEW: Service control (Start/Stop/Restart) from browser",
+            "NEW: Config management - Activate/deactivate YAML files",
+            "NEW: Hardware detection panel in Web UI",
+            "NEW: Radio info display in Web UI",
+            "NEW: Optional password authentication with --password flag",
+            "NEW: Configurable port with --port flag (default 8080)",
+            "NEW: Auto-refresh dashboard every 5 seconds",
+            "IMPROVED: Dark theme UI with mobile-responsive design"
+        ]
+    },
     {
         "version": "3.2.6",
         "date": "2026-01-02",

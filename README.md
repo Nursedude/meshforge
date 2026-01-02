@@ -2,7 +2,39 @@
 
 An interactive installer, updater, and comprehensive configuration tool for meshtasticd on Raspberry Pi OS and compatible Linux systems.
 
-**Version 3.2.6** | [Changelog](#version-history)
+**Version 3.2.7** | [Changelog](#version-history)
+
+## What's New in v3.2.7
+
+### Web UI - Browser-Based Interface
+Access meshtasticd manager from any browser on your network!
+
+- **Dashboard** - Service status, CPU, Memory, Disk, Temperature with live updates
+- **Service Control** - Start/Stop/Restart meshtasticd from browser
+- **Config Management** - Activate/deactivate YAML configurations
+- **Hardware Detection** - View SPI, I2C, and connected devices
+- **Radio Info** - See connected radio details (firmware, hardware, region)
+- **System Monitor** - View top processes and system stats
+- **Optional Authentication** - Password protection with `--password` flag
+- **Custom Port** - Use `--port` to change from default 8080
+
+```bash
+# Start web UI (default port 8080)
+sudo python3 src/main_web.py
+
+# Custom port
+sudo python3 src/main_web.py --port 9000
+
+# With password protection
+sudo python3 src/main_web.py --password mysecretpassword
+
+# Access from browser
+# http://localhost:8080/
+# http://your-pi-ip:8080/
+```
+
+**Security Note:** For remote access over the internet, use a VPN (WireGuard, Tailscale)
+or SSH tunnel rather than exposing the port directly.
 
 ## What's New in v3.2.6
 
@@ -214,12 +246,13 @@ python3 -m src.monitor --json       # JSON output for scripts
 - **Service Management** - Start/stop/restart with live log viewing
 - **Meshtastic CLI Integration** - Run CLI commands from the UI
 - **Reboot Persistence** - Installer auto-restarts after system reboot
-- **Three UI Options** - Choose GTK4, Textual TUI, or Rich CLI based on your setup
+- **Four UI Options** - Choose Web, GTK4, Textual TUI, or Rich CLI based on your setup
 
 ## UI Options
 
 | Interface | Command | Best For |
 |-----------|---------|----------|
+| **Web UI** | `sudo python3 src/main_web.py` | Remote access via browser, any device on network |
 | **Wizard** | `sudo meshtasticd-installer` | Auto-detect and select best interface |
 | **GTK4 GUI** | `sudo python3 src/main_gtk.py` | Pi with display, VNC, Raspberry Pi Connect desktop |
 | **GTK4 GUI (Background)** | `sudo python3 src/main_gtk.py -d` | Same as above, but returns terminal control |
