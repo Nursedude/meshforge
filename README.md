@@ -2,7 +2,16 @@
 
 An interactive installer, updater, and comprehensive configuration tool for meshtasticd on Raspberry Pi OS and compatible Linux systems.
 
-**Version 3.2.4** | [Changelog](#version-history)
+**Version 3.2.5** | [Changelog](#version-history)
+
+## What's New in v3.2.5
+
+### GTK App Stability & Keyboard Shortcuts
+- **Escape Key** - Exit fullscreen mode
+- **F11** - Toggle fullscreen mode
+- **Ctrl+Q** - Quit application
+- **No More Connection Spam** - Removed "Connection reset by peer" error messages
+- **Better Error Handling** - Radio Config shows clear messages when meshtasticd not running
 
 ## What's New in v3.2.4
 
@@ -576,6 +585,13 @@ Meshtasticd_interactive_UI/
 ```
 
 ## Version History
+
+### v3.2.5 (2026-01-02)
+- **Keyboard Shortcuts** - Escape exits fullscreen, F11 toggles fullscreen, Ctrl+Q quits
+- **FIX**: Connection error spam removed from GTK app
+- **FIX**: Radio Config checks meshtasticd connectivity before loading
+- **FIX**: Better error messages when service not running
+- **FIX**: SUDO_USER path detection for meshtastic CLI
 
 ### v3.2.4 (2026-01-02)
 - **Connected Radio Info** - New section showing node details in Radio Config panel

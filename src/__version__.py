@@ -1,11 +1,25 @@
 """Version information for Meshtasticd Interactive Installer"""
 
-__version__ = "3.2.4"
-__version_info__ = (3, 2, 4)
+__version__ = "3.2.5"
+__version_info__ = (3, 2, 5)
 __release_date__ = "2026-01-02"
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "3.2.5",
+        "date": "2026-01-02",
+        "changes": [
+            "NEW: Escape key to exit fullscreen mode in GTK app",
+            "NEW: F11 to toggle fullscreen in GTK app",
+            "NEW: Ctrl+Q to quit GTK app",
+            "FIX: Connection error spam removed - no more 'Connection reset by peer' messages",
+            "FIX: Radio Config panel now checks meshtasticd connectivity before loading",
+            "FIX: SUDO_USER path detection for meshtastic CLI",
+            "FIX: Better error messages when meshtasticd not reachable",
+            "IMPROVED: Socket pre-check before CLI calls (fail fast)"
+        ]
+    },
     {
         "version": "3.2.4",
         "date": "2026-01-02",
