@@ -245,15 +245,15 @@ class ServicePane(Container):
 
         if button_id == "svc-start":
             log.write("Starting service...")
-            await self.run_systemctl("start")
+            self.run_systemctl("start")  # @work decorated - no await
 
         elif button_id == "svc-stop":
             log.write("Stopping service...")
-            await self.run_systemctl("stop")
+            self.run_systemctl("stop")  # @work decorated - no await
 
         elif button_id == "svc-restart":
             log.write("Restarting service...")
-            await self.run_systemctl("restart")
+            self.run_systemctl("restart")  # @work decorated - no await
 
         elif button_id == "svc-reload":
             log.write("Reloading daemon...")
@@ -261,14 +261,14 @@ class ServicePane(Container):
 
         elif button_id == "svc-enable":
             log.write("Enabling on boot...")
-            await self.run_systemctl("enable")
+            self.run_systemctl("enable")  # @work decorated - no await
 
         elif button_id == "svc-disable":
             log.write("Disabling from boot...")
-            await self.run_systemctl("disable")
+            self.run_systemctl("disable")  # @work decorated - no await
 
         elif button_id == "svc-logs":
-            await self.fetch_logs()
+            self.fetch_logs()  # @work decorated - no await
 
         elif button_id == "svc-follow":
             await self.start_following()
