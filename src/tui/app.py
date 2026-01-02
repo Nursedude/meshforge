@@ -659,7 +659,7 @@ class CLIPane(Container):
         else:
             return
 
-        await self.run_meshtastic(host, args, output)
+        self.run_meshtastic(host, args, output)
 
     @work
     async def run_meshtastic(self, host: str, args: list, output: Log):

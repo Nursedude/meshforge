@@ -9,9 +9,10 @@ This document contains research notes, references, and technical documentation f
 1. [MUDP - Meshtastic UDP Library](#mudp---meshtastic-udp-library)
 2. [Meshtastic TCP Interface](#meshtastic-tcp-interface)
 3. [Meshtastic Web Client](#meshtastic-web-client)
-4. [RF Tools & Coverage Planning](#rf-tools--coverage-planning)
-5. [Network Architecture](#network-architecture)
-6. [Protocol References](#protocol-references)
+4. [MeshSense - Network Monitoring](#meshsense---network-monitoring)
+5. [RF Tools & Coverage Planning](#rf-tools--coverage-planning)
+6. [Network Architecture](#network-architecture)
+7. [Protocol References](#protocol-references)
 
 ---
 
@@ -291,6 +292,88 @@ All JavaScript packages publish to both JSR and NPM registries.
 
 ---
 
+## MeshSense - Network Monitoring
+
+MeshSense is a comprehensive, open-source application for monitoring, mapping, and graphically displaying Meshtastic network statistics.
+
+### Overview
+
+- **Website:** https://affirmatech.com/meshsense
+- **GitHub:** https://github.com/Affirmatech/MeshSense
+- **Developer:** Affirmatech Inc
+- **Global Map:** https://meshsense.affirmatech.com/
+
+### Connection Methods
+
+MeshSense connects directly to Meshtastic nodes via:
+- **Bluetooth** - Direct BLE connection to nearby devices
+- **WiFi** - TCP connection to network-accessible nodes
+
+### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| Node Monitoring | Track connected nodes, health, and metrics |
+| Signal Reports | Analyze signal strength, noise levels, SNR |
+| Trace Routes | View routing paths and network topology |
+| Position Mapping | Display nodes on map with known positions |
+| Environment Telemetry | Capture temperature, humidity, pressure data |
+| Device Configuration | View and modify device settings |
+| Channel Configuration | Configure device channels |
+
+### Special Capabilities
+
+**Unknown Position Nodes:**
+- Nodes without position data display with a question mark (?) on the map
+- Shown when they support a route between two nodes with known positions
+
+**Global Map:**
+- Access nearby networks worldwide
+- Find potential bridges to other Meshtastic nodes
+- Available at https://meshsense.affirmatech.com/ or via 🌎 button in app
+
+**Public Data Feed:**
+- Optionally share your MeshSense data publicly
+- Allow others to determine signal strength into your node
+- Real-time maps and statistics from anywhere
+
+**Headless Mode:**
+- Run in terminal without GUI
+- Supports automatic updates in headless mode
+- Ideal for Raspberry Pi and server deployments
+
+### Installation
+
+Download from releases: https://github.com/Affirmatech/MeshSense/releases
+
+Available for:
+- Windows
+- macOS
+- Linux (AppImage, deb)
+
+Official Electron builds are signed with an Affirmatech certificate.
+
+### Integration Notes
+
+**Firmware Compatibility:**
+- Meshtastic firmware 2.5.1+ limits traceroutes to once every 30 seconds
+- MeshSense queues trace route requests according to this limit
+
+**Use Cases for Meshtasticd Installer:**
+- Network health monitoring dashboard
+- Signal strength analysis for node placement
+- Trace route visualization for troubleshooting
+- Remote monitoring via public data feed
+
+### References
+
+- Official Website: https://affirmatech.com/meshsense
+- GitHub Repository: https://github.com/Affirmatech/MeshSense
+- Global Map: https://meshsense.affirmatech.com/
+- Releases: https://github.com/Affirmatech/MeshSense/releases
+
+---
+
 ## RF Tools & Coverage Planning
 
 ### Meshtastic Site Planner
@@ -393,6 +476,7 @@ def check_tool_version(tool_name):
 
 | Date | Version | Changes |
 |------|---------|---------|
+| 2026-01-02 | 3.2.3 | Added MeshSense documentation |
 | 2026-01-02 | 3.2.2 | Added Web Client documentation |
 | 2026-01-01 | 3.2.0 | Initial research document, MUDP integration |
 
@@ -401,6 +485,7 @@ def check_tool_version(tool_name):
 ## Contributors
 
 - Meshtastic Community
+- Affirmatech (MeshSense)
 - pdxlocations (MUDP)
 - Nursedude (Installer)
 
