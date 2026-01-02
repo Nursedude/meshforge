@@ -416,6 +416,119 @@ def detect_hardware():
     return detected
 
 
+def get_nodes():
+    """Get mesh nodes from meshtastic CLI"""
+    cli = find_meshtastic_cli()
+    if not cli:
+        return {'error': 'Meshtastic CLI not found'}
+
+    # Check if port is reachable
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(3.0)
+        if sock.connect_ex(('localhost', 4403)) != 0:
+            sock.close()
+            return {'error': 'meshtasticd not running (port 4403)'}
+        sock.close()
+    except Exception:
+        return {'error': 'Cannot connect to meshtasticd'}
+
+    try:
+        result = subprocess.run(
+            [cli, '--host', 'localhost', '--nodes'],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            output = result.stdout
+            nodes = []
+
+            # Parse node entries - look for node info patterns
+            # Format: !abcd1234: User Name (SHORT)
+            import re
+            node_pattern = re.compile(
+                r'(!?[a-fA-F0-9]{8}):\s*([^\(]+)\s*\(([^\)]+)\)'
+            )
+
+            for match in node_pattern.finditer(output):
+                node_id, name, short_name = match.groups()
+                nodes.append({
+                    'id': node_id.strip(),
+                    'name': name.strip(),
+                    'short': short_name.strip()
+                })
+
+            # Also try to parse the table format if present
+            # Look for lines with | separators
+            lines = output.strip().split('\n')
+            for line in lines:
+                if '│' in line and '!' in line:
+                    parts = [p.strip() for p in line.split('│')]
+                    if len(parts) >= 4:
+                        # Try to extract node info from table row
+                        for part in parts:
+                            if part.startswith('!'):
+                                node_id = part
+                                break
+                        else:
+                            continue
+
+                        # Get other fields
+                        node_data = {
+                            'id': node_id,
+                            'name': parts[1] if len(parts) > 1 else '',
+                            'short': parts[2] if len(parts) > 2 else ''
+                        }
+                        # Avoid duplicates
+                        if not any(n['id'] == node_id for n in nodes):
+                            nodes.append(node_data)
+
+            return {'nodes': nodes, 'raw': output}
+
+        return {'error': result.stderr or 'Failed to get nodes', 'raw': result.stdout}
+
+    except subprocess.TimeoutExpired:
+        return {'error': 'Timeout getting nodes (30s)'}
+    except Exception as e:
+        return {'error': str(e)}
+
+
+def send_mesh_message(text, destination=None):
+    """Send a message to the mesh"""
+    cli = find_meshtastic_cli()
+    if not cli:
+        return {'error': 'Meshtastic CLI not found'}
+
+    if not text or not text.strip():
+        return {'error': 'Message cannot be empty'}
+
+    # Check if port is reachable
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(3.0)
+        if sock.connect_ex(('localhost', 4403)) != 0:
+            sock.close()
+            return {'error': 'meshtasticd not running'}
+        sock.close()
+    except Exception:
+        return {'error': 'Cannot connect to meshtasticd'}
+
+    try:
+        cmd = [cli, '--host', 'localhost', '--sendtext', text.strip()]
+        if destination:
+            cmd.extend(['--dest', destination])
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+        if result.returncode == 0:
+            return {'success': True, 'message': 'Message sent'}
+        return {'error': result.stderr or 'Failed to send message'}
+
+    except subprocess.TimeoutExpired:
+        return {'error': 'Timeout sending message'}
+    except Exception as e:
+        return {'error': str(e)}
+
+
 # ============================================================================
 # API Routes
 # ============================================================================
@@ -559,6 +672,77 @@ def api_processes():
             lines = result.stdout.strip().split('\n')[:11]
             return jsonify({'processes': lines})
         return jsonify({'error': result.stderr})
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+
+@app.route('/api/nodes')
+@login_required
+def api_nodes():
+    """Get mesh nodes"""
+    return jsonify(get_nodes())
+
+
+@app.route('/api/message', methods=['POST'])
+@login_required
+def api_send_message():
+    """Send a mesh message"""
+    data = request.get_json()
+    text = data.get('text', '')
+    destination = data.get('destination')
+    return jsonify(send_mesh_message(text, destination))
+
+
+@app.route('/api/config/edit', methods=['POST'])
+@login_required
+def api_edit_config():
+    """Edit a config file"""
+    data = request.get_json()
+    config_name = data.get('config')
+    content = data.get('content')
+
+    if not config_name:
+        return jsonify({'error': 'No config specified'}), 400
+    if content is None:
+        return jsonify({'error': 'No content provided'}), 400
+
+    # Only allow editing in config.d or available.d
+    for base in ['/etc/meshtasticd/config.d', '/etc/meshtasticd/available.d']:
+        path = Path(base) / config_name
+        if path.exists():
+            try:
+                # Create backup
+                backup_path = path.with_suffix(path.suffix + '.bak')
+                if path.exists():
+                    import shutil
+                    shutil.copy2(path, backup_path)
+
+                # Write new content
+                path.write_text(content)
+                return jsonify({'success': True, 'message': f'{config_name} saved'})
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
+
+    return jsonify({'error': 'Config not found'}), 404
+
+
+@app.route('/api/logs/stream')
+@login_required
+def api_logs_stream():
+    """Stream service logs (returns last N lines, call repeatedly for updates)"""
+    lines = request.args.get('lines', 100, type=int)
+    since = request.args.get('since', '')
+
+    try:
+        cmd = ['journalctl', '-u', 'meshtasticd', '-n', str(lines), '--no-pager']
+        if since:
+            cmd.extend(['--since', since])
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        return jsonify({
+            'logs': result.stdout,
+            'timestamp': datetime.now().isoformat()
+        })
     except Exception as e:
         return jsonify({'error': str(e)})
 
@@ -854,6 +1038,8 @@ MAIN_TEMPLATE = '''
     <div class="container">
         <div class="tabs">
             <div class="tab active" data-tab="dashboard">Dashboard</div>
+            <div class="tab" data-tab="nodes">Nodes</div>
+            <div class="tab" data-tab="messages">Messages</div>
             <div class="tab" data-tab="service">Service</div>
             <div class="tab" data-tab="config">Config</div>
             <div class="tab" data-tab="hardware">Hardware</div>
@@ -897,6 +1083,40 @@ MAIN_TEMPLATE = '''
             <div class="card">
                 <h2>Recent Logs</h2>
                 <div class="log-box" id="logs">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Nodes Tab -->
+        <div id="nodes" class="tab-content">
+            <div class="card">
+                <h2>Mesh Nodes</h2>
+                <button class="btn btn-success" onclick="refreshNodes()" style="margin-bottom: 15px;">Refresh Nodes</button>
+                <div id="nodes-list">Loading...</div>
+                <div id="nodes-raw" style="margin-top: 15px; display: none;">
+                    <h3>Raw Output</h3>
+                    <div class="log-box" id="nodes-raw-content" style="max-height: 200px;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Messages Tab -->
+        <div id="messages" class="tab-content">
+            <div class="card">
+                <h2>Send Message</h2>
+                <div style="margin-bottom: 15px;">
+                    <label style="display: block; margin-bottom: 5px; color: var(--text-muted);">Message Text:</label>
+                    <textarea id="message-text" rows="3" style="width: 100%; padding: 10px; background: #222; border: 1px solid #444; border-radius: 5px; color: var(--text); font-family: inherit;" placeholder="Type your message here..."></textarea>
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <label style="display: block; margin-bottom: 5px; color: var(--text-muted);">Destination (optional, leave blank for broadcast):</label>
+                    <input type="text" id="message-dest" style="width: 100%; padding: 10px; background: #222; border: 1px solid #444; border-radius: 5px; color: var(--text);" placeholder="!abcd1234 or leave blank">
+                </div>
+                <button class="btn btn-success" onclick="sendMessage()">Send Message</button>
+                <div id="message-status" style="margin-top: 15px;"></div>
+            </div>
+            <div class="card" style="margin-top: 20px;">
+                <h2>Recent Messages</h2>
+                <p style="color: var(--text-muted);">Message history coming soon. Check the logs in the Service tab for now.</p>
             </div>
         </div>
 
@@ -1190,12 +1410,91 @@ MAIN_TEMPLATE = '''
             }
         }
 
+        async function refreshNodes() {
+            const el = document.getElementById('nodes-list');
+            const rawEl = document.getElementById('nodes-raw');
+            const rawContent = document.getElementById('nodes-raw-content');
+
+            el.innerHTML = '<em>Loading nodes... (may take up to 30s)</em>';
+
+            try {
+                const resp = await fetch('/api/nodes');
+                const data = await resp.json();
+
+                if (data.error) {
+                    el.innerHTML = `<div style="color: var(--warning);">${data.error}</div>`;
+                } else if (data.nodes && data.nodes.length > 0) {
+                    el.innerHTML = `
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <tr style="border-bottom: 1px solid #444;">
+                                <th style="padding: 10px; text-align: left;">Node ID</th>
+                                <th style="padding: 10px; text-align: left;">Name</th>
+                                <th style="padding: 10px; text-align: left;">Short</th>
+                            </tr>
+                            ${data.nodes.map(n => `
+                                <tr style="border-bottom: 1px solid #333;">
+                                    <td style="padding: 10px; font-family: monospace;">${n.id}</td>
+                                    <td style="padding: 10px;">${n.name}</td>
+                                    <td style="padding: 10px;">${n.short}</td>
+                                </tr>
+                            `).join('')}
+                        </table>
+                        <p style="margin-top: 10px; color: var(--text-muted);">${data.nodes.length} node(s) found</p>
+                    `;
+                } else {
+                    el.innerHTML = '<div style="color: var(--text-muted);">No nodes found</div>';
+                }
+
+                // Show raw output
+                if (data.raw) {
+                    rawEl.style.display = 'block';
+                    rawContent.textContent = data.raw;
+                }
+            } catch (e) {
+                console.error('Error fetching nodes:', e);
+                el.innerHTML = '<div style="color: var(--danger);">Network error fetching nodes</div>';
+            }
+        }
+
+        async function sendMessage() {
+            const text = document.getElementById('message-text').value;
+            const dest = document.getElementById('message-dest').value;
+            const statusEl = document.getElementById('message-status');
+
+            if (!text.trim()) {
+                statusEl.innerHTML = '<span style="color: var(--warning);">Please enter a message</span>';
+                return;
+            }
+
+            statusEl.innerHTML = '<em>Sending...</em>';
+
+            try {
+                const resp = await fetch('/api/message', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: text, destination: dest || null })
+                });
+                const data = await resp.json();
+
+                if (data.success) {
+                    statusEl.innerHTML = '<span style="color: var(--accent);">Message sent successfully!</span>';
+                    document.getElementById('message-text').value = '';
+                } else {
+                    statusEl.innerHTML = `<span style="color: var(--danger);">${data.error}</span>`;
+                }
+            } catch (e) {
+                console.error('Error sending message:', e);
+                statusEl.innerHTML = '<span style="color: var(--danger);">Network error sending message</span>';
+            }
+        }
+
         // Initial load
         fetchStatus();
         fetchLogs();
         fetchConfigs();
         refreshHardware();
         refreshRadio();
+        refreshNodes();
         refreshProcesses();
 
         // Auto-refresh status every 5 seconds
