@@ -175,6 +175,16 @@ class NodeMonitor:
             pub.subscribe(self._on_disconnect, "meshtastic.connection.lost")
             pub.subscribe(self._on_node_update_event, "meshtastic.node.updated")
 
+            # Pre-check: Test if port is reachable (fail fast)
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(min(timeout, 5.0))
+            try:
+                sock.connect((self.host, self.port))
+                sock.close()
+            except (socket.timeout, socket.error, OSError) as e:
+                raise ConnectionError(f"Cannot reach {self.host}:{self.port} - {e}")
+
             # Connect
             logger.info(f"Connecting to {self.host}:{self.port}...")
             self.interface = TCPInterface(
