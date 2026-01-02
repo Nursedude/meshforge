@@ -155,62 +155,73 @@ class RadioConfigPanel(Gtk.Box):
     def _parse_radio_info(self, output):
         """Parse --info output and populate radio info section"""
         import re
+        import json
 
+        # Try to extract node ID from "Owner: Name (!abcd1234)" format
+        owner_match = re.search(r'Owner[:\s]+([^(]+)\s*\((!?[0-9a-fA-F]{8})\)', output)
+        if owner_match:
+            self.radio_long_name.set_label(owner_match.group(1).strip())
+            self.radio_node_id.set_label(owner_match.group(2))
+
+        # Try to parse "My info:" JSON block
+        my_info_match = re.search(r"My info:\s*(\{[^}]+\})", output, re.DOTALL)
+        if my_info_match:
+            try:
+                # Clean up the pseudo-JSON (Python dict format with single quotes)
+                info_str = my_info_match.group(1).replace("'", '"').replace("True", "true").replace("False", "false")
+                info = json.loads(info_str)
+                if 'numChannels' in info:
+                    self.radio_channels.set_label(str(info['numChannels']))
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        # Try to parse "Metadata:" block
+        metadata_match = re.search(r"Metadata:\s*(\{[^}]+\})", output, re.DOTALL)
+        if metadata_match:
+            try:
+                meta_str = metadata_match.group(1).replace("'", '"').replace("True", "true").replace("False", "false")
+                meta = json.loads(meta_str)
+                if 'firmwareVersion' in meta:
+                    self.radio_firmware.set_label(meta['firmwareVersion'])
+                if 'hwModel' in meta:
+                    self.radio_hardware.set_label(meta['hwModel'])
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        # Parse line by line for remaining fields
         lines = output.strip().split('\n')
-
         for line in lines:
             line_lower = line.lower()
 
-            # Node ID (Owner)
-            if 'owner:' in line_lower or 'my node' in line_lower:
-                match = re.search(r'(!?[0-9a-fA-F]{8})', line)
-                if match:
-                    self.radio_node_id.set_label(match.group(1))
-
-            # Long name
-            elif 'long name:' in line_lower or 'longname:' in line_lower:
-                match = re.search(r':\s*(.+)', line)
-                if match:
-                    self.radio_long_name.set_label(match.group(1).strip())
-
             # Short name
-            elif 'short name:' in line_lower or 'shortname:' in line_lower:
-                match = re.search(r':\s*(.+)', line)
+            if 'short name' in line_lower or 'shortname' in line_lower:
+                match = re.search(r'[:\s]+([A-Za-z0-9_-]+)\s*$', line)
                 if match:
                     self.radio_short_name.set_label(match.group(1).strip())
 
-            # Hardware model
-            elif 'hardware:' in line_lower or 'hw_model:' in line_lower or 'hwmodel:' in line_lower:
+            # Region from config
+            elif 'region' in line_lower and ':' in line:
+                match = re.search(r':\s*([A-Z_0-9]+)', line)
+                if match and match.group(1) not in ['True', 'False', 'None']:
+                    self.radio_region.set_label(match.group(1).strip())
+
+            # Modem preset
+            elif 'modem' in line_lower and 'preset' in line_lower:
+                match = re.search(r':\s*([A-Z_]+)', line)
+                if match:
+                    self.radio_preset.set_label(match.group(1).strip())
+
+            # Hardware model fallback
+            elif ('hardware' in line_lower or 'hw_model' in line_lower) and self.radio_hardware.get_label() == "--":
                 match = re.search(r':\s*(.+)', line)
                 if match:
                     self.radio_hardware.set_label(match.group(1).strip())
 
-            # Firmware version
-            elif 'firmware' in line_lower and 'version' in line_lower:
+            # Firmware version fallback
+            elif 'firmware' in line_lower and 'version' in line_lower and self.radio_firmware.get_label() == "--":
                 match = re.search(r':\s*(.+)', line)
                 if match:
                     self.radio_firmware.set_label(match.group(1).strip())
-            elif line.strip().startswith('2.') or line.strip().startswith('1.'):
-                # Firmware version line
-                self.radio_firmware.set_label(line.strip())
-
-            # Region
-            elif 'region:' in line_lower:
-                match = re.search(r':\s*(\w+)', line)
-                if match:
-                    self.radio_region.set_label(match.group(1).strip())
-
-            # Modem preset
-            elif 'modem_preset:' in line_lower or 'modempreset:' in line_lower:
-                match = re.search(r':\s*(\w+)', line)
-                if match:
-                    self.radio_preset.set_label(match.group(1).strip())
-
-            # Channels
-            elif 'channels:' in line_lower or 'num_channels:' in line_lower:
-                match = re.search(r':\s*(\d+)', line)
-                if match:
-                    self.radio_channels.set_label(match.group(1).strip())
 
     def _add_device_section(self, parent):
         """Add device/mesh settings section"""
