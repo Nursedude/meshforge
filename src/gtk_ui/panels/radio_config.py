@@ -440,12 +440,13 @@ class RadioConfigPanel(Gtk.Box):
         box.set_margin_top(10)
         box.set_margin_bottom(10)
 
-        # Region
+        # Region - all Meshtastic supported regions
         region_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         region_box.append(Gtk.Label(label="Region:"))
         self.region_dropdown = Gtk.DropDown.new_from_strings([
             "UNSET", "US", "EU_433", "EU_868", "CN", "JP", "ANZ", "KR", "TW", "RU",
-            "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919", "SG_923"
+            "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919",
+            "SG_923", "PH", "UK_868", "SINGAPORE"
         ])
         self.region_dropdown.set_selected(1)  # Default to US
         region_box.append(self.region_dropdown)
@@ -518,15 +519,16 @@ class RadioConfigPanel(Gtk.Box):
         grid.attach(self.freq_calc_preset, 1, row, 1, 1)
         row += 1
 
-        # Region
+        # Region - all Meshtastic supported regions
         region_label = Gtk.Label(label="Region:")
         region_label.set_xalign(1)
         grid.attach(region_label, 0, row, 1, 1)
         self.freq_calc_region = Gtk.DropDown.new_from_strings([
-            "US", "EU_868", "EU_433", "CN", "JP", "ANZ", "KR", "TW", "RU",
-            "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919", "SG_923"
+            "UNSET", "US", "EU_433", "EU_868", "CN", "JP", "ANZ", "KR", "TW", "RU",
+            "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919",
+            "SG_923", "PH", "UK_868", "SINGAPORE"
         ])
-        self.freq_calc_region.set_selected(0)  # Default to US
+        self.freq_calc_region.set_selected(1)  # Default to US
         self.freq_calc_region.connect("notify::selected", self._on_freq_calc_params_changed)
         grid.attach(self.freq_calc_region, 1, row, 1, 1)
         row += 1
@@ -650,9 +652,10 @@ class RadioConfigPanel(Gtk.Box):
         """Update all frequency calculator fields and rebuild slot dropdown"""
         import math
 
-        # Get selected region
-        regions = ["US", "EU_868", "EU_433", "CN", "JP", "ANZ", "KR", "TW", "RU",
-                   "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919", "SG_923"]
+        # Get selected region - must match dropdown order exactly
+        regions = ["UNSET", "US", "EU_433", "EU_868", "CN", "JP", "ANZ", "KR", "TW", "RU",
+                   "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919",
+                   "SG_923", "PH", "UK_868", "SINGAPORE"]
         region_idx = self.freq_calc_region.get_selected()
         region = regions[region_idx] if region_idx < len(regions) else "US"
 
@@ -680,8 +683,7 @@ class RadioConfigPanel(Gtk.Box):
         # Calculate default slot (for "LongFast" channel name)
         default_hash = self._djb2_hash("LongFast")
         default_slot = default_hash % num_slots
-        default_freq = freq_start + (bw / 2000) + (default_slot * (bw / 1000))
-        self.freq_calc_default_slot.set_label(f"{default_slot + 1} @ {default_freq:.3f} MHz")
+        self.freq_calc_default_slot.set_label(str(default_slot + 1))  # 1-indexed display
 
         # Rebuild slot dropdown with new range
         slot_strings = [str(i) for i in range(1, num_slots + 1)]
@@ -720,10 +722,12 @@ class RadioConfigPanel(Gtk.Box):
         """Get frequency parameters for a region"""
         # Region parameters: (freqStart, freqEnd, spacing, dutyCycle)
         # Spacing is typically 0 for most regions (calculated from bandwidth)
+        # Based on https://meshtastic.org/docs/overview/radio-settings/
         regions = {
+            "UNSET": (902.0, 928.0, 0, 100),      # Defaults to US
             "US": (902.0, 928.0, 0, 100),
-            "EU_868": (869.4, 869.65, 0, 10),
             "EU_433": (433.0, 434.0, 0, 10),
+            "EU_868": (869.4, 869.65, 0, 10),
             "CN": (470.0, 510.0, 0, 100),
             "JP": (920.8, 923.8, 0, 100),
             "ANZ": (915.0, 928.0, 0, 100),
@@ -739,6 +743,9 @@ class RadioConfigPanel(Gtk.Box):
             "MY_433": (433.0, 435.0, 0, 100),
             "MY_919": (919.0, 924.0, 0, 100),
             "SG_923": (920.0, 925.0, 0, 100),
+            "PH": (920.0, 925.0, 0, 100),        # Philippines 920 MHz band
+            "UK_868": (869.4, 869.65, 0, 10),    # UK 868 MHz (same as EU_868)
+            "SINGAPORE": (920.0, 925.0, 0, 100), # Same as SG_923
         }
         return regions.get(region, (902.0, 928.0, 0, 100))
 
@@ -1098,7 +1105,8 @@ class RadioConfigPanel(Gtk.Box):
     def _get_region(self):
         """Get selected region"""
         regions = ["UNSET", "US", "EU_433", "EU_868", "CN", "JP", "ANZ", "KR", "TW", "RU",
-                   "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919", "SG_923"]
+                   "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919",
+                   "SG_923", "PH", "UK_868", "SINGAPORE"]
         return regions[self.region_dropdown.get_selected()]
 
     def _get_preset(self):
@@ -1226,7 +1234,8 @@ class RadioConfigPanel(Gtk.Box):
         roles = ["CLIENT", "CLIENT_MUTE", "ROUTER", "ROUTER_CLIENT",
                  "REPEATER", "TRACKER", "SENSOR", "TAK", "TAK_TRACKER", "CLIENT_HIDDEN", "LOST_AND_FOUND"]
         regions = ["UNSET", "US", "EU_433", "EU_868", "CN", "JP", "ANZ", "KR", "TW", "RU",
-                   "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919", "SG_923"]
+                   "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919",
+                   "SG_923", "PH", "UK_868", "SINGAPORE"]
         presets = ["LONG_FAST", "LONG_SLOW", "LONG_MODERATE", "MEDIUM_SLOW", "MEDIUM_FAST",
                    "SHORT_SLOW", "SHORT_FAST", "SHORT_TURBO"]
         gps_modes = ["DISABLED", "ENABLED", "NOT_PRESENT"]
