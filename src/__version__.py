@@ -3,8 +3,8 @@ MeshForge - LoRa Mesh Network Development & Operations Suite
 Version information and changelog
 """
 
-__version__ = "4.0.1"
-__version_info__ = (4, 0, 1)
+__version__ = "4.1.0"
+__version_info__ = (4, 1, 0)
 __release_date__ = "2026-01-03"
 __app_name__ = "MeshForge"
 __app_description__ = "LoRa Mesh Network Development & Operations Suite"
@@ -12,6 +12,23 @@ __app_tagline__ = "Build. Test. Deploy. Monitor."
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "4.1.0",
+        "date": "2026-01-03",
+        "changes": [
+            "NEW: Mesh Network Map - Interactive Leaflet.js map showing node positions",
+            "NEW: Node markers with color-coded status (online/stale/offline)",
+            "NEW: Click nodes on map to see details (battery, SNR, hardware, etc.)",
+            "NEW: /api/nodes/full endpoint with detailed position and metrics data",
+            "NEW: Version Checker - Check for updates to meshtasticd, CLI, firmware",
+            "NEW: Updates tab in Web UI showing component versions",
+            "NEW: Desktop launcher for Raspberry Pi menu integration",
+            "NEW: Install script for desktop integration (scripts/install-desktop.sh)",
+            "NEW: MeshForge SVG icon",
+            "IMPROVED: Web UI now titled 'MeshForge'",
+            "IMPROVED: Uses NodeMonitor for rich node data including positions"
+        ]
+    },
     {
         "version": "4.0.1",
         "date": "2026-01-03",
