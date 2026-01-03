@@ -213,94 +213,168 @@ class RadioConfigPanel(Gtk.Box):
     def _parse_radio_info(self, output):
         """Parse --info output and populate radio info section"""
         import re
-        import json
+        import ast
 
-        # Try to extract node ID from "Owner: Name (!abcd1234)" format
-        owner_match = re.search(r'Owner[:\s]+([^(]+)\s*\((!?[0-9a-fA-F]{8})\)', output)
-        if owner_match:
-            self.radio_long_name.set_label(owner_match.group(1).strip())
-            self.radio_node_id.set_label(owner_match.group(2))
+        # Debug: print raw output to terminal for troubleshooting
+        print(f"[DEBUG] Raw --info output:\n{output[:500]}...")
 
-        # Try to parse "My info:" JSON block
+        # Extract Owner line - format: "Owner: LongName (ShortName/NodeID)"
+        # Examples: "Owner: MyNode (MYND) !abcd1234" or "Owner: MyNode (!abcd1234)"
+        owner_patterns = [
+            # Owner: LongName (ShortName) !nodeId
+            r'Owner[:\s]+(.+?)\s+\(([A-Za-z0-9]{1,4})\)\s+(!?[0-9a-fA-F]{8})',
+            # Owner: LongName (!nodeId)
+            r'Owner[:\s]+(.+?)\s+\((!?[0-9a-fA-F]{8})\)',
+            # Owner: LongName !nodeId
+            r'Owner[:\s]+(.+?)\s+(!?[0-9a-fA-F]{8})',
+        ]
+
+        for pattern in owner_patterns:
+            owner_match = re.search(pattern, output)
+            if owner_match:
+                groups = owner_match.groups()
+                if len(groups) == 3:
+                    # LongName, ShortName, NodeID
+                    self.radio_long_name.set_label(groups[0].strip())
+                    self.radio_short_name.set_label(groups[1].strip())
+                    self.radio_node_id.set_label(groups[2])
+                elif len(groups) == 2:
+                    # LongName, NodeID (no short name in parens)
+                    self.radio_long_name.set_label(groups[0].strip())
+                    self.radio_node_id.set_label(groups[1])
+                break
+
+        # Helper to safely parse Python dict strings
+        def parse_python_dict(dict_str):
+            """Parse a Python dict string (with single quotes, True/False)"""
+            try:
+                # Use ast.literal_eval for safe Python literal parsing
+                return ast.literal_eval(dict_str)
+            except (ValueError, SyntaxError):
+                try:
+                    # Fallback: convert to JSON format
+                    import json
+                    json_str = dict_str.replace("'", '"').replace("True", "true").replace("False", "false").replace("None", "null")
+                    return json.loads(json_str)
+                except:
+                    return {}
+
+        # Parse "My info:" block - may contain numChannels, myNodeNum, etc.
         my_info_match = re.search(r"My info:\s*(\{[^}]+\})", output, re.DOTALL)
         if my_info_match:
-            try:
-                # Clean up the pseudo-JSON (Python dict format with single quotes)
-                info_str = my_info_match.group(1).replace("'", '"').replace("True", "true").replace("False", "false")
-                info = json.loads(info_str)
-                if 'numChannels' in info:
-                    self.radio_channels.set_label(str(info['numChannels']))
-            except (json.JSONDecodeError, KeyError):
-                pass
+            info = parse_python_dict(my_info_match.group(1))
+            if info.get('numChannels'):
+                self.radio_channels.set_label(str(info['numChannels']))
+            if info.get('myNodeNum'):
+                node_hex = hex(info['myNodeNum'])[2:]
+                if self.radio_node_id.get_label() == "--":
+                    self.radio_node_id.set_label(f"!{node_hex}")
 
-        # Try to extract specific values from JSON in output
-        # Look for "firmwareVersion": "x.x.x" pattern
-        fw_match = re.search(r'"firmwareVersion":\s*"([^"]+)"', output)
-        if fw_match:
-            self.radio_firmware.set_label(fw_match.group(1))
-
-        # Look for "hwModel": "MODEL" pattern
-        hw_match = re.search(r'"hwModel":\s*"([^"]+)"', output)
-        if hw_match:
-            self.radio_hardware.set_label(hw_match.group(1))
-
-        # Look for "role": "ROLE" pattern
-        role_match = re.search(r'"role":\s*"([^"]+)"', output)
-        if role_match:
-            # Update the role dropdown if possible
-            pass  # Role is handled elsewhere
-
-        # Try to parse "Metadata:" block as fallback
+        # Parse "Metadata:" block - contains firmwareVersion, hwModel, etc.
         metadata_match = re.search(r"Metadata:\s*(\{[^}]+\})", output, re.DOTALL)
         if metadata_match:
+            meta = parse_python_dict(metadata_match.group(1))
+            if meta.get('firmwareVersion') and self.radio_firmware.get_label() == "--":
+                self.radio_firmware.set_label(str(meta['firmwareVersion']))
+            if meta.get('hwModel') and self.radio_hardware.get_label() == "--":
+                self.radio_hardware.set_label(str(meta['hwModel']))
+
+        # Parse "Nodes in mesh:" block for local node info
+        nodes_match = re.search(r"Nodes in mesh:\s*(\{.+?\})\s*(?=\n[A-Z]|\nPreferences|\nChannels|\Z)", output, re.DOTALL)
+        if nodes_match:
             try:
-                meta_str = metadata_match.group(1).replace("'", '"').replace("True", "true").replace("False", "false")
-                meta = json.loads(meta_str)
-                if 'firmwareVersion' in meta and self.radio_firmware.get_label() == "--":
-                    self.radio_firmware.set_label(str(meta['firmwareVersion']))
-                if 'hwModel' in meta and self.radio_hardware.get_label() == "--":
-                    self.radio_hardware.set_label(str(meta['hwModel']))
-            except (json.JSONDecodeError, KeyError):
+                nodes_block = nodes_match.group(1)
+                nodes = parse_python_dict(nodes_block)
+                # Find local node (usually first or marked with specific user info)
+                for node_id, node_data in nodes.items():
+                    user = node_data.get('user', {})
+                    if user:
+                        if self.radio_long_name.get_label() == "--":
+                            self.radio_long_name.set_label(user.get('longName', '--'))
+                        if self.radio_short_name.get_label() == "--":
+                            self.radio_short_name.set_label(user.get('shortName', '--'))
+                        if self.radio_hardware.get_label() == "--":
+                            self.radio_hardware.set_label(user.get('hwModel', '--'))
+                        break  # Only get first node (local node)
+            except:
                 pass
 
-        # Parse line by line for remaining fields
+        # Extract individual fields using flexible patterns (handles both ' and " quotes)
+        field_patterns = {
+            'firmwareVersion': (self.radio_firmware, r"['\"]firmwareVersion['\"]\s*:\s*['\"]([^'\"]+)['\"]"),
+            'hwModel': (self.radio_hardware, r"['\"]hwModel['\"]\s*:\s*['\"]([^'\"]+)['\"]"),
+            'region': (self.radio_region, r"['\"]region['\"]\s*:\s*['\"]?([A-Z_0-9]+)['\"]?"),
+            'modemPreset': (self.radio_preset, r"['\"]modem_?[Pp]reset['\"]\s*:\s*['\"]?([A-Z_]+)['\"]?"),
+            'shortName': (self.radio_short_name, r"['\"]shortName['\"]\s*:\s*['\"]([^'\"]+)['\"]"),
+            'longName': (self.radio_long_name, r"['\"]longName['\"]\s*:\s*['\"]([^'\"]+)['\"]"),
+        }
+
+        for field_name, (label, pattern) in field_patterns.items():
+            if label.get_label() == "--":
+                match = re.search(pattern, output)
+                if match:
+                    label.set_label(match.group(1).strip())
+
+        # Parse Preferences block for region and modem_preset
+        prefs_match = re.search(r"Preferences:\s*(\{.+?\})", output, re.DOTALL)
+        if prefs_match:
+            prefs = parse_python_dict(prefs_match.group(1))
+            if prefs.get('region') and self.radio_region.get_label() == "--":
+                self.radio_region.set_label(str(prefs['region']))
+            if prefs.get('modem_preset') and self.radio_preset.get_label() == "--":
+                self.radio_preset.set_label(str(prefs['modem_preset']))
+            if prefs.get('modemPreset') and self.radio_preset.get_label() == "--":
+                self.radio_preset.set_label(str(prefs['modemPreset']))
+
+        # Fallback: Parse line by line for any remaining "--" fields
         lines = output.strip().split('\n')
         for line in lines:
-            line_lower = line.lower()
+            line_lower = line.lower().strip()
 
-            # Short name
-            if 'short name' in line_lower or 'shortname' in line_lower:
-                match = re.search(r'[:\s]+([A-Za-z0-9_-]+)\s*$', line)
-                if match:
-                    self.radio_short_name.set_label(match.group(1).strip())
+            # Skip empty lines and JSON-like content
+            if not line_lower or line_lower.startswith('{') or line_lower.startswith('}'):
+                continue
 
-            # Region from config
-            elif 'region' in line_lower and ':' in line:
-                match = re.search(r':\s*([A-Z_0-9]+)', line)
-                if match and match.group(1) not in ['True', 'False', 'None']:
-                    self.radio_region.set_label(match.group(1).strip())
-
-            # Modem preset
-            elif 'modem' in line_lower and 'preset' in line_lower:
-                match = re.search(r':\s*([A-Z_]+)', line)
-                if match:
-                    self.radio_preset.set_label(match.group(1).strip())
-
-            # Hardware model fallback - skip JSON lines
-            elif ('hardware' in line_lower or 'hw_model' in line_lower) and self.radio_hardware.get_label() == "--":
-                # Skip lines that look like JSON
-                if not line.strip().startswith('{') and '"' not in line:
-                    match = re.search(r':\s*(.+)', line)
+            # Short name from "Short name: XXXX" format
+            if self.radio_short_name.get_label() == "--":
+                if 'short' in line_lower and 'name' in line_lower:
+                    match = re.search(r':\s*([A-Za-z0-9]{1,4})\s*$', line)
                     if match:
-                        self.radio_hardware.set_label(match.group(1).strip())
+                        self.radio_short_name.set_label(match.group(1))
 
-            # Firmware version fallback - skip JSON lines
-            elif 'firmware' in line_lower and 'version' in line_lower and self.radio_firmware.get_label() == "--":
-                # Skip lines that look like JSON (these are handled by regex above)
-                if not line.strip().startswith('{') and '"firmwareVersion"' not in line:
-                    match = re.search(r':\s*(.+)', line)
+            # Region from "region: US" or "Region: US" format
+            if self.radio_region.get_label() == "--":
+                if 'region' in line_lower and ':' in line:
+                    match = re.search(r':\s*([A-Z_0-9]+)', line)
+                    if match and match.group(1) not in ['True', 'False', 'None', 'UNSET']:
+                        self.radio_region.set_label(match.group(1))
+
+            # Modem preset from various formats
+            if self.radio_preset.get_label() == "--":
+                if 'modem' in line_lower and ('preset' in line_lower or ':' in line):
+                    match = re.search(r':\s*([A-Z_]+(?:FAST|SLOW|TURBO|MODERATE))', line, re.IGNORECASE)
                     if match:
-                        self.radio_firmware.set_label(match.group(1).strip())
+                        self.radio_preset.set_label(match.group(1).upper())
+
+            # Hardware model fallback
+            if self.radio_hardware.get_label() == "--":
+                if ('hardware' in line_lower or 'hw_model' in line_lower or 'hwmodel' in line_lower):
+                    match = re.search(r':\s*([A-Z0-9_]+)', line.upper())
+                    if match and len(match.group(1)) > 2:
+                        self.radio_hardware.set_label(match.group(1))
+
+            # Firmware version fallback
+            if self.radio_firmware.get_label() == "--":
+                if 'firmware' in line_lower or 'version' in line_lower:
+                    match = re.search(r':\s*(\d+\.\d+\.\d+[a-zA-Z0-9.-]*)', line)
+                    if match:
+                        self.radio_firmware.set_label(match.group(1))
+
+        # Debug: print what we extracted
+        print(f"[DEBUG] Parsed radio info: Node={self.radio_node_id.get_label()}, "
+              f"Long={self.radio_long_name.get_label()}, Short={self.radio_short_name.get_label()}, "
+              f"HW={self.radio_hardware.get_label()}, FW={self.radio_firmware.get_label()}, "
+              f"Region={self.radio_region.get_label()}, Preset={self.radio_preset.get_label()}")
 
     def _add_device_section(self, parent):
         """Add device/mesh settings section"""
@@ -866,10 +940,12 @@ class RadioConfigPanel(Gtk.Box):
     def _parse_and_populate_config(self, output):
         """Parse CLI output and populate UI fields"""
         import re
+        import ast
 
-        lines = output.strip().split('\n')
+        # Debug output
+        print(f"[DEBUG] Raw config output:\n{output[:800]}...")
 
-        # Role mapping
+        # Option lists for dropdowns (must match dropdown order)
         roles = ["CLIENT", "CLIENT_MUTE", "ROUTER", "ROUTER_CLIENT",
                  "REPEATER", "TRACKER", "SENSOR", "TAK", "TAK_TRACKER", "CLIENT_HIDDEN", "LOST_AND_FOUND"]
         regions = ["UNSET", "US", "EU_433", "EU_868", "CN", "JP", "ANZ", "KR", "TW", "RU",
@@ -877,139 +953,178 @@ class RadioConfigPanel(Gtk.Box):
         presets = ["LONG_FAST", "LONG_SLOW", "LONG_MODERATE", "MEDIUM_SLOW", "MEDIUM_FAST",
                    "SHORT_SLOW", "SHORT_FAST", "SHORT_TURBO"]
         gps_modes = ["DISABLED", "ENABLED", "NOT_PRESENT"]
+        rebroadcast_modes = ["ALL", "ALL_SKIP_DECODING", "LOCAL_ONLY", "KNOWN_ONLY", "NONE"]
 
+        # Track which fields we've set
+        fields_set = {
+            'role': False, 'region': False, 'preset': False, 'hop_limit': False,
+            'gps_mode': False, 'rebroadcast': False, 'tx_power': False,
+            'pos_interval': False, 'mqtt_enabled': False, 'lat': False, 'lon': False, 'alt': False
+        }
+
+        # Helper to safely set dropdown by matching value
+        def set_dropdown_by_value(dropdown, options, value):
+            """Set dropdown selection by matching value in options list"""
+            value_upper = value.upper().strip()
+            for i, option in enumerate(options):
+                if option == value_upper or option in value_upper:
+                    dropdown.set_selected(i)
+                    return True
+            return False
+
+        # Helper to extract value after colon
+        def extract_value(line):
+            """Extract value after colon, handling quotes"""
+            if ':' in line:
+                val = line.split(':', 1)[1].strip()
+                return val.strip('"\'')
+            return None
+
+        # First pass: Try to parse structured output sections
+        # meshtastic --get outputs sections like "lora:", "device:", etc.
+        sections = {}
+        current_section = None
+
+        lines = output.strip().split('\n')
         for line in lines:
-            line_lower = line.lower()
+            stripped = line.strip()
 
-            # Device role
-            if 'role:' in line_lower:
-                for i, role in enumerate(roles):
-                    if role.lower() in line_lower:
-                        self.role_dropdown.set_selected(i)
-                        break
+            # Detect section headers (like "lora:" or "Lora settings:")
+            if stripped.endswith(':') and not ' ' in stripped.rstrip(':'):
+                current_section = stripped.rstrip(':').lower()
+                sections[current_section] = []
+            elif current_section and stripped:
+                sections[current_section].append(stripped)
 
-            # Region
-            elif 'region:' in line_lower:
-                for i, region in enumerate(regions):
-                    if region.lower() in line_lower or region in line:
-                        self.region_dropdown.set_selected(i)
-                        break
+        # Process each line for config values
+        for line in lines:
+            line_stripped = line.strip()
+            line_lower = line_stripped.lower()
 
-            # Modem preset
-            elif 'modem_preset:' in line_lower or 'modempreset:' in line_lower:
-                for i, preset in enumerate(presets):
-                    if preset.lower() in line_lower or preset in line:
-                        self.preset_dropdown.set_selected(i)
-                        break
+            # Skip empty lines and section headers
+            if not line_stripped or line_stripped.endswith(':'):
+                continue
 
-            # Hop limit
-            elif 'hop_limit:' in line_lower or 'hoplimit:' in line_lower:
-                match = re.search(r'(\d+)', line)
+            # --- Device Role ---
+            if not fields_set['role'] and 'role' in line_lower:
+                # Match "role: CLIENT" or "role: ROUTER_CLIENT" etc.
+                match = re.search(r'role[:\s]+([A-Z_]+)', line, re.IGNORECASE)
+                if match:
+                    if set_dropdown_by_value(self.role_dropdown, roles, match.group(1)):
+                        fields_set['role'] = True
+
+            # --- Region ---
+            if not fields_set['region'] and 'region' in line_lower:
+                match = re.search(r'region[:\s]+([A-Z_0-9]+)', line, re.IGNORECASE)
+                if match and match.group(1).upper() not in ['TRUE', 'FALSE', 'NONE']:
+                    if set_dropdown_by_value(self.region_dropdown, regions, match.group(1)):
+                        fields_set['region'] = True
+
+            # --- Modem Preset ---
+            if not fields_set['preset'] and ('modem' in line_lower and 'preset' in line_lower):
+                match = re.search(r'(?:modem_?preset|preset)[:\s]+([A-Z_]+)', line, re.IGNORECASE)
+                if match:
+                    if set_dropdown_by_value(self.preset_dropdown, presets, match.group(1)):
+                        fields_set['preset'] = True
+
+            # --- Hop Limit ---
+            if not fields_set['hop_limit'] and 'hop' in line_lower and 'limit' in line_lower:
+                match = re.search(r'hop_?limit[:\s]+(\d+)', line, re.IGNORECASE)
                 if match:
                     self.hop_spin.set_value(int(match.group(1)))
+                    fields_set['hop_limit'] = True
 
-            # GPS mode
-            elif 'gps_mode:' in line_lower or 'gpsmode:' in line_lower:
-                for i, mode in enumerate(gps_modes):
-                    if mode.lower() in line_lower:
-                        self.gps_dropdown.set_selected(i)
-                        break
-
-            # Position broadcast interval
-            elif 'position_broadcast_secs:' in line_lower:
-                match = re.search(r'(\d+)', line)
-                if match:
-                    self.pos_interval_spin.set_value(int(match.group(1)))
-
-            # TX Power
-            elif 'tx_power:' in line_lower:
-                match = re.search(r'(\d+)', line)
+            # --- TX Power ---
+            if not fields_set['tx_power'] and 'tx' in line_lower and 'power' in line_lower:
+                match = re.search(r'tx_?power[:\s]+(\d+)', line, re.IGNORECASE)
                 if match:
                     self.tx_power_spin.set_value(int(match.group(1)))
+                    fields_set['tx_power'] = True
 
-            # MQTT enabled
-            elif 'mqtt' in line_lower and 'enabled:' in line_lower:
-                if 'true' in line_lower:
-                    self.mqtt_enabled_check.set_active(True)
-                else:
-                    self.mqtt_enabled_check.set_active(False)
-
-            # MQTT server/address
-            elif ('mqtt' in line_lower and 'address:' in line_lower) or 'mqtt_server:' in line_lower:
-                match = re.search(r':\s*(.+)', line)
+            # --- GPS Mode ---
+            if not fields_set['gps_mode'] and 'gps' in line_lower and 'mode' in line_lower:
+                match = re.search(r'gps_?mode[:\s]+([A-Z_]+)', line, re.IGNORECASE)
                 if match:
-                    server = match.group(1).strip().strip('"\'')
-                    if server and server != 'None':
-                        self.mqtt_server_entry.set_text(server)
+                    if set_dropdown_by_value(self.gps_dropdown, gps_modes, match.group(1)):
+                        fields_set['gps_mode'] = True
 
-            # MQTT username
-            elif 'mqtt' in line_lower and 'username:' in line_lower:
-                match = re.search(r':\s*(.+)', line)
+            # --- Rebroadcast Mode ---
+            if not fields_set['rebroadcast'] and 'rebroadcast' in line_lower and 'mode' in line_lower:
+                match = re.search(r'rebroadcast_?mode[:\s]+([A-Z_]+)', line, re.IGNORECASE)
                 if match:
-                    user = match.group(1).strip().strip('"\'')
-                    if user and user != 'None':
-                        self.mqtt_user_entry.set_text(user)
+                    if set_dropdown_by_value(self.rebroadcast_dropdown, rebroadcast_modes, match.group(1)):
+                        fields_set['rebroadcast'] = True
 
-            # MQTT encryption enabled
-            elif 'mqtt' in line_lower and 'encryption_enabled:' in line_lower:
-                if 'true' in line_lower:
-                    self.mqtt_enc_check.set_active(True)
-
-            # MQTT JSON enabled
-            elif 'mqtt' in line_lower and 'json_enabled:' in line_lower:
-                if 'true' in line_lower:
-                    self.mqtt_json_check.set_active(True)
-
-            # MQTT TLS enabled
-            elif 'mqtt' in line_lower and 'tls_enabled:' in line_lower:
-                if 'true' in line_lower:
-                    self.mqtt_tls_check.set_active(True)
-
-            # Rebroadcast mode
-            elif 'rebroadcast_mode:' in line_lower:
-                modes = ["ALL", "ALL_SKIP_DECODING", "LOCAL_ONLY", "KNOWN_ONLY", "NONE"]
-                for i, mode in enumerate(modes):
-                    if mode.lower() in line_lower:
-                        self.rebroadcast_dropdown.set_selected(i)
-                        break
-
-            # Latitude
-            elif 'latitude:' in line_lower or 'lat:' in line_lower:
-                match = re.search(r'[-+]?\d*\.?\d+', line.split(':')[-1])
+            # --- Position Broadcast Interval ---
+            if not fields_set['pos_interval'] and 'position' in line_lower and 'broadcast' in line_lower:
+                match = re.search(r'position_?broadcast_?secs?[:\s]+(\d+)', line, re.IGNORECASE)
                 if match:
-                    lat_val = float(match.group())
+                    self.pos_interval_spin.set_value(int(match.group(1)))
+                    fields_set['pos_interval'] = True
+
+            # --- MQTT Settings ---
+            if 'mqtt' in line_lower:
+                # MQTT enabled
+                if 'enabled' in line_lower and 'encryption' not in line_lower:
+                    if 'true' in line_lower:
+                        self.mqtt_enabled_check.set_active(True)
+                        fields_set['mqtt_enabled'] = True
+                    elif 'false' in line_lower:
+                        self.mqtt_enabled_check.set_active(False)
+                        fields_set['mqtt_enabled'] = True
+
+                # MQTT server/address
+                elif 'address' in line_lower or 'server' in line_lower:
+                    val = extract_value(line_stripped)
+                    if val and val.lower() not in ['none', '']:
+                        self.mqtt_server_entry.set_text(val)
+
+                # MQTT username
+                elif 'username' in line_lower:
+                    val = extract_value(line_stripped)
+                    if val and val.lower() not in ['none', '']:
+                        self.mqtt_user_entry.set_text(val)
+
+                # MQTT encryption enabled
+                elif 'encryption' in line_lower and 'enabled' in line_lower:
+                    self.mqtt_enc_check.set_active('true' in line_lower)
+
+                # MQTT JSON enabled
+                elif 'json' in line_lower and 'enabled' in line_lower:
+                    self.mqtt_json_check.set_active('true' in line_lower)
+
+                # MQTT TLS enabled
+                elif 'tls' in line_lower and 'enabled' in line_lower:
+                    self.mqtt_tls_check.set_active('true' in line_lower)
+
+            # --- Position: Latitude ---
+            if not fields_set['lat'] and ('latitude' in line_lower or line_lower.startswith('lat:')):
+                match = re.search(r'(?:latitude|lat)[:\s]+([-+]?\d+\.?\d*)', line, re.IGNORECASE)
+                if match:
+                    lat_val = float(match.group(1))
                     if lat_val != 0:
                         self.lat_entry.set_text(str(lat_val))
-                        # Update current position display
-                        if hasattr(self, 'current_pos_label'):
-                            current = self.current_pos_label.get_label()
-                            if 'Loading' in current or 'Not set' in current:
-                                self.current_pos_label.set_label(f"Lat: {lat_val}")
-                            elif 'Lat:' in current and 'Lon:' not in current:
-                                self.current_pos_label.set_label(f"Lat: {lat_val}")
+                        fields_set['lat'] = True
 
-            # Longitude
-            elif 'longitude:' in line_lower or 'lon:' in line_lower:
-                match = re.search(r'[-+]?\d*\.?\d+', line.split(':')[-1])
+            # --- Position: Longitude ---
+            if not fields_set['lon'] and ('longitude' in line_lower or line_lower.startswith('lon:')):
+                match = re.search(r'(?:longitude|lon)[:\s]+([-+]?\d+\.?\d*)', line, re.IGNORECASE)
                 if match:
-                    lon_val = float(match.group())
+                    lon_val = float(match.group(1))
                     if lon_val != 0:
                         self.lon_entry.set_text(str(lon_val))
-                        # Update current position display
-                        if hasattr(self, 'current_pos_label'):
-                            lat_text = self.lat_entry.get_text()
-                            if lat_text:
-                                self.current_pos_label.set_label(f"Lat: {lat_text}, Lon: {lon_val}")
+                        fields_set['lon'] = True
 
-            # Altitude
-            elif 'altitude:' in line_lower or 'alt:' in line_lower:
-                match = re.search(r'[-+]?\d+', line.split(':')[-1])
+            # --- Position: Altitude ---
+            if not fields_set['alt'] and ('altitude' in line_lower or line_lower.startswith('alt:')):
+                match = re.search(r'(?:altitude|alt)[:\s]+([-+]?\d+)', line, re.IGNORECASE)
                 if match:
-                    alt_val = int(match.group())
+                    alt_val = int(match.group(1))
                     if alt_val != 0:
                         self.alt_entry.set_text(str(alt_val))
+                        fields_set['alt'] = True
 
-        # Update current position label if we have coordinates
+        # Update current position label
         lat = self.lat_entry.get_text()
         lon = self.lon_entry.get_text()
         alt = self.alt_entry.get_text()
@@ -1020,6 +1135,10 @@ class RadioConfigPanel(Gtk.Box):
             self.current_pos_label.set_label(pos_str)
         else:
             self.current_pos_label.set_label("Not set or GPS disabled")
+
+        # Debug: show what was set
+        set_fields = [k for k, v in fields_set.items() if v]
+        print(f"[DEBUG] Config fields populated: {set_fields}")
 
         self.main_window.set_status_message("Configuration loaded from device")
 
