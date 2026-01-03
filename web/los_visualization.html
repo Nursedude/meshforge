@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RF Line of Sight - MeshForge</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 10px;
+            color: #4fc3f7;
+        }
+        .subtitle {
+            text-align: center;
+            color: #888;
+            margin-bottom: 20px;
+        }
+        .chart-container {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .info-card {
+            background: #16213e;
+            border-radius: 8px;
+            padding: 15px;
+        }
+        .info-card h3 {
+            color: #4fc3f7;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+        .info-card .value {
+            font-size: 24px;
+            font-weight: bold;
+        }
+        .info-card .unit {
+            color: #888;
+            font-size: 14px;
+        }
+        .status-good { color: #4caf50; }
+        .status-marginal { color: #ff9800; }
+        .status-bad { color: #f44336; }
+        .legend {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-top: 15px;
+            flex-wrap: wrap;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .legend-color {
+            width: 20px;
+            height: 4px;
+            border-radius: 2px;
+        }
+        .coordinates {
+            background: #16213e;
+            border-radius: 8px;
+            padding: 15px;
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        .coord-point {
+            text-align: center;
+        }
+        .coord-point h4 {
+            color: #4fc3f7;
+            margin-bottom: 5px;
+        }
+        .loading {
+            text-align: center;
+            padding: 100px;
+            color: #888;
+        }
+        .fresnel-info {
+            background: #1e3a5f;
+            border-left: 4px solid #4fc3f7;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 0 8px 8px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>RF Line of Sight Analysis</h1>
+        <p class="subtitle">MeshForge RF Path Visualization</p>
+
+        <div id="loading" class="loading">Loading elevation data...</div>
+
+        <div id="content" style="display: none;">
+            <div class="coordinates">
+                <div class="coord-point">
+                    <h4>Point A</h4>
+                    <div id="pointA">--</div>
+                </div>
+                <div class="coord-point">
+                    <h4>Distance</h4>
+                    <div id="distance">--</div>
+                </div>
+                <div class="coord-point">
+                    <h4>Point B</h4>
+                    <div id="pointB">--</div>
+                </div>
+            </div>
+
+            <div class="chart-container">
+                <canvas id="elevationChart"></canvas>
+                <div class="legend">
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #8B4513;"></div>
+                        <span>Terrain</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #4fc3f7;"></div>
+                        <span>Line of Sight</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: rgba(76, 175, 80, 0.3); height: 12px;"></div>
+                        <span>60% Fresnel Zone</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #ff9800; border-style: dashed;"></div>
+                        <span>Earth Curvature</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="info-grid">
+                <div class="info-card">
+                    <h3>LOS Status</h3>
+                    <div id="losStatus" class="value">--</div>
+                </div>
+                <div class="info-card">
+                    <h3>Minimum Clearance</h3>
+                    <div id="minClearance" class="value">--</div>
+                </div>
+                <div class="info-card">
+                    <h3>Fresnel Zone (60%)</h3>
+                    <div id="fresnelRadius" class="value">--</div>
+                </div>
+                <div class="info-card">
+                    <h3>Free Space Path Loss</h3>
+                    <div id="fspl" class="value">--</div>
+                </div>
+            </div>
+
+            <div class="fresnel-info">
+                <strong>About Fresnel Zones:</strong> For reliable RF communication, at least 60% of the first Fresnel zone
+                should be clear of obstructions. The Fresnel zone is an ellipsoid-shaped region around the direct line of sight
+                where radio waves travel. Obstructions in this zone cause signal degradation even if the direct path is clear.
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Parse URL parameters
+        function getParams() {
+            const params = new URLSearchParams(window.location.search);
+            return {
+                latA: parseFloat(params.get('latA')) || 0,
+                lonA: parseFloat(params.get('lonA')) || 0,
+                latB: parseFloat(params.get('latB')) || 0,
+                lonB: parseFloat(params.get('lonB')) || 0,
+                heightA: parseFloat(params.get('heightA')) || 2,
+                heightB: parseFloat(params.get('heightB')) || 2,
+                freq: parseFloat(params.get('freq')) || 915,
+                // Pre-calculated data can be passed as JSON
+                data: params.get('data') ? JSON.parse(decodeURIComponent(params.get('data'))) : null
+            };
+        }
+
+        // Haversine distance calculation
+        function haversineDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371000; // Earth radius in meters
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                      Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+
+        // Calculate intermediate points along great circle
+        function interpolatePoints(lat1, lon1, lat2, lon2, numPoints) {
+            const points = [];
+            for (let i = 0; i <= numPoints; i++) {
+                const t = i / numPoints;
+                const lat = lat1 + t * (lat2 - lat1);
+                const lon = lon1 + t * (lon2 - lon1);
+                points.push({ lat, lon, t });
+            }
+            return points;
+        }
+
+        // Fetch elevation data from Open-Elevation API
+        async function fetchElevations(points) {
+            const locations = points.map(p => `${p.lat},${p.lon}`).join('|');
+            const url = `https://api.open-elevation.com/api/v1/lookup?locations=${locations}`;
+
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                return data.results.map((r, i) => ({
+                    ...points[i],
+                    elevation: r.elevation
+                }));
+            } catch (error) {
+                console.error('Elevation API error:', error);
+                // Return flat terrain as fallback
+                return points.map(p => ({ ...p, elevation: 0 }));
+            }
+        }
+
+        // Calculate earth curvature drop
+        function earthCurvatureDrop(distance) {
+            const R = 6371000 * (4/3); // Effective earth radius with RF refraction
+            return (distance * distance) / (2 * R);
+        }
+
+        // Calculate Fresnel zone radius at a point
+        function fresnelRadius(d1, d2, freq) {
+            const wavelength = 299792458 / (freq * 1e6); // Speed of light / frequency
+            return Math.sqrt((wavelength * d1 * d2) / (d1 + d2));
+        }
+
+        // Main visualization function
+        async function visualize() {
+            const params = getParams();
+
+            if (!params.latA || !params.lonA || !params.latB || !params.lonB) {
+                document.getElementById('loading').innerHTML =
+                    '<h2>No coordinates provided</h2>' +
+                    '<p>Use URL parameters: ?latA=...&lonA=...&latB=...&lonB=...</p>';
+                return;
+            }
+
+            const distance = haversineDistance(params.latA, params.lonA, params.latB, params.lonB);
+            const distanceKm = distance / 1000;
+
+            // Get elevation points (20 samples along path)
+            const numSamples = 20;
+            const pathPoints = interpolatePoints(params.latA, params.lonA, params.latB, params.lonB, numSamples);
+
+            let elevationData;
+            if (params.data && params.data.elevations) {
+                elevationData = params.data.elevations;
+            } else {
+                elevationData = await fetchElevations(pathPoints);
+            }
+
+            // Calculate LOS line and Fresnel zones
+            const elevA = elevationData[0].elevation + params.heightA;
+            const elevB = elevationData[elevationData.length - 1].elevation + params.heightB;
+
+            const labels = [];
+            const terrainData = [];
+            const losLine = [];
+            const fresnelUpper = [];
+            const fresnelLower = [];
+            const earthCurvature = [];
+
+            let minClearance = Infinity;
+            let worstPoint = 0;
+
+            elevationData.forEach((point, i) => {
+                const distFromA = point.t * distance;
+                const distFromB = distance - distFromA;
+                const distKm = distFromA / 1000;
+
+                labels.push(distKm.toFixed(2));
+
+                // Terrain elevation
+                terrainData.push(point.elevation);
+
+                // LOS line (straight line from A to B, accounting for earth curvature)
+                const losHeight = elevA + (elevB - elevA) * point.t;
+                const curvatureDrop = earthCurvatureDrop(distFromA);
+                const adjustedLos = losHeight - curvatureDrop;
+                losLine.push(adjustedLos);
+
+                // Earth curvature reference (from point A level)
+                earthCurvature.push(elevA - earthCurvatureDrop(distFromA));
+
+                // Fresnel zone (60%)
+                if (distFromA > 0 && distFromB > 0) {
+                    const fRadius = fresnelRadius(distFromA, distFromB, params.freq) * 0.6;
+                    fresnelUpper.push(adjustedLos + fRadius);
+                    fresnelLower.push(adjustedLos - fRadius);
+
+                    // Calculate clearance
+                    const clearance = adjustedLos - fRadius - point.elevation;
+                    if (clearance < minClearance) {
+                        minClearance = clearance;
+                        worstPoint = i;
+                    }
+                } else {
+                    fresnelUpper.push(adjustedLos);
+                    fresnelLower.push(adjustedLos);
+                }
+            });
+
+            // Determine LOS status
+            let losStatus, statusClass;
+            const fresnel60 = fresnelRadius(distance/2, distance/2, params.freq) * 0.6;
+
+            if (minClearance >= 0) {
+                losStatus = '✓ Clear LOS';
+                statusClass = 'status-good';
+            } else if (minClearance > -fresnel60) {
+                losStatus = '⚠ Marginal';
+                statusClass = 'status-marginal';
+            } else {
+                losStatus = '✗ Obstructed';
+                statusClass = 'status-bad';
+            }
+
+            // Calculate FSPL
+            const fspl = 20 * Math.log10(distance) + 20 * Math.log10(params.freq) - 27.55;
+
+            // Update UI
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('content').style.display = 'block';
+
+            document.getElementById('pointA').textContent = `${params.latA.toFixed(5)}, ${params.lonA.toFixed(5)} (${params.heightA}m)`;
+            document.getElementById('pointB').textContent = `${params.latB.toFixed(5)}, ${params.lonB.toFixed(5)} (${params.heightB}m)`;
+            document.getElementById('distance').textContent = `${distanceKm.toFixed(2)} km`;
+
+            document.getElementById('losStatus').textContent = losStatus;
+            document.getElementById('losStatus').className = 'value ' + statusClass;
+
+            document.getElementById('minClearance').innerHTML = `${minClearance.toFixed(1)} <span class="unit">m</span>`;
+            document.getElementById('fresnelRadius').innerHTML = `${fresnel60.toFixed(1)} <span class="unit">m</span>`;
+            document.getElementById('fspl').innerHTML = `${fspl.toFixed(1)} <span class="unit">dB</span>`;
+
+            // Create chart
+            const ctx = document.getElementById('elevationChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Terrain',
+                            data: terrainData,
+                            borderColor: '#8B4513',
+                            backgroundColor: 'rgba(139, 69, 19, 0.3)',
+                            fill: true,
+                            tension: 0.4,
+                            pointRadius: 0
+                        },
+                        {
+                            label: 'Line of Sight',
+                            data: losLine,
+                            borderColor: '#4fc3f7',
+                            borderWidth: 2,
+                            fill: false,
+                            pointRadius: 0
+                        },
+                        {
+                            label: 'Fresnel Upper',
+                            data: fresnelUpper,
+                            borderColor: 'rgba(76, 175, 80, 0.5)',
+                            backgroundColor: 'rgba(76, 175, 80, 0.2)',
+                            borderWidth: 1,
+                            borderDash: [5, 5],
+                            fill: '+1',
+                            pointRadius: 0
+                        },
+                        {
+                            label: 'Fresnel Lower',
+                            data: fresnelLower,
+                            borderColor: 'rgba(76, 175, 80, 0.5)',
+                            borderWidth: 1,
+                            borderDash: [5, 5],
+                            fill: false,
+                            pointRadius: 0
+                        },
+                        {
+                            label: 'Earth Curvature',
+                            data: earthCurvature,
+                            borderColor: '#ff9800',
+                            borderWidth: 1,
+                            borderDash: [10, 5],
+                            fill: false,
+                            pointRadius: 0
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Distance (km)',
+                                color: '#888'
+                            },
+                            ticks: { color: '#888' },
+                            grid: { color: '#333' }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Elevation (m)',
+                                color: '#888'
+                            },
+                            ticks: { color: '#888' },
+                            grid: { color: '#333' }
+                        }
+                    }
+                }
+            });
+
+            // Resize chart container
+            document.getElementById('elevationChart').parentElement.style.height = '400px';
+        }
+
+        // Run visualization
+        visualize();
+    </script>
+</body>
+</html>

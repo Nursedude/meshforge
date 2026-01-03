@@ -432,12 +432,18 @@ meshforge/
 
 ## Version History
 
-### v4.1.0 (2026-01-03) - Map, Updates & Site Planner
+### v4.1.0 (2026-01-03) - Map, Updates & RF Tools
 - **NEW**: Mesh Network Map with Leaflet.js
   - Interactive map showing node positions
   - Color-coded markers (green=my node, blue=online, orange=stale, gray=offline)
   - Click nodes for detailed popups (battery, SNR, hardware, altitude)
   - Auto-zoom to fit all nodes
+- **NEW**: RF Line of Sight Calculator
+  - Built-in LOS calculator with elevation data from Open-Elevation API
+  - Calculates: distance, earth bulge, Fresnel zone, FSPL
+  - Web-based visualization with Chart.js elevation profile
+  - Shows terrain, LOS line, 60% Fresnel zone, earth curvature
+  - Status indicators: Clear/Marginal/Obstructed
 - **NEW**: Version Checker & Updates tab
   - Check installed versions of meshtasticd, CLI, firmware
   - Compare against latest available versions
@@ -455,7 +461,8 @@ meshforge/
   - All 22 Meshtastic regions supported
   - Channel Preset dropdown for quick slot selection
   - Auto-calculated frequency display
-- **FIX**: Device role parsing now correctly detects CLIENT_MUTE
+- **FIX**: Device role parsing now handles numeric enum values from CLI
+  - Correctly maps 0=CLIENT, 1=CLIENT_MUTE, 2=ROUTER, etc.
 - **NEW**: `/api/nodes/full` endpoint with rich node data
 
 ### v4.0.1 (2026-01-03) - Security & Features

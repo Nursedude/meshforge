@@ -48,10 +48,19 @@ Coverage Map Output
 
 ## Integration Options for MeshForge
 
-### Option A: Link/Embed (Current Implementation)
+### Option A: Link/Embed (Implemented)
 - ✅ **Implemented** - Button in Tools → RF Tools opens site.meshtastic.org
 - Quick solution, no backend needed
 - Uses official hosted tool
+
+### Option A2: Built-in RF Line of Sight Calculator (Implemented)
+- ✅ **Implemented** - Built-in LOS calculator in RF Tools section
+- Input: Point A/B coordinates, antenna heights, frequency
+- Uses Open-Elevation API for terrain data
+- Calculates: distance, earth bulge, Fresnel zone, FSPL
+- Web visualization with Chart.js elevation profile
+- Shows: terrain, LOS line, 60% Fresnel zone, earth curvature
+- Status: Clear (green) / Marginal (orange) / Obstructed (red)
 
 ### Option B: WebKitGTK Embed
 - Embed the web tool directly in MeshForge GTK UI
