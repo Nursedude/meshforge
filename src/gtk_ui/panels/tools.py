@@ -185,6 +185,12 @@ class ToolsPanel(Gtk.Box):
 
         rf_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
 
+        # Site Planner button - prominent position
+        planner_btn = Gtk.Button(label="Site Planner")
+        planner_btn.add_css_class("suggested-action")
+        planner_btn.connect("clicked", self._on_site_planner)
+        rf_buttons.append(planner_btn)
+
         link_btn = Gtk.Button(label="Link Budget Calculator")
         link_btn.connect("clicked", self._on_link_budget)
         rf_buttons.append(link_btn)
@@ -595,6 +601,24 @@ class ToolsPanel(Gtk.Box):
                 GLib.idle_add(self._log, "No Meshtastic devices found on port 4403")
         except Exception as e:
             GLib.idle_add(self._log, f"Scan error: {e}")
+
+    def _on_site_planner(self, button):
+        """Open Meshtastic Site Planner in browser"""
+        import webbrowser
+        url = "https://site.meshtastic.org/"
+        self._log("\n=== Meshtastic Site Planner ===")
+        self._log(f"Opening {url}")
+        self._log("\nFeatures:")
+        self._log("  • RF coverage prediction using ITM/Longley-Rice model")
+        self._log("  • Terrain analysis with NASA SRTM data")
+        self._log("  • Multi-node network planning")
+        self._log("  • Customizable antenna gain, cable loss, clutter")
+        try:
+            webbrowser.open(url)
+            self._log("Browser opened successfully")
+        except Exception as e:
+            self._log(f"Error opening browser: {e}")
+            self._log(f"Visit manually: {url}")
 
     def _on_link_budget(self, button):
         """Show link budget info"""
