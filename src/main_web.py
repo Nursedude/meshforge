@@ -44,13 +44,33 @@ except ImportError:
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 
-# Configuration
+# Configuration - SECURITY: Default to localhost only
+# Use --host 0.0.0.0 explicitly to expose to network (requires --password)
 CONFIG = {
     'auth_enabled': False,
     'password': None,  # Set via --password or environment
-    'host': '0.0.0.0',
+    'host': '127.0.0.1',  # SECURE DEFAULT: localhost only
     'port': 8080,
 }
+
+
+# Security headers middleware
+@app.after_request
+def add_security_headers(response):
+    """Add security headers to all responses"""
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    # CSP - allow inline styles/scripts for single-file app, but restrict sources
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'"
+    )
+    return response
 
 # CPU stats for delta calculation
 _last_cpu = None
@@ -735,6 +755,21 @@ def send_mesh_message(text, destination=None):
     if not text or not text.strip():
         return {'error': 'Message cannot be empty'}
 
+    # Validate message length (Meshtastic limit ~230 bytes)
+    # UTF-8 can use multiple bytes per char, so check both
+    text = text.strip()
+    if len(text) > 230:
+        return {'error': 'Message too long (max 230 characters)'}
+    if len(text.encode('utf-8')) > 230:
+        return {'error': 'Message too long (max 230 bytes, unicode chars count as more)'}
+
+    # Validate destination if provided (Meshtastic node IDs are hex with optional ! prefix)
+    if destination:
+        destination = str(destination).strip()
+        # Node IDs: !abc123def or abc123def (hex)
+        if not re.match(r'^!?[0-9a-fA-F]{1,16}$', destination):
+            return {'error': 'Invalid destination: must be hex node ID (e.g., !abc123 or abc123)'}
+
     # Check if port is reachable
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -747,7 +782,7 @@ def send_mesh_message(text, destination=None):
         return {'error': 'Cannot connect to meshtasticd'}
 
     try:
-        cmd = [cli, '--host', 'localhost', '--sendtext', text.strip()]
+        cmd = [cli, '--host', 'localhost', '--sendtext', text]
         if destination:
             cmd.extend(['--dest', destination])
 
@@ -1019,6 +1054,36 @@ def api_edit_config():
     return jsonify({'error': 'Config not found'}), 404
 
 
+def validate_journalctl_since(since_value):
+    """Validate journalctl --since parameter to prevent injection.
+
+    Allows: ISO dates, relative times like '1 hour ago', 'today', 'yesterday'
+    """
+    import re
+    if not since_value:
+        return True, None
+
+    # Limit length
+    if len(since_value) > 50:
+        return False, "Time value too long"
+
+    # Whitelist safe patterns:
+    # - ISO dates: 2024-01-01, 2024-01-01 12:00:00
+    # - Relative: "1 hour ago", "30 minutes ago", "2 days ago"
+    # - Named: today, yesterday, now
+    safe_patterns = [
+        r'^[\d]{4}-[\d]{2}-[\d]{2}(\s[\d]{2}:[\d]{2}(:[\d]{2})?)?$',  # ISO date/datetime
+        r'^\d+\s+(second|minute|hour|day|week|month|year)s?\s+ago$',  # Relative time
+        r'^(today|yesterday|now|tomorrow)$',  # Named times
+    ]
+
+    for pattern in safe_patterns:
+        if re.match(pattern, since_value.lower().strip()):
+            return True, None
+
+    return False, "Invalid time format. Use ISO date (2024-01-01) or relative (1 hour ago)"
+
+
 @app.route('/api/logs/stream')
 @login_required
 def api_logs_stream():
@@ -1026,7 +1091,15 @@ def api_logs_stream():
     lines = request.args.get('lines', 100, type=int)
     since = request.args.get('since', '')
 
+    # Validate since parameter
+    if since:
+        is_valid, error = validate_journalctl_since(since)
+        if not is_valid:
+            return jsonify({'error': error}), 400
+
     try:
+        # Limit lines to reasonable range
+        lines = max(1, min(lines, 1000))
         cmd = ['journalctl', '-u', 'meshtasticd', '-n', str(lines), '--no-pager']
         if since:
             cmd.extend(['--since', since])
@@ -1530,6 +1603,14 @@ MAIN_TEMPLATE = '''
     </div>
 
     <script>
+        // Security: HTML escape function to prevent XSS
+        function escapeHtml(text) {
+            if (text === null || text === undefined) return '';
+            const div = document.createElement('div');
+            div.textContent = String(text);
+            return div.innerHTML;
+        }
+
         // Tab switching with persistence
         function switchTab(tabName) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -1646,8 +1727,8 @@ MAIN_TEMPLATE = '''
                 } else {
                     availEl.innerHTML = data.available.map(c => `
                         <li class="config-item">
-                            <span class="name">${c}</span>
-                            <button class="btn btn-success" onclick="activateConfig('${c}')">Activate</button>
+                            <span class="name">${escapeHtml(c)}</span>
+                            <button class="btn btn-success" onclick="activateConfig('${escapeHtml(c).replace(/'/g, "\\'")}')">Activate</button>
                         </li>
                     `).join('');
                 }
@@ -1664,8 +1745,8 @@ MAIN_TEMPLATE = '''
                 const el = document.getElementById('hardware-list');
                 el.innerHTML = data.devices.map(d => `
                     <div class="hardware-item">
-                        <span class="badge ${d.type.toLowerCase()}">${d.type}</span>
-                        <span><strong>${d.device}</strong> - ${d.description}</span>
+                        <span class="badge ${escapeHtml(d.type).toLowerCase()}">${escapeHtml(d.type)}</span>
+                        <span><strong>${escapeHtml(d.device)}</strong> - ${escapeHtml(d.description)}</span>
                     </div>
                 `).join('');
             } catch (e) {
@@ -1687,12 +1768,12 @@ MAIN_TEMPLATE = '''
                 const data = await resp.json();
 
                 if (data.error) {
-                    el.innerHTML = `<div class="item" style="grid-column: span 2; color: var(--warning);">${data.error}</div>`;
+                    el.innerHTML = `<div class="item" style="grid-column: span 2; color: var(--warning);">${escapeHtml(data.error)}</div>`;
                 } else {
                     el.innerHTML = Object.entries(data).map(([k, v]) => `
                         <div class="item">
-                            <div class="label">${k.replace('_', ' ').toUpperCase()}</div>
-                            <div>${v}</div>
+                            <div class="label">${escapeHtml(k.replace('_', ' ').toUpperCase())}</div>
+                            <div>${escapeHtml(v)}</div>
                         </div>
                     `).join('');
                 }
@@ -1726,7 +1807,7 @@ MAIN_TEMPLATE = '''
                 const data = await resp.json();
 
                 if (data.error) {
-                    listEl.innerHTML = `<div style="color: var(--warning);">${data.error}</div>`;
+                    listEl.innerHTML = `<div style="color: var(--warning);">${escapeHtml(data.error)}</div>`;
                     return;
                 }
 
@@ -1754,9 +1835,9 @@ MAIN_TEMPLATE = '''
 
                     html += `
                         <tr style="border-bottom: 1px solid #333;">
-                            <td style="padding: 10px;"><strong>${c.name}</strong></td>
-                            <td style="padding: 10px; font-family: monospace;">${c.installed}</td>
-                            <td style="padding: 10px; font-family: monospace;">${c.latest}</td>
+                            <td style="padding: 10px;"><strong>${escapeHtml(c.name)}</strong></td>
+                            <td style="padding: 10px; font-family: monospace;">${escapeHtml(c.installed)}</td>
+                            <td style="padding: 10px; font-family: monospace;">${escapeHtml(c.latest)}</td>
                             <td style="padding: 10px;">${statusBadge}</td>
                         </tr>
                     `;
@@ -1776,7 +1857,7 @@ MAIN_TEMPLATE = '''
 
             } catch (e) {
                 console.error('Error fetching versions:', e);
-                listEl.innerHTML = `<div style="color: var(--danger);">Error: ${e.message}</div>`;
+                listEl.innerHTML = `<div style="color: var(--danger);">Error: ${escapeHtml(e.message)}</div>`;
             }
         }
 
@@ -2182,20 +2263,25 @@ def stop_web_ui():
 def main():
     # Get defaults from environment variables
     default_port = int(os.environ.get('MESHTASTICD_WEB_PORT', 8880))
-    default_host = os.environ.get('MESHTASTICD_WEB_HOST', '0.0.0.0')
+    # SECURITY: Default to localhost, require explicit --host 0.0.0.0 for network access
+    default_host = os.environ.get('MESHTASTICD_WEB_HOST', '127.0.0.1')
 
     parser = argparse.ArgumentParser(
         description='Meshtasticd Manager - Web UI',
         epilog='''
 Examples:
-  sudo python3 src/main_web.py                    # Default port 8880
-  sudo python3 src/main_web.py --port 9000        # Custom port
-  sudo python3 src/main_web.py -p 8080            # Short form
-  sudo python3 src/main_web.py --stop             # Stop running instance
+  sudo python3 src/main_web.py                              # Localhost only (secure)
+  sudo python3 src/main_web.py --host 0.0.0.0 -P secret     # Network access with auth
+  sudo python3 src/main_web.py --port 9000                  # Custom port
+  sudo python3 src/main_web.py --stop                       # Stop running instance
+
+SECURITY NOTE:
+  By default, binds to localhost (127.0.0.1) only.
+  To expose to network, use --host 0.0.0.0 WITH --password.
 
 Environment variables:
   MESHTASTICD_WEB_PORT=9000      # Set default port
-  MESHTASTICD_WEB_PASSWORD=xxx   # Enable authentication
+  MESHTASTICD_WEB_PASSWORD=xxx   # Enable authentication (required for network access)
   MESHTASTICD_WEB_HOST=0.0.0.0   # Set bind address
 '''
     )
@@ -2252,6 +2338,31 @@ Environment variables:
         CONFIG['auth_enabled'] = True
         CONFIG['password'] = os.environ.get('MESHTASTICD_WEB_PASSWORD')
         print("Authentication enabled (from environment)")
+
+    # SECURITY: Warn if exposing to network without authentication
+    if args.host in ('0.0.0.0', '::') and not CONFIG['auth_enabled']:
+        print()
+        print("=" * 70)
+        print("⚠️  SECURITY WARNING: Network exposure without authentication!")
+        print("=" * 70)
+        print("You are binding to all interfaces without a password.")
+        print("Anyone on your network can access and control meshtasticd.")
+        print()
+        print("Recommended: Add authentication with --password <secret>")
+        print("  Example: sudo python3 src/main_web.py --host 0.0.0.0 -P mysecret")
+        print()
+        print("Or use localhost only (default):")
+        print("  Example: sudo python3 src/main_web.py")
+        print("=" * 70)
+        print()
+        # Give user 5 seconds to cancel
+        print("Starting in 5 seconds... (Ctrl+C to cancel)")
+        import time
+        try:
+            time.sleep(5)
+        except KeyboardInterrupt:
+            print("\nAborted.")
+            sys.exit(1)
 
     # Get local IP for display
     try:
