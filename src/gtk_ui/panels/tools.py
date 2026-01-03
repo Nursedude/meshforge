@@ -9,6 +9,7 @@ from gi.repository import Gtk, Adw, GLib
 import subprocess
 import threading
 import socket
+import json
 from pathlib import Path
 
 
@@ -220,6 +221,33 @@ class ToolsPanel(Gtk.Box):
         los_inner.set_margin_end(10)
         los_inner.set_margin_top(8)
         los_inner.set_margin_bottom(8)
+
+        # Location presets and history
+        self._load_los_locations()
+
+        preset_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        preset_box.append(Gtk.Label(label="Presets:"))
+
+        # Build location list for dropdown
+        location_names = ["-- Select Location --"] + [loc["name"] for loc in self.los_locations]
+        self.los_preset_dropdown = Gtk.DropDown.new_from_strings(location_names)
+        self.los_preset_dropdown.set_selected(0)
+        self.los_preset_dropdown.connect("notify::selected", self._on_los_preset_selected)
+        preset_box.append(self.los_preset_dropdown)
+
+        # Point selector (A or B)
+        preset_box.append(Gtk.Label(label="to:"))
+        self.los_point_selector = Gtk.DropDown.new_from_strings(["Point A", "Point B"])
+        self.los_point_selector.set_selected(0)
+        preset_box.append(self.los_point_selector)
+
+        # Save current location button
+        save_loc_btn = Gtk.Button(label="Save Location")
+        save_loc_btn.set_tooltip_text("Save current Point A as a named location")
+        save_loc_btn.connect("clicked", self._on_save_los_location)
+        preset_box.append(save_loc_btn)
+
+        los_inner.append(preset_box)
 
         # Point A
         point_a_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -1149,3 +1177,166 @@ class ToolsPanel(Gtk.Box):
 
         GLib.idle_add(self._log, "Installation complete")
         GLib.idle_add(self._refresh_status)
+
+    # === LOS Location Management ===
+
+    LOS_LOCATIONS_FILE = Path.home() / ".config" / "meshforge" / "los_locations.json"
+
+    # Default preset locations - major cities and Meshtastic community areas
+    DEFAULT_LOCATIONS = [
+        # Hawaii
+        {"name": "Honolulu, HI", "lat": 21.3069, "lon": -157.8583},
+        {"name": "Maui - Haleakala", "lat": 20.7097, "lon": -156.2533},
+        {"name": "Big Island - Mauna Kea", "lat": 19.8207, "lon": -155.4680},
+        # US West Coast
+        {"name": "San Francisco, CA", "lat": 37.7749, "lon": -122.4194},
+        {"name": "Los Angeles, CA", "lat": 34.0522, "lon": -118.2437},
+        {"name": "Seattle, WA", "lat": 47.6062, "lon": -122.3321},
+        {"name": "Portland, OR", "lat": 45.5155, "lon": -122.6789},
+        {"name": "San Diego, CA", "lat": 32.7157, "lon": -117.1611},
+        {"name": "Denver, CO", "lat": 39.7392, "lon": -104.9903},
+        {"name": "Phoenix, AZ", "lat": 33.4484, "lon": -112.0740},
+        # US East Coast
+        {"name": "New York, NY", "lat": 40.7128, "lon": -74.0060},
+        {"name": "Boston, MA", "lat": 42.3601, "lon": -71.0589},
+        {"name": "Miami, FL", "lat": 25.7617, "lon": -80.1918},
+        {"name": "Atlanta, GA", "lat": 33.7490, "lon": -84.3880},
+        {"name": "Washington, DC", "lat": 38.9072, "lon": -77.0369},
+        # US Central
+        {"name": "Chicago, IL", "lat": 41.8781, "lon": -87.6298},
+        {"name": "Austin, TX", "lat": 30.2672, "lon": -97.7431},
+        {"name": "Dallas, TX", "lat": 32.7767, "lon": -96.7970},
+        # Europe
+        {"name": "London, UK", "lat": 51.5074, "lon": -0.1278},
+        {"name": "Berlin, DE", "lat": 52.5200, "lon": 13.4050},
+        {"name": "Paris, FR", "lat": 48.8566, "lon": 2.3522},
+        {"name": "Amsterdam, NL", "lat": 52.3676, "lon": 4.9041},
+        # Australia/NZ
+        {"name": "Sydney, AU", "lat": -33.8688, "lon": 151.2093},
+        {"name": "Melbourne, AU", "lat": -37.8136, "lon": 144.9631},
+        {"name": "Auckland, NZ", "lat": -36.8509, "lon": 174.7645},
+    ]
+
+    def _load_los_locations(self):
+        """Load saved locations from file, merge with defaults"""
+        self.los_locations = list(self.DEFAULT_LOCATIONS)
+        self.los_custom_locations = []
+        self.los_history = []
+
+        try:
+            if self.LOS_LOCATIONS_FILE.exists():
+                with open(self.LOS_LOCATIONS_FILE) as f:
+                    data = json.load(f)
+                    self.los_custom_locations = data.get("custom", [])
+                    self.los_history = data.get("history", [])[-10:]  # Keep last 10
+
+                    # Add custom locations to the list
+                    for loc in self.los_custom_locations:
+                        self.los_locations.append(loc)
+
+                    # Add history items (with prefix)
+                    for loc in self.los_history:
+                        loc_copy = loc.copy()
+                        loc_copy["name"] = f"[Recent] {loc['name']}"
+                        self.los_locations.append(loc_copy)
+        except Exception as e:
+            print(f"[LOS] Error loading locations: {e}")
+
+    def _save_los_locations(self):
+        """Save custom locations and history to file"""
+        try:
+            self.LOS_LOCATIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "custom": self.los_custom_locations,
+                "history": self.los_history[-10:]  # Keep last 10
+            }
+            with open(self.LOS_LOCATIONS_FILE, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"[LOS] Error saving locations: {e}")
+
+    def _on_los_preset_selected(self, dropdown, _):
+        """Handle location preset selection"""
+        selected = dropdown.get_selected()
+        if selected == 0:  # "-- Select Location --"
+            return
+
+        # Get the location (offset by 1 for the placeholder)
+        loc = self.los_locations[selected - 1]
+
+        # Determine which point to fill
+        point = self.los_point_selector.get_selected()
+
+        if point == 0:  # Point A
+            self.los_lat_a.set_text(str(loc["lat"]))
+            self.los_lon_a.set_text(str(loc["lon"]))
+        else:  # Point B
+            self.los_lat_b.set_text(str(loc["lat"]))
+            self.los_lon_b.set_text(str(loc["lon"]))
+
+        self._log(f"Loaded {loc['name']} to Point {'A' if point == 0 else 'B'}")
+
+    def _on_save_los_location(self, button):
+        """Save current Point A as a new named location"""
+        try:
+            lat = float(self.los_lat_a.get_text().strip())
+            lon = float(self.los_lon_a.get_text().strip())
+        except ValueError:
+            self.los_results.set_label("Error: Enter valid coordinates in Point A first")
+            return
+
+        # Show dialog to get name
+        dialog = Gtk.MessageDialog(
+            transient_for=self.main_window,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.OK_CANCEL,
+            text="Save Location"
+        )
+        dialog.format_secondary_text("Enter a name for this location:")
+
+        # Add entry to dialog
+        content_area = dialog.get_content_area()
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("e.g., My Home, Repeater Site 1")
+        entry.set_margin_start(20)
+        entry.set_margin_end(20)
+        entry.set_margin_bottom(10)
+        content_area.append(entry)
+
+        def on_response(dialog, response):
+            if response == Gtk.ResponseType.OK:
+                name = entry.get_text().strip()
+                if name:
+                    new_loc = {"name": name, "lat": lat, "lon": lon}
+                    self.los_custom_locations.append(new_loc)
+                    self.los_locations.append(new_loc)
+                    self._save_los_locations()
+
+                    # Update dropdown
+                    location_names = ["-- Select Location --"] + [loc["name"] for loc in self.los_locations]
+                    self.los_preset_dropdown.set_model(Gtk.StringList.new(location_names))
+
+                    self._log(f"Saved location: {name} ({lat}, {lon})")
+                else:
+                    self.los_results.set_label("Error: Please enter a name")
+            dialog.destroy()
+
+        dialog.connect("response", on_response)
+        dialog.present()
+
+    def _add_to_los_history(self, lat, lon, name=None):
+        """Add a location to history"""
+        if name is None:
+            name = f"{lat:.4f}, {lon:.4f}"
+
+        # Check if already in history
+        for h in self.los_history:
+            if abs(h["lat"] - lat) < 0.0001 and abs(h["lon"] - lon) < 0.0001:
+                return  # Already exists
+
+        self.los_history.append({"name": name, "lat": lat, "lon": lon})
+        if len(self.los_history) > 10:
+            self.los_history = self.los_history[-10:]
+
+        self._save_los_locations()
