@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maidenhead Grid & Distance Calculator</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #16213e;
+            --bg-card: #0f3460;
+            --accent: #e94560;
+            --accent-hover: #ff6b6b;
+            --text-primary: #eaeaea;
+            --text-secondary: #a0a0a0;
+            --success: #00d9ff;
+            --warning: #ffa502;
+            --border: #2a4a6e;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+            color: var(--text-primary);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 750px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .logo {
+            font-size: 14px;
+            font-family: monospace;
+            color: var(--success);
+            margin-bottom: 10px;
+            white-space: pre;
+            line-height: 1.2;
+        }
+
+        h1 {
+            font-size: 1.8rem;
+            margin-bottom: 8px;
+            background: linear-gradient(90deg, var(--success), var(--accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 20px;
+            border: 1px solid var(--border);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        .card-title {
+            font-size: 1.1rem;
+            margin-bottom: 20px;
+            color: var(--success);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .location-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr auto;
+            gap: 12px;
+            align-items: end;
+            margin-bottom: 16px;
+        }
+
+        .form-group {
+            margin-bottom: 0;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 6px;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 12px 16px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 1rem;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: var(--success);
+            box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.1);
+        }
+
+        button {
+            padding: 12px 20px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        button:hover {
+            border-color: var(--success);
+            color: var(--success);
+        }
+
+        button.primary {
+            background: var(--success);
+            color: var(--bg-primary);
+            border-color: var(--success);
+        }
+
+        button.primary:hover {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: white;
+        }
+
+        button.danger {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        button.danger:hover {
+            background: var(--accent);
+            color: white;
+        }
+
+        .preset-section {
+            margin-bottom: 20px;
+        }
+
+        .preset-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .preset-row select {
+            flex: 1;
+        }
+
+        .saved-locations {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 12px;
+            margin-top: 16px;
+        }
+
+        .saved-locations-title {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 10px;
+        }
+
+        .saved-location-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: var(--bg-card);
+            border-radius: 6px;
+            margin-bottom: 6px;
+            font-size: 0.9rem;
+        }
+
+        .saved-location-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .saved-location-name {
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        .saved-location-coords {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+        }
+
+        .saved-location-actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        .saved-location-actions button {
+            padding: 4px 10px;
+            font-size: 0.8rem;
+        }
+
+        .result-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+        }
+
+        .result-item {
+            background: var(--bg-secondary);
+            padding: 16px;
+            border-radius: 12px;
+            text-align: center;
+        }
+
+        .result-item.large {
+            grid-column: 1 / -1;
+        }
+
+        .result-item.highlight {
+            border: 2px solid var(--success);
+            background: rgba(0, 217, 255, 0.1);
+        }
+
+        .result-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .result-value {
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .result-item.large .result-value {
+            font-size: 2rem;
+            color: var(--success);
+            font-family: monospace;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .tab-btn {
+            flex: 1;
+            padding: 12px;
+            text-align: center;
+        }
+
+        .tab-btn.active {
+            background: var(--success);
+            color: var(--bg-primary);
+            border-color: var(--success);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .divider {
+            height: 1px;
+            background: var(--border);
+            margin: 20px 0;
+        }
+
+        .add-location-form {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 10px;
+            margin-top: 12px;
+        }
+
+        footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border);
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+        }
+
+        footer a {
+            color: var(--success);
+            text-decoration: none;
+        }
+
+        footer a:hover {
+            text-decoration: underline;
+        }
+
+        @media (max-width: 600px) {
+            .location-row {
+                grid-template-columns: 1fr;
+            }
+            .result-grid {
+                grid-template-columns: 1fr;
+            }
+            .logo {
+                font-size: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">╔╦╗╔═╗╔═╗╦ ╦╔═╗╔═╗╦═╗╔═╗╔═╗
+║║║║╣ ╚═╗╠═╣╠╣ ║ ║╠╦╝║ ╦║╣
+╩ ╩╚═╝╚═╝╩ ╩╚  ╚═╝╩╚═╚═╝╚═╝</div>
+            <h1>Maidenhead Grid & Distance</h1>
+            <p class="subtitle">Convert coordinates to grid locators and calculate distances</p>
+        </header>
+
+        <div class="card">
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="converter">Grid Converter</button>
+                <button class="tab-btn" data-tab="distance">Distance Calculator</button>
+            </div>
+
+            <!-- Grid Converter Tab -->
+            <div class="tab-content active" id="tab-converter">
+                <div class="preset-section">
+                    <label>Saved Locations</label>
+                    <div class="preset-row">
+                        <select id="locationPreset">
+                            <option value="">-- Select a location --</option>
+                        </select>
+                        <button id="loadPreset">Load</button>
+                    </div>
+                </div>
+
+                <div class="location-row">
+                    <div class="form-group">
+                        <label for="latitude">Latitude</label>
+                        <input type="number" id="latitude" placeholder="19.7297" step="0.0001" value="19.7297">
+                    </div>
+                    <div class="form-group">
+                        <label for="longitude">Longitude</label>
+                        <input type="number" id="longitude" placeholder="-155.0900" step="0.0001" value="-155.0900">
+                    </div>
+                    <button class="primary" id="getLocation" title="Use GPS">📍 GPS</button>
+                </div>
+
+                <div class="result-grid">
+                    <div class="result-item large highlight">
+                        <div class="result-label">Maidenhead Grid Square</div>
+                        <div class="result-value" id="resultGrid">BL09vr</div>
+                    </div>
+                    <div class="result-item">
+                        <div class="result-label">Field (2-char)</div>
+                        <div class="result-value" id="resultField">BL</div>
+                    </div>
+                    <div class="result-item">
+                        <div class="result-label">Square (4-char)</div>
+                        <div class="result-value" id="resultSquare">BL09</div>
+                    </div>
+                    <div class="result-item">
+                        <div class="result-label">Subsquare (6-char)</div>
+                        <div class="result-value" id="resultSubsquare">BL09vr</div>
+                    </div>
+                    <div class="result-item">
+                        <div class="result-label">Extended (8-char)</div>
+                        <div class="result-value" id="resultExtended">BL09vr58</div>
+                    </div>
+                </div>
+
+                <div class="divider"></div>
+
+                <div class="saved-locations">
+                    <div class="saved-locations-title">Manage Saved Locations</div>
+                    <div id="savedLocationsList"></div>
+                    <div class="add-location-form">
+                        <input type="text" id="newLocationName" placeholder="Location name (e.g., Home QTH)">
+                        <button class="primary" id="saveLocation">Save Current</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Distance Calculator Tab -->
+            <div class="tab-content" id="tab-distance">
+                <div class="card-title">
+                    <span>📍</span> Location A
+                </div>
+                <div class="preset-row">
+                    <select id="locationA">
+                        <option value="">-- Select location A --</option>
+                    </select>
+                    <button id="loadLocationA">Load</button>
+                </div>
+                <div class="location-row">
+                    <div class="form-group">
+                        <label for="latA">Latitude</label>
+                        <input type="number" id="latA" step="0.0001" value="19.7297">
+                    </div>
+                    <div class="form-group">
+                        <label for="lonA">Longitude</label>
+                        <input type="number" id="lonA" step="0.0001" value="-155.0900">
+                    </div>
+                    <button id="swapLocations" title="Swap A ↔ B">🔄</button>
+                </div>
+
+                <div class="card-title" style="margin-top: 20px;">
+                    <span>📍</span> Location B
+                </div>
+                <div class="preset-row">
+                    <select id="locationB">
+                        <option value="">-- Select location B --</option>
+                    </select>
+                    <button id="loadLocationB">Load</button>
+                </div>
+                <div class="location-row">
+                    <div class="form-group">
+                        <label for="latB">Latitude</label>
+                        <input type="number" id="latB" step="0.0001" value="19.4300">
+                    </div>
+                    <div class="form-group">
+                        <label for="lonB">Longitude</label>
+                        <input type="number" id="lonB" step="0.0001" value="-155.2900">
+                    </div>
+                    <div></div>
+                </div>
+
+                <div class="divider"></div>
+
+                <div class="result-grid">
+                    <div class="result-item large highlight">
+                        <div class="result-label">Distance</div>
+                        <div class="result-value" id="resultDistance">42.5 km</div>
+                    </div>
+                    <div class="result-item">
+                        <div class="result-label">Miles</div>
+                        <div class="result-value" id="resultMiles">26.4 mi</div>
+                    </div>
+                    <div class="result-item">
+                        <div class="result-label">Bearing</div>
+                        <div class="result-value" id="resultBearing">215°</div>
+                    </div>
+                    <div class="result-item">
+                        <div class="result-label">Grid A</div>
+                        <div class="result-value" id="resultGridA">BL09vr</div>
+                    </div>
+                    <div class="result-item">
+                        <div class="result-label">Grid B</div>
+                        <div class="result-value" id="resultGridB">BL09jk</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>Part of <a href="https://github.com/Nursedude/meshforge" target="_blank">MeshForge</a> - Open Source LoRa Mesh Tools</p>
+            <p style="margin-top: 8px;">Maidenhead Locator System used by amateur radio operators worldwide</p>
+        </footer>
+    </div>
+
+    <script>
+        // Default locations (including Hawaii!)
+        const DEFAULT_LOCATIONS = [
+            { name: "Hilo, Hawaii", lat: 19.7297, lon: -155.0900 },
+            { name: "Volcano, Hawaii", lat: 19.4300, lon: -155.2900 },
+            { name: "Mauna Kea Summit", lat: 19.8207, lon: -155.4681 },
+            { name: "Honolulu, Hawaii", lat: 21.3069, lon: -157.8583 },
+            { name: "San Francisco, CA", lat: 37.7749, lon: -122.4194 },
+            { name: "New York, NY", lat: 40.7128, lon: -74.0060 },
+            { name: "London, UK", lat: 51.5074, lon: -0.1278 }
+        ];
+
+        // Storage key for custom locations
+        const STORAGE_KEY = 'meshforge_locations';
+
+        /**
+         * Convert latitude/longitude to Maidenhead grid locator
+         * @param {number} lat - Latitude (-90 to 90)
+         * @param {number} lon - Longitude (-180 to 180)
+         * @param {number} precision - 1=field, 2=square, 3=subsquare, 4=extended
+         * @returns {string} Maidenhead grid locator
+         */
+        function toMaidenhead(lat, lon, precision = 4) {
+            // Normalize longitude to 0-360 and latitude to 0-180
+            let lng = lon + 180;
+            let lt = lat + 90;
+
+            let locator = '';
+
+            // Field (18x18 zones, 20° lon x 10° lat each)
+            const fieldLon = Math.floor(lng / 20);
+            const fieldLat = Math.floor(lt / 10);
+            locator += String.fromCharCode(65 + fieldLon);  // A-R
+            locator += String.fromCharCode(65 + fieldLat);  // A-R
+
+            if (precision < 2) return locator;
+
+            // Square (10x10 within field, 2° lon x 1° lat each)
+            lng = lng % 20;
+            lt = lt % 10;
+            const squareLon = Math.floor(lng / 2);
+            const squareLat = Math.floor(lt / 1);
+            locator += squareLon.toString();  // 0-9
+            locator += squareLat.toString();  // 0-9
+
+            if (precision < 3) return locator;
+
+            // Subsquare (24x24 within square, 5' lon x 2.5' lat each)
+            lng = (lng % 2) * 12;
+            lt = (lt % 1) * 24;
+            const subLon = Math.floor(lng);
+            const subLat = Math.floor(lt);
+            locator += String.fromCharCode(97 + subLon);  // a-x (lowercase)
+            locator += String.fromCharCode(97 + subLat);  // a-x (lowercase)
+
+            if (precision < 4) return locator;
+
+            // Extended square (10x10 within subsquare)
+            lng = (lng % 1) * 10;
+            lt = (lt % 1) * 10;
+            const extLon = Math.floor(lng);
+            const extLat = Math.floor(lt);
+            locator += extLon.toString();  // 0-9
+            locator += extLat.toString();  // 0-9
+
+            return locator;
+        }
+
+        /**
+         * Calculate distance between two points using Haversine formula
+         * @returns {number} Distance in kilometers
+         */
+        function haversineDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371; // Earth's radius in km
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                      Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+
+        /**
+         * Calculate bearing from point A to point B
+         * @returns {number} Bearing in degrees (0-360)
+         */
+        function calculateBearing(lat1, lon1, lat2, lon2) {
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const lat1Rad = lat1 * Math.PI / 180;
+            const lat2Rad = lat2 * Math.PI / 180;
+
+            const y = Math.sin(dLon) * Math.cos(lat2Rad);
+            const x = Math.cos(lat1Rad) * Math.sin(lat2Rad) -
+                      Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLon);
+
+            let bearing = Math.atan2(y, x) * 180 / Math.PI;
+            return (bearing + 360) % 360;
+        }
+
+        /**
+         * Get all locations (defaults + saved)
+         */
+        function getAllLocations() {
+            const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+            return [...DEFAULT_LOCATIONS, ...saved];
+        }
+
+        /**
+         * Save a custom location
+         */
+        function saveCustomLocation(name, lat, lon) {
+            const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+            saved.push({ name, lat, lon, custom: true });
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+            updateLocationDropdowns();
+            renderSavedLocations();
+        }
+
+        /**
+         * Delete a custom location
+         */
+        function deleteCustomLocation(index) {
+            const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+            saved.splice(index, 1);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+            updateLocationDropdowns();
+            renderSavedLocations();
+        }
+
+        /**
+         * Update all location dropdowns
+         */
+        function updateLocationDropdowns() {
+            const locations = getAllLocations();
+            const dropdowns = ['locationPreset', 'locationA', 'locationB'];
+
+            dropdowns.forEach(id => {
+                const select = document.getElementById(id);
+                const currentValue = select.value;
+
+                // Clear and rebuild
+                select.innerHTML = '<option value="">-- Select a location --</option>';
+
+                // Add default locations
+                const defaultGroup = document.createElement('optgroup');
+                defaultGroup.label = 'Default Locations';
+                DEFAULT_LOCATIONS.forEach((loc, i) => {
+                    const opt = document.createElement('option');
+                    opt.value = `default_${i}`;
+                    opt.textContent = loc.name;
+                    defaultGroup.appendChild(opt);
+                });
+                select.appendChild(defaultGroup);
+
+                // Add custom locations
+                const customLocs = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+                if (customLocs.length > 0) {
+                    const customGroup = document.createElement('optgroup');
+                    customGroup.label = 'My Locations';
+                    customLocs.forEach((loc, i) => {
+                        const opt = document.createElement('option');
+                        opt.value = `custom_${i}`;
+                        opt.textContent = loc.name;
+                        customGroup.appendChild(opt);
+                    });
+                    select.appendChild(customGroup);
+                }
+
+                // Restore selection if possible
+                select.value = currentValue;
+            });
+        }
+
+        /**
+         * Render saved locations list
+         */
+        function renderSavedLocations() {
+            const container = document.getElementById('savedLocationsList');
+            const customLocs = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+
+            if (customLocs.length === 0) {
+                container.innerHTML = '<div style="color: var(--text-secondary); font-size: 0.85rem; padding: 8px;">No custom locations saved yet.</div>';
+                return;
+            }
+
+            container.innerHTML = customLocs.map((loc, i) => `
+                <div class="saved-location-item">
+                    <div>
+                        <span class="saved-location-name">${escapeHtml(loc.name)}</span>
+                        <span class="saved-location-coords">${loc.lat.toFixed(4)}, ${loc.lon.toFixed(4)}</span>
+                    </div>
+                    <div class="saved-location-actions">
+                        <button onclick="loadCustomLocation(${i})">Use</button>
+                        <button class="danger" onclick="deleteCustomLocation(${i})">×</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        /**
+         * Load a custom location into the converter
+         */
+        function loadCustomLocation(index) {
+            const customLocs = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+            if (customLocs[index]) {
+                document.getElementById('latitude').value = customLocs[index].lat;
+                document.getElementById('longitude').value = customLocs[index].lon;
+                calculateGrid();
+            }
+        }
+
+        /**
+         * Get location from dropdown value
+         */
+        function getLocationFromValue(value) {
+            if (!value) return null;
+            const [type, index] = value.split('_');
+            if (type === 'default') {
+                return DEFAULT_LOCATIONS[parseInt(index)];
+            } else if (type === 'custom') {
+                const customLocs = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+                return customLocs[parseInt(index)];
+            }
+            return null;
+        }
+
+        /**
+         * Escape HTML for safe display
+         */
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        /**
+         * Calculate and update grid display
+         */
+        function calculateGrid() {
+            const lat = parseFloat(document.getElementById('latitude').value) || 0;
+            const lon = parseFloat(document.getElementById('longitude').value) || 0;
+
+            // Clamp values
+            const clampedLat = Math.max(-90, Math.min(90, lat));
+            const clampedLon = Math.max(-180, Math.min(180, lon));
+
+            const field = toMaidenhead(clampedLat, clampedLon, 1);
+            const square = toMaidenhead(clampedLat, clampedLon, 2);
+            const subsquare = toMaidenhead(clampedLat, clampedLon, 3);
+            const extended = toMaidenhead(clampedLat, clampedLon, 4);
+
+            document.getElementById('resultGrid').textContent = subsquare;
+            document.getElementById('resultField').textContent = field;
+            document.getElementById('resultSquare').textContent = square;
+            document.getElementById('resultSubsquare').textContent = subsquare;
+            document.getElementById('resultExtended').textContent = extended;
+        }
+
+        /**
+         * Calculate distance between two points
+         */
+        function calculateDistance() {
+            const latA = parseFloat(document.getElementById('latA').value) || 0;
+            const lonA = parseFloat(document.getElementById('lonA').value) || 0;
+            const latB = parseFloat(document.getElementById('latB').value) || 0;
+            const lonB = parseFloat(document.getElementById('lonB').value) || 0;
+
+            const distKm = haversineDistance(latA, lonA, latB, lonB);
+            const distMi = distKm * 0.621371;
+            const bearing = calculateBearing(latA, lonA, latB, lonB);
+
+            const gridA = toMaidenhead(latA, lonA, 3);
+            const gridB = toMaidenhead(latB, lonB, 3);
+
+            document.getElementById('resultDistance').textContent = `${distKm.toFixed(1)} km`;
+            document.getElementById('resultMiles').textContent = `${distMi.toFixed(1)} mi`;
+            document.getElementById('resultBearing').textContent = `${bearing.toFixed(0)}°`;
+            document.getElementById('resultGridA').textContent = gridA;
+            document.getElementById('resultGridB').textContent = gridB;
+        }
+
+        // Tab switching
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                btn.classList.add('active');
+                document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
+            });
+        });
+
+        // Event listeners - Converter tab
+        document.getElementById('latitude').addEventListener('input', calculateGrid);
+        document.getElementById('longitude').addEventListener('input', calculateGrid);
+
+        document.getElementById('loadPreset').addEventListener('click', () => {
+            const loc = getLocationFromValue(document.getElementById('locationPreset').value);
+            if (loc) {
+                document.getElementById('latitude').value = loc.lat;
+                document.getElementById('longitude').value = loc.lon;
+                calculateGrid();
+            }
+        });
+
+        document.getElementById('getLocation').addEventListener('click', () => {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(pos => {
+                    document.getElementById('latitude').value = pos.coords.latitude.toFixed(4);
+                    document.getElementById('longitude').value = pos.coords.longitude.toFixed(4);
+                    calculateGrid();
+                }, err => {
+                    alert('Unable to get location: ' + err.message);
+                });
+            } else {
+                alert('Geolocation not supported by this browser');
+            }
+        });
+
+        document.getElementById('saveLocation').addEventListener('click', () => {
+            const name = document.getElementById('newLocationName').value.trim();
+            const lat = parseFloat(document.getElementById('latitude').value);
+            const lon = parseFloat(document.getElementById('longitude').value);
+
+            if (!name) {
+                alert('Please enter a location name');
+                return;
+            }
+            if (isNaN(lat) || isNaN(lon)) {
+                alert('Please enter valid coordinates');
+                return;
+            }
+
+            saveCustomLocation(name, lat, lon);
+            document.getElementById('newLocationName').value = '';
+        });
+
+        // Event listeners - Distance tab
+        document.getElementById('latA').addEventListener('input', calculateDistance);
+        document.getElementById('lonA').addEventListener('input', calculateDistance);
+        document.getElementById('latB').addEventListener('input', calculateDistance);
+        document.getElementById('lonB').addEventListener('input', calculateDistance);
+
+        document.getElementById('loadLocationA').addEventListener('click', () => {
+            const loc = getLocationFromValue(document.getElementById('locationA').value);
+            if (loc) {
+                document.getElementById('latA').value = loc.lat;
+                document.getElementById('lonA').value = loc.lon;
+                calculateDistance();
+            }
+        });
+
+        document.getElementById('loadLocationB').addEventListener('click', () => {
+            const loc = getLocationFromValue(document.getElementById('locationB').value);
+            if (loc) {
+                document.getElementById('latB').value = loc.lat;
+                document.getElementById('lonB').value = loc.lon;
+                calculateDistance();
+            }
+        });
+
+        document.getElementById('swapLocations').addEventListener('click', () => {
+            const latA = document.getElementById('latA').value;
+            const lonA = document.getElementById('lonA').value;
+            document.getElementById('latA').value = document.getElementById('latB').value;
+            document.getElementById('lonA').value = document.getElementById('lonB').value;
+            document.getElementById('latB').value = latA;
+            document.getElementById('lonB').value = lonA;
+            calculateDistance();
+        });
+
+        // Make deleteCustomLocation globally accessible
+        window.deleteCustomLocation = deleteCustomLocation;
+        window.loadCustomLocation = loadCustomLocation;
+
+        // Initialize
+        updateLocationDropdowns();
+        renderSavedLocations();
+        calculateGrid();
+        calculateDistance();
+    </script>
+</body>
+</html>

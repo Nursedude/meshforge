@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meshtastic Frequency Slot Calculator</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #16213e;
+            --bg-card: #0f3460;
+            --accent: #e94560;
+            --accent-hover: #ff6b6b;
+            --text-primary: #eaeaea;
+            --text-secondary: #a0a0a0;
+            --success: #00d9ff;
+            --border: #2a4a6e;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+            color: var(--text-primary);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .logo {
+            font-size: 14px;
+            font-family: monospace;
+            color: var(--success);
+            margin-bottom: 10px;
+            white-space: pre;
+            line-height: 1.2;
+        }
+
+        h1 {
+            font-size: 1.8rem;
+            margin-bottom: 8px;
+            background: linear-gradient(90deg, var(--success), var(--accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 20px;
+            border: 1px solid var(--border);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        .card-title {
+            font-size: 1.1rem;
+            margin-bottom: 20px;
+            color: var(--success);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .form-group {
+            margin-bottom: 18px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 6px;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 12px 16px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 1rem;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: var(--success);
+            box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.1);
+        }
+
+        select {
+            cursor: pointer;
+        }
+
+        .result-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        .result-item {
+            background: var(--bg-secondary);
+            padding: 16px;
+            border-radius: 12px;
+            text-align: center;
+        }
+
+        .result-item.highlight {
+            grid-column: 1 / -1;
+            background: linear-gradient(135deg, rgba(0, 217, 255, 0.15), rgba(233, 69, 96, 0.15));
+            border: 1px solid var(--success);
+        }
+
+        .result-label {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .result-value {
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .result-item.highlight .result-value {
+            font-size: 2rem;
+            color: var(--success);
+        }
+
+        .info-box {
+            background: var(--bg-secondary);
+            border-left: 3px solid var(--accent);
+            padding: 12px 16px;
+            border-radius: 0 8px 8px 0;
+            margin-top: 20px;
+        }
+
+        .info-box p {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+
+        .info-box code {
+            background: var(--bg-card);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: monospace;
+            color: var(--success);
+        }
+
+        .preset-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .preset-btn {
+            padding: 8px 16px;
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .preset-btn:hover {
+            border-color: var(--success);
+            color: var(--success);
+        }
+
+        .preset-btn.active {
+            background: var(--success);
+            color: var(--bg-primary);
+            border-color: var(--success);
+        }
+
+        footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border);
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+        }
+
+        footer a {
+            color: var(--success);
+            text-decoration: none;
+        }
+
+        footer a:hover {
+            text-decoration: underline;
+        }
+
+        @media (max-width: 480px) {
+            .result-grid {
+                grid-template-columns: 1fr;
+            }
+            .logo {
+                font-size: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">╔╦╗╔═╗╔═╗╦ ╦╔═╗╔═╗╦═╗╔═╗╔═╗
+║║║║╣ ╚═╗╠═╣╠╣ ║ ║╠╦╝║ ╦║╣
+╩ ╩╚═╝╚═╝╩ ╩╚  ╚═╝╩╚═╚═╝╚═╝</div>
+            <h1>Frequency Slot Calculator</h1>
+            <p class="subtitle">Calculate your Meshtastic channel frequency using the djb2 hash algorithm</p>
+        </header>
+
+        <div class="card">
+            <div class="card-title">
+                <span>📡</span> Channel Settings
+            </div>
+
+            <div class="form-group">
+                <label for="channelName">Channel Name</label>
+                <input type="text" id="channelName" placeholder="Enter channel name (e.g., LongFast)" value="LongFast">
+            </div>
+
+            <div class="form-group">
+                <label>Quick Presets</label>
+                <div class="preset-buttons">
+                    <button class="preset-btn active" data-name="LongFast">LongFast</button>
+                    <button class="preset-btn" data-name="MediumSlow">MediumSlow</button>
+                    <button class="preset-btn" data-name="ShortFast">ShortFast</button>
+                    <button class="preset-btn" data-name="LongSlow">LongSlow</button>
+                    <button class="preset-btn" data-name="ShortTurbo">ShortTurbo</button>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="region">Region</label>
+                <select id="region">
+                    <option value="US" selected>US (902-928 MHz)</option>
+                    <option value="EU_868">EU_868 (869.4-869.65 MHz)</option>
+                    <option value="EU_433">EU_433 (433-434 MHz)</option>
+                    <option value="UK_868">UK_868 (869.4-869.65 MHz)</option>
+                    <option value="CN">CN (470-510 MHz)</option>
+                    <option value="JP">JP (920.8-923.8 MHz)</option>
+                    <option value="ANZ">ANZ (915-928 MHz)</option>
+                    <option value="KR">KR (920-923 MHz)</option>
+                    <option value="TW">TW (920-925 MHz)</option>
+                    <option value="RU">RU (868.7-869.2 MHz)</option>
+                    <option value="IN">IN (865-867 MHz)</option>
+                    <option value="NZ_865">NZ_865 (864-868 MHz)</option>
+                    <option value="TH">TH (920-925 MHz)</option>
+                    <option value="LORA_24">LORA_24 (2400-2483.5 MHz)</option>
+                    <option value="UA_433">UA_433 (433-434.79 MHz)</option>
+                    <option value="UA_868">UA_868 (868-868.6 MHz)</option>
+                    <option value="MY_433">MY_433 (433-435 MHz)</option>
+                    <option value="MY_919">MY_919 (919-924 MHz)</option>
+                    <option value="SG_923">SG_923 (920-925 MHz)</option>
+                    <option value="PH">PH (920-925 MHz)</option>
+                    <option value="SINGAPORE">SINGAPORE (920-925 MHz)</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="modemPreset">Modem Preset</label>
+                <select id="modemPreset">
+                    <option value="LONG_FAST" selected>LONG_FAST (250 kHz)</option>
+                    <option value="LONG_SLOW">LONG_SLOW (125 kHz)</option>
+                    <option value="LONG_MODERATE">LONG_MODERATE (125 kHz)</option>
+                    <option value="MEDIUM_SLOW">MEDIUM_SLOW (250 kHz)</option>
+                    <option value="MEDIUM_FAST">MEDIUM_FAST (250 kHz)</option>
+                    <option value="SHORT_SLOW">SHORT_SLOW (250 kHz)</option>
+                    <option value="SHORT_FAST">SHORT_FAST (250 kHz)</option>
+                    <option value="SHORT_TURBO">SHORT_TURBO (500 kHz)</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">
+                <span>📊</span> Results
+            </div>
+
+            <div class="result-grid">
+                <div class="result-item highlight">
+                    <div class="result-label">Center Frequency</div>
+                    <div class="result-value" id="resultFrequency">906.875 MHz</div>
+                </div>
+                <div class="result-item">
+                    <div class="result-label">Frequency Slot</div>
+                    <div class="result-value" id="resultSlot">20</div>
+                </div>
+                <div class="result-item">
+                    <div class="result-label">Total Slots</div>
+                    <div class="result-value" id="resultTotalSlots">104</div>
+                </div>
+                <div class="result-item">
+                    <div class="result-label">djb2 Hash</div>
+                    <div class="result-value" id="resultHash">0x7C9E6628</div>
+                </div>
+                <div class="result-item">
+                    <div class="result-label">Bandwidth</div>
+                    <div class="result-value" id="resultBandwidth">250 kHz</div>
+                </div>
+            </div>
+
+            <div class="info-box">
+                <p>
+                    This calculator uses the same <code>djb2</code> hash algorithm as the Meshtastic firmware.
+                    The channel name is hashed and modulo'd by the number of available frequency slots for your region/preset combination.
+                </p>
+            </div>
+        </div>
+
+        <footer>
+            <p>Part of <a href="https://github.com/Nursedude/meshforge" target="_blank">MeshForge</a> - Open Source LoRa Mesh Tools</p>
+            <p style="margin-top: 8px;">Algorithm reference: <a href="https://meshtastic.org/docs/overview/radio-settings/" target="_blank">Meshtastic Radio Settings</a></p>
+        </footer>
+    </div>
+
+    <script>
+        // Region parameters: { region: [freqStart, freqEnd, spacing, dutyCycle] }
+        const REGIONS = {
+            "US": [902.0, 928.0, 0, 100],
+            "EU_433": [433.0, 434.0, 0, 10],
+            "EU_868": [869.4, 869.65, 0, 10],
+            "CN": [470.0, 510.0, 0, 100],
+            "JP": [920.8, 923.8, 0, 100],
+            "ANZ": [915.0, 928.0, 0, 100],
+            "KR": [920.0, 923.0, 0, 100],
+            "TW": [920.0, 925.0, 0, 100],
+            "RU": [868.7, 869.2, 0, 100],
+            "IN": [865.0, 867.0, 0, 100],
+            "NZ_865": [864.0, 868.0, 0, 100],
+            "TH": [920.0, 925.0, 0, 100],
+            "LORA_24": [2400.0, 2483.5, 0, 100],
+            "UA_433": [433.0, 434.79, 0, 10],
+            "UA_868": [868.0, 868.6, 0, 1],
+            "MY_433": [433.0, 435.0, 0, 100],
+            "MY_919": [919.0, 924.0, 0, 100],
+            "SG_923": [920.0, 925.0, 0, 100],
+            "PH": [920.0, 925.0, 0, 100],
+            "UK_868": [869.4, 869.65, 0, 10],
+            "SINGAPORE": [920.0, 925.0, 0, 100]
+        };
+
+        // Modem preset bandwidths in kHz
+        const PRESETS = {
+            "LONG_FAST": 250,
+            "LONG_SLOW": 125,
+            "LONG_MODERATE": 125,
+            "MEDIUM_SLOW": 250,
+            "MEDIUM_FAST": 250,
+            "SHORT_SLOW": 250,
+            "SHORT_FAST": 250,
+            "SHORT_TURBO": 500
+        };
+
+        /**
+         * Calculate djb2 hash - same algorithm as Meshtastic firmware
+         * @param {string} str - The string to hash
+         * @returns {number} 32-bit unsigned hash value
+         */
+        function djb2Hash(str) {
+            let hash = 5381;
+            for (let i = 0; i < str.length; i++) {
+                hash = ((hash << 5) + hash) + str.charCodeAt(i);
+                hash = hash >>> 0; // Keep as 32-bit unsigned
+            }
+            return hash;
+        }
+
+        /**
+         * Calculate frequency slot and center frequency
+         */
+        function calculate() {
+            const channelName = document.getElementById('channelName').value || 'LongFast';
+            const region = document.getElementById('region').value;
+            const modemPreset = document.getElementById('modemPreset').value;
+
+            // Get region parameters
+            const [freqStart, freqEnd, spacing, dutyCycle] = REGIONS[region] || REGIONS['US'];
+            const bandwidth = PRESETS[modemPreset] || 250;
+
+            // Calculate number of slots
+            const numSlots = Math.floor((freqEnd - freqStart) / (spacing + (bandwidth / 1000)));
+
+            // Calculate hash and slot
+            const hash = djb2Hash(channelName);
+            const slot = hash % numSlots;
+
+            // Calculate center frequency: freqStart + (bw / 2000) + (slot * (bw / 1000))
+            const centerFreq = freqStart + (bandwidth / 2000) + (slot * (bandwidth / 1000));
+
+            // Update display
+            document.getElementById('resultFrequency').textContent = `${centerFreq.toFixed(3)} MHz`;
+            document.getElementById('resultSlot').textContent = slot + 1; // 1-indexed for display
+            document.getElementById('resultTotalSlots').textContent = numSlots;
+            document.getElementById('resultHash').textContent = `0x${hash.toString(16).toUpperCase()}`;
+            document.getElementById('resultBandwidth').textContent = `${bandwidth} kHz`;
+
+            // Update preset button states
+            document.querySelectorAll('.preset-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.name === channelName);
+            });
+        }
+
+        // Event listeners
+        document.getElementById('channelName').addEventListener('input', calculate);
+        document.getElementById('region').addEventListener('change', calculate);
+        document.getElementById('modemPreset').addEventListener('change', calculate);
+
+        // Preset button clicks
+        document.querySelectorAll('.preset-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.getElementById('channelName').value = btn.dataset.name;
+                calculate();
+            });
+        });
+
+        // Initial calculation
+        calculate();
+    </script>
+</body>
+</html>
