@@ -749,6 +749,69 @@ The Pro Max integration would:
 
 ---
 
+## Development Philosophy
+
+### Cornerstones of MeshForge
+
+The project prioritizes these values in order:
+
+| Priority | Principle | Meaning |
+|----------|-----------|---------|
+| 1 | **Reliability** | The app must work consistently, every time |
+| 2 | **Full Functionality** | Complete feature set before optimization |
+| 3 | **Maintainability** | Ability to fix issues reliably and quickly |
+| 4 | **Consistent Architecture** | Clean, understandable, documented code |
+| 5 | **Clear Roadmap** | Planned development path for contributors |
+
+### The Right Order of Development
+
+```
+1. Make it work       ← First priority
+2. Make it reliable   ← Security, testing, validation
+3. Make it maintainable ← Docs, tests, clean code
+4. Make it fast       ← Only when proven necessary
+```
+
+**Premature optimization is the root of all evil.** - Donald Knuth
+
+### On Compilation
+
+Compilation (PyInstaller, Nuitka, Cython, Rust) is a future consideration, not a current priority.
+
+**When compilation makes sense:**
+- Distribution simplicity (single binary)
+- Faster startup times
+- Embedded/constrained systems (Pi Zero)
+- Performance-critical paths (gateway throughput, RF calculations)
+
+**What stays in Python:**
+- GUI layer (GTK bindings work well)
+- Config management (flexibility needed)
+- Anthropic/Dude AI integration (SDK is Python)
+
+**Decision criteria:**
+- Only compile what is *proven* to need it
+- Wait until architecture is stable
+- Wait until contributors are active
+- Wait until real-world usage provides data
+
+**The bridge is crossed when we reach it, not before.**
+
+### Artifact Development
+
+Standalone HTML/JS artifacts serve multiple purposes:
+1. **Testing** - Validate algorithms independently
+2. **Distribution** - Share tools without app installation
+3. **Claude.ai integration** - Use in conversations
+4. **Education** - Show users how calculations work
+
+Current artifacts in `/artifacts/`:
+- `frequency-calculator.html` - Meshtastic frequency slot calculator
+- `link-budget-calculator.html` - LoRa link budget analysis
+- `maidenhead-calculator.html` - Grid locator and distance (with Hawaii presets)
+
+---
+
 ## Development Notes
 
 ### Session Continuity
