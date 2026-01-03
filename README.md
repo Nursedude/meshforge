@@ -432,7 +432,7 @@ meshforge/
 
 ## Version History
 
-### v4.1.0 (2026-01-03) - Map & Updates
+### v4.1.0 (2026-01-03) - Map, Updates & Site Planner
 - **NEW**: Mesh Network Map with Leaflet.js
   - Interactive map showing node positions
   - Color-coded markers (green=my node, blue=online, orange=stale, gray=offline)
@@ -443,9 +443,19 @@ meshforge/
   - Compare against latest available versions
   - Update availability notifications
 - **NEW**: Desktop Integration
-  - `.desktop` launcher for Raspberry Pi menu
+  - `.desktop` launcher for Raspberry Pi menu (Internet, System Tools)
   - SVG icon for application menu
   - Install script: `sudo ./scripts/install-desktop.sh`
+  - Terminal-based sudo authentication for reliable launching
+- **NEW**: Site Planner Integration
+  - Opens [site.meshtastic.org](https://site.meshtastic.org/) for RF coverage planning
+  - Button in Tools → RF Tools section
+  - Uses ITM/Longley-Rice model with NASA SRTM terrain data
+- **NEW**: Frequency Slot Calculator Redesign
+  - All 22 Meshtastic regions supported
+  - Channel Preset dropdown for quick slot selection
+  - Auto-calculated frequency display
+- **FIX**: Device role parsing now correctly detects CLIENT_MUTE
 - **NEW**: `/api/nodes/full` endpoint with rich node data
 
 ### v4.0.1 (2026-01-03) - Security & Features
@@ -485,25 +495,33 @@ meshforge/
 
 ## Roadmap
 
-### v4.2 - Auto-Update System
-- [ ] Component version detection (meshtasticd, CLI, firmware)
+### ✅ v4.2 - Auto-Update System (Completed in v4.1)
+- [x] Component version detection (meshtasticd, CLI, firmware)
+- [x] Update notifications in Updates tab
 - [ ] One-click updates with rollback
-- [ ] Update notifications
 
-### v4.3 - Desktop Integration
-- [ ] `.desktop` launcher for Pi menu
+### ✅ v4.3 - Desktop Integration (Completed in v4.1)
+- [x] `.desktop` launcher for Pi menu
+- [x] SVG application icon
 - [ ] System tray icon
 - [ ] Autostart on boot option
 
-### v4.4 - Node Flashing
+### v4.4 - Site Planner API Integration
+- [x] Link to site.meshtastic.org (completed)
+- [ ] Embed Site Planner in WebKitGTK view
+- [ ] Auto-populate node positions from mesh
+- [ ] Local Docker deployment option
+
+### v4.5 - Node Flashing
 - [ ] Flash Meshtastic firmware to USB devices
 - [ ] Firmware version management
 - [ ] Backup/restore node configs
 
 ### v5.0 - Network Operations
+- [x] Map visualization of mesh topology (completed)
 - [ ] MQTT integration for multi-node monitoring
-- [ ] Map visualization of mesh topology
 - [ ] Message history and analytics
+- [ ] Coverage analytics with Site Planner API
 
 ---
 
