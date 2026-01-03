@@ -19,13 +19,18 @@
 1. [Project Vision](#project-vision)
 2. [Architecture Principles](#architecture-principles)
 3. [Mesh Network Knowledge](#mesh-network-knowledge)
+   - [Self-Healing Network Principles](#self-healing-network-principles)
 4. [RNS-Meshtastic Gateway](#rns-meshtastic-gateway)
 5. [RF Engineering Reference](#rf-engineering-reference)
+   - [LoRa Technical Deep Dive](#lora-technical-deep-dive)
 6. [Hardware Compatibility](#hardware-compatibility)
 7. [UI/UX Guidelines](#uiux-guidelines)
 8. [Integration Patterns](#integration-patterns)
+   - [HamClock Integration](#hamclock-integration)
+   - [Ham Radio Map Resources](#ham-radio-map-resources)
 9. [Security Considerations](#security-considerations)
 10. [Future Roadmap](#future-roadmap)
+    - [ML/AI Research for Dude AI](#mlai-research-for-dude-ai)
 
 ---
 
@@ -125,6 +130,39 @@ All three interfaces (GTK, CLI, Web) should provide:
     port = 4403
   ```
 
+### Self-Healing Network Principles
+
+MeshForge networks should embody self-healing characteristics:
+
+#### Core Concepts
+- **Automatic Fault Detection**: Continuously monitor node health and connectivity
+- **Dynamic Rerouting**: When a node fails, automatically find alternative paths
+- **No Human Intervention**: Recovery happens in real-time without operator action
+- **Adaptive Optimization**: Network continuously tunes itself for best performance
+
+#### Implementation in Mesh Networks
+```
+┌─────────┐    X    ┌─────────┐
+│ Node A  │─────────│ Node B  │  ← Link fails
+└────┬────┘         └─────────┘
+     │                   ▲
+     │   ┌─────────┐     │
+     └──►│ Node C  │─────┘       ← Auto-reroute via C
+         └─────────┘
+```
+
+#### Key Technologies
+1. **Slot-based protocols**: Local neighbor synchronization
+2. **Hop distance calculation**: Find shortest path to gateway
+3. **Digital twin simulation**: Test recovery strategies safely
+4. **AI/ML prediction**: Anticipate failures before they occur
+
+#### Design Goals for MeshForge
+- [ ] Node health monitoring with predictive alerts
+- [ ] Automatic path recalculation on failure
+- [ ] Mesh topology visualization showing link quality
+- [ ] Historical reliability metrics per node/link
+
 ---
 
 ## RNS-Meshtastic Gateway
@@ -186,6 +224,31 @@ where d = distance in km, f = frequency in GHz
 bulge (m) = d² / (8 * R * 4/3)
 where d = distance in meters, R = 6371000 (Earth radius)
 ```
+
+### LoRa Technical Deep Dive
+
+#### Spreading Factor (SF)
+The spreading factor is selectable from SF5 to SF12:
+- **SF7**: Shortest time on air, highest data rate, lowest sensitivity
+- **SF12**: Longest time on air, lowest data rate, best sensitivity (-20 dB below noise floor)
+- Each step up **doubles** the time on air for same data
+- **Orthogonal**: Different SFs don't interfere on same frequency
+
+#### Bandwidth Options
+| Bandwidth | Use Case | Notes |
+|-----------|----------|-------|
+| 125 kHz | Standard LoRaWAN | Best sensitivity |
+| 250 kHz | Faster transfer | Reduced range |
+| 500 kHz | Maximum speed | Shortest range |
+| 7.8-62.5 kHz | Narrow band | Extended range, special use |
+
+#### Coding Rate (Forward Error Correction)
+- CR 4/5 to 4/8 available
+- Higher CR = more reliable in interference, slower data
+- Does NOT increase range, only reliability
+
+#### Sub-Noise Performance
+LoRa demodulates signals **-7.5 to -20 dB below noise floor**. This is key to its long-range capability.
 
 ### LoRa Presets Quick Reference
 | Preset | Data Rate | Sensitivity | Range (LOS) |
@@ -323,10 +386,81 @@ Adw.PreferencesGroup # Settings sections
 3. **LXST** - Real-time voice streaming
 4. **MQTT** - IoT integration
 5. **Site Planner API** - Coverage analysis
+6. **HamClock** - Propagation and space weather
+
+### HamClock Integration
+
+[HamClock](https://www.clearskyinstitute.com/ham/HamClock/) is a powerful ham radio dashboard that provides:
+
+#### Features to Integrate
+| Feature | MeshForge Use |
+|---------|---------------|
+| **VOACAP Propagation** | Predict MUF/TOA for long-range LoRa links |
+| **DRAP Map** | D-layer absorption affects HF, correlates with ionospheric conditions |
+| **Gray Line Indicator** | Enhanced propagation at twilight boundaries |
+| **Solar Flux/A-Index** | Space weather affects all RF propagation |
+| **DX Cluster Spots** | Active frequency usage, potential interference |
+| **Satellite Tracking** | LEO satellite pass predictions |
+
+#### Integration Approach
+```
+┌──────────────────┐     HTTP/REST     ┌──────────────────┐
+│    MeshForge     │◄─────────────────►│    HamClock      │
+│   (Node Map)     │                   │   (Propagation)  │
+└──────────────────┘                   └──────────────────┘
+         │                                      │
+         └───────────► Combined Dashboard ◄─────┘
+```
+
+- HamClock has **web browser control** - accessible via HTTP
+- Embed HamClock data in MeshForge dashboard
+- Overlay propagation predictions on node map
+- Alert when solar events may affect mesh links
+
+#### Hardware
+- Runs on Raspberry Pi (same as MeshForge target)
+- Can share display or run headless with web access
+- Inovato Quadra4K as dedicated HamClock appliance
+
+### Ham Radio Map Resources
+
+For MeshForge's node map and propagation features:
+
+| Resource | Use Case |
+|----------|----------|
+| **ARRL Amateur Radio Map** | Grid squares, CQ/ITU zones, DXCC prefixes |
+| **IZ8WNH.it Repeater Locator** | Interactive repeater database |
+| **Geochron Digital Atlas 4K** | Real-time propagation visualization |
+| **QRZ.com Grid Square Map** | Maidenhead grid reference |
+| **PSKReporter** | Real-time digital mode propagation |
+| **WSPRnet** | Weak signal propagation network |
+
+#### Grid Square / Maidenhead Locator
+```python
+def latlon_to_grid(lat, lon):
+    """Convert lat/lon to 6-character Maidenhead grid"""
+    lon += 180
+    lat += 90
+    field = chr(int(lon / 20) + ord('A')) + chr(int(lat / 10) + ord('A'))
+    square = str(int((lon % 20) / 2)) + str(int(lat % 10))
+    subsq = chr(int((lon % 2) * 12) + ord('a')) + chr(int((lat % 1) * 24) + ord('a'))
+    return field + square + subsq
+
+# Example: latlon_to_grid(21.3069, -157.8583) → "BL11bh" (Honolulu)
+```
+
+#### Contest/Award Features to Consider
+- Display grid square on node map popups
+- Calculate grid square from node position
+- Show CQ/ITU zones for international contacts
+- DXCC prefix lookup for callsigns
 
 ### External APIs
 - **Open-Elevation API** - Terrain data for LOS
 - **Site Planner** - RF coverage prediction
+- **HamClock** - Propagation/space weather (local or remote)
+- **QRZ.com** - Callsign lookup (requires API key)
+- **HamDB** - Free callsign database API
 
 ---
 
@@ -382,6 +516,55 @@ Adw.PreferencesGroup # Settings sections
 - [ ] Configuration suggestions
 - [ ] Problem diagnosis
 
+#### ML/AI Research for Dude AI
+
+**Potential Technologies:**
+
+| Technology | Platform | Use Case |
+|------------|----------|----------|
+| **Claude API** | Cross-platform | Conversational help, config suggestions |
+| **Ollama** | Local (Pi 5) | Offline AI assistance |
+| **Apple MLX** | macOS/Apple Silicon | Fast local inference |
+| **Core ML** | iOS/macOS | On-device signal processing |
+| **TensorFlow Lite** | Pi/Linux | Edge ML for predictions |
+
+**Application Areas:**
+
+1. **Predictive Maintenance**
+   - Monitor node health metrics (battery, SNR, uptime)
+   - Predict node failures before they happen
+   - Suggest optimal maintenance windows
+
+2. **Network Optimization**
+   - Analyze traffic patterns
+   - Suggest optimal routing configurations
+   - Identify bottleneck nodes
+
+3. **Anomaly Detection**
+   - Detect unusual node behavior
+   - Identify potential security issues
+   - Alert on degraded link quality
+
+4. **Conversational Interface**
+   ```
+   User: "Why can't I reach Node-Alpha?"
+   Dude AI: "Node-Alpha was last seen 2 hours ago.
+            The link to Node-Beta (its relay) shows
+            degraded SNR (-15dB). Check for obstruction
+            or try increasing TX power."
+   ```
+
+5. **Time Series Analysis**
+   - Battery discharge prediction
+   - Link quality trending
+   - Solar/propagation correlation
+
+**Privacy-Preserving Approach:**
+- On-device inference preferred (Ollama, TF Lite)
+- No mesh data sent to cloud without consent
+- Local models for sensitive operations
+- Cloud AI only for non-sensitive help queries
+
 ---
 
 ## Development Notes
@@ -426,8 +609,16 @@ When resuming development:
 - `.claude/research/rns_comprehensive.md` - RNS ecosystem deep dive
 - `.claude/session_notes.md` - Development session history
 
+### Technical References
+- [LoRa Spreading Factors](https://www.thethingsnetwork.org/docs/lorawan/spreading-factors/) - TTN documentation
+- [LoRa Parameters](https://unsigned.io/understanding-lora-parameters/) - Bitrate calculator
+- [Meshtastic Radio Settings](https://meshtastic.org/docs/overview/radio-settings/) - Official docs
+- [Self-Healing Networks](https://link.springer.com/chapter/10.1007/978-3-031-75608-5_25) - Academic research
+- [HamClock](https://www.clearskyinstitute.com/ham/HamClock/) - Ham radio dashboard
+- [Apple MLX Framework](https://machinelearning.apple.com/research/exploring-llms-mlx-m5) - ML on Apple Silicon
+
 ---
 
 *Last updated: 2026-01-03*
-*Version: 4.2.0*
+*Version: 4.2.0 (knowledge base rev 2)*
 *Dude AI - Network Engineer, Physicist, Programmer, Project Manager*
