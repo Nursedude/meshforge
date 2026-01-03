@@ -4,27 +4,23 @@ Type=Application
 Name=MeshForge
 GenericName=Mesh Network Manager
 Comment=LoRa Mesh Network Development & Operations Suite
-Exec=pkexec /usr/local/bin/meshforge
+Exec=x-terminal-emulator -e "sudo python3 /opt/meshforge/src/launcher.py"
 Icon=meshforge
 Terminal=false
-Categories=Network;Utility;System;
+Categories=Network;System;
 Keywords=meshtastic;lora;mesh;radio;network;
 StartupNotify=true
 StartupWMClass=meshforge
-Actions=gtk;web;tui;cli;
+Actions=gtk;web;tui;
 
 [Desktop Action gtk]
 Name=Launch GTK Interface
-Exec=pkexec /usr/local/bin/meshforge gtk
+Exec=x-terminal-emulator -e "sudo python3 /opt/meshforge/src/main_gtk.py"
 
 [Desktop Action web]
 Name=Launch Web Interface
-Exec=pkexec /usr/local/bin/meshforge web
+Exec=x-terminal-emulator -e "sudo python3 /opt/meshforge/src/main_web.py"
 
 [Desktop Action tui]
 Name=Launch Terminal TUI
-Exec=x-terminal-emulator -e "sudo /usr/local/bin/meshforge tui"
-
-[Desktop Action cli]
-Name=Launch CLI
-Exec=x-terminal-emulator -e "sudo /usr/local/bin/meshforge cli"
+Exec=x-terminal-emulator -e "sudo python3 /opt/meshforge/src/main_tui.py"
