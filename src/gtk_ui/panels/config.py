@@ -241,7 +241,8 @@ class ConfigPanel(Gtk.Box):
         # Load available configs
         available_count = 0
         if self.AVAILABLE_D.exists():
-            configs = sorted(self.AVAILABLE_D.glob("*.yaml"))
+            # Check both .yaml and .yml files
+            configs = sorted(list(self.AVAILABLE_D.glob("*.yaml")) + list(self.AVAILABLE_D.glob("*.yml")))
 
             for config_path in configs:
                 name = config_path.name
@@ -268,14 +269,24 @@ class ConfigPanel(Gtk.Box):
         # Load active configs
         active_count = 0
         if self.CONFIG_D.exists():
-            active_configs = sorted(self.CONFIG_D.glob("*.yaml"))
+            # Check both .yaml and .yml files
+            active_configs = sorted(list(self.CONFIG_D.glob("*.yaml")) + list(self.CONFIG_D.glob("*.yml")))
             for config_path in active_configs:
                 self._add_config_row(self.active_list, config_path, True)
                 active_count += 1
 
+        # Also check for main config.yaml
+        if self.MAIN_CONFIG.exists():
+            # Show main config in active list too
+            self._add_config_row(self.active_list, self.MAIN_CONFIG, True)
+            active_count += 1
+
         # Update active status
         if active_count == 0:
-            self.active_status.set_label("No additional configs active. Select from available.d to activate.")
+            if not self.CONFIG_D.exists():
+                self.active_status.set_label("config.d/ not found. Install meshtasticd first.")
+            else:
+                self.active_status.set_label("No configs active. Select from available.d to activate.")
         else:
             self.active_status.set_label(f"{active_count} config(s) active")
 
