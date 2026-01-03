@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Node Map - MeshForge</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+        }
+        #map {
+            width: 100%;
+            height: 100vh;
+        }
+        .leaflet-popup-content-wrapper {
+            background: #16213e;
+            color: #eee;
+            border-radius: 8px;
+        }
+        .leaflet-popup-tip {
+            background: #16213e;
+        }
+        .node-popup {
+            min-width: 200px;
+        }
+        .node-popup h3 {
+            color: #4fc3f7;
+            margin-bottom: 8px;
+            font-size: 16px;
+        }
+        .node-popup .network-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-bottom: 8px;
+        }
+        .network-meshtastic {
+            background: #2196f3;
+            color: white;
+        }
+        .network-rns {
+            background: #9c27b0;
+            color: white;
+        }
+        .network-both {
+            background: linear-gradient(90deg, #2196f3 50%, #9c27b0 50%);
+            color: white;
+        }
+        .node-popup .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+            border-bottom: 1px solid #333;
+        }
+        .node-popup .info-row:last-child {
+            border-bottom: none;
+        }
+        .node-popup .label {
+            color: #888;
+        }
+        .node-popup .value {
+            color: #eee;
+            font-weight: 500;
+        }
+        .status-online { color: #4caf50; }
+        .status-offline { color: #f44336; }
+        .status-gateway { color: #ff9800; }
+
+        /* Control panel */
+        .control-panel {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+            background: #16213e;
+            border-radius: 8px;
+            padding: 15px;
+            min-width: 200px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        }
+        .control-panel h4 {
+            color: #4fc3f7;
+            margin-bottom: 10px;
+        }
+        .control-panel .stat-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+        }
+        .control-panel .filter-row {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #333;
+        }
+        .control-panel label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            padding: 4px 0;
+        }
+        .control-panel input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+        }
+        .btn-refresh {
+            width: 100%;
+            margin-top: 10px;
+            padding: 8px;
+            background: #4fc3f7;
+            color: #16213e;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .btn-refresh:hover {
+            background: #81d4fa;
+        }
+
+        /* Legend */
+        .legend {
+            position: absolute;
+            bottom: 30px;
+            left: 10px;
+            z-index: 1000;
+            background: #16213e;
+            border-radius: 8px;
+            padding: 10px 15px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 3px 0;
+        }
+        .legend-marker {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+
+    <div class="control-panel">
+        <h4>Node Statistics</h4>
+        <div class="stat-row">
+            <span>Total:</span>
+            <span id="stat-total">0</span>
+        </div>
+        <div class="stat-row">
+            <span>Meshtastic:</span>
+            <span id="stat-meshtastic">0</span>
+        </div>
+        <div class="stat-row">
+            <span>RNS:</span>
+            <span id="stat-rns">0</span>
+        </div>
+        <div class="stat-row">
+            <span>Online:</span>
+            <span id="stat-online" class="status-online">0</span>
+        </div>
+
+        <div class="filter-row">
+            <label>
+                <input type="checkbox" id="filter-meshtastic" checked>
+                Show Meshtastic
+            </label>
+            <label>
+                <input type="checkbox" id="filter-rns" checked>
+                Show RNS
+            </label>
+            <label>
+                <input type="checkbox" id="filter-online-only">
+                Online Only
+            </label>
+        </div>
+
+        <button class="btn-refresh" onclick="refreshNodes()">Refresh</button>
+    </div>
+
+    <div class="legend">
+        <div class="legend-item">
+            <div class="legend-marker" style="background: #4caf50;"></div>
+            <span>Online</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-marker" style="background: #f44336;"></div>
+            <span>Offline</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-marker" style="background: #ff9800;"></div>
+            <span>Gateway</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-marker" style="background: #2196f3; border: 2px solid white;"></div>
+            <span>Local Node</span>
+        </div>
+    </div>
+
+    <script>
+        // Initialize map
+        const map = L.map('map').setView([20.0, -155.5], 8); // Default to Hawaii
+
+        // Add tile layer (dark mode)
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+            maxZoom: 19
+        }).addTo(map);
+
+        // Node markers layer group
+        let nodeLayer = L.layerGroup().addTo(map);
+        let currentGeoJSON = null;
+
+        // Create custom marker
+        function createNodeMarker(feature) {
+            const props = feature.properties;
+            const coords = feature.geometry.coordinates;
+
+            // Determine marker color
+            let color = props.is_online ? '#4caf50' : '#f44336';
+            if (props.is_gateway) color = '#ff9800';
+
+            // Determine marker size and style
+            let radius = 8;
+            let weight = 2;
+            let fillOpacity = 0.8;
+
+            if (props.is_local) {
+                radius = 12;
+                weight = 3;
+            }
+
+            const marker = L.circleMarker([coords[1], coords[0]], {
+                radius: radius,
+                fillColor: color,
+                color: props.is_local ? '#ffffff' : color,
+                weight: weight,
+                fillOpacity: fillOpacity
+            });
+
+            // Create popup content
+            const networkClass = props.network === 'both' ? 'network-both' :
+                                props.network === 'rns' ? 'network-rns' : 'network-meshtastic';
+
+            const popupContent = `
+                <div class="node-popup">
+                    <h3>${props.name || 'Unknown'}</h3>
+                    <span class="network-badge ${networkClass}">${props.network.toUpperCase()}</span>
+                    <div class="info-row">
+                        <span class="label">Status:</span>
+                        <span class="value ${props.is_online ? 'status-online' : 'status-offline'}">
+                            ${props.is_online ? 'Online' : 'Offline'}
+                        </span>
+                    </div>
+                    ${props.is_gateway ? '<div class="info-row"><span class="label">Role:</span><span class="value status-gateway">Gateway</span></div>' : ''}
+                    <div class="info-row">
+                        <span class="label">Last Seen:</span>
+                        <span class="value">${props.last_seen || 'Unknown'}</span>
+                    </div>
+                    ${props.snr !== null ? `<div class="info-row"><span class="label">SNR:</span><span class="value">${props.snr} dB</span></div>` : ''}
+                    ${props.battery !== null ? `<div class="info-row"><span class="label">Battery:</span><span class="value">${props.battery}%</span></div>` : ''}
+                    <div class="info-row">
+                        <span class="label">Position:</span>
+                        <span class="value">${coords[1].toFixed(5)}, ${coords[0].toFixed(5)}</span>
+                    </div>
+                </div>
+            `;
+
+            marker.bindPopup(popupContent);
+            return marker;
+        }
+
+        // Load and display nodes
+        function loadNodes(geojson) {
+            currentGeoJSON = geojson;
+            updateDisplay();
+        }
+
+        // Update display based on filters
+        function updateDisplay() {
+            if (!currentGeoJSON) return;
+
+            const showMeshtastic = document.getElementById('filter-meshtastic').checked;
+            const showRNS = document.getElementById('filter-rns').checked;
+            const onlineOnly = document.getElementById('filter-online-only').checked;
+
+            // Clear existing markers
+            nodeLayer.clearLayers();
+
+            // Stats
+            let total = 0, meshtastic = 0, rns = 0, online = 0;
+
+            // Add filtered markers
+            currentGeoJSON.features.forEach(feature => {
+                const props = feature.properties;
+
+                // Count stats
+                total++;
+                if (props.network === 'meshtastic' || props.network === 'both') meshtastic++;
+                if (props.network === 'rns' || props.network === 'both') rns++;
+                if (props.is_online) online++;
+
+                // Apply filters
+                if (onlineOnly && !props.is_online) return;
+                if (props.network === 'meshtastic' && !showMeshtastic) return;
+                if (props.network === 'rns' && !showRNS) return;
+                if (props.network === 'both' && !showMeshtastic && !showRNS) return;
+
+                const marker = createNodeMarker(feature);
+                nodeLayer.addLayer(marker);
+            });
+
+            // Update stats display
+            document.getElementById('stat-total').textContent = total;
+            document.getElementById('stat-meshtastic').textContent = meshtastic;
+            document.getElementById('stat-rns').textContent = rns;
+            document.getElementById('stat-online').textContent = online;
+
+            // Fit bounds if we have nodes
+            if (nodeLayer.getLayers().length > 0) {
+                const bounds = nodeLayer.getBounds();
+                if (bounds.isValid()) {
+                    map.fitBounds(bounds, { padding: [50, 50] });
+                }
+            }
+        }
+
+        // Refresh nodes from server
+        async function refreshNodes() {
+            try {
+                // Try to fetch from local MeshForge API
+                const response = await fetch('/api/nodes/geojson');
+                if (response.ok) {
+                    const geojson = await response.json();
+                    loadNodes(geojson);
+                    return;
+                }
+            } catch (e) {
+                console.log('API not available, using demo data');
+            }
+
+            // Check URL params for data
+            const params = new URLSearchParams(window.location.search);
+            if (params.has('data')) {
+                try {
+                    const geojson = JSON.parse(decodeURIComponent(params.get('data')));
+                    loadNodes(geojson);
+                    return;
+                } catch (e) {
+                    console.error('Failed to parse data param:', e);
+                }
+            }
+
+            // Demo data for development
+            const demoData = {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": { "type": "Point", "coordinates": [-157.8583, 21.3069] },
+                        "properties": {
+                            "id": "mesh_!abcd1234",
+                            "name": "Honolulu Node",
+                            "network": "meshtastic",
+                            "is_online": true,
+                            "is_local": true,
+                            "is_gateway": false,
+                            "snr": 12.5,
+                            "battery": 85,
+                            "last_seen": "2m ago"
+                        }
+                    },
+                    {
+                        "type": "Feature",
+                        "geometry": { "type": "Point", "coordinates": [-156.4680, 20.7984] },
+                        "properties": {
+                            "id": "mesh_!efgh5678",
+                            "name": "Maui Repeater",
+                            "network": "meshtastic",
+                            "is_online": true,
+                            "is_local": false,
+                            "is_gateway": true,
+                            "snr": 8.0,
+                            "battery": 100,
+                            "last_seen": "5m ago"
+                        }
+                    },
+                    {
+                        "type": "Feature",
+                        "geometry": { "type": "Point", "coordinates": [-155.5000, 19.7297] },
+                        "properties": {
+                            "id": "rns_a1b2c3d4",
+                            "name": "Big Island RNS",
+                            "network": "rns",
+                            "is_online": true,
+                            "is_local": false,
+                            "is_gateway": false,
+                            "snr": null,
+                            "battery": null,
+                            "last_seen": "1m ago"
+                        }
+                    },
+                    {
+                        "type": "Feature",
+                        "geometry": { "type": "Point", "coordinates": [-159.3711, 22.0964] },
+                        "properties": {
+                            "id": "both_kauai",
+                            "name": "Kauai Gateway",
+                            "network": "both",
+                            "is_online": false,
+                            "is_local": false,
+                            "is_gateway": true,
+                            "snr": 5.5,
+                            "battery": 45,
+                            "last_seen": "2h ago"
+                        }
+                    }
+                ]
+            };
+
+            loadNodes(demoData);
+        }
+
+        // Event listeners for filters
+        document.getElementById('filter-meshtastic').addEventListener('change', updateDisplay);
+        document.getElementById('filter-rns').addEventListener('change', updateDisplay);
+        document.getElementById('filter-online-only').addEventListener('change', updateDisplay);
+
+        // Initial load
+        refreshNodes();
+
+        // Auto-refresh every 30 seconds
+        setInterval(refreshNodes, 30000);
+    </script>
+</body>
+</html>

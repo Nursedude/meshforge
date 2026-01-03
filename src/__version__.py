@@ -3,8 +3,8 @@ MeshForge - LoRa Mesh Network Development & Operations Suite
 Version information and changelog
 """
 
-__version__ = "4.1.0"
-__version_info__ = (4, 1, 0)
+__version__ = "4.2.0"
+__version_info__ = (4, 2, 0)
 __release_date__ = "2026-01-03"
 __app_name__ = "MeshForge"
 __app_description__ = "LoRa Mesh Network Development & Operations Suite"
@@ -12,6 +12,22 @@ __app_tagline__ = "Build. Test. Deploy. Monitor."
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "4.2.0",
+        "date": "2026-01-03",
+        "changes": [
+            "NEW: Unified Node Map - Shows nodes from both Meshtastic AND RNS networks",
+            "NEW: Interactive Leaflet.js map with WebKit or browser display",
+            "NEW: Filter nodes by network type (Meshtastic, RNS) and online status",
+            "NEW: RNS Configuration Editor - Full editor for ~/.reticulum/config",
+            "NEW: Interface templates - One-click TCP, UDP, RNode, Auto-discovery insertion",
+            "NEW: Gateway Configuration Dialog - Complete settings editor for RNS-Meshtastic bridge",
+            "NEW: Gateway settings: Meshtastic connection, RNS config, telemetry, routing rules",
+            "NEW: Export/Import gateway configuration as JSON",
+            "IMPROVED: RNS panel now has 'Config Editor' button with template support",
+            "IMPROVED: Node Map panel added to main navigation",
+        ]
+    },
     {
         "version": "4.1.0",
         "date": "2026-01-03",

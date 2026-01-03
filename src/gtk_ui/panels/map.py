@@ -1,0 +1,456 @@
+"""
+Map Panel - Unified node map for RNS and Meshtastic networks
+"""
+
+import gi
+gi.require_version('Gtk', '4.0')
+gi.require_version('Adw', '1')
+from gi.repository import Gtk, Adw, GLib
+import subprocess
+import threading
+import json
+import urllib.parse
+from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Try to import WebKit for embedded map
+try:
+    gi.require_version('WebKit', '6.0')
+    from gi.repository import WebKit
+    HAS_WEBKIT = True
+except (ValueError, ImportError):
+    try:
+        gi.require_version('WebKit2', '4.1')
+        from gi.repository import WebKit2 as WebKit
+        HAS_WEBKIT = True
+    except (ValueError, ImportError):
+        HAS_WEBKIT = False
+        logger.info("WebKit not available, map will open in browser")
+
+
+class MapPanel(Gtk.Box):
+    """Map panel showing nodes from both RNS and Meshtastic networks"""
+
+    def __init__(self, main_window):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.main_window = main_window
+        self.node_tracker = None
+        self.webview = None
+
+        self.set_margin_start(20)
+        self.set_margin_end(20)
+        self.set_margin_top(20)
+        self.set_margin_bottom(20)
+
+        self._init_node_tracker()
+        self._build_ui()
+        GLib.timeout_add_seconds(5, self._auto_refresh)
+
+    def _init_node_tracker(self):
+        """Initialize the node tracker"""
+        try:
+            from ...gateway.node_tracker import UnifiedNodeTracker
+            self.node_tracker = UnifiedNodeTracker()
+            self.node_tracker.start()
+            logger.info("Node tracker initialized")
+        except ImportError as e:
+            logger.warning(f"Could not import node tracker: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize node tracker: {e}")
+
+    def _build_ui(self):
+        """Build the map panel UI"""
+        # Header
+        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+
+        title = Gtk.Label(label="Network Node Map")
+        title.add_css_class("title-1")
+        title.set_xalign(0)
+        title.set_hexpand(True)
+        header_box.append(title)
+
+        # Refresh button
+        refresh_btn = Gtk.Button(label="Refresh")
+        refresh_btn.connect("clicked", self._on_refresh)
+        header_box.append(refresh_btn)
+
+        # Open in browser button
+        browser_btn = Gtk.Button(label="Open in Browser")
+        browser_btn.connect("clicked", self._on_open_browser)
+        header_box.append(browser_btn)
+
+        self.append(header_box)
+
+        subtitle = Gtk.Label(label="Unified view of Meshtastic and RNS nodes with positions")
+        subtitle.add_css_class("dim-label")
+        subtitle.set_xalign(0)
+        self.append(subtitle)
+
+        # Statistics row
+        stats_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=20)
+        stats_box.set_margin_top(10)
+        stats_box.set_margin_bottom(10)
+
+        self.stat_total = self._create_stat_label("Total", "0")
+        stats_box.append(self.stat_total)
+
+        self.stat_meshtastic = self._create_stat_label("Meshtastic", "0")
+        stats_box.append(self.stat_meshtastic)
+
+        self.stat_rns = self._create_stat_label("RNS", "0")
+        stats_box.append(self.stat_rns)
+
+        self.stat_online = self._create_stat_label("Online", "0")
+        stats_box.append(self.stat_online)
+
+        self.stat_with_pos = self._create_stat_label("With Position", "0")
+        stats_box.append(self.stat_with_pos)
+
+        self.append(stats_box)
+
+        # Main content area
+        if HAS_WEBKIT:
+            self._build_webkit_map()
+        else:
+            self._build_fallback_ui()
+
+        # Status bar
+        self.status_label = Gtk.Label(label="Ready")
+        self.status_label.add_css_class("dim-label")
+        self.status_label.set_xalign(0)
+        self.append(self.status_label)
+
+        # Initial data load
+        GLib.idle_add(self._refresh_data)
+
+    def _create_stat_label(self, name, value):
+        """Create a statistics label widget"""
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+
+        name_label = Gtk.Label(label=f"{name}:")
+        name_label.add_css_class("dim-label")
+        box.append(name_label)
+
+        value_label = Gtk.Label(label=value)
+        value_label.add_css_class("heading")
+        value_label.set_name(f"value_{name.lower()}")
+        box.append(value_label)
+
+        return box
+
+    def _update_stat(self, stat_box, value):
+        """Update a stat box value"""
+        for child in stat_box:
+            if child.get_name() and child.get_name().startswith("value_"):
+                child.set_label(str(value))
+                return
+
+    def _build_webkit_map(self):
+        """Build embedded WebKit map view"""
+        frame = Gtk.Frame()
+        frame.set_vexpand(True)
+
+        # Create WebView
+        self.webview = WebKit.WebView()
+        self.webview.set_vexpand(True)
+        self.webview.set_hexpand(True)
+
+        # Load map HTML
+        map_path = self._get_map_path()
+        if map_path and map_path.exists():
+            self.webview.load_uri(f"file://{map_path}")
+        else:
+            # Create inline HTML fallback
+            self._load_inline_map()
+
+        frame.set_child(self.webview)
+        self.append(frame)
+
+    def _build_fallback_ui(self):
+        """Build fallback UI when WebKit is not available"""
+        frame = Gtk.Frame()
+        frame.set_label("Node List")
+        frame.set_vexpand(True)
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+
+        # Node list view
+        self.node_list = Gtk.ListBox()
+        self.node_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        scrolled.set_child(self.node_list)
+
+        frame.set_child(scrolled)
+        self.append(frame)
+
+        # Add info about opening in browser
+        info_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        info_box.set_margin_top(10)
+
+        info_icon = Gtk.Image.new_from_icon_name("dialog-information-symbolic")
+        info_box.append(info_icon)
+
+        info_label = Gtk.Label(
+            label="WebKit not available. Click 'Open in Browser' for interactive map."
+        )
+        info_label.add_css_class("dim-label")
+        info_box.append(info_label)
+
+        self.append(info_box)
+
+    def _get_map_path(self):
+        """Get path to map HTML file"""
+        # Try relative to this file
+        current_dir = Path(__file__).parent.parent.parent.parent
+        map_path = current_dir / "web" / "node_map.html"
+        if map_path.exists():
+            return map_path
+
+        # Try installed location
+        map_path = Path("/opt/meshforge/web/node_map.html")
+        if map_path.exists():
+            return map_path
+
+        return None
+
+    def _load_inline_map(self):
+        """Load a simple inline map if external file not found"""
+        html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {
+                    font-family: sans-serif;
+                    background: #1a1a2e;
+                    color: #eee;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                }
+                .message {
+                    text-align: center;
+                    padding: 40px;
+                }
+                h2 { color: #4fc3f7; }
+            </style>
+        </head>
+        <body>
+            <div class="message">
+                <h2>Map Loading...</h2>
+                <p>Interactive map requires web/node_map.html</p>
+                <p>Click 'Open in Browser' for full map experience.</p>
+            </div>
+        </body>
+        </html>
+        """
+        self.webview.load_html(html, "file:///")
+
+    def _refresh_data(self):
+        """Refresh node data"""
+        self.status_label.set_label("Refreshing...")
+
+        def fetch_data():
+            stats = {"total": 0, "meshtastic": 0, "rns": 0, "online": 0, "with_position": 0}
+            geojson = {"type": "FeatureCollection", "features": []}
+            nodes = []
+
+            if self.node_tracker:
+                try:
+                    stats = self.node_tracker.get_stats()
+                    geojson = self.node_tracker.to_geojson()
+                    nodes = self.node_tracker.get_all_nodes()
+                except Exception as e:
+                    logger.error(f"Error fetching node data: {e}")
+
+            GLib.idle_add(self._update_ui, stats, geojson, nodes)
+
+        threading.Thread(target=fetch_data, daemon=True).start()
+
+    def _update_ui(self, stats, geojson, nodes):
+        """Update UI with fetched data"""
+        # Update statistics
+        self._update_stat(self.stat_total, stats.get("total", 0))
+        self._update_stat(self.stat_meshtastic, stats.get("meshtastic", 0))
+        self._update_stat(self.stat_rns, stats.get("rns", 0))
+        self._update_stat(self.stat_online, stats.get("online", 0))
+        self._update_stat(self.stat_with_pos, stats.get("with_position", 0))
+
+        # Update map if WebKit available
+        if self.webview:
+            try:
+                # Send GeoJSON to JavaScript
+                geojson_str = json.dumps(geojson)
+                js_code = f"if(typeof loadNodes === 'function') loadNodes({geojson_str});"
+                self.webview.evaluate_javascript(js_code, -1, None, None, None, None, None)
+            except Exception as e:
+                logger.debug(f"Could not update webview: {e}")
+
+        # Update node list if in fallback mode
+        if hasattr(self, 'node_list'):
+            self._update_node_list(nodes)
+
+        self.status_label.set_label(
+            f"Last updated: {stats.get('total', 0)} nodes "
+            f"({stats.get('online', 0)} online)"
+        )
+
+        return False
+
+    def _update_node_list(self, nodes):
+        """Update the fallback node list"""
+        # Clear existing
+        while True:
+            child = self.node_list.get_first_child()
+            if child is None:
+                break
+            self.node_list.remove(child)
+
+        # Add nodes
+        for node in nodes:
+            row = self._create_node_row(node)
+            self.node_list.append(row)
+
+        if not nodes:
+            empty_label = Gtk.Label(label="No nodes found")
+            empty_label.add_css_class("dim-label")
+            empty_label.set_margin_top(20)
+            empty_label.set_margin_bottom(20)
+            self.node_list.append(empty_label)
+
+    def _create_node_row(self, node):
+        """Create a list row for a node"""
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=15)
+        box.set_margin_start(10)
+        box.set_margin_end(10)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+
+        # Status indicator
+        status_icon = Gtk.Label()
+        if node.is_online:
+            status_icon.set_label("\u25CF")  # Filled circle
+            status_icon.add_css_class("success")
+        else:
+            status_icon.set_label("\u25CB")  # Empty circle
+            status_icon.add_css_class("error")
+        box.append(status_icon)
+
+        # Name
+        name_label = Gtk.Label(label=node.name or node.id)
+        name_label.set_xalign(0)
+        name_label.set_hexpand(True)
+        box.append(name_label)
+
+        # Network badge
+        network_label = Gtk.Label(label=node.network.upper())
+        if node.network == "meshtastic":
+            network_label.add_css_class("accent")
+        elif node.network == "rns":
+            network_label.add_css_class("warning")
+        box.append(network_label)
+
+        # Position indicator
+        if node.position and node.position.is_valid():
+            pos_label = Gtk.Label(
+                label=f"{node.position.latitude:.4f}, {node.position.longitude:.4f}"
+            )
+            pos_label.add_css_class("dim-label")
+        else:
+            pos_label = Gtk.Label(label="No position")
+            pos_label.add_css_class("dim-label")
+        box.append(pos_label)
+
+        # Last seen
+        seen_label = Gtk.Label(label=node.get_age_string())
+        seen_label.add_css_class("dim-label")
+        box.append(seen_label)
+
+        return box
+
+    def _on_refresh(self, button):
+        """Handle refresh button click"""
+        self._refresh_data()
+
+    def _auto_refresh(self):
+        """Auto-refresh timer callback"""
+        self._refresh_data()
+        return True  # Continue timer
+
+    def _on_open_browser(self, button):
+        """Open map in external browser"""
+        import os
+
+        map_path = self._get_map_path()
+        if not map_path or not map_path.exists():
+            self.status_label.set_label("Error: Map file not found")
+            return
+
+        # Build URL with current data
+        geojson = {"type": "FeatureCollection", "features": []}
+        if self.node_tracker:
+            try:
+                geojson = self.node_tracker.to_geojson()
+            except Exception:
+                pass
+
+        params = urllib.parse.urlencode({
+            'data': json.dumps(geojson)
+        })
+
+        url = f"file://{map_path}?{params}"
+
+        def try_open():
+            user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
+
+            # Try xdg-open
+            try:
+                result = subprocess.run(
+                    ['sudo', '-u', user, 'xdg-open', url],
+                    capture_output=True, timeout=10
+                )
+                if result.returncode == 0:
+                    GLib.idle_add(
+                        self.status_label.set_label,
+                        "Opened map in browser"
+                    )
+                    return
+            except Exception:
+                pass
+
+            # Try common browsers
+            browsers = ['chromium-browser', 'firefox', 'epiphany-browser']
+            for browser in browsers:
+                try:
+                    subprocess.Popen(
+                        ['sudo', '-u', user, browser, url],
+                        start_new_session=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    GLib.idle_add(
+                        self.status_label.set_label,
+                        f"Opened map in {browser}"
+                    )
+                    return
+                except Exception:
+                    continue
+
+            GLib.idle_add(
+                self.status_label.set_label,
+                f"Could not open browser. URL: {url[:50]}..."
+            )
+
+        threading.Thread(target=try_open, daemon=True).start()
+
+    def cleanup(self):
+        """Cleanup when panel is destroyed"""
+        if self.node_tracker:
+            try:
+                self.node_tracker.stop()
+            except Exception:
+                pass

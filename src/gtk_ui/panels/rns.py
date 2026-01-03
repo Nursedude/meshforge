@@ -440,31 +440,43 @@ class RNSPanel(Gtk.Box):
 
         # Main config file
         config_file = config_path / "config"
-        if config_file.exists():
-            file_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        file_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
 
-            file_label = Gtk.Label(label="Main Config:")
-            file_label.set_xalign(0)
-            file_row.append(file_label)
+        file_label = Gtk.Label(label="Main Config:")
+        file_label.set_xalign(0)
+        file_row.append(file_label)
 
-            file_path_label = Gtk.Label(label=str(config_file))
-            file_path_label.add_css_class("dim-label")
-            file_row.append(file_path_label)
+        file_path_label = Gtk.Label(label=str(config_file))
+        file_path_label.add_css_class("dim-label")
+        file_row.append(file_path_label)
 
-            spacer2 = Gtk.Box()
-            spacer2.set_hexpand(True)
-            file_row.append(spacer2)
+        spacer2 = Gtk.Box()
+        spacer2.set_hexpand(True)
+        file_row.append(spacer2)
 
-            edit_btn = Gtk.Button(label="Edit")
-            edit_btn.connect("clicked", lambda b: self._edit_config(config_file))
-            file_row.append(edit_btn)
+        # Edit with external editor
+        ext_edit_btn = Gtk.Button(label="Edit (External)")
+        ext_edit_btn.set_tooltip_text("Open in external text editor")
+        ext_edit_btn.connect("clicked", lambda b: self._edit_config(config_file))
+        file_row.append(ext_edit_btn)
 
-            box.append(file_row)
-        else:
-            no_config = Gtk.Label(label="No RNS configuration found. Install RNS first.")
-            no_config.add_css_class("dim-label")
-            no_config.set_xalign(0)
-            box.append(no_config)
+        # Edit with built-in config editor
+        config_edit_btn = Gtk.Button(label="Config Editor")
+        config_edit_btn.add_css_class("suggested-action")
+        config_edit_btn.set_tooltip_text("Open in MeshForge config editor with templates")
+        config_edit_btn.connect("clicked", lambda b: self._open_rns_config_dialog())
+        file_row.append(config_edit_btn)
+
+        box.append(file_row)
+
+        if not config_file.exists():
+            note_label = Gtk.Label(
+                label="No config file exists yet. Click 'Config Editor' to create one with templates."
+            )
+            note_label.add_css_class("dim-label")
+            note_label.set_xalign(0)
+            note_label.set_wrap(True)
+            box.append(note_label)
 
         frame.set_child(box)
         parent.append(frame)
@@ -911,6 +923,23 @@ class RNSPanel(Gtk.Box):
             subprocess.run(['xdg-open', str(path)])
         except Exception as e:
             self.main_window.set_status_message(f"Failed to open folder: {e}")
+
+    def _open_rns_config_dialog(self):
+        """Open the RNS configuration editor dialog"""
+        try:
+            from ..dialogs.rns_config import RNSConfigDialog
+            dialog = RNSConfigDialog(self.main_window)
+            dialog.present()
+        except ImportError as e:
+            # Fallback if dialog not available
+            dialog = Adw.MessageDialog(
+                transient_for=self.main_window,
+                heading="Configuration Editor",
+                body=f"Config editor not available: {e}\n\n"
+                     "Config file: ~/.reticulum/config"
+            )
+            dialog.add_response("ok", "OK")
+            dialog.present()
 
     def _edit_config(self, config_file):
         """Open config file in editor"""
