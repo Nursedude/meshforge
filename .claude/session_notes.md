@@ -45,11 +45,20 @@ sudo ./scripts/install-desktop.sh
 
 ## Recent Work Summary
 
-### Session: 2026-01-03 (v4.1.0) - Map & Updates
+### Session: 2026-01-03 (v4.1.0) - Map, Updates & Calculator
 
 **New Features Implemented:**
 
-1. **Mesh Network Map** (`src/main_web.py`)
+1. **Frequency Slot Calculator Redesign** (`src/gtk_ui/panels/radio_config.py`)
+   - Dropdown-based interface matching Meshtastic docs
+   - All 22 Meshtastic regions supported (US, EU_433, EU_868, CN, JP, ANZ, KR, TW, RU, IN, NZ_865, TH, LORA_24, UA_433, UA_868, MY_433, MY_919, SG_923, PH, UK_868, SINGAPORE)
+   - Auto-calculated fields:
+     - Default Frequency Slot (from LongFast hash)
+     - Number of slots (from region bandwidth)
+     - Frequency of slot (MHz)
+   - Channel Preset dropdown for quick slot selection
+
+2. **Mesh Network Map** (`src/main_web.py`)
    - Interactive Leaflet.js map with dark CARTO tiles
    - Color-coded node markers:
      - Green = My node
@@ -101,6 +110,7 @@ sudo ./scripts/install-desktop.sh
 
 | File | Status | Description |
 |------|--------|-------------|
+| `src/gtk_ui/panels/radio_config.py` | Modified | Frequency slot calculator redesign, all 22 regions |
 | `src/main_web.py` | Modified | Map tab, Updates tab, /api/nodes/full, /api/versions |
 | `src/updates/__init__.py` | New | Module exports |
 | `src/updates/version_checker.py` | New | Version detection logic |
