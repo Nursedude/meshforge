@@ -488,7 +488,7 @@ class RadioConfigPanel(Gtk.Box):
         parent.append(frame)
 
     def _add_frequency_calculator_section(self, parent):
-        """Add frequency slot calculator section - calculates frequency from channel name"""
+        """Add frequency slot calculator section"""
         frame = Gtk.Frame()
         frame.set_label("Frequency Slot Calculator")
 
@@ -498,13 +498,6 @@ class RadioConfigPanel(Gtk.Box):
         box.set_margin_top(10)
         box.set_margin_bottom(10)
 
-        # Description
-        desc = Gtk.Label(label="Calculate the frequency slot for a channel name using the djb2 hash algorithm.")
-        desc.set_xalign(0)
-        desc.add_css_class("dim-label")
-        desc.set_wrap(True)
-        box.append(desc)
-
         # Create a grid for cleaner layout
         grid = Gtk.Grid()
         grid.set_column_spacing(15)
@@ -512,7 +505,7 @@ class RadioConfigPanel(Gtk.Box):
 
         row = 0
 
-        # Modem Preset (first as requested)
+        # Modem Preset
         preset_label = Gtk.Label(label="Modem Preset:")
         preset_label.set_xalign(1)
         grid.attach(preset_label, 0, row, 1, 1)
@@ -521,7 +514,7 @@ class RadioConfigPanel(Gtk.Box):
             "SHORT_SLOW", "SHORT_FAST", "SHORT_TURBO"
         ])
         self.freq_calc_preset.set_selected(0)
-        self.freq_calc_preset.connect("notify::selected", self._on_freq_calc_changed)
+        self.freq_calc_preset.connect("notify::selected", self._on_freq_calc_params_changed)
         grid.attach(self.freq_calc_preset, 1, row, 1, 1)
         row += 1
 
@@ -534,7 +527,7 @@ class RadioConfigPanel(Gtk.Box):
             "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919", "SG_923"
         ])
         self.freq_calc_region.set_selected(0)  # Default to US
-        self.freq_calc_region.connect("notify::selected", self._on_freq_calc_changed)
+        self.freq_calc_region.connect("notify::selected", self._on_freq_calc_params_changed)
         grid.attach(self.freq_calc_region, 1, row, 1, 1)
         row += 1
 
@@ -557,33 +550,38 @@ class RadioConfigPanel(Gtk.Box):
         grid.attach(self.freq_calc_num_slots, 1, row, 1, 1)
         row += 1
 
-        # Separator
-        sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        grid.attach(sep, 0, row, 2, 1)
-        row += 1
-
-        # Channel Name Entry (custom channel)
-        channel_label = Gtk.Label(label="Channel Name:")
-        channel_label.set_xalign(1)
-        grid.attach(channel_label, 0, row, 1, 1)
-        self.freq_calc_channel = Gtk.Entry()
-        self.freq_calc_channel.set_placeholder_text("Enter custom channel name")
-        self.freq_calc_channel.set_hexpand(True)
-        self.freq_calc_channel.connect("changed", self._on_freq_calc_channel_changed)
-        grid.attach(self.freq_calc_channel, 1, row, 1, 1)
-        row += 1
-
-        # Frequency Slot (for custom channel)
+        # Frequency Slot dropdown (manual selection)
         slot_label = Gtk.Label(label="Frequency Slot:")
         slot_label.set_xalign(1)
         grid.attach(slot_label, 0, row, 1, 1)
-        self.freq_calc_slot = Gtk.Label(label="--")
-        self.freq_calc_slot.set_xalign(0)
-        self.freq_calc_slot.add_css_class("monospace")
-        grid.attach(self.freq_calc_slot, 1, row, 1, 1)
+        # Create dropdown with placeholder - will be populated when params change
+        self.freq_calc_slot_dropdown = Gtk.DropDown.new_from_strings(["1"])
+        self.freq_calc_slot_dropdown.set_selected(0)
+        self.freq_calc_slot_dropdown.connect("notify::selected", self._on_freq_slot_selected)
+        grid.attach(self.freq_calc_slot_dropdown, 1, row, 1, 1)
         row += 1
 
-        # Frequency of slot
+        # Channel Preset dropdown (Meshtastic default channel names)
+        preset_channel_label = Gtk.Label(label="Channel Preset:")
+        preset_channel_label.set_xalign(1)
+        grid.attach(preset_channel_label, 0, row, 1, 1)
+        self.freq_calc_channel_preset = Gtk.DropDown.new_from_strings([
+            "(Manual Slot)",
+            "LongFast",
+            "LongSlow",
+            "LongModerate",
+            "MediumSlow",
+            "MediumFast",
+            "ShortSlow",
+            "ShortFast",
+            "ShortTurbo"
+        ])
+        self.freq_calc_channel_preset.set_selected(1)  # Default to LongFast
+        self.freq_calc_channel_preset.connect("notify::selected", self._on_channel_preset_selected)
+        grid.attach(self.freq_calc_channel_preset, 1, row, 1, 1)
+        row += 1
+
+        # Frequency of slot (calculated)
         freq_label = Gtk.Label(label="Frequency of slot:")
         freq_label.set_xalign(1)
         grid.attach(freq_label, 0, row, 1, 1)
@@ -594,22 +592,64 @@ class RadioConfigPanel(Gtk.Box):
 
         box.append(grid)
 
+        # Store current params for frequency calculation
+        self._freq_calc_num_slots = 104  # Default for US/LONG_FAST
+        self._freq_calc_freq_start = 902.0
+        self._freq_calc_bw = 250
+
         # Calculate on load
         GLib.idle_add(self._update_frequency_calculator)
 
         frame.set_child(box)
         parent.append(frame)
 
-    def _on_freq_calc_changed(self, dropdown, param):
-        """Called when region or preset dropdown changes"""
+    def _on_freq_calc_params_changed(self, dropdown, param):
+        """Called when region or preset dropdown changes - rebuild slot dropdown"""
         self._update_frequency_calculator()
 
-    def _on_freq_calc_channel_changed(self, entry):
-        """Called when channel name entry changes"""
-        self._update_frequency_calculator()
+    def _on_freq_slot_selected(self, dropdown, param):
+        """Called when frequency slot dropdown selection changes"""
+        # Set channel preset to Manual when slot is manually changed
+        self.freq_calc_channel_preset.set_selected(0)  # (Manual Slot)
+        self._update_slot_frequency()
+
+    def _on_channel_preset_selected(self, dropdown, param):
+        """Called when channel preset dropdown selection changes"""
+        presets = [
+            "(Manual Slot)",
+            "LongFast",
+            "LongSlow",
+            "LongModerate",
+            "MediumSlow",
+            "MediumFast",
+            "ShortSlow",
+            "ShortFast",
+            "ShortTurbo"
+        ]
+        preset_idx = dropdown.get_selected()
+
+        if preset_idx == 0:
+            # Manual mode - just update frequency for current slot
+            self._update_slot_frequency()
+            return
+
+        # Get channel name and calculate its slot
+        channel_name = presets[preset_idx]
+        h = self._djb2_hash(channel_name)
+        slot = h % self._freq_calc_num_slots
+
+        # Update slot dropdown to match (without triggering the slot changed handler)
+        self.freq_calc_slot_dropdown.handler_block_by_func(self._on_freq_slot_selected)
+        self.freq_calc_slot_dropdown.set_selected(slot)
+        self.freq_calc_slot_dropdown.handler_unblock_by_func(self._on_freq_slot_selected)
+
+        # Update frequency display
+        self._update_slot_frequency()
 
     def _update_frequency_calculator(self):
-        """Update all frequency calculator fields"""
+        """Update all frequency calculator fields and rebuild slot dropdown"""
+        import math
+
         # Get selected region
         regions = ["US", "EU_868", "EU_433", "CN", "JP", "ANZ", "KR", "TW", "RU",
                    "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919", "SG_923"]
@@ -627,8 +667,14 @@ class RadioConfigPanel(Gtk.Box):
         bw = self._get_preset_bandwidth(preset)
 
         # Calculate number of slots
-        import math
         num_slots = int(math.floor((freq_end - freq_start) / (spacing + (bw / 1000))))
+
+        # Store for frequency calculation
+        self._freq_calc_num_slots = num_slots
+        self._freq_calc_freq_start = freq_start
+        self._freq_calc_bw = bw
+
+        # Update Number of slots label
         self.freq_calc_num_slots.set_label(str(num_slots))
 
         # Calculate default slot (for "LongFast" channel name)
@@ -637,17 +683,31 @@ class RadioConfigPanel(Gtk.Box):
         default_freq = freq_start + (bw / 2000) + (default_slot * (bw / 1000))
         self.freq_calc_default_slot.set_label(f"{default_slot + 1} @ {default_freq:.3f} MHz")
 
-        # Calculate custom channel slot if entered
-        channel_name = self.freq_calc_channel.get_text().strip()
-        if channel_name:
-            h = self._djb2_hash(channel_name)
-            slot = h % num_slots
-            center_freq = freq_start + (bw / 2000) + (slot * (bw / 1000))
-            self.freq_calc_slot.set_label(str(slot + 1))
-            self.freq_calc_freq.set_label(f"{center_freq:.3f} MHz")
+        # Rebuild slot dropdown with new range
+        slot_strings = [str(i) for i in range(1, num_slots + 1)]
+        slot_model = Gtk.StringList.new(slot_strings)
+        self.freq_calc_slot_dropdown.set_model(slot_model)
+
+        # Set to default slot (LongFast)
+        if default_slot < num_slots:
+            self.freq_calc_slot_dropdown.set_selected(default_slot)
         else:
-            self.freq_calc_slot.set_label("--")
-            self.freq_calc_freq.set_label("--")
+            self.freq_calc_slot_dropdown.set_selected(0)
+
+        # Set channel preset to LongFast
+        self.freq_calc_channel_preset.set_selected(1)  # LongFast
+
+        # Update frequency display
+        self._update_slot_frequency()
+
+    def _update_slot_frequency(self):
+        """Calculate and display frequency for selected slot"""
+        slot_idx = self.freq_calc_slot_dropdown.get_selected()
+        slot = slot_idx  # 0-indexed internally
+
+        # Calculate center frequency: freqStart + (bw / 2000) + (slot * (bw / 1000))
+        center_freq = self._freq_calc_freq_start + (self._freq_calc_bw / 2000) + (slot * (self._freq_calc_bw / 1000))
+        self.freq_calc_freq.set_label(f"{center_freq:.3f} MHz")
 
     def _djb2_hash(self, s):
         """Calculate djb2 hash - same algorithm as Meshtastic firmware"""
