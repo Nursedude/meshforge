@@ -268,6 +268,24 @@ class RadioConfigPanel(Gtk.Box):
                 if self.radio_node_id.get_label() == "--":
                     self.radio_node_id.set_label(f"!{node_hex}")
 
+        # Also try to extract channels from "Channels:" section
+        if self.radio_channels.get_label() == "--":
+            channels_match = re.search(r"Channels:\s*(\{.+?\})\s*(?=\n[A-Z]|\Z)", output, re.DOTALL)
+            if channels_match:
+                try:
+                    channels_block = channels_match.group(1)
+                    channels = parse_python_dict(channels_block)
+                    num_channels = len(channels) if isinstance(channels, dict) else 0
+                    if num_channels > 0:
+                        self.radio_channels.set_label(str(num_channels))
+                except (ValueError, SyntaxError):
+                    pass
+
+            # Fallback: count channel entries in output
+            channel_entries = re.findall(r'(?:PRIMARY|SECONDARY|DISABLED)\s*(?:psk|name)', output, re.IGNORECASE)
+            if channel_entries and self.radio_channels.get_label() == "--":
+                self.radio_channels.set_label(str(len(channel_entries)))
+
         # Parse "Metadata:" block - contains firmwareVersion, hwModel, etc.
         metadata_match = re.search(r"Metadata:\s*(\{[^}]+\})", output, re.DOTALL)
         if metadata_match:
@@ -481,104 +499,155 @@ class RadioConfigPanel(Gtk.Box):
         box.set_margin_bottom(10)
 
         # Description
-        desc = Gtk.Label(label="Calculate the frequency slot and center frequency for a channel name.\n"
-                               "Uses the djb2 hash algorithm from Meshtastic firmware.")
+        desc = Gtk.Label(label="Calculate the frequency slot for a channel name using the djb2 hash algorithm.")
         desc.set_xalign(0)
         desc.add_css_class("dim-label")
         desc.set_wrap(True)
         box.append(desc)
 
-        # Channel Name Entry
-        name_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        name_box.append(Gtk.Label(label="Channel Name:"))
-        self.freq_calc_channel = Gtk.Entry()
-        self.freq_calc_channel.set_text("LongFast")
-        self.freq_calc_channel.set_hexpand(True)
-        name_box.append(self.freq_calc_channel)
-        box.append(name_box)
+        # Create a grid for cleaner layout
+        grid = Gtk.Grid()
+        grid.set_column_spacing(15)
+        grid.set_row_spacing(10)
 
-        # Region dropdown
-        region_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        region_box.append(Gtk.Label(label="Region:"))
-        self.freq_calc_region = Gtk.DropDown.new_from_strings([
-            "US", "EU_868", "EU_433", "CN", "JP", "ANZ", "KR", "TW", "RU",
-            "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919", "SG_923"
-        ])
-        self.freq_calc_region.set_selected(0)  # Default to US
-        region_box.append(self.freq_calc_region)
-        box.append(region_box)
+        row = 0
 
-        # Modem Preset dropdown
-        preset_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        preset_box.append(Gtk.Label(label="Modem Preset:"))
+        # Modem Preset (first as requested)
+        preset_label = Gtk.Label(label="Modem Preset:")
+        preset_label.set_xalign(1)
+        grid.attach(preset_label, 0, row, 1, 1)
         self.freq_calc_preset = Gtk.DropDown.new_from_strings([
             "LONG_FAST", "LONG_SLOW", "LONG_MODERATE", "MEDIUM_SLOW", "MEDIUM_FAST",
             "SHORT_SLOW", "SHORT_FAST", "SHORT_TURBO"
         ])
         self.freq_calc_preset.set_selected(0)
-        preset_box.append(self.freq_calc_preset)
-        box.append(preset_box)
+        self.freq_calc_preset.connect("notify::selected", self._on_freq_calc_changed)
+        grid.attach(self.freq_calc_preset, 1, row, 1, 1)
+        row += 1
 
-        # Calculate button
-        calc_btn = Gtk.Button(label="Calculate Frequency")
-        calc_btn.add_css_class("suggested-action")
-        calc_btn.connect("clicked", self._on_calculate_frequency)
-        box.append(calc_btn)
+        # Region
+        region_label = Gtk.Label(label="Region:")
+        region_label.set_xalign(1)
+        grid.attach(region_label, 0, row, 1, 1)
+        self.freq_calc_region = Gtk.DropDown.new_from_strings([
+            "US", "EU_868", "EU_433", "CN", "JP", "ANZ", "KR", "TW", "RU",
+            "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919", "SG_923"
+        ])
+        self.freq_calc_region.set_selected(0)  # Default to US
+        self.freq_calc_region.connect("notify::selected", self._on_freq_calc_changed)
+        grid.attach(self.freq_calc_region, 1, row, 1, 1)
+        row += 1
 
-        # Results display
-        result_frame = Gtk.Frame()
-        result_frame.set_label("Results")
-        result_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-        result_box.set_margin_start(10)
-        result_box.set_margin_end(10)
-        result_box.set_margin_top(8)
-        result_box.set_margin_bottom(8)
+        # Default Frequency Slot (for "LongFast" default channel)
+        default_slot_label = Gtk.Label(label="Default Frequency Slot:")
+        default_slot_label.set_xalign(1)
+        grid.attach(default_slot_label, 0, row, 1, 1)
+        self.freq_calc_default_slot = Gtk.Label(label="--")
+        self.freq_calc_default_slot.set_xalign(0)
+        self.freq_calc_default_slot.add_css_class("monospace")
+        grid.attach(self.freq_calc_default_slot, 1, row, 1, 1)
+        row += 1
 
-        # Hash value
-        hash_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        hash_row.append(Gtk.Label(label="Hash (djb2):"))
-        self.freq_calc_hash = Gtk.Label(label="--")
-        self.freq_calc_hash.set_xalign(0)
-        self.freq_calc_hash.add_css_class("monospace")
-        hash_row.append(self.freq_calc_hash)
-        result_box.append(hash_row)
-
-        # Slot
-        slot_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        slot_row.append(Gtk.Label(label="Frequency Slot:"))
-        self.freq_calc_slot = Gtk.Label(label="--")
-        self.freq_calc_slot.set_xalign(0)
-        slot_row.append(self.freq_calc_slot)
-        result_box.append(slot_row)
-
-        # Num channels
-        num_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        num_row.append(Gtk.Label(label="Total Slots:"))
+        # Number of slots
+        num_slots_label = Gtk.Label(label="Number of slots:")
+        num_slots_label.set_xalign(1)
+        grid.attach(num_slots_label, 0, row, 1, 1)
         self.freq_calc_num_slots = Gtk.Label(label="--")
         self.freq_calc_num_slots.set_xalign(0)
-        num_row.append(self.freq_calc_num_slots)
-        result_box.append(num_row)
+        grid.attach(self.freq_calc_num_slots, 1, row, 1, 1)
+        row += 1
 
-        # Center frequency
-        freq_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        freq_row.append(Gtk.Label(label="Center Frequency:"))
+        # Separator
+        sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        grid.attach(sep, 0, row, 2, 1)
+        row += 1
+
+        # Channel Name Entry (custom channel)
+        channel_label = Gtk.Label(label="Channel Name:")
+        channel_label.set_xalign(1)
+        grid.attach(channel_label, 0, row, 1, 1)
+        self.freq_calc_channel = Gtk.Entry()
+        self.freq_calc_channel.set_placeholder_text("Enter custom channel name")
+        self.freq_calc_channel.set_hexpand(True)
+        self.freq_calc_channel.connect("changed", self._on_freq_calc_channel_changed)
+        grid.attach(self.freq_calc_channel, 1, row, 1, 1)
+        row += 1
+
+        # Frequency Slot (for custom channel)
+        slot_label = Gtk.Label(label="Frequency Slot:")
+        slot_label.set_xalign(1)
+        grid.attach(slot_label, 0, row, 1, 1)
+        self.freq_calc_slot = Gtk.Label(label="--")
+        self.freq_calc_slot.set_xalign(0)
+        self.freq_calc_slot.add_css_class("monospace")
+        grid.attach(self.freq_calc_slot, 1, row, 1, 1)
+        row += 1
+
+        # Frequency of slot
+        freq_label = Gtk.Label(label="Frequency of slot:")
+        freq_label.set_xalign(1)
+        grid.attach(freq_label, 0, row, 1, 1)
         self.freq_calc_freq = Gtk.Label(label="--")
         self.freq_calc_freq.set_xalign(0)
         self.freq_calc_freq.add_css_class("success")
-        freq_row.append(self.freq_calc_freq)
-        result_box.append(freq_row)
+        grid.attach(self.freq_calc_freq, 1, row, 1, 1)
 
-        result_frame.set_child(result_box)
-        box.append(result_frame)
+        box.append(grid)
 
-        # Common presets info
-        info_label = Gtk.Label(label="Common defaults (US, LongFast): Slot 20 @ 906.875 MHz")
-        info_label.set_xalign(0)
-        info_label.add_css_class("dim-label")
-        box.append(info_label)
+        # Calculate on load
+        GLib.idle_add(self._update_frequency_calculator)
 
         frame.set_child(box)
         parent.append(frame)
+
+    def _on_freq_calc_changed(self, dropdown, param):
+        """Called when region or preset dropdown changes"""
+        self._update_frequency_calculator()
+
+    def _on_freq_calc_channel_changed(self, entry):
+        """Called when channel name entry changes"""
+        self._update_frequency_calculator()
+
+    def _update_frequency_calculator(self):
+        """Update all frequency calculator fields"""
+        # Get selected region
+        regions = ["US", "EU_868", "EU_433", "CN", "JP", "ANZ", "KR", "TW", "RU",
+                   "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919", "SG_923"]
+        region_idx = self.freq_calc_region.get_selected()
+        region = regions[region_idx] if region_idx < len(regions) else "US"
+
+        # Get selected preset
+        presets = ["LONG_FAST", "LONG_SLOW", "LONG_MODERATE", "MEDIUM_SLOW", "MEDIUM_FAST",
+                   "SHORT_SLOW", "SHORT_FAST", "SHORT_TURBO"]
+        preset_idx = self.freq_calc_preset.get_selected()
+        preset = presets[preset_idx] if preset_idx < len(presets) else "LONG_FAST"
+
+        # Get region parameters and bandwidth
+        freq_start, freq_end, spacing, _ = self._get_region_params(region)
+        bw = self._get_preset_bandwidth(preset)
+
+        # Calculate number of slots
+        import math
+        num_slots = int(math.floor((freq_end - freq_start) / (spacing + (bw / 1000))))
+        self.freq_calc_num_slots.set_label(str(num_slots))
+
+        # Calculate default slot (for "LongFast" channel name)
+        default_hash = self._djb2_hash("LongFast")
+        default_slot = default_hash % num_slots
+        default_freq = freq_start + (bw / 2000) + (default_slot * (bw / 1000))
+        self.freq_calc_default_slot.set_label(f"{default_slot + 1} @ {default_freq:.3f} MHz")
+
+        # Calculate custom channel slot if entered
+        channel_name = self.freq_calc_channel.get_text().strip()
+        if channel_name:
+            h = self._djb2_hash(channel_name)
+            slot = h % num_slots
+            center_freq = freq_start + (bw / 2000) + (slot * (bw / 1000))
+            self.freq_calc_slot.set_label(str(slot + 1))
+            self.freq_calc_freq.set_label(f"{center_freq:.3f} MHz")
+        else:
+            self.freq_calc_slot.set_label("--")
+            self.freq_calc_freq.set_label("--")
 
     def _djb2_hash(self, s):
         """Calculate djb2 hash - same algorithm as Meshtastic firmware"""
@@ -627,47 +696,6 @@ class RadioConfigPanel(Gtk.Box):
             "SHORT_TURBO": 500,
         }
         return presets.get(preset, 250)
-
-    def _on_calculate_frequency(self, button):
-        """Calculate and display frequency slot"""
-        channel_name = self.freq_calc_channel.get_text().strip()
-        if not channel_name:
-            channel_name = "LongFast"
-
-        # Get selected region
-        regions = ["US", "EU_868", "EU_433", "CN", "JP", "ANZ", "KR", "TW", "RU",
-                   "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919", "SG_923"]
-        region_idx = self.freq_calc_region.get_selected()
-        region = regions[region_idx] if region_idx < len(regions) else "US"
-
-        # Get selected preset
-        presets = ["LONG_FAST", "LONG_SLOW", "LONG_MODERATE", "MEDIUM_SLOW", "MEDIUM_FAST",
-                   "SHORT_SLOW", "SHORT_FAST", "SHORT_TURBO"]
-        preset_idx = self.freq_calc_preset.get_selected()
-        preset = presets[preset_idx] if preset_idx < len(presets) else "LONG_FAST"
-
-        # Get region parameters
-        freq_start, freq_end, spacing, _ = self._get_region_params(region)
-        bw = self._get_preset_bandwidth(preset)
-
-        # Calculate number of channels: floor((freqEnd - freqStart) / (spacing + (bw / 1000)))
-        import math
-        num_channels = int(math.floor((freq_end - freq_start) / (spacing + (bw / 1000))))
-
-        # Calculate hash and slot
-        h = self._djb2_hash(channel_name)
-        slot = h % num_channels
-
-        # Calculate center frequency: freqStart + (bw / 2000) + (slot * (bw / 1000))
-        center_freq = freq_start + (bw / 2000) + (slot * (bw / 1000))
-
-        # Update display
-        self.freq_calc_hash.set_label(f"0x{h:08X} ({h})")
-        self.freq_calc_slot.set_label(f"{slot + 1} (0-indexed: {slot})")
-        self.freq_calc_num_slots.set_label(str(num_channels))
-        self.freq_calc_freq.set_label(f"{center_freq:.3f} MHz")
-
-        self.status_label.set_label(f"Calculated: '{channel_name}' → Slot {slot + 1} @ {center_freq:.3f} MHz ({region})")
 
     def _add_position_section(self, parent):
         """Add position settings section"""
