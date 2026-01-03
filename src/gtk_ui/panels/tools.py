@@ -272,6 +272,12 @@ class ToolsPanel(Gtk.Box):
         los_calc_btn.add_css_class("suggested-action")
         los_calc_btn.connect("clicked", self._on_calculate_los)
         calc_box.append(los_calc_btn)
+
+        los_viz_btn = Gtk.Button(label="Visualize")
+        los_viz_btn.set_tooltip_text("Open visualization in browser")
+        los_viz_btn.connect("clicked", self._on_visualize_los)
+        calc_box.append(los_viz_btn)
+
         los_inner.append(calc_box)
 
         # Results area
@@ -911,6 +917,86 @@ class ToolsPanel(Gtk.Box):
                 GLib.idle_add(self.los_results.set_label, f"Error: {e}")
 
         threading.Thread(target=calculate, daemon=True).start()
+
+    def _on_visualize_los(self, button):
+        """Open LOS visualization in browser"""
+        import os
+        import urllib.parse
+        from pathlib import Path
+
+        # Get coordinates
+        try:
+            lat_a = float(self.los_lat_a.get_text().strip())
+            lon_a = float(self.los_lon_a.get_text().strip())
+            lat_b = float(self.los_lat_b.get_text().strip())
+            lon_b = float(self.los_lon_b.get_text().strip())
+        except ValueError:
+            self.los_results.set_label("Error: Enter valid coordinates first")
+            return
+
+        height_a = self.los_height_a.get_value()
+        height_b = self.los_height_b.get_value()
+
+        freq_options = [915, 868, 433, 923]
+        freq_mhz = freq_options[self.los_freq.get_selected()]
+
+        # Build URL with parameters
+        viz_path = Path(__file__).parent.parent.parent.parent / "web" / "los_visualization.html"
+        if not viz_path.exists():
+            # Try alternate path
+            viz_path = Path("/opt/meshforge/web/los_visualization.html")
+        if not viz_path.exists():
+            self.los_results.set_label("Error: Visualization file not found")
+            return
+
+        params = urllib.parse.urlencode({
+            'latA': lat_a,
+            'lonA': lon_a,
+            'latB': lat_b,
+            'lonB': lon_b,
+            'heightA': height_a,
+            'heightB': height_b,
+            'freq': freq_mhz
+        })
+
+        url = f"file://{viz_path}?{params}"
+        self._log(f"\n=== Opening LOS Visualization ===")
+        self._log(f"URL: {url}")
+
+        def try_open():
+            user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
+
+            # Method 1: xdg-open as the real user
+            try:
+                result = subprocess.run(
+                    ['sudo', '-u', user, 'xdg-open', url],
+                    capture_output=True, timeout=10
+                )
+                if result.returncode == 0:
+                    GLib.idle_add(self._log, "Visualization opened in browser")
+                    return
+            except Exception:
+                pass
+
+            # Method 2: Try common browsers directly
+            browsers = ['chromium-browser', 'firefox', 'epiphany-browser']
+            for browser in browsers:
+                try:
+                    subprocess.Popen(
+                        ['sudo', '-u', user, browser, url],
+                        start_new_session=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    GLib.idle_add(self._log, f"Opened in {browser}")
+                    return
+                except Exception:
+                    continue
+
+            GLib.idle_add(self._log, "Could not open browser automatically")
+            GLib.idle_add(self._log, f"Open manually: {url}")
+
+        threading.Thread(target=try_open, daemon=True).start()
 
     def _on_link_budget(self, button):
         """Show link budget info"""
