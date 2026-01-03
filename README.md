@@ -9,7 +9,7 @@
 
 **Build. Test. Deploy. Monitor.**
 
-[![Version](https://img.shields.io/badge/version-4.0.1-blue.svg)](https://github.com/Nursedude/meshforge)
+[![Version](https://img.shields.io/badge/version-4.1.0-blue.svg)](https://github.com/Nursedude/meshforge)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-yellow.svg)](https://python.org)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20Linux-orange.svg)](https://www.raspberrypi.org/)
@@ -431,6 +431,22 @@ meshforge/
 ---
 
 ## Version History
+
+### v4.1.0 (2026-01-03) - Map & Updates
+- **NEW**: Mesh Network Map with Leaflet.js
+  - Interactive map showing node positions
+  - Color-coded markers (green=my node, blue=online, orange=stale, gray=offline)
+  - Click nodes for detailed popups (battery, SNR, hardware, altitude)
+  - Auto-zoom to fit all nodes
+- **NEW**: Version Checker & Updates tab
+  - Check installed versions of meshtasticd, CLI, firmware
+  - Compare against latest available versions
+  - Update availability notifications
+- **NEW**: Desktop Integration
+  - `.desktop` launcher for Raspberry Pi menu
+  - SVG icon for application menu
+  - Install script: `sudo ./scripts/install-desktop.sh`
+- **NEW**: `/api/nodes/full` endpoint with rich node data
 
 ### v4.0.1 (2026-01-03) - Security & Features
 - **SECURITY**: Replaced `os.system()` with `subprocess.run()`

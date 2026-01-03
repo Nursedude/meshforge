@@ -3,7 +3,7 @@
 > **LoRa Mesh Network Development & Operations Suite**
 > *Build. Test. Deploy. Monitor.*
 
-## Current Version: 4.0.0
+## Current Version: 4.1.0
 
 ## Project Identity
 
@@ -24,7 +24,14 @@
 
 ## Recent Work Summary
 
-### Session Focus Areas
+### Session Focus Areas (v4.1.0)
+1. **Mesh Network Map** - Interactive Leaflet.js map with node positions
+2. **Version Checker** - Auto-update detection for meshtasticd/CLI/firmware
+3. **Desktop Integration** - .desktop launcher and install script
+4. **/api/nodes/full** - Rich node data API with positions and metrics
+5. **Updates Tab** - Web UI for checking component versions
+
+### Previous Session (v4.0.x)
 1. Web UI process cleanup and signal handling
 2. GTK D-Bus registration timeout fix
 3. Radio Configuration panel parsing improvements

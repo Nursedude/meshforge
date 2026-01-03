@@ -586,6 +586,112 @@ def get_nodes():
         return {'error': str(e)}
 
 
+# Node monitor for full node data with positions
+_node_monitor = None
+_node_monitor_lock = threading.Lock()
+
+
+def get_nodes_full():
+    """Get detailed node info including positions using NodeMonitor"""
+    global _node_monitor
+
+    # Check if port is reachable first
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(3.0)
+        if sock.connect_ex(('localhost', 4403)) != 0:
+            sock.close()
+            return {'error': 'meshtasticd not running (port 4403)'}
+        sock.close()
+    except Exception:
+        return {'error': 'Cannot connect to meshtasticd'}
+
+    try:
+        with _node_monitor_lock:
+            # Import NodeMonitor
+            try:
+                from monitoring.node_monitor import NodeMonitor
+            except ImportError:
+                try:
+                    from src.monitoring.node_monitor import NodeMonitor
+                except ImportError:
+                    return {'error': 'NodeMonitor not available'}
+
+            # Create or reuse monitor
+            if _node_monitor is None or not _node_monitor.is_connected:
+                if _node_monitor:
+                    try:
+                        _node_monitor.disconnect()
+                    except Exception:
+                        pass
+                _node_monitor = NodeMonitor(host='localhost', port=4403)
+                if not _node_monitor.connect(timeout=10.0):
+                    return {'error': 'Failed to connect to meshtasticd'}
+
+            # Get nodes
+            nodes = []
+            my_node = _node_monitor.get_my_node()
+
+            for node in _node_monitor.get_nodes():
+                node_data = {
+                    'id': node.node_id,
+                    'name': node.long_name or node.short_name or node.node_id,
+                    'short': node.short_name,
+                    'hardware': node.hardware_model,
+                    'role': node.role,
+                    'snr': node.snr,
+                    'hops': node.hops_away,
+                    'via_mqtt': node.via_mqtt,
+                    'is_me': node.node_id == _node_monitor.my_node_id,
+                }
+
+                # Position
+                if node.position and (node.position.latitude or node.position.longitude):
+                    node_data['position'] = {
+                        'latitude': node.position.latitude,
+                        'longitude': node.position.longitude,
+                        'altitude': node.position.altitude,
+                    }
+
+                # Metrics
+                if node.metrics:
+                    node_data['battery'] = node.metrics.battery_level
+                    node_data['voltage'] = node.metrics.voltage
+                    if node.metrics.temperature:
+                        node_data['temperature'] = node.metrics.temperature
+                    if node.metrics.humidity:
+                        node_data['humidity'] = node.metrics.humidity
+
+                # Last heard
+                if node.last_heard:
+                    node_data['last_heard'] = node.last_heard.isoformat()
+                    # Calculate how long ago
+                    delta = datetime.now() - node.last_heard
+                    if delta.total_seconds() < 60:
+                        node_data['last_heard_ago'] = f"{int(delta.total_seconds())}s ago"
+                    elif delta.total_seconds() < 3600:
+                        node_data['last_heard_ago'] = f"{int(delta.total_seconds() / 60)}m ago"
+                    elif delta.total_seconds() < 86400:
+                        node_data['last_heard_ago'] = f"{int(delta.total_seconds() / 3600)}h ago"
+                    else:
+                        node_data['last_heard_ago'] = f"{int(delta.total_seconds() / 86400)}d ago"
+
+                nodes.append(node_data)
+
+            # Count nodes with positions
+            nodes_with_position = sum(1 for n in nodes if 'position' in n)
+
+            return {
+                'nodes': nodes,
+                'my_node_id': _node_monitor.my_node_id,
+                'total_nodes': len(nodes),
+                'nodes_with_position': nodes_with_position,
+            }
+
+    except Exception as e:
+        return {'error': f'Error getting nodes: {str(e)}'}
+
+
 def send_mesh_message(text, destination=None):
     """Send a message to the mesh"""
     cli = find_meshtastic_cli()
@@ -755,6 +861,24 @@ def api_config_content(config_name):
     return jsonify({'error': 'Config not found'}), 404
 
 
+@app.route('/api/versions')
+@login_required
+def api_versions():
+    """Get component versions and update availability"""
+    try:
+        try:
+            from updates.version_checker import get_version_summary
+        except ImportError:
+            try:
+                from src.updates.version_checker import get_version_summary
+            except ImportError:
+                return jsonify({'error': 'Version checker not available'})
+
+        return jsonify(get_version_summary())
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+
 @app.route('/api/processes')
 @login_required
 def api_processes():
@@ -777,6 +901,13 @@ def api_processes():
 def api_nodes():
     """Get mesh nodes"""
     return jsonify(get_nodes())
+
+
+@app.route('/api/nodes/full')
+@login_required
+def api_nodes_full():
+    """Get detailed mesh nodes with positions for map display"""
+    return jsonify(get_nodes_full())
 
 
 @app.route('/api/message', methods=['POST'])
@@ -911,8 +1042,11 @@ MAIN_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Meshtasticd Manager</title>
+    <title>MeshForge</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Leaflet.js for maps -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         :root {
@@ -1134,12 +1268,14 @@ MAIN_TEMPLATE = '''
     <div class="container">
         <div class="tabs">
             <div class="tab active" data-tab="dashboard">Dashboard</div>
+            <div class="tab" data-tab="map">Map</div>
             <div class="tab" data-tab="nodes">Nodes</div>
             <div class="tab" data-tab="messages">Messages</div>
             <div class="tab" data-tab="service">Service</div>
             <div class="tab" data-tab="config">Config</div>
             <div class="tab" data-tab="hardware">Hardware</div>
             <div class="tab" data-tab="radio">Radio</div>
+            <div class="tab" data-tab="updates">Updates</div>
             <div class="tab" data-tab="system">System</div>
         </div>
 
@@ -1179,6 +1315,30 @@ MAIN_TEMPLATE = '''
             <div class="card">
                 <h2>Recent Logs</h2>
                 <div class="log-box" id="logs">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Map Tab -->
+        <div id="map" class="tab-content">
+            <div class="card" style="padding: 10px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <h2 style="margin: 0;">Mesh Network Map</h2>
+                    <div>
+                        <span id="map-node-count" style="color: var(--text-muted); margin-right: 15px;">--</span>
+                        <button class="btn btn-success" onclick="refreshMap()">Refresh Map</button>
+                    </div>
+                </div>
+                <div id="mesh-map" style="height: 500px; border-radius: 8px; background: #1a1a2e;"></div>
+                <div id="map-legend" style="margin-top: 10px; padding: 10px; background: #222; border-radius: 5px;">
+                    <span style="margin-right: 20px;"><span style="display: inline-block; width: 12px; height: 12px; background: #4CAF50; border-radius: 50%; margin-right: 5px;"></span> My Node</span>
+                    <span style="margin-right: 20px;"><span style="display: inline-block; width: 12px; height: 12px; background: #2196F3; border-radius: 50%; margin-right: 5px;"></span> Online (< 1h)</span>
+                    <span style="margin-right: 20px;"><span style="display: inline-block; width: 12px; height: 12px; background: #ff9800; border-radius: 50%; margin-right: 5px;"></span> Stale (1-24h)</span>
+                    <span><span style="display: inline-block; width: 12px; height: 12px; background: #607D8B; border-radius: 50%; margin-right: 5px;"></span> Offline (> 24h)</span>
+                </div>
+            </div>
+            <div class="card" style="margin-top: 20px;">
+                <h2>Nodes with Position</h2>
+                <div id="map-node-list" style="max-height: 300px; overflow-y: auto;">Loading...</div>
             </div>
         </div>
 
@@ -1264,6 +1424,32 @@ MAIN_TEMPLATE = '''
                 <h2>Connected Radio</h2>
                 <button class="btn btn-success" onclick="refreshRadio(true)" style="margin-bottom: 15px;">Refresh</button>
                 <div class="radio-info" id="radio-info">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Updates Tab -->
+        <div id="updates" class="tab-content">
+            <div class="card">
+                <h2>Component Versions</h2>
+                <p style="color: var(--text-muted); margin-bottom: 15px;">
+                    Check for updates to meshtasticd, CLI, and node firmware.
+                </p>
+                <button class="btn btn-success" onclick="refreshVersions()" style="margin-bottom: 15px;">Check for Updates</button>
+                <div id="version-list">Loading...</div>
+                <div id="version-status" style="margin-top: 15px; color: var(--text-muted);"></div>
+            </div>
+            <div class="card" style="margin-top: 20px;">
+                <h2>Update Instructions</h2>
+                <div style="color: var(--text-muted);">
+                    <h3 style="color: var(--text); margin: 15px 0 10px 0;">meshtasticd</h3>
+                    <pre style="background: #111; padding: 10px; border-radius: 5px; overflow-x: auto;">sudo apt update && sudo apt upgrade meshtasticd</pre>
+
+                    <h3 style="color: var(--text); margin: 15px 0 10px 0;">Meshtastic CLI</h3>
+                    <pre style="background: #111; padding: 10px; border-radius: 5px; overflow-x: auto;">pipx upgrade meshtastic</pre>
+
+                    <h3 style="color: var(--text); margin: 15px 0 10px 0;">Node Firmware</h3>
+                    <p>Use the <a href="https://flasher.meshtastic.org/" target="_blank" style="color: var(--accent);">Meshtastic Web Flasher</a> or the meshtastic-flasher tool.</p>
+                </div>
             </div>
         </div>
 
@@ -1462,6 +1648,72 @@ MAIN_TEMPLATE = '''
             }
         }
 
+        async function refreshVersions() {
+            const listEl = document.getElementById('version-list');
+            const statusEl = document.getElementById('version-status');
+
+            listEl.innerHTML = '<em>Checking versions... (this may take a moment)</em>';
+            statusEl.textContent = '';
+
+            try {
+                const resp = await fetch('/api/versions');
+                const data = await resp.json();
+
+                if (data.error) {
+                    listEl.innerHTML = `<div style="color: var(--warning);">${data.error}</div>`;
+                    return;
+                }
+
+                let html = '<table style="width: 100%; border-collapse: collapse;">';
+                html += `
+                    <tr style="border-bottom: 1px solid #444;">
+                        <th style="padding: 10px; text-align: left;">Component</th>
+                        <th style="padding: 10px; text-align: left;">Installed</th>
+                        <th style="padding: 10px; text-align: left;">Latest</th>
+                        <th style="padding: 10px; text-align: left;">Status</th>
+                    </tr>
+                `;
+
+                data.components.forEach(c => {
+                    let statusBadge = '';
+                    if (c.installed === 'Not installed') {
+                        statusBadge = '<span style="color: var(--text-muted);">Not installed</span>';
+                    } else if (c.update_available) {
+                        statusBadge = '<span style="background: var(--warning); color: black; padding: 2px 8px; border-radius: 3px; font-size: 12px;">Update Available</span>';
+                    } else if (c.latest !== 'Unknown') {
+                        statusBadge = '<span style="color: var(--accent);">Up to date</span>';
+                    } else {
+                        statusBadge = '<span style="color: var(--text-muted);">--</span>';
+                    }
+
+                    html += `
+                        <tr style="border-bottom: 1px solid #333;">
+                            <td style="padding: 10px;"><strong>${c.name}</strong></td>
+                            <td style="padding: 10px; font-family: monospace;">${c.installed}</td>
+                            <td style="padding: 10px; font-family: monospace;">${c.latest}</td>
+                            <td style="padding: 10px;">${statusBadge}</td>
+                        </tr>
+                    `;
+                });
+
+                html += '</table>';
+                listEl.innerHTML = html;
+
+                // Status message
+                if (data.updates_available > 0) {
+                    statusEl.innerHTML = `<span style="color: var(--warning);">${data.updates_available} update(s) available</span>`;
+                } else {
+                    statusEl.innerHTML = '<span style="color: var(--accent);">All components up to date</span>';
+                }
+
+                statusEl.innerHTML += ` <span style="color: var(--text-muted);">| Last checked: ${new Date(data.checked_at).toLocaleTimeString()}</span>`;
+
+            } catch (e) {
+                console.error('Error fetching versions:', e);
+                listEl.innerHTML = `<div style="color: var(--danger);">Error: ${e.message}</div>`;
+            }
+        }
+
         async function serviceAction(action) {
             if (!confirm(`Are you sure you want to ${action} the service?`)) return;
 
@@ -1595,6 +1847,188 @@ MAIN_TEMPLATE = '''
 
         // Auto-refresh status every 5 seconds
         setInterval(fetchStatus, 5000);
+
+        // ========================================
+        // Map functionality
+        // ========================================
+        let meshMap = null;
+        let mapMarkers = [];
+        let mapInitialized = false;
+
+        function initMap() {
+            if (mapInitialized) return;
+
+            const mapContainer = document.getElementById('mesh-map');
+            if (!mapContainer) return;
+
+            // Initialize map centered on a default location
+            meshMap = L.map('mesh-map').setView([20, 0], 2);
+
+            // Add OpenStreetMap tiles with dark theme
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/">CARTO</a>',
+                subdomains: 'abcd',
+                maxZoom: 19
+            }).addTo(meshMap);
+
+            mapInitialized = true;
+            refreshMap();
+        }
+
+        function getNodeColor(node) {
+            if (node.is_me) return '#4CAF50';  // Green for my node
+
+            if (!node.last_heard) return '#607D8B';  // Gray for unknown
+
+            const lastHeard = new Date(node.last_heard);
+            const now = new Date();
+            const hoursSince = (now - lastHeard) / (1000 * 60 * 60);
+
+            if (hoursSince < 1) return '#2196F3';   // Blue for online
+            if (hoursSince < 24) return '#ff9800';  // Orange for stale
+            return '#607D8B';                        // Gray for offline
+        }
+
+        function createNodeIcon(color, isMe) {
+            const size = isMe ? 16 : 12;
+            return L.divIcon({
+                className: 'custom-marker',
+                html: `<div style="
+                    width: ${size}px;
+                    height: ${size}px;
+                    background: ${color};
+                    border: 2px solid white;
+                    border-radius: 50%;
+                    box-shadow: 0 2px 5px rgba(0,0,0,0.5);
+                "></div>`,
+                iconSize: [size, size],
+                iconAnchor: [size/2, size/2],
+                popupAnchor: [0, -size/2]
+            });
+        }
+
+        async function refreshMap() {
+            const countEl = document.getElementById('map-node-count');
+            const listEl = document.getElementById('map-node-list');
+
+            countEl.textContent = 'Loading...';
+
+            try {
+                const resp = await fetch('/api/nodes/full');
+                const data = await resp.json();
+
+                if (data.error) {
+                    countEl.textContent = data.error;
+                    listEl.innerHTML = `<div style="color: var(--warning);">${data.error}</div>`;
+                    return;
+                }
+
+                // Clear existing markers
+                mapMarkers.forEach(m => meshMap.removeLayer(m));
+                mapMarkers = [];
+
+                // Filter nodes with positions
+                const nodesWithPos = data.nodes.filter(n => n.position && n.position.latitude && n.position.longitude);
+
+                countEl.textContent = `${nodesWithPos.length} of ${data.total_nodes} nodes with position`;
+
+                if (nodesWithPos.length === 0) {
+                    listEl.innerHTML = '<div style="color: var(--text-muted);">No nodes with GPS position found. Nodes need to have GPS or fixed position set.</div>';
+                    return;
+                }
+
+                // Add markers
+                const bounds = [];
+                nodesWithPos.forEach(node => {
+                    const lat = node.position.latitude;
+                    const lng = node.position.longitude;
+                    const color = getNodeColor(node);
+                    const icon = createNodeIcon(color, node.is_me);
+
+                    const marker = L.marker([lat, lng], { icon: icon }).addTo(meshMap);
+
+                    // Build popup content
+                    let popupContent = `
+                        <div style="min-width: 200px; font-family: sans-serif;">
+                            <h3 style="margin: 0 0 8px 0; color: #333;">${node.name}</h3>
+                            <table style="font-size: 12px; color: #666;">
+                                <tr><td style="padding-right: 10px;"><strong>ID:</strong></td><td><code>${node.id}</code></td></tr>
+                                <tr><td><strong>Short:</strong></td><td>${node.short || '--'}</td></tr>
+                                <tr><td><strong>Hardware:</strong></td><td>${node.hardware || '--'}</td></tr>
+                    `;
+
+                    if (node.battery) {
+                        popupContent += `<tr><td><strong>Battery:</strong></td><td>${node.battery}%</td></tr>`;
+                    }
+                    if (node.last_heard_ago) {
+                        popupContent += `<tr><td><strong>Last Heard:</strong></td><td>${node.last_heard_ago}</td></tr>`;
+                    }
+                    if (node.snr !== null && node.snr !== undefined) {
+                        popupContent += `<tr><td><strong>SNR:</strong></td><td>${node.snr} dB</td></tr>`;
+                    }
+                    if (node.hops !== null && node.hops !== undefined) {
+                        popupContent += `<tr><td><strong>Hops:</strong></td><td>${node.hops}</td></tr>`;
+                    }
+                    if (node.position.altitude) {
+                        popupContent += `<tr><td><strong>Altitude:</strong></td><td>${node.position.altitude}m</td></tr>`;
+                    }
+
+                    popupContent += `
+                                <tr><td><strong>Position:</strong></td><td>${lat.toFixed(5)}, ${lng.toFixed(5)}</td></tr>
+                            </table>
+                        </div>
+                    `;
+
+                    marker.bindPopup(popupContent);
+                    mapMarkers.push(marker);
+                    bounds.push([lat, lng]);
+                });
+
+                // Fit map to bounds if we have markers
+                if (bounds.length > 0) {
+                    if (bounds.length === 1) {
+                        meshMap.setView(bounds[0], 14);
+                    } else {
+                        meshMap.fitBounds(bounds, { padding: [50, 50] });
+                    }
+                }
+
+                // Update node list
+                listEl.innerHTML = nodesWithPos.map(n => `
+                    <div class="hardware-item" style="cursor: pointer;" onclick="focusNode(${n.position.latitude}, ${n.position.longitude})">
+                        <span class="badge" style="background: ${getNodeColor(n)};">${n.is_me ? 'ME' : n.short || '??'}</span>
+                        <span>
+                            <strong>${n.name}</strong>
+                            <span style="color: var(--text-muted); margin-left: 10px;">
+                                ${n.position.latitude.toFixed(4)}, ${n.position.longitude.toFixed(4)}
+                                ${n.last_heard_ago ? ' - ' + n.last_heard_ago : ''}
+                            </span>
+                        </span>
+                    </div>
+                `).join('');
+
+            } catch (e) {
+                console.error('Error refreshing map:', e);
+                countEl.textContent = 'Error loading map data';
+                listEl.innerHTML = `<div style="color: var(--danger);">Error: ${e.message}</div>`;
+            }
+        }
+
+        function focusNode(lat, lng) {
+            if (meshMap) {
+                meshMap.setView([lat, lng], 16);
+            }
+        }
+
+        // Initialize map when Map tab is clicked
+        document.querySelector('.tab[data-tab="map"]').addEventListener('click', () => {
+            setTimeout(() => {
+                initMap();
+                if (meshMap) {
+                    meshMap.invalidateSize();
+                }
+            }, 100);
+        });
     </script>
 </body>
 </html>

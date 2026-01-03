@@ -19,7 +19,7 @@ Usage:
     monitor.disconnect()
 """
 
-from .node_monitor import NodeMonitor, NodeInfo, NodeMetrics
+from .node_monitor import NodeMonitor, NodeInfo, NodeMetrics, NodePosition
 
-__all__ = ['NodeMonitor', 'NodeInfo', 'NodeMetrics']
+__all__ = ['NodeMonitor', 'NodeInfo', 'NodeMetrics', 'NodePosition']
 __version__ = '0.1.0'
