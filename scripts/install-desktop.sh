@@ -102,6 +102,22 @@ if command -v gtk-update-icon-cache &> /dev/null; then
     gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true
 fi
 
+# Install launcher script
+echo "Installing launcher script..."
+cp "$PROJECT_DIR/scripts/meshforge-launcher.sh" /usr/local/bin/meshforge
+chmod 755 /usr/local/bin/meshforge
+
+# Install polkit policy (for pkexec authentication)
+echo "Installing polkit policy..."
+POLKIT_DIR="/usr/share/polkit-1/actions"
+if [ -d "$POLKIT_DIR" ]; then
+    cp "$PROJECT_DIR/assets/org.meshforge.policy" "$POLKIT_DIR/"
+    chmod 644 "$POLKIT_DIR/org.meshforge.policy"
+    echo "  Polkit policy installed - pkexec will prompt for password"
+else
+    echo "  Warning: Polkit not found, desktop launcher may not work"
+fi
+
 echo
 echo "==========================================="
 echo "Installation complete!"
@@ -116,5 +132,6 @@ echo
 echo "Or search for 'MeshForge' in your application launcher."
 echo
 echo "To run from command line:"
-echo "  sudo python3 /opt/meshforge/src/launcher.py"
+echo "  meshforge          # Uses pkexec for GUI"
+echo "  sudo meshforge tui # For terminal UI"
 echo
