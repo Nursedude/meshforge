@@ -145,6 +145,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         self._add_cli_page()
         self._add_hardware_page()
         self._add_tools_page()
+        self._add_settings_page()
 
         # Left sidebar navigation (after content_stack exists)
         sidebar = self._create_sidebar()
@@ -250,6 +251,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
             ("cli", "Meshtastic CLI", "utilities-terminal-symbolic"),
             ("hardware", "Hardware Detection", "drive-harddisk-symbolic"),
             ("tools", "System Tools", "applications-utilities-symbolic"),
+            ("settings", "Settings", "preferences-system-symbolic"),
         ]
 
         for name, label, icon in nav_items:
@@ -338,6 +340,13 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         panel = ToolsPanel(self)
         self.content_stack.add_named(panel, "tools")
         self.tools_panel = panel
+
+    def _add_settings_page(self):
+        """Add the settings page"""
+        from .panels.settings import SettingsPanel
+        panel = SettingsPanel(self)
+        self.content_stack.add_named(panel, "settings")
+        self.settings_panel = panel
 
     def _create_bottom_status(self):
         """Create bottom status bar"""

@@ -444,6 +444,16 @@ meshforge/
   - Web-based visualization with Chart.js elevation profile
   - Shows terrain, LOS line, 60% Fresnel zone, earth curvature
   - Status indicators: Clear/Marginal/Obstructed
+- **NEW**: Settings Panel with Dark Mode
+  - Dark/Light mode toggle with instant theme switching
+  - Compact mode for smaller screens
+  - Auto-refresh and interval settings
+  - Settings persisted to ~/.config/meshforge/settings.json
+- **NEW**: In-App Config File Editor
+  - Full YAML editor built into Config File Manager
+  - Save and Revert buttons with change tracking
+  - Unsaved changes indicator
+  - Option to use terminal editor (nano) if preferred
 - **NEW**: Version Checker & Updates tab
   - Check installed versions of meshtasticd, CLI, firmware
   - Compare against latest available versions
@@ -515,11 +525,19 @@ meshforge/
 
 ### v4.4 - Site Planner API Integration
 - [x] Link to site.meshtastic.org (completed)
+- [x] Built-in RF Line of Sight calculator
 - [ ] Embed Site Planner in WebKitGTK view
 - [ ] Auto-populate node positions from mesh
 - [ ] Local Docker deployment option
 
-### v4.5 - Node Flashing
+### v4.5 - RNS/Reticulum Integration
+- [ ] RNS Management panel (install, configure, monitor rnsd)
+- [ ] LXMF/NomadNet/MeshChat integration
+- [ ] RNS-Meshtastic Gateway setup wizard
+- [ ] RNS nodes on mesh map (if gateway active)
+- [ ] RNODE device detection and configuration
+
+### v4.6 - Node Flashing
 - [ ] Flash Meshtastic firmware to USB devices
 - [ ] Firmware version management
 - [ ] Backup/restore node configs
