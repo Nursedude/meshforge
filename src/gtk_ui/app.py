@@ -142,6 +142,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         self._add_install_page()
         self._add_config_page()
         self._add_radio_config_page()
+        self._add_rns_page()
         self._add_cli_page()
         self._add_hardware_page()
         self._add_tools_page()
@@ -248,6 +249,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
             ("install", "Install / Update", "system-software-install-symbolic"),
             ("config", "Config File Manager", "document-edit-symbolic"),
             ("radio_config", "Radio Configuration", "network-wireless-symbolic"),
+            ("rns", "Reticulum (RNS)", "network-transmit-receive-symbolic"),
             ("cli", "Meshtastic CLI", "utilities-terminal-symbolic"),
             ("hardware", "Hardware Detection", "drive-harddisk-symbolic"),
             ("tools", "System Tools", "applications-utilities-symbolic"),
@@ -319,6 +321,13 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         panel = RadioConfigPanel(self)
         self.content_stack.add_named(panel, "radio_config")
         self.radio_config_panel = panel
+
+    def _add_rns_page(self):
+        """Add the RNS/Reticulum management page"""
+        from .panels.rns import RNSPanel
+        panel = RNSPanel(self)
+        self.content_stack.add_named(panel, "rns")
+        self.rns_panel = panel
 
     def _add_cli_page(self):
         """Add the meshtastic CLI page"""
