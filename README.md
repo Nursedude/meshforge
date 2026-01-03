@@ -9,7 +9,7 @@
 
 **Build. Test. Deploy. Monitor.**
 
-[![Version](https://img.shields.io/badge/version-4.1.0-blue.svg)](https://github.com/Nursedude/meshforge)
+[![Version](https://img.shields.io/badge/version-4.2.0-blue.svg)](https://github.com/Nursedude/meshforge)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-yellow.svg)](https://python.org)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20Linux-orange.svg)](https://www.raspberrypi.org/)
@@ -396,12 +396,22 @@ meshforge/
 │   │
 │   ├── gtk_ui/
 │   │   ├── app.py            # MeshForgeApp GTK application
-│   │   └── panels/
-│   │       ├── dashboard.py  # System dashboard
-│   │       ├── radio_config.py # Radio configuration + freq calculator
-│   │       ├── hardware.py   # Hardware detection
-│   │       ├── install.py    # Installation panel
-│   │       └── ...
+│   │   ├── panels/
+│   │   │   ├── dashboard.py  # System dashboard
+│   │   │   ├── radio_config.py # Radio configuration + freq calculator
+│   │   │   ├── rns.py        # RNS/Reticulum management
+│   │   │   ├── map.py        # Unified node map (RNS + Meshtastic)
+│   │   │   ├── hardware.py   # Hardware detection
+│   │   │   ├── install.py    # Installation panel
+│   │   │   └── ...
+│   │   └── dialogs/
+│   │       ├── gateway_config.py # Gateway settings editor
+│   │       └── rns_config.py     # RNS config file editor
+│   │
+│   ├── gateway/
+│   │   ├── rns_bridge.py     # RNS-Meshtastic gateway bridge
+│   │   ├── node_tracker.py   # Unified node tracking
+│   │   └── config.py         # Gateway configuration
 │   │
 │   ├── config/
 │   │   ├── hardware.py       # Hardware detection logic
@@ -423,6 +433,10 @@ meshforge/
 │       ├── cli.py            # CLI path detection
 │       └── emoji.py          # Terminal emoji support
 │
+├── web/
+│   ├── node_map.html         # Interactive Leaflet map
+│   └── los_visualization.html # LOS profile visualization
+│
 ├── templates/                 # Config templates
 ├── .claude/                   # Development notes
 └── README.md
@@ -431,6 +445,27 @@ meshforge/
 ---
 
 ## Version History
+
+### v4.2.0 (2026-01-03) - Unified Node Map & RNS Integration
+- **NEW**: Unified Node Map Panel
+  - Shows nodes from both Meshtastic AND RNS networks
+  - Leaflet.js interactive map with WebKit or browser display
+  - Filter by network type, online status
+  - Real-time statistics and auto-refresh
+  - Node markers with popups showing name, network, status, position
+- **NEW**: RNS Configuration Editor
+  - Full-featured editor for ~/.reticulum/config
+  - One-click interface templates: TCP, UDP, RNode, Auto-discovery
+  - Syntax validation and helpful error messages
+  - Default configuration template with all interface types
+  - Insert templates for quick setup
+- **NEW**: Gateway Configuration Dialog
+  - Complete gateway settings editor
+  - Meshtastic connection settings (host, port, channel)
+  - RNS settings (config dir, identity, propagation)
+  - Telemetry sharing options
+  - Message routing rules
+  - Export/Import configuration
 
 ### v4.1.0 (2026-01-03) - Map, Updates & RF Tools
 - **NEW**: Mesh Network Map with Leaflet.js
@@ -530,11 +565,14 @@ meshforge/
 - [ ] Auto-populate node positions from mesh
 - [ ] Local Docker deployment option
 
-### v4.5 - RNS/Reticulum Integration
-- [ ] RNS Management panel (install, configure, monitor rnsd)
-- [ ] LXMF/NomadNet/MeshChat integration
-- [ ] RNS-Meshtastic Gateway setup wizard
-- [ ] RNS nodes on mesh map (if gateway active)
+### ✅ v4.5 - RNS/Reticulum Integration (Completed in v4.2)
+- [x] RNS Management panel (install, configure, monitor rnsd)
+- [x] Unified Node Map with RNS + Meshtastic nodes
+- [x] RNS Configuration Editor with interface templates
+- [x] RNS-Meshtastic Gateway bridge with full configuration
+- [x] Gateway Configuration Dialog with all settings
+- [ ] LXMF/NomadNet/MeshChat UI integration
+- [ ] LXST voice streaming support
 - [ ] RNODE device detection and configuration
 
 ### v4.6 - Node Flashing

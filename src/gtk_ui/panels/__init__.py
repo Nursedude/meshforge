@@ -7,6 +7,7 @@ from .config import ConfigPanel
 from .cli import CLIPanel
 from .hardware import HardwarePanel
 from .rns import RNSPanel
+from .map import MapPanel
 
 __all__ = [
     'DashboardPanel',
@@ -15,5 +16,6 @@ __all__ = [
     'ConfigPanel',
     'CLIPanel',
     'HardwarePanel',
-    'RNSPanel'
+    'RNSPanel',
+    'MapPanel'
 ]
