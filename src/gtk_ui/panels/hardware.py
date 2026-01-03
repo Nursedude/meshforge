@@ -183,12 +183,32 @@ class HardwarePanel(Gtk.Box):
         for key, value in sys_info.items():
             GLib.idle_add(self.sys_labels[key].set_label, value)
 
-        # Interface status
+        # Interface status with more detail
+        spi_devs = list(Path('/dev').glob('spidev*'))
+        i2c_devs = list(Path('/dev').glob('i2c-*'))
+
+        spi_status = f"Enabled ({len(spi_devs)} device(s))" if spi_devs else "Disabled"
+        i2c_status = f"Enabled ({len(i2c_devs)} bus(es))" if i2c_devs else "Disabled"
+
+        gpio_status = "Available"
+        if Path('/dev/gpiochip0').exists():
+            gpio_status = "Available (gpiochip0)"
+        elif Path('/dev/gpiomem').exists():
+            gpio_status = "Available (gpiomem)"
+        else:
+            gpio_status = "Not available"
+
+        serial_status = "Not available"
+        if Path('/dev/serial0').exists():
+            serial_status = "Available (serial0)"
+        elif Path('/dev/ttyAMA0').exists():
+            serial_status = "Available (ttyAMA0)"
+
         iface_status = {
-            "spi": "Enabled" if Path('/dev/spidev0.0').exists() else "Disabled",
-            "i2c": "Enabled" if Path('/dev/i2c-1').exists() else "Disabled",
-            "gpio": "Available" if Path('/dev/gpiomem').exists() else "Not available",
-            "serial": "Available" if Path('/dev/serial0').exists() else "Not available",
+            "spi": spi_status,
+            "i2c": i2c_status,
+            "gpio": gpio_status,
+            "serial": serial_status,
         }
 
         for key, value in iface_status.items():
@@ -367,13 +387,23 @@ class HardwarePanel(Gtk.Box):
                         "description": "Active configuration"
                     })
 
+            # Check USB devices for LoRa modules
+            usb_lora_detected = self._detect_usb_devices()
+            detected.extend(usb_lora_detected)
+
+            # Check Serial ports (GPS, etc)
+            serial_detected = self._detect_serial_ports()
+            detected.extend(serial_detected)
+
             # Check SPI devices
             spi_devices = list(Path('/dev').glob('spidev*'))
             for dev in spi_devices:
+                # Get more info about SPI
+                bus_info = dev.name.replace('spidev', '')
                 detected.append({
                     "type": "SPI",
                     "device": str(dev),
-                    "description": "SPI interface available"
+                    "description": f"SPI Bus {bus_info} - LoRa HAT compatible"
                 })
 
             # Check I2C devices
@@ -430,19 +460,163 @@ class HardwarePanel(Gtk.Box):
         thread.daemon = True
         thread.start()
 
+    def _detect_usb_devices(self):
+        """Detect USB LoRa and serial devices"""
+        detected = []
+
+        # Known USB Vendor:Product IDs for LoRa devices
+        known_devices = {
+            "1a86:7523": ("CH340", "USB-Serial (LoRa module compatible)"),
+            "1a86:55d4": ("CH9102", "USB-Serial (LoRa module compatible)"),
+            "10c4:ea60": ("CP2102", "Silicon Labs USB-Serial"),
+            "10c4:ea70": ("CP2105", "Silicon Labs Dual USB-Serial"),
+            "0403:6001": ("FT232R", "FTDI USB-Serial"),
+            "0403:6015": ("FT231X", "FTDI USB-Serial"),
+            "0403:6010": ("FT2232", "FTDI Dual USB-Serial"),
+            "303a:1001": ("ESP32-S3", "Meshtastic USB Device"),
+            "303a:4001": ("ESP32-S2", "Meshtastic USB Device"),
+            "239a:8029": ("nRF52840", "Adafruit Feather nRF52840"),
+            "2e8a:000a": ("RP2040", "Raspberry Pi Pico"),
+            "2341:0043": ("Arduino", "Arduino Uno/Nano"),
+            "2341:8036": ("Arduino", "Arduino Leonardo"),
+        }
+
+        try:
+            # Use lsusb if available
+            result = subprocess.run(['lsusb'], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                for line in result.stdout.strip().split('\n'):
+                    if not line.strip():
+                        continue
+
+                    # Extract vendor:product from line
+                    # Format: Bus 001 Device 002: ID 1a86:7523 QinHeng Electronics CH340 serial converter
+                    import re
+                    match = re.search(r'ID\s+([0-9a-fA-F]{4}):([0-9a-fA-F]{4})\s+(.+)', line)
+                    if match:
+                        vid_pid = f"{match.group(1).lower()}:{match.group(2).lower()}"
+                        desc = match.group(3).strip()
+
+                        if vid_pid in known_devices:
+                            name, description = known_devices[vid_pid]
+                            detected.append({
+                                "type": "USB",
+                                "device": name,
+                                "description": f"{description} [{vid_pid}]"
+                            })
+                        elif any(x in desc.lower() for x in ['serial', 'uart', 'ch340', 'cp210', 'ftdi', 'esp32', 'meshtastic']):
+                            detected.append({
+                                "type": "USB",
+                                "device": vid_pid,
+                                "description": desc[:50]
+                            })
+        except Exception:
+            pass
+
+        # Check for /dev/ttyUSB* and /dev/ttyACM* devices
+        usb_serial = list(Path('/dev').glob('ttyUSB*')) + list(Path('/dev').glob('ttyACM*'))
+        for dev in usb_serial:
+            # Try to get device info from udevadm
+            dev_info = self._get_usb_device_info(str(dev))
+            detected.append({
+                "type": "USB-Serial",
+                "device": str(dev),
+                "description": dev_info
+            })
+
+        return detected
+
+    def _get_usb_device_info(self, device_path):
+        """Get USB device info using udevadm"""
+        try:
+            result = subprocess.run(
+                ['udevadm', 'info', '--query=property', '--name=' + device_path],
+                capture_output=True, text=True, timeout=3
+            )
+            if result.returncode == 0:
+                props = {}
+                for line in result.stdout.split('\n'):
+                    if '=' in line:
+                        key, val = line.split('=', 1)
+                        props[key] = val
+
+                vendor = props.get('ID_VENDOR', props.get('ID_VENDOR_FROM_DATABASE', ''))
+                model = props.get('ID_MODEL', props.get('ID_MODEL_FROM_DATABASE', ''))
+
+                if vendor or model:
+                    return f"{vendor} {model}".strip()
+
+            return "USB Serial Device"
+        except Exception:
+            return "USB Serial Device"
+
+    def _detect_serial_ports(self):
+        """Detect serial ports for GPS modules etc"""
+        detected = []
+
+        # Check for hardware serial ports
+        serial_devices = {
+            '/dev/serial0': 'Primary Serial (GPIO 14/15)',
+            '/dev/serial1': 'Secondary Serial',
+            '/dev/ttyAMA0': 'Hardware UART (PL011)',
+            '/dev/ttyS0': 'Mini UART',
+        }
+
+        for dev_path, description in serial_devices.items():
+            dev = Path(dev_path)
+            if dev.exists():
+                # Check if it's a symlink and get real path
+                real_path = ""
+                if dev.is_symlink():
+                    try:
+                        real_path = f" -> {dev.resolve().name}"
+                    except Exception:
+                        pass
+
+                detected.append({
+                    "type": "Serial",
+                    "device": dev_path,
+                    "description": f"{description}{real_path} - GPS/Peripheral ready"
+                })
+
+        return detected
+
     def _identify_i2c_device(self, addr):
         """Identify common I2C devices by address"""
         known_devices = {
-            "3c": "SSD1306 OLED Display",
-            "3d": "SSD1306 OLED Display (alt)",
-            "27": "PCF8574 I/O Expander",
+            "3c": "SSD1306 OLED Display (128x64)",
+            "3d": "SSD1306 OLED Display (alt addr)",
+            "27": "PCF8574 I/O Expander / LCD",
             "20": "PCF8574 I/O Expander",
+            "21": "PCF8574A I/O Expander",
+            "22": "PCF8574A I/O Expander",
+            "23": "PCF8574A I/O Expander",
+            "38": "PCF8574A I/O Expander",
+            "39": "PCF8574A I/O Expander",
+            "3a": "PCF8574A I/O Expander",
+            "3b": "PCF8574A I/O Expander",
+            "3e": "LCD Display (I2C)",
+            "3f": "LCD Display (I2C)",
+            "48": "ADS1115 ADC / TMP102 Temp",
+            "49": "ADS1115 ADC",
+            "4a": "ADS1115 ADC",
+            "4b": "ADS1115 ADC",
             "50": "AT24C32 EEPROM",
-            "68": "DS3231 RTC / MPU6050",
-            "76": "BME280 Sensor",
-            "77": "BME280 Sensor (alt)",
+            "51": "AT24C32 EEPROM",
+            "52": "AT24C32 EEPROM",
+            "53": "AT24C32 EEPROM / ADXL345 Accel",
+            "57": "AT24C32 EEPROM",
+            "5a": "MLX90614 IR Temp",
+            "5c": "AM2320 Temp/Humidity",
+            "60": "ATECC608 Crypto",
+            "68": "DS3231 RTC / MPU6050 IMU",
+            "69": "MPU6050 IMU (alt)",
+            "70": "TCA9548A I2C Mux",
+            "76": "BME280/BMP280 Sensor",
+            "77": "BME280/BMP280 Sensor (alt)",
+            "78": "SH1107 OLED (128x128)",
         }
-        return known_devices.get(addr.lower(), "Unknown device")
+        return known_devices.get(addr.lower(), "Unknown I2C device")
 
     def _add_hardware_row(self, hw):
         """Add a hardware item to the list"""
