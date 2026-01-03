@@ -859,14 +859,20 @@ class RNSPanel(Gtk.Box):
 
     def _on_configure_gateway(self, button):
         """Open gateway configuration dialog"""
-        dialog = Adw.MessageDialog(
-            transient_for=self.main_window,
-            heading="Gateway Configuration",
-            body="Gateway configuration editor coming soon.\n\n"
-                 "Config file: ~/.config/meshforge/gateway.json"
-        )
-        dialog.add_response("ok", "OK")
-        dialog.present()
+        try:
+            from ..dialogs.gateway_config import GatewayConfigDialog
+            dialog = GatewayConfigDialog(self.main_window)
+            dialog.present()
+        except ImportError as e:
+            # Fallback if dialog not available
+            dialog = Adw.MessageDialog(
+                transient_for=self.main_window,
+                heading="Gateway Configuration",
+                body=f"Config editor not available: {e}\n\n"
+                     "Config file: ~/.config/meshforge/gateway.json"
+            )
+            dialog.add_response("ok", "OK")
+            dialog.present()
 
     def _on_view_nodes(self, button):
         """Show tracked nodes from both networks"""
