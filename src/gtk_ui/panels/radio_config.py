@@ -1252,8 +1252,14 @@ class RadioConfigPanel(Gtk.Box):
         def set_dropdown_by_value(dropdown, options, value):
             """Set dropdown selection by matching value in options list"""
             value_upper = value.upper().strip()
+            # First try exact match
             for i, option in enumerate(options):
-                if option == value_upper or option in value_upper:
+                if option == value_upper:
+                    dropdown.set_selected(i)
+                    return True
+            # Fallback to partial match (for backwards compatibility)
+            for i, option in enumerate(options):
+                if option in value_upper:
                     dropdown.set_selected(i)
                     return True
             return False
