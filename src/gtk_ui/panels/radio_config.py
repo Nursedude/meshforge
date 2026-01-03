@@ -412,6 +412,14 @@ class RadioConfigPanel(Gtk.Box):
         role_box.append(role_apply)
         box.append(role_box)
 
+        # Refresh Device Settings button (below device role)
+        refresh_device_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        refresh_device_box.set_margin_top(5)
+        refresh_device_btn = Gtk.Button(label="Refresh Device Settings")
+        refresh_device_btn.connect("clicked", lambda b: self._load_current_config())
+        refresh_device_box.append(refresh_device_btn)
+        box.append(refresh_device_box)
+
         # Rebroadcast Mode
         rebroadcast_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         rebroadcast_box.append(Gtk.Label(label="Rebroadcast Mode:"))
@@ -1257,11 +1265,13 @@ class RadioConfigPanel(Gtk.Box):
                 if option == value_upper:
                     dropdown.set_selected(i)
                     return True
-            # Fallback to partial match (for backwards compatibility)
+            # Try matching with underscores replaced (CLIENT_MUTE vs CLIENTMUTE)
+            value_no_underscore = value_upper.replace('_', '')
             for i, option in enumerate(options):
-                if option in value_upper:
+                if option.replace('_', '') == value_no_underscore:
                     dropdown.set_selected(i)
                     return True
+            # DO NOT use partial substring matching - it causes CLIENT to match before CLIENT_MUTE
             return False
 
         # Helper to extract value after colon
@@ -1298,19 +1308,38 @@ class RadioConfigPanel(Gtk.Box):
                 continue
 
             # --- Device Role ---
-            if not fields_set['role'] and 'role' in line_lower:
-                # Match various formats:
-                # "role: CLIENT_MUTE", "deviceRole: clientMute", "device.role: CLIENT_MUTE"
-                match = re.search(r'(?:device[._]?)?role[:\s]+["\']?([A-Za-z_]+)["\']?', line, re.IGNORECASE)
+            # Skip if this line is about rebroadcast_mode or other role-containing words
+            if not fields_set['role'] and 'role' in line_lower and 'rebroadcast' not in line_lower:
+                # Match specific formats for device role only:
+                # "  role: CLIENT_MUTE" (indented in config output)
+                # "device.role: CLIENT_MUTE"
+                # "deviceRole: clientMute"
+                # But NOT lines like "Owner: Name (CLIENT)" or other contexts
+
+                # Pattern: look for role at word boundary, followed by colon and value
+                match = re.search(r'^\s*(?:device[._]?)?role\s*:\s*["\']?([A-Za-z_]+)["\']?\s*$', line, re.IGNORECASE)
+                if not match:
+                    # Try Python dict format: 'role': 'CLIENT_MUTE' or "role": "CLIENT_MUTE"
+                    match = re.search(r"['\"]role['\"]\s*:\s*['\"]([A-Za-z_]+)['\"]", line, re.IGNORECASE)
+                if not match:
+                    # Also try format like "role: VALUE" anywhere in line but not after Owner/other fields
+                    if 'owner' not in line_lower and ':' in line:
+                        match = re.search(r'\brole\s*:\s*["\']?([A-Za-z_]+)["\']?', line, re.IGNORECASE)
+
                 if match:
                     role_raw = match.group(1)
                     role_value = role_raw.upper()
                     # Convert camelCase to UPPER_SNAKE_CASE if needed (e.g., clientMute -> CLIENT_MUTE)
-                    if '_' not in role_value:
-                        # Check for camelCase pattern
+                    if '_' not in role_value and any(c.islower() for c in role_raw) and any(c.isupper() for c in role_raw):
+                        # Has mixed case - convert camelCase to SNAKE_CASE
                         role_value = re.sub(r'([a-z])([A-Z])', r'\1_\2', role_raw).upper()
+
+                    # Debug: print what we found
+                    print(f"[RadioConfig] Found role: '{role_raw}' -> '{role_value}'")
+
                     if set_dropdown_by_value(self.role_dropdown, roles, role_value):
                         fields_set['role'] = True
+                        print(f"[RadioConfig] Set role dropdown to: {role_value}")
 
             # --- Region ---
             if not fields_set['region'] and 'region' in line_lower:
