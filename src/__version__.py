@@ -25,6 +25,12 @@ VERSION_HISTORY = [
             "NEW: Desktop launcher for Raspberry Pi menu integration",
             "NEW: Install script for desktop integration (scripts/install-desktop.sh)",
             "NEW: MeshForge SVG icon",
+            "NEW: Site Planner integration - Opens site.meshtastic.org for RF coverage planning",
+            "NEW: Frequency Slot Calculator redesign with all 22 Meshtastic regions",
+            "NEW: Channel Preset dropdown for quick frequency slot selection",
+            "FIX: Device role parsing now correctly detects CLIENT_MUTE",
+            "FIX: Desktop launcher uses terminal for sudo authentication",
+            "FIX: Dropdown matching uses exact match first (prevents CLIENT matching CLIENT_MUTE)",
             "IMPROVED: Web UI now titled 'MeshForge'",
             "IMPROVED: Uses NodeMonitor for rich node data including positions"
         ]
