@@ -149,22 +149,64 @@ class ConfigPanel(Gtk.Box):
         active_frame.set_child(active_box)
         right_box.append(active_frame)
 
-        # Preview frame
-        preview_frame = Gtk.Frame()
-        preview_frame.set_label("Preview")
+        # Editor frame (replaces preview - now fully editable)
+        self.editor_frame = Gtk.Frame()
+        self.editor_frame.set_label("Editor")
+        self.editor_frame.set_vexpand(True)
 
-        preview_scrolled = Gtk.ScrolledWindow()
-        preview_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        preview_scrolled.set_size_request(-1, 150)
+        editor_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+
+        # Editor toolbar
+        editor_toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        editor_toolbar.set_margin_start(5)
+        editor_toolbar.set_margin_end(5)
+        editor_toolbar.set_margin_top(5)
+
+        self.editor_file_label = Gtk.Label(label="No file selected")
+        self.editor_file_label.set_xalign(0)
+        self.editor_file_label.set_hexpand(True)
+        self.editor_file_label.add_css_class("dim-label")
+        editor_toolbar.append(self.editor_file_label)
+
+        self.save_btn = Gtk.Button(label="Save")
+        self.save_btn.add_css_class("suggested-action")
+        self.save_btn.connect("clicked", self._on_save_editor)
+        self.save_btn.set_sensitive(False)
+        editor_toolbar.append(self.save_btn)
+
+        self.revert_btn = Gtk.Button(label="Revert")
+        self.revert_btn.connect("clicked", self._on_revert_editor)
+        self.revert_btn.set_sensitive(False)
+        editor_toolbar.append(self.revert_btn)
+
+        editor_box.append(editor_toolbar)
+
+        # Text editor
+        editor_scrolled = Gtk.ScrolledWindow()
+        editor_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        editor_scrolled.set_vexpand(True)
 
         self.preview_text = Gtk.TextView()
-        self.preview_text.set_editable(False)
+        self.preview_text.set_editable(True)
         self.preview_text.set_monospace(True)
         self.preview_text.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        preview_scrolled.set_child(self.preview_text)
+        self.preview_text.set_left_margin(10)
+        self.preview_text.set_right_margin(10)
+        self.preview_text.set_top_margin(5)
+        self.preview_text.set_bottom_margin(5)
 
-        preview_frame.set_child(preview_scrolled)
-        right_box.append(preview_frame)
+        # Track changes
+        self.preview_text.get_buffer().connect("changed", self._on_editor_changed)
+        editor_scrolled.set_child(self.preview_text)
+
+        editor_box.append(editor_scrolled)
+        self.editor_frame.set_child(editor_box)
+        right_box.append(self.editor_frame)
+
+        # Track editing state
+        self.editing_file = None
+        self.original_content = ""
+        self.has_unsaved_changes = False
 
         paned.set_end_child(right_box)
 
@@ -180,11 +222,17 @@ class ConfigPanel(Gtk.Box):
         self.activate_btn.set_sensitive(False)
         button_box.append(self.activate_btn)
 
-        # Edit with nano button
-        self.edit_btn = Gtk.Button(label="Edit with nano")
-        self.edit_btn.connect("clicked", self._on_edit)
+        # Edit in-app button
+        self.edit_btn = Gtk.Button(label="Edit Selected")
+        self.edit_btn.connect("clicked", self._on_edit_inapp)
         self.edit_btn.set_sensitive(False)
         button_box.append(self.edit_btn)
+
+        # Edit with nano (external editor)
+        nano_btn = Gtk.Button(label="Edit in Terminal")
+        nano_btn.set_tooltip_text("Open in nano editor")
+        nano_btn.connect("clicked", self._on_edit)
+        button_box.append(nano_btn)
 
         # Deactivate button
         self.deactivate_btn = Gtk.Button(label="Deactivate Selected")
@@ -565,3 +613,103 @@ Webserver:
             "This will reload the configuration and restart the meshtasticd service.",
             lambda confirmed: threading.Thread(target=do_apply, daemon=True).start() if confirmed else None
         )
+
+    def _on_edit_inapp(self, button):
+        """Edit selected config in the in-app editor"""
+        if not self.selected_config_path:
+            return
+        self._load_file_for_editing(self.selected_config_path)
+
+    def _load_file_for_editing(self, file_path):
+        """Load a file into the in-app editor"""
+        try:
+            content = file_path.read_text()
+            self.editing_file = file_path
+            self.original_content = content
+            self.has_unsaved_changes = False
+
+            # Update editor
+            self.preview_text.get_buffer().set_text(content)
+            self.editor_file_label.set_label(f"Editing: {file_path.name}")
+            self.editor_file_label.remove_css_class("dim-label")
+            self.editor_frame.set_label(f"Editor - {file_path.name}")
+
+            # Enable revert, disable save (no changes yet)
+            self.revert_btn.set_sensitive(True)
+            self.save_btn.set_sensitive(False)
+
+            self.main_window.set_status_message(f"Loaded {file_path.name} for editing")
+
+        except Exception as e:
+            self.main_window.show_info_dialog("Error", f"Failed to load file: {e}")
+
+    def _on_editor_changed(self, buffer):
+        """Handle editor content changes"""
+        if self.editing_file is None:
+            return
+
+        # Get current content
+        start = buffer.get_start_iter()
+        end = buffer.get_end_iter()
+        current_content = buffer.get_text(start, end, True)
+
+        # Check if content differs from original
+        self.has_unsaved_changes = (current_content != self.original_content)
+
+        # Update save button
+        self.save_btn.set_sensitive(self.has_unsaved_changes)
+
+        # Update frame label to show unsaved status
+        if self.has_unsaved_changes:
+            self.editor_frame.set_label(f"Editor - {self.editing_file.name} *")
+        else:
+            self.editor_frame.set_label(f"Editor - {self.editing_file.name}")
+
+    def _on_save_editor(self, button):
+        """Save the current editor content"""
+        if not self.editing_file or not self.has_unsaved_changes:
+            return
+
+        # Get content from editor
+        buffer = self.preview_text.get_buffer()
+        start = buffer.get_start_iter()
+        end = buffer.get_end_iter()
+        content = buffer.get_text(start, end, True)
+
+        try:
+            # Write to file
+            self.editing_file.write_text(content)
+            self.original_content = content
+            self.has_unsaved_changes = False
+
+            # Update UI
+            self.save_btn.set_sensitive(False)
+            self.editor_frame.set_label(f"Editor - {self.editing_file.name}")
+
+            self.main_window.set_status_message(f"Saved {self.editing_file.name}")
+            self._refresh_configs()
+
+        except Exception as e:
+            self.main_window.show_info_dialog("Error", f"Failed to save file: {e}")
+
+    def _on_revert_editor(self, button):
+        """Revert editor to original content"""
+        if not self.editing_file:
+            return
+
+        def do_revert(confirmed):
+            if confirmed:
+                self.preview_text.get_buffer().set_text(self.original_content)
+                self.has_unsaved_changes = False
+                self.save_btn.set_sensitive(False)
+                self.editor_frame.set_label(f"Editor - {self.editing_file.name}")
+                self.main_window.set_status_message("Reverted to saved version")
+
+        if self.has_unsaved_changes:
+            self.main_window.show_confirm_dialog(
+                "Revert Changes?",
+                "Discard unsaved changes and revert to saved version?",
+                do_revert
+            )
+        else:
+            self.main_window.set_status_message("No changes to revert")
