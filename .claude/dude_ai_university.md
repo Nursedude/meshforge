@@ -29,8 +29,11 @@
    - [HamClock Integration](#hamclock-integration)
    - [Ham Radio Map Resources](#ham-radio-map-resources)
 9. [Security Considerations](#security-considerations)
+   - [Security Audit (2026-01-03)](#security-audit-2026-01-03)
 10. [Future Roadmap](#future-roadmap)
     - [ML/AI Research for Dude AI](#mlai-research-for-dude-ai)
+    - [Dude AI Integration Architecture](#dude-ai-integration-architecture)
+11. [Business Model](#business-model)
 
 ---
 
@@ -484,6 +487,36 @@ def latlon_to_grid(lat, lon):
 - Identity-based addressing (no IP exposure)
 - Perfect forward secrecy on Links
 
+### Security Audit (2026-01-03)
+
+Comprehensive security review performed. Issues found and fixed:
+
+#### Fixed Vulnerabilities
+
+| Issue | Severity | File | Fix Applied |
+|-------|----------|------|-------------|
+| DOM-based XSS | CRITICAL | main_web.py | Added `escapeHtml()` function, sanitize all dynamic content |
+| journalctl injection | CRITICAL | main_web.py | Added `validate_journalctl_since()` with whitelist patterns |
+| Insecure default binding | HIGH | main_web.py | Changed default to `127.0.0.1`, added security warning |
+| Missing security headers | HIGH | main_web.py | Added CSP, X-Frame-Options, X-XSS-Protection headers |
+| TUI command injection | HIGH | tui/app.py | Use `shlex.split()` for proper command parsing |
+| Message validation | MEDIUM | main_web.py | Added length limit (230 bytes), hex node ID validation |
+
+#### Already Secure (Confirmed)
+- ✓ Path traversal prevention (`validate_config_name()`)
+- ✓ Timing-safe password comparison (`secrets.compare_digest()`)
+- ✓ No `shell=True` in subprocess calls
+- ✓ TLS validation in version checker (`create_default_context()`)
+- ✓ Safe literal parsing (`ast.literal_eval` not `eval`)
+
+#### Security Checklist for New Features
+- [ ] All user inputs validated/sanitized
+- [ ] No innerHTML with unescaped content
+- [ ] Subprocess uses list args, never shell=True
+- [ ] File paths validated against traversal
+- [ ] Network binding requires auth for 0.0.0.0
+- [ ] Passwords never logged or exposed
+
 ---
 
 ## Future Roadmap
@@ -564,6 +597,155 @@ def latlon_to_grid(lat, lon):
 - No mesh data sent to cloud without consent
 - Local models for sensitive operations
 - Cloud AI only for non-sensitive help queries
+
+### Dude AI Integration Architecture
+
+The in-app Dude AI assistant should be:
+- **Portable**: Works on Pi, uConsole, any Linux
+- **Offline-first**: Core functionality without internet
+- **Privacy-conscious**: No mesh data leaves device without consent
+- **Helpful**: Solves real connectivity problems
+
+#### Network Access Policy
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Dude AI Network Policy                   │
+├─────────────────────────────────────────────────────────────┤
+│  ALLOWED (with user confirmation):                          │
+│  • Git operations (check updates, pull releases)            │
+│  • Version checks (GitHub API for latest releases)          │
+│  • Pro Max: Claude API calls (if user has Anthropic acct)   │
+│                                                             │
+│  NEVER ALLOWED:                                             │
+│  • Sending mesh node data to external servers               │
+│  • Telemetry without explicit opt-in                        │
+│  • Background network requests                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### Tiered Architecture
+```
+┌────────────────────────────────────────────────────────────┐
+│                      USER INTERFACE                        │
+│   GTK Panel  │  CLI Command  │  Web Widget  │  TUI Panel   │
+└──────────────┼───────────────┼──────────────┼──────────────┘
+               │               │              │
+               ▼               ▼              ▼
+┌────────────────────────────────────────────────────────────┐
+│                   DUDE AI CORE ENGINE                      │
+│  ┌──────────────┐  ┌───────────────┐  ┌────────────────┐  │
+│  │ Knowledge    │  │ Network       │  │ Diagnostic     │  │
+│  │ Base         │  │ Analyzer      │  │ Engine         │  │
+│  │ (local MD)   │  │ (mesh data)   │  │ (rule-based)   │  │
+│  └──────────────┘  └───────────────┘  └────────────────┘  │
+└────────────────────────────────────────────────────────────┘
+               │               │              │
+               ▼               ▼              ▼
+┌────────────────────────────────────────────────────────────┐
+│                    AI BACKEND (pluggable)                  │
+│  ┌──────────────┐  ┌───────────────┐  ┌────────────────┐  │
+│  │ Rule-based   │  │ Ollama        │  │ Claude API     │  │
+│  │ (always)     │  │ (local LLM)   │  │ (Pro Max)      │  │
+│  └──────────────┘  └───────────────┘  └────────────────┘  │
+└────────────────────────────────────────────────────────────┘
+```
+
+#### Diagnostic Capabilities
+Dude AI should help solve:
+
+1. **Connectivity Issues**
+   - "Why can't I reach node X?"
+   - Analyze hop count, SNR history, last seen times
+   - Suggest: power increase, antenna adjustment, relay placement
+
+2. **Configuration Problems**
+   - "Why isn't my gateway bridging?"
+   - Check RNS config, interface status, port availability
+   - Suggest: config corrections, service restarts
+
+3. **Performance Optimization**
+   - "My network is slow"
+   - Analyze channel utilization, collision rates
+   - Suggest: modem preset changes, channel spreading
+
+4. **Hardware Troubleshooting**
+   - "Device not detected"
+   - Check USB connections, firmware versions
+   - Suggest: driver installation, firmware update
+
+---
+
+## Business Model
+
+### Core Principle: Always Open Source
+
+MeshForge will **always** be open source under a permissive license.
+The community version includes all core functionality:
+- Full GTK, CLI, Web, and TUI interfaces
+- RNS-Meshtastic gateway
+- Node monitoring and management
+- Configuration editing
+- Firmware flashing (when implemented)
+
+### Pro Max Subscription (Future)
+
+For users who want enhanced AI assistance:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    MeshForge Pro Max                        │
+│              (Subscription - requires Anthropic account)    │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Everything in Community Edition, PLUS:                     │
+│                                                             │
+│  🤖 Claude-Powered Dude AI                                  │
+│     • Natural language network troubleshooting              │
+│     • Advanced configuration suggestions                    │
+│     • RF propagation analysis explanations                  │
+│     • Custom automation script generation                   │
+│                                                             │
+│  📊 Advanced Analytics                                      │
+│     • AI-generated network health reports                   │
+│     • Predictive maintenance alerts                         │
+│     • Trend analysis and forecasting                        │
+│                                                             │
+│  🔧 Priority Support                                        │
+│     • Direct access to development team                     │
+│     • Feature request priority                              │
+│                                                             │
+│  Pricing: TBD (user brings own Anthropic API key)           │
+│  Revenue: Subscription fee OR % of API usage                │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Integration with Anthropic
+
+The Pro Max integration would:
+1. Require user to have their own Anthropic account
+2. Use Claude API with user's API key (secure, never stored)
+3. Provide mesh-network-aware context to Claude
+4. Apply strict data policies (no PII, node IDs anonymized)
+
+**Potential Partnership:**
+- Work with Anthropic to develop mesh-network-specific Claude features
+- Showcase MeshForge as example of Claude-integrated open source tool
+- Contribute mesh networking knowledge back to Claude's training
+
+### Revenue Sustainability
+
+| Model | Pros | Cons |
+|-------|------|------|
+| **Freemium** | Low barrier, community growth | Need critical mass |
+| **API passthrough** | User controls costs | Complex billing |
+| **Flat subscription** | Predictable revenue | May limit adoption |
+| **Donations/Sponsors** | No paywalls | Unpredictable |
+
+**Recommended Approach:**
+- Start with donations/GitHub sponsors
+- Add Pro Max when user base justifies development
+- Keep core features forever free
 
 ---
 

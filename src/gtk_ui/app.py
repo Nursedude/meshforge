@@ -383,7 +383,9 @@ class MeshForgeWindow(Adw.ApplicationWindow):
 
     def set_status_message(self, message):
         """Set the bottom status message"""
-        self.bottom_message.set_label(message)
+        # Defensive check: bottom_message may not exist during panel initialization
+        if hasattr(self, 'bottom_message') and self.bottom_message:
+            self.bottom_message.set_label(message)
 
     def _update_status(self):
         """Update status bar information"""

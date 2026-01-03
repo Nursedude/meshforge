@@ -9,6 +9,7 @@ import sys
 import os
 import subprocess
 import asyncio
+import shlex
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -653,9 +654,14 @@ class CLIPane(Container):
 
         if button_id == "cli-run":
             custom = self.query_one("#cli-custom", Input).value
-            args = custom.split()
+            try:
+                # Use shlex for proper command-line parsing (handles quotes, escapes)
+                args = shlex.split(custom)
+            except ValueError as e:
+                output.write(f"[red]Invalid command syntax: {e}[/red]")
+                return
         elif button_id in cmd_map:
-            args = cmd_map[button_id].split()
+            args = shlex.split(cmd_map[button_id])
         else:
             return
 
