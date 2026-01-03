@@ -412,14 +412,6 @@ class RadioConfigPanel(Gtk.Box):
         role_box.append(role_apply)
         box.append(role_box)
 
-        # Refresh Device Settings button (below device role)
-        refresh_device_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        refresh_device_box.set_margin_top(5)
-        refresh_device_btn = Gtk.Button(label="Refresh Device Settings")
-        refresh_device_btn.connect("clicked", lambda b: self._load_current_config())
-        refresh_device_box.append(refresh_device_btn)
-        box.append(refresh_device_box)
-
         # Rebroadcast Mode
         rebroadcast_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         rebroadcast_box.append(Gtk.Label(label="Rebroadcast Mode:"))
@@ -1021,14 +1013,14 @@ class RadioConfigPanel(Gtk.Box):
         box.set_margin_bottom(10)
         box.set_halign(Gtk.Align.CENTER)
 
-        # Load Current Config
-        load_btn = Gtk.Button(label="Load Current Config")
-        load_btn.add_css_class("suggested-action")
-        load_btn.connect("clicked", lambda b: self._load_current_config())
-        box.append(load_btn)
+        # Refresh All Settings - fetches current config from device and updates all UI fields
+        refresh_btn = Gtk.Button(label="Refresh All Settings")
+        refresh_btn.add_css_class("suggested-action")
+        refresh_btn.connect("clicked", lambda b: self._load_current_config())
+        box.append(refresh_btn)
 
-        # View Full Config
-        view_btn = Gtk.Button(label="View Full Config")
+        # View Full Config - shows raw CLI output for debugging
+        view_btn = Gtk.Button(label="View Raw Config")
         view_btn.connect("clicked", lambda b: self._view_full_config())
         box.append(view_btn)
 
@@ -1310,6 +1302,9 @@ class RadioConfigPanel(Gtk.Box):
             # --- Device Role ---
             # Skip if this line is about rebroadcast_mode or other role-containing words
             if not fields_set['role'] and 'role' in line_lower and 'rebroadcast' not in line_lower:
+                # Debug: log all lines containing 'role' to help debug
+                print(f"[RadioConfig] Checking line for role: '{line_stripped}'")
+
                 # Match specific formats for device role only:
                 # "  role: CLIENT_MUTE" (indented in config output)
                 # "device.role: CLIENT_MUTE"
@@ -1336,10 +1331,13 @@ class RadioConfigPanel(Gtk.Box):
 
                     # Debug: print what we found
                     print(f"[RadioConfig] Found role: '{role_raw}' -> '{role_value}'")
+                    self.status_label.set_label(f"Debug: Found role '{role_raw}' -> '{role_value}'")
 
                     if set_dropdown_by_value(self.role_dropdown, roles, role_value):
                         fields_set['role'] = True
                         print(f"[RadioConfig] Set role dropdown to: {role_value}")
+                else:
+                    print(f"[RadioConfig] No match for role in line: '{line_stripped}'")
 
             # --- Region ---
             if not fields_set['region'] and 'region' in line_lower:

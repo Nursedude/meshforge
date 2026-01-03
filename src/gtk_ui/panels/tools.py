@@ -191,6 +191,12 @@ class ToolsPanel(Gtk.Box):
         planner_btn.connect("clicked", self._on_site_planner)
         rf_buttons.append(planner_btn)
 
+        # External Line of Sight tool (backup)
+        los_btn = Gtk.Button(label="External LOS Tool")
+        los_btn.set_tooltip_text("Open ScadaCore RF LOS tool in browser")
+        los_btn.connect("clicked", self._on_line_of_sight)
+        rf_buttons.append(los_btn)
+
         link_btn = Gtk.Button(label="Link Budget Calculator")
         link_btn.connect("clicked", self._on_link_budget)
         rf_buttons.append(link_btn)
@@ -204,6 +210,80 @@ class ToolsPanel(Gtk.Box):
         rf_buttons.append(detect_btn)
 
         rf_box.append(rf_buttons)
+
+        # Line of Sight Calculator - integrated tool
+        los_frame = Gtk.Frame()
+        los_frame.set_label("RF Line of Sight Calculator")
+        los_frame.set_margin_top(10)
+        los_inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        los_inner.set_margin_start(10)
+        los_inner.set_margin_end(10)
+        los_inner.set_margin_top(8)
+        los_inner.set_margin_bottom(8)
+
+        # Point A
+        point_a_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        point_a_box.append(Gtk.Label(label="Point A:"))
+        self.los_lat_a = Gtk.Entry()
+        self.los_lat_a.set_placeholder_text("Latitude")
+        self.los_lat_a.set_width_chars(12)
+        point_a_box.append(self.los_lat_a)
+        self.los_lon_a = Gtk.Entry()
+        self.los_lon_a.set_placeholder_text("Longitude")
+        self.los_lon_a.set_width_chars(12)
+        point_a_box.append(self.los_lon_a)
+        point_a_box.append(Gtk.Label(label="Height (m):"))
+        self.los_height_a = Gtk.SpinButton()
+        self.los_height_a.set_range(0, 500)
+        self.los_height_a.set_value(2)
+        self.los_height_a.set_increments(1, 10)
+        point_a_box.append(self.los_height_a)
+        los_inner.append(point_a_box)
+
+        # Point B
+        point_b_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        point_b_box.append(Gtk.Label(label="Point B:"))
+        self.los_lat_b = Gtk.Entry()
+        self.los_lat_b.set_placeholder_text("Latitude")
+        self.los_lat_b.set_width_chars(12)
+        point_b_box.append(self.los_lat_b)
+        self.los_lon_b = Gtk.Entry()
+        self.los_lon_b.set_placeholder_text("Longitude")
+        self.los_lon_b.set_width_chars(12)
+        point_b_box.append(self.los_lon_b)
+        point_b_box.append(Gtk.Label(label="Height (m):"))
+        self.los_height_b = Gtk.SpinButton()
+        self.los_height_b.set_range(0, 500)
+        self.los_height_b.set_value(2)
+        self.los_height_b.set_increments(1, 10)
+        point_b_box.append(self.los_height_b)
+        los_inner.append(point_b_box)
+
+        # Frequency and Calculate
+        calc_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        calc_box.append(Gtk.Label(label="Frequency (MHz):"))
+        self.los_freq = Gtk.DropDown.new_from_strings([
+            "915 (US)", "868 (EU)", "433 (EU/Asia)", "923 (AU/NZ)"
+        ])
+        self.los_freq.set_selected(0)
+        calc_box.append(self.los_freq)
+
+        los_calc_btn = Gtk.Button(label="Calculate LOS")
+        los_calc_btn.add_css_class("suggested-action")
+        los_calc_btn.connect("clicked", self._on_calculate_los)
+        calc_box.append(los_calc_btn)
+        los_inner.append(calc_box)
+
+        # Results area
+        self.los_results = Gtk.Label(label="Enter coordinates and click Calculate")
+        self.los_results.set_xalign(0)
+        self.los_results.set_wrap(True)
+        self.los_results.add_css_class("dim-label")
+        los_inner.append(self.los_results)
+
+        los_frame.set_child(los_inner)
+        rf_box.append(los_frame)
+
         rf_frame.set_child(rf_box)
         content.append(rf_frame)
 
@@ -658,6 +738,179 @@ class ToolsPanel(Gtk.Box):
             GLib.idle_add(self._log, f"Visit manually: {url}")
 
         threading.Thread(target=try_open, daemon=True).start()
+
+    def _on_line_of_sight(self, button):
+        """Open RF Line of Sight tool in browser"""
+        import os
+        url = "https://www.scadacore.com/tools/rf-path/rf-line-of-sight/"
+        self._log("\n=== RF Line of Sight Tool ===")
+        self._log(f"Opening {url}")
+        self._log("\nFeatures:")
+        self._log("  • Elevation profile between two points")
+        self._log("  • Fresnel zone visualization")
+        self._log("  • Earth curvature calculation")
+        self._log("  • Free online tool - no account needed")
+        self._log("\nTip: Enter coordinates or click on the map to set endpoints")
+
+        def try_open():
+            # Get real user if running as sudo
+            user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
+
+            # Method 1: xdg-open as the real user
+            try:
+                result = subprocess.run(
+                    ['sudo', '-u', user, 'xdg-open', url],
+                    capture_output=True, timeout=10
+                )
+                if result.returncode == 0:
+                    GLib.idle_add(self._log, "Browser opened successfully")
+                    return
+            except Exception:
+                pass
+
+            # Method 2: Try common browsers directly
+            browsers = ['chromium-browser', 'firefox', 'epiphany-browser']
+            for browser in browsers:
+                try:
+                    subprocess.Popen(
+                        ['sudo', '-u', user, browser, url],
+                        start_new_session=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    GLib.idle_add(self._log, f"Browser opened ({browser})")
+                    return
+                except Exception:
+                    continue
+
+            # Method 3: webbrowser module fallback
+            try:
+                import webbrowser
+                webbrowser.open(url)
+                GLib.idle_add(self._log, "Browser opened successfully")
+                return
+            except Exception:
+                pass
+
+            GLib.idle_add(self._log, "Could not open browser automatically")
+            GLib.idle_add(self._log, f"Visit manually: {url}")
+
+        threading.Thread(target=try_open, daemon=True).start()
+
+    def _on_calculate_los(self, button):
+        """Calculate RF Line of Sight between two points"""
+        import math
+        import json
+        import urllib.request
+        import urllib.error
+
+        # Get coordinates
+        try:
+            lat_a = float(self.los_lat_a.get_text().strip())
+            lon_a = float(self.los_lon_a.get_text().strip())
+            lat_b = float(self.los_lat_b.get_text().strip())
+            lon_b = float(self.los_lon_b.get_text().strip())
+        except ValueError:
+            self.los_results.set_label("Error: Enter valid coordinates (e.g., 37.7749, -122.4194)")
+            return
+
+        height_a = self.los_height_a.get_value()
+        height_b = self.los_height_b.get_value()
+
+        # Get frequency
+        freq_options = [915, 868, 433, 923]
+        freq_mhz = freq_options[self.los_freq.get_selected()]
+
+        self.los_results.set_label("Calculating... fetching elevation data...")
+
+        def calculate():
+            try:
+                # Calculate distance using Haversine formula
+                R = 6371000  # Earth radius in meters
+                lat1_rad = math.radians(lat_a)
+                lat2_rad = math.radians(lat_b)
+                delta_lat = math.radians(lat_b - lat_a)
+                delta_lon = math.radians(lon_b - lon_a)
+
+                a = math.sin(delta_lat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon/2)**2
+                c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+                distance_m = R * c
+                distance_km = distance_m / 1000
+
+                # Calculate earth bulge at midpoint (for long distances)
+                # h = d^2 / (8 * R) where d is distance, R is earth radius
+                earth_bulge_m = (distance_m ** 2) / (8 * R * (4/3))  # 4/3 earth radius for RF refraction
+
+                # Calculate first Fresnel zone radius at midpoint
+                # r = 17.3 * sqrt(d / (4 * f)) where d is in km, f is in GHz
+                freq_ghz = freq_mhz / 1000
+                fresnel_radius_m = 17.3 * math.sqrt(distance_km / (4 * freq_ghz))
+
+                # 60% Fresnel zone clearance needed for good LOS
+                fresnel_60_m = fresnel_radius_m * 0.6
+
+                # Try to get elevation data from Open-Elevation API
+                elev_a = None
+                elev_b = None
+                elev_mid = None
+
+                try:
+                    # Query elevations for point A, B, and midpoint
+                    mid_lat = (lat_a + lat_b) / 2
+                    mid_lon = (lon_a + lon_b) / 2
+
+                    url = f"https://api.open-elevation.com/api/v1/lookup?locations={lat_a},{lon_a}|{mid_lat},{mid_lon}|{lat_b},{lon_b}"
+                    req = urllib.request.Request(url, headers={'User-Agent': 'MeshForge/4.1'})
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        data = json.loads(response.read().decode())
+                        results = data.get('results', [])
+                        if len(results) >= 3:
+                            elev_a = results[0].get('elevation', 0)
+                            elev_mid = results[1].get('elevation', 0)
+                            elev_b = results[2].get('elevation', 0)
+                except Exception as e:
+                    print(f"[LOS] Elevation API error: {e}")
+
+                # Build results
+                results = []
+                results.append(f"Distance: {distance_km:.2f} km ({distance_m:.0f} m)")
+                results.append(f"Earth Bulge at Midpoint: {earth_bulge_m:.1f} m")
+                results.append(f"1st Fresnel Zone Radius: {fresnel_radius_m:.1f} m")
+                results.append(f"60% Fresnel Clearance Needed: {fresnel_60_m:.1f} m")
+
+                if elev_a is not None:
+                    results.append(f"\nElevation Data:")
+                    results.append(f"  Point A: {elev_a:.0f} m + {height_a:.0f} m antenna = {elev_a + height_a:.0f} m")
+                    results.append(f"  Point B: {elev_b:.0f} m + {height_b:.0f} m antenna = {elev_b + height_b:.0f} m")
+                    results.append(f"  Midpoint Ground: {elev_mid:.0f} m")
+
+                    # Simple LOS check
+                    # Line from A to B at midpoint height
+                    line_height_mid = ((elev_a + height_a) + (elev_b + height_b)) / 2
+                    clearance = line_height_mid - elev_mid - earth_bulge_m
+
+                    results.append(f"\nMidpoint Clearance: {clearance:.1f} m")
+
+                    if clearance >= fresnel_60_m:
+                        results.append("✓ Good LOS - 60% Fresnel zone clear")
+                    elif clearance > 0:
+                        results.append("⚠ Marginal LOS - some Fresnel obstruction")
+                    else:
+                        results.append("✗ No LOS - terrain blocks path")
+                else:
+                    results.append("\n(Elevation API unavailable - basic calculations only)")
+
+                # Free Space Path Loss
+                fspl = 20 * math.log10(distance_m) + 20 * math.log10(freq_mhz) - 27.55
+                results.append(f"\nFree Space Path Loss: {fspl:.1f} dB")
+
+                GLib.idle_add(self.los_results.set_label, "\n".join(results))
+                GLib.idle_add(self.los_results.remove_css_class, "dim-label")
+
+            except Exception as e:
+                GLib.idle_add(self.los_results.set_label, f"Error: {e}")
+
+        threading.Thread(target=calculate, daemon=True).start()
 
     def _on_link_budget(self, button):
         """Show link budget info"""
