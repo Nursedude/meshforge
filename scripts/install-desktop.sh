@@ -125,9 +125,8 @@ echo "==========================================="
 echo
 echo "MeshForge has been added to your applications menu."
 echo "You can find it under:"
-echo "  - Network"
+echo "  - Internet"
 echo "  - System Tools"
-echo "  - Utilities"
 echo
 echo "Or search for 'MeshForge' in your application launcher."
 echo
