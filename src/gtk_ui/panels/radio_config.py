@@ -1299,15 +1299,16 @@ class RadioConfigPanel(Gtk.Box):
 
             # --- Device Role ---
             if not fields_set['role'] and 'role' in line_lower:
-                # Match various formats: "role: CLIENT_MUTE", "role: clientMute", etc.
-                # Use word boundary to get the full role value
-                match = re.search(r'\brole[:\s]+["\']?([A-Za-z_]+)["\']?', line, re.IGNORECASE)
+                # Match various formats:
+                # "role: CLIENT_MUTE", "deviceRole: clientMute", "device.role: CLIENT_MUTE"
+                match = re.search(r'(?:device[._]?)?role[:\s]+["\']?([A-Za-z_]+)["\']?', line, re.IGNORECASE)
                 if match:
-                    role_value = match.group(1).upper()
-                    # Convert camelCase to UPPER_SNAKE_CASE if needed
-                    if '_' not in role_value and len(role_value) > 6:
-                        # Handle clientMute -> CLIENT_MUTE
-                        role_value = re.sub(r'([a-z])([A-Z])', r'\1_\2', match.group(1)).upper()
+                    role_raw = match.group(1)
+                    role_value = role_raw.upper()
+                    # Convert camelCase to UPPER_SNAKE_CASE if needed (e.g., clientMute -> CLIENT_MUTE)
+                    if '_' not in role_value:
+                        # Check for camelCase pattern
+                        role_value = re.sub(r'([a-z])([A-Z])', r'\1_\2', role_raw).upper()
                     if set_dropdown_by_value(self.role_dropdown, roles, role_value):
                         fields_set['role'] = True
 

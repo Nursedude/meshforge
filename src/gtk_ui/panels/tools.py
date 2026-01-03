@@ -604,7 +604,7 @@ class ToolsPanel(Gtk.Box):
 
     def _on_site_planner(self, button):
         """Open Meshtastic Site Planner in browser"""
-        import webbrowser
+        import os
         url = "https://site.meshtastic.org/"
         self._log("\n=== Meshtastic Site Planner ===")
         self._log(f"Opening {url}")
@@ -613,12 +613,51 @@ class ToolsPanel(Gtk.Box):
         self._log("  • Terrain analysis with NASA SRTM data")
         self._log("  • Multi-node network planning")
         self._log("  • Customizable antenna gain, cable loss, clutter")
-        try:
-            webbrowser.open(url)
-            self._log("Browser opened successfully")
-        except Exception as e:
-            self._log(f"Error opening browser: {e}")
-            self._log(f"Visit manually: {url}")
+
+        def try_open():
+            # Get real user if running as sudo
+            user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
+
+            # Method 1: xdg-open as the real user
+            try:
+                result = subprocess.run(
+                    ['sudo', '-u', user, 'xdg-open', url],
+                    capture_output=True, timeout=10
+                )
+                if result.returncode == 0:
+                    GLib.idle_add(self._log, "Browser opened successfully")
+                    return
+            except Exception:
+                pass
+
+            # Method 2: Try common browsers directly
+            browsers = ['chromium-browser', 'firefox', 'epiphany-browser']
+            for browser in browsers:
+                try:
+                    subprocess.Popen(
+                        ['sudo', '-u', user, browser, url],
+                        start_new_session=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    GLib.idle_add(self._log, f"Browser opened ({browser})")
+                    return
+                except Exception:
+                    continue
+
+            # Method 3: webbrowser module fallback
+            try:
+                import webbrowser
+                webbrowser.open(url)
+                GLib.idle_add(self._log, "Browser opened successfully")
+                return
+            except Exception:
+                pass
+
+            GLib.idle_add(self._log, "Could not open browser automatically")
+            GLib.idle_add(self._log, f"Visit manually: {url}")
+
+        threading.Thread(target=try_open, daemon=True).start()
 
     def _on_link_budget(self, button):
         """Show link budget info"""
