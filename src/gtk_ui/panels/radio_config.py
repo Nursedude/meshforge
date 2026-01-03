@@ -1305,13 +1305,34 @@ class RadioConfigPanel(Gtk.Box):
                 # Debug: log all lines containing 'role' to help debug
                 print(f"[RadioConfig] Checking line for role: '{line_stripped}'")
 
-                # Match specific formats for device role only:
-                # "  role: CLIENT_MUTE" (indented in config output)
-                # "device.role: CLIENT_MUTE"
-                # "deviceRole: clientMute"
-                # But NOT lines like "Owner: Name (CLIENT)" or other contexts
+                # Meshtastic device role enum values (numeric to string mapping)
+                role_enum_map = {
+                    0: "CLIENT",
+                    1: "CLIENT_MUTE",
+                    2: "ROUTER",
+                    3: "ROUTER_CLIENT",
+                    4: "REPEATER",
+                    5: "TRACKER",
+                    6: "SENSOR",
+                    7: "TAK",
+                    8: "TAK_TRACKER",
+                    9: "CLIENT_HIDDEN",
+                    10: "LOST_AND_FOUND",
+                }
 
-                # Pattern: look for role at word boundary, followed by colon and value
+                # First try to match numeric value: "device.role: 1" or "role: 1"
+                num_match = re.search(r'(?:device[._]?)?role\s*:\s*(\d+)', line, re.IGNORECASE)
+                if num_match:
+                    role_num = int(num_match.group(1))
+                    if role_num in role_enum_map:
+                        role_value = role_enum_map[role_num]
+                        print(f"[RadioConfig] Found numeric role: {role_num} -> '{role_value}'")
+                        if set_dropdown_by_value(self.role_dropdown, roles, role_value):
+                            fields_set['role'] = True
+                            print(f"[RadioConfig] Set role dropdown to: {role_value}")
+                        continue
+
+                # Pattern: look for role at word boundary, followed by colon and string value
                 match = re.search(r'^\s*(?:device[._]?)?role\s*:\s*["\']?([A-Za-z_]+)["\']?\s*$', line, re.IGNORECASE)
                 if not match:
                     # Try Python dict format: 'role': 'CLIENT_MUTE' or "role": "CLIENT_MUTE"
@@ -1329,9 +1350,7 @@ class RadioConfigPanel(Gtk.Box):
                         # Has mixed case - convert camelCase to SNAKE_CASE
                         role_value = re.sub(r'([a-z])([A-Z])', r'\1_\2', role_raw).upper()
 
-                    # Debug: print what we found
                     print(f"[RadioConfig] Found role: '{role_raw}' -> '{role_value}'")
-                    self.status_label.set_label(f"Debug: Found role '{role_raw}' -> '{role_value}'")
 
                     if set_dropdown_by_value(self.role_dropdown, roles, role_value):
                         fields_set['role'] = True
