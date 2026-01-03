@@ -158,7 +158,11 @@ def login_required(f):
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        if request.form.get('password') == CONFIG['password']:
+        # Use constant-time comparison to prevent timing attacks
+        user_password = request.form.get('password', '')
+        stored_password = CONFIG['password'] or ''
+        # Both must be strings for compare_digest
+        if secrets.compare_digest(user_password, stored_password):
             session['authenticated'] = True
             return redirect(url_for('index'))
         return render_template_string(LOGIN_TEMPLATE, error="Invalid password")
@@ -174,6 +178,36 @@ def logout():
 # ============================================================================
 # Utility Functions
 # ============================================================================
+
+def validate_config_name(config_name):
+    """
+    Validate config filename to prevent path traversal attacks.
+    Returns (is_valid, error_message).
+    Only allows alphanumeric, hyphen, underscore, and dot characters.
+    Must end with .yaml or .yml extension.
+    """
+    if not config_name:
+        return False, "Config name is required"
+
+    # Block any path separators or parent directory references
+    if '/' in config_name or '\\' in config_name or '..' in config_name:
+        return False, "Invalid config name: path separators not allowed"
+
+    # Only allow safe characters: alphanumeric, hyphen, underscore, dot
+    import re
+    if not re.match(r'^[a-zA-Z0-9_.-]+$', config_name):
+        return False, "Invalid config name: only alphanumeric, hyphen, underscore, and dot allowed"
+
+    # Must have valid extension
+    if not (config_name.endswith('.yaml') or config_name.endswith('.yml')):
+        return False, "Invalid config name: must end with .yaml or .yml"
+
+    # Prevent hidden files
+    if config_name.startswith('.'):
+        return False, "Invalid config name: hidden files not allowed"
+
+    return True, None
+
 
 def find_meshtastic_cli():
     """Find meshtastic CLI path"""
@@ -807,11 +841,19 @@ def api_activate_config():
     data = request.get_json()
     config_name = data.get('config')
 
-    if not config_name:
-        return jsonify({'error': 'No config specified'}), 400
+    # Validate config name to prevent path traversal
+    is_valid, error = validate_config_name(config_name)
+    if not is_valid:
+        return jsonify({'error': error}), 400
 
-    src = Path(f'/etc/meshtasticd/available.d/{config_name}')
-    dst = Path(f'/etc/meshtasticd/config.d/{config_name}')
+    src = Path('/etc/meshtasticd/available.d') / config_name
+    dst = Path('/etc/meshtasticd/config.d') / config_name
+
+    # Additional safety: verify resolved paths are within expected directories
+    if not str(src.resolve()).startswith('/etc/meshtasticd/available.d/'):
+        return jsonify({'error': 'Invalid config path'}), 400
+    if not str(dst.resolve()).startswith('/etc/meshtasticd/config.d/'):
+        return jsonify({'error': 'Invalid config path'}), 400
 
     if not src.exists():
         return jsonify({'error': 'Config not found'}), 404
@@ -831,10 +873,16 @@ def api_deactivate_config():
     data = request.get_json()
     config_name = data.get('config')
 
-    if not config_name:
-        return jsonify({'error': 'No config specified'}), 400
+    # Validate config name to prevent path traversal
+    is_valid, error = validate_config_name(config_name)
+    if not is_valid:
+        return jsonify({'error': error}), 400
 
-    config_path = Path(f'/etc/meshtasticd/config.d/{config_name}')
+    config_path = Path('/etc/meshtasticd/config.d') / config_name
+
+    # Additional safety: verify resolved path is within expected directory
+    if not str(config_path.resolve()).startswith('/etc/meshtasticd/config.d/'):
+        return jsonify({'error': 'Invalid config path'}), 400
 
     if not config_path.exists():
         return jsonify({'error': 'Config not active'}), 404
@@ -846,13 +894,23 @@ def api_deactivate_config():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/config/content/<path:config_name>')
+@app.route('/api/config/content/<config_name>')
 @login_required
 def api_config_content(config_name):
     """Get config file content"""
+    # Validate config name to prevent path traversal
+    is_valid, error = validate_config_name(config_name)
+    if not is_valid:
+        return jsonify({'error': error}), 400
+
     # Check both directories
     for base in ['/etc/meshtasticd/config.d', '/etc/meshtasticd/available.d']:
         path = Path(base) / config_name
+        # Additional safety: verify resolved path is within expected directory
+        resolved = str(path.resolve())
+        if not (resolved.startswith('/etc/meshtasticd/config.d/') or
+                resolved.startswith('/etc/meshtasticd/available.d/')):
+            return jsonify({'error': 'Invalid config path'}), 400
         if path.exists():
             try:
                 return jsonify({'content': path.read_text()})
@@ -928,14 +986,22 @@ def api_edit_config():
     config_name = data.get('config')
     content = data.get('content')
 
-    if not config_name:
-        return jsonify({'error': 'No config specified'}), 400
+    # Validate config name to prevent path traversal
+    is_valid, error = validate_config_name(config_name)
+    if not is_valid:
+        return jsonify({'error': error}), 400
+
     if content is None:
         return jsonify({'error': 'No content provided'}), 400
 
     # Only allow editing in config.d or available.d
     for base in ['/etc/meshtasticd/config.d', '/etc/meshtasticd/available.d']:
         path = Path(base) / config_name
+        # Additional safety: verify resolved path is within expected directory
+        resolved = str(path.resolve())
+        if not (resolved.startswith('/etc/meshtasticd/config.d/') or
+                resolved.startswith('/etc/meshtasticd/available.d/')):
+            return jsonify({'error': 'Invalid config path'}), 400
         if path.exists():
             try:
                 # Create backup

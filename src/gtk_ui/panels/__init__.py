@@ -6,6 +6,7 @@ from .install import InstallPanel
 from .config import ConfigPanel
 from .cli import CLIPanel
 from .hardware import HardwarePanel
+from .rns import RNSPanel
 
 __all__ = [
     'DashboardPanel',
@@ -13,5 +14,6 @@ __all__ = [
     'InstallPanel',
     'ConfigPanel',
     'CLIPanel',
-    'HardwarePanel'
+    'HardwarePanel',
+    'RNSPanel'
 ]
