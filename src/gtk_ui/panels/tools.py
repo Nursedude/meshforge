@@ -191,6 +191,11 @@ class ToolsPanel(Gtk.Box):
         planner_btn.connect("clicked", self._on_site_planner)
         rf_buttons.append(planner_btn)
 
+        # Line of Sight tool
+        los_btn = Gtk.Button(label="Line of Sight")
+        los_btn.connect("clicked", self._on_line_of_sight)
+        rf_buttons.append(los_btn)
+
         link_btn = Gtk.Button(label="Link Budget Calculator")
         link_btn.connect("clicked", self._on_link_budget)
         rf_buttons.append(link_btn)
@@ -613,6 +618,64 @@ class ToolsPanel(Gtk.Box):
         self._log("  • Terrain analysis with NASA SRTM data")
         self._log("  • Multi-node network planning")
         self._log("  • Customizable antenna gain, cable loss, clutter")
+
+        def try_open():
+            # Get real user if running as sudo
+            user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
+
+            # Method 1: xdg-open as the real user
+            try:
+                result = subprocess.run(
+                    ['sudo', '-u', user, 'xdg-open', url],
+                    capture_output=True, timeout=10
+                )
+                if result.returncode == 0:
+                    GLib.idle_add(self._log, "Browser opened successfully")
+                    return
+            except Exception:
+                pass
+
+            # Method 2: Try common browsers directly
+            browsers = ['chromium-browser', 'firefox', 'epiphany-browser']
+            for browser in browsers:
+                try:
+                    subprocess.Popen(
+                        ['sudo', '-u', user, browser, url],
+                        start_new_session=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    GLib.idle_add(self._log, f"Browser opened ({browser})")
+                    return
+                except Exception:
+                    continue
+
+            # Method 3: webbrowser module fallback
+            try:
+                import webbrowser
+                webbrowser.open(url)
+                GLib.idle_add(self._log, "Browser opened successfully")
+                return
+            except Exception:
+                pass
+
+            GLib.idle_add(self._log, "Could not open browser automatically")
+            GLib.idle_add(self._log, f"Visit manually: {url}")
+
+        threading.Thread(target=try_open, daemon=True).start()
+
+    def _on_line_of_sight(self, button):
+        """Open RF Line of Sight tool in browser"""
+        import os
+        url = "https://www.scadacore.com/tools/rf-path/rf-line-of-sight/"
+        self._log("\n=== RF Line of Sight Tool ===")
+        self._log(f"Opening {url}")
+        self._log("\nFeatures:")
+        self._log("  • Elevation profile between two points")
+        self._log("  • Fresnel zone visualization")
+        self._log("  • Earth curvature calculation")
+        self._log("  • Free online tool - no account needed")
+        self._log("\nTip: Enter coordinates or click on the map to set endpoints")
 
         def try_open():
             # Get real user if running as sudo
