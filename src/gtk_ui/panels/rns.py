@@ -601,20 +601,19 @@ class RNSPanel(Gtk.Box):
 
         box.append(btn_row)
 
-        # Config row
+        # Config row - use lambdas to defer path resolution
         config_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         config_row.set_halign(Gtk.Align.CENTER)
 
-        nomadnet_config = Path.home() / ".nomadnetwork" / "config"
         config_btn = Gtk.Button(label="Edit Config")
-        config_btn.set_tooltip_text(f"Edit {nomadnet_config}")
-        config_btn.connect("clicked", lambda b: self._edit_config_terminal(nomadnet_config))
+        config_btn.set_tooltip_text("Edit ~/.nomadnetwork/config")
+        config_btn.connect("clicked", lambda b: self._edit_nomadnet_config())
         config_row.append(config_btn)
 
         # Open config folder
         folder_btn = Gtk.Button(label="Open Folder")
         folder_btn.set_tooltip_text("Open ~/.nomadnetwork folder")
-        folder_btn.connect("clicked", lambda b: self._open_config_folder(Path.home() / ".nomadnetwork"))
+        folder_btn.connect("clicked", lambda b: self._open_nomadnet_folder())
         config_row.append(folder_btn)
 
         box.append(config_row)
@@ -679,6 +678,36 @@ class RNSPanel(Gtk.Box):
         # Check status on load
         GLib.timeout_add(500, self._check_nomadnet_status)
 
+    def _get_real_user_home(self):
+        """Get the real user's home directory, even when running as root via sudo"""
+        import os
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and os.geteuid() == 0:
+            return Path('/home') / sudo_user
+        return Path.home()
+
+    def _get_real_username(self):
+        """Get the real username, even when running as root via sudo"""
+        import os
+        return os.environ.get('SUDO_USER', os.environ.get('USER', 'root'))
+
+    def _find_nomadnet(self):
+        """Find nomadnet executable, checking user local bin if running as root"""
+        import os
+
+        # First check system PATH
+        nomadnet_path = shutil.which('nomadnet')
+        if nomadnet_path:
+            return nomadnet_path
+
+        # Check real user's local bin (for --user pip installs)
+        real_home = self._get_real_user_home()
+        user_local_bin = real_home / ".local" / "bin" / "nomadnet"
+        if user_local_bin.exists():
+            return str(user_local_bin)
+
+        return None
+
     def _check_nomadnet_status(self):
         """Check if NomadNet daemon is running"""
         def check():
@@ -697,6 +726,8 @@ class RNSPanel(Gtk.Box):
 
     def _update_nomadnet_status(self, running):
         """Update NomadNet status display"""
+        nomadnet_path = self._find_nomadnet()
+
         if running:
             self.nomadnet_status_icon.set_from_icon_name("emblem-default-symbolic")
             self.nomadnet_status_label.set_label("NomadNet daemon running")
@@ -704,7 +735,7 @@ class RNSPanel(Gtk.Box):
             self.nomadnet_stop_btn.set_sensitive(True)
         else:
             # Check if installed
-            if shutil.which('nomadnet'):
+            if nomadnet_path:
                 self.nomadnet_status_icon.set_from_icon_name("media-playback-stop-symbolic")
                 self.nomadnet_status_label.set_label("NomadNet installed (daemon stopped)")
                 self.nomadnet_daemon_btn.set_sensitive(True)
@@ -720,20 +751,23 @@ class RNSPanel(Gtk.Box):
         """Launch NomadNet in specified mode"""
         print(f"[RNS] Launching NomadNet ({mode})...", flush=True)
 
-        if not shutil.which('nomadnet'):
+        nomadnet_path = self._find_nomadnet()
+        if not nomadnet_path:
             self.main_window.set_status_message("NomadNet not installed - install it first")
-            print("[RNS] NomadNet not found in PATH", flush=True)
+            print("[RNS] NomadNet not found", flush=True)
             return
+
+        print(f"[RNS] Found nomadnet at: {nomadnet_path}", flush=True)
 
         try:
             if mode == "textui":
-                # Launch in a terminal
+                # Launch in a terminal using full path
                 terminals = [
-                    ['gnome-terminal', '--', 'nomadnet'],
-                    ['xfce4-terminal', '-e', 'nomadnet'],
-                    ['konsole', '-e', 'nomadnet'],
-                    ['lxterminal', '-e', 'nomadnet'],
-                    ['xterm', '-e', 'nomadnet'],
+                    ['gnome-terminal', '--', nomadnet_path],
+                    ['xfce4-terminal', '-e', nomadnet_path],
+                    ['konsole', '-e', nomadnet_path],
+                    ['lxterminal', '-e', nomadnet_path],
+                    ['xterm', '-e', nomadnet_path],
                 ]
                 for term_cmd in terminals:
                     if shutil.which(term_cmd[0]):
@@ -743,9 +777,9 @@ class RNSPanel(Gtk.Box):
                         return
                 self.main_window.set_status_message("No terminal emulator found")
             elif mode == "daemon":
-                # Run as daemon
+                # Run as daemon using full path
                 subprocess.Popen(
-                    ['nomadnet', '--daemon'],
+                    [nomadnet_path, '--daemon'],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     stdin=subprocess.DEVNULL,
@@ -775,33 +809,157 @@ class RNSPanel(Gtk.Box):
             print(f"[RNS] Failed to stop NomadNet: {e}", flush=True)
             self.main_window.set_status_message(f"Failed: {e}")
 
+    def _edit_nomadnet_config(self):
+        """Edit NomadNet config file"""
+        real_home = self._get_real_user_home()
+        config_file = real_home / ".nomadnetwork" / "config"
+
+        # If config doesn't exist or is empty, create default config
+        if not config_file.exists() or config_file.stat().st_size == 0:
+            self._create_default_nomadnet_config(config_file)
+
+        self._edit_config_terminal(config_file)
+
+    def _create_default_nomadnet_config(self, config_file):
+        """Create a default NomadNet config file with sensible defaults"""
+        import os
+
+        default_config = '''# NomadNet Configuration File
+# Edit this file to customize your NomadNet settings
+# Reference: https://github.com/markqvist/NomadNet
+
+[logging]
+# Valid log levels are 0 through 7:
+#   0: Log only critical information
+#   1: Log errors and lower log levels
+#   2: Log warnings and lower log levels
+#   3: Log notices and lower log levels
+#   4: Log info and lower (this is the default)
+#   5: Verbose logging
+#   6: Debug logging
+#   7: Extreme logging
+
+loglevel = 4
+destination = file
+
+[client]
+
+enable_client = yes
+user_interface = text
+downloads_path = ~/Downloads
+notify_on_new_message = yes
+
+# Announce this peer at startup to let others reach it
+announce_at_start = yes
+
+# Try LXMF propagation network if direct delivery fails
+try_propagation_on_send_fail = yes
+
+# Periodically sync messages from propagation nodes
+periodic_lxmf_sync = yes
+
+# Sync interval in minutes (360 = 6 hours)
+lxmf_sync_interval = 360
+
+# Max messages to download per sync (0 = unlimited)
+lxmf_sync_limit = 8
+
+# Required stamp cost for inbound messages (0 = disabled)
+# stamp_cost = 8
+
+[textui]
+# Text UI theme: dark, light
+theme = dark
+
+# Editor to use for composing messages
+# editor = nano
+
+# Hide guide on startup after first run
+hide_guide = no
+
+[node]
+# Enable hosting a NomadNet node
+enable_node = no
+
+# Node name displayed to visitors
+# node_name = My Node
+
+# Enable as LXMF propagation node
+enable_propagation = no
+
+# Max message storage in MB
+message_storage_limit = 2000
+'''
+        try:
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(config_file, 'w') as f:
+                f.write(default_config)
+
+            # Fix ownership if running as root
+            real_user = self._get_real_username()
+            if os.geteuid() == 0 and real_user != 'root':
+                subprocess.run(['chown', '-R', f'{real_user}:{real_user}',
+                               str(config_file.parent)], capture_output=True)
+
+            print(f"[RNS] Created default NomadNet config: {config_file}", flush=True)
+            self.main_window.set_status_message("Created default NomadNet config")
+        except Exception as e:
+            print(f"[RNS] Failed to create config: {e}", flush=True)
+
+    def _open_nomadnet_folder(self):
+        """Open NomadNet config folder"""
+        real_home = self._get_real_user_home()
+        folder = real_home / ".nomadnetwork"
+        self._open_config_folder(folder)
+
     def _edit_config_terminal(self, config_file):
         """Open config file in terminal with nano/vim"""
-        print(f"[RNS] Opening config in terminal: {config_file}", flush=True)
+        import os
 
-        # Create the config file if it doesn't exist
         config_path = Path(config_file)
+        print(f"[RNS] Opening config in terminal: {config_path}", flush=True)
+
+        # Get the real user for running commands
+        real_user = self._get_real_username()
+        is_root = os.geteuid() == 0
+
+        # Create the config file if it doesn't exist (as the real user)
         if not config_path.exists():
             try:
                 config_path.parent.mkdir(parents=True, exist_ok=True)
                 config_path.touch()
-                print(f"[RNS] Created empty config file: {config_file}", flush=True)
+                # Fix ownership if running as root
+                if is_root and real_user != 'root':
+                    subprocess.run(['chown', f'{real_user}:{real_user}', str(config_path)],
+                                   capture_output=True)
+                    subprocess.run(['chown', f'{real_user}:{real_user}', str(config_path.parent)],
+                                   capture_output=True)
+                print(f"[RNS] Created config file: {config_path}", flush=True)
             except Exception as e:
                 print(f"[RNS] Failed to create config: {e}", flush=True)
 
         try:
-            # Find available terminal and editor
-            terminals = [
-                ('gnome-terminal', ['gnome-terminal', '--', 'nano', str(config_file)]),
-                ('xfce4-terminal', ['xfce4-terminal', '-e', f'nano {config_file}']),
-                ('konsole', ['konsole', '-e', 'nano', str(config_file)]),
-                ('lxterminal', ['lxterminal', '-e', f'nano {config_file}']),
-                ('xterm', ['xterm', '-e', 'nano', str(config_file)]),
-            ]
+            # When running as root, launch terminal as the actual user
+            if is_root and real_user != 'root':
+                terminals = [
+                    ('lxterminal', ['sudo', '-u', real_user, 'lxterminal', '-e', f'nano {config_path}']),
+                    ('gnome-terminal', ['sudo', '-u', real_user, 'gnome-terminal', '--', 'nano', str(config_path)]),
+                    ('xfce4-terminal', ['sudo', '-u', real_user, 'xfce4-terminal', '-e', f'nano {config_path}']),
+                    ('konsole', ['sudo', '-u', real_user, 'konsole', '-e', 'nano', str(config_path)]),
+                    ('xterm', ['sudo', '-u', real_user, 'xterm', '-e', 'nano', str(config_path)]),
+                ]
+            else:
+                terminals = [
+                    ('lxterminal', ['lxterminal', '-e', f'nano {config_path}']),
+                    ('gnome-terminal', ['gnome-terminal', '--', 'nano', str(config_path)]),
+                    ('xfce4-terminal', ['xfce4-terminal', '-e', f'nano {config_path}']),
+                    ('konsole', ['konsole', '-e', 'nano', str(config_path)]),
+                    ('xterm', ['xterm', '-e', 'nano', str(config_path)]),
+                ]
 
             for term_name, term_cmd in terminals:
                 if shutil.which(term_name):
-                    print(f"[RNS] Using terminal: {term_name}", flush=True)
+                    print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
                     subprocess.Popen(term_cmd, start_new_session=True)
                     self.main_window.set_status_message(f"Editing {config_path.name} in terminal")
                     return
