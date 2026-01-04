@@ -357,11 +357,19 @@
                 console.log('API not available, using demo data');
             }
 
-            // Check URL params for data
+            // Check for embedded data from MeshForge (injected into HTML)
+            if (window.meshforgeData) {
+                console.log('Using embedded MeshForge data');
+                loadNodes(window.meshforgeData);
+                return;
+            }
+
+            // Check URL params for inline data (fallback, limited by URL length)
             const params = new URLSearchParams(window.location.search);
             if (params.has('data')) {
                 try {
                     const geojson = JSON.parse(decodeURIComponent(params.get('data')));
+                    console.log('Loaded ' + geojson.features.length + ' nodes from URL params');
                     loadNodes(geojson);
                     return;
                 } catch (e) {

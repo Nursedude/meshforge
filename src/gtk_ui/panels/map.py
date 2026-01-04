@@ -630,6 +630,7 @@ class MapPanel(Gtk.Box):
     def _on_open_browser(self, button):
         """Open map in external browser"""
         import os
+        import tempfile
 
         map_path = self._get_map_path()
         if not map_path or not map_path.exists():
@@ -638,12 +639,44 @@ class MapPanel(Gtk.Box):
 
         # Use stored geojson from last refresh (populated by NodeMonitor)
         geojson = self._current_geojson
+        node_count = len(geojson.get('features', []))
 
-        params = urllib.parse.urlencode({
-            'data': json.dumps(geojson)
-        })
+        # For large datasets, generate a self-contained HTML with embedded data
+        # (URL params truncate with 80+ nodes, and fetch('file://') is blocked)
+        try:
+            # Read the template HTML
+            with open(map_path, 'r') as f:
+                html_content = f.read()
 
-        url = f"file://{map_path}?{params}"
+            # Inject the GeoJSON data before </body>
+            geojson_str = json.dumps(geojson)
+            inject_script = f'''
+<script>
+// Injected by MeshForge - {node_count} nodes
+window.meshforgeData = {geojson_str};
+document.addEventListener('DOMContentLoaded', function() {{
+    if (typeof loadNodes === 'function' && window.meshforgeData) {{
+        console.log('Loading {node_count} nodes from embedded data');
+        loadNodes(window.meshforgeData);
+    }}
+}});
+</script>
+</body>'''
+            html_content = html_content.replace('</body>', inject_script)
+
+            # Write to temp file
+            temp_html = Path(tempfile.gettempdir()) / "meshforge_map.html"
+            with open(temp_html, 'w') as f:
+                f.write(html_content)
+
+            url = f"file://{temp_html}"
+            logger.info(f"Generated map with {node_count} nodes at {temp_html}")
+
+        except Exception as e:
+            logger.error(f"Failed to generate map: {e}")
+            # Fallback to original URL with params (will be truncated for large data)
+            params = urllib.parse.urlencode({'data': json.dumps(geojson)})
+            url = f"file://{map_path}?{params}"
 
         def try_open():
             user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
