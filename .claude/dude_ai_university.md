@@ -209,33 +209,66 @@ class UnifiedNode:
 
 RNS uses interfaces defined in `~/.reticulum/config`. Key interface types:
 
-#### TCPServerInterface (Host a network entry point)
+#### Example: HawaiiNet Node Configuration
 ```ini
+# Auto-discovery on local network
+[[Default Interface]]
+  type = AutoInterface
+  enabled = Yes
+
+# Connect to HawaiiNet RNS server
 [[HawaiiNet RNS]]
+  type = TCPClientInterface
+  enabled = yes
+  target_host = 192.168.86.38
+  target_port = 4242
+  name = HawaiiNet RNS
+
+# LoRa radio via RNode (US 900 MHz ISM band)
+[[wh6gxzpi3 rnode]]
+  type = RNodeInterface
+  interface_enabled = True
+  port = /dev/ttyACM0
+  frequency = 903625000
+  txpower = 22
+  bandwidth = 250000
+  spreadingfactor = 7
+  codingrate = 5
+  name = wh6gxzpi3 rnode
+```
+
+#### TCPServerInterface (Host entry point)
+```ini
+[[HawaiiNet RNS Server]]
   type = TCPServerInterface
   enabled = yes
   listen_ip = 0.0.0.0
   listen_port = 4242
 ```
 
-#### TCPClientInterface (Connect to a network)
+#### TCPClientInterface (Connect to network)
 ```ini
-[[TCP Client]]
+[[HawaiiNet RNS]]
   type = TCPClientInterface
   enabled = yes
-  target_host = 127.0.0.1
+  target_host = 192.168.86.38
   target_port = 4242
 ```
 
-#### BackboneInterface (Recommended for high-capacity servers)
-The BackboneInterface is compatible with TCP interfaces but more efficient for handling many connections.
+#### AutoInterface (Local discovery)
+```ini
+[[Default Interface]]
+  type = AutoInterface
+  enabled = Yes
+```
 
 **Important Notes:**
-- TCP interfaces tolerate intermittent IP links (auto-reconnect)
-- Never enable `kiss_framing` between TCPClient/TCPServer (disables reliability)
-- Use `i2p_tunneled = yes` when routing over I2P
-- Config file location: `~/.reticulum/config`
-- Get example config: `rnsd --exampleconfig`
+- TCP interfaces auto-reconnect on link failures
+- Never enable `kiss_framing` between TCP interfaces
+- Config file: `~/.reticulum/config`
+- Example config: `rnsd --exampleconfig`
+- HawaiiNet: 192.168.86.38:4242
+- RNode freq 903.625 MHz = US 900 MHz ISM band
 
 Reference: [Reticulum Manual - Interfaces](https://reticulum.network/manual/interfaces.html)
 
