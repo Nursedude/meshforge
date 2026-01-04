@@ -517,12 +517,11 @@ loglevel = 4
         """Insert an interface template at cursor position"""
         templates = {
             "tcp_client": """
-[[HawaiiNet RNS]]
+[[My RNS Network]]
   type = TCPClientInterface
   enabled = yes
-  target_host = 192.168.86.38
+  target_host = 192.168.1.100
   target_port = 4242
-  name = HawaiiNet RNS
 
 """,
             "tcp_server": """
