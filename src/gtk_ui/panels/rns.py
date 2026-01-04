@@ -734,40 +734,38 @@ class RNSPanel(Gtk.Box):
         """Check if NomadNet daemon is running"""
         def check():
             try:
-                # Use multiple detection methods for reliability
                 running = False
 
-                # Method 1: Check for python process running nomadnet module
+                # Simple approach: use pgrep -f to find any process with "nomadnet" in cmdline
                 result = subprocess.run(
-                    ['pgrep', '-f', 'python.*nomadnet'],
+                    ['pgrep', '-f', 'nomadnet'],
                     capture_output=True, text=True, timeout=5
                 )
+
                 if result.returncode == 0 and result.stdout.strip():
-                    running = True
+                    # Filter out any pgrep or grep processes from the PIDs
+                    pids = result.stdout.strip().split('\n')
+                    print(f"[RNS] pgrep found PIDs: {pids}", flush=True)
 
-                # Method 2: Check for nomadnet executable directly
-                if not running:
-                    result = subprocess.run(
-                        ['pgrep', '-f', '/nomadnet'],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if result.returncode == 0 and result.stdout.strip():
-                        running = True
+                    # Verify at least one PID is actually nomadnet (not grep/pgrep)
+                    for pid in pids:
+                        try:
+                            # Read the cmdline for this PID
+                            cmdline_path = f"/proc/{pid.strip()}/cmdline"
+                            with open(cmdline_path, 'r') as f:
+                                cmdline = f.read().replace('\x00', ' ')
 
-                # Method 3: Use ps aux for broader matching
+                            # Check it's actually nomadnet, not grep/pgrep
+                            if 'nomadnet' in cmdline and 'grep' not in cmdline and 'pgrep' not in cmdline:
+                                running = True
+                                print(f"[RNS] NomadNet daemon running (PID {pid.strip()}): {cmdline[:80]}", flush=True)
+                                break
+                        except (FileNotFoundError, PermissionError):
+                            # Process may have exited
+                            continue
+
                 if not running:
-                    result = subprocess.run(
-                        ['ps', 'aux'],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if result.returncode == 0:
-                        for line in result.stdout.split('\n'):
-                            # Look for nomadnet in process list, exclude grep itself
-                            if 'nomadnet' in line.lower() and 'grep' not in line.lower():
-                                # Make sure it's actually a nomadnet process, not just this check
-                                if '--daemon' in line or 'nomadnet' in line.split()[-1]:
-                                    running = True
-                                    break
+                    print("[RNS] NomadNet daemon not detected", flush=True)
 
                 GLib.idle_add(self._update_nomadnet_status, running)
             except Exception as e:
@@ -823,33 +821,36 @@ class RNSPanel(Gtk.Box):
                 # Launch in a terminal
                 # When running as root: run terminal as root (has X11), but command as user
                 if is_root and real_user != 'root':
-                    # Terminal runs as root, command runs as user inside
-                    # Use bash -c with the full command as a single argument to -e
-                    user_cmd = f"sudo -u {real_user} {nomadnet_path}"
-                    bash_cmd = f'bash -c "{user_cmd}"'
+                    # Use sudo -i for login shell to get user's environment (.bashrc, etc.)
+                    # This ensures any env vars set by the user are available
+                    user_cmd = f"sudo -i -u {real_user} nomadnet"
+                    # lxterminal -e runs command through shell, so pass as single string
                     terminals = [
-                        ['lxterminal', '-e', bash_cmd],
-                        ['xfce4-terminal', '-e', bash_cmd],
-                        ['gnome-terminal', '--', 'bash', '-c', user_cmd],
-                        ['konsole', '-e', bash_cmd],
-                        ['xterm', '-e', bash_cmd],
+                        ['lxterminal', '-e', user_cmd],
+                        ['xfce4-terminal', '-e', user_cmd],
+                        ['gnome-terminal', '--', 'sudo', '-i', '-u', real_user, 'nomadnet'],
+                        ['konsole', '-e', 'sudo', '-i', '-u', real_user, 'nomadnet'],
+                        ['xterm', '-e', 'sudo', '-i', '-u', real_user, 'nomadnet'],
                     ]
                 else:
                     terminals = [
-                        ['lxterminal', '-e', nomadnet_path],
-                        ['xfce4-terminal', '-e', nomadnet_path],
-                        ['gnome-terminal', '--', nomadnet_path],
-                        ['konsole', '-e', nomadnet_path],
-                        ['xterm', '-e', nomadnet_path],
+                        ['lxterminal', '-e', 'nomadnet'],
+                        ['xfce4-terminal', '-e', 'nomadnet'],
+                        ['gnome-terminal', '--', 'nomadnet'],
+                        ['konsole', '-e', 'nomadnet'],
+                        ['xterm', '-e', 'nomadnet'],
                     ]
 
                 for term_cmd in terminals:
                     term_name = term_cmd[0]
                     if shutil.which(term_name):
+                        # Build the full command string for shell execution
+                        full_cmd = ' '.join(term_cmd)
                         print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
-                        print(f"[RNS] Command: {' '.join(term_cmd)}", flush=True)
+                        print(f"[RNS] Command: {full_cmd}", flush=True)
                         try:
-                            proc = subprocess.Popen(term_cmd, start_new_session=True,
+                            # Use shell=True to properly parse the command with spaces
+                            proc = subprocess.Popen(full_cmd, shell=True, start_new_session=True,
                                                    stderr=subprocess.PIPE)
                             # Check for immediate failure
                             GLib.timeout_add(500, lambda p=proc: self._check_terminal_launch(p))
@@ -1170,15 +1171,14 @@ message_storage_limit = 2000
             # When running as root: run terminal as root (has X11), but nano as user
             if is_root and real_user != 'root':
                 # Terminal runs as root, nano runs as user inside
-                # Use bash -c with the full command as a single argument to -e
                 user_cmd = f"sudo -u {real_user} nano {config_path}"
-                bash_cmd = f'bash -c "{user_cmd}"'
+                # lxterminal -e runs command through shell, so pass as single string
                 terminals = [
-                    ('lxterminal', ['lxterminal', '-e', bash_cmd]),
-                    ('xfce4-terminal', ['xfce4-terminal', '-e', bash_cmd]),
-                    ('gnome-terminal', ['gnome-terminal', '--', 'bash', '-c', user_cmd]),
-                    ('konsole', ['konsole', '-e', bash_cmd]),
-                    ('xterm', ['xterm', '-e', bash_cmd]),
+                    ('lxterminal', ['lxterminal', '-e', user_cmd]),
+                    ('xfce4-terminal', ['xfce4-terminal', '-e', user_cmd]),
+                    ('gnome-terminal', ['gnome-terminal', '--', 'sudo', '-u', real_user, 'nano', str(config_path)]),
+                    ('konsole', ['konsole', '-e', 'sudo', '-u', real_user, 'nano', str(config_path)]),
+                    ('xterm', ['xterm', '-e', 'sudo', '-u', real_user, 'nano', str(config_path)]),
                 ]
             else:
                 terminals = [
