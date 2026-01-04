@@ -846,64 +846,23 @@ class RNSPanel(Gtk.Box):
 
         try:
             if mode == "textui":
-                # Launch in a terminal
-                # When running as root: run terminal as root (has X11), but command as user
+                # Launch terminal as root (has X11), run nomadnet as user inside
                 if is_root and real_user != 'root':
-                    # Create a temp script to run the command - more reliable than complex quoting
+                    # Create temp script - terminal runs as root, command runs as user
                     import tempfile
                     script_content = f'''#!/bin/bash
 sudo -i -u {real_user} nomadnet --config CONFIG
-echo ""
-echo "Press Enter to close..."
-read
 '''
                     with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
                         f.write(script_content)
                         script_path = f.name
                     os.chmod(script_path, 0o755)
-
-                    terminals = [
-                        f"lxterminal -e {script_path}",
-                        f"xfce4-terminal -e {script_path}",
-                        f"gnome-terminal -- {script_path}",
-                        f"konsole -e {script_path}",
-                        f"xterm -e {script_path}",
-                    ]
+                    print(f"[RNS] Script: {script_path}", flush=True)
+                    os.system(f"setsid lxterminal -e {script_path} >/dev/null 2>&1 &")
                 else:
-                    import tempfile
-                    script_content = '''#!/bin/bash
-nomadnet --config CONFIG
-echo ""
-echo "Press Enter to close..."
-read
-'''
-                    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
-                        f.write(script_content)
-                        script_path = f.name
-                    os.chmod(script_path, 0o755)
-
-                    terminals = [
-                        f"lxterminal -e {script_path}",
-                        f"xfce4-terminal -e {script_path}",
-                        f"gnome-terminal -- {script_path}",
-                        f"konsole -e {script_path}",
-                        f"xterm -e {script_path}",
-                    ]
-
-                for full_cmd in terminals:
-                    term_name = full_cmd.split()[0]
-                    if shutil.which(term_name):
-                        print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
-                        print(f"[RNS] Command: {full_cmd}", flush=True)
-                        try:
-                            # Use setsid to completely detach the terminal from MeshForge
-                            os.system(f"setsid {full_cmd} >/dev/null 2>&1 &")
-                            self.main_window.set_status_message("NomadNet launched in terminal")
-                        except Exception as e:
-                            print(f"[RNS] Failed to launch terminal: {e}", flush=True)
-                            continue
-                        return
-                self.main_window.set_status_message("No terminal emulator found")
+                    os.system("setsid lxterminal -e 'nomadnet --config CONFIG' >/dev/null 2>&1 &")
+                self.main_window.set_status_message("NomadNet launched in terminal")
+                return
             elif mode == "daemon":
                 # Run as daemon using full path
                 # When running as root, run as real user
