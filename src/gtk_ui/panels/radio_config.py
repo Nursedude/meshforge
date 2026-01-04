@@ -888,11 +888,16 @@ class RadioConfigPanel(Gtk.Box):
         frame.set_child(box)
         parent.append(frame)
 
-    # MQTT Broker presets
+    # MQTT Broker presets - Regional mesh networks
+    # Default credentials: meshdev / large4cats (widely used)
+    # See: https://meshtastic.org/docs/software/integrations/mqtt/
     MQTT_PRESETS = [
         {"name": "Custom", "server": "", "user": "", "password": "", "tls": False},
-        {"name": "Meshtastic Default", "server": "mqtt.meshtastic.org", "user": "meshdev", "password": "large4cats", "tls": False},
+        {"name": "Meshtastic Public", "server": "mqtt.meshtastic.org", "user": "meshdev", "password": "large4cats", "tls": False},
         {"name": "Hawaii Mesh (Big Island)", "server": "gt.wildc.net:1884", "user": "mesh_publish", "password": "mesh.kula.smoke", "tls": False},
+        {"name": "Chicagoland Mesh", "server": "mqtt.chimesh.org", "user": "meshdev", "password": "large4cats", "tls": False},
+        {"name": "Boston Mesh", "server": "mqttmt01.bostonme.sh", "user": "meshdev", "password": "large4cats", "tls": False},
+        {"name": "MichMesh", "server": "mqtt.michmesh.net", "user": "meshdev", "password": "large4cats", "tls": False},
     ]
 
     def _add_mqtt_section(self, parent):
