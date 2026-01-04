@@ -205,6 +205,40 @@ class UnifiedNode:
 3. Message arrives on RNS → unwrap LXMF → check routing rules
 4. If destination is Meshtastic → encode → send via TCP
 
+### RNS Interface Configuration
+
+RNS uses interfaces defined in `~/.reticulum/config`. Key interface types:
+
+#### TCPServerInterface (Host a network entry point)
+```ini
+[[HawaiiNet RNS]]
+  type = TCPServerInterface
+  enabled = yes
+  listen_ip = 0.0.0.0
+  listen_port = 4242
+```
+
+#### TCPClientInterface (Connect to a network)
+```ini
+[[TCP Client]]
+  type = TCPClientInterface
+  enabled = yes
+  target_host = 127.0.0.1
+  target_port = 4242
+```
+
+#### BackboneInterface (Recommended for high-capacity servers)
+The BackboneInterface is compatible with TCP interfaces but more efficient for handling many connections.
+
+**Important Notes:**
+- TCP interfaces tolerate intermittent IP links (auto-reconnect)
+- Never enable `kiss_framing` between TCPClient/TCPServer (disables reliability)
+- Use `i2p_tunneled = yes` when routing over I2P
+- Config file location: `~/.reticulum/config`
+- Get example config: `rnsd --exampleconfig`
+
+Reference: [Reticulum Manual - Interfaces](https://reticulum.network/manual/interfaces.html)
+
 ---
 
 ## RF Engineering Reference
