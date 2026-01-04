@@ -272,13 +272,19 @@ class NodeMonitor:
             device_metrics = data.get('deviceMetrics', {})
             env_metrics = data.get('environmentMetrics', {})
 
-            # Extract node number
-            node_num = data.get('num', 0)
+            # Extract node number - handle None values
+            node_num = data.get('num')
+            if node_num is None:
+                node_num = 0
             if isinstance(node_id, str) and node_id.startswith('!'):
                 try:
                     node_num = int(node_id[1:], 16)
-                except ValueError:
+                except (ValueError, TypeError):
                     pass
+
+            # Ensure node_num is valid for formatting
+            if not isinstance(node_num, int):
+                node_num = 0
 
             node_info = NodeInfo(
                 node_id=f"!{node_num:08x}" if node_num else str(node_id),
@@ -306,12 +312,20 @@ class NodeMonitor:
                     lon_i = position.get('longitudeI')
                     lon = lon_i / 1e7 if lon_i is not None else None
 
+                # Handle timestamp - may be None or invalid
+                pos_time = None
+                if 'time' in position and position['time']:
+                    try:
+                        pos_time = datetime.fromtimestamp(position['time'])
+                    except (TypeError, ValueError, OSError):
+                        pass
+
                 node_info.position = NodePosition(
                     latitude=lat,
                     longitude=lon,
                     altitude=position.get('altitude'),
                     precision_bits=position.get('precisionBits'),
-                    time=datetime.fromtimestamp(position['time']) if 'time' in position else None,
+                    time=pos_time,
                 )
 
             # Metrics
