@@ -42,6 +42,7 @@ class MapPanel(Gtk.Box):
         self.main_window = main_window
         self.node_tracker = None
         self.webview = None
+        self._current_geojson = {"type": "FeatureCollection", "features": []}
 
         self.set_margin_start(20)
         self.set_margin_end(20)
@@ -399,6 +400,9 @@ class MapPanel(Gtk.Box):
 
     def _update_ui(self, stats, geojson, nodes, error_msg=None):
         """Update UI with fetched data"""
+        # Store geojson for browser button
+        self._current_geojson = geojson
+
         # Update statistics
         self._update_stat(self.stat_total, stats.get("total", 0))
         self._update_stat(self.stat_meshtastic, stats.get("meshtastic", 0))
@@ -612,13 +616,8 @@ class MapPanel(Gtk.Box):
             self.status_label.set_label("Error: Map file not found")
             return
 
-        # Build URL with current data
-        geojson = {"type": "FeatureCollection", "features": []}
-        if self.node_tracker:
-            try:
-                geojson = self.node_tracker.to_geojson()
-            except Exception:
-                pass
+        # Use stored geojson from last refresh (populated by NodeMonitor)
+        geojson = self._current_geojson
 
         params = urllib.parse.urlencode({
             'data': json.dumps(geojson)
