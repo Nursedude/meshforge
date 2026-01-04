@@ -143,6 +143,7 @@ class HamClockPanel(Gtk.Box):
         self.api_port_spin.set_range(1, 65535)
         self.api_port_spin.set_value(self._settings.get("api_port", 8080))
         self.api_port_spin.set_increments(1, 10)
+        self.api_port_spin.set_width_chars(6)  # Wide enough for 5-digit port
         port_box.append(self.api_port_spin)
 
         port_box.append(Gtk.Label(label="Live Port:"))
@@ -151,6 +152,7 @@ class HamClockPanel(Gtk.Box):
         self.live_port_spin.set_range(1, 65535)
         self.live_port_spin.set_value(self._settings.get("live_port", 8081))
         self.live_port_spin.set_increments(1, 10)
+        self.live_port_spin.set_width_chars(6)  # Wide enough for 5-digit port
         port_box.append(self.live_port_spin)
 
         settings_box.append(port_box)

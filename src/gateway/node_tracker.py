@@ -236,6 +236,9 @@ class UnifiedNodeTracker:
         self._callbacks: List[Callable] = []
         self._running = False
         self._cleanup_thread = None
+        self._rns_thread = None
+        self._reticulum = None
+        self._rns_connected = False
 
         # Load cached nodes
         self._load_cache()
@@ -245,6 +248,11 @@ class UnifiedNodeTracker:
         self._running = True
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
+
+        # Start RNS discovery in background
+        self._rns_thread = threading.Thread(target=self._start_rns_discovery, daemon=True)
+        self._rns_thread.start()
+
         logger.info("Node tracker started")
 
     def stop(self):
@@ -478,3 +486,67 @@ class UnifiedNodeTracker:
             "type": "FeatureCollection",
             "features": features
         }
+
+    def _start_rns_discovery(self):
+        """Initialize RNS and start listening for announces"""
+        try:
+            import RNS
+
+            logger.info("Initializing RNS for node discovery...")
+
+            # Initialize Reticulum
+            self._reticulum = RNS.Reticulum()
+
+            # Create announce handler
+            class NodeAnnounceHandler:
+                def __init__(self, tracker):
+                    self.tracker = tracker
+                    self.aspect_filter = None  # Accept all announces
+
+                def received_announce(self, destination_hash, announced_identity, app_data):
+                    """Called when an announce is received"""
+                    try:
+                        self.tracker._on_rns_announce(destination_hash, announced_identity, app_data)
+                    except Exception as e:
+                        logger.error(f"Error handling RNS announce: {e}")
+
+            # Register the announce handler
+            RNS.Transport.register_announce_handler(NodeAnnounceHandler(self))
+
+            self._rns_connected = True
+            logger.info("RNS discovery initialized - listening for announces")
+
+            # Keep running while tracker is active
+            while self._running:
+                time.sleep(1)
+
+        except ImportError:
+            logger.info("RNS module not installed - RNS node discovery disabled")
+        except Exception as e:
+            logger.warning(f"Failed to initialize RNS discovery: {e}")
+            self._rns_connected = False
+
+    def _on_rns_announce(self, dest_hash, announced_identity, app_data):
+        """Handle RNS announce for node discovery"""
+        try:
+            # Parse display name from app_data if available
+            display_name = ""
+            if app_data:
+                try:
+                    # LXMF announces typically include display name
+                    # Try to decode as UTF-8 string
+                    display_name = app_data.decode('utf-8', errors='ignore').strip()
+                    # Clean up - remove non-printable characters
+                    display_name = ''.join(c for c in display_name if c.isprintable())
+                except Exception:
+                    pass
+
+            # Create node from announce
+            node = UnifiedNode.from_rns(dest_hash, name=display_name, app_data=app_data)
+            self.add_node(node)
+
+            hash_short = dest_hash.hex()[:8]
+            logger.info(f"Discovered RNS node: {hash_short} ({display_name or 'unnamed'})")
+
+        except Exception as e:
+            logger.error(f"Error processing RNS announce: {e}")
