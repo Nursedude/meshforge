@@ -209,7 +209,7 @@ class UnifiedNode:
 
 RNS uses interfaces defined in `~/.reticulum/config`. Key interface types:
 
-#### Example: HawaiiNet Node Configuration
+#### Example: HawaiiNet CLIENT Configuration
 ```ini
 # Auto-discovery on local network
 [[Default Interface]]
@@ -235,6 +235,43 @@ RNS uses interfaces defined in `~/.reticulum/config`. Key interface types:
   spreadingfactor = 7
   codingrate = 5
   name = wh6gxzpi3 rnode
+```
+
+#### Example: HawaiiNet SERVER Configuration (192.168.86.38)
+```ini
+# Auto-discovery on local network
+[[Default Interface]]
+  type = AutoInterface
+  enabled = true
+  name = Default Interface
+
+# Optional: Connect to RNS public testnet
+[[RNS Testnet Amsterdam]]
+  type = TCPClientInterface
+  interface_enabled = false
+  target_host = amsterdam.connect.reticulum.network
+  target_port = 4965
+  name = RNS Testnet Amsterdam
+
+# HOST the HawaiiNet RNS network (other nodes connect here)
+[[HawaiiNet RNS]]
+  type = TCPServerInterface
+  enabled = yes
+  listen_ip = 0.0.0.0
+  listen_port = 4242
+  name = HawaiiNet RNS
+
+# LoRa gateway via RNode
+[[nurse dude rnode gateway]]
+  type = RNodeInterface
+  interface_enabled = True
+  port = /dev/ttyACM0
+  frequency = 903625000
+  txpower = 22
+  bandwidth = 250000
+  spreadingfactor = 7
+  codingrate = 5
+  name = nurse dude rnode gateway
 ```
 
 #### TCPServerInterface (Host entry point)
