@@ -369,9 +369,16 @@ class RNSPanel(Gtk.Box):
         test_btn.connect("clicked", self._on_test_gateway)
         action_row.append(test_btn)
 
-        config_btn = Gtk.Button(label="Configure Gateway")
+        config_btn = Gtk.Button(label="Configure")
+        config_btn.set_tooltip_text("Open GUI config editor")
         config_btn.connect("clicked", self._on_configure_gateway)
         action_row.append(config_btn)
+
+        # Terminal editor for gateway config
+        config_terminal_btn = Gtk.Button(label="Edit (Terminal)")
+        config_terminal_btn.set_tooltip_text("Edit gateway.json in terminal with nano")
+        config_terminal_btn.connect("clicked", self._on_edit_gateway_terminal)
+        action_row.append(config_terminal_btn)
 
         view_nodes_btn = Gtk.Button(label="View Nodes")
         view_nodes_btn.connect("clicked", self._on_view_nodes)
@@ -804,8 +811,16 @@ class RNSPanel(Gtk.Box):
                         term_name = term_cmd[0]
                     if shutil.which(term_name):
                         print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
-                        subprocess.Popen(term_cmd, start_new_session=True)
-                        self.main_window.set_status_message("NomadNet launched in terminal")
+                        print(f"[RNS] Command: {' '.join(term_cmd)}", flush=True)
+                        try:
+                            proc = subprocess.Popen(term_cmd, start_new_session=True,
+                                                   stderr=subprocess.PIPE)
+                            # Check for immediate failure
+                            GLib.timeout_add(500, lambda p=proc: self._check_terminal_launch(p))
+                            self.main_window.set_status_message("NomadNet launched in terminal")
+                        except Exception as e:
+                            print(f"[RNS] Failed to launch terminal: {e}", flush=True)
+                            continue
                         return
                 self.main_window.set_status_message("No terminal emulator found")
             elif mode == "daemon":
@@ -830,6 +845,20 @@ class RNSPanel(Gtk.Box):
         except Exception as e:
             print(f"[RNS] Failed to launch NomadNet: {e}", flush=True)
             self.main_window.set_status_message(f"Failed: {e}")
+
+    def _check_terminal_launch(self, proc):
+        """Check if terminal process launched successfully"""
+        if proc.poll() is not None:
+            # Process exited
+            try:
+                stderr = proc.stderr.read().decode() if proc.stderr else ""
+                if stderr:
+                    print(f"[RNS] Terminal error: {stderr}", flush=True)
+                if proc.returncode != 0:
+                    print(f"[RNS] Terminal exited with code: {proc.returncode}", flush=True)
+            except Exception:
+                pass
+        return False  # Don't repeat
 
     def _stop_nomadnet(self):
         """Stop NomadNet daemon"""
@@ -1790,6 +1819,54 @@ message_storage_limit = 2000
             )
             dialog.add_response("ok", "OK")
             dialog.present()
+
+    def _on_edit_gateway_terminal(self, button):
+        """Edit gateway config in terminal with nano"""
+        import os
+
+        real_home = self._get_real_user_home()
+        config_file = real_home / ".config" / "meshforge" / "gateway.json"
+
+        print(f"[RNS] Opening gateway config in terminal: {config_file}", flush=True)
+
+        # Create default config if it doesn't exist
+        if not config_file.exists():
+            try:
+                config_file.parent.mkdir(parents=True, exist_ok=True)
+                default_config = {
+                    "enabled": False,
+                    "meshtastic": {
+                        "host": "localhost",
+                        "port": 4403
+                    },
+                    "rns": {
+                        "config_dir": "",
+                        "announce_interval": 300
+                    },
+                    "telemetry": {
+                        "enabled": True,
+                        "interval": 60
+                    },
+                    "routing": {
+                        "rules": []
+                    }
+                }
+                import json
+                config_file.write_text(json.dumps(default_config, indent=2))
+
+                # Fix ownership if running as root
+                real_user = self._get_real_username()
+                is_root = os.geteuid() == 0
+                if is_root and real_user != 'root':
+                    subprocess.run(['chown', '-R', f'{real_user}:{real_user}', str(config_file.parent)],
+                                   capture_output=True)
+
+                print(f"[RNS] Created default gateway config: {config_file}", flush=True)
+            except Exception as e:
+                print(f"[RNS] Failed to create gateway config: {e}", flush=True)
+
+        # Open in terminal editor
+        self._edit_config_terminal(config_file)
 
     def _on_view_nodes(self, button):
         """Show tracked nodes from both networks"""
