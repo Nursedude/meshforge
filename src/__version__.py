@@ -3,15 +3,30 @@ MeshForge - LoRa Mesh Network Development & Operations Suite
 Version information and changelog
 """
 
-__version__ = "4.2.0"
-__version_info__ = (4, 2, 0)
-__release_date__ = "2026-01-03"
+__version__ = "4.2.1"
+__version_info__ = (4, 2, 1)
+__release_date__ = "2026-01-04"
 __app_name__ = "MeshForge"
 __app_description__ = "LoRa Mesh Network Development & Operations Suite"
 __app_tagline__ = "Build. Test. Deploy. Monitor."
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "4.2.1",
+        "date": "2026-01-04",
+        "changes": [
+            "SECURITY: Added shlex.quote() to prevent shell injection in terminal commands",
+            "SECURITY: Fixed command injection vulnerabilities in system.py using list args",
+            "FIX: Gateway now properly sends Mesh→RNS traffic (was only receiving)",
+            "FIX: NodeTracker no longer auto-starts, preventing RNS port conflicts",
+            "FIX: Improved NomadNet Text UI launch with proper daemon detection",
+            "NEW: Diagnostic tool (cli/diagnose.py) for troubleshooting",
+            "NEW: Thread management utilities (utils/threads.py) for clean shutdown",
+            "REFACTOR: Consolidated 20+ CLI path lookups to use utils/cli.py",
+            "IMPROVED: Thread cleanup in NodeTracker and NodeMonitor on shutdown",
+        ]
+    },
     {
         "version": "4.2.0",
         "date": "2026-01-03",
