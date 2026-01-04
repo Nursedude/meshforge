@@ -601,20 +601,19 @@ class RNSPanel(Gtk.Box):
 
         box.append(btn_row)
 
-        # Config row
+        # Config row - use lambdas to defer path resolution
         config_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         config_row.set_halign(Gtk.Align.CENTER)
 
-        nomadnet_config = Path.home() / ".nomadnetwork" / "config"
         config_btn = Gtk.Button(label="Edit Config")
-        config_btn.set_tooltip_text(f"Edit {nomadnet_config}")
-        config_btn.connect("clicked", lambda b: self._edit_config_terminal(nomadnet_config))
+        config_btn.set_tooltip_text("Edit ~/.nomadnetwork/config")
+        config_btn.connect("clicked", lambda b: self._edit_nomadnet_config())
         config_row.append(config_btn)
 
         # Open config folder
         folder_btn = Gtk.Button(label="Open Folder")
         folder_btn.set_tooltip_text("Open ~/.nomadnetwork folder")
-        folder_btn.connect("clicked", lambda b: self._open_config_folder(Path.home() / ".nomadnetwork"))
+        folder_btn.connect("clicked", lambda b: self._open_nomadnet_folder())
         config_row.append(folder_btn)
 
         box.append(config_row)
@@ -679,6 +678,19 @@ class RNSPanel(Gtk.Box):
         # Check status on load
         GLib.timeout_add(500, self._check_nomadnet_status)
 
+    def _get_real_user_home(self):
+        """Get the real user's home directory, even when running as root via sudo"""
+        import os
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and os.geteuid() == 0:
+            return Path('/home') / sudo_user
+        return Path.home()
+
+    def _get_real_username(self):
+        """Get the real username, even when running as root via sudo"""
+        import os
+        return os.environ.get('SUDO_USER', os.environ.get('USER', 'root'))
+
     def _find_nomadnet(self):
         """Find nomadnet executable, checking user local bin if running as root"""
         import os
@@ -688,17 +700,11 @@ class RNSPanel(Gtk.Box):
         if nomadnet_path:
             return nomadnet_path
 
-        # Check user's local bin (for --user pip installs)
-        user_local_bin = Path.home() / ".local" / "bin" / "nomadnet"
+        # Check real user's local bin (for --user pip installs)
+        real_home = self._get_real_user_home()
+        user_local_bin = real_home / ".local" / "bin" / "nomadnet"
         if user_local_bin.exists():
             return str(user_local_bin)
-
-        # If running as root via sudo, check the original user's local bin
-        sudo_user = os.environ.get('SUDO_USER')
-        if sudo_user:
-            sudo_user_bin = Path('/home') / sudo_user / ".local" / "bin" / "nomadnet"
-            if sudo_user_bin.exists():
-                return str(sudo_user_bin)
 
         return None
 
@@ -803,33 +809,66 @@ class RNSPanel(Gtk.Box):
             print(f"[RNS] Failed to stop NomadNet: {e}", flush=True)
             self.main_window.set_status_message(f"Failed: {e}")
 
+    def _edit_nomadnet_config(self):
+        """Edit NomadNet config file"""
+        real_home = self._get_real_user_home()
+        config_file = real_home / ".nomadnetwork" / "config"
+        self._edit_config_terminal(config_file)
+
+    def _open_nomadnet_folder(self):
+        """Open NomadNet config folder"""
+        real_home = self._get_real_user_home()
+        folder = real_home / ".nomadnetwork"
+        self._open_config_folder(folder)
+
     def _edit_config_terminal(self, config_file):
         """Open config file in terminal with nano/vim"""
-        print(f"[RNS] Opening config in terminal: {config_file}", flush=True)
+        import os
 
-        # Create the config file if it doesn't exist
         config_path = Path(config_file)
+        print(f"[RNS] Opening config in terminal: {config_path}", flush=True)
+
+        # Get the real user for running commands
+        real_user = self._get_real_username()
+        is_root = os.geteuid() == 0
+
+        # Create the config file if it doesn't exist (as the real user)
         if not config_path.exists():
             try:
                 config_path.parent.mkdir(parents=True, exist_ok=True)
                 config_path.touch()
-                print(f"[RNS] Created empty config file: {config_file}", flush=True)
+                # Fix ownership if running as root
+                if is_root and real_user != 'root':
+                    subprocess.run(['chown', f'{real_user}:{real_user}', str(config_path)],
+                                   capture_output=True)
+                    subprocess.run(['chown', f'{real_user}:{real_user}', str(config_path.parent)],
+                                   capture_output=True)
+                print(f"[RNS] Created config file: {config_path}", flush=True)
             except Exception as e:
                 print(f"[RNS] Failed to create config: {e}", flush=True)
 
         try:
-            # Find available terminal and editor
-            terminals = [
-                ('gnome-terminal', ['gnome-terminal', '--', 'nano', str(config_file)]),
-                ('xfce4-terminal', ['xfce4-terminal', '-e', f'nano {config_file}']),
-                ('konsole', ['konsole', '-e', 'nano', str(config_file)]),
-                ('lxterminal', ['lxterminal', '-e', f'nano {config_file}']),
-                ('xterm', ['xterm', '-e', 'nano', str(config_file)]),
-            ]
+            # When running as root, launch terminal as the actual user
+            if is_root and real_user != 'root':
+                terminals = [
+                    ('lxterminal', ['sudo', '-u', real_user, 'lxterminal', '-e', f'nano {config_path}']),
+                    ('gnome-terminal', ['sudo', '-u', real_user, 'gnome-terminal', '--', 'nano', str(config_path)]),
+                    ('xfce4-terminal', ['sudo', '-u', real_user, 'xfce4-terminal', '-e', f'nano {config_path}']),
+                    ('konsole', ['sudo', '-u', real_user, 'konsole', '-e', 'nano', str(config_path)]),
+                    ('xterm', ['sudo', '-u', real_user, 'xterm', '-e', 'nano', str(config_path)]),
+                ]
+            else:
+                terminals = [
+                    ('lxterminal', ['lxterminal', '-e', f'nano {config_path}']),
+                    ('gnome-terminal', ['gnome-terminal', '--', 'nano', str(config_path)]),
+                    ('xfce4-terminal', ['xfce4-terminal', '-e', f'nano {config_path}']),
+                    ('konsole', ['konsole', '-e', 'nano', str(config_path)]),
+                    ('xterm', ['xterm', '-e', 'nano', str(config_path)]),
+                ]
 
             for term_name, term_cmd in terminals:
                 if shutil.which(term_name):
-                    print(f"[RNS] Using terminal: {term_name}", flush=True)
+                    print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
                     subprocess.Popen(term_cmd, start_new_session=True)
                     self.main_window.set_status_message(f"Editing {config_path.name} in terminal")
                     return
