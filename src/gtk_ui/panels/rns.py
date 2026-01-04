@@ -12,6 +12,9 @@ import threading
 import shutil
 from pathlib import Path
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class RNSPanel(Gtk.Box):
@@ -590,6 +593,8 @@ class RNSPanel(Gtk.Box):
 
     def _service_action(self, action):
         """Perform RNS service action"""
+        logger.info(f"Service action button clicked: {action}")
+        print(f"[RNS] Service action: {action}...")  # Console feedback
         self.main_window.set_status_message(f"{action.capitalize()}ing rnsd...")
 
         def do_action():
@@ -637,6 +642,8 @@ class RNSPanel(Gtk.Box):
     def _install_component(self, component):
         """Install or update a component"""
         package = component['package']
+        logger.info(f"Install button clicked for: {component['display']} ({package})")
+        print(f"[RNS] Installing: {component['display']}...")  # Console feedback
         self.main_window.set_status_message(f"Installing {component['display']}...")
 
         def do_install():
@@ -666,6 +673,8 @@ class RNSPanel(Gtk.Box):
 
     def _on_install_all(self, button):
         """Install all RNS components"""
+        logger.info("Install All button clicked")
+        print("[RNS] Installing all components...")  # Console feedback
         self.main_window.set_status_message("Installing all RNS components...")
 
         def do_install_all():

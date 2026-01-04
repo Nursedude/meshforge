@@ -494,8 +494,28 @@ class UnifiedNodeTracker:
 
             logger.info("Initializing RNS for node discovery...")
 
-            # Initialize Reticulum
-            self._reticulum = RNS.Reticulum()
+            # RNS.Reticulum() sets up signal handlers which fails in non-main threads
+            # We need to temporarily disable signal handling during init
+            import signal
+            import sys
+
+            # Store if we're in main thread
+            import threading
+            is_main_thread = threading.current_thread() is threading.main_thread()
+
+            if not is_main_thread:
+                # Patch signal.signal temporarily to avoid the error
+                original_signal = signal.signal
+                def dummy_signal(sig, handler):
+                    return None  # Do nothing, rnsd handles signals
+                signal.signal = dummy_signal
+
+            try:
+                self._reticulum = RNS.Reticulum()
+            finally:
+                if not is_main_thread:
+                    # Restore original signal function
+                    signal.signal = original_signal
 
             # Create announce handler for new announces
             class NodeAnnounceHandler:

@@ -84,13 +84,13 @@ class MapPanel(Gtk.Box):
                 try:
                     if cls._monitor.is_connected:
                         return cls._monitor, None
-                except Exception:
-                    pass
+                except (BrokenPipeError, OSError, Exception) as e:
+                    logger.debug(f"Monitor connection check failed: {e}")
 
-                # Disconnect old monitor
+                # Disconnect old monitor safely
                 try:
                     cls._monitor.disconnect()
-                except Exception:
+                except (BrokenPipeError, OSError, Exception):
                     pass
                 cls._monitor = None
 
@@ -420,6 +420,17 @@ class MapPanel(Gtk.Box):
                     }
                     geojson = {"type": "FeatureCollection", "features": features}
 
+                except (BrokenPipeError, OSError) as e:
+                    # Connection lost - clear monitor for reconnect next time
+                    logger.warning(f"Meshtastic connection lost: {e}")
+                    with MapPanel._monitor_lock:
+                        try:
+                            if MapPanel._monitor:
+                                MapPanel._monitor.disconnect()
+                        except Exception:
+                            pass
+                        MapPanel._monitor = None
+                    error_msg = "Connection lost - will retry"
                 except Exception as e:
                     logger.error(f"Error fetching Meshtastic nodes: {e}")
                     error_msg = str(e)
