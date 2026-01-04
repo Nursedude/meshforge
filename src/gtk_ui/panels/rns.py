@@ -736,6 +736,7 @@ class RNSPanel(Gtk.Box):
             try:
                 # Use multiple detection methods for reliability
                 running = False
+                detected_by = None
 
                 # Method 1: Check for python process running nomadnet module
                 result = subprocess.run(
@@ -744,6 +745,8 @@ class RNSPanel(Gtk.Box):
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     running = True
+                    detected_by = "python.*nomadnet"
+                    print(f"[RNS] NomadNet detected via pgrep python.*nomadnet: PIDs={result.stdout.strip()}", flush=True)
 
                 # Method 2: Check for nomadnet executable directly
                 if not running:
@@ -753,8 +756,21 @@ class RNSPanel(Gtk.Box):
                     )
                     if result.returncode == 0 and result.stdout.strip():
                         running = True
+                        detected_by = "/nomadnet"
+                        print(f"[RNS] NomadNet detected via pgrep /nomadnet: PIDs={result.stdout.strip()}", flush=True)
 
-                # Method 3: Use ps aux for broader matching
+                # Method 3: Check for .local/bin/nomadnet specifically
+                if not running:
+                    result = subprocess.run(
+                        ['pgrep', '-f', '.local/bin/nomadnet'],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        running = True
+                        detected_by = ".local/bin/nomadnet"
+                        print(f"[RNS] NomadNet detected via pgrep .local/bin/nomadnet: PIDs={result.stdout.strip()}", flush=True)
+
+                # Method 4: Use ps aux for broader matching
                 if not running:
                     result = subprocess.run(
                         ['ps', 'aux'],
@@ -762,12 +778,17 @@ class RNSPanel(Gtk.Box):
                     )
                     if result.returncode == 0:
                         for line in result.stdout.split('\n'):
-                            # Look for nomadnet in process list, exclude grep itself
-                            if 'nomadnet' in line.lower() and 'grep' not in line.lower():
-                                # Make sure it's actually a nomadnet process, not just this check
-                                if '--daemon' in line or 'nomadnet' in line.split()[-1]:
-                                    running = True
-                                    break
+                            # Look for nomadnet in process list
+                            if 'nomadnet' in line.lower() and 'pgrep' not in line.lower() and 'grep' not in line.lower():
+                                running = True
+                                detected_by = f"ps aux: {line[:80]}"
+                                print(f"[RNS] NomadNet detected via ps aux: {line[:100]}", flush=True)
+                                break
+
+                if not running:
+                    print("[RNS] NomadNet daemon not detected by any method", flush=True)
+                else:
+                    print(f"[RNS] NomadNet daemon running (detected by: {detected_by})", flush=True)
 
                 GLib.idle_add(self._update_nomadnet_status, running)
             except Exception as e:
@@ -824,15 +845,19 @@ class RNSPanel(Gtk.Box):
                 # When running as root: run terminal as root (has X11), but command as user
                 if is_root and real_user != 'root':
                     # Terminal runs as root, command runs as user inside
-                    # Use bash -c with the full command as a single argument to -e
                     user_cmd = f"sudo -u {real_user} {nomadnet_path}"
-                    bash_cmd = f'bash -c "{user_cmd}"'
+                    # Different terminals need different argument styles
                     terminals = [
-                        ['lxterminal', '-e', bash_cmd],
-                        ['xfce4-terminal', '-e', bash_cmd],
+                        # lxterminal: pass bash, -c, and command as separate args after -e
+                        ['lxterminal', '-e', 'bash', '-c', user_cmd],
+                        # xfce4-terminal: use -x for execute with multiple args
+                        ['xfce4-terminal', '-x', 'bash', '-c', user_cmd],
+                        # gnome-terminal: use -- to separate terminal args from command
                         ['gnome-terminal', '--', 'bash', '-c', user_cmd],
-                        ['konsole', '-e', bash_cmd],
-                        ['xterm', '-e', bash_cmd],
+                        # konsole: -e takes the rest as command
+                        ['konsole', '-e', 'bash', '-c', user_cmd],
+                        # xterm: -e takes the rest as command
+                        ['xterm', '-e', 'bash', '-c', user_cmd],
                     ]
                 else:
                     terminals = [
@@ -1170,21 +1195,20 @@ message_storage_limit = 2000
             # When running as root: run terminal as root (has X11), but nano as user
             if is_root and real_user != 'root':
                 # Terminal runs as root, nano runs as user inside
-                # Use bash -c with the full command as a single argument to -e
                 user_cmd = f"sudo -u {real_user} nano {config_path}"
-                bash_cmd = f'bash -c "{user_cmd}"'
+                # Different terminals need different argument styles
                 terminals = [
-                    ('lxterminal', ['lxterminal', '-e', bash_cmd]),
-                    ('xfce4-terminal', ['xfce4-terminal', '-e', bash_cmd]),
+                    ('lxterminal', ['lxterminal', '-e', 'bash', '-c', user_cmd]),
+                    ('xfce4-terminal', ['xfce4-terminal', '-x', 'bash', '-c', user_cmd]),
                     ('gnome-terminal', ['gnome-terminal', '--', 'bash', '-c', user_cmd]),
-                    ('konsole', ['konsole', '-e', bash_cmd]),
-                    ('xterm', ['xterm', '-e', bash_cmd]),
+                    ('konsole', ['konsole', '-e', 'bash', '-c', user_cmd]),
+                    ('xterm', ['xterm', '-e', 'bash', '-c', user_cmd]),
                 ]
             else:
                 terminals = [
-                    ('lxterminal', ['lxterminal', '-e', f'nano {config_path}']),
+                    ('lxterminal', ['lxterminal', '-e', 'nano', str(config_path)]),
                     ('gnome-terminal', ['gnome-terminal', '--', 'nano', str(config_path)]),
-                    ('xfce4-terminal', ['xfce4-terminal', '-e', f'nano {config_path}']),
+                    ('xfce4-terminal', ['xfce4-terminal', '-e', 'nano', str(config_path)]),
                     ('konsole', ['konsole', '-e', 'nano', str(config_path)]),
                     ('xterm', ['xterm', '-e', 'nano', str(config_path)]),
                 ]
