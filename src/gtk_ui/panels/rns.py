@@ -793,13 +793,14 @@ class RNSPanel(Gtk.Box):
                 # When running as root: run terminal as root (has X11), but command as user
                 if is_root and real_user != 'root':
                     # Terminal runs as root, command runs as user inside
+                    # Use bash -c to ensure proper command parsing
                     user_cmd = f"sudo -u {real_user} {nomadnet_path}"
                     terminals = [
-                        ['lxterminal', '-e', user_cmd],
-                        ['xfce4-terminal', '-e', user_cmd],
+                        ['lxterminal', '-e', 'bash', '-c', user_cmd],
+                        ['xfce4-terminal', '-e', f'bash -c "{user_cmd}"'],
                         ['gnome-terminal', '--', 'bash', '-c', user_cmd],
                         ['konsole', '-e', 'bash', '-c', user_cmd],
-                        ['xterm', '-e', user_cmd],
+                        ['xterm', '-e', 'bash', '-c', user_cmd],
                     ]
                 else:
                     terminals = [
@@ -1137,13 +1138,14 @@ message_storage_limit = 2000
             # When running as root: run terminal as root (has X11), but nano as user
             if is_root and real_user != 'root':
                 # Terminal runs as root, nano runs as user inside
+                # Use bash -c to ensure proper command parsing
                 user_cmd = f"sudo -u {real_user} nano {config_path}"
                 terminals = [
-                    ('lxterminal', ['lxterminal', '-e', user_cmd]),
-                    ('xfce4-terminal', ['xfce4-terminal', '-e', user_cmd]),
+                    ('lxterminal', ['lxterminal', '-e', 'bash', '-c', user_cmd]),
+                    ('xfce4-terminal', ['xfce4-terminal', '-e', f'bash -c "{user_cmd}"']),
                     ('gnome-terminal', ['gnome-terminal', '--', 'bash', '-c', user_cmd]),
                     ('konsole', ['konsole', '-e', 'bash', '-c', user_cmd]),
-                    ('xterm', ['xterm', '-e', user_cmd]),
+                    ('xterm', ['xterm', '-e', 'bash', '-c', user_cmd]),
                 ]
             else:
                 terminals = [
