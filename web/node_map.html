@@ -231,8 +231,10 @@
             const coords = feature.geometry.coordinates;
 
             // Determine marker color
+            // Green=online, Red=offline, Orange=gateway, Purple=MQTT
             let color = props.is_online ? '#4caf50' : '#f44336';
             if (props.is_gateway) color = '#ff9800';
+            if (props.via_mqtt) color = '#9c27b0';  // Purple for MQTT nodes
 
             // Determine marker size and style
             let radius = 8;
@@ -267,6 +269,8 @@
                         </span>
                     </div>
                     ${props.is_gateway ? '<div class="info-row"><span class="label">Role:</span><span class="value status-gateway">Gateway</span></div>' : ''}
+                    ${props.via_mqtt ? '<div class="info-row"><span class="label">Source:</span><span class="value" style="color:#9c27b0">MQTT</span></div>' : ''}
+                    ${props.role ? `<div class="info-row"><span class="label">Role:</span><span class="value">${props.role}</span></div>` : ''}
                     <div class="info-row">
                         <span class="label">Last Seen:</span>
                         <span class="value">${props.last_seen || 'Unknown'}</span>
