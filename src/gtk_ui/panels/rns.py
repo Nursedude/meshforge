@@ -610,14 +610,12 @@ class RNSPanel(Gtk.Box):
                     # Start rnsd as a background process
                     # rnsd doesn't have a --daemon flag, so we use Popen with detachment
                     print("[RNS] Starting rnsd in background...", flush=True)
-                    import os
                     process = subprocess.Popen(
                         ['rnsd'],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         stdin=subprocess.DEVNULL,
-                        start_new_session=True,
-                        preexec_fn=os.setpgrp
+                        start_new_session=True
                     )
                     # Give it a moment to start
                     import time
@@ -646,14 +644,12 @@ class RNSPanel(Gtk.Box):
                     time.sleep(1)
                     # Start rnsd as a background process
                     print("[RNS] Starting rnsd in background...", flush=True)
-                    import os
                     process = subprocess.Popen(
                         ['rnsd'],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         stdin=subprocess.DEVNULL,
-                        start_new_session=True,
-                        preexec_fn=os.setpgrp
+                        start_new_session=True
                     )
                     time.sleep(1)
                     if process.poll() is None:
