@@ -293,11 +293,22 @@ class NodeMonitor:
                 is_licensed=user.get('isLicensed', False),
             )
 
-            # Position
+            # Position - handle both float (latitude) and integer (latitudeI) formats
             if position:
+                # Prefer float format, fall back to integer format (divide by 1e7)
+                lat = position.get('latitude')
+                if lat is None:
+                    lat_i = position.get('latitudeI')
+                    lat = lat_i / 1e7 if lat_i is not None else None
+
+                lon = position.get('longitude')
+                if lon is None:
+                    lon_i = position.get('longitudeI')
+                    lon = lon_i / 1e7 if lon_i is not None else None
+
                 node_info.position = NodePosition(
-                    latitude=position.get('latitude') or position.get('latitudeI', 0) / 1e7,
-                    longitude=position.get('longitude') or position.get('longitudeI', 0) / 1e7,
+                    latitude=lat,
+                    longitude=lon,
                     altitude=position.get('altitude'),
                     precision_bits=position.get('precisionBits'),
                     time=datetime.fromtimestamp(position['time']) if 'time' in position else None,
