@@ -28,15 +28,27 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Try to import WebKit for embedded view
+# Note: WebKit doesn't work when running as root (sandbox issues)
+import os
+_is_root = os.geteuid() == 0
+
 try:
-    gi.require_version('WebKit', '6.0')
-    from gi.repository import WebKit
-    HAS_WEBKIT = True
+    if _is_root:
+        # WebKit doesn't work as root due to sandbox restrictions
+        HAS_WEBKIT = False
+        logger.info("WebKit disabled (running as root)")
+    else:
+        gi.require_version('WebKit', '6.0')
+        from gi.repository import WebKit
+        HAS_WEBKIT = True
 except (ValueError, ImportError):
     try:
-        gi.require_version('WebKit2', '4.1')
-        from gi.repository import WebKit2 as WebKit
-        HAS_WEBKIT = True
+        if not _is_root:
+            gi.require_version('WebKit2', '4.1')
+            from gi.repository import WebKit2 as WebKit
+            HAS_WEBKIT = True
+        else:
+            HAS_WEBKIT = False
     except (ValueError, ImportError):
         HAS_WEBKIT = False
 
