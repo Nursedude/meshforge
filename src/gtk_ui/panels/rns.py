@@ -607,13 +607,31 @@ class RNSPanel(Gtk.Box):
         def do_action():
             try:
                 if action == "start":
-                    # Start rnsd in daemon mode
-                    print("[RNS] Running: rnsd --daemon", flush=True)
-                    result = subprocess.run(
-                        ['rnsd', '--daemon'],
-                        capture_output=True, text=True,
-                        timeout=30
+                    # Start rnsd as a background process
+                    # rnsd doesn't have a --daemon flag, so we use Popen with detachment
+                    print("[RNS] Starting rnsd in background...", flush=True)
+                    import os
+                    process = subprocess.Popen(
+                        ['rnsd'],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        stdin=subprocess.DEVNULL,
+                        start_new_session=True,
+                        preexec_fn=os.setpgrp
                     )
+                    # Give it a moment to start
+                    import time
+                    time.sleep(1)
+                    # Check if process is still running
+                    if process.poll() is None:
+                        success = True
+                        output = f"rnsd started (PID: {process.pid})"
+                    else:
+                        success = False
+                        output = "rnsd exited immediately - check config"
+                    print(f"[RNS] Service start: {'OK' if success else 'FAILED'} - {output}", flush=True)
+                    GLib.idle_add(self._action_complete, action, success, output)
+                    return
                 elif action == "stop":
                     # Kill rnsd process
                     print("[RNS] Running: pkill -f rnsd", flush=True)
@@ -626,12 +644,27 @@ class RNSPanel(Gtk.Box):
                     subprocess.run(['pkill', '-f', 'rnsd'], capture_output=True, timeout=10)
                     import time
                     time.sleep(1)
-                    print("[RNS] Running: rnsd --daemon", flush=True)
-                    result = subprocess.run(
-                        ['rnsd', '--daemon'],
-                        capture_output=True, text=True,
-                        timeout=30
+                    # Start rnsd as a background process
+                    print("[RNS] Starting rnsd in background...", flush=True)
+                    import os
+                    process = subprocess.Popen(
+                        ['rnsd'],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        stdin=subprocess.DEVNULL,
+                        start_new_session=True,
+                        preexec_fn=os.setpgrp
                     )
+                    time.sleep(1)
+                    if process.poll() is None:
+                        success = True
+                        output = f"rnsd restarted (PID: {process.pid})"
+                    else:
+                        success = False
+                        output = "rnsd exited immediately - check config"
+                    print(f"[RNS] Service restart: {'OK' if success else 'FAILED'} - {output}", flush=True)
+                    GLib.idle_add(self._action_complete, action, success, output)
+                    return
 
                 success = result.returncode == 0 if action != "stop" else True
                 output = result.stderr if hasattr(result, 'stderr') else ''
@@ -681,19 +714,25 @@ class RNSPanel(Gtk.Box):
         def do_install():
             try:
                 # Use python -m pip for better reliability
+                # Add --no-cache-dir to avoid permission issues with pip cache
                 import sys
+                cmd = [sys.executable, '-m', 'pip', 'install', '--upgrade', '--user', '--no-cache-dir', package]
+                print(f"[RNS] Running: {' '.join(cmd)}", flush=True)
                 result = subprocess.run(
-                    [sys.executable, '-m', 'pip', 'install', '--upgrade', '--user', package],
+                    cmd,
                     capture_output=True, text=True,
-                    timeout=120  # 2 minute timeout
+                    timeout=180  # 3 minute timeout for slow networks
                 )
                 output = result.stdout + result.stderr
                 success = result.returncode == 0
                 print(f"[RNS] pip install result: {'OK' if success else 'FAILED'}", flush=True)
                 if not success:
                     print(f"[RNS] Error: {output[:200]}", flush=True)
+                else:
+                    print(f"[RNS] Install completed successfully", flush=True)
                 GLib.idle_add(self._install_complete, component['display'], success, output)
             except subprocess.TimeoutExpired:
+                print(f"[RNS] Install timed out after 180s", flush=True)
                 GLib.idle_add(self._install_complete, component['display'], False, "Installation timed out")
             except Exception as e:
                 print(f"[RNS] Exception during install: {e}", flush=True)
