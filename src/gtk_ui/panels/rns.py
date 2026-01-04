@@ -98,6 +98,9 @@ class RNSPanel(Gtk.Box):
         # Configuration Section
         self._build_config_section(content)
 
+        # NomadNet Tools Section
+        self._build_nomadnet_section(content)
+
         scrolled.set_child(content)
         self.append(scrolled)
 
@@ -398,6 +401,51 @@ class RNSPanel(Gtk.Box):
         stats_expander.set_child(stats_box)
         box.append(stats_expander)
 
+        # Meshtastic Interface Setup
+        mesh_iface_expander = Gtk.Expander(label="Meshtastic Interface Setup")
+        mesh_iface_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        mesh_iface_box.set_margin_start(10)
+        mesh_iface_box.set_margin_top(5)
+        mesh_iface_box.set_margin_bottom(5)
+
+        mesh_desc = Gtk.Label(
+            label="Install the RNS-Meshtastic interface to bridge networks.\n"
+                  "Requires: pip install meshtastic"
+        )
+        mesh_desc.set_xalign(0)
+        mesh_desc.add_css_class("dim-label")
+        mesh_desc.set_wrap(True)
+        mesh_iface_box.append(mesh_desc)
+
+        # Install button row
+        install_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+
+        install_iface_btn = Gtk.Button(label="Install Interface")
+        install_iface_btn.set_tooltip_text("Download Meshtastic_Interface.py to ~/.reticulum/interfaces/")
+        install_iface_btn.connect("clicked", self._install_meshtastic_interface)
+        install_row.append(install_iface_btn)
+
+        add_config_btn = Gtk.Button(label="Add Config Template")
+        add_config_btn.set_tooltip_text("Add Meshtastic Interface config to RNS config file")
+        add_config_btn.connect("clicked", self._add_meshtastic_interface_config)
+        install_row.append(add_config_btn)
+
+        mesh_iface_box.append(install_row)
+
+        # Status label
+        self.mesh_iface_status = Gtk.Label(label="")
+        self.mesh_iface_status.set_xalign(0)
+        self.mesh_iface_status.add_css_class("dim-label")
+        mesh_iface_box.append(self.mesh_iface_status)
+
+        # Check if already installed
+        iface_file = Path.home() / ".reticulum" / "interfaces" / "Meshtastic_Interface.py"
+        if iface_file.exists():
+            self.mesh_iface_status.set_label("✓ Meshtastic_Interface.py installed")
+
+        mesh_iface_expander.set_child(mesh_iface_box)
+        box.append(mesh_iface_expander)
+
         frame.set_child(box)
         parent.append(frame)
 
@@ -458,10 +506,16 @@ class RNSPanel(Gtk.Box):
         file_row.append(spacer2)
 
         # Edit with external editor
-        ext_edit_btn = Gtk.Button(label="Edit (External)")
-        ext_edit_btn.set_tooltip_text("Open in external text editor")
+        ext_edit_btn = Gtk.Button(label="Edit (GUI)")
+        ext_edit_btn.set_tooltip_text("Open in GUI text editor")
         ext_edit_btn.connect("clicked", lambda b: self._edit_config(config_file))
         file_row.append(ext_edit_btn)
+
+        # Edit in terminal with nano
+        terminal_edit_btn = Gtk.Button(label="Edit (Terminal)")
+        terminal_edit_btn.set_tooltip_text("Open in terminal with nano")
+        terminal_edit_btn.connect("clicked", lambda b: self._edit_config_terminal(config_file))
+        file_row.append(terminal_edit_btn)
 
         # Edit with built-in config editor
         config_edit_btn = Gtk.Button(label="Config Editor")
@@ -483,6 +537,385 @@ class RNSPanel(Gtk.Box):
 
         frame.set_child(box)
         parent.append(frame)
+
+    def _build_nomadnet_section(self, parent):
+        """Build NomadNet tools section"""
+        frame = Gtk.Frame()
+        frame.set_label("NomadNet Tools")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_start(15)
+        box.set_margin_end(15)
+        box.set_margin_top(10)
+        box.set_margin_bottom(10)
+
+        # Description
+        desc = Gtk.Label(label="Terminal-based encrypted messaging and browsing over Reticulum")
+        desc.set_xalign(0)
+        desc.set_wrap(True)
+        desc.add_css_class("dim-label")
+        box.append(desc)
+
+        # Status row
+        status_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.nomadnet_status_icon = Gtk.Image.new_from_icon_name("emblem-question")
+        self.nomadnet_status_icon.set_pixel_size(20)
+        status_row.append(self.nomadnet_status_icon)
+
+        self.nomadnet_status_label = Gtk.Label(label="Checking...")
+        self.nomadnet_status_label.set_xalign(0)
+        status_row.append(self.nomadnet_status_label)
+
+        # Refresh button
+        refresh_btn = Gtk.Button()
+        refresh_btn.set_icon_name("view-refresh-symbolic")
+        refresh_btn.set_tooltip_text("Refresh status")
+        refresh_btn.connect("clicked", lambda b: self._check_nomadnet_status())
+        status_row.append(refresh_btn)
+
+        box.append(status_row)
+
+        # Launch buttons row
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        btn_row.set_halign(Gtk.Align.CENTER)
+
+        # NomadNet Text UI
+        textui_btn = Gtk.Button(label="Launch Text UI")
+        textui_btn.add_css_class("suggested-action")
+        textui_btn.set_tooltip_text("Launch NomadNet in a terminal window")
+        textui_btn.connect("clicked", lambda b: self._launch_nomadnet("textui"))
+        btn_row.append(textui_btn)
+
+        # NomadNet Daemon
+        self.nomadnet_daemon_btn = Gtk.Button(label="Start Daemon")
+        self.nomadnet_daemon_btn.set_tooltip_text("Run NomadNet as background daemon")
+        self.nomadnet_daemon_btn.connect("clicked", lambda b: self._launch_nomadnet("daemon"))
+        btn_row.append(self.nomadnet_daemon_btn)
+
+        # Stop Daemon
+        self.nomadnet_stop_btn = Gtk.Button(label="Stop Daemon")
+        self.nomadnet_stop_btn.add_css_class("destructive-action")
+        self.nomadnet_stop_btn.set_tooltip_text("Stop NomadNet daemon")
+        self.nomadnet_stop_btn.connect("clicked", lambda b: self._stop_nomadnet())
+        btn_row.append(self.nomadnet_stop_btn)
+
+        box.append(btn_row)
+
+        # Config row
+        config_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        config_row.set_halign(Gtk.Align.CENTER)
+
+        nomadnet_config = Path.home() / ".nomadnetwork" / "config"
+        config_btn = Gtk.Button(label="Edit Config")
+        config_btn.set_tooltip_text(f"Edit {nomadnet_config}")
+        config_btn.connect("clicked", lambda b: self._edit_config_terminal(nomadnet_config))
+        config_row.append(config_btn)
+
+        # Open config folder
+        folder_btn = Gtk.Button(label="Open Folder")
+        folder_btn.set_tooltip_text("Open ~/.nomadnetwork folder")
+        folder_btn.connect("clicked", lambda b: self._open_config_folder(Path.home() / ".nomadnetwork"))
+        config_row.append(folder_btn)
+
+        box.append(config_row)
+
+        # Links row
+        links_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        links_row.set_halign(Gtk.Align.CENTER)
+
+        docs_link = Gtk.LinkButton.new_with_label(
+            "https://github.com/markqvist/NomadNet",
+            "Documentation"
+        )
+        links_row.append(docs_link)
+
+        reticulum_link = Gtk.LinkButton.new_with_label(
+            "https://reticulum.network/",
+            "Reticulum Network"
+        )
+        links_row.append(reticulum_link)
+
+        box.append(links_row)
+
+        # Testnet info (expandable)
+        testnet_expander = Gtk.Expander(label="RNS Testnet Hubs")
+        testnet_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        testnet_box.set_margin_start(10)
+        testnet_box.set_margin_top(5)
+
+        testnet_desc = Gtk.Label(label="Use Ctrl+U in NomadNet Network view to connect:")
+        testnet_desc.set_xalign(0)
+        testnet_desc.add_css_class("dim-label")
+        testnet_box.append(testnet_desc)
+
+        # Dublin hub
+        dublin_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        dublin_label = Gtk.Label(label="Dublin: ")
+        dublin_label.set_xalign(0)
+        dublin_row.append(dublin_label)
+        dublin_addr = Gtk.Label(label="abb3ebcd03cb2388a838e70c001291f9")
+        dublin_addr.set_selectable(True)
+        dublin_addr.add_css_class("monospace")
+        dublin_row.append(dublin_addr)
+        testnet_box.append(dublin_row)
+
+        # Frankfurt hub
+        frankfurt_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        frankfurt_label = Gtk.Label(label="Frankfurt: ")
+        frankfurt_label.set_xalign(0)
+        frankfurt_row.append(frankfurt_label)
+        frankfurt_addr = Gtk.Label(label="ea6a715f814bdc37e56f80c34da6ad51")
+        frankfurt_addr.set_selectable(True)
+        frankfurt_addr.add_css_class("monospace")
+        frankfurt_row.append(frankfurt_addr)
+        testnet_box.append(frankfurt_row)
+
+        testnet_expander.set_child(testnet_box)
+        box.append(testnet_expander)
+
+        frame.set_child(box)
+        parent.append(frame)
+
+        # Check status on load
+        GLib.timeout_add(500, self._check_nomadnet_status)
+
+    def _check_nomadnet_status(self):
+        """Check if NomadNet daemon is running"""
+        def check():
+            try:
+                result = subprocess.run(
+                    ['pgrep', '-f', 'nomadnet'],
+                    capture_output=True, text=True, timeout=5
+                )
+                running = result.returncode == 0 and result.stdout.strip()
+                GLib.idle_add(self._update_nomadnet_status, running)
+            except Exception:
+                GLib.idle_add(self._update_nomadnet_status, False)
+
+        threading.Thread(target=check, daemon=True).start()
+        return False
+
+    def _update_nomadnet_status(self, running):
+        """Update NomadNet status display"""
+        if running:
+            self.nomadnet_status_icon.set_from_icon_name("emblem-default-symbolic")
+            self.nomadnet_status_label.set_label("NomadNet daemon running")
+            self.nomadnet_daemon_btn.set_sensitive(False)
+            self.nomadnet_stop_btn.set_sensitive(True)
+        else:
+            # Check if installed
+            if shutil.which('nomadnet'):
+                self.nomadnet_status_icon.set_from_icon_name("media-playback-stop-symbolic")
+                self.nomadnet_status_label.set_label("NomadNet installed (daemon stopped)")
+                self.nomadnet_daemon_btn.set_sensitive(True)
+                self.nomadnet_stop_btn.set_sensitive(False)
+            else:
+                self.nomadnet_status_icon.set_from_icon_name("dialog-warning-symbolic")
+                self.nomadnet_status_label.set_label("NomadNet not installed")
+                self.nomadnet_daemon_btn.set_sensitive(False)
+                self.nomadnet_stop_btn.set_sensitive(False)
+        return False
+
+    def _launch_nomadnet(self, mode):
+        """Launch NomadNet in specified mode"""
+        print(f"[RNS] Launching NomadNet ({mode})...", flush=True)
+
+        if not shutil.which('nomadnet'):
+            self.main_window.set_status_message("NomadNet not installed - install it first")
+            print("[RNS] NomadNet not found in PATH", flush=True)
+            return
+
+        try:
+            if mode == "textui":
+                # Launch in a terminal
+                terminals = [
+                    ['gnome-terminal', '--', 'nomadnet'],
+                    ['xfce4-terminal', '-e', 'nomadnet'],
+                    ['konsole', '-e', 'nomadnet'],
+                    ['lxterminal', '-e', 'nomadnet'],
+                    ['xterm', '-e', 'nomadnet'],
+                ]
+                for term_cmd in terminals:
+                    if shutil.which(term_cmd[0]):
+                        print(f"[RNS] Using terminal: {term_cmd[0]}", flush=True)
+                        subprocess.Popen(term_cmd, start_new_session=True)
+                        self.main_window.set_status_message("NomadNet launched in terminal")
+                        return
+                self.main_window.set_status_message("No terminal emulator found")
+            elif mode == "daemon":
+                # Run as daemon
+                subprocess.Popen(
+                    ['nomadnet', '--daemon'],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+                self.main_window.set_status_message("NomadNet daemon started")
+                print("[RNS] NomadNet daemon started", flush=True)
+                # Refresh status after a moment
+                GLib.timeout_add(1000, self._check_nomadnet_status)
+        except Exception as e:
+            print(f"[RNS] Failed to launch NomadNet: {e}", flush=True)
+            self.main_window.set_status_message(f"Failed: {e}")
+
+    def _stop_nomadnet(self):
+        """Stop NomadNet daemon"""
+        print("[RNS] Stopping NomadNet daemon...", flush=True)
+        try:
+            result = subprocess.run(['pkill', '-f', 'nomadnet'], capture_output=True, timeout=10)
+            if result.returncode == 0:
+                self.main_window.set_status_message("NomadNet daemon stopped")
+                print("[RNS] NomadNet stopped", flush=True)
+                # Refresh status
+                GLib.timeout_add(500, self._check_nomadnet_status)
+            else:
+                self.main_window.set_status_message("NomadNet was not running")
+        except Exception as e:
+            print(f"[RNS] Failed to stop NomadNet: {e}", flush=True)
+            self.main_window.set_status_message(f"Failed: {e}")
+
+    def _edit_config_terminal(self, config_file):
+        """Open config file in terminal with nano/vim"""
+        print(f"[RNS] Opening config in terminal: {config_file}", flush=True)
+
+        # Create the config file if it doesn't exist
+        config_path = Path(config_file)
+        if not config_path.exists():
+            try:
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                config_path.touch()
+                print(f"[RNS] Created empty config file: {config_file}", flush=True)
+            except Exception as e:
+                print(f"[RNS] Failed to create config: {e}", flush=True)
+
+        try:
+            # Find available terminal and editor
+            terminals = [
+                ('gnome-terminal', ['gnome-terminal', '--', 'nano', str(config_file)]),
+                ('xfce4-terminal', ['xfce4-terminal', '-e', f'nano {config_file}']),
+                ('konsole', ['konsole', '-e', 'nano', str(config_file)]),
+                ('lxterminal', ['lxterminal', '-e', f'nano {config_file}']),
+                ('xterm', ['xterm', '-e', 'nano', str(config_file)]),
+            ]
+
+            for term_name, term_cmd in terminals:
+                if shutil.which(term_name):
+                    print(f"[RNS] Using terminal: {term_name}", flush=True)
+                    subprocess.Popen(term_cmd, start_new_session=True)
+                    self.main_window.set_status_message(f"Editing {config_path.name} in terminal")
+                    return
+
+            self.main_window.set_status_message("No terminal emulator found")
+            print("[RNS] No terminal emulator found", flush=True)
+        except Exception as e:
+            print(f"[RNS] Failed to open terminal editor: {e}", flush=True)
+            self.main_window.set_status_message(f"Failed to open editor: {e}")
+
+    def _install_meshtastic_interface(self, button):
+        """Download and install Meshtastic_Interface.py"""
+        print("[RNS] Installing Meshtastic Interface...", flush=True)
+        self.main_window.set_status_message("Downloading Meshtastic Interface...")
+
+        def do_install():
+            try:
+                import urllib.request
+
+                # Create interfaces directory
+                interfaces_dir = Path.home() / ".reticulum" / "interfaces"
+                interfaces_dir.mkdir(parents=True, exist_ok=True)
+
+                # Download the interface file
+                url = "https://raw.githubusercontent.com/landandair/RNS_Over_Meshtastic/main/Interface/Meshtastic_Interface.py"
+                dest = interfaces_dir / "Meshtastic_Interface.py"
+
+                print(f"[RNS] Downloading from {url}", flush=True)
+                urllib.request.urlretrieve(url, str(dest))
+
+                print(f"[RNS] Saved to {dest}", flush=True)
+                GLib.idle_add(self._install_meshtastic_interface_complete, True, str(dest))
+
+            except Exception as e:
+                print(f"[RNS] Failed to install: {e}", flush=True)
+                GLib.idle_add(self._install_meshtastic_interface_complete, False, str(e))
+
+        threading.Thread(target=do_install, daemon=True).start()
+
+    def _install_meshtastic_interface_complete(self, success, message):
+        """Handle install completion"""
+        if success:
+            self.main_window.set_status_message("Meshtastic Interface installed")
+            self.mesh_iface_status.set_label(f"✓ Installed: {message}")
+            print("[RNS] Meshtastic Interface installed successfully", flush=True)
+        else:
+            self.main_window.set_status_message(f"Install failed: {message}")
+            self.mesh_iface_status.set_label(f"✗ Failed: {message}")
+        return False
+
+    def _add_meshtastic_interface_config(self, button):
+        """Add Meshtastic Interface config template to RNS config"""
+        print("[RNS] Adding Meshtastic Interface config...", flush=True)
+
+        config_file = Path.home() / ".reticulum" / "config"
+
+        # Config template
+        config_template = '''
+# Meshtastic Interface - RNS over Meshtastic
+# Uncomment and configure ONE connection method (port, ble_port, or tcp_port)
+[[Meshtastic Interface]]
+  type = Meshtastic_Interface
+  enabled = true
+  mode = gateway
+
+  # Serial connection (USB)
+  port = /dev/ttyUSB0
+  # port = /dev/ttyACM0
+
+  # Bluetooth LE connection (alternative)
+  # ble_port = short_1234
+
+  # TCP/IP connection (alternative)
+  # tcp_port = 127.0.0.1:4403
+
+  # Radio speed: 8=Turbo, 6=ShortFast, 5=ShortSlow, 4=MedFast, 3=MedSlow, 7=LongMod, 1=LongSlow, 0=LongFast
+  data_speed = 8
+  hop_limit = 1
+  bitrate = 500
+'''
+
+        try:
+            # Check if config file exists
+            if not config_file.exists():
+                self.main_window.set_status_message("RNS config not found - run rnsd first")
+                print("[RNS] Config file not found", flush=True)
+                return
+
+            # Read existing config
+            with open(config_file, 'r') as f:
+                existing_config = f.read()
+
+            # Check if already configured
+            if 'Meshtastic Interface' in existing_config:
+                self.main_window.set_status_message("Meshtastic Interface already in config")
+                print("[RNS] Config already contains Meshtastic Interface", flush=True)
+                # Open editor anyway
+                self._edit_config_terminal(config_file)
+                return
+
+            # Append the template
+            with open(config_file, 'a') as f:
+                f.write(config_template)
+
+            self.main_window.set_status_message("Meshtastic Interface config added - edit to configure")
+            self.mesh_iface_status.set_label("✓ Config template added - edit port settings")
+            print("[RNS] Config template added", flush=True)
+
+            # Open in terminal editor to configure
+            self._edit_config_terminal(config_file)
+
+        except Exception as e:
+            self.main_window.set_status_message(f"Failed: {e}")
+            print(f"[RNS] Failed to add config: {e}", flush=True)
 
     def _refresh_all(self):
         """Refresh all status information"""

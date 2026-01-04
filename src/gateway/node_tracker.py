@@ -263,7 +263,16 @@ class UnifiedNodeTracker:
 
             # Initialize Reticulum - this sets up signal handlers
             # Must be done from main thread
-            self._reticulum = RNS.Reticulum()
+            # If RNS is already running (e.g., rnsd), we'll use the shared instance
+            try:
+                self._reticulum = RNS.Reticulum()
+            except Exception as e:
+                if "reinitialise" in str(e).lower() or "already running" in str(e).lower():
+                    # RNS is already running (rnsd), use shared transport
+                    logger.info("RNS already running, using shared instance")
+                    self._reticulum = None  # We don't need a direct reference
+                else:
+                    raise
 
             # Create announce handler
             class NodeAnnounceHandler:
