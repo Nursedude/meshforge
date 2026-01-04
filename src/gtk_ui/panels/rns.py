@@ -556,6 +556,25 @@ class RNSPanel(Gtk.Box):
         desc.add_css_class("dim-label")
         box.append(desc)
 
+        # Status row
+        status_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.nomadnet_status_icon = Gtk.Image.new_from_icon_name("emblem-question")
+        self.nomadnet_status_icon.set_pixel_size(20)
+        status_row.append(self.nomadnet_status_icon)
+
+        self.nomadnet_status_label = Gtk.Label(label="Checking...")
+        self.nomadnet_status_label.set_xalign(0)
+        status_row.append(self.nomadnet_status_label)
+
+        # Refresh button
+        refresh_btn = Gtk.Button()
+        refresh_btn.set_icon_name("view-refresh-symbolic")
+        refresh_btn.set_tooltip_text("Refresh status")
+        refresh_btn.connect("clicked", lambda b: self._check_nomadnet_status())
+        status_row.append(refresh_btn)
+
+        box.append(status_row)
+
         # Launch buttons row
         btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         btn_row.set_halign(Gtk.Align.CENTER)
@@ -568,17 +587,17 @@ class RNSPanel(Gtk.Box):
         btn_row.append(textui_btn)
 
         # NomadNet Daemon
-        daemon_btn = Gtk.Button(label="Start Daemon")
-        daemon_btn.set_tooltip_text("Run NomadNet as background daemon")
-        daemon_btn.connect("clicked", lambda b: self._launch_nomadnet("daemon"))
-        btn_row.append(daemon_btn)
+        self.nomadnet_daemon_btn = Gtk.Button(label="Start Daemon")
+        self.nomadnet_daemon_btn.set_tooltip_text("Run NomadNet as background daemon")
+        self.nomadnet_daemon_btn.connect("clicked", lambda b: self._launch_nomadnet("daemon"))
+        btn_row.append(self.nomadnet_daemon_btn)
 
         # Stop Daemon
-        stop_daemon_btn = Gtk.Button(label="Stop Daemon")
-        stop_daemon_btn.add_css_class("destructive-action")
-        stop_daemon_btn.set_tooltip_text("Stop NomadNet daemon")
-        stop_daemon_btn.connect("clicked", lambda b: self._stop_nomadnet())
-        btn_row.append(stop_daemon_btn)
+        self.nomadnet_stop_btn = Gtk.Button(label="Stop Daemon")
+        self.nomadnet_stop_btn.add_css_class("destructive-action")
+        self.nomadnet_stop_btn.set_tooltip_text("Stop NomadNet daemon")
+        self.nomadnet_stop_btn.connect("clicked", lambda b: self._stop_nomadnet())
+        btn_row.append(self.nomadnet_stop_btn)
 
         box.append(btn_row)
 
@@ -600,8 +619,102 @@ class RNSPanel(Gtk.Box):
 
         box.append(config_row)
 
+        # Links row
+        links_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        links_row.set_halign(Gtk.Align.CENTER)
+
+        docs_link = Gtk.LinkButton.new_with_label(
+            "https://github.com/markqvist/NomadNet",
+            "Documentation"
+        )
+        links_row.append(docs_link)
+
+        reticulum_link = Gtk.LinkButton.new_with_label(
+            "https://reticulum.network/",
+            "Reticulum Network"
+        )
+        links_row.append(reticulum_link)
+
+        box.append(links_row)
+
+        # Testnet info (expandable)
+        testnet_expander = Gtk.Expander(label="RNS Testnet Hubs")
+        testnet_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        testnet_box.set_margin_start(10)
+        testnet_box.set_margin_top(5)
+
+        testnet_desc = Gtk.Label(label="Use Ctrl+U in NomadNet Network view to connect:")
+        testnet_desc.set_xalign(0)
+        testnet_desc.add_css_class("dim-label")
+        testnet_box.append(testnet_desc)
+
+        # Dublin hub
+        dublin_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        dublin_label = Gtk.Label(label="Dublin: ")
+        dublin_label.set_xalign(0)
+        dublin_row.append(dublin_label)
+        dublin_addr = Gtk.Label(label="abb3ebcd03cb2388a838e70c001291f9")
+        dublin_addr.set_selectable(True)
+        dublin_addr.add_css_class("monospace")
+        dublin_row.append(dublin_addr)
+        testnet_box.append(dublin_row)
+
+        # Frankfurt hub
+        frankfurt_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        frankfurt_label = Gtk.Label(label="Frankfurt: ")
+        frankfurt_label.set_xalign(0)
+        frankfurt_row.append(frankfurt_label)
+        frankfurt_addr = Gtk.Label(label="ea6a715f814bdc37e56f80c34da6ad51")
+        frankfurt_addr.set_selectable(True)
+        frankfurt_addr.add_css_class("monospace")
+        frankfurt_row.append(frankfurt_addr)
+        testnet_box.append(frankfurt_row)
+
+        testnet_expander.set_child(testnet_box)
+        box.append(testnet_expander)
+
         frame.set_child(box)
         parent.append(frame)
+
+        # Check status on load
+        GLib.timeout_add(500, self._check_nomadnet_status)
+
+    def _check_nomadnet_status(self):
+        """Check if NomadNet daemon is running"""
+        def check():
+            try:
+                result = subprocess.run(
+                    ['pgrep', '-f', 'nomadnet'],
+                    capture_output=True, text=True, timeout=5
+                )
+                running = result.returncode == 0 and result.stdout.strip()
+                GLib.idle_add(self._update_nomadnet_status, running)
+            except Exception:
+                GLib.idle_add(self._update_nomadnet_status, False)
+
+        threading.Thread(target=check, daemon=True).start()
+        return False
+
+    def _update_nomadnet_status(self, running):
+        """Update NomadNet status display"""
+        if running:
+            self.nomadnet_status_icon.set_from_icon_name("emblem-default-symbolic")
+            self.nomadnet_status_label.set_label("NomadNet daemon running")
+            self.nomadnet_daemon_btn.set_sensitive(False)
+            self.nomadnet_stop_btn.set_sensitive(True)
+        else:
+            # Check if installed
+            if shutil.which('nomadnet'):
+                self.nomadnet_status_icon.set_from_icon_name("media-playback-stop-symbolic")
+                self.nomadnet_status_label.set_label("NomadNet installed (daemon stopped)")
+                self.nomadnet_daemon_btn.set_sensitive(True)
+                self.nomadnet_stop_btn.set_sensitive(False)
+            else:
+                self.nomadnet_status_icon.set_from_icon_name("dialog-warning-symbolic")
+                self.nomadnet_status_label.set_label("NomadNet not installed")
+                self.nomadnet_daemon_btn.set_sensitive(False)
+                self.nomadnet_stop_btn.set_sensitive(False)
+        return False
 
     def _launch_nomadnet(self, mode):
         """Launch NomadNet in specified mode"""
@@ -640,6 +753,8 @@ class RNSPanel(Gtk.Box):
                 )
                 self.main_window.set_status_message("NomadNet daemon started")
                 print("[RNS] NomadNet daemon started", flush=True)
+                # Refresh status after a moment
+                GLib.timeout_add(1000, self._check_nomadnet_status)
         except Exception as e:
             print(f"[RNS] Failed to launch NomadNet: {e}", flush=True)
             self.main_window.set_status_message(f"Failed: {e}")
@@ -652,6 +767,8 @@ class RNSPanel(Gtk.Box):
             if result.returncode == 0:
                 self.main_window.set_status_message("NomadNet daemon stopped")
                 print("[RNS] NomadNet stopped", flush=True)
+                # Refresh status
+                GLib.timeout_add(500, self._check_nomadnet_status)
             else:
                 self.main_window.set_status_message("NomadNet was not running")
         except Exception as e:
