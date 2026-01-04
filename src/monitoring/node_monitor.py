@@ -390,10 +390,33 @@ class NodeMonitor:
         self._reconnect_thread = threading.Thread(target=reconnect_loop, daemon=True)
         self._reconnect_thread.start()
 
-    def get_nodes(self) -> List[NodeInfo]:
-        """Get all known nodes"""
+    def get_nodes(self, refresh: bool = False) -> List[NodeInfo]:
+        """Get all known nodes
+
+        Args:
+            refresh: If True, re-sync from interface before returning
+        """
+        if refresh:
+            self.sync_nodes()
         with self._lock:
             return list(self._nodes.values())
+
+    def sync_nodes(self):
+        """Re-sync nodes from interface (picks up any nodes we missed)"""
+        if not self.interface or not hasattr(self.interface, 'nodes'):
+            return
+
+        try:
+            interface_nodes = self.interface.nodes or {}
+            with self._lock:
+                for node_id, node_data in interface_nodes.items():
+                    node_info = self._parse_node_data(node_id, node_data)
+                    if node_info and node_info.node_id not in self._nodes:
+                        self._nodes[node_info.node_id] = node_info
+                        logger.debug(f"Synced new node: {node_info.node_id}")
+            logger.info(f"Sync complete: {len(self._nodes)} nodes")
+        except Exception as e:
+            logger.error(f"Error syncing nodes: {e}")
 
     def get_node(self, node_id: str) -> Optional[NodeInfo]:
         """Get a specific node by ID"""

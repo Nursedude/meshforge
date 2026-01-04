@@ -331,7 +331,7 @@ class MapPanel(Gtk.Box):
                     online = 0
                     with_position = 0
 
-                    for node in monitor.get_nodes():
+                    for node in monitor.get_nodes(refresh=True):
                         total += 1
                         nodes_raw.append(node)
 
