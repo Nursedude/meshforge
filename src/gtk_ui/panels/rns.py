@@ -862,9 +862,8 @@ nomadnet --config CONFIG
                         print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
                         print(f"[RNS] Command: {full_cmd}", flush=True)
                         try:
-                            proc = subprocess.Popen(full_cmd, shell=True, start_new_session=True,
-                                                   stderr=subprocess.PIPE)
-                            GLib.timeout_add(500, lambda p=proc: self._check_terminal_launch(p))
+                            # Use os.system with & to launch in background - more reliable for GUI apps
+                            os.system(f"{full_cmd} &")
                             self.main_window.set_status_message("NomadNet launched in terminal")
                         except Exception as e:
                             print(f"[RNS] Failed to launch terminal: {e}", flush=True)
