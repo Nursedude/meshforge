@@ -777,14 +777,14 @@ class RNSPanel(Gtk.Box):
         try:
             if mode == "textui":
                 # Launch in a terminal using full path
-                # When running as root, use sudo -u to run as real user
+                # When running as root, use sudo with --preserve-env to keep DISPLAY
                 if is_root and real_user != 'root':
                     terminals = [
-                        ['sudo', '-u', real_user, 'lxterminal', '-e', nomadnet_path],
-                        ['sudo', '-u', real_user, 'xfce4-terminal', '-e', nomadnet_path],
-                        ['sudo', '-u', real_user, 'gnome-terminal', '--', nomadnet_path],
-                        ['sudo', '-u', real_user, 'konsole', '-e', nomadnet_path],
-                        ['sudo', '-u', real_user, 'xterm', '-e', nomadnet_path],
+                        ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'lxterminal', '-e', nomadnet_path],
+                        ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'xfce4-terminal', '-e', nomadnet_path],
+                        ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'gnome-terminal', '--', nomadnet_path],
+                        ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'konsole', '-e', nomadnet_path],
+                        ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'xterm', '-e', nomadnet_path],
                     ]
                 else:
                     terminals = [
@@ -796,8 +796,12 @@ class RNSPanel(Gtk.Box):
                     ]
 
                 for term_cmd in terminals:
-                    # Check for the terminal binary (first non-sudo element)
-                    term_name = term_cmd[0] if term_cmd[0] != 'sudo' else term_cmd[3]
+                    # Check for the terminal binary (find first element that's a terminal name)
+                    if term_cmd[0] == 'sudo':
+                        # sudo --preserve-env=... -u user terminal -e cmd
+                        term_name = term_cmd[4]  # terminal is at index 4
+                    else:
+                        term_name = term_cmd[0]
                     if shutil.which(term_name):
                         print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
                         subprocess.Popen(term_cmd, start_new_session=True)
@@ -1099,13 +1103,14 @@ message_storage_limit = 2000
 
         try:
             # When running as root, launch terminal as the actual user
+            # Use --preserve-env to keep DISPLAY for GUI terminals
             if is_root and real_user != 'root':
                 terminals = [
-                    ('lxterminal', ['sudo', '-u', real_user, 'lxterminal', '-e', f'nano {config_path}']),
-                    ('gnome-terminal', ['sudo', '-u', real_user, 'gnome-terminal', '--', 'nano', str(config_path)]),
-                    ('xfce4-terminal', ['sudo', '-u', real_user, 'xfce4-terminal', '-e', f'nano {config_path}']),
-                    ('konsole', ['sudo', '-u', real_user, 'konsole', '-e', 'nano', str(config_path)]),
-                    ('xterm', ['sudo', '-u', real_user, 'xterm', '-e', 'nano', str(config_path)]),
+                    ('lxterminal', ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'lxterminal', '-e', f'nano {config_path}']),
+                    ('gnome-terminal', ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'gnome-terminal', '--', 'nano', str(config_path)]),
+                    ('xfce4-terminal', ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'xfce4-terminal', '-e', f'nano {config_path}']),
+                    ('konsole', ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'konsole', '-e', 'nano', str(config_path)]),
+                    ('xterm', ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'xterm', '-e', 'nano', str(config_path)]),
                 ]
             else:
                 terminals = [
