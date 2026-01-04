@@ -602,11 +602,11 @@ class RNSPanel(Gtk.Box):
         btn_row.set_halign(Gtk.Align.CENTER)
 
         # NomadNet Text UI
-        textui_btn = Gtk.Button(label="Launch Text UI")
-        textui_btn.add_css_class("suggested-action")
-        textui_btn.set_tooltip_text("Launch NomadNet in a terminal window")
-        textui_btn.connect("clicked", lambda b: self._launch_nomadnet("textui"))
-        btn_row.append(textui_btn)
+        self.nomadnet_textui_btn = Gtk.Button(label="Launch Text UI")
+        self.nomadnet_textui_btn.add_css_class("suggested-action")
+        self.nomadnet_textui_btn.set_tooltip_text("Launch NomadNet in a terminal window")
+        self.nomadnet_textui_btn.connect("clicked", lambda b: self._launch_nomadnet("textui"))
+        btn_row.append(self.nomadnet_textui_btn)
 
         # NomadNet Daemon
         self.nomadnet_daemon_btn = Gtk.Button(label="Start Daemon")
@@ -775,6 +775,28 @@ class RNSPanel(Gtk.Box):
         threading.Thread(target=check, daemon=True).start()
         return False
 
+    def _is_nomadnet_daemon_running(self):
+        """Synchronously check if NomadNet daemon is running"""
+        try:
+            result = subprocess.run(
+                ['pgrep', '-f', 'nomadnet'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                pids = result.stdout.strip().split('\n')
+                for pid in pids:
+                    try:
+                        cmdline_path = f"/proc/{pid.strip()}/cmdline"
+                        with open(cmdline_path, 'r') as f:
+                            cmdline = f.read().replace('\x00', ' ')
+                        if 'nomadnet' in cmdline and 'grep' not in cmdline and 'pgrep' not in cmdline:
+                            return True
+                    except (FileNotFoundError, PermissionError):
+                        continue
+            return False
+        except Exception:
+            return False
+
     def _update_nomadnet_status(self, running):
         """Update NomadNet status display"""
         nomadnet_path = self._find_nomadnet()
@@ -804,6 +826,12 @@ class RNSPanel(Gtk.Box):
 
         print(f"[RNS] Launching NomadNet ({mode})...", flush=True)
 
+        # Disable button immediately to prevent double-clicks
+        if mode == "textui" and hasattr(self, 'nomadnet_textui_btn'):
+            self.nomadnet_textui_btn.set_sensitive(False)
+            # Re-enable after 2 seconds
+            GLib.timeout_add(2000, lambda: self.nomadnet_textui_btn.set_sensitive(True) or False)
+
         nomadnet_path = self._find_nomadnet()
         if not nomadnet_path:
             self.main_window.set_status_message("NomadNet not installed - install it first")
@@ -815,6 +843,14 @@ class RNSPanel(Gtk.Box):
         # Check if running as root via sudo
         is_root = os.geteuid() == 0
         real_user = self._get_real_username()
+
+        # Check if daemon is running before launching text UI (they conflict)
+        if mode == "textui":
+            daemon_running = self._is_nomadnet_daemon_running()
+            if daemon_running:
+                self.main_window.set_status_message("Stop daemon first - Text UI and daemon can't run together")
+                print("[RNS] Daemon is running, cannot start text UI", flush=True)
+                return
 
         try:
             if mode == "textui":
