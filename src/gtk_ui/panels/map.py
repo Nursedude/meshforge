@@ -90,7 +90,7 @@ class MapPanel(Gtk.Box):
                 from ...monitoring.node_monitor import NodeMonitor
             except ImportError:
                 try:
-                    from src.monitoring.node_monitor import NodeMonitor
+                    from monitoring.node_monitor import NodeMonitor
                 except ImportError:
                     return None, "NodeMonitor not available"
 
