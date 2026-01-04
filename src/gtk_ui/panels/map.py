@@ -68,7 +68,7 @@ class MapPanel(Gtk.Box):
         GLib.timeout_add_seconds(5, self._auto_refresh)
 
     def _init_node_tracker(self):
-        """Initialize the node tracker"""
+        """Initialize the node tracker (but don't start - it grabs RNS port)"""
         try:
             # Try relative import first (when run as package)
             from ...gateway.node_tracker import UnifiedNodeTracker
@@ -82,8 +82,9 @@ class MapPanel(Gtk.Box):
 
         try:
             self.node_tracker = UnifiedNodeTracker()
-            self.node_tracker.start()
-            logger.info("Node tracker initialized")
+            # Don't auto-start - it initializes RNS and blocks NomadNet/rnsd
+            # User can start manually if needed via gateway controls
+            logger.info("Node tracker available (not started - use gateway to enable RNS)")
         except Exception as e:
             logger.error(f"Failed to initialize node tracker: {e}")
 
