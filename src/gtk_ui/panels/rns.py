@@ -715,8 +715,10 @@ class RNSPanel(Gtk.Box):
             try:
                 # Use python -m pip for better reliability
                 # Add --no-cache-dir to avoid permission issues with pip cache
+                # Add --break-system-packages for PEP 668 externally managed environments
                 import sys
-                cmd = [sys.executable, '-m', 'pip', 'install', '--upgrade', '--user', '--no-cache-dir', package]
+                cmd = [sys.executable, '-m', 'pip', 'install', '--upgrade', '--user',
+                       '--no-cache-dir', '--break-system-packages', package]
                 print(f"[RNS] Running: {' '.join(cmd)}", flush=True)
                 result = subprocess.run(
                     cmd,
@@ -781,8 +783,12 @@ class RNSPanel(Gtk.Box):
             packages = [c['package'] for c in self.COMPONENTS]
             try:
                 import sys
+                # Add --break-system-packages for PEP 668 externally managed environments
+                cmd = [sys.executable, '-m', 'pip', 'install', '--upgrade', '--user',
+                       '--no-cache-dir', '--break-system-packages'] + packages
+                print(f"[RNS] Running: {' '.join(cmd)}", flush=True)
                 result = subprocess.run(
-                    [sys.executable, '-m', 'pip', 'install', '--upgrade', '--user'] + packages,
+                    cmd,
                     capture_output=True, text=True,
                     timeout=300  # 5 minute timeout for all packages
                 )
