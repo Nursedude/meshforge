@@ -299,12 +299,59 @@ RNS uses interfaces defined in `~/.reticulum/config`. Key interface types:
   enabled = Yes
 ```
 
+#### Public RNS Entry Points (Community Nodes)
+
+For connecting to the global RNS testnet:
+
+```ini
+# Dublin - Official testnet
+[[RNS Testnet Dublin]]
+  type = TCPClientInterface
+  enabled = yes
+  target_host = dublin.connect.reticulum.network
+  target_port = 4965
+
+# Community nodes - pick one or more for redundancy
+[[Community Node US]]
+  type = TCPClientInterface
+  enabled = yes
+  target_host = rns.acehoss.net
+  target_port = 4242
+
+[[Community Node AU]]
+  type = TCPClientInterface
+  enabled = yes
+  target_host = sydney.reticulum.au
+  target_port = 4242
+```
+
+**Available Community Nodes:**
+| Host | Port | Region |
+|------|------|--------|
+| dublin.connect.reticulum.network | 4965 | Ireland (official) |
+| reticulum.betweentheborders.com | 4242 | USA |
+| rns.acehoss.net | 4242 | USA |
+| dfw.us.g00n.cloud | 6969 | USA (Texas) |
+| rns.quad4.io | 4242 | USA |
+| sydney.reticulum.au | 4242 | Australia |
+| reticulum.on6zq.be | 4965 | Belgium |
+| istanbul.reserve.network | 9034 | Turkey |
+
+Source: [Reticulum Community Node List](https://github.com/markqvist/Reticulum/wiki/Community-Node-List)
+
+#### Transport Node Best Practices
+
+For optimal network connectivity:
+1. **Local transport node**: Set up a stationary, always-on node with `enable_transport = True`
+2. **Multiple uplinks**: Connect to 2-3 public entry points for redundancy
+3. **BackboneInterface**: Most efficient for high-traffic gateways (Linux only)
+4. **Never use `kiss_framing`** between TCP interfaces - it disables reliability mechanisms
+
 **Important Notes:**
 - TCP interfaces auto-reconnect on link failures
-- Never enable `kiss_framing` between TCP interfaces
 - Config file: `~/.reticulum/config`
 - Example config: `rnsd --exampleconfig`
-- HawaiiNet: 192.168.86.38:4242
+- HawaiiNet (local): 192.168.86.38:4242
 - RNode freq 903.625 MHz = US 900 MHz ISM band
 
 Reference: [Reticulum Manual - Interfaces](https://reticulum.network/manual/interfaces.html)
