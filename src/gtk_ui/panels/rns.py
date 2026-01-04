@@ -734,61 +734,38 @@ class RNSPanel(Gtk.Box):
         """Check if NomadNet daemon is running"""
         def check():
             try:
-                # Use multiple detection methods for reliability
                 running = False
-                detected_by = None
 
-                # Method 1: Check for python process running nomadnet module
+                # Simple approach: use pgrep -f to find any process with "nomadnet" in cmdline
                 result = subprocess.run(
-                    ['pgrep', '-f', 'python.*nomadnet'],
+                    ['pgrep', '-f', 'nomadnet'],
                     capture_output=True, text=True, timeout=5
                 )
+
                 if result.returncode == 0 and result.stdout.strip():
-                    running = True
-                    detected_by = "python.*nomadnet"
-                    print(f"[RNS] NomadNet detected via pgrep python.*nomadnet: PIDs={result.stdout.strip()}", flush=True)
+                    # Filter out any pgrep or grep processes from the PIDs
+                    pids = result.stdout.strip().split('\n')
+                    print(f"[RNS] pgrep found PIDs: {pids}", flush=True)
 
-                # Method 2: Check for nomadnet executable directly
-                if not running:
-                    result = subprocess.run(
-                        ['pgrep', '-f', '/nomadnet'],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if result.returncode == 0 and result.stdout.strip():
-                        running = True
-                        detected_by = "/nomadnet"
-                        print(f"[RNS] NomadNet detected via pgrep /nomadnet: PIDs={result.stdout.strip()}", flush=True)
+                    # Verify at least one PID is actually nomadnet (not grep/pgrep)
+                    for pid in pids:
+                        try:
+                            # Read the cmdline for this PID
+                            cmdline_path = f"/proc/{pid.strip()}/cmdline"
+                            with open(cmdline_path, 'r') as f:
+                                cmdline = f.read().replace('\x00', ' ')
 
-                # Method 3: Check for .local/bin/nomadnet specifically
-                if not running:
-                    result = subprocess.run(
-                        ['pgrep', '-f', '.local/bin/nomadnet'],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if result.returncode == 0 and result.stdout.strip():
-                        running = True
-                        detected_by = ".local/bin/nomadnet"
-                        print(f"[RNS] NomadNet detected via pgrep .local/bin/nomadnet: PIDs={result.stdout.strip()}", flush=True)
-
-                # Method 4: Use ps aux for broader matching
-                if not running:
-                    result = subprocess.run(
-                        ['ps', 'aux'],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if result.returncode == 0:
-                        for line in result.stdout.split('\n'):
-                            # Look for nomadnet in process list
-                            if 'nomadnet' in line.lower() and 'pgrep' not in line.lower() and 'grep' not in line.lower():
+                            # Check it's actually nomadnet, not grep/pgrep
+                            if 'nomadnet' in cmdline and 'grep' not in cmdline and 'pgrep' not in cmdline:
                                 running = True
-                                detected_by = f"ps aux: {line[:80]}"
-                                print(f"[RNS] NomadNet detected via ps aux: {line[:100]}", flush=True)
+                                print(f"[RNS] NomadNet daemon running (PID {pid.strip()}): {cmdline[:80]}", flush=True)
                                 break
+                        except (FileNotFoundError, PermissionError):
+                            # Process may have exited
+                            continue
 
                 if not running:
-                    print("[RNS] NomadNet daemon not detected by any method", flush=True)
-                else:
-                    print(f"[RNS] NomadNet daemon running (detected by: {detected_by})", flush=True)
+                    print("[RNS] NomadNet daemon not detected", flush=True)
 
                 GLib.idle_add(self._update_nomadnet_status, running)
             except Exception as e:
