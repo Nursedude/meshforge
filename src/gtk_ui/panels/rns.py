@@ -846,18 +846,18 @@ class RNSPanel(Gtk.Box):
                 if is_root and real_user != 'root':
                     # Terminal runs as root, command runs as user inside
                     user_cmd = f"sudo -u {real_user} {nomadnet_path}"
-                    # Different terminals need different argument styles
+                    # lxterminal -e runs command through shell, so pass as single string
                     terminals = [
-                        # lxterminal: pass bash, -c, and command as separate args after -e
-                        ['lxterminal', '-e', 'bash', '-c', user_cmd],
-                        # xfce4-terminal: use -x for execute with multiple args
-                        ['xfce4-terminal', '-x', 'bash', '-c', user_cmd],
-                        # gnome-terminal: use -- to separate terminal args from command
-                        ['gnome-terminal', '--', 'bash', '-c', user_cmd],
+                        # lxterminal: -e takes a single command string (runs through sh -c internally)
+                        ['lxterminal', '-e', user_cmd],
+                        # xfce4-terminal: -e takes a single command string
+                        ['xfce4-terminal', '-e', user_cmd],
+                        # gnome-terminal: use -- then the command parts
+                        ['gnome-terminal', '--', 'sudo', '-u', real_user, nomadnet_path],
                         # konsole: -e takes the rest as command
-                        ['konsole', '-e', 'bash', '-c', user_cmd],
+                        ['konsole', '-e', 'sudo', '-u', real_user, nomadnet_path],
                         # xterm: -e takes the rest as command
-                        ['xterm', '-e', 'bash', '-c', user_cmd],
+                        ['xterm', '-e', 'sudo', '-u', real_user, nomadnet_path],
                     ]
                 else:
                     terminals = [
@@ -1196,19 +1196,19 @@ message_storage_limit = 2000
             if is_root and real_user != 'root':
                 # Terminal runs as root, nano runs as user inside
                 user_cmd = f"sudo -u {real_user} nano {config_path}"
-                # Different terminals need different argument styles
+                # lxterminal -e runs command through shell, so pass as single string
                 terminals = [
-                    ('lxterminal', ['lxterminal', '-e', 'bash', '-c', user_cmd]),
-                    ('xfce4-terminal', ['xfce4-terminal', '-x', 'bash', '-c', user_cmd]),
-                    ('gnome-terminal', ['gnome-terminal', '--', 'bash', '-c', user_cmd]),
-                    ('konsole', ['konsole', '-e', 'bash', '-c', user_cmd]),
-                    ('xterm', ['xterm', '-e', 'bash', '-c', user_cmd]),
+                    ('lxterminal', ['lxterminal', '-e', user_cmd]),
+                    ('xfce4-terminal', ['xfce4-terminal', '-e', user_cmd]),
+                    ('gnome-terminal', ['gnome-terminal', '--', 'sudo', '-u', real_user, 'nano', str(config_path)]),
+                    ('konsole', ['konsole', '-e', 'sudo', '-u', real_user, 'nano', str(config_path)]),
+                    ('xterm', ['xterm', '-e', 'sudo', '-u', real_user, 'nano', str(config_path)]),
                 ]
             else:
                 terminals = [
-                    ('lxterminal', ['lxterminal', '-e', 'nano', str(config_path)]),
+                    ('lxterminal', ['lxterminal', '-e', f'nano {config_path}']),
                     ('gnome-terminal', ['gnome-terminal', '--', 'nano', str(config_path)]),
-                    ('xfce4-terminal', ['xfce4-terminal', '-e', 'nano', str(config_path)]),
+                    ('xfce4-terminal', ['xfce4-terminal', '-e', f'nano {config_path}']),
                     ('konsole', ['konsole', '-e', 'nano', str(config_path)]),
                     ('xterm', ['xterm', '-e', 'nano', str(config_path)]),
                 ]
