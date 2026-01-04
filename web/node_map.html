@@ -206,6 +206,14 @@
             <span>Gateway</span>
         </div>
         <div class="legend-item">
+            <div class="legend-marker" style="background: #9c27b0;"></div>
+            <span>Via MQTT</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-marker" style="background: #00bcd4;"></div>
+            <span>RNS Node</span>
+        </div>
+        <div class="legend-item">
             <div class="legend-marker" style="background: #2196f3; border: 2px solid white;"></div>
             <span>Local Node</span>
         </div>
@@ -231,10 +239,11 @@
             const coords = feature.geometry.coordinates;
 
             // Determine marker color
-            // Green=online, Red=offline, Orange=gateway, Purple=MQTT
+            // Green=online, Red=offline, Orange=gateway, Purple=MQTT, Cyan=RNS
             let color = props.is_online ? '#4caf50' : '#f44336';
             if (props.is_gateway) color = '#ff9800';
             if (props.via_mqtt) color = '#9c27b0';  // Purple for MQTT nodes
+            if (props.network === 'rns') color = props.is_online ? '#00bcd4' : '#607d8b';  // Cyan for RNS
 
             // Determine marker size and style
             let radius = 8;

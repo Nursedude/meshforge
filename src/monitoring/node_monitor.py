@@ -364,9 +364,12 @@ class NodeMonitor:
                 last_updated=datetime.now(),
             )
 
-            # Last heard
-            if 'lastHeard' in data:
-                node_info.last_heard = datetime.fromtimestamp(data['lastHeard'])
+            # Last heard - handle None or invalid timestamps
+            if 'lastHeard' in data and data['lastHeard']:
+                try:
+                    node_info.last_heard = datetime.fromtimestamp(data['lastHeard'])
+                except (TypeError, ValueError, OSError):
+                    pass
 
             return node_info
 

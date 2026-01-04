@@ -404,13 +404,60 @@ class MapPanel(Gtk.Box):
                         "meshtastic": total,
                         "rns": 0,
                         "online": online,
-                        "with_position": with_position
+                        "with_position": with_position,
+                        "via_mqtt": stats.get("via_mqtt", 0)
                     }
                     geojson = {"type": "FeatureCollection", "features": features}
 
                 except Exception as e:
                     logger.error(f"Error fetching Meshtastic nodes: {e}")
                     error_msg = str(e)
+
+            # Also fetch RNS nodes from the unified tracker
+            rns_count = 0
+            if self.node_tracker:
+                try:
+                    rns_nodes = self.node_tracker.get_rns_nodes()
+                    for rns_node in rns_nodes:
+                        rns_count += 1
+                        stats["total"] += 1
+
+                        # Check if has valid position
+                        if rns_node.position and rns_node.position.is_valid():
+                            stats["with_position"] += 1
+                            feature = {
+                                "type": "Feature",
+                                "geometry": {
+                                    "type": "Point",
+                                    "coordinates": [
+                                        rns_node.position.longitude,
+                                        rns_node.position.latitude
+                                    ]
+                                },
+                                "properties": {
+                                    "id": rns_node.id,
+                                    "name": rns_node.name or rns_node.short_name or rns_node.id,
+                                    "network": "rns",
+                                    "is_online": rns_node.is_online,
+                                    "is_local": rns_node.is_local,
+                                    "is_gateway": rns_node.is_gateway,
+                                    "via_mqtt": False,
+                                    "snr": rns_node.snr,
+                                    "battery": rns_node.telemetry.battery_level if rns_node.telemetry else None,
+                                    "last_seen": rns_node.get_age_string(),
+                                    "hardware": rns_node.hardware_model,
+                                    "role": rns_node.role,
+                                }
+                            }
+                            geojson["features"].append(feature)
+
+                        if rns_node.is_online:
+                            stats["online"] += 1
+
+                except Exception as e:
+                    logger.warning(f"Error fetching RNS nodes: {e}")
+
+            stats["rns"] = rns_count
 
             GLib.idle_add(self._update_ui, stats, geojson, nodes_raw, error_msg)
 
