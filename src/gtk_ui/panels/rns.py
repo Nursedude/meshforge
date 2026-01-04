@@ -821,23 +821,39 @@ class RNSPanel(Gtk.Box):
                 # Launch in a terminal
                 # When running as root: run terminal as root (has X11), but command as user
                 if is_root and real_user != 'root':
-                    # Use the exact command format that works: nomadnet --config CONFIG
-                    user_cmd = f"sudo -i -u {real_user} nomadnet --config CONFIG"
-                    # Quote the command for terminals that need it
+                    # Create a temp script to run the command - more reliable than complex quoting
+                    import tempfile
+                    script_content = f'''#!/bin/bash
+sudo -i -u {real_user} nomadnet --config CONFIG
+'''
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+                        f.write(script_content)
+                        script_path = f.name
+                    os.chmod(script_path, 0o755)
+
                     terminals = [
-                        f"lxterminal -e '{user_cmd}'",
-                        f"xfce4-terminal -e '{user_cmd}'",
-                        f"gnome-terminal -- {user_cmd}",
-                        f"konsole -e {user_cmd}",
-                        f"xterm -e {user_cmd}",
+                        f"lxterminal -e {script_path}",
+                        f"xfce4-terminal -e {script_path}",
+                        f"gnome-terminal -- {script_path}",
+                        f"konsole -e {script_path}",
+                        f"xterm -e {script_path}",
                     ]
                 else:
+                    import tempfile
+                    script_content = '''#!/bin/bash
+nomadnet --config CONFIG
+'''
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+                        f.write(script_content)
+                        script_path = f.name
+                    os.chmod(script_path, 0o755)
+
                     terminals = [
-                        "lxterminal -e 'nomadnet --config CONFIG'",
-                        "xfce4-terminal -e 'nomadnet --config CONFIG'",
-                        "gnome-terminal -- nomadnet --config CONFIG",
-                        "konsole -e nomadnet --config CONFIG",
-                        "xterm -e nomadnet --config CONFIG",
+                        f"lxterminal -e {script_path}",
+                        f"xfce4-terminal -e {script_path}",
+                        f"gnome-terminal -- {script_path}",
+                        f"konsole -e {script_path}",
+                        f"xterm -e {script_path}",
                     ]
 
                 for full_cmd in terminals:
@@ -846,10 +862,8 @@ class RNSPanel(Gtk.Box):
                         print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
                         print(f"[RNS] Command: {full_cmd}", flush=True)
                         try:
-                            # Use shell=True to properly parse the command with quotes
                             proc = subprocess.Popen(full_cmd, shell=True, start_new_session=True,
                                                    stderr=subprocess.PIPE)
-                            # Check for immediate failure
                             GLib.timeout_add(500, lambda p=proc: self._check_terminal_launch(p))
                             self.main_window.set_status_message("NomadNet launched in terminal")
                         except Exception as e:
