@@ -249,11 +249,59 @@ class UnifiedNodeTracker:
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
 
-        # Start RNS discovery in background
-        self._rns_thread = threading.Thread(target=self._start_rns_discovery, daemon=True)
-        self._rns_thread.start()
+        # Initialize RNS in the main thread to avoid signal handler issues
+        # RNS.Reticulum() sets up signal handlers which only work in main thread
+        self._init_rns_main_thread()
 
         logger.info("Node tracker started")
+
+    def _init_rns_main_thread(self):
+        """Initialize RNS from main thread, then start background listener"""
+        try:
+            import RNS
+            logger.info("Initializing RNS for node discovery...")
+
+            # Initialize Reticulum - this sets up signal handlers
+            # Must be done from main thread
+            self._reticulum = RNS.Reticulum()
+
+            # Create announce handler
+            class NodeAnnounceHandler:
+                def __init__(self, tracker):
+                    self.tracker = tracker
+                    self.aspect_filter = None
+
+                def received_announce(self, destination_hash, announced_identity, app_data):
+                    try:
+                        self.tracker._on_rns_announce(destination_hash, announced_identity, app_data)
+                    except Exception as e:
+                        logger.error(f"Error handling RNS announce: {e}")
+
+            RNS.Transport.register_announce_handler(NodeAnnounceHandler(self))
+            self._rns_connected = True
+            logger.info("RNS discovery initialized - listening for announces")
+
+            # Load known destinations
+            self._load_known_rns_destinations(RNS)
+
+            # Start background loop to keep RNS alive
+            self._rns_thread = threading.Thread(target=self._rns_loop, daemon=True)
+            self._rns_thread.start()
+
+        except ImportError:
+            logger.info("RNS module not installed. To enable RNS node discovery:")
+            logger.info("  1. Install RNS: pip install rns")
+            logger.info("  2. Configure ~/.reticulum/config with TCPClientInterface")
+            logger.info("  3. Restart MeshForge")
+        except Exception as e:
+            logger.warning(f"Failed to initialize RNS discovery: {e}")
+            self._rns_connected = False
+
+    def _rns_loop(self):
+        """Background loop to keep RNS connection alive"""
+        import time
+        while self._running:
+            time.sleep(1)
 
     def stop(self):
         """Stop the node tracker"""
@@ -486,71 +534,6 @@ class UnifiedNodeTracker:
             "type": "FeatureCollection",
             "features": features
         }
-
-    def _start_rns_discovery(self):
-        """Initialize RNS and start listening for announces"""
-        try:
-            import RNS
-
-            logger.info("Initializing RNS for node discovery...")
-
-            # RNS.Reticulum() sets up signal handlers which fails in non-main threads
-            # We need to temporarily disable signal handling during init
-            import signal
-            import sys
-
-            # Store if we're in main thread
-            import threading
-            is_main_thread = threading.current_thread() is threading.main_thread()
-
-            if not is_main_thread:
-                # Patch signal.signal temporarily to avoid the error
-                original_signal = signal.signal
-                def dummy_signal(sig, handler):
-                    return None  # Do nothing, rnsd handles signals
-                signal.signal = dummy_signal
-
-            try:
-                self._reticulum = RNS.Reticulum()
-            finally:
-                if not is_main_thread:
-                    # Restore original signal function
-                    signal.signal = original_signal
-
-            # Create announce handler for new announces
-            class NodeAnnounceHandler:
-                def __init__(self, tracker):
-                    self.tracker = tracker
-                    self.aspect_filter = None  # Accept all announces
-
-                def received_announce(self, destination_hash, announced_identity, app_data):
-                    """Called when an announce is received"""
-                    try:
-                        self.tracker._on_rns_announce(destination_hash, announced_identity, app_data)
-                    except Exception as e:
-                        logger.error(f"Error handling RNS announce: {e}")
-
-            # Register the announce handler
-            RNS.Transport.register_announce_handler(NodeAnnounceHandler(self))
-
-            self._rns_connected = True
-            logger.info("RNS discovery initialized - listening for announces")
-
-            # Load already-known destinations from RNS identity cache
-            self._load_known_rns_destinations(RNS)
-
-            # Keep running while tracker is active
-            while self._running:
-                time.sleep(1)
-
-        except ImportError:
-            logger.info("RNS module not installed. To enable RNS node discovery:")
-            logger.info("  1. Install RNS: pip install rns")
-            logger.info("  2. Configure ~/.reticulum/config with TCPClientInterface")
-            logger.info("  3. Restart MeshForge")
-        except Exception as e:
-            logger.warning(f"Failed to initialize RNS discovery: {e}")
-            self._rns_connected = False
 
     def _load_known_rns_destinations(self, RNS):
         """Load known destinations from RNS identity/destination cache"""
