@@ -825,6 +825,9 @@ class RNSPanel(Gtk.Box):
                     import tempfile
                     script_content = f'''#!/bin/bash
 sudo -i -u {real_user} nomadnet --config CONFIG
+echo ""
+echo "Press Enter to close..."
+read
 '''
                     with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
                         f.write(script_content)
@@ -842,6 +845,9 @@ sudo -i -u {real_user} nomadnet --config CONFIG
                     import tempfile
                     script_content = '''#!/bin/bash
 nomadnet --config CONFIG
+echo ""
+echo "Press Enter to close..."
+read
 '''
                     with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
                         f.write(script_content)
@@ -862,9 +868,8 @@ nomadnet --config CONFIG
                         print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
                         print(f"[RNS] Command: {full_cmd}", flush=True)
                         try:
-                            proc = subprocess.Popen(full_cmd, shell=True, start_new_session=True,
-                                                   stderr=subprocess.PIPE)
-                            GLib.timeout_add(500, lambda p=proc: self._check_terminal_launch(p))
+                            # Use os.system with & to launch in background - more reliable for GUI apps
+                            os.system(f"{full_cmd} &")
                             self.main_window.set_status_message("NomadNet launched in terminal")
                         except Exception as e:
                             print(f"[RNS] Failed to launch terminal: {e}", flush=True)
