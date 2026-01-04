@@ -844,10 +844,13 @@ class RNSPanel(Gtk.Box):
                 for term_cmd in terminals:
                     term_name = term_cmd[0]
                     if shutil.which(term_name):
+                        # Build the full command string for shell execution
+                        full_cmd = ' '.join(term_cmd)
                         print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
-                        print(f"[RNS] Command: {' '.join(term_cmd)}", flush=True)
+                        print(f"[RNS] Command: {full_cmd}", flush=True)
                         try:
-                            proc = subprocess.Popen(term_cmd, start_new_session=True,
+                            # Use shell=True to properly parse the command with spaces
+                            proc = subprocess.Popen(full_cmd, shell=True, start_new_session=True,
                                                    stderr=subprocess.PIPE)
                             # Check for immediate failure
                             GLib.timeout_add(500, lambda p=proc: self._check_terminal_launch(p))
