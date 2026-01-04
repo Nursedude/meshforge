@@ -679,6 +679,29 @@ class RNSPanel(Gtk.Box):
         # Check status on load
         GLib.timeout_add(500, self._check_nomadnet_status)
 
+    def _find_nomadnet(self):
+        """Find nomadnet executable, checking user local bin if running as root"""
+        import os
+
+        # First check system PATH
+        nomadnet_path = shutil.which('nomadnet')
+        if nomadnet_path:
+            return nomadnet_path
+
+        # Check user's local bin (for --user pip installs)
+        user_local_bin = Path.home() / ".local" / "bin" / "nomadnet"
+        if user_local_bin.exists():
+            return str(user_local_bin)
+
+        # If running as root via sudo, check the original user's local bin
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user:
+            sudo_user_bin = Path('/home') / sudo_user / ".local" / "bin" / "nomadnet"
+            if sudo_user_bin.exists():
+                return str(sudo_user_bin)
+
+        return None
+
     def _check_nomadnet_status(self):
         """Check if NomadNet daemon is running"""
         def check():
@@ -697,6 +720,8 @@ class RNSPanel(Gtk.Box):
 
     def _update_nomadnet_status(self, running):
         """Update NomadNet status display"""
+        nomadnet_path = self._find_nomadnet()
+
         if running:
             self.nomadnet_status_icon.set_from_icon_name("emblem-default-symbolic")
             self.nomadnet_status_label.set_label("NomadNet daemon running")
@@ -704,7 +729,7 @@ class RNSPanel(Gtk.Box):
             self.nomadnet_stop_btn.set_sensitive(True)
         else:
             # Check if installed
-            if shutil.which('nomadnet'):
+            if nomadnet_path:
                 self.nomadnet_status_icon.set_from_icon_name("media-playback-stop-symbolic")
                 self.nomadnet_status_label.set_label("NomadNet installed (daemon stopped)")
                 self.nomadnet_daemon_btn.set_sensitive(True)
@@ -720,20 +745,23 @@ class RNSPanel(Gtk.Box):
         """Launch NomadNet in specified mode"""
         print(f"[RNS] Launching NomadNet ({mode})...", flush=True)
 
-        if not shutil.which('nomadnet'):
+        nomadnet_path = self._find_nomadnet()
+        if not nomadnet_path:
             self.main_window.set_status_message("NomadNet not installed - install it first")
-            print("[RNS] NomadNet not found in PATH", flush=True)
+            print("[RNS] NomadNet not found", flush=True)
             return
+
+        print(f"[RNS] Found nomadnet at: {nomadnet_path}", flush=True)
 
         try:
             if mode == "textui":
-                # Launch in a terminal
+                # Launch in a terminal using full path
                 terminals = [
-                    ['gnome-terminal', '--', 'nomadnet'],
-                    ['xfce4-terminal', '-e', 'nomadnet'],
-                    ['konsole', '-e', 'nomadnet'],
-                    ['lxterminal', '-e', 'nomadnet'],
-                    ['xterm', '-e', 'nomadnet'],
+                    ['gnome-terminal', '--', nomadnet_path],
+                    ['xfce4-terminal', '-e', nomadnet_path],
+                    ['konsole', '-e', nomadnet_path],
+                    ['lxterminal', '-e', nomadnet_path],
+                    ['xterm', '-e', nomadnet_path],
                 ]
                 for term_cmd in terminals:
                     if shutil.which(term_cmd[0]):
@@ -743,9 +771,9 @@ class RNSPanel(Gtk.Box):
                         return
                 self.main_window.set_status_message("No terminal emulator found")
             elif mode == "daemon":
-                # Run as daemon
+                # Run as daemon using full path
                 subprocess.Popen(
-                    ['nomadnet', '--daemon'],
+                    [nomadnet_path, '--daemon'],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     stdin=subprocess.DEVNULL,
