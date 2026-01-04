@@ -179,6 +179,9 @@ class MapPanel(Gtk.Box):
         stats_box.append(self.stat_meshtastic)
 
         self.stat_rns = self._create_stat_label("RNS", "0")
+        # Add tooltip explaining RNS status
+        if self.node_tracker is None:
+            self.stat_rns.set_tooltip_text("RNS not available - install RNS and configure TCPClientInterface")
         stats_box.append(self.stat_rns)
 
         self.stat_online = self._create_stat_label("Online", "0")

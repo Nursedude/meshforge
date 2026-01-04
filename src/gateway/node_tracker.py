@@ -497,7 +497,7 @@ class UnifiedNodeTracker:
             # Initialize Reticulum
             self._reticulum = RNS.Reticulum()
 
-            # Create announce handler
+            # Create announce handler for new announces
             class NodeAnnounceHandler:
                 def __init__(self, tracker):
                     self.tracker = tracker
@@ -516,15 +516,58 @@ class UnifiedNodeTracker:
             self._rns_connected = True
             logger.info("RNS discovery initialized - listening for announces")
 
+            # Load already-known destinations from RNS identity cache
+            self._load_known_rns_destinations(RNS)
+
             # Keep running while tracker is active
             while self._running:
                 time.sleep(1)
 
         except ImportError:
-            logger.info("RNS module not installed - RNS node discovery disabled")
+            logger.info("RNS module not installed. To enable RNS node discovery:")
+            logger.info("  1. Install RNS: pip install rns")
+            logger.info("  2. Configure ~/.reticulum/config with TCPClientInterface")
+            logger.info("  3. Restart MeshForge")
         except Exception as e:
             logger.warning(f"Failed to initialize RNS discovery: {e}")
             self._rns_connected = False
+
+    def _load_known_rns_destinations(self, RNS):
+        """Load known destinations from RNS identity/destination cache"""
+        try:
+            # Check for known destinations in the transport layer
+            known_count = 0
+
+            # Try to access known destinations from Transport
+            if hasattr(RNS.Transport, 'destinations') and RNS.Transport.destinations:
+                for dest_hash, dest in RNS.Transport.destinations.items():
+                    try:
+                        if hasattr(dest, 'hash'):
+                            node = UnifiedNode.from_rns(dest.hash, name="", app_data=None)
+                            self.add_node(node)
+                            known_count += 1
+                    except Exception as e:
+                        logger.debug(f"Error loading destination: {e}")
+
+            # Also check the identity known destinations
+            if hasattr(RNS.Identity, 'known_destinations') and RNS.Identity.known_destinations:
+                for dest_hash in RNS.Identity.known_destinations:
+                    try:
+                        if isinstance(dest_hash, bytes) and len(dest_hash) == 16:
+                            # Check if we already have this node
+                            node_id = f"rns_{dest_hash.hex()[:16]}"
+                            if node_id not in self._nodes:
+                                node = UnifiedNode.from_rns(dest_hash, name="", app_data=None)
+                                self.add_node(node)
+                                known_count += 1
+                    except Exception as e:
+                        logger.debug(f"Error loading known identity: {e}")
+
+            if known_count > 0:
+                logger.info(f"Loaded {known_count} known RNS destinations")
+
+        except Exception as e:
+            logger.debug(f"Could not load known RNS destinations: {e}")
 
     def _on_rns_announce(self, dest_hash, announced_identity, app_data):
         """Handle RNS announce for node discovery"""
