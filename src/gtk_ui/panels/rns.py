@@ -734,13 +734,44 @@ class RNSPanel(Gtk.Box):
         """Check if NomadNet daemon is running"""
         def check():
             try:
+                # Use multiple detection methods for reliability
+                running = False
+
+                # Method 1: Check for python process running nomadnet module
                 result = subprocess.run(
-                    ['pgrep', '-f', 'nomadnet'],
+                    ['pgrep', '-f', 'python.*nomadnet'],
                     capture_output=True, text=True, timeout=5
                 )
-                running = result.returncode == 0 and result.stdout.strip()
+                if result.returncode == 0 and result.stdout.strip():
+                    running = True
+
+                # Method 2: Check for nomadnet executable directly
+                if not running:
+                    result = subprocess.run(
+                        ['pgrep', '-f', '/nomadnet'],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        running = True
+
+                # Method 3: Use ps aux for broader matching
+                if not running:
+                    result = subprocess.run(
+                        ['ps', 'aux'],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0:
+                        for line in result.stdout.split('\n'):
+                            # Look for nomadnet in process list, exclude grep itself
+                            if 'nomadnet' in line.lower() and 'grep' not in line.lower():
+                                # Make sure it's actually a nomadnet process, not just this check
+                                if '--daemon' in line or 'nomadnet' in line.split()[-1]:
+                                    running = True
+                                    break
+
                 GLib.idle_add(self._update_nomadnet_status, running)
-            except Exception:
+            except Exception as e:
+                print(f"[RNS] Error checking nomadnet status: {e}", flush=True)
                 GLib.idle_add(self._update_nomadnet_status, False)
 
         threading.Thread(target=check, daemon=True).start()
