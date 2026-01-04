@@ -844,14 +844,6 @@ class RNSPanel(Gtk.Box):
         is_root = os.geteuid() == 0
         real_user = self._get_real_username()
 
-        # Check if daemon is running before launching text UI (they conflict)
-        if mode == "textui":
-            daemon_running = self._is_nomadnet_daemon_running()
-            if daemon_running:
-                self.main_window.set_status_message("Stop daemon first - Text UI and daemon can't run together")
-                print("[RNS] Daemon is running, cannot start text UI", flush=True)
-                return
-
         try:
             if mode == "textui":
                 # Launch in a terminal
