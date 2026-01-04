@@ -48,6 +48,8 @@ class MapPanel(Gtk.Box):
     # Persistent monitor shared across refreshes
     _monitor = None
     _monitor_lock = threading.Lock()
+    _last_connect_attempt = 0
+    _connect_backoff = 5  # Minimum seconds between connection attempts
 
     def __init__(self, main_window):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -105,6 +107,12 @@ class MapPanel(Gtk.Box):
                 except (BrokenPipeError, OSError, Exception):
                     pass
                 cls._monitor = None
+
+            # Backoff: Don't retry too frequently
+            now = time.time()
+            if now - cls._last_connect_attempt < cls._connect_backoff:
+                return None, "Waiting to reconnect..."
+            cls._last_connect_attempt = now
 
             # Create new monitor
             try:
@@ -434,7 +442,8 @@ class MapPanel(Gtk.Box):
 
                 except (BrokenPipeError, OSError) as e:
                     # Connection lost - clear monitor for reconnect next time
-                    logger.warning(f"Meshtastic connection lost: {e}")
+                    # Use debug level to avoid log spam during reconnection
+                    logger.debug(f"Meshtastic connection lost: {e}")
                     with MapPanel._monitor_lock:
                         try:
                             if MapPanel._monitor:
@@ -444,7 +453,7 @@ class MapPanel(Gtk.Box):
                         MapPanel._monitor = None
                     error_msg = "Connection lost - will retry"
                 except Exception as e:
-                    logger.error(f"Error fetching Meshtastic nodes: {e}")
+                    logger.debug(f"Error fetching Meshtastic nodes: {e}")
                     error_msg = str(e)
 
             # Also fetch RNS nodes from the unified tracker
