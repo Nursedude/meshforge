@@ -783,15 +783,17 @@ class RNSPanel(Gtk.Box):
 
         try:
             if mode == "textui":
-                # Launch in a terminal using full path
-                # When running as root, use sudo with --preserve-env to keep DISPLAY
+                # Launch in a terminal
+                # When running as root: run terminal as root (has X11), but command as user
                 if is_root and real_user != 'root':
+                    # Terminal runs as root, command runs as user inside
+                    user_cmd = f"sudo -u {real_user} {nomadnet_path}"
                     terminals = [
-                        ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'lxterminal', '-e', nomadnet_path],
-                        ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'xfce4-terminal', '-e', nomadnet_path],
-                        ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'gnome-terminal', '--', nomadnet_path],
-                        ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'konsole', '-e', nomadnet_path],
-                        ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'xterm', '-e', nomadnet_path],
+                        ['lxterminal', '-e', user_cmd],
+                        ['xfce4-terminal', '-e', user_cmd],
+                        ['gnome-terminal', '--', 'bash', '-c', user_cmd],
+                        ['konsole', '-e', 'bash', '-c', user_cmd],
+                        ['xterm', '-e', user_cmd],
                     ]
                 else:
                     terminals = [
@@ -803,12 +805,7 @@ class RNSPanel(Gtk.Box):
                     ]
 
                 for term_cmd in terminals:
-                    # Check for the terminal binary (find first element that's a terminal name)
-                    if term_cmd[0] == 'sudo':
-                        # sudo --preserve-env=... -u user terminal -e cmd
-                        term_name = term_cmd[4]  # terminal is at index 4
-                    else:
-                        term_name = term_cmd[0]
+                    term_name = term_cmd[0]
                     if shutil.which(term_name):
                         print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
                         print(f"[RNS] Command: {' '.join(term_cmd)}", flush=True)
@@ -1131,15 +1128,16 @@ message_storage_limit = 2000
                 print(f"[RNS] Failed to create config: {e}", flush=True)
 
         try:
-            # When running as root, launch terminal as the actual user
-            # Use --preserve-env to keep DISPLAY for GUI terminals
+            # When running as root: run terminal as root (has X11), but nano as user
             if is_root and real_user != 'root':
+                # Terminal runs as root, nano runs as user inside
+                user_cmd = f"sudo -u {real_user} nano {config_path}"
                 terminals = [
-                    ('lxterminal', ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'lxterminal', '-e', f'nano {config_path}']),
-                    ('gnome-terminal', ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'gnome-terminal', '--', 'nano', str(config_path)]),
-                    ('xfce4-terminal', ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'xfce4-terminal', '-e', f'nano {config_path}']),
-                    ('konsole', ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'konsole', '-e', 'nano', str(config_path)]),
-                    ('xterm', ['sudo', '--preserve-env=DISPLAY,XAUTHORITY', '-u', real_user, 'xterm', '-e', 'nano', str(config_path)]),
+                    ('lxterminal', ['lxterminal', '-e', user_cmd]),
+                    ('xfce4-terminal', ['xfce4-terminal', '-e', user_cmd]),
+                    ('gnome-terminal', ['gnome-terminal', '--', 'bash', '-c', user_cmd]),
+                    ('konsole', ['konsole', '-e', 'bash', '-c', user_cmd]),
+                    ('xterm', ['xterm', '-e', user_cmd]),
                 ]
             else:
                 terminals = [
