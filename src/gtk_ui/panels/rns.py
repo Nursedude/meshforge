@@ -793,14 +793,15 @@ class RNSPanel(Gtk.Box):
                 # When running as root: run terminal as root (has X11), but command as user
                 if is_root and real_user != 'root':
                     # Terminal runs as root, command runs as user inside
-                    # Use bash -c to ensure proper command parsing
+                    # Use bash -c with the full command as a single argument to -e
                     user_cmd = f"sudo -u {real_user} {nomadnet_path}"
+                    bash_cmd = f'bash -c "{user_cmd}"'
                     terminals = [
-                        ['lxterminal', '-e', 'bash', '-c', user_cmd],
-                        ['xfce4-terminal', '-e', f'bash -c "{user_cmd}"'],
+                        ['lxterminal', '-e', bash_cmd],
+                        ['xfce4-terminal', '-e', bash_cmd],
                         ['gnome-terminal', '--', 'bash', '-c', user_cmd],
-                        ['konsole', '-e', 'bash', '-c', user_cmd],
-                        ['xterm', '-e', 'bash', '-c', user_cmd],
+                        ['konsole', '-e', bash_cmd],
+                        ['xterm', '-e', bash_cmd],
                     ]
                 else:
                     terminals = [
@@ -1138,14 +1139,15 @@ message_storage_limit = 2000
             # When running as root: run terminal as root (has X11), but nano as user
             if is_root and real_user != 'root':
                 # Terminal runs as root, nano runs as user inside
-                # Use bash -c to ensure proper command parsing
+                # Use bash -c with the full command as a single argument to -e
                 user_cmd = f"sudo -u {real_user} nano {config_path}"
+                bash_cmd = f'bash -c "{user_cmd}"'
                 terminals = [
-                    ('lxterminal', ['lxterminal', '-e', 'bash', '-c', user_cmd]),
-                    ('xfce4-terminal', ['xfce4-terminal', '-e', f'bash -c "{user_cmd}"']),
+                    ('lxterminal', ['lxterminal', '-e', bash_cmd]),
+                    ('xfce4-terminal', ['xfce4-terminal', '-e', bash_cmd]),
                     ('gnome-terminal', ['gnome-terminal', '--', 'bash', '-c', user_cmd]),
-                    ('konsole', ['konsole', '-e', 'bash', '-c', user_cmd]),
-                    ('xterm', ['xterm', '-e', 'bash', '-c', user_cmd]),
+                    ('konsole', ['konsole', '-e', bash_cmd]),
+                    ('xterm', ['xterm', '-e', bash_cmd]),
                 ]
             else:
                 terminals = [
