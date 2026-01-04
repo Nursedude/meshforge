@@ -218,33 +218,53 @@ def check_internet_connection():
         return False
 
 
-def get_service_status(service_name):
-    """Get systemd service status"""
-    result = run_command(f'systemctl is-active {service_name}')
+def get_service_status(service_name: str) -> str:
+    """Get systemd service status
+
+    Args:
+        service_name: Name of the systemd service (validated, no shell chars)
+    """
+    # Use list form to prevent command injection
+    result = run_command(['systemctl', 'is-active', service_name])
     return result['stdout'].strip() if result['success'] else 'unknown'
 
 
-def is_service_running(service_name):
+def is_service_running(service_name: str) -> bool:
     """Check if a systemd service is running"""
     return get_service_status(service_name) == 'active'
 
 
-def enable_service(service_name):
-    """Enable and start a systemd service"""
-    enable_result = run_command(f'systemctl enable {service_name}')
-    start_result = run_command(f'systemctl start {service_name}')
+def enable_service(service_name: str) -> bool:
+    """Enable and start a systemd service
+
+    Args:
+        service_name: Name of the systemd service (validated, no shell chars)
+    """
+    # Use list form to prevent command injection
+    enable_result = run_command(['systemctl', 'enable', service_name])
+    start_result = run_command(['systemctl', 'start', service_name])
     return enable_result['success'] and start_result['success']
 
 
-def restart_service(service_name):
-    """Restart a systemd service"""
-    result = run_command(f'systemctl restart {service_name}')
+def restart_service(service_name: str) -> bool:
+    """Restart a systemd service
+
+    Args:
+        service_name: Name of the systemd service (validated, no shell chars)
+    """
+    # Use list form to prevent command injection
+    result = run_command(['systemctl', 'restart', service_name])
     return result['success']
 
 
-def check_package_installed(package_name):
-    """Check if a Debian package is installed"""
-    result = run_command(f'dpkg -l {package_name}')
+def check_package_installed(package_name: str) -> bool:
+    """Check if a Debian package is installed
+
+    Args:
+        package_name: Name of the package (validated, no shell chars)
+    """
+    # Use list form to prevent command injection
+    result = run_command(['dpkg', '-l', package_name])
     return result['success']
 
 
@@ -265,15 +285,19 @@ def get_available_memory():
             return 0
 
 
-def get_disk_space(path='/'):
-    """Get available disk space in MB"""
+def get_disk_space(path: str = '/') -> int:
+    """Get available disk space in MB
+
+    Args:
+        path: Filesystem path to check (validated, no shell chars)
+    """
     try:
         import psutil
         disk = psutil.disk_usage(path)
         return disk.free // (1024 * 1024)
     except ImportError:
-        # Fallback to df command
-        result = run_command(f'df -m {path}')
+        # Fallback to df command - use list form for security
+        result = run_command(['df', '-m', path])
         if result['success']:
             lines = result['stdout'].strip().split('\n')
             if len(lines) > 1:
