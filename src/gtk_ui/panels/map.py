@@ -33,6 +33,10 @@ except (ValueError, ImportError):
 class MapPanel(Gtk.Box):
     """Map panel showing nodes from both RNS and Meshtastic networks"""
 
+    # Persistent monitor shared across refreshes
+    _monitor = None
+    _monitor_lock = threading.Lock()
+
     def __init__(self, main_window):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         self.main_window = main_window
@@ -59,6 +63,60 @@ class MapPanel(Gtk.Box):
             logger.warning(f"Could not import node tracker: {e}")
         except Exception as e:
             logger.error(f"Failed to initialize node tracker: {e}")
+
+    @classmethod
+    def _get_monitor(cls):
+        """Get or create persistent NodeMonitor"""
+        import time
+
+        with cls._monitor_lock:
+            # Check if monitor exists and is connected
+            if cls._monitor is not None:
+                try:
+                    if cls._monitor.is_connected:
+                        return cls._monitor, None
+                except Exception:
+                    pass
+
+                # Disconnect old monitor
+                try:
+                    cls._monitor.disconnect()
+                except Exception:
+                    pass
+                cls._monitor = None
+
+            # Create new monitor
+            try:
+                from ...monitoring.node_monitor import NodeMonitor
+            except ImportError:
+                try:
+                    from src.monitoring.node_monitor import NodeMonitor
+                except ImportError:
+                    return None, "NodeMonitor not available"
+
+            try:
+                import socket
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(3.0)
+                if sock.connect_ex(('localhost', 4403)) != 0:
+                    sock.close()
+                    return None, "meshtasticd not running (port 4403)"
+                sock.close()
+            except Exception as e:
+                return None, f"Cannot check port: {e}"
+
+            try:
+                monitor = NodeMonitor(host='localhost', port=4403)
+                if monitor.connect(timeout=15.0):
+                    # Wait for nodes to load from interface
+                    time.sleep(2.0)
+                    cls._monitor = monitor
+                    logger.info(f"NodeMonitor connected, {monitor.get_node_count()} nodes")
+                    return monitor, None
+                else:
+                    return None, "Failed to connect to meshtasticd"
+            except Exception as e:
+                return None, f"Connection error: {e}"
 
     def _build_ui(self):
         """Build the map panel UI"""
@@ -255,110 +313,85 @@ class MapPanel(Gtk.Box):
         self.status_label.set_label("Refreshing...")
 
         def fetch_data():
+            from datetime import datetime
+
             stats = {"total": 0, "meshtastic": 0, "rns": 0, "online": 0, "with_position": 0}
             geojson = {"type": "FeatureCollection", "features": []}
             nodes_raw = []
             error_msg = None
 
-            # Try to get nodes from Meshtastic via NodeMonitor
-            try:
-                import socket
-                from datetime import datetime
+            # Get persistent monitor
+            monitor, error_msg = MapPanel._get_monitor()
 
-                # Check if meshtasticd is running
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(3.0)
-                if sock.connect_ex(('localhost', 4403)) != 0:
-                    sock.close()
-                    error_msg = "meshtasticd not running (port 4403)"
-                else:
-                    sock.close()
+            if monitor:
+                try:
+                    features = []
+                    total = 0
+                    online = 0
+                    with_position = 0
 
-                    # Import NodeMonitor
-                    try:
-                        from ...monitoring.node_monitor import NodeMonitor
-                    except ImportError:
-                        try:
-                            from src.monitoring.node_monitor import NodeMonitor
-                        except ImportError:
-                            error_msg = "NodeMonitor not available"
-                            NodeMonitor = None
+                    for node in monitor.get_nodes():
+                        total += 1
+                        nodes_raw.append(node)
 
-                    if NodeMonitor:
-                        monitor = NodeMonitor(host='localhost', port=4403)
-                        if monitor.connect(timeout=10.0):
-                            features = []
-                            total = 0
-                            online = 0
-                            with_position = 0
+                        # Check if online (seen in last 15 minutes)
+                        is_online = False
+                        last_seen = "Unknown"
+                        if node.last_heard:
+                            delta = datetime.now() - node.last_heard
+                            if delta.total_seconds() < 60:
+                                last_seen = f"{int(delta.total_seconds())}s ago"
+                                is_online = True
+                            elif delta.total_seconds() < 3600:
+                                last_seen = f"{int(delta.total_seconds() / 60)}m ago"
+                                is_online = True
+                            elif delta.total_seconds() < 86400:
+                                last_seen = f"{int(delta.total_seconds() / 3600)}h ago"
+                            else:
+                                last_seen = f"{int(delta.total_seconds() / 86400)}d ago"
 
-                            for node in monitor.get_nodes():
-                                total += 1
-                                nodes_raw.append(node)
+                        if is_online:
+                            online += 1
 
-                                # Check if online (seen in last 15 minutes)
-                                is_online = False
-                                last_seen = "Unknown"
-                                if node.last_heard:
-                                    delta = datetime.now() - node.last_heard
-                                    if delta.total_seconds() < 60:
-                                        last_seen = f"{int(delta.total_seconds())}s ago"
-                                        is_online = True
-                                    elif delta.total_seconds() < 3600:
-                                        last_seen = f"{int(delta.total_seconds() / 60)}m ago"
-                                        is_online = True
-                                    elif delta.total_seconds() < 86400:
-                                        last_seen = f"{int(delta.total_seconds() / 3600)}h ago"
-                                    else:
-                                        last_seen = f"{int(delta.total_seconds() / 86400)}d ago"
+                        # Check position
+                        if node.position and (node.position.latitude or node.position.longitude):
+                            lat = node.position.latitude
+                            lon = node.position.longitude
+                            if lat and lon and not (lat == 0 and lon == 0):
+                                with_position += 1
+                                feature = {
+                                    "type": "Feature",
+                                    "geometry": {
+                                        "type": "Point",
+                                        "coordinates": [lon, lat]
+                                    },
+                                    "properties": {
+                                        "id": node.node_id,
+                                        "name": node.long_name or node.short_name or node.node_id,
+                                        "network": "meshtastic",
+                                        "is_online": is_online,
+                                        "is_local": node.node_id == monitor.my_node_id,
+                                        "is_gateway": (node.role or '').upper() in ['ROUTER', 'REPEATER', 'ROUTER_CLIENT'],
+                                        "snr": node.snr,
+                                        "battery": node.metrics.battery_level if node.metrics else None,
+                                        "last_seen": last_seen,
+                                        "hardware": node.hardware_model,
+                                    }
+                                }
+                                features.append(feature)
 
-                                if is_online:
-                                    online += 1
+                    stats = {
+                        "total": total,
+                        "meshtastic": total,
+                        "rns": 0,
+                        "online": online,
+                        "with_position": with_position
+                    }
+                    geojson = {"type": "FeatureCollection", "features": features}
 
-                                # Check position
-                                if node.position and (node.position.latitude or node.position.longitude):
-                                    lat = node.position.latitude
-                                    lon = node.position.longitude
-                                    if lat and lon and not (lat == 0 and lon == 0):
-                                        with_position += 1
-                                        feature = {
-                                            "type": "Feature",
-                                            "geometry": {
-                                                "type": "Point",
-                                                "coordinates": [lon, lat]
-                                            },
-                                            "properties": {
-                                                "id": node.node_id,
-                                                "name": node.long_name or node.short_name or node.node_id,
-                                                "network": "meshtastic",
-                                                "is_online": is_online,
-                                                "is_local": node.node_id == monitor.my_node_id,
-                                                "is_gateway": (node.role or '').upper() in ['ROUTER', 'REPEATER', 'ROUTER_CLIENT'],
-                                                "snr": node.snr,
-                                                "battery": node.metrics.battery_level if node.metrics else None,
-                                                "last_seen": last_seen,
-                                                "hardware": node.hardware_model,
-                                            }
-                                        }
-                                        features.append(feature)
-
-                            monitor.disconnect()
-
-                            stats = {
-                                "total": total,
-                                "meshtastic": total,
-                                "rns": 0,
-                                "online": online,
-                                "with_position": with_position
-                            }
-                            geojson = {"type": "FeatureCollection", "features": features}
-
-                        else:
-                            error_msg = "Failed to connect to meshtasticd"
-
-            except Exception as e:
-                logger.error(f"Error fetching Meshtastic nodes: {e}")
-                error_msg = str(e)
+                except Exception as e:
+                    logger.error(f"Error fetching Meshtastic nodes: {e}")
+                    error_msg = str(e)
 
             GLib.idle_add(self._update_ui, stats, geojson, nodes_raw, error_msg)
 
