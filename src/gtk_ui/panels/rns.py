@@ -843,6 +843,7 @@ class RNSPanel(Gtk.Box):
 
     def _on_gateway_start(self, button):
         """Start the gateway bridge"""
+        print("[RNS] Starting gateway...", flush=True)
         self.main_window.set_status_message("Starting gateway...")
 
         def do_start():
@@ -856,11 +857,14 @@ class RNSPanel(Gtk.Box):
 
                 self._gateway_bridge = RNSMeshtasticBridge(config)
                 success = self._gateway_bridge.start()
+                print(f"[RNS] Gateway start: {'OK' if success else 'FAILED'}", flush=True)
 
                 GLib.idle_add(self._gateway_start_complete, success)
             except ImportError as e:
+                print(f"[RNS] Gateway start failed - missing module: {e}", flush=True)
                 GLib.idle_add(self._gateway_start_complete, False, f"Missing module: {e}")
             except Exception as e:
+                print(f"[RNS] Gateway start exception: {e}", flush=True)
                 GLib.idle_add(self._gateway_start_complete, False, str(e))
 
         thread = threading.Thread(target=do_start)
@@ -880,11 +884,15 @@ class RNSPanel(Gtk.Box):
 
     def _on_gateway_stop(self, button):
         """Stop the gateway bridge"""
+        print("[RNS] Stopping gateway...", flush=True)
         self.main_window.set_status_message("Stopping gateway...")
 
         if self._gateway_bridge:
             self._gateway_bridge.stop()
             self._gateway_bridge = None
+            print("[RNS] Gateway stopped", flush=True)
+        else:
+            print("[RNS] No gateway running", flush=True)
 
         self.main_window.set_status_message("Gateway stopped")
         self._update_gateway_status()
@@ -902,6 +910,7 @@ class RNSPanel(Gtk.Box):
 
     def _on_test_gateway(self, button):
         """Test gateway connections"""
+        print("[RNS] Testing gateway connections...", flush=True)
         self.main_window.set_status_message("Testing connections...")
 
         def do_test():
@@ -946,6 +955,7 @@ class RNSPanel(Gtk.Box):
         """Handle test completion"""
         mesh_ok = results['meshtastic']['connected']
         rns_ok = results['rns']['connected']
+        print(f"[RNS] Test results - Meshtastic: {'OK' if mesh_ok else 'FAIL'}, RNS: {'OK' if rns_ok else 'FAIL'}", flush=True)
 
         # Update icons
         if mesh_ok:
@@ -1025,11 +1035,14 @@ class RNSPanel(Gtk.Box):
 
     def _open_rns_config_dialog(self):
         """Open the RNS configuration editor dialog"""
+        print("[RNS] Opening RNS config dialog...", flush=True)
         try:
             from ..dialogs.rns_config import RNSConfigDialog
             dialog = RNSConfigDialog(self.main_window)
             dialog.present()
+            print("[RNS] Config dialog opened", flush=True)
         except ImportError as e:
+            print(f"[RNS] Config dialog import failed: {e}", flush=True)
             # Fallback if dialog not available
             dialog = Adw.MessageDialog(
                 transient_for=self.main_window,
@@ -1042,14 +1055,18 @@ class RNSPanel(Gtk.Box):
 
     def _edit_config(self, config_file):
         """Open config file in editor"""
+        print(f"[RNS] Opening config: {config_file}", flush=True)
         try:
-            # Try common editors
-            editors = ['gedit', 'kate', 'xed', 'mousepad', 'nano', 'vim']
-            for editor in editors:
+            # Try GUI editors only (no terminal editors like nano/vim)
+            gui_editors = ['gedit', 'kate', 'xed', 'mousepad', 'pluma', 'featherpad']
+            for editor in gui_editors:
                 if shutil.which(editor):
+                    print(f"[RNS] Using editor: {editor}", flush=True)
                     subprocess.Popen([editor, str(config_file)])
                     return
             # Fallback to xdg-open
+            print("[RNS] Using xdg-open", flush=True)
             subprocess.run(['xdg-open', str(config_file)])
         except Exception as e:
+            print(f"[RNS] Failed to open editor: {e}", flush=True)
             self.main_window.set_status_message(f"Failed to open editor: {e}")
