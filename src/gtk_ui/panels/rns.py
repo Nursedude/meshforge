@@ -822,34 +822,31 @@ class RNSPanel(Gtk.Box):
                 # When running as root: run terminal as root (has X11), but command as user
                 if is_root and real_user != 'root':
                     # Use sudo -i for login shell to get user's environment (.bashrc, etc.)
-                    # This ensures any env vars set by the user are available
                     user_cmd = f"sudo -i -u {real_user} nomadnet"
-                    # lxterminal -e runs command through shell, so pass as single string
+                    # Quote the command for terminals that need it
                     terminals = [
-                        ['lxterminal', '-e', user_cmd],
-                        ['xfce4-terminal', '-e', user_cmd],
-                        ['gnome-terminal', '--', 'sudo', '-i', '-u', real_user, 'nomadnet'],
-                        ['konsole', '-e', 'sudo', '-i', '-u', real_user, 'nomadnet'],
-                        ['xterm', '-e', 'sudo', '-i', '-u', real_user, 'nomadnet'],
+                        f"lxterminal -e '{user_cmd}'",
+                        f"xfce4-terminal -e '{user_cmd}'",
+                        f"gnome-terminal -- {user_cmd}",
+                        f"konsole -e {user_cmd}",
+                        f"xterm -e {user_cmd}",
                     ]
                 else:
                     terminals = [
-                        ['lxterminal', '-e', 'nomadnet'],
-                        ['xfce4-terminal', '-e', 'nomadnet'],
-                        ['gnome-terminal', '--', 'nomadnet'],
-                        ['konsole', '-e', 'nomadnet'],
-                        ['xterm', '-e', 'nomadnet'],
+                        "lxterminal -e nomadnet",
+                        "xfce4-terminal -e nomadnet",
+                        "gnome-terminal -- nomadnet",
+                        "konsole -e nomadnet",
+                        "xterm -e nomadnet",
                     ]
 
-                for term_cmd in terminals:
-                    term_name = term_cmd[0]
+                for full_cmd in terminals:
+                    term_name = full_cmd.split()[0]
                     if shutil.which(term_name):
-                        # Build the full command string for shell execution
-                        full_cmd = ' '.join(term_cmd)
                         print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
                         print(f"[RNS] Command: {full_cmd}", flush=True)
                         try:
-                            # Use shell=True to properly parse the command with spaces
+                            # Use shell=True to properly parse the command with quotes
                             proc = subprocess.Popen(full_cmd, shell=True, start_new_session=True,
                                                    stderr=subprocess.PIPE)
                             # Check for immediate failure
@@ -1170,29 +1167,29 @@ message_storage_limit = 2000
         try:
             # When running as root: run terminal as root (has X11), but nano as user
             if is_root and real_user != 'root':
-                # Terminal runs as root, nano runs as user inside
-                user_cmd = f"sudo -u {real_user} nano {config_path}"
-                # lxterminal -e runs command through shell, so pass as single string
+                # Use sudo -i for login shell to get user's environment
+                user_cmd = f"sudo -i -u {real_user} nano {config_path}"
                 terminals = [
-                    ('lxterminal', ['lxterminal', '-e', user_cmd]),
-                    ('xfce4-terminal', ['xfce4-terminal', '-e', user_cmd]),
-                    ('gnome-terminal', ['gnome-terminal', '--', 'sudo', '-u', real_user, 'nano', str(config_path)]),
-                    ('konsole', ['konsole', '-e', 'sudo', '-u', real_user, 'nano', str(config_path)]),
-                    ('xterm', ['xterm', '-e', 'sudo', '-u', real_user, 'nano', str(config_path)]),
+                    ('lxterminal', f'lxterminal -e {user_cmd}'),
+                    ('xfce4-terminal', f'xfce4-terminal -e {user_cmd}'),
+                    ('gnome-terminal', f'gnome-terminal -- sudo -i -u {real_user} nano {config_path}'),
+                    ('konsole', f'konsole -e sudo -i -u {real_user} nano {config_path}'),
+                    ('xterm', f'xterm -e sudo -i -u {real_user} nano {config_path}'),
                 ]
             else:
                 terminals = [
-                    ('lxterminal', ['lxterminal', '-e', f'nano {config_path}']),
-                    ('gnome-terminal', ['gnome-terminal', '--', 'nano', str(config_path)]),
-                    ('xfce4-terminal', ['xfce4-terminal', '-e', f'nano {config_path}']),
-                    ('konsole', ['konsole', '-e', 'nano', str(config_path)]),
-                    ('xterm', ['xterm', '-e', 'nano', str(config_path)]),
+                    ('lxterminal', f'lxterminal -e nano {config_path}'),
+                    ('xfce4-terminal', f'xfce4-terminal -e nano {config_path}'),
+                    ('gnome-terminal', f'gnome-terminal -- nano {config_path}'),
+                    ('konsole', f'konsole -e nano {config_path}'),
+                    ('xterm', f'xterm -e nano {config_path}'),
                 ]
 
-            for term_name, term_cmd in terminals:
+            for term_name, full_cmd in terminals:
                 if shutil.which(term_name):
                     print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
-                    subprocess.Popen(term_cmd, start_new_session=True)
+                    print(f"[RNS] Command: {full_cmd}", flush=True)
+                    subprocess.Popen(full_cmd, shell=True, start_new_session=True)
                     self.main_window.set_status_message(f"Editing {config_path.name} in terminal")
                     return
 
@@ -1547,13 +1544,25 @@ message_storage_limit = 2000
 
         def do_install():
             try:
-                # Use python -m pip for better reliability
-                # Add --no-cache-dir to avoid permission issues with pip cache
-                # Add --break-system-packages for PEP 668 externally managed environments
-                import sys
-                cmd = [sys.executable, '-m', 'pip', 'install', '--upgrade', '--user',
-                       '--no-cache-dir', '--break-system-packages', package]
-                print(f"[RNS] Running: {' '.join(cmd)}", flush=True)
+                import os
+                is_root = os.geteuid() == 0
+                real_user = self._get_real_username()
+
+                # Build pip install command
+                pip_args = ['pip', 'install', '--upgrade', '--user',
+                           '--no-cache-dir', '--break-system-packages', package]
+
+                # When running as root, install as the real user
+                if is_root and real_user != 'root':
+                    # Use sudo -i -u to get user's environment and install to their home
+                    cmd = ['sudo', '-i', '-u', real_user] + pip_args
+                    print(f"[RNS] Installing as user {real_user}: {' '.join(cmd)}", flush=True)
+                else:
+                    # Running as normal user, use python -m pip
+                    import sys
+                    cmd = [sys.executable, '-m'] + pip_args
+                    print(f"[RNS] Running: {' '.join(cmd)}", flush=True)
+
                 result = subprocess.run(
                     cmd,
                     capture_output=True, text=True,
@@ -1616,11 +1625,23 @@ message_storage_limit = 2000
         def do_install_all():
             packages = [c['package'] for c in self.COMPONENTS]
             try:
-                import sys
-                # Add --break-system-packages for PEP 668 externally managed environments
-                cmd = [sys.executable, '-m', 'pip', 'install', '--upgrade', '--user',
-                       '--no-cache-dir', '--break-system-packages'] + packages
-                print(f"[RNS] Running: {' '.join(cmd)}", flush=True)
+                import os
+                is_root = os.geteuid() == 0
+                real_user = self._get_real_username()
+
+                # Build pip install command
+                pip_args = ['pip', 'install', '--upgrade', '--user',
+                           '--no-cache-dir', '--break-system-packages'] + packages
+
+                # When running as root, install as the real user
+                if is_root and real_user != 'root':
+                    cmd = ['sudo', '-i', '-u', real_user] + pip_args
+                    print(f"[RNS] Installing as user {real_user}: {' '.join(cmd)}", flush=True)
+                else:
+                    import sys
+                    cmd = [sys.executable, '-m'] + pip_args
+                    print(f"[RNS] Running: {' '.join(cmd)}", flush=True)
+
                 result = subprocess.run(
                     cmd,
                     capture_output=True, text=True,
