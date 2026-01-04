@@ -759,34 +759,57 @@ class RNSPanel(Gtk.Box):
 
         print(f"[RNS] Found nomadnet at: {nomadnet_path}", flush=True)
 
+        # Check if running as root via sudo
+        is_root = os.geteuid() == 0
+        real_user = self._get_real_username()
+
         try:
             if mode == "textui":
                 # Launch in a terminal using full path
-                terminals = [
-                    ['gnome-terminal', '--', nomadnet_path],
-                    ['xfce4-terminal', '-e', nomadnet_path],
-                    ['konsole', '-e', nomadnet_path],
-                    ['lxterminal', '-e', nomadnet_path],
-                    ['xterm', '-e', nomadnet_path],
-                ]
+                # When running as root, use sudo -u to run as real user
+                if is_root and real_user != 'root':
+                    terminals = [
+                        ['sudo', '-u', real_user, 'lxterminal', '-e', nomadnet_path],
+                        ['sudo', '-u', real_user, 'xfce4-terminal', '-e', nomadnet_path],
+                        ['sudo', '-u', real_user, 'gnome-terminal', '--', nomadnet_path],
+                        ['sudo', '-u', real_user, 'konsole', '-e', nomadnet_path],
+                        ['sudo', '-u', real_user, 'xterm', '-e', nomadnet_path],
+                    ]
+                else:
+                    terminals = [
+                        ['lxterminal', '-e', nomadnet_path],
+                        ['xfce4-terminal', '-e', nomadnet_path],
+                        ['gnome-terminal', '--', nomadnet_path],
+                        ['konsole', '-e', nomadnet_path],
+                        ['xterm', '-e', nomadnet_path],
+                    ]
+
                 for term_cmd in terminals:
-                    if shutil.which(term_cmd[0]):
-                        print(f"[RNS] Using terminal: {term_cmd[0]}", flush=True)
+                    # Check for the terminal binary (first non-sudo element)
+                    term_name = term_cmd[0] if term_cmd[0] != 'sudo' else term_cmd[3]
+                    if shutil.which(term_name):
+                        print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
                         subprocess.Popen(term_cmd, start_new_session=True)
                         self.main_window.set_status_message("NomadNet launched in terminal")
                         return
                 self.main_window.set_status_message("No terminal emulator found")
             elif mode == "daemon":
                 # Run as daemon using full path
+                # When running as root, run as real user
+                if is_root and real_user != 'root':
+                    cmd = ['sudo', '-u', real_user, nomadnet_path, '--daemon']
+                else:
+                    cmd = [nomadnet_path, '--daemon']
+
                 subprocess.Popen(
-                    [nomadnet_path, '--daemon'],
+                    cmd,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     stdin=subprocess.DEVNULL,
                     start_new_session=True
                 )
                 self.main_window.set_status_message("NomadNet daemon started")
-                print("[RNS] NomadNet daemon started", flush=True)
+                print(f"[RNS] NomadNet daemon started (user: {real_user})", flush=True)
                 # Refresh status after a moment
                 GLib.timeout_add(1000, self._check_nomadnet_status)
         except Exception as e:
