@@ -251,27 +251,120 @@ class MapPanel(Gtk.Box):
         self.webview.load_html(html, "file:///")
 
     def _refresh_data(self):
-        """Refresh node data"""
+        """Refresh node data from Meshtastic"""
         self.status_label.set_label("Refreshing...")
 
         def fetch_data():
             stats = {"total": 0, "meshtastic": 0, "rns": 0, "online": 0, "with_position": 0}
             geojson = {"type": "FeatureCollection", "features": []}
-            nodes = []
+            nodes_raw = []
+            error_msg = None
 
-            if self.node_tracker:
-                try:
-                    stats = self.node_tracker.get_stats()
-                    geojson = self.node_tracker.to_geojson()
-                    nodes = self.node_tracker.get_all_nodes()
-                except Exception as e:
-                    logger.error(f"Error fetching node data: {e}")
+            # Try to get nodes from Meshtastic via NodeMonitor
+            try:
+                import socket
+                from datetime import datetime
 
-            GLib.idle_add(self._update_ui, stats, geojson, nodes)
+                # Check if meshtasticd is running
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(3.0)
+                if sock.connect_ex(('localhost', 4403)) != 0:
+                    sock.close()
+                    error_msg = "meshtasticd not running (port 4403)"
+                else:
+                    sock.close()
+
+                    # Import NodeMonitor
+                    try:
+                        from ...monitoring.node_monitor import NodeMonitor
+                    except ImportError:
+                        try:
+                            from src.monitoring.node_monitor import NodeMonitor
+                        except ImportError:
+                            error_msg = "NodeMonitor not available"
+                            NodeMonitor = None
+
+                    if NodeMonitor:
+                        monitor = NodeMonitor(host='localhost', port=4403)
+                        if monitor.connect(timeout=10.0):
+                            features = []
+                            total = 0
+                            online = 0
+                            with_position = 0
+
+                            for node in monitor.get_nodes():
+                                total += 1
+                                nodes_raw.append(node)
+
+                                # Check if online (seen in last 15 minutes)
+                                is_online = False
+                                last_seen = "Unknown"
+                                if node.last_heard:
+                                    delta = datetime.now() - node.last_heard
+                                    if delta.total_seconds() < 60:
+                                        last_seen = f"{int(delta.total_seconds())}s ago"
+                                        is_online = True
+                                    elif delta.total_seconds() < 3600:
+                                        last_seen = f"{int(delta.total_seconds() / 60)}m ago"
+                                        is_online = True
+                                    elif delta.total_seconds() < 86400:
+                                        last_seen = f"{int(delta.total_seconds() / 3600)}h ago"
+                                    else:
+                                        last_seen = f"{int(delta.total_seconds() / 86400)}d ago"
+
+                                if is_online:
+                                    online += 1
+
+                                # Check position
+                                if node.position and (node.position.latitude or node.position.longitude):
+                                    lat = node.position.latitude
+                                    lon = node.position.longitude
+                                    if lat and lon and not (lat == 0 and lon == 0):
+                                        with_position += 1
+                                        feature = {
+                                            "type": "Feature",
+                                            "geometry": {
+                                                "type": "Point",
+                                                "coordinates": [lon, lat]
+                                            },
+                                            "properties": {
+                                                "id": node.node_id,
+                                                "name": node.long_name or node.short_name or node.node_id,
+                                                "network": "meshtastic",
+                                                "is_online": is_online,
+                                                "is_local": node.node_id == monitor.my_node_id,
+                                                "is_gateway": (node.role or '').upper() in ['ROUTER', 'REPEATER', 'ROUTER_CLIENT'],
+                                                "snr": node.snr,
+                                                "battery": node.metrics.battery_level if node.metrics else None,
+                                                "last_seen": last_seen,
+                                                "hardware": node.hardware_model,
+                                            }
+                                        }
+                                        features.append(feature)
+
+                            monitor.disconnect()
+
+                            stats = {
+                                "total": total,
+                                "meshtastic": total,
+                                "rns": 0,
+                                "online": online,
+                                "with_position": with_position
+                            }
+                            geojson = {"type": "FeatureCollection", "features": features}
+
+                        else:
+                            error_msg = "Failed to connect to meshtasticd"
+
+            except Exception as e:
+                logger.error(f"Error fetching Meshtastic nodes: {e}")
+                error_msg = str(e)
+
+            GLib.idle_add(self._update_ui, stats, geojson, nodes_raw, error_msg)
 
         threading.Thread(target=fetch_data, daemon=True).start()
 
-    def _update_ui(self, stats, geojson, nodes):
+    def _update_ui(self, stats, geojson, nodes, error_msg=None):
         """Update UI with fetched data"""
         # Update statistics
         self._update_stat(self.stat_total, stats.get("total", 0))
@@ -292,12 +385,17 @@ class MapPanel(Gtk.Box):
 
         # Update node list if in fallback mode
         if hasattr(self, 'node_list'):
-            self._update_node_list(nodes)
+            self._update_node_list_raw(nodes)
 
-        self.status_label.set_label(
-            f"Last updated: {stats.get('total', 0)} nodes "
-            f"({stats.get('online', 0)} online)"
-        )
+        # Update status with error or success
+        if error_msg:
+            self.status_label.set_label(f"Error: {error_msg}")
+        else:
+            self.status_label.set_label(
+                f"Last updated: {stats.get('total', 0)} nodes "
+                f"({stats.get('with_position', 0)} with position, "
+                f"{stats.get('online', 0)} online)"
+            )
 
         return False
 
@@ -321,6 +419,97 @@ class MapPanel(Gtk.Box):
             empty_label.set_margin_top(20)
             empty_label.set_margin_bottom(20)
             self.node_list.append(empty_label)
+
+    def _update_node_list_raw(self, nodes):
+        """Update the fallback node list with raw NodeInfo objects from NodeMonitor"""
+        from datetime import datetime
+
+        # Clear existing
+        while True:
+            child = self.node_list.get_first_child()
+            if child is None:
+                break
+            self.node_list.remove(child)
+
+        # Add nodes
+        for node in nodes:
+            row = self._create_node_row_raw(node)
+            self.node_list.append(row)
+
+        if not nodes:
+            empty_label = Gtk.Label(label="No nodes found - is meshtasticd running?")
+            empty_label.add_css_class("dim-label")
+            empty_label.set_margin_top(20)
+            empty_label.set_margin_bottom(20)
+            self.node_list.append(empty_label)
+
+    def _create_node_row_raw(self, node):
+        """Create a list row for a raw NodeInfo from NodeMonitor"""
+        from datetime import datetime
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=15)
+        box.set_margin_start(10)
+        box.set_margin_end(10)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+
+        # Check if online (seen in last 15 minutes)
+        is_online = False
+        age_str = "Unknown"
+        if node.last_heard:
+            delta = datetime.now() - node.last_heard
+            if delta.total_seconds() < 900:  # 15 minutes
+                is_online = True
+            if delta.total_seconds() < 60:
+                age_str = f"{int(delta.total_seconds())}s ago"
+            elif delta.total_seconds() < 3600:
+                age_str = f"{int(delta.total_seconds() / 60)}m ago"
+            elif delta.total_seconds() < 86400:
+                age_str = f"{int(delta.total_seconds() / 3600)}h ago"
+            else:
+                age_str = f"{int(delta.total_seconds() / 86400)}d ago"
+
+        # Status indicator
+        status_icon = Gtk.Label()
+        if is_online:
+            status_icon.set_label("\u25CF")  # Filled circle
+            status_icon.add_css_class("success")
+        else:
+            status_icon.set_label("\u25CB")  # Empty circle
+            status_icon.add_css_class("error")
+        box.append(status_icon)
+
+        # Name
+        name = node.long_name or node.short_name or node.node_id
+        name_label = Gtk.Label(label=name)
+        name_label.set_xalign(0)
+        name_label.set_hexpand(True)
+        box.append(name_label)
+
+        # Network badge
+        network_label = Gtk.Label(label="MESH")
+        network_label.add_css_class("accent")
+        box.append(network_label)
+
+        # Position indicator
+        if node.position and (node.position.latitude or node.position.longitude):
+            lat = node.position.latitude
+            lon = node.position.longitude
+            if lat and lon and not (lat == 0 and lon == 0):
+                pos_label = Gtk.Label(label=f"{lat:.4f}, {lon:.4f}")
+            else:
+                pos_label = Gtk.Label(label="No position")
+        else:
+            pos_label = Gtk.Label(label="No position")
+        pos_label.add_css_class("dim-label")
+        box.append(pos_label)
+
+        # Last seen
+        seen_label = Gtk.Label(label=age_str)
+        seen_label.add_css_class("dim-label")
+        box.append(seen_label)
+
+        return box
 
     def _create_node_row(self, node):
         """Create a list row for a node"""
