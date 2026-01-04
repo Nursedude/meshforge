@@ -9,6 +9,7 @@ HamClock by Clear Sky Institute provides:
 - Satellite tracking
 
 Reference: https://www.clearskyinstitute.com/ham/HamClock/
+SystemD packages: https://github.com/pa28/hamclock-systemd
 """
 
 import gi
@@ -16,6 +17,8 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, GLib, Gio
 import threading
+import subprocess
+import shutil
 import json
 import urllib.request
 import urllib.error
@@ -56,9 +59,12 @@ class HamClockPanel(Gtk.Box):
         self._settings = self._load_settings()
         self._build_ui()
 
+        # Check service status on startup
+        GLib.timeout_add(500, self._check_service_status)
+
         # Auto-connect if URL is configured
         if self._settings.get("url"):
-            GLib.timeout_add(500, self._auto_connect)
+            GLib.timeout_add(1000, self._auto_connect)
 
     def _load_settings(self):
         """Load HamClock settings"""
@@ -108,6 +114,9 @@ class HamClockPanel(Gtk.Box):
         subtitle.set_xalign(0)
         subtitle.add_css_class("dim-label")
         self.append(subtitle)
+
+        # Service status section
+        self._build_service_section()
 
         # Connection settings
         settings_frame = Gtk.Frame()
@@ -236,6 +245,230 @@ class HamClockPanel(Gtk.Box):
 
             browser_frame.set_child(browser_box)
             self.append(browser_frame)
+
+    def _build_service_section(self):
+        """Build HamClock service status and control section"""
+        frame = Gtk.Frame()
+        frame.set_label("HamClock Service")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_start(15)
+        box.set_margin_end(15)
+        box.set_margin_top(10)
+        box.set_margin_bottom(10)
+
+        # Status row
+        status_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=15)
+
+        self.service_status_icon = Gtk.Image.new_from_icon_name("emblem-question")
+        self.service_status_icon.set_pixel_size(32)
+        status_row.append(self.service_status_icon)
+
+        status_info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        self.service_status_label = Gtk.Label(label="Checking...")
+        self.service_status_label.set_xalign(0)
+        self.service_status_label.add_css_class("heading")
+        status_info.append(self.service_status_label)
+
+        self.service_detail_label = Gtk.Label(label="")
+        self.service_detail_label.set_xalign(0)
+        self.service_detail_label.add_css_class("dim-label")
+        status_info.append(self.service_detail_label)
+
+        status_row.append(status_info)
+
+        # Spacer
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        status_row.append(spacer)
+
+        # Control buttons
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+
+        self.service_start_btn = Gtk.Button(label="Start")
+        self.service_start_btn.add_css_class("suggested-action")
+        self.service_start_btn.connect("clicked", lambda b: self._service_action("start"))
+        btn_box.append(self.service_start_btn)
+
+        self.service_stop_btn = Gtk.Button(label="Stop")
+        self.service_stop_btn.add_css_class("destructive-action")
+        self.service_stop_btn.connect("clicked", lambda b: self._service_action("stop"))
+        btn_box.append(self.service_stop_btn)
+
+        self.service_restart_btn = Gtk.Button(label="Restart")
+        self.service_restart_btn.connect("clicked", lambda b: self._service_action("restart"))
+        btn_box.append(self.service_restart_btn)
+
+        status_row.append(btn_box)
+        box.append(status_row)
+
+        # Install info row
+        install_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+
+        install_label = Gtk.Label(label="Install HamClock:")
+        install_label.set_xalign(0)
+        install_row.append(install_label)
+
+        # Link to hamclock-systemd
+        link_btn = Gtk.LinkButton.new_with_label(
+            "https://github.com/pa28/hamclock-systemd",
+            "hamclock-systemd packages"
+        )
+        install_row.append(link_btn)
+
+        # Or official site
+        official_link = Gtk.LinkButton.new_with_label(
+            "https://www.clearskyinstitute.com/ham/HamClock/",
+            "Official HamClock"
+        )
+        install_row.append(official_link)
+
+        box.append(install_row)
+        frame.set_child(box)
+        self.append(frame)
+
+    def _check_service_status(self):
+        """Check if HamClock service is running"""
+        print("[HamClock] Checking service status...", flush=True)
+
+        def check():
+            status = {
+                'installed': False,
+                'running': False,
+                'service_name': None,
+                'error': None
+            }
+
+            # Check for different HamClock service names
+            service_names = ['hamclock', 'hamclock-web', 'hamclock-systemd']
+
+            for name in service_names:
+                try:
+                    result = subprocess.run(
+                        ['systemctl', 'is-active', name],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0 and result.stdout.strip() == 'active':
+                        status['installed'] = True
+                        status['running'] = True
+                        status['service_name'] = name
+                        break
+
+                    # Check if installed but not running
+                    result2 = subprocess.run(
+                        ['systemctl', 'is-enabled', name],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result2.returncode == 0 or 'disabled' in result2.stdout:
+                        status['installed'] = True
+                        status['service_name'] = name
+
+                except Exception as e:
+                    pass
+
+            # Also check for running hamclock process (might be started manually)
+            if not status['running']:
+                try:
+                    result = subprocess.run(
+                        ['pgrep', '-f', 'hamclock'],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        status['running'] = True
+                        status['service_name'] = 'hamclock (process)'
+                except Exception:
+                    pass
+
+            GLib.idle_add(self._update_service_status, status)
+
+        threading.Thread(target=check, daemon=True).start()
+        return False  # Don't repeat
+
+    def _update_service_status(self, status):
+        """Update the service status display"""
+        if status['running']:
+            self.service_status_icon.set_from_icon_name("emblem-default-symbolic")
+            self.service_status_label.set_label("HamClock Running")
+            if status['service_name']:
+                self.service_detail_label.set_label(f"Service: {status['service_name']}")
+            self.service_start_btn.set_sensitive(False)
+            self.service_stop_btn.set_sensitive(True)
+            self.service_restart_btn.set_sensitive(True)
+            print(f"[HamClock] Service running: {status['service_name']}", flush=True)
+        elif status['installed']:
+            self.service_status_icon.set_from_icon_name("dialog-warning-symbolic")
+            self.service_status_label.set_label("HamClock Stopped")
+            self.service_detail_label.set_label(f"Service: {status['service_name']}")
+            self.service_start_btn.set_sensitive(True)
+            self.service_stop_btn.set_sensitive(False)
+            self.service_restart_btn.set_sensitive(False)
+            print(f"[HamClock] Service installed but stopped", flush=True)
+        else:
+            self.service_status_icon.set_from_icon_name("dialog-question-symbolic")
+            self.service_status_label.set_label("HamClock Not Installed")
+            self.service_detail_label.set_label("Install via hamclock-systemd or official packages")
+            self.service_start_btn.set_sensitive(False)
+            self.service_stop_btn.set_sensitive(False)
+            self.service_restart_btn.set_sensitive(False)
+            print("[HamClock] Service not found", flush=True)
+
+        return False
+
+    def _service_action(self, action):
+        """Perform HamClock service action (start/stop/restart)"""
+        print(f"[HamClock] Service action: {action}...", flush=True)
+        self.main_window.set_status_message(f"{action.capitalize()}ing HamClock...")
+
+        def do_action():
+            service_names = ['hamclock', 'hamclock-web', 'hamclock-systemd']
+            success = False
+            error = None
+
+            for name in service_names:
+                try:
+                    # Check if this service exists
+                    check = subprocess.run(
+                        ['systemctl', 'status', name],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if check.returncode == 4:  # Unit not found
+                        continue
+
+                    # Try the action
+                    result = subprocess.run(
+                        ['sudo', 'systemctl', action, name],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    if result.returncode == 0:
+                        success = True
+                        print(f"[HamClock] {action} {name}: OK", flush=True)
+                        break
+                    else:
+                        error = result.stderr.strip()
+                except subprocess.TimeoutExpired:
+                    error = "Command timed out"
+                except Exception as e:
+                    error = str(e)
+
+            if not success and not error:
+                error = "No HamClock service found"
+
+            GLib.idle_add(self._service_action_complete, action, success, error)
+
+        threading.Thread(target=do_action, daemon=True).start()
+
+    def _service_action_complete(self, action, success, error):
+        """Handle service action completion"""
+        if success:
+            self.main_window.set_status_message(f"HamClock {action} successful")
+            print(f"[HamClock] {action}: OK", flush=True)
+        else:
+            self.main_window.set_status_message(f"HamClock {action} failed: {error}")
+            print(f"[HamClock] {action}: FAILED - {error}", flush=True)
+
+        # Refresh status
+        GLib.timeout_add(1000, self._check_service_status)
+        return False
 
     def _auto_connect(self):
         """Auto-connect on startup"""
