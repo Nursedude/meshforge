@@ -391,9 +391,16 @@ class RNSMeshtasticBridge:
             import RNS
             import LXMF
 
-            # Initialize Reticulum
+            # Initialize Reticulum (or connect to existing shared instance)
             config_dir = self.config.rns.config_dir or None
-            self._reticulum = RNS.Reticulum(configdir=config_dir)
+            try:
+                self._reticulum = RNS.Reticulum(configdir=config_dir)
+            except Exception as e:
+                if "reinitialise" in str(e).lower() or "already running" in str(e).lower():
+                    logger.info("RNS already running, using shared instance")
+                    self._reticulum = None  # Use shared instance
+                else:
+                    raise
 
             # Create or load identity
             identity_path = Path.home() / ".config" / "meshforge" / "gateway_identity"

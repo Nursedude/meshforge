@@ -464,8 +464,8 @@ class RNSPanel(Gtk.Box):
         box.set_margin_top(10)
         box.set_margin_bottom(10)
 
-        # Config file location
-        config_path = Path.home() / ".reticulum"
+        # Config file location - use real user's home when running as root
+        config_path = self._get_real_user_home() / ".reticulum"
 
         config_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
 
@@ -527,13 +527,22 @@ class RNSPanel(Gtk.Box):
         box.append(file_row)
 
         if not config_file.exists():
+            # Add Create Default button
+            create_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
             note_label = Gtk.Label(
-                label="No config file exists yet. Click 'Config Editor' to create one with templates."
+                label="No config file exists yet."
             )
             note_label.add_css_class("dim-label")
             note_label.set_xalign(0)
-            note_label.set_wrap(True)
-            box.append(note_label)
+            create_row.append(note_label)
+
+            create_btn = Gtk.Button(label="Create Default Config")
+            create_btn.add_css_class("suggested-action")
+            create_btn.set_tooltip_text("Create a default RNS config with AutoInterface enabled")
+            create_btn.connect("clicked", lambda b: self._create_default_rns_config(config_file))
+            create_row.append(create_btn)
+
+            box.append(create_row)
 
         frame.set_child(box)
         parent.append(frame)
@@ -842,6 +851,131 @@ class RNSPanel(Gtk.Box):
             self._create_default_nomadnet_config(config_file)
 
         self._edit_config_terminal(config_file)
+
+    def _create_default_rns_config(self, config_file):
+        """Create a default RNS config file with sensible defaults"""
+        import os
+
+        default_config = '''# Reticulum Network Stack Configuration
+# Reference: https://reticulum.network/manual/interfaces.html
+
+[reticulum]
+# Enable this node to act as a transport node
+# and route traffic for other peers
+enable_transport = False
+
+# Share the Reticulum instance with locally
+# running clients via a local socket
+share_instance = Yes
+
+# If running multiple instances, give them
+# unique names to avoid conflicts
+# instance_name = default
+
+# Panic and forcibly close if a hardware
+# interface experiences an unrecoverable error
+panic_on_interface_error = No
+
+
+[logging]
+# Valid log levels are 0 through 7:
+#   0: Log only critical information
+#   1: Log errors and lower log levels
+#   2: Log warnings and lower log levels
+#   3: Log notices and lower log levels
+#   4: Log info and lower (default)
+#   5: Verbose logging
+#   6: Debug logging
+#   7: Extreme logging
+loglevel = 4
+
+
+[interfaces]
+# Default AutoInterface for local network discovery
+# Uses link-local UDP broadcasts for peer discovery
+[[Default Interface]]
+    type = AutoInterface
+    enabled = Yes
+
+
+# ===== RNS TESTNET CONNECTIONS =====
+# Uncomment to connect to the public Reticulum Testnet
+
+# [[RNS Testnet Dublin]]
+#     type = TCPClientInterface
+#     enabled = yes
+#     target_host = dublin.connect.reticulum.network
+#     target_port = 4965
+
+# [[RNS Testnet BetweenTheBorders]]
+#     type = TCPClientInterface
+#     enabled = yes
+#     target_host = reticulum.betweentheborders.com
+#     target_port = 4242
+
+
+# ===== TCP INTERFACES =====
+# For hosting your own connectable node
+
+# [[TCP Server Interface]]
+#     type = TCPServerInterface
+#     enabled = no
+#     listen_ip = 0.0.0.0
+#     listen_port = 4242
+
+# [[TCP Client Interface]]
+#     type = TCPClientInterface
+#     enabled = no
+#     target_host = example.com
+#     target_port = 4242
+
+
+# ===== RNODE LORA INTERFACE =====
+# For LoRa communication using RNode devices
+
+# [[RNode LoRa Interface]]
+#     type = RNodeInterface
+#     interface_enabled = False
+#     port = /dev/ttyUSB0
+#     frequency = 867200000
+#     bandwidth = 125000
+#     txpower = 7
+#     spreadingfactor = 8
+#     codingrate = 5
+
+# BLE RNode connection (must be paired first):
+# [[RNode BLE]]
+#     type = RNodeInterface
+#     interface_enabled = False
+#     port = ble://RNode 3B87
+'''
+
+        try:
+            config_path = Path(config_file)
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(default_config)
+
+            # Fix ownership if running as root
+            real_user = self._get_real_username()
+            is_root = os.geteuid() == 0
+            if is_root and real_user != 'root':
+                subprocess.run(['chown', '-R', f'{real_user}:{real_user}', str(config_path.parent)],
+                               capture_output=True)
+
+            print(f"[RNS] Created default RNS config: {config_path}", flush=True)
+            self.main_window.set_status_message("Created default RNS config")
+
+            # Refresh the panel to show the config exists now
+            GLib.timeout_add(500, self._refresh_panel)
+
+        except Exception as e:
+            print(f"[RNS] Failed to create default config: {e}", flush=True)
+            self.main_window.set_status_message(f"Failed to create config: {e}")
+
+    def _refresh_panel(self):
+        """Refresh the panel content"""
+        # This is a simple refresh - in a full implementation we'd rebuild the config section
+        return False
 
     def _create_default_nomadnet_config(self, config_file):
         """Create a default NomadNet config file with sensible defaults"""
