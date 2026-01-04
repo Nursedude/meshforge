@@ -437,6 +437,12 @@ class RNSPanel(Gtk.Box):
         add_config_btn.connect("clicked", self._add_meshtastic_interface_config)
         install_row.append(add_config_btn)
 
+        # Edit interface file button
+        edit_iface_btn = Gtk.Button(label="Edit Interface")
+        edit_iface_btn.set_tooltip_text("Edit Meshtastic_Interface.py in terminal (set speed, connection type)")
+        edit_iface_btn.connect("clicked", self._edit_meshtastic_interface)
+        install_row.append(edit_iface_btn)
+
         mesh_iface_box.append(install_row)
 
         # Status label
@@ -787,13 +793,14 @@ class RNSPanel(Gtk.Box):
                 # When running as root: run terminal as root (has X11), but command as user
                 if is_root and real_user != 'root':
                     # Terminal runs as root, command runs as user inside
+                    # Use bash -c to ensure proper command parsing
                     user_cmd = f"sudo -u {real_user} {nomadnet_path}"
                     terminals = [
-                        ['lxterminal', '-e', user_cmd],
-                        ['xfce4-terminal', '-e', user_cmd],
+                        ['lxterminal', '-e', 'bash', '-c', user_cmd],
+                        ['xfce4-terminal', '-e', f'bash -c "{user_cmd}"'],
                         ['gnome-terminal', '--', 'bash', '-c', user_cmd],
                         ['konsole', '-e', 'bash', '-c', user_cmd],
-                        ['xterm', '-e', user_cmd],
+                        ['xterm', '-e', 'bash', '-c', user_cmd],
                     ]
                 else:
                     terminals = [
@@ -1131,13 +1138,14 @@ message_storage_limit = 2000
             # When running as root: run terminal as root (has X11), but nano as user
             if is_root and real_user != 'root':
                 # Terminal runs as root, nano runs as user inside
+                # Use bash -c to ensure proper command parsing
                 user_cmd = f"sudo -u {real_user} nano {config_path}"
                 terminals = [
-                    ('lxterminal', ['lxterminal', '-e', user_cmd]),
-                    ('xfce4-terminal', ['xfce4-terminal', '-e', user_cmd]),
+                    ('lxterminal', ['lxterminal', '-e', 'bash', '-c', user_cmd]),
+                    ('xfce4-terminal', ['xfce4-terminal', '-e', f'bash -c "{user_cmd}"']),
                     ('gnome-terminal', ['gnome-terminal', '--', 'bash', '-c', user_cmd]),
                     ('konsole', ['konsole', '-e', 'bash', '-c', user_cmd]),
-                    ('xterm', ['xterm', '-e', user_cmd]),
+                    ('xterm', ['xterm', '-e', 'bash', '-c', user_cmd]),
                 ]
             else:
                 terminals = [
@@ -1200,6 +1208,21 @@ message_storage_limit = 2000
             self.main_window.set_status_message(f"Install failed: {message}")
             self.mesh_iface_status.set_label(f"✗ Failed: {message}")
         return False
+
+    def _edit_meshtastic_interface(self, button):
+        """Edit Meshtastic_Interface.py in terminal"""
+        import os
+
+        real_home = self._get_real_user_home()
+        iface_file = real_home / ".reticulum" / "interfaces" / "Meshtastic_Interface.py"
+
+        if not iface_file.exists():
+            self.main_window.set_status_message("Interface not installed - click 'Install Interface' first")
+            print(f"[RNS] Interface file not found: {iface_file}", flush=True)
+            return
+
+        print(f"[RNS] Opening interface file in terminal: {iface_file}", flush=True)
+        self._edit_config_terminal(iface_file)
 
     def _add_meshtastic_interface_config(self, button):
         """Add Meshtastic Interface config template to RNS config"""
