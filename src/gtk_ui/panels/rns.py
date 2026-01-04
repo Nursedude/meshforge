@@ -846,17 +846,22 @@ class RNSPanel(Gtk.Box):
 
         try:
             if mode == "textui":
-                # Launch in a terminal - keep it simple
-                # Run terminal as the real user so nomadnet runs in their environment
+                # Launch terminal as root (has X11), run nomadnet as user inside
                 if is_root and real_user != 'root':
-                    # Run the whole terminal as the user - simpler than switching inside
-                    cmd = f"su - {real_user} -c 'lxterminal -e \"nomadnet --config CONFIG\"'"
-                    print(f"[RNS] Running: {cmd}", flush=True)
-                    os.system(f"setsid {cmd} >/dev/null 2>&1 &")
-                    self.main_window.set_status_message("NomadNet launched in terminal")
+                    # Create temp script - terminal runs as root, command runs as user
+                    import tempfile
+                    script_content = f'''#!/bin/bash
+sudo -i -u {real_user} nomadnet --config CONFIG
+'''
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+                        f.write(script_content)
+                        script_path = f.name
+                    os.chmod(script_path, 0o755)
+                    print(f"[RNS] Script: {script_path}", flush=True)
+                    os.system(f"setsid lxterminal -e {script_path} >/dev/null 2>&1 &")
                 else:
                     os.system("setsid lxterminal -e 'nomadnet --config CONFIG' >/dev/null 2>&1 &")
-                    self.main_window.set_status_message("NomadNet launched in terminal")
+                self.main_window.set_status_message("NomadNet launched in terminal")
                 return
             elif mode == "daemon":
                 # Run as daemon using full path
