@@ -826,6 +826,7 @@ class RNSPanel(Gtk.Box):
 
         default_config = '''# NomadNet Configuration File
 # Edit this file to customize your NomadNet settings
+# Reference: https://github.com/markqvist/NomadNet
 
 [logging]
 # Valid log levels are 0 through 7:
@@ -848,36 +849,46 @@ user_interface = text
 downloads_path = ~/Downloads
 notify_on_new_message = yes
 
-# By default, the peer is announced at startup
-# to let other peers reach it immediately.
+# Announce this peer at startup to let others reach it
 announce_at_start = yes
 
-# By default, the client will try to deliver a
-# message via the LXMF propagation network, if
-# a direct delivery to the recipient is not
-# possible.
+# Try LXMF propagation network if direct delivery fails
 try_propagation_on_send_fail = yes
 
-# Nomadnet will periodically sync messages from
-# LXMF propagation nodes by default, if any are
-# present. You can disable this if you want to
-# only sync when manually initiated.
+# Periodically sync messages from propagation nodes
 periodic_lxmf_sync = yes
 
-# The sync interval in minutes. This value is
-# equal to 6 hours (360 minutes) by default.
+# Sync interval in minutes (360 = 6 hours)
 lxmf_sync_interval = 360
 
-# By default, automatic LXMF syncs will only
-# download 8 messages at a time. You can change
-# this number, or set the option to 0 to disable
-# the limit, and download everything every time.
+# Max messages to download per sync (0 = unlimited)
 lxmf_sync_limit = 8
 
-# You can specify a required stamp cost for
-# inbound messages to be accepted. Set to 0
-# to disable stamp requirements.
+# Required stamp cost for inbound messages (0 = disabled)
 # stamp_cost = 8
+
+[textui]
+# Text UI theme: dark, light
+theme = dark
+
+# Editor to use for composing messages
+# editor = nano
+
+# Hide guide on startup after first run
+hide_guide = no
+
+[node]
+# Enable hosting a NomadNet node
+enable_node = no
+
+# Node name displayed to visitors
+# node_name = My Node
+
+# Enable as LXMF propagation node
+enable_propagation = no
+
+# Max message storage in MB
+message_storage_limit = 2000
 '''
         try:
             config_file.parent.mkdir(parents=True, exist_ok=True)
