@@ -758,6 +758,8 @@ class RNSPanel(Gtk.Box):
 
     def _launch_nomadnet(self, mode):
         """Launch NomadNet in specified mode"""
+        import os
+
         print(f"[RNS] Launching NomadNet ({mode})...", flush=True)
 
         nomadnet_path = self._find_nomadnet()
