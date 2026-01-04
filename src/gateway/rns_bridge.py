@@ -55,6 +55,7 @@ class RNSMeshtasticBridge:
         self._running = False
         self._connected_mesh = False
         self._connected_rns = False
+        self._rns_init_failed_permanently = False  # True if RNS can't be initialized from this thread
 
         # Message queues
         self._mesh_to_rns_queue = Queue()
@@ -304,6 +305,11 @@ class RNSMeshtasticBridge:
         """Main loop for RNS connection"""
         while self._running:
             try:
+                # Don't retry if RNS init failed permanently (e.g., signal handler issue)
+                if self._rns_init_failed_permanently:
+                    time.sleep(10)
+                    continue
+
                 if not self._connected_rns:
                     self._connect_rns()
 
@@ -446,8 +452,15 @@ class RNSMeshtasticBridge:
         except ImportError:
             logger.warning("RNS library not installed")
             self._connected_rns = False
+            self._rns_init_failed_permanently = True  # Don't retry
         except Exception as e:
-            logger.error(f"Failed to initialize RNS: {e}")
+            error_msg = str(e).lower()
+            if "signal only works in main thread" in error_msg:
+                # RNS must be initialized from main thread - don't retry from background thread
+                logger.warning("RNS must be initialized from main thread (run rnsd separately)")
+                self._rns_init_failed_permanently = True  # Don't retry
+            else:
+                logger.error(f"Failed to initialize RNS: {e}")
             self._connected_rns = False
 
     def _disconnect_rns(self):
