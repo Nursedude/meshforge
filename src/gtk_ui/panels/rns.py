@@ -813,7 +813,87 @@ class RNSPanel(Gtk.Box):
         """Edit NomadNet config file"""
         real_home = self._get_real_user_home()
         config_file = real_home / ".nomadnetwork" / "config"
+
+        # If config doesn't exist or is empty, create default config
+        if not config_file.exists() or config_file.stat().st_size == 0:
+            self._create_default_nomadnet_config(config_file)
+
         self._edit_config_terminal(config_file)
+
+    def _create_default_nomadnet_config(self, config_file):
+        """Create a default NomadNet config file with sensible defaults"""
+        import os
+
+        default_config = '''# NomadNet Configuration File
+# Edit this file to customize your NomadNet settings
+
+[logging]
+# Valid log levels are 0 through 7:
+#   0: Log only critical information
+#   1: Log errors and lower log levels
+#   2: Log warnings and lower log levels
+#   3: Log notices and lower log levels
+#   4: Log info and lower (this is the default)
+#   5: Verbose logging
+#   6: Debug logging
+#   7: Extreme logging
+
+loglevel = 4
+destination = file
+
+[client]
+
+enable_client = yes
+user_interface = text
+downloads_path = ~/Downloads
+notify_on_new_message = yes
+
+# By default, the peer is announced at startup
+# to let other peers reach it immediately.
+announce_at_start = yes
+
+# By default, the client will try to deliver a
+# message via the LXMF propagation network, if
+# a direct delivery to the recipient is not
+# possible.
+try_propagation_on_send_fail = yes
+
+# Nomadnet will periodically sync messages from
+# LXMF propagation nodes by default, if any are
+# present. You can disable this if you want to
+# only sync when manually initiated.
+periodic_lxmf_sync = yes
+
+# The sync interval in minutes. This value is
+# equal to 6 hours (360 minutes) by default.
+lxmf_sync_interval = 360
+
+# By default, automatic LXMF syncs will only
+# download 8 messages at a time. You can change
+# this number, or set the option to 0 to disable
+# the limit, and download everything every time.
+lxmf_sync_limit = 8
+
+# You can specify a required stamp cost for
+# inbound messages to be accepted. Set to 0
+# to disable stamp requirements.
+# stamp_cost = 8
+'''
+        try:
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(config_file, 'w') as f:
+                f.write(default_config)
+
+            # Fix ownership if running as root
+            real_user = self._get_real_username()
+            if os.geteuid() == 0 and real_user != 'root':
+                subprocess.run(['chown', '-R', f'{real_user}:{real_user}',
+                               str(config_file.parent)], capture_output=True)
+
+            print(f"[RNS] Created default NomadNet config: {config_file}", flush=True)
+            self.main_window.set_status_message("Created default NomadNet config")
+        except Exception as e:
+            print(f"[RNS] Failed to create config: {e}", flush=True)
 
     def _open_nomadnet_folder(self):
         """Open NomadNet config folder"""
