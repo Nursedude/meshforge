@@ -857,9 +857,12 @@ class RNSPanel(Gtk.Box):
 
         try:
             if mode == "textui":
-                # Check if meshtasticd might cause issues
-                if self._is_meshtasticd_running():
-                    print("[RNS] Warning: meshtasticd is running - may conflict", flush=True)
+                # Stop NomadNet daemon first if running - it conflicts with Text UI
+                if self._is_nomadnet_daemon_running():
+                    print("[RNS] NomadNet daemon running - stopping it first", flush=True)
+                    subprocess.run(['pkill', '-f', 'nomadnet'], capture_output=True, timeout=5)
+                    import time
+                    time.sleep(0.5)  # Brief pause for process to terminate
 
                 # Launch terminal as root (has X11), run nomadnet as user inside
                 if is_root and real_user != 'root':
