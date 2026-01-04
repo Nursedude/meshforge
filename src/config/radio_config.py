@@ -24,27 +24,13 @@ class RadioConfig:
         self._cli_path = self._find_meshtastic_cli()
 
     def _find_meshtastic_cli(self):
-        """Find the meshtastic CLI executable"""
-        cli_path = shutil.which('meshtastic')
-        if cli_path:
-            return cli_path
-
-        # Check common pipx paths
-        pipx_paths = [
-            '/root/.local/bin/meshtastic',
-            '/home/pi/.local/bin/meshtastic',
-            os.path.expanduser('~/.local/bin/meshtastic'),
-        ]
-
-        sudo_user = os.environ.get('SUDO_USER')
-        if sudo_user:
-            pipx_paths.append(f'/home/{sudo_user}/.local/bin/meshtastic')
-
-        for path in pipx_paths:
-            if os.path.isfile(path) and os.access(path, os.X_OK):
-                return path
-
-        return None
+        """Find the meshtastic CLI executable - uses centralized utils.cli"""
+        try:
+            from utils.cli import find_meshtastic_cli
+            return find_meshtastic_cli()
+        except ImportError:
+            # Fallback if utils not available
+            return shutil.which('meshtastic')
 
     def _run_cli(self, args, timeout=30):
         """Run meshtastic CLI command"""
