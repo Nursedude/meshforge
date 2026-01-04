@@ -825,6 +825,9 @@ class RNSPanel(Gtk.Box):
                     import tempfile
                     script_content = f'''#!/bin/bash
 sudo -i -u {real_user} nomadnet --config CONFIG
+echo ""
+echo "Press Enter to close..."
+read
 '''
                     with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
                         f.write(script_content)
@@ -842,6 +845,9 @@ sudo -i -u {real_user} nomadnet --config CONFIG
                     import tempfile
                     script_content = '''#!/bin/bash
 nomadnet --config CONFIG
+echo ""
+echo "Press Enter to close..."
+read
 '''
                     with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
                         f.write(script_content)
