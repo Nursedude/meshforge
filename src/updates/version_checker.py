@@ -99,28 +99,13 @@ def get_meshtasticd_version() -> Optional[str]:
 def get_meshtastic_cli_version() -> Optional[str]:
     """Get installed meshtastic CLI version"""
     try:
-        # Find meshtastic CLI
-        cli_paths = [
-            '/root/.local/bin/meshtastic',
-            Path.home() / '.local/bin/meshtastic',
-        ]
-
-        import os
-        sudo_user = os.environ.get('SUDO_USER')
-        if sudo_user:
-            cli_paths.insert(0, Path(f'/home/{sudo_user}/.local/bin/meshtastic'))
-
-        cli_path = None
-        for path in cli_paths:
-            if Path(path).exists():
-                cli_path = str(path)
-                break
-
-        if not cli_path:
-            # Try which
-            result = subprocess.run(['which', 'meshtastic'], capture_output=True, text=True)
-            if result.returncode == 0:
-                cli_path = result.stdout.strip()
+        # Find meshtastic CLI using centralized function
+        try:
+            from utils.cli import find_meshtastic_cli
+            cli_path = find_meshtastic_cli()
+        except ImportError:
+            import shutil
+            cli_path = shutil.which('meshtastic')
 
         if not cli_path:
             return None
@@ -155,22 +140,13 @@ def get_node_firmware_version() -> Optional[str]:
             return None
         sock.close()
 
-        # Find CLI
-        cli_paths = [
-            '/root/.local/bin/meshtastic',
-            str(Path.home() / '.local/bin/meshtastic'),
-        ]
-
-        import os
-        sudo_user = os.environ.get('SUDO_USER')
-        if sudo_user:
-            cli_paths.insert(0, f'/home/{sudo_user}/.local/bin/meshtastic')
-
-        cli_path = None
-        for path in cli_paths:
-            if Path(path).exists():
-                cli_path = path
-                break
+        # Find CLI using centralized function
+        try:
+            from utils.cli import find_meshtastic_cli
+            cli_path = find_meshtastic_cli()
+        except ImportError:
+            import shutil
+            cli_path = shutil.which('meshtastic')
 
         if not cli_path:
             return None
