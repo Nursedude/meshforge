@@ -1070,33 +1070,17 @@ class RadioConfigPanel(Gtk.Box):
         parent.append(frame)
 
     def _find_cli(self):
-        """Find the meshtastic CLI path"""
+        """Find the meshtastic CLI path - uses centralized utils.cli"""
         if self._cli_path:
             return self._cli_path
 
-        cli_paths = [
-            '/root/.local/bin/meshtastic',
-            '/home/pi/.local/bin/meshtastic',
-            os.path.expanduser('~/.local/bin/meshtastic'),
-        ]
+        try:
+            from utils.cli import find_meshtastic_cli
+            self._cli_path = find_meshtastic_cli()
+        except ImportError:
+            self._cli_path = shutil.which('meshtastic')
 
-        # Also check for the original user's home if running with sudo
-        sudo_user = os.environ.get('SUDO_USER')
-        if sudo_user:
-            cli_paths.insert(0, f'/home/{sudo_user}/.local/bin/meshtastic')
-
-        for path in cli_paths:
-            if os.path.exists(path) and os.access(path, os.X_OK):
-                self._cli_path = path
-                return path
-
-        # Check if in PATH
-        result = subprocess.run(['which', 'meshtastic'], capture_output=True, text=True)
-        if result.returncode == 0:
-            self._cli_path = result.stdout.strip()
-            return self._cli_path
-
-        return None
+        return self._cli_path
 
     def _run_cli(self, args, callback=None):
         """Run meshtastic CLI command in background thread"""

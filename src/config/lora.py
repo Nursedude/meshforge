@@ -752,36 +752,23 @@ class LoRaConfigurator:
             return None
 
     def _find_meshtastic_cli(self):
-        """Find the meshtastic CLI executable"""
-        import shutil
+        """Find the meshtastic CLI executable - uses centralized utils.cli"""
         import os
 
-        # Check if in PATH
-        cli_path = shutil.which('meshtastic')
+        try:
+            from utils.cli import find_meshtastic_cli
+            cli_path = find_meshtastic_cli()
+        except ImportError:
+            import shutil
+            cli_path = shutil.which('meshtastic')
+
+        # Add directory to PATH for this session if found
         if cli_path:
-            return cli_path
+            pipx_bin = os.path.dirname(cli_path)
+            if pipx_bin not in os.environ.get('PATH', ''):
+                os.environ['PATH'] = f"{pipx_bin}:{os.environ.get('PATH', '')}"
 
-        # Check common pipx installation paths
-        pipx_paths = [
-            '/root/.local/bin/meshtastic',
-            '/home/pi/.local/bin/meshtastic',
-            os.path.expanduser('~/.local/bin/meshtastic'),
-        ]
-
-        # Also check for the original user's home if running with sudo
-        sudo_user = os.environ.get('SUDO_USER')
-        if sudo_user:
-            pipx_paths.append(f'/home/{sudo_user}/.local/bin/meshtastic')
-
-        for path in pipx_paths:
-            if os.path.isfile(path) and os.access(path, os.X_OK):
-                # Add the directory to PATH for this session
-                pipx_bin = os.path.dirname(path)
-                if pipx_bin not in os.environ.get('PATH', ''):
-                    os.environ['PATH'] = f"{pipx_bin}:{os.environ.get('PATH', '')}"
-                return path
-
-        return None
+        return cli_path
 
     def _ensure_meshtastic_cli(self):
         """Ensure meshtastic CLI is installed, offer to install if not"""
