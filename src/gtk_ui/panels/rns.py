@@ -797,6 +797,17 @@ class RNSPanel(Gtk.Box):
         except Exception:
             return False
 
+    def _is_meshtasticd_running(self):
+        """Check if meshtasticd service is running (blocks serial port)"""
+        try:
+            result = subprocess.run(
+                ['pgrep', '-f', 'meshtasticd'],
+                capture_output=True, text=True, timeout=5
+            )
+            return result.returncode == 0 and result.stdout.strip()
+        except Exception:
+            return False
+
     def _update_nomadnet_status(self, running):
         """Update NomadNet status display"""
         nomadnet_path = self._find_nomadnet()
@@ -846,21 +857,49 @@ class RNSPanel(Gtk.Box):
 
         try:
             if mode == "textui":
+                # Stop NomadNet daemon first if running - it conflicts with Text UI
+                if self._is_nomadnet_daemon_running():
+                    print("[RNS] NomadNet daemon running - stopping it first", flush=True)
+                    subprocess.run(['pkill', '-f', 'nomadnet'], capture_output=True, timeout=5)
+                    import time
+                    time.sleep(0.5)  # Brief pause for process to terminate
+
                 # Launch terminal as root (has X11), run nomadnet as user inside
                 if is_root and real_user != 'root':
-                    # Create temp script - terminal runs as root, command runs as user
+                    # Get user's home for proper environment
+                    real_home = self._get_real_user_home()
+
+                    # Create temp script - runs nomadnet as user with full environment
                     import tempfile
                     script_content = f'''#!/bin/bash
+cd {real_home}
 sudo -i -u {real_user} nomadnet --config CONFIG
+echo ""
+echo "Press Enter to close..."
+read
 '''
                     with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
                         f.write(script_content)
                         script_path = f.name
                     os.chmod(script_path, 0o755)
                     print(f"[RNS] Script: {script_path}", flush=True)
-                    os.system(f"setsid lxterminal -e {script_path} >/dev/null 2>&1 &")
+
+                    # Use subprocess with proper detachment
+                    subprocess.Popen(
+                        ['lxterminal', '-e', script_path],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        stdin=subprocess.DEVNULL,
+                        start_new_session=True
+                    )
                 else:
-                    os.system("setsid lxterminal -e 'nomadnet --config CONFIG' >/dev/null 2>&1 &")
+                    subprocess.Popen(
+                        ['lxterminal', '-e', 'nomadnet --config CONFIG'],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        stdin=subprocess.DEVNULL,
+                        start_new_session=True
+                    )
                 self.main_window.set_status_message("NomadNet launched in terminal")
                 return
             elif mode == "daemon":
