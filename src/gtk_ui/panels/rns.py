@@ -705,12 +705,26 @@ class RNSPanel(Gtk.Box):
 
     def _install_complete(self, name, success, error):
         """Handle install completion"""
-        if success:
-            self.main_window.set_status_message(f"{name} installed successfully")
-        else:
-            self.main_window.set_status_message(f"Failed to install {name}: {error}")
+        # Re-enable the button for this component
+        for comp in self.COMPONENTS:
+            if comp['display'] == name:
+                row = self.component_rows.get(comp['name'])
+                if row and hasattr(row, 'action_btn'):
+                    row.action_btn.set_sensitive(True)
+                break
 
-        self._refresh_all()
+        if success:
+            msg = f"{name} installed successfully"
+            print(f"[RNS] {msg}", flush=True)
+            self.main_window.set_status_message(msg)
+        else:
+            short_error = str(error)[:80] if error else "Unknown error"
+            msg = f"Failed to install {name}: {short_error}"
+            print(f"[RNS] {msg}", flush=True)
+            self.main_window.set_status_message(msg)
+
+        # Refresh status after a short delay to not overwrite the message
+        GLib.timeout_add(2000, self._refresh_all)
         return False
 
     def _on_install_all(self, button):
@@ -756,12 +770,17 @@ class RNSPanel(Gtk.Box):
         button.set_label("Install All")
 
         if success:
-            self.main_window.set_status_message("All RNS components installed successfully")
+            msg = "All RNS components installed successfully"
+            print(f"[RNS] {msg}", flush=True)
+            self.main_window.set_status_message(msg)
         else:
             short_error = str(error)[:100] if error else "Unknown error"
-            self.main_window.set_status_message(f"Install failed: {short_error}")
+            msg = f"Install failed: {short_error}"
+            print(f"[RNS] {msg}", flush=True)
+            self.main_window.set_status_message(msg)
 
-        self._refresh_all()
+        # Refresh status after a short delay to not overwrite the message
+        GLib.timeout_add(2000, self._refresh_all)
         return False
 
     def _on_update_all(self, button):
