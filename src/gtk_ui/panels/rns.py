@@ -1170,29 +1170,29 @@ message_storage_limit = 2000
         try:
             # When running as root: run terminal as root (has X11), but nano as user
             if is_root and real_user != 'root':
-                # Terminal runs as root, nano runs as user inside
-                user_cmd = f"sudo -u {real_user} nano {config_path}"
-                # lxterminal -e runs command through shell, so pass as single string
+                # Use sudo -i for login shell to get user's environment
+                user_cmd = f"sudo -i -u {real_user} nano {config_path}"
                 terminals = [
-                    ('lxterminal', ['lxterminal', '-e', user_cmd]),
-                    ('xfce4-terminal', ['xfce4-terminal', '-e', user_cmd]),
-                    ('gnome-terminal', ['gnome-terminal', '--', 'sudo', '-u', real_user, 'nano', str(config_path)]),
-                    ('konsole', ['konsole', '-e', 'sudo', '-u', real_user, 'nano', str(config_path)]),
-                    ('xterm', ['xterm', '-e', 'sudo', '-u', real_user, 'nano', str(config_path)]),
+                    ('lxterminal', f'lxterminal -e {user_cmd}'),
+                    ('xfce4-terminal', f'xfce4-terminal -e {user_cmd}'),
+                    ('gnome-terminal', f'gnome-terminal -- sudo -i -u {real_user} nano {config_path}'),
+                    ('konsole', f'konsole -e sudo -i -u {real_user} nano {config_path}'),
+                    ('xterm', f'xterm -e sudo -i -u {real_user} nano {config_path}'),
                 ]
             else:
                 terminals = [
-                    ('lxterminal', ['lxterminal', '-e', f'nano {config_path}']),
-                    ('gnome-terminal', ['gnome-terminal', '--', 'nano', str(config_path)]),
-                    ('xfce4-terminal', ['xfce4-terminal', '-e', f'nano {config_path}']),
-                    ('konsole', ['konsole', '-e', 'nano', str(config_path)]),
-                    ('xterm', ['xterm', '-e', 'nano', str(config_path)]),
+                    ('lxterminal', f'lxterminal -e nano {config_path}'),
+                    ('xfce4-terminal', f'xfce4-terminal -e nano {config_path}'),
+                    ('gnome-terminal', f'gnome-terminal -- nano {config_path}'),
+                    ('konsole', f'konsole -e nano {config_path}'),
+                    ('xterm', f'xterm -e nano {config_path}'),
                 ]
 
-            for term_name, term_cmd in terminals:
+            for term_name, full_cmd in terminals:
                 if shutil.which(term_name):
                     print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
-                    subprocess.Popen(term_cmd, start_new_session=True)
+                    print(f"[RNS] Command: {full_cmd}", flush=True)
+                    subprocess.Popen(full_cmd, shell=True, start_new_session=True)
                     self.main_window.set_status_message(f"Editing {config_path.name} in terminal")
                     return
 
