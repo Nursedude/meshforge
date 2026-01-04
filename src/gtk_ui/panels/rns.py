@@ -821,8 +821,8 @@ class RNSPanel(Gtk.Box):
                 # Launch in a terminal
                 # When running as root: run terminal as root (has X11), but command as user
                 if is_root and real_user != 'root':
-                    # Use sudo -i for login shell to get user's environment (.bashrc, etc.)
-                    user_cmd = f"sudo -i -u {real_user} nomadnet"
+                    # Use the exact command format that works: nomadnet --config CONFIG
+                    user_cmd = f"sudo -i -u {real_user} nomadnet --config CONFIG"
                     # Quote the command for terminals that need it
                     terminals = [
                         f"lxterminal -e '{user_cmd}'",
@@ -833,11 +833,11 @@ class RNSPanel(Gtk.Box):
                     ]
                 else:
                     terminals = [
-                        "lxterminal -e nomadnet",
-                        "xfce4-terminal -e nomadnet",
-                        "gnome-terminal -- nomadnet",
-                        "konsole -e nomadnet",
-                        "xterm -e nomadnet",
+                        "lxterminal -e 'nomadnet --config CONFIG'",
+                        "xfce4-terminal -e 'nomadnet --config CONFIG'",
+                        "gnome-terminal -- nomadnet --config CONFIG",
+                        "konsole -e nomadnet --config CONFIG",
+                        "xterm -e nomadnet --config CONFIG",
                     ]
 
                 for full_cmd in terminals:
