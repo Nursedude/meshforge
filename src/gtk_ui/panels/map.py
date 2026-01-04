@@ -109,8 +109,20 @@ class MapPanel(Gtk.Box):
             try:
                 monitor = NodeMonitor(host='localhost', port=4403)
                 if monitor.connect(timeout=15.0):
-                    # Wait for nodes to load from interface
-                    time.sleep(2.0)
+                    # Wait for nodes to load - MQTT meshes can have 100+ nodes
+                    # Poll until node count stabilizes or timeout
+                    last_count = 0
+                    stable_count = 0
+                    for _ in range(10):  # Max 10 seconds
+                        time.sleep(1.0)
+                        count = monitor.get_node_count()
+                        if count == last_count:
+                            stable_count += 1
+                            if stable_count >= 2:  # Stable for 2 seconds
+                                break
+                        else:
+                            stable_count = 0
+                            last_count = count
                     cls._monitor = monitor
                     logger.info(f"NodeMonitor connected, {monitor.get_node_count()} nodes")
                     return monitor, None
