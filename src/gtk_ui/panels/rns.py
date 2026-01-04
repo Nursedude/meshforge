@@ -868,8 +868,8 @@ read
                         print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
                         print(f"[RNS] Command: {full_cmd}", flush=True)
                         try:
-                            # Use os.system with & to launch in background - more reliable for GUI apps
-                            os.system(f"{full_cmd} &")
+                            # Use setsid to completely detach the terminal from MeshForge
+                            os.system(f"setsid {full_cmd} >/dev/null 2>&1 &")
                             self.main_window.set_status_message("NomadNet launched in terminal")
                         except Exception as e:
                             print(f"[RNS] Failed to launch terminal: {e}", flush=True)
