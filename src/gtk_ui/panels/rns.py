@@ -734,13 +734,44 @@ class RNSPanel(Gtk.Box):
         """Check if NomadNet daemon is running"""
         def check():
             try:
+                # Use multiple detection methods for reliability
+                running = False
+
+                # Method 1: Check for python process running nomadnet module
                 result = subprocess.run(
-                    ['pgrep', '-f', 'nomadnet'],
+                    ['pgrep', '-f', 'python.*nomadnet'],
                     capture_output=True, text=True, timeout=5
                 )
-                running = result.returncode == 0 and result.stdout.strip()
+                if result.returncode == 0 and result.stdout.strip():
+                    running = True
+
+                # Method 2: Check for nomadnet executable directly
+                if not running:
+                    result = subprocess.run(
+                        ['pgrep', '-f', '/nomadnet'],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        running = True
+
+                # Method 3: Use ps aux for broader matching
+                if not running:
+                    result = subprocess.run(
+                        ['ps', 'aux'],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0:
+                        for line in result.stdout.split('\n'):
+                            # Look for nomadnet in process list, exclude grep itself
+                            if 'nomadnet' in line.lower() and 'grep' not in line.lower():
+                                # Make sure it's actually a nomadnet process, not just this check
+                                if '--daemon' in line or 'nomadnet' in line.split()[-1]:
+                                    running = True
+                                    break
+
                 GLib.idle_add(self._update_nomadnet_status, running)
-            except Exception:
+            except Exception as e:
+                print(f"[RNS] Error checking nomadnet status: {e}", flush=True)
                 GLib.idle_add(self._update_nomadnet_status, False)
 
         threading.Thread(target=check, daemon=True).start()
@@ -793,14 +824,15 @@ class RNSPanel(Gtk.Box):
                 # When running as root: run terminal as root (has X11), but command as user
                 if is_root and real_user != 'root':
                     # Terminal runs as root, command runs as user inside
-                    # Use bash -c to ensure proper command parsing
+                    # Use bash -c with the full command as a single argument to -e
                     user_cmd = f"sudo -u {real_user} {nomadnet_path}"
+                    bash_cmd = f'bash -c "{user_cmd}"'
                     terminals = [
-                        ['lxterminal', '-e', 'bash', '-c', user_cmd],
-                        ['xfce4-terminal', '-e', f'bash -c "{user_cmd}"'],
+                        ['lxterminal', '-e', bash_cmd],
+                        ['xfce4-terminal', '-e', bash_cmd],
                         ['gnome-terminal', '--', 'bash', '-c', user_cmd],
-                        ['konsole', '-e', 'bash', '-c', user_cmd],
-                        ['xterm', '-e', 'bash', '-c', user_cmd],
+                        ['konsole', '-e', bash_cmd],
+                        ['xterm', '-e', bash_cmd],
                     ]
                 else:
                     terminals = [
@@ -1138,14 +1170,15 @@ message_storage_limit = 2000
             # When running as root: run terminal as root (has X11), but nano as user
             if is_root and real_user != 'root':
                 # Terminal runs as root, nano runs as user inside
-                # Use bash -c to ensure proper command parsing
+                # Use bash -c with the full command as a single argument to -e
                 user_cmd = f"sudo -u {real_user} nano {config_path}"
+                bash_cmd = f'bash -c "{user_cmd}"'
                 terminals = [
-                    ('lxterminal', ['lxterminal', '-e', 'bash', '-c', user_cmd]),
-                    ('xfce4-terminal', ['xfce4-terminal', '-e', f'bash -c "{user_cmd}"']),
+                    ('lxterminal', ['lxterminal', '-e', bash_cmd]),
+                    ('xfce4-terminal', ['xfce4-terminal', '-e', bash_cmd]),
                     ('gnome-terminal', ['gnome-terminal', '--', 'bash', '-c', user_cmd]),
-                    ('konsole', ['konsole', '-e', 'bash', '-c', user_cmd]),
-                    ('xterm', ['xterm', '-e', 'bash', '-c', user_cmd]),
+                    ('konsole', ['konsole', '-e', bash_cmd]),
+                    ('xterm', ['xterm', '-e', bash_cmd]),
                 ]
             else:
                 terminals = [
