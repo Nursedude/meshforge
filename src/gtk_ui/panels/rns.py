@@ -804,8 +804,16 @@ class RNSPanel(Gtk.Box):
                         term_name = term_cmd[0]
                     if shutil.which(term_name):
                         print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
-                        subprocess.Popen(term_cmd, start_new_session=True)
-                        self.main_window.set_status_message("NomadNet launched in terminal")
+                        print(f"[RNS] Command: {' '.join(term_cmd)}", flush=True)
+                        try:
+                            proc = subprocess.Popen(term_cmd, start_new_session=True,
+                                                   stderr=subprocess.PIPE)
+                            # Check for immediate failure
+                            GLib.timeout_add(500, lambda p=proc: self._check_terminal_launch(p))
+                            self.main_window.set_status_message("NomadNet launched in terminal")
+                        except Exception as e:
+                            print(f"[RNS] Failed to launch terminal: {e}", flush=True)
+                            continue
                         return
                 self.main_window.set_status_message("No terminal emulator found")
             elif mode == "daemon":
@@ -830,6 +838,20 @@ class RNSPanel(Gtk.Box):
         except Exception as e:
             print(f"[RNS] Failed to launch NomadNet: {e}", flush=True)
             self.main_window.set_status_message(f"Failed: {e}")
+
+    def _check_terminal_launch(self, proc):
+        """Check if terminal process launched successfully"""
+        if proc.poll() is not None:
+            # Process exited
+            try:
+                stderr = proc.stderr.read().decode() if proc.stderr else ""
+                if stderr:
+                    print(f"[RNS] Terminal error: {stderr}", flush=True)
+                if proc.returncode != 0:
+                    print(f"[RNS] Terminal exited with code: {proc.returncode}", flush=True)
+            except Exception:
+                pass
+        return False  # Don't repeat
 
     def _stop_nomadnet(self):
         """Stop NomadNet daemon"""
