@@ -1,8 +1,8 @@
-# Meshtasticd Installer - Development Session Notes
+# MeshForge - Development Session Notes
 
-## Current Version: v3.2.2
-## Session Date: 2026-01-02
-## Branch: `claude/review-meshtasticd-installer-52ENu`
+## Current Version: v4.2.0
+## Session Date: 2026-01-04
+## Branch: `claude/continue-previous-work-YB9x9`
 
 ---
 
@@ -12,10 +12,10 @@ When resuming this project, read this file and `CLAUDE_CONTEXT.md` first.
 
 ```bash
 # 1. Switch to the feature branch
-git checkout claude/review-meshtasticd-installer-52ENu
+git checkout claude/continue-previous-work-YB9x9
 
 # 2. Check current status
-git status && git log --oneline -5
+git status && git log --oneline -10
 
 # 3. Test the application
 sudo python3 src/main.py        # Rich CLI
@@ -25,232 +25,111 @@ sudo python3 src/main_gtk.py    # GTK4 GUI
 
 ---
 
-## Latest Session Summary (2026-01-02)
+## Latest Session Summary (2026-01-04)
 
-### Completed This Session (v3.2.2)
+### Major Accomplishments - Node Map & MQTT Integration
 
-1. **Radio Configuration Panel in GTK UI** (`src/gtk_ui/panels/radio_config.py`) - NEW
-   - New sidebar navigation item "Radio Configuration"
-   - Device & Mesh Settings: Role, rebroadcast mode
-   - LoRa Settings: Region, modem preset, hop limit
-   - Position Settings: GPS mode, broadcast interval, fixed position
-   - Power Settings: TX power, power saving mode
-   - MQTT Settings: Enable, server, auth, encryption, TLS
-   - Telemetry Settings: Device and environment metrics intervals
-   - Actions: Load Config, View Full Config, Factory Reset, Reboot Node
+1. **Fixed GTK Node Map** (`src/gtk_ui/panels/map.py`)
+   - FIX: NodeMonitor import path corrected for GTK runtime
+   - FIX: Browser map now uses actual node data (not empty tracker)
+   - FIX: Position parsing handles all coordinate formats (lat/lon and latI/lonI)
+   - NEW: Smart node loading - waits up to 10s for MQTT meshes with 100+ nodes
+   - NEW: Persistent NodeMonitor with auto-reconnect
+   - NEW: `sync_nodes()` refreshes from interface on each update
 
-2. **Fixed GTK Status Bar** (`src/gtk_ui/app.py`)
-   - FIX: Node count now updates from meshtastic CLI
-   - FIX: Uptime now displays correctly when service running
-   - NEW: `_get_node_count()` method queries `meshtastic --nodes`
+2. **MQTT Visualization** (`src/gtk_ui/panels/map.py`, `web/node_map.html`)
+   - NEW: `via_mqtt` flag tracked in GeoJSON properties
+   - NEW: MQTT nodes shown in **purple** on map
+   - NEW: MQTT count displayed in status bar
+   - NEW: MQTT badge in node popup
+   - NEW: Node role displayed in popup
 
-3. **Fixed Dashboard Config Count** (`src/gtk_ui/panels/dashboard.py`)
-   - FIX: Now counts both .yaml and .yml files
-   - FIX: Better detection of meshtasticd installation
+3. **MQTT Broker Presets** (`src/gtk_ui/panels/radio_config.py`)
+   - NEW: Preset dropdown in Radio Config → MQTT Settings
+   - Meshtastic Public (mqtt.meshtastic.org - meshdev/large4cats)
+   - Hawaii Mesh Big Island (gt.wildc.net:1884)
+   - Chicagoland Mesh (mqtt.chimesh.org)
+   - Boston Mesh (mqttmt01.bostonme.sh)
+   - MichMesh (mqtt.michmesh.net)
+   - NEW: "Apply All MQTT Settings" button for one-click config
 
-4. **Fixed Hardware Detection** (`src/gtk_ui/panels/hardware.py`)
-   - FIX: Enable SPI/I2C buttons now use `sudo`
-   - NEW: Detects active meshtasticd hardware via CLI
-   - NEW: Shows active configs from config.d
-   - IMPROVED: Better I2C device parsing
+4. **Diagnostic Tools**
+   - NEW: `diagnose_nodes.py` - Debug script showing node loading over time
+   - Shows node count growing second-by-second
+   - Identifies MQTT vs local RF nodes
+   - Shows position data for debugging
 
-5. **Web Client Documentation** (`RESEARCH.md`)
-   - NEW: Added Meshtastic Web Client section
-   - HTTP, BLE, Serial connection methods
-   - Browser compatibility notes
-   - MUI and BaseUI (2.7+) documentation
-   - References and links
+### Map Color Legend
+| Color | Meaning |
+|-------|---------|
+| Green | Online (local RF) |
+| Purple | Via MQTT |
+| Orange | Gateway/Router |
+| Red | Offline |
 
-### Previous Session (v3.2.1)
+### Files Modified This Session
+- `src/gtk_ui/panels/map.py` - Major fixes for node display
+- `src/gtk_ui/panels/radio_config.py` - MQTT presets
+- `src/monitoring/node_monitor.py` - sync_nodes(), position parsing
+- `web/node_map.html` - MQTT visualization
+- `diagnose_nodes.py` - New diagnostic tool
 
-1. **Full Radio Configuration** (`src/config/radio_config.py`) - CLI version
-2. **GTK Service Panel Fix** - Added sudo to systemctl
-3. **Hardware Configuration** (`src/config/hardware_config.py`) - CLI version
-
----
-
-## Version History
-
-| Version | Date | Key Changes |
-|---------|------|-------------|
-| v3.2.1 | 2026-01-02 | Hardware Configuration, Full Radio Config, GTK service fix |
-| v3.2.0 | 2026-01-01 | Network Tools, RF Tools, MUDP Tools, Tool Manager |
-| v3.1.1 | 2026-01-01 | TUI widget ID fix, GTK content_stack fix, pip --ignore-installed |
-| v3.1.0 | 2026-01-01 | System Diagnostics, Site Planner |
-| v3.0.6 | 2025-12-31 | Meshtastic CLI detection (pipx) |
-| v3.0.5 | 2025-12-31 | Emoji font detection |
-| v3.0.4 | 2025-12-31 | Uninstaller, progress indicators, launcher preferences |
-| v3.0.3 | 2025-12-31 | Edit channels, consistent navigation |
-| v3.0.2 | 2025-12-31 | Channel config, CLI auto-install, PSK generation |
-| v3.0.1 | 2025-12-30 | Launcher wizard, bug fixes |
-| v3.0.0 | 2025-12-30 | GTK4 GUI, Textual TUI, Config File Manager |
-
----
-
-## Project Architecture
-
+### Key Commits
 ```
-src/
-├── main.py                 # Rich CLI entry point
-├── main_gtk.py             # GTK4 entry point
-├── main_tui.py             # Textual TUI entry point
-├── launcher.py             # UI selection wizard
-├── __version__.py          # Version and changelog
-├── dashboard.py            # Status dashboard
-│
-├── config/                 # Configuration modules
-│   ├── lora.py             # LoRa/Channel configuration
-│   ├── radio.py            # Basic radio settings
-│   ├── radio_config.py     # Full radio config (NEW)
-│   ├── hardware_config.py  # SPI/Serial/GPIO (NEW)
-│   ├── modules.py          # Module configuration
-│   ├── device.py           # Device configuration
-│   ├── hardware.py         # Hardware detection
-│   └── channel_presets.py  # Channel presets
-│
-├── tools/                  # System tools (v3.2.0)
-│   ├── network_tools.py    # TCP/IP, ping, scanning
-│   ├── rf_tools.py         # Link budget, LoRa analysis
-│   ├── mudp_tools.py       # UDP, multicast, MUDP
-│   └── tool_manager.py     # Tool install/update
-│
-├── diagnostics/            # Diagnostic tools (v3.1.0)
-│   ├── system_diagnostics.py
-│   └── site_planner.py
-│
-├── gtk_ui/                 # GTK4 interface
-│   ├── app.py              # Main GTK4 application
-│   └── panels/             # UI panels
-│       ├── dashboard.py
-│       ├── service.py      # Fixed with sudo
-│       ├── config.py
-│       ├── cli.py
-│       ├── hardware.py
-│       └── tools.py        # NEW in v3.2.0
-│
-├── tui/                    # Textual TUI
-│   └── app.py              # Fixed widget IDs
-│
-├── installer/              # Installation modules
-│   ├── meshtasticd.py
-│   ├── dependencies.py
-│   └── uninstaller.py      # v3.0.4
-│
-├── services/               # Service management
-│   └── service_manager.py
-│
-├── cli/                    # Meshtastic CLI wrapper
-│   └── meshtastic_cli.py
-│
-└── utils/                  # Utilities
-    ├── system.py
-    ├── emoji.py            # Font detection
-    ├── cli.py              # CLI path finder
-    ├── progress.py         # Progress indicators
-    └── logger.py
+a9e41fb feat: Add regional mesh MQTT broker presets
+f77b72a feat: MQTT node visualization on map
+6b6da57 feat: Add MQTT broker presets with one-click configuration
+4353721 feat: Smart node loading for large MQTT meshes
+e3a78df fix: Improve position parsing to handle all coordinate formats
+8ba3d51 feat: Add sync_nodes() to refresh node list from interface
+44319c1 fix: Browser map now uses actual node data from NodeMonitor
+e9c1889 fix: Correct NodeMonitor import path for GTK runtime
+8963be4 fix: Use persistent NodeMonitor with delay for node loading
 ```
 
 ---
 
-## Main Menu Options
-
-```
-Main Menu:
-1. Quick Status Dashboard
-2. Service Management
-3. Install meshtasticd
-4. Update meshtasticd
-5. Configure device
-6. Channel Presets (Quick Setup)
-7. Configuration Templates
-8. Config File Manager (YAML + nano)
-f. Full Radio Config (Mesh, MQTT, Position) [NEW]
-c. Meshtastic CLI Commands
-t. System Diagnostics
-p. Site Planner
-n. Network Tools
-r. RF Tools
-m. MUDP Tools
-g. Tool Manager
-9. Check dependencies
-h. Hardware detection
-w. Hardware Configuration (SPI, Serial, GPIO) [NEW]
-d. Debug & troubleshooting
-u. Uninstall
-q. Exit
-```
+## Hawaii Mesh Stats
+- 150+ nodes across Hawaiian islands
+- MQTT broker: gt.wildc.net:1884
+- Credentials: mesh_publish / mesh.kula.smoke
+- Active mesh with good MQTT coverage
 
 ---
 
-## Known Issues / Pending Work
+## Known Issues / Future Work
 
-1. **Device Configuration Wizard** - May need additional back options
-2. **Additional TUI/GTK4 testing** - User testing in progress
-3. **Mobile/tablet UI** - Not yet optimized
+1. **WebKit not available** - Map opens in browser instead of embedded
+2. **Connection recovery** - BrokenPipeError logs from meshtastic lib (non-fatal, auto-recovers)
+3. **Node tracker import warning** - Relative import warning (non-critical)
 
----
-
-## Key Technical Details
-
-### Meshtastic Connection
-- Default: `localhost:4403` (TCP)
-- CLI: `meshtastic --host localhost`
-- MUDP: `224.0.0.69:4403` (multicast)
-
-### Raspberry Pi Configuration
-- Boot config: `/boot/firmware/config.txt`
-- SPI overlay: `dtoverlay=spi0-0cs`
-- Config files: `/etc/meshtasticd/config.d/`
-- Available configs: `/etc/meshtasticd/available.d/`
-
-### pip Installation (RPi)
-```bash
-# For Textual TUI
-sudo pip install --break-system-packages --ignore-installed textual
-
-# For GTK4 (system packages)
-sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0 libadwaita-1-0 gir1.2-adw-1
-```
+### Planned Features
+- HamClock integration (documented in university)
+- RNS bridge completion
+- More RF calculation tools
+- Artifacts for Claude.ai (frequency calculator, link budget, maidenhead)
 
 ---
 
-## Git Commands
+## Development Philosophy
 
-```bash
-# Current branch
-git checkout claude/review-meshtasticd-installer-52ENu
+From `.claude/dude_ai_university.md`:
+1. **Reliability** - It must work consistently
+2. **Functionality** - Complete features before adding new ones
+3. **Maintainability** - Clean, documented code
+4. **Architecture** - Consistent patterns
+5. **Roadmap** - Clear development path
 
-# View changes
-git diff --stat origin/main..HEAD
-
-# Commit format
-git commit -m "feat: Description of feature"
-git commit -m "fix: Description of fix"
-
-# Push to branch
-git push -u origin claude/review-meshtasticd-installer-52ENu
-```
+"Cross that bridge when we reach it" - Focus on working code now, optimize later.
 
 ---
 
-## Testing Checklist
+## References
 
-- [ ] Rich CLI menu navigation
-- [ ] Textual TUI all tabs work
-- [ ] GTK4 service buttons work
-- [ ] Config file manager (activate/edit)
-- [ ] Channel configuration (add/edit)
-- [ ] Hardware detection
-- [ ] Service start/stop/restart
-- [ ] Meshtastic CLI commands
-- [ ] System diagnostics
-- [ ] RF tools (link budget)
-- [ ] MUDP tools (if mudp installed)
+- [Meshtastic MQTT Docs](https://meshtastic.org/docs/software/integrations/mqtt/)
+- [MeshSense](https://affirmatech.com/meshsense) - Network monitoring reference
+- Default MQTT credentials: meshdev / large4cats
 
 ---
 
-## Contact / Repository
-
-- **GitHub:** https://github.com/Nursedude/Meshtasticd_interactive_UI
-- **Branch:** claude/review-meshtasticd-installer-52ENu
-- **License:** GPL-3.0
+*73 de Dude AI - Session saved 2026-01-04*

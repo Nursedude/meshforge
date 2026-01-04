@@ -293,11 +293,22 @@ class NodeMonitor:
                 is_licensed=user.get('isLicensed', False),
             )
 
-            # Position
+            # Position - handle both float (latitude) and integer (latitudeI) formats
             if position:
+                # Prefer float format, fall back to integer format (divide by 1e7)
+                lat = position.get('latitude')
+                if lat is None:
+                    lat_i = position.get('latitudeI')
+                    lat = lat_i / 1e7 if lat_i is not None else None
+
+                lon = position.get('longitude')
+                if lon is None:
+                    lon_i = position.get('longitudeI')
+                    lon = lon_i / 1e7 if lon_i is not None else None
+
                 node_info.position = NodePosition(
-                    latitude=position.get('latitude') or position.get('latitudeI', 0) / 1e7,
-                    longitude=position.get('longitude') or position.get('longitudeI', 0) / 1e7,
+                    latitude=lat,
+                    longitude=lon,
                     altitude=position.get('altitude'),
                     precision_bits=position.get('precisionBits'),
                     time=datetime.fromtimestamp(position['time']) if 'time' in position else None,
@@ -390,10 +401,33 @@ class NodeMonitor:
         self._reconnect_thread = threading.Thread(target=reconnect_loop, daemon=True)
         self._reconnect_thread.start()
 
-    def get_nodes(self) -> List[NodeInfo]:
-        """Get all known nodes"""
+    def get_nodes(self, refresh: bool = False) -> List[NodeInfo]:
+        """Get all known nodes
+
+        Args:
+            refresh: If True, re-sync from interface before returning
+        """
+        if refresh:
+            self.sync_nodes()
         with self._lock:
             return list(self._nodes.values())
+
+    def sync_nodes(self):
+        """Re-sync nodes from interface (picks up any nodes we missed)"""
+        if not self.interface or not hasattr(self.interface, 'nodes'):
+            return
+
+        try:
+            interface_nodes = self.interface.nodes or {}
+            with self._lock:
+                for node_id, node_data in interface_nodes.items():
+                    node_info = self._parse_node_data(node_id, node_data)
+                    if node_info and node_info.node_id not in self._nodes:
+                        self._nodes[node_info.node_id] = node_info
+                        logger.debug(f"Synced new node: {node_info.node_id}")
+            logger.info(f"Sync complete: {len(self._nodes)} nodes")
+        except Exception as e:
+            logger.error(f"Error syncing nodes: {e}")
 
     def get_node(self, node_id: str) -> Optional[NodeInfo]:
         """Get a specific node by ID"""

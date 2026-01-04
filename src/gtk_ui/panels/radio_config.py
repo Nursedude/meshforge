@@ -888,6 +888,18 @@ class RadioConfigPanel(Gtk.Box):
         frame.set_child(box)
         parent.append(frame)
 
+    # MQTT Broker presets - Regional mesh networks
+    # Default credentials: meshdev / large4cats (widely used)
+    # See: https://meshtastic.org/docs/software/integrations/mqtt/
+    MQTT_PRESETS = [
+        {"name": "Custom", "server": "", "user": "", "password": "", "tls": False},
+        {"name": "Meshtastic Public", "server": "mqtt.meshtastic.org", "user": "meshdev", "password": "large4cats", "tls": False},
+        {"name": "Hawaii Mesh (Big Island)", "server": "gt.wildc.net:1884", "user": "mesh_publish", "password": "mesh.kula.smoke", "tls": False},
+        {"name": "Chicagoland Mesh", "server": "mqtt.chimesh.org", "user": "meshdev", "password": "large4cats", "tls": False},
+        {"name": "Boston Mesh", "server": "mqttmt01.bostonme.sh", "user": "meshdev", "password": "large4cats", "tls": False},
+        {"name": "MichMesh", "server": "mqtt.michmesh.net", "user": "meshdev", "password": "large4cats", "tls": False},
+    ]
+
     def _add_mqtt_section(self, parent):
         """Add MQTT settings section"""
         frame = Gtk.Frame()
@@ -898,6 +910,16 @@ class RadioConfigPanel(Gtk.Box):
         box.set_margin_end(15)
         box.set_margin_top(10)
         box.set_margin_bottom(10)
+
+        # MQTT Preset dropdown
+        preset_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        preset_box.append(Gtk.Label(label="Preset:"))
+        self.mqtt_preset_dropdown = Gtk.DropDown.new_from_strings(
+            [p["name"] for p in self.MQTT_PRESETS]
+        )
+        self.mqtt_preset_dropdown.connect("notify::selected", self._on_mqtt_preset_changed)
+        preset_box.append(self.mqtt_preset_dropdown)
+        box.append(preset_box)
 
         # MQTT Enable
         mqtt_enable_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
@@ -953,6 +975,15 @@ class RadioConfigPanel(Gtk.Box):
         self.mqtt_tls_check = Gtk.CheckButton(label="TLS Enabled")
         enc_box.append(self.mqtt_tls_check)
         box.append(enc_box)
+
+        # Apply All MQTT button
+        apply_all_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        apply_all_box.set_margin_top(10)
+        apply_all_btn = Gtk.Button(label="Apply All MQTT Settings")
+        apply_all_btn.add_css_class("suggested-action")
+        apply_all_btn.connect("clicked", self._apply_mqtt_preset)
+        apply_all_box.append(apply_all_btn)
+        box.append(apply_all_box)
 
         frame.set_child(box)
         parent.append(frame)
@@ -1182,6 +1213,34 @@ class RadioConfigPanel(Gtk.Box):
             self._apply_setting("mqtt.username", user)
         if passwd:
             self._apply_setting("mqtt.password", passwd)
+
+    def _on_mqtt_preset_changed(self, dropdown, _):
+        """Handle MQTT preset selection"""
+        idx = dropdown.get_selected()
+        if idx < len(self.MQTT_PRESETS):
+            preset = self.MQTT_PRESETS[idx]
+            if preset["name"] != "Custom":
+                self.mqtt_server_entry.set_text(preset["server"])
+                self.mqtt_user_entry.set_text(preset["user"])
+                self.mqtt_pass_entry.set_text(preset["password"])
+                self.mqtt_tls_check.set_active(preset["tls"])
+                self.status_label.set_label(f"Loaded preset: {preset['name']} - Click Apply to save")
+
+    def _apply_mqtt_preset(self, button):
+        """Apply all MQTT settings from current fields"""
+        server = self.mqtt_server_entry.get_text()
+        user = self.mqtt_user_entry.get_text()
+        passwd = self.mqtt_pass_entry.get_text()
+
+        if server:
+            self._apply_setting("mqtt.address", server)
+        if user:
+            self._apply_setting("mqtt.username", user)
+        if passwd:
+            self._apply_setting("mqtt.password", passwd)
+
+        self._apply_setting("mqtt.enabled", "true" if self.mqtt_enabled_check.get_active() else "false")
+        self._apply_setting("mqtt.tls_enabled", "true" if self.mqtt_tls_check.get_active() else "false")
 
     def _load_current_config(self):
         """Load current configuration from device"""

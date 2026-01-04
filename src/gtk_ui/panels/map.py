@@ -109,8 +109,20 @@ class MapPanel(Gtk.Box):
             try:
                 monitor = NodeMonitor(host='localhost', port=4403)
                 if monitor.connect(timeout=15.0):
-                    # Wait for nodes to load from interface
-                    time.sleep(2.0)
+                    # Wait for nodes to load - MQTT meshes can have 100+ nodes
+                    # Poll until node count stabilizes or timeout
+                    last_count = 0
+                    stable_count = 0
+                    for _ in range(10):  # Max 10 seconds
+                        time.sleep(1.0)
+                        count = monitor.get_node_count()
+                        if count == last_count:
+                            stable_count += 1
+                            if stable_count >= 2:  # Stable for 2 seconds
+                                break
+                        else:
+                            stable_count = 0
+                            last_count = count
                     cls._monitor = monitor
                     logger.info(f"NodeMonitor connected, {monitor.get_node_count()} nodes")
                     return monitor, None
@@ -316,7 +328,7 @@ class MapPanel(Gtk.Box):
         def fetch_data():
             from datetime import datetime
 
-            stats = {"total": 0, "meshtastic": 0, "rns": 0, "online": 0, "with_position": 0}
+            stats = {"total": 0, "meshtastic": 0, "rns": 0, "online": 0, "with_position": 0, "via_mqtt": 0}
             geojson = {"type": "FeatureCollection", "features": []}
             nodes_raw = []
             error_msg = None
@@ -331,7 +343,7 @@ class MapPanel(Gtk.Box):
                     online = 0
                     with_position = 0
 
-                    for node in monitor.get_nodes():
+                    for node in monitor.get_nodes(refresh=True):
                         total += 1
                         nodes_raw.append(node)
 
@@ -354,6 +366,10 @@ class MapPanel(Gtk.Box):
                         if is_online:
                             online += 1
 
+                        # Count MQTT nodes
+                        if node.via_mqtt:
+                            stats["via_mqtt"] += 1
+
                         # Check position
                         if node.position and (node.position.latitude or node.position.longitude):
                             lat = node.position.latitude
@@ -373,10 +389,12 @@ class MapPanel(Gtk.Box):
                                         "is_online": is_online,
                                         "is_local": node.node_id == monitor.my_node_id,
                                         "is_gateway": (node.role or '').upper() in ['ROUTER', 'REPEATER', 'ROUTER_CLIENT'],
+                                        "via_mqtt": node.via_mqtt,
                                         "snr": node.snr,
                                         "battery": node.metrics.battery_level if node.metrics else None,
                                         "last_seen": last_seen,
                                         "hardware": node.hardware_model,
+                                        "role": node.role,
                                     }
                                 }
                                 features.append(feature)
@@ -428,10 +446,12 @@ class MapPanel(Gtk.Box):
         if error_msg:
             self.status_label.set_label(f"Error: {error_msg}")
         else:
+            mqtt_count = stats.get('via_mqtt', 0)
+            mqtt_str = f", {mqtt_count} MQTT" if mqtt_count > 0 else ""
             self.status_label.set_label(
                 f"Last updated: {stats.get('total', 0)} nodes "
-                f"({stats.get('with_position', 0)} with position, "
-                f"{stats.get('online', 0)} online)"
+                f"({stats.get('with_position', 0)} mapped, "
+                f"{stats.get('online', 0)} online{mqtt_str})"
             )
 
         return False
