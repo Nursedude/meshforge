@@ -292,8 +292,11 @@ class HamClockPanel(Gtk.Box):
 
     def _on_connection_failed(self, error):
         """Handle connection failure"""
-        self.status_label.set_label(f"Connection failed: {error[:40]}")
-        logger.error(f"HamClock connection failed: {error}")
+        # Truncate long error messages for display
+        short_error = str(error)[:50]
+        self.status_label.set_label(f"Not connected")
+        # Only log once, not spam
+        logger.debug(f"HamClock connection failed: {error}")
 
     def _on_refresh(self, button):
         """Refresh space weather data"""
