@@ -594,35 +594,57 @@ class RNSPanel(Gtk.Box):
     def _service_action(self, action):
         """Perform RNS service action"""
         logger.info(f"Service action button clicked: {action}")
-        print(f"[RNS] Service action: {action}...")  # Console feedback
+        print(f"[RNS] Service action: {action}...", flush=True)
+
+        # Check if rnsd is available
+        if not shutil.which('rnsd') and action in ('start', 'restart'):
+            self.main_window.set_status_message("rnsd not found - install RNS first")
+            print("[RNS] rnsd not found in PATH", flush=True)
+            return
+
         self.main_window.set_status_message(f"{action.capitalize()}ing rnsd...")
 
         def do_action():
             try:
                 if action == "start":
                     # Start rnsd in daemon mode
+                    print("[RNS] Running: rnsd --daemon", flush=True)
                     result = subprocess.run(
                         ['rnsd', '--daemon'],
-                        capture_output=True, text=True
+                        capture_output=True, text=True,
+                        timeout=30
                     )
                 elif action == "stop":
                     # Kill rnsd process
+                    print("[RNS] Running: pkill -f rnsd", flush=True)
                     result = subprocess.run(
                         ['pkill', '-f', 'rnsd'],
-                        capture_output=True, text=True
+                        capture_output=True, text=True,
+                        timeout=10
                     )
                 elif action == "restart":
-                    subprocess.run(['pkill', '-f', 'rnsd'], capture_output=True)
+                    subprocess.run(['pkill', '-f', 'rnsd'], capture_output=True, timeout=10)
                     import time
                     time.sleep(1)
+                    print("[RNS] Running: rnsd --daemon", flush=True)
                     result = subprocess.run(
                         ['rnsd', '--daemon'],
-                        capture_output=True, text=True
+                        capture_output=True, text=True,
+                        timeout=30
                     )
 
                 success = result.returncode == 0 if action != "stop" else True
-                GLib.idle_add(self._action_complete, action, success, result.stderr if hasattr(result, 'stderr') else '')
+                output = result.stderr if hasattr(result, 'stderr') else ''
+                print(f"[RNS] Service {action}: {'OK' if success else 'FAILED'} - {output[:100]}", flush=True)
+                GLib.idle_add(self._action_complete, action, success, output)
+            except subprocess.TimeoutExpired:
+                print(f"[RNS] Service {action} timed out", flush=True)
+                GLib.idle_add(self._action_complete, action, False, "Command timed out")
+            except FileNotFoundError as e:
+                print(f"[RNS] Command not found: {e}", flush=True)
+                GLib.idle_add(self._action_complete, action, False, f"Command not found: {e}")
             except Exception as e:
+                print(f"[RNS] Exception: {e}", flush=True)
                 GLib.idle_add(self._action_complete, action, False, str(e))
 
         thread = threading.Thread(target=do_action)
@@ -643,18 +665,38 @@ class RNSPanel(Gtk.Box):
         """Install or update a component"""
         package = component['package']
         logger.info(f"Install button clicked for: {component['display']} ({package})")
-        print(f"[RNS] Installing: {component['display']}...")  # Console feedback
+        print(f"[RNS] Installing: {component['display']}...", flush=True)  # Console feedback
+
+        # Visual feedback - disable button and update text
+        try:
+            row = self.component_rows.get(component['name'])
+            if row and hasattr(row, 'action_btn'):
+                row.action_btn.set_sensitive(False)
+                row.action_btn.set_label("Installing...")
+        except Exception as e:
+            logger.debug(f"Could not update button state: {e}")
+
         self.main_window.set_status_message(f"Installing {component['display']}...")
 
         def do_install():
             try:
+                # Use python -m pip for better reliability
+                import sys
                 result = subprocess.run(
-                    ['pip3', 'install', '--upgrade', package],
-                    capture_output=True, text=True
+                    [sys.executable, '-m', 'pip', 'install', '--upgrade', '--user', package],
+                    capture_output=True, text=True,
+                    timeout=120  # 2 minute timeout
                 )
+                output = result.stdout + result.stderr
                 success = result.returncode == 0
-                GLib.idle_add(self._install_complete, component['display'], success, result.stderr)
+                print(f"[RNS] pip install result: {'OK' if success else 'FAILED'}", flush=True)
+                if not success:
+                    print(f"[RNS] Error: {output[:200]}", flush=True)
+                GLib.idle_add(self._install_complete, component['display'], success, output)
+            except subprocess.TimeoutExpired:
+                GLib.idle_add(self._install_complete, component['display'], False, "Installation timed out")
             except Exception as e:
+                print(f"[RNS] Exception during install: {e}", flush=True)
                 GLib.idle_add(self._install_complete, component['display'], False, str(e))
 
         thread = threading.Thread(target=do_install)
@@ -674,24 +716,53 @@ class RNSPanel(Gtk.Box):
     def _on_install_all(self, button):
         """Install all RNS components"""
         logger.info("Install All button clicked")
-        print("[RNS] Installing all components...")  # Console feedback
+        print("[RNS] Installing all components...", flush=True)  # Console feedback
+
+        # Disable button during install
+        button.set_sensitive(False)
+        button.set_label("Installing...")
+
         self.main_window.set_status_message("Installing all RNS components...")
 
         def do_install_all():
             packages = [c['package'] for c in self.COMPONENTS]
             try:
+                import sys
                 result = subprocess.run(
-                    ['pip3', 'install', '--upgrade'] + packages,
-                    capture_output=True, text=True
+                    [sys.executable, '-m', 'pip', 'install', '--upgrade', '--user'] + packages,
+                    capture_output=True, text=True,
+                    timeout=300  # 5 minute timeout for all packages
                 )
+                output = result.stdout + result.stderr
                 success = result.returncode == 0
-                GLib.idle_add(self._install_complete, "All components", success, result.stderr)
+                print(f"[RNS] pip install all result: {'OK' if success else 'FAILED'}", flush=True)
+                if not success:
+                    print(f"[RNS] Error: {output[:300]}", flush=True)
+                GLib.idle_add(self._install_all_complete, button, success, output)
+            except subprocess.TimeoutExpired:
+                GLib.idle_add(self._install_all_complete, button, False, "Installation timed out")
             except Exception as e:
-                GLib.idle_add(self._install_complete, "All components", False, str(e))
+                print(f"[RNS] Exception during install all: {e}", flush=True)
+                GLib.idle_add(self._install_all_complete, button, False, str(e))
 
         thread = threading.Thread(target=do_install_all)
         thread.daemon = True
         thread.start()
+
+    def _install_all_complete(self, button, success, error):
+        """Handle install all completion"""
+        # Re-enable button
+        button.set_sensitive(True)
+        button.set_label("Install All")
+
+        if success:
+            self.main_window.set_status_message("All RNS components installed successfully")
+        else:
+            short_error = str(error)[:100] if error else "Unknown error"
+            self.main_window.set_status_message(f"Install failed: {short_error}")
+
+        self._refresh_all()
+        return False
 
     def _on_update_all(self, button):
         """Update all installed RNS components"""
