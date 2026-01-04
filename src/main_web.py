@@ -1003,6 +1003,76 @@ def api_nodes_full():
     return jsonify(get_nodes_full())
 
 
+@app.route('/api/nodes/geojson')
+@login_required
+def api_nodes_geojson():
+    """Get mesh nodes as GeoJSON for map display"""
+    data = get_nodes_full()
+
+    if 'error' in data:
+        return jsonify({"type": "FeatureCollection", "features": [], "error": data['error']})
+
+    features = []
+    now = datetime.now()
+
+    for node in data.get('nodes', []):
+        # Skip nodes without position
+        if 'position' not in node:
+            continue
+
+        pos = node['position']
+        lat = pos.get('latitude')
+        lon = pos.get('longitude')
+
+        # Skip invalid coordinates
+        if lat is None or lon is None or (lat == 0 and lon == 0):
+            continue
+
+        # Determine if online (heard in last 15 minutes)
+        is_online = False
+        last_seen = node.get('last_heard_ago', 'Unknown')
+        if 's ago' in last_seen or 'm ago' in last_seen:
+            is_online = True
+        elif 'h ago' in last_seen:
+            try:
+                hours = int(last_seen.replace('h ago', ''))
+                is_online = hours < 1
+            except ValueError:
+                pass
+
+        feature = {
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [lon, lat]  # GeoJSON is [lon, lat]
+            },
+            "properties": {
+                "id": node.get('id', ''),
+                "name": node.get('name', 'Unknown'),
+                "short": node.get('short', ''),
+                "network": "meshtastic",
+                "is_online": is_online,
+                "is_local": node.get('is_me', False),
+                "is_gateway": node.get('role', '').upper() in ['ROUTER', 'REPEATER', 'ROUTER_CLIENT'],
+                "snr": node.get('snr'),
+                "battery": node.get('battery'),
+                "last_seen": last_seen,
+                "hardware": node.get('hardware', ''),
+                "altitude": pos.get('altitude'),
+                "hops": node.get('hops'),
+            }
+        }
+        features.append(feature)
+
+    return jsonify({
+        "type": "FeatureCollection",
+        "features": features,
+        "total_nodes": data.get('total_nodes', 0),
+        "nodes_with_position": len(features),
+        "my_node_id": data.get('my_node_id', '')
+    })
+
+
 @app.route('/api/message', methods=['POST'])
 @login_required
 def api_send_message():

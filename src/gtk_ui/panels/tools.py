@@ -1184,10 +1184,15 @@ class ToolsPanel(Gtk.Box):
 
     # Default preset locations - major cities and Meshtastic community areas
     DEFAULT_LOCATIONS = [
-        # Hawaii
+        # Hawaii - Big Island
+        {"name": "Hilo, HI", "lat": 19.7297, "lon": -155.0900},
+        {"name": "Volcano, HI", "lat": 19.4300, "lon": -155.2900},
+        {"name": "Kona, HI", "lat": 19.6400, "lon": -155.9969},
+        {"name": "Waimea (Kamuela), HI", "lat": 20.0234, "lon": -155.6728},
+        {"name": "Big Island - Mauna Kea", "lat": 19.8207, "lon": -155.4680},
+        # Hawaii - Other Islands
         {"name": "Honolulu, HI", "lat": 21.3069, "lon": -157.8583},
         {"name": "Maui - Haleakala", "lat": 20.7097, "lon": -156.2533},
-        {"name": "Big Island - Mauna Kea", "lat": 19.8207, "lon": -155.4680},
         # US West Coast
         {"name": "San Francisco, CA", "lat": 37.7749, "lon": -122.4194},
         {"name": "Los Angeles, CA", "lat": 34.0522, "lon": -118.2437},
