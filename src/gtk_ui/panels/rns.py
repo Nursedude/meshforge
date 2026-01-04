@@ -1547,13 +1547,25 @@ message_storage_limit = 2000
 
         def do_install():
             try:
-                # Use python -m pip for better reliability
-                # Add --no-cache-dir to avoid permission issues with pip cache
-                # Add --break-system-packages for PEP 668 externally managed environments
-                import sys
-                cmd = [sys.executable, '-m', 'pip', 'install', '--upgrade', '--user',
-                       '--no-cache-dir', '--break-system-packages', package]
-                print(f"[RNS] Running: {' '.join(cmd)}", flush=True)
+                import os
+                is_root = os.geteuid() == 0
+                real_user = self._get_real_username()
+
+                # Build pip install command
+                pip_args = ['pip', 'install', '--upgrade', '--user',
+                           '--no-cache-dir', '--break-system-packages', package]
+
+                # When running as root, install as the real user
+                if is_root and real_user != 'root':
+                    # Use sudo -i -u to get user's environment and install to their home
+                    cmd = ['sudo', '-i', '-u', real_user] + pip_args
+                    print(f"[RNS] Installing as user {real_user}: {' '.join(cmd)}", flush=True)
+                else:
+                    # Running as normal user, use python -m pip
+                    import sys
+                    cmd = [sys.executable, '-m'] + pip_args
+                    print(f"[RNS] Running: {' '.join(cmd)}", flush=True)
+
                 result = subprocess.run(
                     cmd,
                     capture_output=True, text=True,
@@ -1616,11 +1628,23 @@ message_storage_limit = 2000
         def do_install_all():
             packages = [c['package'] for c in self.COMPONENTS]
             try:
-                import sys
-                # Add --break-system-packages for PEP 668 externally managed environments
-                cmd = [sys.executable, '-m', 'pip', 'install', '--upgrade', '--user',
-                       '--no-cache-dir', '--break-system-packages'] + packages
-                print(f"[RNS] Running: {' '.join(cmd)}", flush=True)
+                import os
+                is_root = os.geteuid() == 0
+                real_user = self._get_real_username()
+
+                # Build pip install command
+                pip_args = ['pip', 'install', '--upgrade', '--user',
+                           '--no-cache-dir', '--break-system-packages'] + packages
+
+                # When running as root, install as the real user
+                if is_root and real_user != 'root':
+                    cmd = ['sudo', '-i', '-u', real_user] + pip_args
+                    print(f"[RNS] Installing as user {real_user}: {' '.join(cmd)}", flush=True)
+                else:
+                    import sys
+                    cmd = [sys.executable, '-m'] + pip_args
+                    print(f"[RNS] Running: {' '.join(cmd)}", flush=True)
+
                 result = subprocess.run(
                     cmd,
                     capture_output=True, text=True,
