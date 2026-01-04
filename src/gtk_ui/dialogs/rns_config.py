@@ -517,25 +517,25 @@ loglevel = 4
         """Insert an interface template at cursor position"""
         templates = {
             "tcp_client": """
-[TCP Client]
+[[My RNS Network]]
   type = TCPClientInterface
-  enabled = True
+  enabled = yes
   target_host = 192.168.1.100
-  target_port = 4965
+  target_port = 4242
 
 """,
             "tcp_server": """
-[TCP Server]
+[[RNS Server]]
   type = TCPServerInterface
-  enabled = True
+  enabled = yes
   listen_ip = 0.0.0.0
-  listen_port = 4965
+  listen_port = 4242
 
 """,
             "udp": """
-[UDP Interface]
+[[UDP Interface]]
   type = UDPInterface
-  enabled = True
+  enabled = yes
   listen_ip = 0.0.0.0
   listen_port = 4966
   forward_ip = 255.255.255.255
@@ -543,22 +543,22 @@ loglevel = 4
 
 """,
             "rnode": """
-[RNode LoRa]
+[[RNode LoRa]]
   type = RNodeInterface
-  enabled = True
-  port = /dev/ttyUSB0
-  frequency = 915000000
-  bandwidth = 125000
-  txpower = 7
-  spreadingfactor = 8
+  interface_enabled = True
+  port = /dev/ttyACM0
+  frequency = 903625000
+  bandwidth = 250000
+  txpower = 22
+  spreadingfactor = 7
   codingrate = 5
+  name = rnode
 
 """,
             "auto": """
-[Auto Discovery]
+[[Default Interface]]
   type = AutoInterface
-  enabled = True
-  group_id = reticulum
+  enabled = Yes
 
 """
         }

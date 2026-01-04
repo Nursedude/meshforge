@@ -209,33 +209,150 @@ class UnifiedNode:
 
 RNS uses interfaces defined in `~/.reticulum/config`. Key interface types:
 
-#### TCPServerInterface (Host a network entry point)
+#### Example: HawaiiNet CLIENT Configuration
 ```ini
+# Auto-discovery on local network
+[[Default Interface]]
+  type = AutoInterface
+  enabled = Yes
+
+# Connect to HawaiiNet RNS server
 [[HawaiiNet RNS]]
+  type = TCPClientInterface
+  enabled = yes
+  target_host = 192.168.86.38
+  target_port = 4242
+  name = HawaiiNet RNS
+
+# LoRa radio via RNode (US 900 MHz ISM band)
+[[wh6gxzpi3 rnode]]
+  type = RNodeInterface
+  interface_enabled = True
+  port = /dev/ttyACM0
+  frequency = 903625000
+  txpower = 22
+  bandwidth = 250000
+  spreadingfactor = 7
+  codingrate = 5
+  name = wh6gxzpi3 rnode
+```
+
+#### Example: HawaiiNet SERVER Configuration (192.168.86.38)
+```ini
+# Auto-discovery on local network
+[[Default Interface]]
+  type = AutoInterface
+  enabled = true
+  name = Default Interface
+
+# Optional: Connect to RNS public testnet
+[[RNS Testnet Amsterdam]]
+  type = TCPClientInterface
+  interface_enabled = false
+  target_host = amsterdam.connect.reticulum.network
+  target_port = 4965
+  name = RNS Testnet Amsterdam
+
+# HOST the HawaiiNet RNS network (other nodes connect here)
+[[HawaiiNet RNS]]
+  type = TCPServerInterface
+  enabled = yes
+  listen_ip = 0.0.0.0
+  listen_port = 4242
+  name = HawaiiNet RNS
+
+# LoRa gateway via RNode
+[[nurse dude rnode gateway]]
+  type = RNodeInterface
+  interface_enabled = True
+  port = /dev/ttyACM0
+  frequency = 903625000
+  txpower = 22
+  bandwidth = 250000
+  spreadingfactor = 7
+  codingrate = 5
+  name = nurse dude rnode gateway
+```
+
+#### TCPServerInterface (Host entry point)
+```ini
+[[HawaiiNet RNS Server]]
   type = TCPServerInterface
   enabled = yes
   listen_ip = 0.0.0.0
   listen_port = 4242
 ```
 
-#### TCPClientInterface (Connect to a network)
+#### TCPClientInterface (Connect to network)
 ```ini
-[[TCP Client]]
+[[HawaiiNet RNS]]
   type = TCPClientInterface
   enabled = yes
-  target_host = 127.0.0.1
+  target_host = 192.168.86.38
   target_port = 4242
 ```
 
-#### BackboneInterface (Recommended for high-capacity servers)
-The BackboneInterface is compatible with TCP interfaces but more efficient for handling many connections.
+#### AutoInterface (Local discovery)
+```ini
+[[Default Interface]]
+  type = AutoInterface
+  enabled = Yes
+```
+
+#### Public RNS Entry Points (Community Nodes)
+
+For connecting to the global RNS testnet:
+
+```ini
+# Dublin - Official testnet
+[[RNS Testnet Dublin]]
+  type = TCPClientInterface
+  enabled = yes
+  target_host = dublin.connect.reticulum.network
+  target_port = 4965
+
+# Community nodes - pick one or more for redundancy
+[[Community Node US]]
+  type = TCPClientInterface
+  enabled = yes
+  target_host = rns.acehoss.net
+  target_port = 4242
+
+[[Community Node AU]]
+  type = TCPClientInterface
+  enabled = yes
+  target_host = sydney.reticulum.au
+  target_port = 4242
+```
+
+**Available Community Nodes:**
+| Host | Port | Region |
+|------|------|--------|
+| dublin.connect.reticulum.network | 4965 | Ireland (official) |
+| reticulum.betweentheborders.com | 4242 | USA |
+| rns.acehoss.net | 4242 | USA |
+| dfw.us.g00n.cloud | 6969 | USA (Texas) |
+| rns.quad4.io | 4242 | USA |
+| sydney.reticulum.au | 4242 | Australia |
+| reticulum.on6zq.be | 4965 | Belgium |
+| istanbul.reserve.network | 9034 | Turkey |
+
+Source: [Reticulum Community Node List](https://github.com/markqvist/Reticulum/wiki/Community-Node-List)
+
+#### Transport Node Best Practices
+
+For optimal network connectivity:
+1. **Local transport node**: Set up a stationary, always-on node with `enable_transport = True`
+2. **Multiple uplinks**: Connect to 2-3 public entry points for redundancy
+3. **BackboneInterface**: Most efficient for high-traffic gateways (Linux only)
+4. **Never use `kiss_framing`** between TCP interfaces - it disables reliability mechanisms
 
 **Important Notes:**
-- TCP interfaces tolerate intermittent IP links (auto-reconnect)
-- Never enable `kiss_framing` between TCPClient/TCPServer (disables reliability)
-- Use `i2p_tunneled = yes` when routing over I2P
-- Config file location: `~/.reticulum/config`
-- Get example config: `rnsd --exampleconfig`
+- TCP interfaces auto-reconnect on link failures
+- Config file: `~/.reticulum/config`
+- Example config: `rnsd --exampleconfig`
+- HawaiiNet (local): 192.168.86.38:4242
+- RNode freq 903.625 MHz = US 900 MHz ISM band
 
 Reference: [Reticulum Manual - Interfaces](https://reticulum.network/manual/interfaces.html)
 

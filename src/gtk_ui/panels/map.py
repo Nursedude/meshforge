@@ -56,12 +56,20 @@ class MapPanel(Gtk.Box):
     def _init_node_tracker(self):
         """Initialize the node tracker"""
         try:
+            # Try relative import first (when run as package)
             from ...gateway.node_tracker import UnifiedNodeTracker
+        except ImportError:
+            try:
+                # Fallback for direct execution
+                from gateway.node_tracker import UnifiedNodeTracker
+            except ImportError:
+                logger.info("Node tracker not available - RNS nodes won't be shown")
+                return
+
+        try:
             self.node_tracker = UnifiedNodeTracker()
             self.node_tracker.start()
             logger.info("Node tracker initialized")
-        except ImportError as e:
-            logger.warning(f"Could not import node tracker: {e}")
         except Exception as e:
             logger.error(f"Failed to initialize node tracker: {e}")
 
@@ -171,6 +179,9 @@ class MapPanel(Gtk.Box):
         stats_box.append(self.stat_meshtastic)
 
         self.stat_rns = self._create_stat_label("RNS", "0")
+        # Add tooltip explaining RNS status
+        if self.node_tracker is None:
+            self.stat_rns.set_tooltip_text("RNS not available - install RNS and configure TCPClientInterface")
         stats_box.append(self.stat_rns)
 
         self.stat_online = self._create_stat_label("Online", "0")
