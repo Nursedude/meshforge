@@ -147,7 +147,19 @@ class NodeMonitor:
     @property
     def is_connected(self) -> bool:
         """Check if currently connected"""
-        return self._state == ConnectionState.CONNECTED and self.interface is not None
+        if self._state != ConnectionState.CONNECTED or self.interface is None:
+            return False
+        # Also verify the socket is still valid
+        try:
+            if hasattr(self.interface, 'socket') and self.interface.socket:
+                # Check if socket is still open (non-blocking check)
+                self.interface.socket.getpeername()
+                return True
+            return self.interface.isConnected if hasattr(self.interface, 'isConnected') else False
+        except (OSError, AttributeError):
+            # Socket is closed or invalid
+            self.state = ConnectionState.DISCONNECTED
+            return False
 
     def connect(self, timeout: float = 10.0) -> bool:
         """
@@ -225,8 +237,10 @@ class NodeMonitor:
     def disconnect(self):
         """Disconnect from meshtasticd"""
         self._running = False
+        self.state = ConnectionState.DISCONNECTED  # Set state first to prevent reconnect attempts
 
         if self.interface:
+            # Unsubscribe from events first to prevent callbacks during close
             try:
                 from pubsub import pub
                 pub.unsubscribe(self._on_receive, "meshtastic.receive")
@@ -236,14 +250,24 @@ class NodeMonitor:
             except Exception:
                 pass
 
+            # Stop heartbeat timer if it exists
+            try:
+                if hasattr(self.interface, '_heartbeatTimer') and self.interface._heartbeatTimer:
+                    self.interface._heartbeatTimer.cancel()
+                    self.interface._heartbeatTimer = None
+            except Exception:
+                pass
+
+            # Close the interface
             try:
                 self.interface.close()
-            except Exception as e:
-                logger.error(f"Error closing interface: {e}")
+            except (BrokenPipeError, OSError, Exception) as e:
+                # Ignore broken pipe on disconnect - expected if connection already lost
+                if not isinstance(e, BrokenPipeError):
+                    logger.debug(f"Error closing interface: {e}")
 
             self.interface = None
 
-        self.state = ConnectionState.DISCONNECTED
         logger.info("Disconnected")
 
     def _load_initial_nodes(self):

@@ -144,6 +144,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         self._add_radio_config_page()
         self._add_rns_page()
         self._add_map_page()
+        self._add_hamclock_page()
         self._add_cli_page()
         self._add_hardware_page()
         self._add_tools_page()
@@ -252,6 +253,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
             ("radio_config", "Radio Configuration", "network-wireless-symbolic"),
             ("rns", "Reticulum (RNS)", "network-transmit-receive-symbolic"),
             ("map", "Node Map", "mark-location-symbolic"),
+            ("hamclock", "HamClock", "weather-clear-symbolic"),
             ("cli", "Meshtastic CLI", "utilities-terminal-symbolic"),
             ("hardware", "Hardware Detection", "drive-harddisk-symbolic"),
             ("tools", "System Tools", "applications-utilities-symbolic"),
@@ -337,6 +339,13 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         panel = MapPanel(self)
         self.content_stack.add_named(panel, "map")
         self.map_panel = panel
+
+    def _add_hamclock_page(self):
+        """Add the HamClock integration page"""
+        from .panels.hamclock import HamClockPanel
+        panel = HamClockPanel(self)
+        self.content_stack.add_named(panel, "hamclock")
+        self.hamclock_panel = panel
 
     def _add_cli_page(self):
         """Add the meshtastic CLI page"""

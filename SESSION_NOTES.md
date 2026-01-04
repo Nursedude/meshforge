@@ -27,9 +27,18 @@ sudo python3 src/main_gtk.py    # GTK4 GUI
 
 ## Latest Session Summary (2026-01-04)
 
-### Major Accomplishments - Node Map & MQTT Integration
+### Major Accomplishments - Node Map, MQTT & HamClock
 
-1. **Fixed GTK Node Map** (`src/gtk_ui/panels/map.py`)
+1. **HamClock Integration** (`src/gtk_ui/panels/hamclock.py`) - NEW!
+   - NEW: Full HamClock panel in GTK navigation
+   - NEW: Connection settings (URL, API port 8080, Live port 8081)
+   - NEW: Space weather display (SFI, Kp, A index, X-ray, Sunspots, Band Conditions)
+   - NEW: Embedded WebKit live view (or browser fallback)
+   - NEW: REST API integration with get_sys.txt and get_spacewx.txt endpoints
+   - NEW: Settings persistence to ~/.config/meshforge/hamclock.json
+   - NEW: Auto-connect on startup if URL is configured
+
+2. **Fixed GTK Node Map** (`src/gtk_ui/panels/map.py`)
    - FIX: NodeMonitor import path corrected for GTK runtime
    - FIX: Browser map now uses actual node data (not empty tracker)
    - FIX: Position parsing handles all coordinate formats (lat/lon and latI/lonI)
@@ -68,14 +77,20 @@ sudo python3 src/main_gtk.py    # GTK4 GUI
 | Red | Offline |
 
 ### Files Modified This Session
-- `src/gtk_ui/panels/map.py` - Major fixes for node display
+- `src/gtk_ui/panels/hamclock.py` - NEW: HamClock integration panel
+- `src/gtk_ui/app.py` - Added HamClock navigation and page
+- `src/gtk_ui/panels/map.py` - Major fixes for node display, browser map fix
 - `src/gtk_ui/panels/radio_config.py` - MQTT presets
-- `src/monitoring/node_monitor.py` - sync_nodes(), position parsing
+- `src/monitoring/node_monitor.py` - sync_nodes(), position parsing, connection fixes
 - `web/node_map.html` - MQTT visualization
 - `diagnose_nodes.py` - New diagnostic tool
 
 ### Key Commits
 ```
+0aaf80e feat: Add HamClock integration panel
+a95c3ab fix: More robust connection handling to prevent BrokenPipeError
+fea5ddb fix: Handle None values in node parsing to prevent crashes
+3809123 fix: Browser map now shows all 80+ nodes
 a9e41fb feat: Add regional mesh MQTT broker presets
 f77b72a feat: MQTT node visualization on map
 6b6da57 feat: Add MQTT broker presets with one-click configuration
@@ -104,7 +119,6 @@ e9c1889 fix: Correct NodeMonitor import path for GTK runtime
 3. **Node tracker import warning** - Relative import warning (non-critical)
 
 ### Planned Features
-- HamClock integration (documented in university)
 - RNS bridge completion
 - More RF calculation tools
 - Artifacts for Claude.ai (frequency calculator, link budget, maidenhead)
