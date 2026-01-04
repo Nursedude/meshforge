@@ -842,34 +842,26 @@ class RNSPanel(Gtk.Box):
         try:
             if mode == "textui":
                 # Launch in a terminal
-                # Get config path for the real user
-                real_home = self._get_real_user_home()
-                config_dir = real_home / ".nomadnetwork"
-
                 # When running as root: run terminal as root (has X11), but command as user
                 if is_root and real_user != 'root':
-                    # Terminal runs as root, command runs as user inside
-                    user_cmd = f"sudo -u {real_user} {nomadnet_path} --config {config_dir}"
+                    # Use sudo -i for login shell to get user's environment (.bashrc, etc.)
+                    # This ensures any env vars set by the user are available
+                    user_cmd = f"sudo -i -u {real_user} nomadnet"
                     # lxterminal -e runs command through shell, so pass as single string
                     terminals = [
-                        # lxterminal: -e takes a single command string (runs through sh -c internally)
                         ['lxterminal', '-e', user_cmd],
-                        # xfce4-terminal: -e takes a single command string
                         ['xfce4-terminal', '-e', user_cmd],
-                        # gnome-terminal: use -- then the command parts
-                        ['gnome-terminal', '--', 'sudo', '-u', real_user, nomadnet_path, '--config', str(config_dir)],
-                        # konsole: -e takes the rest as command
-                        ['konsole', '-e', 'sudo', '-u', real_user, nomadnet_path, '--config', str(config_dir)],
-                        # xterm: -e takes the rest as command
-                        ['xterm', '-e', 'sudo', '-u', real_user, nomadnet_path, '--config', str(config_dir)],
+                        ['gnome-terminal', '--', 'sudo', '-i', '-u', real_user, 'nomadnet'],
+                        ['konsole', '-e', 'sudo', '-i', '-u', real_user, 'nomadnet'],
+                        ['xterm', '-e', 'sudo', '-i', '-u', real_user, 'nomadnet'],
                     ]
                 else:
                     terminals = [
-                        ['lxterminal', '-e', f'{nomadnet_path} --config {config_dir}'],
-                        ['xfce4-terminal', '-e', f'{nomadnet_path} --config {config_dir}'],
-                        ['gnome-terminal', '--', nomadnet_path, '--config', str(config_dir)],
-                        ['konsole', '-e', nomadnet_path, '--config', str(config_dir)],
-                        ['xterm', '-e', nomadnet_path, '--config', str(config_dir)],
+                        ['lxterminal', '-e', 'nomadnet'],
+                        ['xfce4-terminal', '-e', 'nomadnet'],
+                        ['gnome-terminal', '--', 'nomadnet'],
+                        ['konsole', '-e', 'nomadnet'],
+                        ['xterm', '-e', 'nomadnet'],
                     ]
 
                 for term_cmd in terminals:
