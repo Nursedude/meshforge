@@ -320,26 +320,11 @@ class HardwarePanel(Gtk.Box):
 
                 if is_running:
                     # Try to get hardware info from meshtastic CLI
-                    cli_paths = [
-                        '/root/.local/bin/meshtastic',
-                        '/home/pi/.local/bin/meshtastic',
-                        os.path.expanduser('~/.local/bin/meshtastic'),
-                    ]
-
-                    # Check SUDO_USER path
-                    sudo_user = os.environ.get('SUDO_USER')
-                    if sudo_user:
-                        cli_paths.insert(0, f'/home/{sudo_user}/.local/bin/meshtastic')
-
-                    cli_path = None
-                    for path in cli_paths:
-                        if os.path.exists(path) and os.access(path, os.X_OK):
-                            cli_path = path
-                            break
-                    if not cli_path:
-                        result = subprocess.run(['which', 'meshtastic'], capture_output=True, text=True)
-                        if result.returncode == 0:
-                            cli_path = result.stdout.strip()
+                    try:
+                        from utils.cli import find_meshtastic_cli
+                        cli_path = find_meshtastic_cli()
+                    except ImportError:
+                        cli_path = shutil.which('meshtastic')
 
                     hw_model = "Connected"
                     firmware = ""

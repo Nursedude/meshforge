@@ -312,9 +312,27 @@ class UnifiedNodeTracker:
         while self._running:
             time.sleep(1)
 
-    def stop(self):
-        """Stop the node tracker"""
+    def stop(self, timeout: float = 5.0):
+        """Stop the node tracker and wait for threads to finish
+
+        Args:
+            timeout: Seconds to wait for each thread to finish
+        """
+        logger.info("Stopping node tracker...")
         self._running = False
+
+        # Wait for cleanup thread to finish
+        if hasattr(self, '_cleanup_thread') and self._cleanup_thread and self._cleanup_thread.is_alive():
+            self._cleanup_thread.join(timeout=timeout)
+            if self._cleanup_thread.is_alive():
+                logger.warning("Cleanup thread did not stop in time")
+
+        # Wait for RNS thread to finish
+        if hasattr(self, '_rns_thread') and self._rns_thread and self._rns_thread.is_alive():
+            self._rns_thread.join(timeout=timeout)
+            if self._rns_thread.is_alive():
+                logger.warning("RNS thread did not stop in time")
+
         self._save_cache()
         logger.info("Node tracker stopped")
 

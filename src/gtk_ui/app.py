@@ -485,25 +485,12 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         # Use CLI method (more reliable, avoids meshtastic library noise)
         try:
             import re
-            # Find meshtastic CLI
-            cli_paths = [
-                '/root/.local/bin/meshtastic',
-                '/home/pi/.local/bin/meshtastic',
-                os.path.expanduser('~/.local/bin/meshtastic'),
-                'meshtastic'
-            ]
-
-            cli_path = None
-            for path in cli_paths:
-                if path == 'meshtastic':
-                    # Check if in PATH
-                    result = subprocess.run(['which', 'meshtastic'], capture_output=True, text=True)
-                    if result.returncode == 0:
-                        cli_path = 'meshtastic'
-                        break
-                elif os.path.exists(path):
-                    cli_path = path
-                    break
+            # Find meshtastic CLI using centralized function
+            try:
+                from utils.cli import find_meshtastic_cli
+                cli_path = find_meshtastic_cli()
+            except ImportError:
+                cli_path = shutil.which('meshtastic')
 
             if not cli_path:
                 return self._node_count_cache

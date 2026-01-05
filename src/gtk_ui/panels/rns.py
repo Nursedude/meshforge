@@ -1186,6 +1186,7 @@ message_storage_limit = 2000
     def _edit_config_terminal(self, config_file):
         """Open config file in terminal with nano/vim"""
         import os
+        import shlex
 
         config_path = Path(config_file)
         print(f"[RNS] Opening config in terminal: {config_path}", flush=True)
@@ -1210,24 +1211,28 @@ message_storage_limit = 2000
                 print(f"[RNS] Failed to create config: {e}", flush=True)
 
         try:
+            # Quote paths/usernames to prevent shell injection
+            safe_path = shlex.quote(str(config_path))
+            safe_user = shlex.quote(real_user)
+
             # When running as root: run terminal as root (has X11), but nano as user
             if is_root and real_user != 'root':
                 # Use sudo -i for login shell to get user's environment
-                user_cmd = f"sudo -i -u {real_user} nano {config_path}"
+                user_cmd = f"sudo -i -u {safe_user} nano {safe_path}"
                 terminals = [
                     ('lxterminal', f'lxterminal -e {user_cmd}'),
                     ('xfce4-terminal', f'xfce4-terminal -e {user_cmd}'),
-                    ('gnome-terminal', f'gnome-terminal -- sudo -i -u {real_user} nano {config_path}'),
-                    ('konsole', f'konsole -e sudo -i -u {real_user} nano {config_path}'),
-                    ('xterm', f'xterm -e sudo -i -u {real_user} nano {config_path}'),
+                    ('gnome-terminal', f'gnome-terminal -- sudo -i -u {safe_user} nano {safe_path}'),
+                    ('konsole', f'konsole -e sudo -i -u {safe_user} nano {safe_path}'),
+                    ('xterm', f'xterm -e sudo -i -u {safe_user} nano {safe_path}'),
                 ]
             else:
                 terminals = [
-                    ('lxterminal', f'lxterminal -e nano {config_path}'),
-                    ('xfce4-terminal', f'xfce4-terminal -e nano {config_path}'),
-                    ('gnome-terminal', f'gnome-terminal -- nano {config_path}'),
-                    ('konsole', f'konsole -e nano {config_path}'),
-                    ('xterm', f'xterm -e nano {config_path}'),
+                    ('lxterminal', f'lxterminal -e nano {safe_path}'),
+                    ('xfce4-terminal', f'xfce4-terminal -e nano {safe_path}'),
+                    ('gnome-terminal', f'gnome-terminal -- nano {safe_path}'),
+                    ('konsole', f'konsole -e nano {safe_path}'),
+                    ('xterm', f'xterm -e nano {safe_path}'),
                 ]
 
             for term_name, full_cmd in terminals:

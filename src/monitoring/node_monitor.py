@@ -234,10 +234,20 @@ class NodeMonitor:
                 self.on_error(e)
             return False
 
-    def disconnect(self):
-        """Disconnect from meshtasticd"""
+    def disconnect(self, timeout: float = 5.0):
+        """Disconnect from meshtasticd and wait for threads to finish
+
+        Args:
+            timeout: Seconds to wait for threads to finish
+        """
         self._running = False
         self.state = ConnectionState.DISCONNECTED  # Set state first to prevent reconnect attempts
+
+        # Wait for reconnect thread to finish if running
+        if hasattr(self, '_reconnect_thread') and self._reconnect_thread and self._reconnect_thread.is_alive():
+            self._reconnect_thread.join(timeout=timeout)
+            if self._reconnect_thread.is_alive():
+                logger.warning("Reconnect thread did not stop in time")
 
         if self.interface:
             # Unsubscribe from events first to prevent callbacks during close

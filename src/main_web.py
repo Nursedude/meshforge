@@ -230,24 +230,14 @@ def validate_config_name(config_name):
 
 
 def find_meshtastic_cli():
-    """Find meshtastic CLI path"""
-    cli_paths = [
-        '/root/.local/bin/meshtastic',
-        '/home/pi/.local/bin/meshtastic',
-        os.path.expanduser('~/.local/bin/meshtastic'),
-    ]
-    sudo_user = os.environ.get('SUDO_USER')
-    if sudo_user:
-        cli_paths.insert(0, f'/home/{sudo_user}/.local/bin/meshtastic')
-
-    for path in cli_paths:
-        if os.path.exists(path) and os.access(path, os.X_OK):
-            return path
-
-    result = subprocess.run(['which', 'meshtastic'], capture_output=True, text=True)
-    if result.returncode == 0:
-        return result.stdout.strip()
-    return None
+    """Find meshtastic CLI path - uses centralized utils.cli"""
+    try:
+        from utils.cli import find_meshtastic_cli as _find_cli
+        return _find_cli()
+    except ImportError:
+        # Fallback if utils not available
+        import shutil
+        return shutil.which('meshtastic')
 
 
 def check_service_status():

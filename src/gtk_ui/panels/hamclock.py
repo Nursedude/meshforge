@@ -15,10 +15,9 @@ SystemD packages: https://github.com/pa28/hamclock-systemd
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import Gtk, Adw, GLib, Gio
+from gi.repository import Gtk, GLib
 import threading
 import subprocess
-import shutil
 import json
 import urllib.request
 import urllib.error
@@ -198,6 +197,8 @@ class HamClockPanel(Gtk.Box):
             ("xray", "X-Ray Flux"),
             ("sunspots", "Sunspot Number"),
             ("conditions", "Band Conditions"),
+            ("aurora", "Aurora Activity"),
+            ("proton", "Proton Flux"),
         ]
 
         for key, label_text in stats:
@@ -224,6 +225,56 @@ class HamClockPanel(Gtk.Box):
 
         weather_frame.set_child(weather_box)
         self.append(weather_frame)
+
+        # HF Band Conditions Frame
+        bands_frame = Gtk.Frame()
+        bands_frame.set_label("HF Band Conditions (Day/Night)")
+        bands_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        bands_box.set_margin_start(15)
+        bands_box.set_margin_end(15)
+        bands_box.set_margin_top(10)
+        bands_box.set_margin_bottom(10)
+
+        # Band condition labels
+        self.band_labels = {}
+        bands = [
+            ("80m-40m", "80m-40m (Low)"),
+            ("30m-20m", "30m-20m (Mid)"),
+            ("17m-15m", "17m-15m (High)"),
+            ("12m-10m", "12m-10m (VHF)"),
+        ]
+
+        for key, label_text in bands:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            label = Gtk.Label(label=f"{label_text}:")
+            label.set_xalign(0)
+            label.set_hexpand(True)
+            row.append(label)
+
+            value = Gtk.Label(label="--/--")
+            value.set_xalign(1)
+            row.append(value)
+            self.band_labels[key] = value
+
+            bands_box.append(row)
+
+        # NOAA fetch button
+        noaa_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        noaa_row.set_margin_top(5)
+
+        noaa_btn = Gtk.Button(label="Fetch NOAA Data")
+        noaa_btn.connect("clicked", self._on_fetch_noaa)
+        noaa_btn.set_tooltip_text("Get latest from NOAA Space Weather")
+        noaa_row.append(noaa_btn)
+
+        prop_btn = Gtk.Button(label="DX Propagation")
+        prop_btn.connect("clicked", self._on_open_dx_propagation)
+        prop_btn.set_tooltip_text("Open DX propagation charts in browser")
+        noaa_row.append(prop_btn)
+
+        bands_box.append(noaa_row)
+        bands_frame.set_child(bands_box)
+        self.append(bands_frame)
 
         # Live view (if WebKit available)
         if HAS_WEBKIT:
@@ -375,7 +426,7 @@ class HamClockPanel(Gtk.Box):
                         status['installed'] = True
                         status['service_name'] = name
 
-                except Exception as e:
+                except Exception:
                     pass
 
             # Also check for running hamclock process (might be started manually)
@@ -661,3 +712,93 @@ class HamClockPanel(Gtk.Box):
             self.status_label.set_label("Opened in browser")
         except Exception as e:
             self.status_label.set_label(f"Failed to open browser: {e}")
+
+    def _on_fetch_noaa(self, button):
+        """Fetch space weather data from NOAA"""
+        self.status_label.set_label("Fetching NOAA data...")
+
+        def fetch():
+            try:
+                # NOAA Space Weather Prediction Center - Solar data
+                noaa_url = "https://services.swpc.noaa.gov/json/solar-cycle/observed-solar-cycle-indices.json"
+                req = urllib.request.Request(noaa_url)
+                req.add_header('User-Agent', 'MeshForge/1.0')
+
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    data = json.loads(response.read().decode('utf-8'))
+
+                # Get most recent entry
+                if data and len(data) > 0:
+                    latest = data[-1]
+                    GLib.idle_add(self._update_noaa_display, latest)
+                else:
+                    GLib.idle_add(lambda: self.status_label.set_label("No NOAA data"))
+
+            except Exception as e:
+                logger.error(f"NOAA fetch error: {e}")
+                GLib.idle_add(lambda: self.status_label.set_label(f"NOAA error: {e}"))
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _update_noaa_display(self, data):
+        """Update display with NOAA solar data"""
+        try:
+            # Solar Flux Index
+            if 'f10.7' in data:
+                self.stat_labels['sfi'].set_label(str(data['f10.7']))
+
+            # Sunspot number
+            if 'ssn' in data:
+                self.stat_labels['sunspots'].set_label(str(data['ssn']))
+
+            # Estimate band conditions based on SFI
+            sfi = float(data.get('f10.7', 0))
+            if sfi >= 150:
+                conditions = "Excellent"
+                bands = {"80m-40m": "Good/Good", "30m-20m": "Excellent/Good",
+                         "17m-15m": "Excellent/Fair", "12m-10m": "Good/Poor"}
+            elif sfi >= 120:
+                conditions = "Good"
+                bands = {"80m-40m": "Good/Good", "30m-20m": "Good/Good",
+                         "17m-15m": "Good/Fair", "12m-10m": "Fair/Poor"}
+            elif sfi >= 90:
+                conditions = "Fair"
+                bands = {"80m-40m": "Good/Good", "30m-20m": "Fair/Fair",
+                         "17m-15m": "Fair/Poor", "12m-10m": "Poor/Poor"}
+            else:
+                conditions = "Poor"
+                bands = {"80m-40m": "Fair/Good", "30m-20m": "Poor/Fair",
+                         "17m-15m": "Poor/Poor", "12m-10m": "Poor/Poor"}
+
+            self.stat_labels['conditions'].set_label(conditions)
+
+            for band, condition in bands.items():
+                if band in self.band_labels:
+                    self.band_labels[band].set_label(condition)
+
+            self.status_label.set_label(f"NOAA data updated (SFI: {sfi})")
+        except Exception as e:
+            self.status_label.set_label(f"Parse error: {e}")
+
+    def _on_open_dx_propagation(self, button):
+        """Open DX propagation charts in browser"""
+        import subprocess
+        import os
+
+        urls = [
+            "https://www.hamqsl.com/solar.html",  # N0NBH Solar-Terrestrial
+            "https://prop.kc2g.com/",  # KC2G MUF Map
+        ]
+
+        user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
+
+        try:
+            # Open the solar conditions page
+            subprocess.Popen(
+                ['sudo', '-u', user, 'xdg-open', urls[0]],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            self.status_label.set_label("Opened propagation charts")
+        except Exception as e:
+            self.status_label.set_label(f"Failed: {e}")

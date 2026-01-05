@@ -580,17 +580,42 @@ class RNSMeshtasticBridge:
     def _process_mesh_to_rns(self, msg: BridgedMessage):
         """Process message from Meshtastic to RNS"""
         try:
-            prefix = f"[Mesh:{msg.source_id[-4:]}] " if not msg.is_broadcast else "[Mesh] "
+            prefix = f"[Mesh:{msg.source_id[-4:]}] " if msg.source_id else "[Mesh] "
             content = prefix + msg.content
 
-            # For now, log the bridged message
-            # Full LXMF routing requires destination mapping
-            logger.info(f"Bridge Mesh→RNS: {content[:50]}...")
-            self.stats['messages_mesh_to_rns'] += 1
+            # Attempt to send to RNS
+            # For broadcasts or unknown destinations, this may fail
+            # but we should at least try and report properly
+            destination_hash = None
+
+            # Check if we have a mapped destination
+            if msg.destination_id and not msg.is_broadcast:
+                # Try to find RNS destination for this Meshtastic node
+                destination_hash = self._get_rns_destination(msg.destination_id)
+
+            if self.send_to_rns(content, destination_hash):
+                logger.info(f"Bridge Mesh→RNS: {content[:50]}...")
+                self.stats['messages_mesh_to_rns'] += 1
+            else:
+                # Log but don't count as error for broadcasts (expected behavior)
+                if msg.is_broadcast:
+                    logger.debug(f"Mesh→RNS broadcast not sent (no propagation node): {content[:30]}...")
+                else:
+                    logger.warning(f"Failed to bridge Mesh→RNS: {content[:30]}...")
+                    self.stats['errors'] += 1
 
         except Exception as e:
             logger.error(f"Error bridging Mesh→RNS: {e}")
             self.stats['errors'] += 1
+
+    def _get_rns_destination(self, meshtastic_id: str) -> bytes:
+        """Look up RNS destination hash for a Meshtastic node ID"""
+        # Check node tracker for known mappings
+        if hasattr(self, 'node_tracker') and self.node_tracker:
+            node = self.node_tracker.get_node_by_mesh_id(meshtastic_id)
+            if node and hasattr(node, 'rns_hash') and node.rns_hash:
+                return node.rns_hash
+        return None
 
     def _process_rns_to_mesh(self, msg: BridgedMessage):
         """Process message from RNS to Meshtastic"""
