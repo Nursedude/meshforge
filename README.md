@@ -17,7 +17,7 @@
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-yellow.svg)](https://python.org)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20Linux-orange.svg)](https://www.raspberrypi.org/)
-[![Tests](https://img.shields.io/badge/tests-70%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-89%20passing-brightgreen.svg)](tests/)
 
 **The first open-source tool to bridge Meshtastic and Reticulum (RNS) mesh networks.**
 
@@ -239,6 +239,7 @@ MeshForge provides **multiple interfaces for different use cases** - choose the 
 | **Rich CLI** | `sudo python3 src/main.py` | Scripting, minimal systems | Rich |
 | **Monitor** | `python3 -m src.monitor` | Quick node check | None (no sudo!) |
 | **Diagnostics** | `python3 src/cli/diagnose.py -g` | Gateway setup wizard | None |
+| **Device Scanner** | `python3 -m src.utils.device_scanner` | Find USB/serial ports | None |
 
 ### Interface Selection Guide
 
@@ -925,6 +926,7 @@ meshforge/
 │   │   ├── emoji.py          # Terminal emoji support
 │   │   ├── rf.py             # RF calculations (tested)
 │   │   ├── plugins.py        # Plugin architecture
+│   │   ├── device_scanner.py # USB/Serial port scanner (tested)
 │   │   └── gateway_diagnostic.py  # Gateway setup wizard
 │   │
 │   └── plugins/              # Extensible plugin system
@@ -936,7 +938,8 @@ meshforge/
 │   ├── test_security.py      # Security validation tests (24)
 │   ├── test_rf_utils.py      # RF calculation tests (13)
 │   ├── test_gateway_diagnostic.py  # Diagnostic tests (18)
-│   └── test_plugins.py       # Plugin architecture tests (15)
+│   ├── test_plugins.py       # Plugin architecture tests (15)
+│   └── test_device_scanner.py # Device scanner tests (19)
 │
 ├── assets/
 │   ├── shaka.svg             # Shaka icon (detailed)
@@ -1114,11 +1117,12 @@ source venv/bin/activate
 # Install dev dependencies
 pip install rich textual flask meshtastic
 
-# Run tests (TDD approach - 70 total)
+# Run tests (TDD approach - 89 total)
 python3 tests/test_security.py      # 24 security tests
 python3 tests/test_rf_utils.py      # 13 RF calculation tests
 python3 tests/test_gateway_diagnostic.py  # 18 diagnostic tests
 python3 tests/test_plugins.py       # 15 plugin architecture tests
+python3 tests/test_device_scanner.py  # 19 device scanner tests
 
 # Verify syntax
 python3 -m py_compile src/**/*.py
