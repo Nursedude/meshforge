@@ -623,5 +623,261 @@ class AIAssistant:
 
 ---
 
+## Appendix A: Apple Responsible AI Principles
+
+Based on [Apple's Human Interface Guidelines for Generative AI](https://developer.apple.com/design/human-interface-guidelines/generative-ai) and their [Responsible AI framework](https://machinelearning.apple.com/research/introducing-apple-foundation-models), MeshForge adopts these core principles:
+
+### A.1 Empowering the User
+
+> "Apple identifies areas where AI can be used responsibly to create tools for addressing specific user needs, and respects how users choose to use these tools to accomplish their goals."
+
+**MeshForge Implementation:**
+- AI suggests, user decides
+- Tools address specific mesh networking needs
+- Respect user's workflow preferences
+- Never override user intent
+
+### A.2 Representing Users Authentically
+
+> "Apple builds deeply personal products with the goal of representing users around the globe authentically, and works continuously to avoid perpetuating stereotypes and systemic biases."
+
+**MeshForge Implementation:**
+- Diverse user personas in design
+- No assumptions about technical skill level
+- Culturally aware examples
+- Regular bias audits on suggestions
+
+### A.3 Designing with Care
+
+> "Apple takes precautions at every stage of the process, including design, model training, feature development, and quality evaluation to identify how AI tools may be misused or lead to potential harm."
+
+**MeshForge Implementation:**
+```
+DESIGN PRECAUTIONS
+══════════════════
+□ Design Phase
+  • Threat modeling for AI features
+  • Edge case identification
+  • Misuse scenario analysis
+
+□ Development Phase
+  • Safety guardrails in code
+  • Input/output validation
+  • Graceful degradation
+
+□ Evaluation Phase
+  • Red team testing
+  • User feedback integration
+  • Continuous monitoring
+```
+
+### A.4 Protecting Privacy
+
+> "Apple protects users' privacy with powerful on-device processing. They do not use users' private personal data or user interactions when training foundation models."
+
+**MeshForge Privacy Architecture:**
+```
+┌─────────────────────────────────────────────────────────────┐
+│                 MESHFORGE PRIVACY MODEL                      │
+│              (Aligned with Apple Principles)                 │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌─────────────────┐                                        │
+│  │  ON-DEVICE      │  ← All AI processing happens here      │
+│  │  PROCESSING     │                                        │
+│  └────────┬────────┘                                        │
+│           │                                                  │
+│           ▼                                                  │
+│  ┌─────────────────┐                                        │
+│  │  LOCAL STORAGE  │  ← User data stays on device          │
+│  │  ONLY           │                                        │
+│  └────────┬────────┘                                        │
+│           │                                                  │
+│           ▼                                                  │
+│  ┌─────────────────┐                                        │
+│  │  NO TRAINING    │  ← User data never trains models      │
+│  │  ON USER DATA   │                                        │
+│  └─────────────────┘                                        │
+│                                                              │
+│  If cloud processing ever needed:                           │
+│  • Explicit user consent required                           │
+│  • Data processed only for request                          │
+│  • Results returned, data deleted                           │
+│  • Cryptographic verification available                     │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### A.5 Verifiable Transparency
+
+Apple commits to allowing inspection of their AI systems. MeshForge follows:
+
+```
+TRANSPARENCY COMMITMENTS
+════════════════════════
+
+1. Open Source Core
+   - AI logic visible in source code
+   - Community can audit implementations
+   - No hidden processing
+
+2. Processing Logs
+   - Show when AI is active
+   - Log what data was analyzed (locally)
+   - User can review AI activity
+
+3. Decision Explanations
+   - Every suggestion has a "Why?"
+   - Factors are enumerated
+   - Confidence levels displayed
+
+4. Limitation Disclosure
+   - Clear about what AI cannot do
+   - Error rates communicated
+   - No overclaiming capabilities
+```
+
+### A.6 Explicit Consent
+
+> "Apple enforces explicit user consent for data sharing. Users must opt in and approve specific data-sharing requests."
+
+**MeshForge Consent Model:**
+```
+┌─────────────────────────────────────────────────────────────┐
+│  First-Time AI Feature Use                                   │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ✨ AI Assistance Available                                  │
+│                                                              │
+│  MeshForge can help optimize your network with              │
+│  intelligent suggestions.                                    │
+│                                                              │
+│  How it works:                                              │
+│  • Analyzes your local configuration                        │
+│  • Suggests improvements                                     │
+│  • All processing happens on your device                    │
+│  • Your data never leaves your system                       │
+│                                                              │
+│  You can change this anytime in Settings.                   │
+│                                                              │
+│  [Enable AI Assistance]  [Not Now]  [Learn More]            │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### A.7 Thumbs Up/Down Feedback
+
+Following Apple's Image Playground pattern:
+
+```
+SIMPLE FEEDBACK PATTERN
+═══════════════════════
+
+After every AI suggestion:
+
+┌───────────────────────────────────┐
+│  Was this suggestion helpful?     │
+│                                   │
+│     👍          👎                │
+│    Yes         No                 │
+│                                   │
+└───────────────────────────────────┘
+
+On thumbs down, expand:
+
+┌───────────────────────────────────┐
+│  What was wrong?                  │
+│                                   │
+│  ○ Not relevant to my situation  │
+│  ○ Technically incorrect          │
+│  ○ Too complex                    │
+│  ○ Other: [____________]         │
+│                                   │
+│  [Submit Feedback]                │
+└───────────────────────────────────┘
+```
+
+### A.8 Graceful Error Handling
+
+> "If the output doesn't match expectations, decoding will fail gracefully—you'll get a partial result or an error."
+
+**MeshForge Error Strategy:**
+```python
+class AIFeature:
+    """AI feature with graceful degradation"""
+
+    def get_suggestion(self, context):
+        try:
+            result = self._analyze(context)
+            if result.confidence < self.MIN_CONFIDENCE:
+                return self._fallback_suggestion(context)
+            return result
+        except AnalysisError as e:
+            # Log for improvement, don't crash
+            logger.warning(f"AI analysis failed: {e}")
+            return self._manual_mode_prompt()
+        except Exception as e:
+            # Unexpected error - fail safe
+            logger.exception("Unexpected AI error")
+            return {
+                "type": "error",
+                "message": "Couldn't generate suggestion",
+                "action": "manual_configuration",
+                "help_url": "/help/manual-config"
+            }
+
+    def _fallback_suggestion(self, context):
+        """When AI is uncertain, guide to manual config"""
+        return {
+            "type": "low_confidence",
+            "message": "Not enough information for a suggestion",
+            "action": "show_manual_options",
+            "options": self._get_common_configurations()
+        }
+```
+
+---
+
+## Appendix B: Apple's Liquid Glass Design Language (2025)
+
+For future UI updates, consider Apple's new Liquid Glass design principles:
+
+```
+LIQUID GLASS PRINCIPLES
+═══════════════════════
+
+1. TRANSLUCENCY
+   - Depth through layered transparency
+   - Content visible through UI elements
+   - Context-aware opacity
+
+2. FLUIDITY
+   - Smooth transitions
+   - Responsive to interaction
+   - Organic motion
+
+3. ADAPTIVITY
+   - Responds to context
+   - Changes with content
+   - Platform-appropriate
+
+Application to MeshForge:
+- AI suggestion cards could use translucent backgrounds
+- Confidence meters with fluid fill animations
+- Adaptive layouts based on content complexity
+```
+
+---
+
+## References
+
+- [Apple HIG: Generative AI](https://developer.apple.com/design/human-interface-guidelines/generative-ai)
+- [Apple HIG: Machine Learning](https://developer.apple.com/design/human-interface-guidelines/machine-learning)
+- [Apple Foundation Models Research](https://machinelearning.apple.com/research/introducing-apple-foundation-models)
+- [Apple Responsible AI Approach](https://learnprompting.org/blog/apple-intelligence-responsible-ai)
+- [Apple Intelligence Privacy](https://www.apple.com/legal/privacy/data/en/intelligence-engine/)
+
+---
+
 *Based on Apple Human Interface Guidelines for AI and industry best practices.*
 *MeshForge Implementation Guide | 2026-01-05*
