@@ -1,16 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-  <!-- Simplified shaka icon - works at small sizes -->
-  <g fill="#000">
+  <!-- Simplified shaka icon - works at small sizes, visible on light/dark -->
+  <defs>
+    <linearGradient id="shakaGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4a90d9;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#2d5a87;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <g fill="url(#shakaGrad)" stroke="#1a3a5c" stroke-width="0.5">
     <!-- Thumb pointing left -->
     <ellipse cx="6" cy="16" rx="4" ry="2.5" transform="rotate(-20 6 16)"/>
-
     <!-- Pinky pointing up -->
     <ellipse cx="24" cy="7" rx="2" ry="5"/>
-
     <!-- Palm/fist -->
     <rect x="12" y="11" width="14" height="12" rx="4"/>
-
     <!-- Wrist -->
     <rect x="14" y="23" width="10" height="6" rx="2"/>
   </g>
