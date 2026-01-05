@@ -1,0 +1,31 @@
+{
+    "id": "org.meshforge.plugin.band_plan",
+    "name": "Band Plan Reference",
+    "version": "1.0.0",
+    "description": "Quick reference for LoRa frequency allocations and Part 97 amateur bands",
+    "author": "MeshForge Community",
+    "type": "panel",
+    "entry_point": "main.py",
+    "min_meshforge_version": "1.0.0",
+    "homepage": "https://github.com/meshforge/plugins",
+    "license": "MIT",
+    "icon": "view-list-symbolic",
+    "category": "Reference",
+    "tags": ["band-plan", "frequency", "ham", "lora", "regulations"],
+    "dependencies": [],
+    "permissions": [],
+    "premium": false,
+    "settings_schema": {
+        "region": {
+            "type": "choice",
+            "choices": ["US", "EU", "AU/NZ", "AS", "KR", "JP", "IN"],
+            "default": "US",
+            "label": "Default Region"
+        },
+        "show_amateur": {
+            "type": "boolean",
+            "default": true,
+            "label": "Show Amateur Bands"
+        }
+    }
+}

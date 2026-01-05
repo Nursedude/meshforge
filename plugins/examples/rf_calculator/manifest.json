@@ -1,0 +1,31 @@
+{
+    "id": "org.meshforge.plugin.rf_calculator",
+    "name": "RF Calculator",
+    "version": "1.0.0",
+    "description": "Essential RF calculations for link planning: FSPL, EIRP, sensitivity, and more",
+    "author": "MeshForge Community",
+    "type": "tool",
+    "entry_point": "main.py",
+    "min_meshforge_version": "1.0.0",
+    "homepage": "https://github.com/meshforge/plugins",
+    "license": "MIT",
+    "icon": "accessories-calculator-symbolic",
+    "category": "Tools",
+    "tags": ["rf", "calculator", "radio", "link-budget"],
+    "dependencies": [],
+    "permissions": [],
+    "premium": false,
+    "settings_schema": {
+        "default_frequency": {
+            "type": "number",
+            "default": 915,
+            "label": "Default Frequency (MHz)"
+        },
+        "distance_unit": {
+            "type": "choice",
+            "choices": ["km", "miles"],
+            "default": "km",
+            "label": "Distance Unit"
+        }
+    }
+}

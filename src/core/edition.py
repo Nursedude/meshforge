@@ -114,6 +114,7 @@ EDITION_FEATURES: Dict[Edition, Set[str]] = {
         "hamclock",
         "plugins",
         # Ham-specific
+        "amateur_radio",  # Main Amateur Radio panel
         "callsign_management",
         "ares_races_tools",
         "band_plan_reference",
