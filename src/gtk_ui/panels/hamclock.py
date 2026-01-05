@@ -412,7 +412,7 @@ class HamClockPanel(Gtk.Box):
 
     def _check_service_status(self):
         """Check if HamClock service is running"""
-        print("[HamClock] Checking service status...", flush=True)
+        logger.debug("[HamClock] Checking service status...")
 
         def check():
             status = {
@@ -477,7 +477,7 @@ class HamClockPanel(Gtk.Box):
             self.service_start_btn.set_sensitive(False)
             self.service_stop_btn.set_sensitive(True)
             self.service_restart_btn.set_sensitive(True)
-            print(f"[HamClock] Service running: {status['service_name']}", flush=True)
+            logger.debug(f"[HamClock] Service running: {status['service_name']}")
         elif status['installed']:
             self.service_status_icon.set_from_icon_name("dialog-warning-symbolic")
             self.service_status_label.set_label("HamClock Stopped")
@@ -485,7 +485,7 @@ class HamClockPanel(Gtk.Box):
             self.service_start_btn.set_sensitive(True)
             self.service_stop_btn.set_sensitive(False)
             self.service_restart_btn.set_sensitive(False)
-            print(f"[HamClock] Service installed but stopped", flush=True)
+            logger.debug(f"[HamClock] Service installed but stopped")
         else:
             self.service_status_icon.set_from_icon_name("dialog-question-symbolic")
             self.service_status_label.set_label("HamClock Not Installed")
@@ -493,13 +493,13 @@ class HamClockPanel(Gtk.Box):
             self.service_start_btn.set_sensitive(False)
             self.service_stop_btn.set_sensitive(False)
             self.service_restart_btn.set_sensitive(False)
-            print("[HamClock] Service not found", flush=True)
+            logger.debug("[HamClock] Service not found")
 
         return False
 
     def _service_action(self, action):
         """Perform HamClock service action (start/stop/restart)"""
-        print(f"[HamClock] Service action: {action}...", flush=True)
+        logger.debug(f"[HamClock] Service action: {action}...")
         self.main_window.set_status_message(f"{action.capitalize()}ing HamClock...")
 
         def do_action():
@@ -524,7 +524,7 @@ class HamClockPanel(Gtk.Box):
                     )
                     if result.returncode == 0:
                         success = True
-                        print(f"[HamClock] {action} {name}: OK", flush=True)
+                        logger.debug(f"[HamClock] {action} {name}: OK")
                         break
                     else:
                         error = result.stderr.strip()
@@ -544,10 +544,10 @@ class HamClockPanel(Gtk.Box):
         """Handle service action completion"""
         if success:
             self.main_window.set_status_message(f"HamClock {action} successful")
-            print(f"[HamClock] {action}: OK", flush=True)
+            logger.debug(f"[HamClock] {action}: OK")
         else:
             self.main_window.set_status_message(f"HamClock {action} failed: {error}")
-            print(f"[HamClock] {action}: FAILED - {error}", flush=True)
+            logger.debug(f"[HamClock] {action}: FAILED - {error}")
 
         # Refresh status
         GLib.timeout_add(1000, self._check_service_status)
@@ -582,13 +582,13 @@ class HamClockPanel(Gtk.Box):
         self.url_entry.set_text(url)
 
         self.status_label.set_label("Connecting...")
-        print(f"[HamClock] Connecting to {url}...", flush=True)
+        logger.debug(f"[HamClock] Connecting to {url}...")
 
         def check_connection():
             api_url = f"{url}:{self._settings['api_port']}"
             full_url = f"{api_url}/get_sys.txt"
 
-            print(f"[HamClock] Testing connection: {full_url}", flush=True)
+            logger.debug(f"[HamClock] Testing connection: {full_url}")
 
             try:
                 # Try to get version or any API response
@@ -596,18 +596,18 @@ class HamClockPanel(Gtk.Box):
                 req.add_header('User-Agent', 'MeshForge/1.0')
                 with urllib.request.urlopen(req, timeout=5) as response:
                     data = response.read().decode('utf-8')
-                    print(f"[HamClock] Connection successful, got {len(data)} bytes", flush=True)
+                    logger.debug(f"[HamClock] Connection successful, got {len(data)} bytes")
                     GLib.idle_add(self._on_connected, url, data)
             except urllib.error.HTTPError as e:
                 error_msg = f"HTTP {e.code}: {e.reason}"
-                print(f"[HamClock] HTTP error: {error_msg}", flush=True)
+                logger.debug(f"[HamClock] HTTP error: {error_msg}")
                 GLib.idle_add(self._on_connection_failed, error_msg)
             except urllib.error.URLError as e:
                 error_msg = str(e.reason)
-                print(f"[HamClock] URL error: {error_msg}", flush=True)
+                logger.debug(f"[HamClock] URL error: {error_msg}")
                 GLib.idle_add(self._on_connection_failed, error_msg)
             except Exception as e:
-                print(f"[HamClock] Connection error: {e}", flush=True)
+                logger.debug(f"[HamClock] Connection error: {e}")
                 GLib.idle_add(self._on_connection_failed, str(e))
 
         threading.Thread(target=check_connection, daemon=True).start()
@@ -646,7 +646,7 @@ class HamClockPanel(Gtk.Box):
         api_port = self._settings.get("api_port", 8080)
 
         if not url:
-            print("[HamClock] No URL configured, skipping fetch", flush=True)
+            logger.debug("[HamClock] No URL configured, skipping fetch")
             return
 
         def fetch():
@@ -654,7 +654,7 @@ class HamClockPanel(Gtk.Box):
             weather_data = {}
             success_count = 0
 
-            print(f"[HamClock] Fetching from {api_url}...", flush=True)
+            logger.debug(f"[HamClock] Fetching from {api_url}...")
 
             # Try various HamClock endpoints
             endpoints = [
@@ -666,24 +666,24 @@ class HamClockPanel(Gtk.Box):
             for endpoint, parser in endpoints:
                 try:
                     full_url = f"{api_url}/{endpoint}"
-                    print(f"[HamClock] Trying {full_url}...", flush=True)
+                    logger.debug(f"[HamClock] Trying {full_url}...")
 
                     req = urllib.request.Request(full_url, method='GET')
                     req.add_header('User-Agent', 'MeshForge/1.0')
                     with urllib.request.urlopen(req, timeout=5) as response:
                         data = response.read().decode('utf-8')
-                        print(f"[HamClock] {endpoint} response: {data[:100]}...", flush=True)
+                        logger.debug(f"[HamClock] {endpoint} response: {data[:100]}...")
                         parsed = parser(data)
                         weather_data.update(parsed)
                         success_count += 1
                 except urllib.error.HTTPError as e:
-                    print(f"[HamClock] {endpoint}: HTTP {e.code} - {e.reason}", flush=True)
+                    logger.debug(f"[HamClock] {endpoint}: HTTP {e.code} - {e.reason}")
                 except urllib.error.URLError as e:
-                    print(f"[HamClock] {endpoint}: URL Error - {e.reason}", flush=True)
+                    logger.debug(f"[HamClock] {endpoint}: URL Error - {e.reason}")
                 except Exception as e:
-                    print(f"[HamClock] {endpoint}: Error - {e}", flush=True)
+                    logger.debug(f"[HamClock] {endpoint}: Error - {e}")
 
-            print(f"[HamClock] Fetched {success_count} endpoints, {len(weather_data)} values", flush=True)
+            logger.debug(f"[HamClock] Fetched {success_count} endpoints, {len(weather_data)} values")
             GLib.idle_add(self._update_weather_display, weather_data)
 
         threading.Thread(target=fetch, daemon=True).start()
@@ -691,7 +691,7 @@ class HamClockPanel(Gtk.Box):
     def _parse_band_conditions(self, data):
         """Parse band conditions response from HamClock API (get_bc.txt)"""
         result = {}
-        print(f"[HamClock] Parsing band conditions: {data[:200]}...", flush=True)
+        logger.debug(f"[HamClock] Parsing band conditions: {data[:200]}...")
 
         for line in data.strip().split('\n'):
             if '=' in line:
@@ -731,7 +731,7 @@ class HamClockPanel(Gtk.Box):
             SSN=112
         """
         result = {}
-        print(f"[HamClock] Parsing spacewx data: {data[:200]}...", flush=True)
+        logger.debug(f"[HamClock] Parsing spacewx data: {data[:200]}...")
 
         for line in data.strip().split('\n'):
             if '=' in line:
@@ -755,12 +755,12 @@ class HamClockPanel(Gtk.Box):
                 elif key_lower == 'aurora' or 'aur' in key_lower:
                     result['aurora'] = value
 
-        print(f"[HamClock] Parsed values: {result}", flush=True)
+        logger.debug(f"[HamClock] Parsed values: {result}")
         return result
 
     def _update_weather_display(self, data):
         """Update the weather display with fetched data"""
-        print(f"[HamClock] Updating display with: {data}", flush=True)
+        logger.debug(f"[HamClock] Updating display with: {data}")
 
         updated_count = 0
 
@@ -796,10 +796,10 @@ class HamClockPanel(Gtk.Box):
 
         if updated_count > 0:
             self.status_label.set_label(f"Updated {updated_count} values")
-            print(f"[HamClock] Updated {updated_count} UI labels", flush=True)
+            logger.debug(f"[HamClock] Updated {updated_count} UI labels")
         else:
             self.status_label.set_label("No data received")
-            print("[HamClock] No values to update", flush=True)
+            logger.debug("[HamClock] No values to update")
 
     def _on_open_browser(self, button):
         """Open HamClock live view in browser"""
@@ -815,7 +815,7 @@ class HamClockPanel(Gtk.Box):
 
     def _open_url_in_browser(self, url):
         """Open a URL in the user's default browser (handles running as root)"""
-        print(f"[HamClock] Opening URL: {url}", flush=True)
+        logger.debug(f"[HamClock] Opening URL: {url}")
 
         user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
         display = os.environ.get('DISPLAY', ':0')
@@ -847,14 +847,14 @@ class HamClockPanel(Gtk.Box):
             try:
                 method()
                 self.status_label.set_label(f"Opened in browser")
-                print(f"[HamClock] Browser opened using method {i+1}", flush=True)
+                logger.debug(f"[HamClock] Browser opened using method {i+1}")
                 return
             except Exception as e:
-                print(f"[HamClock] Method {i+1} failed: {e}", flush=True)
+                logger.debug(f"[HamClock] Method {i+1} failed: {e}")
                 continue
 
         self.status_label.set_label("Could not open browser - copy URL manually")
-        print(f"[HamClock] All browser methods failed for {url}", flush=True)
+        logger.debug(f"[HamClock] All browser methods failed for {url}")
 
     def _on_fetch_noaa(self, button):
         """Fetch space weather data from NOAA"""

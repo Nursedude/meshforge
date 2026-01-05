@@ -752,7 +752,7 @@ class RNSPanel(Gtk.Box):
                 if result.returncode == 0 and result.stdout.strip():
                     # Filter out any pgrep or grep processes from the PIDs
                     pids = result.stdout.strip().split('\n')
-                    print(f"[RNS] pgrep found PIDs: {pids}", flush=True)
+                    logger.debug(f"[RNS] pgrep found PIDs: {pids}")
 
                     # Verify at least one PID is actually nomadnet (not grep/pgrep)
                     for pid in pids:
@@ -765,18 +765,18 @@ class RNSPanel(Gtk.Box):
                             # Check it's actually nomadnet, not grep/pgrep
                             if 'nomadnet' in cmdline and 'grep' not in cmdline and 'pgrep' not in cmdline:
                                 running = True
-                                print(f"[RNS] NomadNet daemon running (PID {pid.strip()}): {cmdline[:80]}", flush=True)
+                                logger.debug(f"[RNS] NomadNet daemon running (PID {pid.strip()}): {cmdline[:80]}")
                                 break
                         except (FileNotFoundError, PermissionError):
                             # Process may have exited
                             continue
 
                 if not running:
-                    print("[RNS] NomadNet daemon not detected", flush=True)
+                    logger.debug("[RNS] NomadNet daemon not detected")
 
                 GLib.idle_add(self._update_nomadnet_status, running)
             except Exception as e:
-                print(f"[RNS] Error checking nomadnet status: {e}", flush=True)
+                logger.debug(f"[RNS] Error checking nomadnet status: {e}")
                 GLib.idle_add(self._update_nomadnet_status, False)
 
         threading.Thread(target=check, daemon=True).start()
@@ -842,7 +842,7 @@ class RNSPanel(Gtk.Box):
         """Launch NomadNet in specified mode"""
         import os
 
-        print(f"[RNS] Launching NomadNet ({mode})...", flush=True)
+        logger.debug(f"[RNS] Launching NomadNet ({mode})...")
 
         # Disable button immediately to prevent double-clicks
         if mode == "textui" and hasattr(self, 'nomadnet_textui_btn'):
@@ -853,10 +853,10 @@ class RNSPanel(Gtk.Box):
         nomadnet_path = self._find_nomadnet()
         if not nomadnet_path:
             self.main_window.set_status_message("NomadNet not installed - install it first")
-            print("[RNS] NomadNet not found", flush=True)
+            logger.debug("[RNS] NomadNet not found")
             return
 
-        print(f"[RNS] Found nomadnet at: {nomadnet_path}", flush=True)
+        logger.debug(f"[RNS] Found nomadnet at: {nomadnet_path}")
 
         # Check if running as root via sudo
         is_root = os.geteuid() == 0
@@ -866,7 +866,7 @@ class RNSPanel(Gtk.Box):
             if mode == "textui":
                 # Stop NomadNet daemon first if running - it conflicts with Text UI
                 if self._is_nomadnet_daemon_running():
-                    print("[RNS] NomadNet daemon running - stopping it first", flush=True)
+                    logger.debug("[RNS] NomadNet daemon running - stopping it first")
                     subprocess.run(['pkill', '-f', 'nomadnet'], capture_output=True, timeout=5)
                     import time
                     time.sleep(0.5)  # Brief pause for process to terminate
@@ -889,7 +889,7 @@ read
                         f.write(script_content)
                         script_path = f.name
                     os.chmod(script_path, 0o755)
-                    print(f"[RNS] Script: {script_path}", flush=True)
+                    logger.debug(f"[RNS] Script: {script_path}")
 
                     # Use subprocess with proper detachment
                     subprocess.Popen(
@@ -925,11 +925,11 @@ read
                     start_new_session=True
                 )
                 self.main_window.set_status_message("NomadNet daemon started")
-                print(f"[RNS] NomadNet daemon started (user: {real_user})", flush=True)
+                logger.debug(f"[RNS] NomadNet daemon started (user: {real_user})")
                 # Refresh status after a moment
                 GLib.timeout_add(1000, self._check_nomadnet_status)
         except Exception as e:
-            print(f"[RNS] Failed to launch NomadNet: {e}", flush=True)
+            logger.debug(f"[RNS] Failed to launch NomadNet: {e}")
             self.main_window.set_status_message(f"Failed: {e}")
 
     def _check_terminal_launch(self, proc):
@@ -939,27 +939,27 @@ read
             try:
                 stderr = proc.stderr.read().decode() if proc.stderr else ""
                 if stderr:
-                    print(f"[RNS] Terminal error: {stderr}", flush=True)
+                    logger.debug(f"[RNS] Terminal error: {stderr}")
                 if proc.returncode != 0:
-                    print(f"[RNS] Terminal exited with code: {proc.returncode}", flush=True)
+                    logger.debug(f"[RNS] Terminal exited with code: {proc.returncode}")
             except Exception:
                 pass
         return False  # Don't repeat
 
     def _stop_nomadnet(self):
         """Stop NomadNet daemon"""
-        print("[RNS] Stopping NomadNet daemon...", flush=True)
+        logger.debug("[RNS] Stopping NomadNet daemon...")
         try:
             result = subprocess.run(['pkill', '-f', 'nomadnet'], capture_output=True, timeout=10)
             if result.returncode == 0:
                 self.main_window.set_status_message("NomadNet daemon stopped")
-                print("[RNS] NomadNet stopped", flush=True)
+                logger.debug("[RNS] NomadNet stopped")
                 # Refresh status
                 GLib.timeout_add(500, self._check_nomadnet_status)
             else:
                 self.main_window.set_status_message("NomadNet was not running")
         except Exception as e:
-            print(f"[RNS] Failed to stop NomadNet: {e}", flush=True)
+            logger.debug(f"[RNS] Failed to stop NomadNet: {e}")
             self.main_window.set_status_message(f"Failed: {e}")
 
     def _edit_nomadnet_config(self):
@@ -1102,14 +1102,14 @@ loglevel = 4
                 subprocess.run(['chown', '-R', f'{real_user}:{real_user}', str(config_path.parent)],
                                capture_output=True)
 
-            print(f"[RNS] Created default RNS config: {config_path}", flush=True)
+            logger.debug(f"[RNS] Created default RNS config: {config_path}")
             self.main_window.set_status_message("Created default RNS config")
 
             # Refresh the panel to show the config exists now
             GLib.timeout_add(500, self._refresh_panel)
 
         except Exception as e:
-            print(f"[RNS] Failed to create default config: {e}", flush=True)
+            logger.debug(f"[RNS] Failed to create default config: {e}")
             self.main_window.set_status_message(f"Failed to create config: {e}")
 
     def _refresh_panel(self):
@@ -1198,10 +1198,10 @@ message_storage_limit = 2000
                 subprocess.run(['chown', '-R', f'{real_user}:{real_user}',
                                str(config_file.parent)], capture_output=True)
 
-            print(f"[RNS] Created default NomadNet config: {config_file}", flush=True)
+            logger.debug(f"[RNS] Created default NomadNet config: {config_file}")
             self.main_window.set_status_message("Created default NomadNet config")
         except Exception as e:
-            print(f"[RNS] Failed to create config: {e}", flush=True)
+            logger.debug(f"[RNS] Failed to create config: {e}")
 
     def _open_nomadnet_folder(self):
         """Open NomadNet config folder"""
@@ -1215,7 +1215,7 @@ message_storage_limit = 2000
         import shlex
 
         config_path = Path(config_file)
-        print(f"[RNS] Opening config in terminal: {config_path}", flush=True)
+        logger.debug(f"[RNS] Opening config in terminal: {config_path}")
 
         # Get the real user for running commands
         real_user = self._get_real_username()
@@ -1232,9 +1232,9 @@ message_storage_limit = 2000
                                    capture_output=True)
                     subprocess.run(['chown', f'{real_user}:{real_user}', str(config_path.parent)],
                                    capture_output=True)
-                print(f"[RNS] Created config file: {config_path}", flush=True)
+                logger.debug(f"[RNS] Created config file: {config_path}")
             except Exception as e:
-                print(f"[RNS] Failed to create config: {e}", flush=True)
+                logger.debug(f"[RNS] Failed to create config: {e}")
 
         try:
             # Quote paths/usernames to prevent shell injection
@@ -1263,21 +1263,21 @@ message_storage_limit = 2000
 
             for term_name, full_cmd in terminals:
                 if shutil.which(term_name):
-                    print(f"[RNS] Using terminal: {term_name} (user: {real_user})", flush=True)
-                    print(f"[RNS] Command: {full_cmd}", flush=True)
+                    logger.debug(f"[RNS] Using terminal: {term_name} (user: {real_user})")
+                    logger.debug(f"[RNS] Command: {full_cmd}")
                     subprocess.Popen(full_cmd, shell=True, start_new_session=True)
                     self.main_window.set_status_message(f"Editing {config_path.name} in terminal")
                     return
 
             self.main_window.set_status_message("No terminal emulator found")
-            print("[RNS] No terminal emulator found", flush=True)
+            logger.debug("[RNS] No terminal emulator found")
         except Exception as e:
-            print(f"[RNS] Failed to open terminal editor: {e}", flush=True)
+            logger.debug(f"[RNS] Failed to open terminal editor: {e}")
             self.main_window.set_status_message(f"Failed to open editor: {e}")
 
     def _install_meshtastic_interface(self, button):
         """Download and install Meshtastic_Interface.py"""
-        print("[RNS] Installing Meshtastic Interface...", flush=True)
+        logger.debug("[RNS] Installing Meshtastic Interface...")
         self.main_window.set_status_message("Downloading Meshtastic Interface...")
 
         def do_install():
@@ -1292,14 +1292,14 @@ message_storage_limit = 2000
                 url = "https://raw.githubusercontent.com/Nursedude/RNS_Over_Meshtastic_Gateway/main/Meshtastic_Interface.py"
                 dest = interfaces_dir / "Meshtastic_Interface.py"
 
-                print(f"[RNS] Downloading from {url}", flush=True)
+                logger.debug(f"[RNS] Downloading from {url}")
                 urllib.request.urlretrieve(url, str(dest))
 
-                print(f"[RNS] Saved to {dest}", flush=True)
+                logger.debug(f"[RNS] Saved to {dest}")
                 GLib.idle_add(self._install_meshtastic_interface_complete, True, str(dest))
 
             except Exception as e:
-                print(f"[RNS] Failed to install: {e}", flush=True)
+                logger.debug(f"[RNS] Failed to install: {e}")
                 GLib.idle_add(self._install_meshtastic_interface_complete, False, str(e))
 
         threading.Thread(target=do_install, daemon=True).start()
@@ -1309,7 +1309,7 @@ message_storage_limit = 2000
         if success:
             self.main_window.set_status_message("Meshtastic Interface installed")
             self.mesh_iface_status.set_label(f"✓ Installed: {message}")
-            print("[RNS] Meshtastic Interface installed successfully", flush=True)
+            logger.debug("[RNS] Meshtastic Interface installed successfully")
         else:
             self.main_window.set_status_message(f"Install failed: {message}")
             self.mesh_iface_status.set_label(f"✗ Failed: {message}")
@@ -1324,15 +1324,15 @@ message_storage_limit = 2000
 
         if not iface_file.exists():
             self.main_window.set_status_message("Interface not installed - click 'Install Interface' first")
-            print(f"[RNS] Interface file not found: {iface_file}", flush=True)
+            logger.debug(f"[RNS] Interface file not found: {iface_file}")
             return
 
-        print(f"[RNS] Opening interface file in terminal: {iface_file}", flush=True)
+        logger.debug(f"[RNS] Opening interface file in terminal: {iface_file}")
         self._edit_config_terminal(iface_file)
 
     def _add_meshtastic_interface_config(self, button):
         """Add Meshtastic Interface config template to RNS config"""
-        print("[RNS] Adding Meshtastic Interface config...", flush=True)
+        logger.debug("[RNS] Adding Meshtastic Interface config...")
 
         config_file = Path.home() / ".reticulum" / "config"
 
@@ -1386,7 +1386,7 @@ message_storage_limit = 2000
             # Check if config file exists
             if not config_file.exists():
                 self.main_window.set_status_message("RNS config not found - run rnsd first")
-                print("[RNS] Config file not found", flush=True)
+                logger.debug("[RNS] Config file not found")
                 return
 
             # Read existing config
@@ -1396,7 +1396,7 @@ message_storage_limit = 2000
             # Check if already configured
             if 'Meshtastic Interface' in existing_config:
                 self.main_window.set_status_message("Meshtastic Interface already in config")
-                print("[RNS] Config already contains Meshtastic Interface", flush=True)
+                logger.debug("[RNS] Config already contains Meshtastic Interface")
                 # Open editor anyway
                 self._edit_config_terminal(config_file)
                 return
@@ -1407,14 +1407,14 @@ message_storage_limit = 2000
 
             self.main_window.set_status_message("Meshtastic Interface config added - edit to configure")
             self.mesh_iface_status.set_label("✓ Config template added - edit port settings")
-            print("[RNS] Config template added", flush=True)
+            logger.debug("[RNS] Config template added")
 
             # Open in terminal editor to configure
             self._edit_config_terminal(config_file)
 
         except Exception as e:
             self.main_window.set_status_message(f"Failed: {e}")
-            print(f"[RNS] Failed to add config: {e}", flush=True)
+            logger.debug(f"[RNS] Failed to add config: {e}")
 
     def _refresh_all(self):
         """Refresh all status information"""
@@ -1526,12 +1526,12 @@ message_storage_limit = 2000
     def _service_action(self, action):
         """Perform RNS service action"""
         logger.info(f"Service action button clicked: {action}")
-        print(f"[RNS] Service action: {action}...", flush=True)
+        logger.debug(f"[RNS] Service action: {action}...")
 
         # Check if rnsd is available
         if not shutil.which('rnsd') and action in ('start', 'restart'):
             self.main_window.set_status_message("rnsd not found - install RNS first")
-            print("[RNS] rnsd not found in PATH", flush=True)
+            logger.debug("[RNS] rnsd not found in PATH")
             return
 
         self.main_window.set_status_message(f"{action.capitalize()}ing rnsd...")
@@ -1541,7 +1541,7 @@ message_storage_limit = 2000
                 if action == "start":
                     # Start rnsd as a background process
                     # rnsd doesn't have a --daemon flag, so we use Popen with detachment
-                    print("[RNS] Starting rnsd in background...", flush=True)
+                    logger.debug("[RNS] Starting rnsd in background...")
                     process = subprocess.Popen(
                         ['rnsd'],
                         stdout=subprocess.DEVNULL,
@@ -1559,12 +1559,12 @@ message_storage_limit = 2000
                     else:
                         success = False
                         output = "rnsd exited immediately - check config"
-                    print(f"[RNS] Service start: {'OK' if success else 'FAILED'} - {output}", flush=True)
+                    logger.debug(f"[RNS] Service start: {'OK' if success else 'FAILED'} - {output}")
                     GLib.idle_add(self._action_complete, action, success, output)
                     return
                 elif action == "stop":
                     # Kill rnsd process
-                    print("[RNS] Running: pkill -f rnsd", flush=True)
+                    logger.debug("[RNS] Running: pkill -f rnsd")
                     result = subprocess.run(
                         ['pkill', '-f', 'rnsd'],
                         capture_output=True, text=True,
@@ -1575,7 +1575,7 @@ message_storage_limit = 2000
                     import time
                     time.sleep(1)
                     # Start rnsd as a background process
-                    print("[RNS] Starting rnsd in background...", flush=True)
+                    logger.debug("[RNS] Starting rnsd in background...")
                     process = subprocess.Popen(
                         ['rnsd'],
                         stdout=subprocess.DEVNULL,
@@ -1590,22 +1590,22 @@ message_storage_limit = 2000
                     else:
                         success = False
                         output = "rnsd exited immediately - check config"
-                    print(f"[RNS] Service restart: {'OK' if success else 'FAILED'} - {output}", flush=True)
+                    logger.debug(f"[RNS] Service restart: {'OK' if success else 'FAILED'} - {output}")
                     GLib.idle_add(self._action_complete, action, success, output)
                     return
 
                 success = result.returncode == 0 if action != "stop" else True
                 output = result.stderr if hasattr(result, 'stderr') else ''
-                print(f"[RNS] Service {action}: {'OK' if success else 'FAILED'} - {output[:100]}", flush=True)
+                logger.debug(f"[RNS] Service {action}: {'OK' if success else 'FAILED'} - {output[:100]}")
                 GLib.idle_add(self._action_complete, action, success, output)
             except subprocess.TimeoutExpired:
-                print(f"[RNS] Service {action} timed out", flush=True)
+                logger.debug(f"[RNS] Service {action} timed out")
                 GLib.idle_add(self._action_complete, action, False, "Command timed out")
             except FileNotFoundError as e:
-                print(f"[RNS] Command not found: {e}", flush=True)
+                logger.debug(f"[RNS] Command not found: {e}")
                 GLib.idle_add(self._action_complete, action, False, f"Command not found: {e}")
             except Exception as e:
-                print(f"[RNS] Exception: {e}", flush=True)
+                logger.debug(f"[RNS] Exception: {e}")
                 GLib.idle_add(self._action_complete, action, False, str(e))
 
         thread = threading.Thread(target=do_action)
@@ -1626,7 +1626,7 @@ message_storage_limit = 2000
         """Install or update a component"""
         package = component['package']
         logger.info(f"Install button clicked for: {component['display']} ({package})")
-        print(f"[RNS] Installing: {component['display']}...", flush=True)  # Console feedback
+        logger.debug(f"[RNS] Installing: {component['display']}...", flush=True)  # Console feedback
 
         # Visual feedback - disable button and update text
         try:
@@ -1653,12 +1653,12 @@ message_storage_limit = 2000
                 if is_root and real_user != 'root':
                     # Use sudo -i -u to get user's environment and install to their home
                     cmd = ['sudo', '-i', '-u', real_user] + pip_args
-                    print(f"[RNS] Installing as user {real_user}: {' '.join(cmd)}", flush=True)
+                    logger.debug(f"[RNS] Installing as user {real_user}: {' '.join(cmd)}")
                 else:
                     # Running as normal user, use python -m pip
                     import sys
                     cmd = [sys.executable, '-m'] + pip_args
-                    print(f"[RNS] Running: {' '.join(cmd)}", flush=True)
+                    logger.debug(f"[RNS] Running: {' '.join(cmd)}")
 
                 result = subprocess.run(
                     cmd,
@@ -1667,17 +1667,17 @@ message_storage_limit = 2000
                 )
                 output = result.stdout + result.stderr
                 success = result.returncode == 0
-                print(f"[RNS] pip install result: {'OK' if success else 'FAILED'}", flush=True)
+                logger.debug(f"[RNS] pip install result: {'OK' if success else 'FAILED'}")
                 if not success:
-                    print(f"[RNS] Error: {output[:200]}", flush=True)
+                    logger.debug(f"[RNS] Error: {output[:200]}")
                 else:
-                    print(f"[RNS] Install completed successfully", flush=True)
+                    logger.debug(f"[RNS] Install completed successfully")
                 GLib.idle_add(self._install_complete, component['display'], success, output)
             except subprocess.TimeoutExpired:
-                print(f"[RNS] Install timed out after 180s", flush=True)
+                logger.debug(f"[RNS] Install timed out after 180s")
                 GLib.idle_add(self._install_complete, component['display'], False, "Installation timed out")
             except Exception as e:
-                print(f"[RNS] Exception during install: {e}", flush=True)
+                logger.debug(f"[RNS] Exception during install: {e}")
                 GLib.idle_add(self._install_complete, component['display'], False, str(e))
 
         thread = threading.Thread(target=do_install)
@@ -1696,12 +1696,12 @@ message_storage_limit = 2000
 
         if success:
             msg = f"{name} installed successfully"
-            print(f"[RNS] {msg}", flush=True)
+            logger.debug(f"[RNS] {msg}")
             self.main_window.set_status_message(msg)
         else:
             short_error = str(error)[:80] if error else "Unknown error"
             msg = f"Failed to install {name}: {short_error}"
-            print(f"[RNS] {msg}", flush=True)
+            logger.debug(f"[RNS] {msg}")
             self.main_window.set_status_message(msg)
 
         # Refresh status after a short delay to not overwrite the message
@@ -1711,7 +1711,7 @@ message_storage_limit = 2000
     def _on_install_all(self, button):
         """Install all RNS components"""
         logger.info("Install All button clicked")
-        print("[RNS] Installing all components...", flush=True)  # Console feedback
+        logger.debug("[RNS] Installing all components...", flush=True)  # Console feedback
 
         # Disable button during install
         button.set_sensitive(False)
@@ -1733,11 +1733,11 @@ message_storage_limit = 2000
                 # When running as root, install as the real user
                 if is_root and real_user != 'root':
                     cmd = ['sudo', '-i', '-u', real_user] + pip_args
-                    print(f"[RNS] Installing as user {real_user}: {' '.join(cmd)}", flush=True)
+                    logger.debug(f"[RNS] Installing as user {real_user}: {' '.join(cmd)}")
                 else:
                     import sys
                     cmd = [sys.executable, '-m'] + pip_args
-                    print(f"[RNS] Running: {' '.join(cmd)}", flush=True)
+                    logger.debug(f"[RNS] Running: {' '.join(cmd)}")
 
                 result = subprocess.run(
                     cmd,
@@ -1746,14 +1746,14 @@ message_storage_limit = 2000
                 )
                 output = result.stdout + result.stderr
                 success = result.returncode == 0
-                print(f"[RNS] pip install all result: {'OK' if success else 'FAILED'}", flush=True)
+                logger.debug(f"[RNS] pip install all result: {'OK' if success else 'FAILED'}")
                 if not success:
-                    print(f"[RNS] Error: {output[:300]}", flush=True)
+                    logger.debug(f"[RNS] Error: {output[:300]}")
                 GLib.idle_add(self._install_all_complete, button, success, output)
             except subprocess.TimeoutExpired:
                 GLib.idle_add(self._install_all_complete, button, False, "Installation timed out")
             except Exception as e:
-                print(f"[RNS] Exception during install all: {e}", flush=True)
+                logger.debug(f"[RNS] Exception during install all: {e}")
                 GLib.idle_add(self._install_all_complete, button, False, str(e))
 
         thread = threading.Thread(target=do_install_all)
@@ -1768,12 +1768,12 @@ message_storage_limit = 2000
 
         if success:
             msg = "All RNS components installed successfully"
-            print(f"[RNS] {msg}", flush=True)
+            logger.debug(f"[RNS] {msg}")
             self.main_window.set_status_message(msg)
         else:
             short_error = str(error)[:100] if error else "Unknown error"
             msg = f"Install failed: {short_error}"
-            print(f"[RNS] {msg}", flush=True)
+            logger.debug(f"[RNS] {msg}")
             self.main_window.set_status_message(msg)
 
         # Refresh status after a short delay to not overwrite the message
@@ -1840,7 +1840,7 @@ message_storage_limit = 2000
 
     def _on_gateway_start(self, button):
         """Start the gateway bridge"""
-        print("[RNS] Starting gateway...", flush=True)
+        logger.debug("[RNS] Starting gateway...")
         self.main_window.set_status_message("Starting gateway...")
 
         def do_start():
@@ -1854,14 +1854,14 @@ message_storage_limit = 2000
 
                 self._gateway_bridge = RNSMeshtasticBridge(config)
                 success = self._gateway_bridge.start()
-                print(f"[RNS] Gateway start: {'OK' if success else 'FAILED'}", flush=True)
+                logger.debug(f"[RNS] Gateway start: {'OK' if success else 'FAILED'}")
 
                 GLib.idle_add(self._gateway_start_complete, success)
             except ImportError as e:
-                print(f"[RNS] Gateway start failed - missing module: {e}", flush=True)
+                logger.debug(f"[RNS] Gateway start failed - missing module: {e}")
                 GLib.idle_add(self._gateway_start_complete, False, f"Missing module: {e}")
             except Exception as e:
-                print(f"[RNS] Gateway start exception: {e}", flush=True)
+                logger.debug(f"[RNS] Gateway start exception: {e}")
                 GLib.idle_add(self._gateway_start_complete, False, str(e))
 
         thread = threading.Thread(target=do_start)
@@ -1881,15 +1881,15 @@ message_storage_limit = 2000
 
     def _on_gateway_stop(self, button):
         """Stop the gateway bridge"""
-        print("[RNS] Stopping gateway...", flush=True)
+        logger.debug("[RNS] Stopping gateway...")
         self.main_window.set_status_message("Stopping gateway...")
 
         if self._gateway_bridge:
             self._gateway_bridge.stop()
             self._gateway_bridge = None
-            print("[RNS] Gateway stopped", flush=True)
+            logger.debug("[RNS] Gateway stopped")
         else:
-            print("[RNS] No gateway running", flush=True)
+            logger.debug("[RNS] No gateway running")
 
         self.main_window.set_status_message("Gateway stopped")
         self._update_gateway_status()
@@ -1907,7 +1907,7 @@ message_storage_limit = 2000
 
     def _on_test_gateway(self, button):
         """Test gateway connections"""
-        print("[RNS] Testing gateway connections...", flush=True)
+        logger.debug("[RNS] Testing gateway connections...")
         self.main_window.set_status_message("Testing connections...")
 
         def do_test():
@@ -1952,7 +1952,7 @@ message_storage_limit = 2000
         """Handle test completion"""
         mesh_ok = results['meshtastic']['connected']
         rns_ok = results['rns']['connected']
-        print(f"[RNS] Test results - Meshtastic: {'OK' if mesh_ok else 'FAIL'}, RNS: {'OK' if rns_ok else 'FAIL'}", flush=True)
+        logger.debug(f"[RNS] Test results - Meshtastic: {'OK' if mesh_ok else 'FAIL'}, RNS: {'OK' if rns_ok else 'FAIL'}")
 
         # Update icons
         if mesh_ok:
@@ -1999,7 +1999,7 @@ message_storage_limit = 2000
         real_home = self._get_real_user_home()
         config_file = real_home / ".config" / "meshforge" / "gateway.json"
 
-        print(f"[RNS] Opening gateway config in terminal: {config_file}", flush=True)
+        logger.debug(f"[RNS] Opening gateway config in terminal: {config_file}")
 
         # Create default config if it doesn't exist
         if not config_file.exists():
@@ -2033,9 +2033,9 @@ message_storage_limit = 2000
                     subprocess.run(['chown', '-R', f'{real_user}:{real_user}', str(config_file.parent)],
                                    capture_output=True)
 
-                print(f"[RNS] Created default gateway config: {config_file}", flush=True)
+                logger.debug(f"[RNS] Created default gateway config: {config_file}")
             except Exception as e:
-                print(f"[RNS] Failed to create gateway config: {e}", flush=True)
+                logger.debug(f"[RNS] Failed to create gateway config: {e}")
 
         # Open in terminal editor
         self._edit_config_terminal(config_file)
@@ -2069,7 +2069,7 @@ message_storage_limit = 2000
 
     def _on_run_diagnostic(self, button):
         """Run the gateway diagnostic wizard"""
-        print("[RNS] Running gateway diagnostic...", flush=True)
+        logger.debug("[RNS] Running gateway diagnostic...")
         self.main_window.set_status_message("Running gateway diagnostic...")
 
         def do_diagnostic():
@@ -2088,10 +2088,10 @@ message_storage_limit = 2000
                              wizard_output, len(failures), len(warnings), len(passes))
 
             except ImportError as e:
-                print(f"[RNS] Diagnostic import error: {e}", flush=True)
+                logger.debug(f"[RNS] Diagnostic import error: {e}")
                 GLib.idle_add(lambda: self.main_window.set_status_message(f"Diagnostic error: {e}"))
             except Exception as e:
-                print(f"[RNS] Diagnostic error: {e}", flush=True)
+                logger.debug(f"[RNS] Diagnostic error: {e}")
                 GLib.idle_add(lambda: self.main_window.set_status_message(f"Error: {e}"))
 
         threading.Thread(target=do_diagnostic, daemon=True).start()
@@ -2152,14 +2152,14 @@ message_storage_limit = 2000
 
     def _open_rns_config_dialog(self):
         """Open the RNS configuration editor dialog"""
-        print("[RNS] Opening RNS config dialog...", flush=True)
+        logger.debug("[RNS] Opening RNS config dialog...")
         try:
             from ..dialogs.rns_config import RNSConfigDialog
             dialog = RNSConfigDialog(self.main_window)
             dialog.present()
-            print("[RNS] Config dialog opened", flush=True)
+            logger.debug("[RNS] Config dialog opened")
         except ImportError as e:
-            print(f"[RNS] Config dialog import failed: {e}", flush=True)
+            logger.debug(f"[RNS] Config dialog import failed: {e}")
             # Fallback if dialog not available
             dialog = Adw.MessageDialog(
                 transient_for=self.main_window,
@@ -2172,18 +2172,18 @@ message_storage_limit = 2000
 
     def _edit_config(self, config_file):
         """Open config file in editor"""
-        print(f"[RNS] Opening config: {config_file}", flush=True)
+        logger.debug(f"[RNS] Opening config: {config_file}")
         try:
             # Try GUI editors only (no terminal editors like nano/vim)
             gui_editors = ['gedit', 'kate', 'xed', 'mousepad', 'pluma', 'featherpad']
             for editor in gui_editors:
                 if shutil.which(editor):
-                    print(f"[RNS] Using editor: {editor}", flush=True)
+                    logger.debug(f"[RNS] Using editor: {editor}")
                     subprocess.Popen([editor, str(config_file)])
                     return
             # Fallback to xdg-open
-            print("[RNS] Using xdg-open", flush=True)
+            logger.debug("[RNS] Using xdg-open")
             subprocess.run(['xdg-open', str(config_file)])
         except Exception as e:
-            print(f"[RNS] Failed to open editor: {e}", flush=True)
+            logger.debug(f"[RNS] Failed to open editor: {e}")
             self.main_window.set_status_message(f"Failed to open editor: {e}")
