@@ -1530,69 +1530,22 @@ class ToolsPanel(Gtk.Box):
         import shlex
         import os
 
-        config_path = Path(config_path)
-        self._log(f"Opening {config_path} in nano...")
+        try:
+            config_path = Path(config_path)
 
-        # Find a terminal emulator
-        real_user = self._get_real_username()
-        is_root = os.geteuid() == 0
-        safe_path = shlex.quote(str(config_path))
-
-        terminals = [
-            ('lxterminal', f'lxterminal -e nano {safe_path}'),
-            ('xfce4-terminal', f'xfce4-terminal -e nano {safe_path}'),
-            ('gnome-terminal', f'gnome-terminal -- nano {safe_path}'),
-            ('konsole', f'konsole -e nano {safe_path}'),
-            ('xterm', f'xterm -e nano {safe_path}'),
-        ]
-
-        for term_name, cmd in terminals:
-            if shutil.which(term_name):
-                subprocess.Popen(cmd, shell=True, start_new_session=True)
-                self._log(f"Opened {config_path.name} in {term_name}")
-                self.main_window.set_status_message(f"Editing {config_path.name}")
+            # Check if file exists
+            if not config_path.exists():
+                self._log(f"File not found: {config_path}")
+                self.main_window.set_status_message(f"File not found: {config_path}")
                 return
 
-        self._log("No terminal emulator found")
-        self.main_window.set_status_message("No terminal emulator found")
+            self._log(f"Opening {config_path} in nano...")
 
-    def _edit_config_user(self, relative_path):
-        """Open a user config file (relative to home) in terminal with nano"""
-        import shutil
-        import shlex
-        import os
+            # Find a terminal emulator
+            real_user = self._get_real_username()
+            is_root = os.geteuid() == 0
+            safe_path = shlex.quote(str(config_path))
 
-        real_home = self._get_real_user_home()
-        config_path = real_home / relative_path
-
-        # Create parent directory if needed
-        if not config_path.parent.exists():
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            self._log(f"Created directory: {config_path.parent}")
-
-        # Create file if it doesn't exist
-        if not config_path.exists():
-            config_path.touch()
-            self._log(f"Created empty config: {config_path}")
-
-        self._log(f"Opening {config_path} in nano...")
-
-        real_user = self._get_real_username()
-        is_root = os.geteuid() == 0
-        safe_path = shlex.quote(str(config_path))
-        safe_user = shlex.quote(real_user)
-
-        # When running as root, run nano as the real user
-        if is_root and real_user != 'root':
-            user_cmd = f"sudo -i -u {safe_user} nano {safe_path}"
-            terminals = [
-                ('lxterminal', f'lxterminal -e {user_cmd}'),
-                ('xfce4-terminal', f'xfce4-terminal -e {user_cmd}'),
-                ('gnome-terminal', f'gnome-terminal -- sudo -i -u {safe_user} nano {safe_path}'),
-                ('konsole', f'konsole -e sudo -i -u {safe_user} nano {safe_path}'),
-                ('xterm', f'xterm -e sudo -i -u {safe_user} nano {safe_path}'),
-            ]
-        else:
             terminals = [
                 ('lxterminal', f'lxterminal -e nano {safe_path}'),
                 ('xfce4-terminal', f'xfce4-terminal -e nano {safe_path}'),
@@ -1601,25 +1554,101 @@ class ToolsPanel(Gtk.Box):
                 ('xterm', f'xterm -e nano {safe_path}'),
             ]
 
-        for term_name, cmd in terminals:
-            if shutil.which(term_name):
-                subprocess.Popen(cmd, shell=True, start_new_session=True)
-                self._log(f"Opened {config_path.name} in {term_name}")
-                self.main_window.set_status_message(f"Editing {config_path.name}")
-                return
+            for term_name, cmd in terminals:
+                if shutil.which(term_name):
+                    subprocess.Popen(cmd, shell=True, start_new_session=True)
+                    self._log(f"Opened {config_path.name} in {term_name}")
+                    self.main_window.set_status_message(f"Editing {config_path.name}")
+                    return
 
-        self._log("No terminal emulator found")
+            self._log("No terminal emulator found")
+            self.main_window.set_status_message("No terminal emulator found")
+        except Exception as e:
+            self._log(f"Error opening config: {e}")
+            self.main_window.set_status_message(f"Error: {e}")
+
+    def _edit_config_user(self, relative_path):
+        """Open a user config file (relative to home) in terminal with nano"""
+        import shutil
+        import shlex
+        import os
+
+        try:
+            real_home = self._get_real_user_home()
+            config_path = real_home / relative_path
+
+            # Create parent directory if needed
+            if not config_path.parent.exists():
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                self._log(f"Created directory: {config_path.parent}")
+
+            # Create file if it doesn't exist
+            if not config_path.exists():
+                config_path.touch()
+                self._log(f"Created empty config: {config_path}")
+
+            self._log(f"Opening {config_path} in nano...")
+
+            real_user = self._get_real_username()
+            is_root = os.geteuid() == 0
+            safe_path = shlex.quote(str(config_path))
+            safe_user = shlex.quote(real_user)
+
+            # When running as root, run nano as the real user
+            if is_root and real_user != 'root':
+                user_cmd = f"sudo -i -u {safe_user} nano {safe_path}"
+                terminals = [
+                    ('lxterminal', f'lxterminal -e {user_cmd}'),
+                    ('xfce4-terminal', f'xfce4-terminal -e {user_cmd}'),
+                    ('gnome-terminal', f'gnome-terminal -- sudo -i -u {safe_user} nano {safe_path}'),
+                    ('konsole', f'konsole -e sudo -i -u {safe_user} nano {safe_path}'),
+                    ('xterm', f'xterm -e sudo -i -u {safe_user} nano {safe_path}'),
+                ]
+            else:
+                terminals = [
+                    ('lxterminal', f'lxterminal -e nano {safe_path}'),
+                    ('xfce4-terminal', f'xfce4-terminal -e nano {safe_path}'),
+                    ('gnome-terminal', f'gnome-terminal -- nano {safe_path}'),
+                    ('konsole', f'konsole -e nano {safe_path}'),
+                    ('xterm', f'xterm -e nano {safe_path}'),
+                ]
+
+            for term_name, cmd in terminals:
+                if shutil.which(term_name):
+                    subprocess.Popen(cmd, shell=True, start_new_session=True)
+                    self._log(f"Opened {config_path.name} in {term_name}")
+                    self.main_window.set_status_message(f"Editing {config_path.name}")
+                    return
+
+            self._log("No terminal emulator found")
+            self.main_window.set_status_message("No terminal emulator found")
+        except PermissionError as e:
+            self._log(f"Permission denied: {e}")
+            self.main_window.set_status_message("Permission denied")
+        except Exception as e:
+            self._log(f"Error: {e}")
+            self.main_window.set_status_message(f"Error: {e}")
 
     def _browse_config_dir(self, dir_path):
         """Show files in a config directory and let user select one to edit"""
-        dir_path = Path(dir_path)
+        try:
+            dir_path = Path(dir_path)
 
-        if not dir_path.exists():
-            self._log(f"Directory not found: {dir_path}")
-            self.main_window.set_status_message(f"Directory not found: {dir_path}")
+            if not dir_path.exists():
+                self._log(f"Directory not found: {dir_path}")
+                self.main_window.set_status_message(f"Directory not found: {dir_path}")
+                return
+
+            files = sorted([f.name for f in dir_path.iterdir() if f.is_file()])
+        except PermissionError:
+            self._log(f"Permission denied: {dir_path}")
+            self.main_window.set_status_message("Permission denied")
+            return
+        except Exception as e:
+            self._log(f"Error reading directory: {e}")
+            self.main_window.set_status_message(f"Error: {e}")
             return
 
-        files = sorted([f.name for f in dir_path.iterdir() if f.is_file()])
         if not files:
             self._log(f"No files in {dir_path}")
             self.main_window.set_status_message("No config files found")
@@ -1721,10 +1750,14 @@ class ToolsPanel(Gtk.Box):
 
     def _on_open_webrx(self, button):
         """Open OpenWebRX in browser"""
-        import webbrowser
-        webbrowser.open('http://localhost:8073')
-        self._log("Opening OpenWebRX at http://localhost:8073")
-        self.main_window.set_status_message("Opening OpenWebRX in browser")
+        try:
+            import webbrowser
+            webbrowser.open('http://localhost:8073')
+            self._log("Opening OpenWebRX at http://localhost:8073")
+            self.main_window.set_status_message("Opening OpenWebRX in browser")
+        except Exception as e:
+            self._log(f"Failed to open browser: {e}")
+            self.main_window.set_status_message(f"Failed to open browser: {e}")
 
     def _on_install_openwebrx(self, button):
         """Show OpenWebRX installation instructions"""
