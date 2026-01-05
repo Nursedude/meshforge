@@ -384,6 +384,13 @@ class RNSPanel(Gtk.Box):
         view_nodes_btn.connect("clicked", self._on_view_nodes)
         action_row.append(view_nodes_btn)
 
+        # Diagnostic wizard button
+        diag_btn = Gtk.Button(label="🔧 Diagnose")
+        diag_btn.set_tooltip_text("Run gateway setup diagnostic wizard")
+        diag_btn.add_css_class("suggested-action")
+        diag_btn.connect("clicked", self._on_run_diagnostic)
+        action_row.append(diag_btn)
+
         box.append(action_row)
 
         # Statistics
@@ -2059,6 +2066,78 @@ message_storage_limit = 2000
         )
         dialog.add_response("ok", "OK")
         dialog.present()
+
+    def _on_run_diagnostic(self, button):
+        """Run the gateway diagnostic wizard"""
+        print("[RNS] Running gateway diagnostic...", flush=True)
+        self.main_window.set_status_message("Running gateway diagnostic...")
+
+        def do_diagnostic():
+            try:
+                from utils.gateway_diagnostic import GatewayDiagnostic
+
+                diag = GatewayDiagnostic()
+                wizard_output = diag.run_wizard()
+
+                # Also get structured results for UI
+                failures = [r for r in diag.results if r.status.value == "FAIL"]
+                warnings = [r for r in diag.results if r.status.value == "WARN"]
+                passes = [r for r in diag.results if r.status.value == "PASS"]
+
+                GLib.idle_add(self._show_diagnostic_results,
+                             wizard_output, len(failures), len(warnings), len(passes))
+
+            except ImportError as e:
+                print(f"[RNS] Diagnostic import error: {e}", flush=True)
+                GLib.idle_add(lambda: self.main_window.set_status_message(f"Diagnostic error: {e}"))
+            except Exception as e:
+                print(f"[RNS] Diagnostic error: {e}", flush=True)
+                GLib.idle_add(lambda: self.main_window.set_status_message(f"Error: {e}"))
+
+        threading.Thread(target=do_diagnostic, daemon=True).start()
+
+    def _show_diagnostic_results(self, wizard_output, fail_count, warn_count, pass_count):
+        """Show diagnostic results in a dialog"""
+        if fail_count == 0:
+            heading = "✓ Gateway Ready"
+            status_msg = "All checks passed"
+        else:
+            heading = f"⚠️ {fail_count} Issue(s) Found"
+            status_msg = f"{fail_count} failures, {warn_count} warnings"
+
+        self.main_window.set_status_message(status_msg)
+
+        # Create scrollable dialog for results
+        dialog = Adw.MessageDialog(
+            transient_for=self.main_window,
+            heading=heading,
+            body=""  # We'll use a custom widget instead
+        )
+
+        # Create scrollable text view for output
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_min_content_height(400)
+        scroll.set_min_content_width(500)
+
+        text_view = Gtk.TextView()
+        text_view.set_editable(False)
+        text_view.set_monospace(True)
+        text_view.set_wrap_mode(Gtk.WrapMode.WORD)
+        text_view.set_margin_start(10)
+        text_view.set_margin_end(10)
+        text_view.set_margin_top(10)
+        text_view.set_margin_bottom(10)
+
+        buffer = text_view.get_buffer()
+        buffer.set_text(wizard_output)
+
+        scroll.set_child(text_view)
+        dialog.set_extra_child(scroll)
+
+        dialog.add_response("ok", "OK")
+        dialog.present()
+
+        return False
 
     def _on_setup_gateway(self, button):
         """Open gateway setup wizard"""
