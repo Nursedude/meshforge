@@ -15,10 +15,9 @@ SystemD packages: https://github.com/pa28/hamclock-systemd
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import Gtk, Adw, GLib, Gio
+from gi.repository import Gtk, GLib
 import threading
 import subprocess
-import shutil
 import json
 import urllib.request
 import urllib.error
@@ -427,7 +426,7 @@ class HamClockPanel(Gtk.Box):
                         status['installed'] = True
                         status['service_name'] = name
 
-                except Exception as e:
+                except Exception:
                     pass
 
             # Also check for running hamclock process (might be started manually)

@@ -1690,7 +1690,8 @@ class ToolsPanel(Gtk.Box):
                 GLib.idle_add(lambda: self._log("RTL-SDR device found (test timed out - normal)"))
                 GLib.idle_add(lambda: self.rtlsdr_status.set_text("Device found"))
             except Exception as e:
-                GLib.idle_add(lambda: self._log(f"RTL-SDR test error: {e}"))
+                err = str(e)
+                GLib.idle_add(lambda: self._log(f"RTL-SDR test error: {err}"))
 
         threading.Thread(target=run_test, daemon=True).start()
 
@@ -1743,7 +1744,8 @@ class ToolsPanel(Gtk.Box):
             except subprocess.TimeoutExpired:
                 GLib.idle_add(lambda: self._log("Spectrum scan timed out"))
             except Exception as e:
-                GLib.idle_add(lambda: self._log(f"Spectrum scan error: {e}"))
+                err = str(e)
+                GLib.idle_add(lambda: self._log(f"Spectrum scan error: {err}"))
 
             GLib.idle_add(lambda: self.main_window.set_status_message("Scan complete"))
 

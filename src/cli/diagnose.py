@@ -69,10 +69,8 @@ def check_rns_port():
         sock.bind(('::', 29716))
         sock.close()
         print_status("RNS port 29716", True, "available")
-        port_available = True
     except OSError as e:
         print_status("RNS port 29716", False, f"in use ({e})")
-        port_available = False
 
         # Try to find what's using it
         try:
