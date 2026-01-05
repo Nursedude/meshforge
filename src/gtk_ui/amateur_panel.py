@@ -13,11 +13,12 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, GLib, Pango
 
-import logging
 from typing import Optional
 from datetime import datetime
 
-logger = logging.getLogger(__name__)
+# Use centralized logging
+from utils.logging_config import get_logger
+logger = get_logger(__name__)
 
 # Import amateur radio modules with fallback
 try:

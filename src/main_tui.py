@@ -15,19 +15,20 @@ import shutil
 import subprocess
 from pathlib import Path
 
+# Add src directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent))
+
+from utils.system import require_root
+
 
 def check_root():
     """Check for root privileges"""
-    if os.geteuid() != 0:
-        print("=" * 60)
-        print("ERROR: Root privileges required")
-        print("=" * 60)
-        print()
-        print("This application requires root/sudo privileges.")
-        print("Please run with:")
-        print("  sudo python3 src/main_tui.py")
-        print("=" * 60)
-        sys.exit(1)
+    require_root(
+        exit_on_fail=True,
+        message="This application requires root/sudo privileges.\n"
+                "Please run with:\n"
+                "  sudo python3 src/main_tui.py"
+    )
 
 
 def check_textual():

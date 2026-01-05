@@ -35,7 +35,8 @@ def print_status(name: str, status: bool, detail: str = ""):
 
 def check_root() -> bool:
     """Check if running as root."""
-    return os.geteuid() == 0
+    from utils.system import check_root as _check_root
+    return _check_root()
 
 
 def check_services():

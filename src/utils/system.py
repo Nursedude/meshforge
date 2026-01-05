@@ -5,11 +5,111 @@ import sys
 import platform
 import subprocess
 import distro
+from typing import Optional, Callable
 
 
-def check_root():
-    """Check if running with root privileges"""
+def check_root() -> bool:
+    """
+    Check if running with root privileges.
+
+    Returns:
+        True if running as root (euid 0), False otherwise
+    """
     return os.geteuid() == 0
+
+
+def require_root(exit_on_fail: bool = True,
+                 message: str = None,
+                 print_func: Callable[[str], None] = None) -> bool:
+    """
+    Require root privileges, optionally exiting if not root.
+
+    Args:
+        exit_on_fail: If True, exit the program when not root
+        message: Custom error message
+        print_func: Optional custom print function (e.g., console.print)
+
+    Returns:
+        True if running as root
+
+    Raises:
+        SystemExit: If exit_on_fail is True and not running as root
+    """
+    if check_root():
+        return True
+
+    error_msg = message or "This operation requires root privileges. Please run with sudo."
+
+    if print_func:
+        print_func(f"[error]{error_msg}[/error]")
+    else:
+        print(f"Error: {error_msg}", file=sys.stderr)
+
+    if exit_on_fail:
+        sys.exit(1)
+
+    return False
+
+
+def get_real_user() -> str:
+    """
+    Get the real username, even when running with sudo.
+
+    Returns:
+        The real username (SUDO_USER or USER)
+    """
+    return os.environ.get('SUDO_USER') or os.environ.get('USER') or 'unknown'
+
+
+def get_real_uid() -> int:
+    """
+    Get the real user ID, even when running with sudo.
+
+    Returns:
+        The real user ID
+    """
+    sudo_uid = os.environ.get('SUDO_UID')
+    if sudo_uid:
+        return int(sudo_uid)
+    return os.getuid()
+
+
+def get_real_gid() -> int:
+    """
+    Get the real group ID, even when running with sudo.
+
+    Returns:
+        The real group ID
+    """
+    sudo_gid = os.environ.get('SUDO_GID')
+    if sudo_gid:
+        return int(sudo_gid)
+    return os.getgid()
+
+
+def drop_privileges() -> bool:
+    """
+    Drop root privileges back to the original user (if running via sudo).
+
+    Returns:
+        True if privileges were dropped successfully
+    """
+    if not check_root():
+        return True  # Already non-root
+
+    try:
+        uid = get_real_uid()
+        gid = get_real_gid()
+
+        if uid == 0:
+            return False  # Would still be root
+
+        os.setgroups([])
+        os.setgid(gid)
+        os.setuid(uid)
+        return True
+    except (OSError, PermissionError):
+        return False
 
 
 def get_system_info():
