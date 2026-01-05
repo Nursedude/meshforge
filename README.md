@@ -158,6 +158,8 @@ Plugin architecture is complete with 15 tests. These plugins have **stub impleme
 - Core functionality awaits external library integration
 - Community contributions welcome!
 
+**Safety principle:** Plugins can fail without breaking core MeshForge. If `paho-mqtt` isn't installed, MQTT plugin fails gracefully—RF tools, gateway, and UI continue working.
+
 ### 📋 Planned (Future)
 
 | Feature | Priority | Notes |
@@ -430,25 +432,41 @@ frequency = freq_start + (bandwidth / 2000) + (slot * bandwidth / 1000)
 
 ## RF Engineering Tools
 
-RF engineering encompasses simulation software, test instruments, and analysis tools for designing wireless systems. MeshForge provides **field-ready RF analysis** for mesh network planning:
+RF engineering encompasses simulation software, test instruments, and analysis tools for designing wireless systems. MeshForge provides **field-ready RF analysis** for mesh network planning.
+
+### Core vs Plugin Strategy
+
+**Principle: Don't break code. Safety over features.**
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     RF ENGINEERING TOOLKIT                           │
+│                     RF TOOLS: CORE vs PLUGIN                         │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                       │
-│  PROPAGATION ANALYSIS          LINK BUDGET              PLANNING     │
-│  ┌───────────────────┐        ┌─────────────┐        ┌─────────────┐│
-│  │ • Line of Sight   │        │ • FSPL calc │        │ • Freq slot ││
-│  │ • Fresnel zones   │        │ • Path loss │        │ • Channel   ││
-│  │ • Earth curvature │        │ • Fade marg │        │ • Region    ││
-│  │ • Terrain profile │        │ • Link marg │        │ • Bandwidth ││
-│  └───────────────────┘        └─────────────┘        └─────────────┘│
+│  ✅ CORE (Integrated)              🔧 PLUGIN (Optional)              │
+│  ┌─────────────────────┐          ┌─────────────────────┐           │
+│  │ • Haversine distance│          │ • Site Planner API  │           │
+│  │ • Fresnel radius    │          │ • External elevation│           │
+│  │ • FSPL calculation  │          │ • Coverage heatmaps │           │
+│  │ • Earth bulge       │          │ • APRS integration  │           │
+│  │ • Freq slot calc    │          │ • Antenna modeling  │           │
+│  │ 13 tests, no deps   │          │ External APIs/deps  │           │
+│  └─────────────────────┘          └─────────────────────┘           │
+│                                                                       │
+│  Safety: Core functions work offline with no external dependencies   │
 │                                                                       │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Available Calculations (13 Tested Functions)
+| Category | Core (Integrated) | Plugin (Optional) |
+|----------|-------------------|-------------------|
+| **Distance** | Haversine (tested) | GPS tracking APIs |
+| **Clearance** | Fresnel, Earth bulge (tested) | Terrain elevation APIs |
+| **Loss** | FSPL formula (tested) | ITM/Longley-Rice models |
+| **Planning** | Freq slot calculator | Site Planner, coverage maps |
+| **Why** | Works offline, no deps | Needs network, external APIs |
+
+### Core Calculations (13 Tested Functions)
 
 | Function | Formula | Use Case |
 |----------|---------|----------|
@@ -485,24 +503,28 @@ MeshForge generates **elevation profile charts** showing:
 - Earth curvature effect
 - Obstruction points
 
-### Integration with Site Planner
+### External Tools (Plugin Candidates)
 
-For advanced coverage modeling, MeshForge links to [site.meshtastic.org](https://site.meshtastic.org/):
-- ITM/Longley-Rice propagation model
-- NASA SRTM terrain data
-- Coverage heatmaps
-- Multi-node network planning
+These require network access or external dependencies—good candidates for **optional plugins**:
+
+| Tool | Status | Notes |
+|------|--------|-------|
+| [site.meshtastic.org](https://site.meshtastic.org/) | Link only | ITM/Longley-Rice, coverage maps |
+| Open-Elevation API | Optional | Terrain profiles (network required) |
+| APRS-IS | 📋 Planned | Position reporting for HAMs |
+
+**Why plugins?** These fail if network is down. Core RF tools work offline.
 
 ### What MeshForge Doesn't Replace
 
-MeshForge provides **field planning tools**, not full RF simulation. For advanced work:
+MeshForge provides **field planning tools**, not full RF simulation:
 
-| Need | Professional Tool |
-|------|-------------------|
-| Antenna design | HFSS, CST, FEKO |
-| Circuit simulation | ADS, AWR, Keysight |
-| Lab measurements | VNA, spectrum analyzer |
-| EMC compliance | Pre-compliance test gear |
+| Need | Professional Tool | Why Not Core? |
+|------|-------------------|---------------|
+| Antenna design | HFSS, CST, FEKO | Complex, licensed software |
+| Circuit simulation | ADS, AWR, Keysight | Hardware-specific |
+| Lab measurements | VNA, spectrum analyzer | Requires physical instruments |
+| EMC compliance | Pre-compliance gear | Regulatory, specialized |
 
 ---
 
