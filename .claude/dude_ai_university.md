@@ -1015,6 +1015,169 @@ When resuming development:
 
 ---
 
-*Last updated: 2026-01-03*
-*Version: 4.2.0 (knowledge base rev 2)*
+---
+
+## Plugin Architecture (v0.4.3)
+
+MeshForge now supports an extensible plugin system for adding functionality without modifying core code.
+
+### Plugin Types
+
+| Type | Purpose | Example |
+|------|---------|---------|
+| `PanelPlugin` | Add new UI tabs | MeshCore dashboard |
+| `IntegrationPlugin` | Connect external services | MQTT bridge, Home Assistant |
+| `ToolPlugin` | Add RF tools | Link budget calculator |
+| `ProtocolPlugin` | Support mesh protocols | MeshCore, RNS |
+
+### Creating a Plugin
+
+```python
+from utils.plugins import IntegrationPlugin, PluginMetadata, PluginType
+
+class MQTTBridgePlugin(IntegrationPlugin):
+    @staticmethod
+    def get_metadata():
+        return PluginMetadata(
+            name="mqtt-bridge",
+            version="1.0.0",
+            description="MQTT integration for Home Assistant",
+            author="Community",
+            plugin_type=PluginType.INTEGRATION,
+        )
+
+    def activate(self):
+        self.connect()
+
+    def deactivate(self):
+        self.disconnect()
+
+    def connect(self) -> bool:
+        # Connect to MQTT broker
+        pass
+
+    def disconnect(self):
+        pass
+
+    def is_connected(self) -> bool:
+        return self._connected
+```
+
+### Available Plugin Stubs
+
+| Plugin | Type | Description | Source |
+|--------|------|-------------|--------|
+| `mqtt_bridge` | Integration | Home Assistant/Node-RED | Built-in |
+| `meshcore` | Protocol | MeshCore protocol support | [meshcore.co.uk](https://meshcore.co.uk) |
+| `meshing_around` | Integration | Bot framework | [GitHub](https://github.com/SpudGunMan/meshing-around) |
+
+### Plugin Discovery
+
+Plugins are loaded from:
+1. `src/plugins/` - Built-in plugins
+2. `~/.config/meshforge/plugins/` - User plugins
+3. `/usr/share/meshforge/plugins/` - System plugins
+
+---
+
+## Heterogeneous Network Architecture
+
+### Reticulum as Universal Transport
+
+> "Reticulum can carry data over any mixture of physical mediums and topologies.
+> Low-bandwidth networks can co-exist and interoperate with large, high-bandwidth networks."
+
+This is the key insight for MeshForge's architecture:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    MESHFORGE UNIFIED NETWORK                             │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐                 │
+│  │  Meshtastic  │   │   MeshCore   │   │ Direct LoRa  │   LOW BANDWIDTH │
+│  │   (LoRa)     │   │   (LoRa)     │   │   (RNode)    │   ~1 kbps       │
+│  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘                 │
+│         │                  │                  │                          │
+│         └──────────────────┼──────────────────┘                          │
+│                            │                                             │
+│                    ┌───────▼───────┐                                     │
+│                    │   RETICULUM   │  ← Protocol Agnostic Layer          │
+│                    │   (RNS)       │    Any medium, any topology         │
+│                    └───────┬───────┘                                     │
+│                            │                                             │
+│         ┌──────────────────┼──────────────────┐                          │
+│         │                  │                  │                          │
+│  ┌──────▼───────┐   ┌──────▼───────┐   ┌──────▼───────┐                 │
+│  │    WiFi      │   │   Ethernet   │   │   Internet   │   HIGH BANDWIDTH│
+│  │   (TCP/UDP)  │   │    (LAN)     │   │   (I2P/Tor)  │   1+ Mbps       │
+│  └──────────────┘   └──────────────┘   └──────────────┘                 │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### MeshCore vs Meshtastic
+
+| Feature | Meshtastic | MeshCore |
+|---------|------------|----------|
+| Routing | Client flooding | Fixed repeaters |
+| Max hops | 7 | 64 |
+| Battery life | Moderate | Excellent |
+| Setup | Easy | Requires planning |
+| Use case | Mobile groups | City infrastructure |
+| Compatibility | Own protocol | Own protocol |
+
+**Key insight**: They're not compatible, but both can use RNS as a bridge layer.
+
+### Sources
+
+- [MeshCore GitHub](https://github.com/meshcore-dev/MeshCore)
+- [meshing-around](https://github.com/SpudGunMan/meshing-around)
+- [Meshtastic Integrations](https://meshtastic.org/docs/software/integrations/)
+- [MeshCore vs Meshtastic](https://www.austinmesh.org/learn/meshcore-vs-meshtastic/)
+
+---
+
+## Test-Driven Development (TDD)
+
+MeshForge uses TDD for reliable, maintainable code:
+
+### Workflow
+
+```
+1. Write failing test     → tests/test_feature.py
+2. Commit tests           → git commit -m "test: Add feature tests"
+3. Implement feature      → src/utils/feature.py
+4. Verify tests pass      → python3 tests/test_feature.py
+5. Commit implementation  → git commit -m "feat: Add feature"
+```
+
+### Test Suites
+
+| Suite | Tests | Purpose |
+|-------|-------|---------|
+| `test_security.py` | 24 | Input validation, path safety |
+| `test_rf_utils.py` | 13 | RF calculations |
+| `test_gateway_diagnostic.py` | 18 | Gateway setup wizard |
+| `test_plugins.py` | 15 | Plugin architecture |
+| **Total** | **70** | All passing |
+
+### Running Tests
+
+```bash
+# Run all tests
+python3 tests/test_security.py
+python3 tests/test_rf_utils.py
+python3 tests/test_gateway_diagnostic.py
+python3 tests/test_plugins.py
+
+# Verify syntax
+python3 -m py_compile src/**/*.py
+```
+
+---
+
+*Last updated: 2026-01-05*
+*Version: 0.4.3-beta (knowledge base rev 3)*
 *Dude AI - Network Engineer, Physicist, Programmer, Project Manager*
+*Made with aloha 🤙 - nurse dude (wh6gxz)*

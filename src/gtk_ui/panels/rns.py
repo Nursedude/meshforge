@@ -384,6 +384,13 @@ class RNSPanel(Gtk.Box):
         view_nodes_btn.connect("clicked", self._on_view_nodes)
         action_row.append(view_nodes_btn)
 
+        # Diagnostic wizard button
+        diag_btn = Gtk.Button(label="🔧 Diagnose")
+        diag_btn.set_tooltip_text("Run gateway setup diagnostic wizard")
+        diag_btn.add_css_class("suggested-action")
+        diag_btn.connect("clicked", self._on_run_diagnostic)
+        action_row.append(diag_btn)
+
         box.append(action_row)
 
         # Statistics
@@ -1062,6 +1069,25 @@ loglevel = 4
 #     type = RNodeInterface
 #     interface_enabled = False
 #     port = ble://RNode 3B87
+
+
+# ===== MESHTASTIC INTERFACE =====
+# RNS over Meshtastic LoRa mesh
+# Install: Click "Install Interface" in MeshForge RNS panel
+# Source: https://github.com/Nursedude/RNS_Over_Meshtastic_Gateway
+
+# [[Meshtastic Interface]]
+#     type = Meshtastic_Interface
+#     enabled = False
+#     mode = gateway
+#     # Connection: choose ONE (port, ble_port, or tcp_port)
+#     port = /dev/ttyUSB0
+#     # ble_port = RNode_1234
+#     # tcp_port = 127.0.0.1:4403
+#     # Speed: 0=LongFast, 1=LongSlow, 6=ShortFast, 8=Turbo
+#     data_speed = 8
+#     hop_limit = 3
+#     bitrate = 500
 '''
 
         try:
@@ -1263,7 +1289,7 @@ message_storage_limit = 2000
                 interfaces_dir.mkdir(parents=True, exist_ok=True)
 
                 # Download the interface file
-                url = "https://raw.githubusercontent.com/landandair/RNS_Over_Meshtastic/main/Interface/Meshtastic_Interface.py"
+                url = "https://raw.githubusercontent.com/Nursedude/RNS_Over_Meshtastic_Gateway/main/Meshtastic_Interface.py"
                 dest = interfaces_dir / "Meshtastic_Interface.py"
 
                 print(f"[RNS] Downloading from {url}", flush=True)
@@ -1310,28 +1336,49 @@ message_storage_limit = 2000
 
         config_file = Path.home() / ".reticulum" / "config"
 
-        # Config template
+        # Config template - based on Nursedude/RNS_Over_Meshtastic_Gateway
         config_template = '''
-# Meshtastic Interface - RNS over Meshtastic
-# Uncomment and configure ONE connection method (port, ble_port, or tcp_port)
+# ===== MESHTASTIC INTERFACE =====
+# RNS over Meshtastic LoRa - bridges Reticulum with Meshtastic networks
+# Source: https://github.com/Nursedude/RNS_Over_Meshtastic_Gateway
+#
+# Configure ONE connection method: port (serial), ble_port, or tcp_port
+
 [[Meshtastic Interface]]
   type = Meshtastic_Interface
   enabled = true
   mode = gateway
 
-  # Serial connection (USB)
+  # === CONNECTION OPTIONS (choose ONE) ===
+
+  # Option 1: USB Serial (most common)
   port = /dev/ttyUSB0
   # port = /dev/ttyACM0
 
-  # Bluetooth LE connection (alternative)
-  # ble_port = short_1234
+  # Option 2: Bluetooth LE (pair device first)
+  # ble_port = RNode_1234
 
-  # TCP/IP connection (alternative)
+  # Option 3: TCP/IP (via meshtasticd daemon)
   # tcp_port = 127.0.0.1:4403
 
-  # Radio speed: 8=Turbo, 6=ShortFast, 5=ShortSlow, 4=MedFast, 3=MedSlow, 7=LongMod, 1=LongSlow, 0=LongFast
+  # === RADIO SPEED PRESETS ===
+  # Speed determines range vs throughput tradeoff
+  #   0 = LONG_FAST     (1066 bps, ~30km,  -123dBm)
+  #   1 = LONG_SLOW     (293 bps,  ~80km,  -129dBm)
+  #   2 = VERY_LONG_SLW (146 bps,  ~120km, -132dBm)
+  #   3 = MEDIUM_SLOW   (702 bps,  ~20km,  -120dBm)
+  #   4 = MEDIUM_FAST   (3516 bps, ~12km,  -117dBm)
+  #   5 = SHORT_SLOW    (4375 bps, ~8km,   -114dBm)
+  #   6 = SHORT_FAST    (10937 bps,~5km,   -111dBm)
+  #   7 = LONG_MODERATE (878 bps,  ~40km,  -126dBm)
+  #   8 = SHORT_TURBO   (21875 bps,~3km,   -108dBm) [Default]
   data_speed = 8
-  hop_limit = 1
+
+  # Hop limit for multi-hop routing (1-7)
+  hop_limit = 3
+
+  # Effective bitrate in bytes/sec (match your speed preset)
+  # TURBO=500, FAST=200, SLOW=50
   bitrate = 500
 '''
 
@@ -2019,6 +2066,78 @@ message_storage_limit = 2000
         )
         dialog.add_response("ok", "OK")
         dialog.present()
+
+    def _on_run_diagnostic(self, button):
+        """Run the gateway diagnostic wizard"""
+        print("[RNS] Running gateway diagnostic...", flush=True)
+        self.main_window.set_status_message("Running gateway diagnostic...")
+
+        def do_diagnostic():
+            try:
+                from utils.gateway_diagnostic import GatewayDiagnostic
+
+                diag = GatewayDiagnostic()
+                wizard_output = diag.run_wizard()
+
+                # Also get structured results for UI
+                failures = [r for r in diag.results if r.status.value == "FAIL"]
+                warnings = [r for r in diag.results if r.status.value == "WARN"]
+                passes = [r for r in diag.results if r.status.value == "PASS"]
+
+                GLib.idle_add(self._show_diagnostic_results,
+                             wizard_output, len(failures), len(warnings), len(passes))
+
+            except ImportError as e:
+                print(f"[RNS] Diagnostic import error: {e}", flush=True)
+                GLib.idle_add(lambda: self.main_window.set_status_message(f"Diagnostic error: {e}"))
+            except Exception as e:
+                print(f"[RNS] Diagnostic error: {e}", flush=True)
+                GLib.idle_add(lambda: self.main_window.set_status_message(f"Error: {e}"))
+
+        threading.Thread(target=do_diagnostic, daemon=True).start()
+
+    def _show_diagnostic_results(self, wizard_output, fail_count, warn_count, pass_count):
+        """Show diagnostic results in a dialog"""
+        if fail_count == 0:
+            heading = "✓ Gateway Ready"
+            status_msg = "All checks passed"
+        else:
+            heading = f"⚠️ {fail_count} Issue(s) Found"
+            status_msg = f"{fail_count} failures, {warn_count} warnings"
+
+        self.main_window.set_status_message(status_msg)
+
+        # Create scrollable dialog for results
+        dialog = Adw.MessageDialog(
+            transient_for=self.main_window,
+            heading=heading,
+            body=""  # We'll use a custom widget instead
+        )
+
+        # Create scrollable text view for output
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_min_content_height(400)
+        scroll.set_min_content_width(500)
+
+        text_view = Gtk.TextView()
+        text_view.set_editable(False)
+        text_view.set_monospace(True)
+        text_view.set_wrap_mode(Gtk.WrapMode.WORD)
+        text_view.set_margin_start(10)
+        text_view.set_margin_end(10)
+        text_view.set_margin_top(10)
+        text_view.set_margin_bottom(10)
+
+        buffer = text_view.get_buffer()
+        buffer.set_text(wizard_output)
+
+        scroll.set_child(text_view)
+        dialog.set_extra_child(scroll)
+
+        dialog.add_response("ok", "OK")
+        dialog.present()
+
+        return False
 
     def _on_setup_gateway(self, button):
         """Open gateway setup wizard"""

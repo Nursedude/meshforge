@@ -507,12 +507,50 @@ def check_ham_callsign():
         print_status("Callsign", False, "not found in environment (set CALLSIGN=)")
 
 
+def run_gateway_wizard():
+    """Run the AI-like gateway diagnostic wizard."""
+    try:
+        # Add parent directory to path for imports
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from utils.gateway_diagnostic import GatewayDiagnostic
+
+        diag = GatewayDiagnostic()
+        print(diag.run_wizard())
+        return True
+    except ImportError as e:
+        print(f"\nError: Could not load gateway diagnostic module: {e}")
+        print("Make sure you're running from the MeshForge directory")
+        return False
+
+
 def main():
     """Run all diagnostics."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="MeshForge Diagnostic Tool",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python3 diagnose.py              Full system diagnostics
+  python3 diagnose.py --gateway    RNS/Meshtastic gateway wizard
+  python3 diagnose.py -g           Gateway wizard (short form)
+        """
+    )
+    parser.add_argument('--gateway', '-g', action='store_true',
+                        help='Run RNS/Meshtastic gateway setup wizard')
+
+    args = parser.parse_args()
+
+    if args.gateway:
+        run_gateway_wizard()
+        return
+
     print()
     print("MeshForge Diagnostics")
     print("=====================")
     print("For RF engineers, network operators, and HAMs")
+    print("\nTip: Use --gateway for RNS/Meshtastic setup wizard")
 
     if not check_root():
         print("\nNote: Running without root - some checks may be limited")
