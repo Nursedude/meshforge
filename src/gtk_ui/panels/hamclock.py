@@ -104,7 +104,7 @@ class HamClockPanel(Gtk.Box):
 
     def _build_ui(self):
         """Build the HamClock panel UI"""
-        # Header
+        # Header (fixed, not scrolled)
         header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
 
         title = Gtk.Label(label="HamClock")
@@ -126,8 +126,18 @@ class HamClockPanel(Gtk.Box):
         subtitle.add_css_class("dim-label")
         self.append(subtitle)
 
+        # Scrollable content area
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_vexpand(True)
+        scrolled.set_min_content_height(400)
+
+        # Content box inside scroll
+        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        content_box.set_margin_top(10)
+
         # Service status section
-        self._build_service_section()
+        self._build_service_section(content_box)
 
         # Connection settings
         settings_frame = Gtk.Frame()
@@ -178,7 +188,7 @@ class HamClockPanel(Gtk.Box):
 
         settings_box.append(port_box)
         settings_frame.set_child(settings_box)
-        self.append(settings_frame)
+        content_box.append(settings_frame)
 
         # Space weather info
         weather_frame = Gtk.Frame()
@@ -226,7 +236,7 @@ class HamClockPanel(Gtk.Box):
         weather_box.append(refresh_box)
 
         weather_frame.set_child(weather_box)
-        self.append(weather_frame)
+        content_box.append(weather_frame)
 
         # HF Band Conditions Frame
         bands_frame = Gtk.Frame()
@@ -276,7 +286,7 @@ class HamClockPanel(Gtk.Box):
 
         bands_box.append(noaa_row)
         bands_frame.set_child(bands_box)
-        self.append(bands_frame)
+        content_box.append(bands_frame)
 
         # Live view (if WebKit available)
         if HAS_WEBKIT:
@@ -289,7 +299,7 @@ class HamClockPanel(Gtk.Box):
             self.webview.set_hexpand(True)
 
             view_frame.set_child(self.webview)
-            self.append(view_frame)
+            content_box.append(view_frame)
         else:
             # Open in browser button
             browser_frame = Gtk.Frame()
@@ -310,9 +320,13 @@ class HamClockPanel(Gtk.Box):
             browser_box.append(open_btn)
 
             browser_frame.set_child(browser_box)
-            self.append(browser_frame)
+            content_box.append(browser_frame)
 
-    def _build_service_section(self):
+        # Add scrollable content to the panel
+        scrolled.set_child(content_box)
+        self.append(scrolled)
+
+    def _build_service_section(self, parent):
         """Build HamClock service status and control section"""
         frame = Gtk.Frame()
         frame.set_label("HamClock Service")
@@ -394,7 +408,7 @@ class HamClockPanel(Gtk.Box):
 
         box.append(install_row)
         frame.set_child(box)
-        self.append(frame)
+        parent.append(frame)
 
     def _check_service_status(self):
         """Check if HamClock service is running"""
@@ -789,9 +803,6 @@ class HamClockPanel(Gtk.Box):
 
     def _on_open_browser(self, button):
         """Open HamClock live view in browser"""
-        import subprocess
-        import os
-
         url = self._settings.get("url", "").rstrip('/')
         live_port = self._settings.get("live_port", 8081)
 
@@ -800,17 +811,50 @@ class HamClockPanel(Gtk.Box):
             return
 
         live_url = f"{url}:{live_port}/live.html"
-        user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
+        self._open_url_in_browser(live_url)
 
-        try:
-            subprocess.Popen(
-                ['sudo', '-u', user, 'xdg-open', live_url],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            self.status_label.set_label("Opened in browser")
-        except Exception as e:
-            self.status_label.set_label(f"Failed to open browser: {e}")
+    def _open_url_in_browser(self, url):
+        """Open a URL in the user's default browser (handles running as root)"""
+        print(f"[HamClock] Opening URL: {url}", flush=True)
+
+        user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
+        display = os.environ.get('DISPLAY', ':0')
+
+        # Try multiple browser open methods
+        methods = [
+            # Method 1: Run as original user with their display
+            lambda: subprocess.Popen(
+                ['sudo', '-u', user, 'env', f'DISPLAY={display}', 'xdg-open', url],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            ),
+            # Method 2: Direct xdg-open (if not root)
+            lambda: subprocess.Popen(
+                ['xdg-open', url],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            ),
+            # Method 3: Try specific browsers
+            lambda: subprocess.Popen(
+                ['sudo', '-u', user, 'chromium-browser', url],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            ),
+            lambda: subprocess.Popen(
+                ['sudo', '-u', user, 'firefox', url],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            ),
+        ]
+
+        for i, method in enumerate(methods):
+            try:
+                method()
+                self.status_label.set_label(f"Opened in browser")
+                print(f"[HamClock] Browser opened using method {i+1}", flush=True)
+                return
+            except Exception as e:
+                print(f"[HamClock] Method {i+1} failed: {e}", flush=True)
+                continue
+
+        self.status_label.set_label("Could not open browser - copy URL manually")
+        print(f"[HamClock] All browser methods failed for {url}", flush=True)
 
     def _on_fetch_noaa(self, button):
         """Fetch space weather data from NOAA"""
@@ -881,23 +925,6 @@ class HamClockPanel(Gtk.Box):
 
     def _on_open_dx_propagation(self, button):
         """Open DX propagation charts in browser"""
-        import subprocess
-        import os
-
-        urls = [
-            "https://www.hamqsl.com/solar.html",  # N0NBH Solar-Terrestrial
-            "https://prop.kc2g.com/",  # KC2G MUF Map
-        ]
-
-        user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
-
-        try:
-            # Open the solar conditions page
-            subprocess.Popen(
-                ['sudo', '-u', user, 'xdg-open', urls[0]],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            self.status_label.set_label("Opened propagation charts")
-        except Exception as e:
-            self.status_label.set_label(f"Failed: {e}")
+        # N0NBH Solar-Terrestrial Data page
+        url = "https://www.hamqsl.com/solar.html"
+        self._open_url_in_browser(url)
