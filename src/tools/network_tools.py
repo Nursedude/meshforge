@@ -373,7 +373,7 @@ class NetworkTools:
         console.print("\n[bold cyan]── Network Scan ──[/bold cyan]\n")
 
         # Check for nmap
-        nmap_check = subprocess.run(['which', 'nmap'], capture_output=True)
+        nmap_check = subprocess.run(['which', 'nmap'], capture_output=True, timeout=5)
         if nmap_check.returncode != 0:
             console.print("[yellow]nmap not installed. Install with:[/yellow]")
             console.print("  sudo apt install nmap")
@@ -420,7 +420,7 @@ class NetworkTools:
         console.print("\n[bold cyan]── Find Meshtastic Devices ──[/bold cyan]\n")
 
         # Check for nmap
-        nmap_check = subprocess.run(['which', 'nmap'], capture_output=True)
+        nmap_check = subprocess.run(['which', 'nmap'], capture_output=True, timeout=5)
         has_nmap = nmap_check.returncode == 0
 
         # Determine network range
