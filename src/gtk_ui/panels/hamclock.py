@@ -18,17 +18,23 @@ gi.require_version('Adw', '1')
 from gi.repository import Gtk, GLib
 import threading
 import subprocess
-import json
 import urllib.request
 import urllib.error
 import logging
 from pathlib import Path
+import os
 
 logger = logging.getLogger(__name__)
 
+# Use centralized settings manager
+try:
+    from utils.common import SettingsManager
+    HAS_SETTINGS_MANAGER = True
+except ImportError:
+    HAS_SETTINGS_MANAGER = False
+
 # Try to import WebKit for embedded view
 # Note: WebKit doesn't work when running as root (sandbox issues)
-import os
 _is_root = os.geteuid() == 0
 
 try:
@@ -55,7 +61,12 @@ except (ValueError, ImportError):
 class HamClockPanel(Gtk.Box):
     """Panel for HamClock integration"""
 
-    SETTINGS_FILE = Path.home() / ".config" / "meshforge" / "hamclock.json"
+    # Settings defaults
+    SETTINGS_DEFAULTS = {
+        "url": "",
+        "api_port": 8080,
+        "live_port": 8081,
+    }
 
     def __init__(self, main_window):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -67,7 +78,13 @@ class HamClockPanel(Gtk.Box):
         self.set_margin_top(20)
         self.set_margin_bottom(20)
 
-        self._settings = self._load_settings()
+        # Use centralized settings manager
+        if HAS_SETTINGS_MANAGER:
+            self._settings_mgr = SettingsManager("hamclock", defaults=self.SETTINGS_DEFAULTS)
+            self._settings = self._settings_mgr.all()
+        else:
+            self._settings = self._load_settings_legacy()
+
         self._build_ui()
 
         # Check service status on startup
@@ -77,16 +94,14 @@ class HamClockPanel(Gtk.Box):
         if self._settings.get("url"):
             GLib.timeout_add(1000, self._auto_connect)
 
-    def _load_settings(self):
-        """Load HamClock settings"""
-        defaults = {
-            "url": "",
-            "api_port": 8080,
-            "live_port": 8081,
-        }
+    def _load_settings_legacy(self):
+        """Legacy settings load for fallback"""
+        import json
+        settings_file = Path.home() / ".config" / "meshforge" / "hamclock.json"
+        defaults = self.SETTINGS_DEFAULTS.copy()
         try:
-            if self.SETTINGS_FILE.exists():
-                with open(self.SETTINGS_FILE) as f:
+            if settings_file.exists():
+                with open(settings_file) as f:
                     saved = json.load(f)
                     defaults.update(saved)
         except Exception as e:
@@ -95,12 +110,19 @@ class HamClockPanel(Gtk.Box):
 
     def _save_settings(self):
         """Save HamClock settings"""
-        try:
-            self.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.SETTINGS_FILE, 'w') as f:
-                json.dump(self._settings, f, indent=2)
-        except Exception as e:
-            logger.error(f"Error saving HamClock settings: {e}")
+        if HAS_SETTINGS_MANAGER:
+            self._settings_mgr.update(self._settings)
+            self._settings_mgr.save()
+        else:
+            # Legacy fallback
+            import json
+            settings_file = Path.home() / ".config" / "meshforge" / "hamclock.json"
+            try:
+                settings_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(settings_file, 'w') as f:
+                    json.dump(self._settings, f, indent=2)
+            except Exception as e:
+                logger.error(f"Error saving HamClock settings: {e}")
 
     def _build_ui(self):
         """Build the HamClock panel UI"""
