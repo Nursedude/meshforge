@@ -716,6 +716,501 @@ The AREDN panel provides:
         )
         self.courses[aredn_course.id] = aredn_course
 
+        # Course 7: AI-Assisted Development
+        ai_dev_course = Course(
+            id="ai-development",
+            title="AI-Assisted Development",
+            description="Master AI coding, debugging, and code review for mesh systems",
+            difficulty=Difficulty.INTERMEDIATE,
+            icon="system-run-symbolic",
+            estimated_hours=3.0,
+            tags=["ai", "coding", "debugging", "security", "review"],
+            lessons=[
+                Lesson(
+                    id="ai-01-intro",
+                    title="Introduction to AI-Assisted Development",
+                    duration_minutes=15,
+                    content="""# AI-Assisted Development
+
+Learn to leverage AI assistants for more effective mesh network software development.
+
+## What is AI-Assisted Development?
+
+AI-assisted development uses large language models and AI tools to:
+
+- **Generate Code** - Create implementations from descriptions
+- **Debug Issues** - Analyze errors and suggest fixes
+- **Review Code** - Identify security and quality issues
+- **Document** - Generate clear documentation
+
+## Why AI for Mesh Development?
+
+Mesh networking involves complex domains:
+
+```
+MESH DEVELOPMENT DOMAINS
+========================
+- RF propagation physics
+- Protocol specifications
+- Network topology
+- Hardware interfaces
+- Security patterns
+- Regulatory compliance
+```
+
+AI assistants can help bridge knowledge gaps and accelerate development.
+
+## Key Principles
+
+1. **Context is Everything** - AI needs project context
+2. **Trust but Verify** - Always review generated code
+3. **Security First** - Never compromise on security
+4. **Iterative Refinement** - Build on AI suggestions
+
+## In This Course
+
+You'll learn:
+- Effective prompting for code generation
+- Systematic debugging with AI
+- Automated code review techniques
+- Security best practices
+""",
+                    resources=[
+                        {"title": "AI Dev Practices", "url": "docs/ai_development_practices.md"},
+                    ]
+                ),
+                Lesson(
+                    id="ai-02-prompting",
+                    title="Effective Prompting for Code Generation",
+                    duration_minutes=20,
+                    content="""# Prompting for Code Generation
+
+Writing effective prompts is key to getting useful code from AI.
+
+## The CLEAR Framework
+
+```
+C - Context    : Project, language, constraints
+L - Language   : Be specific and technical
+E - Examples   : Show expected input/output
+A - Ask        : Clear, specific request
+R - Review     : Specify validation criteria
+```
+
+## Example: Mesh Message Handler
+
+### Poor Prompt
+> "Write a function to handle mesh messages"
+
+### Better Prompt
+> "Write a Python function that handles incoming Meshtastic mesh
+> messages. The function should:
+> - Accept a protobuf MeshPacket object
+> - Validate the sender node ID (8 hex chars)
+> - Check message size against MAX_PAYLOAD (237 bytes)
+> - Log reception with RSSI and SNR values
+> - Return a typed MessageResult dataclass
+> - Use type hints and docstrings
+> - Handle malformed packets gracefully"
+
+## Domain-Specific Context
+
+For mesh networking, always include:
+
+```python
+# CONTEXT TO PROVIDE
+# ------------------
+# LoRa constraints:
+#   - Max payload: 237 bytes
+#   - Duty cycle limits
+#   - SF/BW/CR settings
+#
+# Meshtastic specifics:
+#   - Node ID format
+#   - Channel configuration
+#   - Encryption expectations
+#
+# Security requirements:
+#   - Input validation
+#   - No command injection
+#   - Secure defaults
+```
+
+## Iterative Refinement
+
+1. **Start general** - Get basic structure
+2. **Add constraints** - Security, performance
+3. **Request tests** - Unit test generation
+4. **Ask for review** - Security audit
+""",
+                    has_assessment=True,
+                ),
+                Lesson(
+                    id="ai-03-debugging",
+                    title="AI-Powered Debugging Techniques",
+                    duration_minutes=25,
+                    content="""# Debugging with AI Assistance
+
+Learn systematic approaches to debugging mesh network issues with AI.
+
+## The TRACE Method
+
+```
+T - Track     : Capture full error context
+R - Reproduce : Create minimal reproduction
+A - Analyze   : Break down with AI assistance
+C - Correct   : Apply targeted fix
+E - Ensure    : Verify with tests
+```
+
+## Providing Error Context
+
+### Minimal (Less Effective)
+> "My mesh node isn't connecting"
+
+### Comprehensive (More Effective)
+> "Error when connecting to Meshtastic node:
+>
+> Environment:
+> - OS: Raspberry Pi OS (Debian 12)
+> - Python: 3.11.2
+> - meshtastic: 2.2.10
+> - Device: RAK WisBlock via /dev/ttyACM0
+>
+> Error:
+> ```
+> serial.serialutil.SerialException:
+> [Errno 13] could not open port /dev/ttyACM0:
+> [Errno 13] Permission denied
+> ```
+>
+> Steps to reproduce:
+> 1. Run `meshtasticd --serial-port /dev/ttyACM0`
+> 2. Error appears immediately
+>
+> What I've tried:
+> - Verified device exists with `ls -la /dev/ttyACM0`
+> - User is in dialout group"
+
+## RF-Specific Debugging
+
+For mesh network issues, capture:
+
+```python
+debug_info = {
+    'node_id': node.my_node_num,
+    'hardware': node.hardware_model,
+    'firmware': node.firmware_version,
+
+    # RF metrics
+    'rssi': packet.rx_rssi,
+    'snr': packet.rx_snr,
+    'hop_count': packet.hop_limit,
+
+    # Timing
+    'rx_time': packet.rx_time,
+    'latency_ms': calculated_latency,
+
+    # Channel config
+    'channel': channel_settings,
+    'modem_preset': modem_config,
+}
+```
+
+## Common Mesh Issues
+
+| Symptom | Likely Cause | Debug Focus |
+|---------|--------------|-------------|
+| No packets | RF/antenna | RSSI, connections |
+| Intermittent | Interference | Channel, duty cycle |
+| Slow | High hop count | Routing, topology |
+| Timeout | Config mismatch | Channel settings |
+""",
+                    has_assessment=True,
+                ),
+                Lesson(
+                    id="ai-04-security",
+                    title="Security-First AI Code Generation",
+                    duration_minutes=20,
+                    content="""# Security in AI-Generated Code
+
+AI can introduce security vulnerabilities. Learn to identify and prevent them.
+
+## OWASP Top 10 in Mesh Context
+
+| Vulnerability | Mesh Risk | Prevention |
+|--------------|-----------|------------|
+| Injection | Command exec | Shell=False, validate |
+| Auth Bypass | Node spoofing | Verify node IDs |
+| Data Exposure | Message logging | Sanitize logs |
+| XXE | Config parsing | Safe parsers |
+| Broken Access | Admin functions | Role checks |
+
+## Security Review Patterns
+
+Always verify AI-generated code for:
+
+### 1. Input Validation
+```python
+# BAD - AI might generate
+def process_message(data):
+    return json.loads(data)
+
+# GOOD - Add validation
+def process_message(data: str) -> dict:
+    if not isinstance(data, str):
+        raise TypeError("Expected string")
+    if len(data) > MAX_MESSAGE_SIZE:
+        raise ValueError("Message too large")
+    return json.loads(data)
+```
+
+### 2. Command Execution
+```python
+# BAD - Command injection risk
+def run_mesh_command(user_cmd):
+    os.system(f"meshtastic {user_cmd}")
+
+# GOOD - Safe execution
+ALLOWED_COMMANDS = {'--info', '--nodes', '--ch-index'}
+
+def run_mesh_command(cmd: str) -> str:
+    if cmd not in ALLOWED_COMMANDS:
+        raise ValueError(f"Command not allowed: {cmd}")
+    result = subprocess.run(
+        ['meshtastic', cmd],
+        shell=False,
+        capture_output=True,
+        timeout=30
+    )
+    return result.stdout.decode()
+```
+
+### 3. Path Operations
+```python
+# BAD - Path traversal
+def read_config(name):
+    with open(f"/etc/meshforge/{name}") as f:
+        return f.read()
+
+# GOOD - Validate path
+def read_config(name: str) -> str:
+    safe_name = Path(name).name  # Strip directory
+    config_path = Path("/etc/meshforge") / safe_name
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config not found: {name}")
+    return config_path.read_text()
+```
+
+## Security Checklist for AI Code
+
+```
+□ All user input validated
+□ No shell=True with variables
+□ Paths resolved and checked
+□ Credentials not hardcoded
+□ Errors don't leak info
+□ Logging sanitized
+□ Dependencies audited
+```
+""",
+                    has_assessment=True,
+                ),
+                Lesson(
+                    id="ai-05-review",
+                    title="Automated Code Review with AI",
+                    duration_minutes=20,
+                    content="""# AI-Powered Code Review
+
+Learn to use AI for systematic code review and quality assurance.
+
+## Review Categories
+
+### 1. Security Review
+Focus on vulnerabilities and attack vectors.
+
+### 2. Quality Review
+Check readability, maintainability, patterns.
+
+### 3. Performance Review
+Identify bottlenecks and inefficiencies.
+
+### 4. Domain Review
+Mesh-specific correctness and best practices.
+
+## Review Prompt Template
+
+```
+Review this [language] code for a mesh networking application:
+
+```[code]```
+
+Please analyze:
+
+1. SECURITY
+   - Input validation issues
+   - Injection vulnerabilities
+   - Authentication/authorization gaps
+   - Sensitive data handling
+
+2. QUALITY
+   - Code organization
+   - Naming conventions
+   - Error handling
+   - Documentation completeness
+
+3. PERFORMANCE
+   - Algorithm efficiency
+   - Resource management
+   - Unnecessary operations
+   - Caching opportunities
+
+4. MESH-SPECIFIC
+   - Payload size considerations
+   - Duty cycle awareness
+   - Protocol compliance
+   - RF metric handling
+
+Format findings as:
+[SEVERITY] Category: Issue
+  Location: file:line
+  Problem: description
+  Fix: suggested solution
+```
+
+## Interpreting Review Results
+
+| Severity | Action | Timeline |
+|----------|--------|----------|
+| CRITICAL | Must fix | Before merge |
+| HIGH | Should fix | This sprint |
+| MEDIUM | Plan fix | Next sprint |
+| LOW | Consider | Backlog |
+| INFO | Informational | Optional |
+
+## Automated Review Integration
+
+```python
+# Example: Pre-commit review hook
+def pre_commit_review(files: List[str]) -> bool:
+    reviewer = AICodeReviewer()
+    all_passed = True
+
+    for file in files:
+        findings = reviewer.review_file(file)
+        critical = [f for f in findings
+                   if f.severity == Severity.CRITICAL]
+
+        if critical:
+            print(f"BLOCKED: {file}")
+            for finding in critical:
+                print(f"  - {finding.message}")
+            all_passed = False
+
+    return all_passed
+```
+""",
+                    has_assessment=True,
+                ),
+                Lesson(
+                    id="ai-06-practical",
+                    title="Practical Exercise: AI Development Workflow",
+                    duration_minutes=30,
+                    content="""# Practical: Complete AI Development Workflow
+
+Apply everything you've learned in a real-world exercise.
+
+## Scenario
+
+You need to create a **Mesh Node Health Monitor** that:
+- Checks node connectivity every 60 seconds
+- Logs RSSI, SNR, and battery level
+- Alerts when signal drops below threshold
+- Stores metrics for analysis
+
+## Step 1: Design with AI
+
+Prompt the AI for architecture:
+
+> "Design a Python class for monitoring Meshtastic node health.
+> Requirements:
+> - Periodic checks (configurable interval)
+> - Metric collection: RSSI, SNR, battery, uptime
+> - Alert thresholds with callbacks
+> - SQLite storage for history
+> - Async-compatible
+>
+> Provide class structure with method signatures."
+
+## Step 2: Generate Implementation
+
+Request implementation for each method:
+
+> "Implement the check_node_health() method for the
+> NodeHealthMonitor class. It should:
+> - Connect to meshtasticd API on localhost:4403
+> - Query node telemetry
+> - Return NodeMetrics dataclass
+> - Handle connection timeouts gracefully
+> - Include type hints and docstring"
+
+## Step 3: Debug Any Issues
+
+If you encounter errors:
+
+> "Error when running health check:
+> ```
+> ConnectionRefusedError: [Errno 111] Connection refused
+> ```
+>
+> The meshtasticd service is running (verified with systemctl).
+> Config shows api_port: 4403.
+>
+> What could cause this and how to fix?"
+
+## Step 4: Security Review
+
+Request security audit:
+
+> "Review this NodeHealthMonitor implementation for
+> security issues, particularly:
+> - API connection handling
+> - Data sanitization before storage
+> - Error message information leakage
+> - Configuration validation"
+
+## Step 5: Test Generation
+
+Generate tests:
+
+> "Generate pytest tests for NodeHealthMonitor covering:
+> - Successful health check
+> - Connection failure handling
+> - Threshold alert triggering
+> - Database storage verification
+> - Configuration validation"
+
+## Expected Outcome
+
+A production-ready monitoring component with:
+- ✅ Clean, documented code
+- ✅ Comprehensive error handling
+- ✅ Security-reviewed implementation
+- ✅ Test coverage
+
+## Reflection Questions
+
+1. What context was most important to provide?
+2. Where did you need to correct AI suggestions?
+3. What security issues were initially missed?
+4. How would you improve the workflow?
+""",
+                    has_assessment=True,
+                ),
+            ]
+        )
+        self.courses[ai_dev_course.id] = ai_dev_course
+
     def get_course(self, course_id: str) -> Optional[Course]:
         """Get a course by ID"""
         return self.courses.get(course_id)
