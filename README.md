@@ -65,6 +65,7 @@ MeshForge is a **Network Operations Center (NOC)** for heterogeneous off-grid me
 - [Interfaces](#interfaces)
 - [Features](#features)
 - [Frequency Slot Calculator](#frequency-slot-calculator)
+- [RF Engineering Tools](#rf-engineering-tools)
 - [Gateway Diagnostic Wizard](#gateway-diagnostic-wizard)
 - [Plugin System](#plugin-system)
 - [Lightweight Monitor (No Sudo)](#lightweight-monitor-no-sudo)
@@ -424,6 +425,84 @@ def djb2_hash(channel_name):
 slot = djb2_hash(channel_name) % num_channels
 frequency = freq_start + (bandwidth / 2000) + (slot * bandwidth / 1000)
 ```
+
+---
+
+## RF Engineering Tools
+
+RF engineering encompasses simulation software, test instruments, and analysis tools for designing wireless systems. MeshForge provides **field-ready RF analysis** for mesh network planning:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     RF ENGINEERING TOOLKIT                           │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│  PROPAGATION ANALYSIS          LINK BUDGET              PLANNING     │
+│  ┌───────────────────┐        ┌─────────────┐        ┌─────────────┐│
+│  │ • Line of Sight   │        │ • FSPL calc │        │ • Freq slot ││
+│  │ • Fresnel zones   │        │ • Path loss │        │ • Channel   ││
+│  │ • Earth curvature │        │ • Fade marg │        │ • Region    ││
+│  │ • Terrain profile │        │ • Link marg │        │ • Bandwidth ││
+│  └───────────────────┘        └─────────────┘        └─────────────┘│
+│                                                                       │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Available Calculations (13 Tested Functions)
+
+| Function | Formula | Use Case |
+|----------|---------|----------|
+| **Haversine Distance** | Great-circle distance | Node-to-node range |
+| **Fresnel Radius** | `17.3 × √(d/4f)` meters | Clearance planning |
+| **Free Space Path Loss** | `20log(d) + 20log(f) + 20log(4π/c)` dB | Link budget |
+| **Earth Bulge** | `d²/12.75` meters | Long-distance LOS |
+
+### Line of Sight Calculator
+
+Integrated LOS analysis with elevation data:
+
+```bash
+# From GUI: Radio Config → RF Tools → Line of Sight
+
+# Enter two coordinates:
+#   Point A: 19.7297, -155.0900 (Hilo)
+#   Point B: 21.3069, -157.8583 (Honolulu)
+
+# Results:
+#   Distance:     337.2 km
+#   Earth Bulge:  2,234 m (at midpoint)
+#   Fresnel 60%:  89.3 m (915 MHz)
+#   FSPL:         128.4 dB
+#   Status:       OBSTRUCTED (terrain blocks LOS)
+```
+
+### Visualization
+
+MeshForge generates **elevation profile charts** showing:
+- Terrain elevation along path
+- Line of sight (direct path)
+- 60% Fresnel zone (minimum clearance)
+- Earth curvature effect
+- Obstruction points
+
+### Integration with Site Planner
+
+For advanced coverage modeling, MeshForge links to [site.meshtastic.org](https://site.meshtastic.org/):
+- ITM/Longley-Rice propagation model
+- NASA SRTM terrain data
+- Coverage heatmaps
+- Multi-node network planning
+
+### What MeshForge Doesn't Replace
+
+MeshForge provides **field planning tools**, not full RF simulation. For advanced work:
+
+| Need | Professional Tool |
+|------|-------------------|
+| Antenna design | HFSS, CST, FEKO |
+| Circuit simulation | ADS, AWR, Keysight |
+| Lab measurements | VNA, spectrum analyzer |
+| EMC compliance | Pre-compliance test gear |
 
 ---
 
