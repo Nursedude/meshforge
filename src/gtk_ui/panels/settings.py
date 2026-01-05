@@ -1,5 +1,5 @@
 """
-Settings Panel - Application preferences and theme settings
+Settings Panel - Application preferences, theme settings, and simulation controls
 """
 
 import gi
@@ -11,9 +11,24 @@ from pathlib import Path
 
 
 class SettingsPanel(Gtk.Box):
-    """Settings panel with theme and preference options"""
+    """Settings panel with theme, preferences, and simulation options"""
 
     SETTINGS_FILE = Path.home() / ".config" / "meshforge" / "settings.json"
+
+    # Theme options
+    THEME_OPTIONS = [
+        ("system", "System Default"),
+        ("dark", "Dark"),
+        ("light", "Light"),
+    ]
+
+    # Simulation mode options
+    SIMULATION_OPTIONS = [
+        ("disabled", "Disabled (Real Hardware)"),
+        ("rf_only", "RF Simulation Only"),
+        ("mesh_network", "Mesh Network Simulation"),
+        ("full", "Full Hardware Simulation"),
+    ]
 
     def __init__(self, main_window):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=15)
@@ -31,11 +46,14 @@ class SettingsPanel(Gtk.Box):
     def _load_settings(self):
         """Load settings from file"""
         defaults = {
-            "dark_mode": True,  # Default to dark
+            "theme": "dark",        # "system", "dark", "light"
+            "dark_mode": True,      # Legacy, kept for compatibility
             "auto_refresh": True,
             "refresh_interval": 5,
             "show_node_ids": True,
             "compact_mode": False,
+            "simulation_mode": "disabled",
+            "simulation_preset": "hawaii",  # "hawaii" or "generic"
         }
 
         try:
@@ -65,7 +83,7 @@ class SettingsPanel(Gtk.Box):
         title.set_xalign(0)
         self.append(title)
 
-        subtitle = Gtk.Label(label="Configure MeshForge appearance and behavior")
+        subtitle = Gtk.Label(label="Configure MeshForge appearance, behavior, and simulation")
         subtitle.set_xalign(0)
         subtitle.add_css_class("dim-label")
         self.append(subtitle)
@@ -78,7 +96,9 @@ class SettingsPanel(Gtk.Box):
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=15)
         content.set_margin_top(15)
 
+        # ══════════════════════════════════════════════════════════════
         # Appearance Section
+        # ══════════════════════════════════════════════════════════════
         appearance_frame = Gtk.Frame()
         appearance_frame.set_label("Appearance")
         appearance_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -87,9 +107,33 @@ class SettingsPanel(Gtk.Box):
         appearance_box.set_margin_top(10)
         appearance_box.set_margin_bottom(10)
 
-        # Dark Mode Toggle
+        # Theme Dropdown (replaces simple toggle)
+        theme_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        theme_label = Gtk.Label(label="Theme")
+        theme_label.set_xalign(0)
+        theme_label.set_hexpand(True)
+        theme_row.append(theme_label)
+
+        self.theme_dropdown = Gtk.DropDown()
+        theme_model = Gtk.StringList()
+        for _, display_name in self.THEME_OPTIONS:
+            theme_model.append(display_name)
+        self.theme_dropdown.set_model(theme_model)
+
+        # Set current theme selection
+        current_theme = self._settings.get("theme", "dark")
+        for i, (value, _) in enumerate(self.THEME_OPTIONS):
+            if value == current_theme:
+                self.theme_dropdown.set_selected(i)
+                break
+
+        self.theme_dropdown.connect("notify::selected", self._on_theme_changed)
+        theme_row.append(self.theme_dropdown)
+        appearance_box.append(theme_row)
+
+        # Dark Mode Toggle (legacy, kept for quick access)
         dark_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        dark_label = Gtk.Label(label="Dark Mode")
+        dark_label = Gtk.Label(label="Force Dark Mode")
         dark_label.set_xalign(0)
         dark_label.set_hexpand(True)
         dark_row.append(dark_label)
@@ -107,19 +151,88 @@ class SettingsPanel(Gtk.Box):
         compact_label.set_hexpand(True)
         compact_row.append(compact_label)
 
-        compact_desc = Gtk.Label(label="Reduce spacing for smaller screens")
-        compact_desc.add_css_class("dim-label")
-        compact_desc.set_xalign(0)
-
         self.compact_switch = Gtk.Switch()
         self.compact_switch.set_active(self._settings.get("compact_mode", False))
         self.compact_switch.connect("notify::active", self._on_compact_mode_changed)
         compact_row.append(self.compact_switch)
         appearance_box.append(compact_row)
+
+        compact_desc = Gtk.Label(label="Reduce spacing for smaller screens (DevTerm, uConsole)")
+        compact_desc.add_css_class("dim-label")
+        compact_desc.set_xalign(0)
         appearance_box.append(compact_desc)
 
         appearance_frame.set_child(appearance_box)
         content.append(appearance_frame)
+
+        # ══════════════════════════════════════════════════════════════
+        # Simulation Section (NEW)
+        # ══════════════════════════════════════════════════════════════
+        sim_frame = Gtk.Frame()
+        sim_frame.set_label("Simulation Mode")
+        sim_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        sim_box.set_margin_start(15)
+        sim_box.set_margin_end(15)
+        sim_box.set_margin_top(10)
+        sim_box.set_margin_bottom(10)
+
+        # Simulation mode info
+        sim_info = Gtk.Label(label="Test RF and mesh features without physical hardware")
+        sim_info.add_css_class("dim-label")
+        sim_info.set_xalign(0)
+        sim_box.append(sim_info)
+
+        # Simulation Mode Dropdown
+        sim_mode_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        sim_mode_label = Gtk.Label(label="Mode")
+        sim_mode_label.set_xalign(0)
+        sim_mode_label.set_hexpand(True)
+        sim_mode_row.append(sim_mode_label)
+
+        self.sim_mode_dropdown = Gtk.DropDown()
+        sim_model = Gtk.StringList()
+        for _, display_name in self.SIMULATION_OPTIONS:
+            sim_model.append(display_name)
+        self.sim_mode_dropdown.set_model(sim_model)
+
+        # Set current simulation mode
+        current_sim = self._settings.get("simulation_mode", "disabled")
+        for i, (value, _) in enumerate(self.SIMULATION_OPTIONS):
+            if value == current_sim:
+                self.sim_mode_dropdown.set_selected(i)
+                break
+
+        self.sim_mode_dropdown.connect("notify::selected", self._on_simulation_mode_changed)
+        sim_mode_row.append(self.sim_mode_dropdown)
+        sim_box.append(sim_mode_row)
+
+        # Simulation Preset (Hawaii vs Generic)
+        preset_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        preset_label = Gtk.Label(label="Node Preset")
+        preset_label.set_xalign(0)
+        preset_label.set_hexpand(True)
+        preset_row.append(preset_label)
+
+        self.preset_dropdown = Gtk.DropDown()
+        preset_model = Gtk.StringList()
+        preset_model.append("Hawaii Islands (8 nodes)")
+        preset_model.append("Generic Test (5 nodes)")
+        self.preset_dropdown.set_model(preset_model)
+
+        current_preset = self._settings.get("simulation_preset", "hawaii")
+        self.preset_dropdown.set_selected(0 if current_preset == "hawaii" else 1)
+        self.preset_dropdown.connect("notify::selected", self._on_preset_changed)
+        preset_row.append(self.preset_dropdown)
+        sim_box.append(preset_row)
+
+        # Simulation status indicator
+        self.sim_status_label = Gtk.Label()
+        self.sim_status_label.set_xalign(0)
+        self._update_simulation_status()
+        sim_box.append(self.sim_status_label)
+
+        sim_frame.set_child(sim_box)
+        content.append(sim_frame)
 
         # Dashboard Section
         dashboard_frame = Gtk.Frame()
@@ -311,26 +424,128 @@ class SettingsPanel(Gtk.Box):
         self._settings["show_node_ids"] = switch.get_active()
         self._save_settings()
 
+    def _on_theme_changed(self, dropdown, _):
+        """Handle theme dropdown change"""
+        selected = dropdown.get_selected()
+        if selected < len(self.THEME_OPTIONS):
+            theme_value, theme_name = self.THEME_OPTIONS[selected]
+            self._settings["theme"] = theme_value
+            self._save_settings()
+
+            # Apply theme
+            style_manager = Adw.StyleManager.get_default()
+            if theme_value == "system":
+                style_manager.set_color_scheme(Adw.ColorScheme.DEFAULT)
+            elif theme_value == "dark":
+                style_manager.set_color_scheme(Adw.ColorScheme.FORCE_DARK)
+                self.dark_switch.set_active(True)
+            else:  # light
+                style_manager.set_color_scheme(Adw.ColorScheme.FORCE_LIGHT)
+                self.dark_switch.set_active(False)
+
+            self.main_window.set_status_message(f"Theme: {theme_name}")
+
+    def _on_simulation_mode_changed(self, dropdown, _):
+        """Handle simulation mode change"""
+        selected = dropdown.get_selected()
+        if selected < len(self.SIMULATION_OPTIONS):
+            mode_value, mode_name = self.SIMULATION_OPTIONS[selected]
+            self._settings["simulation_mode"] = mode_value
+            self._save_settings()
+
+            # Apply simulation mode
+            self._apply_simulation_mode(mode_value)
+            self._update_simulation_status()
+            self.main_window.set_status_message(f"Simulation: {mode_name}")
+
+    def _on_preset_changed(self, dropdown, _):
+        """Handle simulation preset change"""
+        selected = dropdown.get_selected()
+        preset = "hawaii" if selected == 0 else "generic"
+        self._settings["simulation_preset"] = preset
+        self._save_settings()
+
+        # Update simulator preset if running
+        try:
+            from utils.simulator import get_mesh_simulator
+            sim = get_mesh_simulator()
+            if sim.is_enabled:
+                sim.set_preset(use_hawaii=(preset == "hawaii"))
+                self._update_simulation_status()
+        except ImportError:
+            pass
+
+        self.main_window.set_status_message(f"Preset: {'Hawaii Islands' if preset == 'hawaii' else 'Generic Test'}")
+
+    def _apply_simulation_mode(self, mode: str):
+        """Apply simulation mode to the simulator"""
+        try:
+            from utils.simulator import get_mesh_simulator, SimulationMode
+
+            sim = get_mesh_simulator()
+            preset = self._settings.get("simulation_preset", "hawaii")
+            sim.set_preset(use_hawaii=(preset == "hawaii"))
+
+            if mode == "disabled":
+                sim.disable()
+            elif mode == "rf_only":
+                sim.enable(SimulationMode.RF_ONLY)
+            elif mode == "mesh_network":
+                sim.enable(SimulationMode.MESH_NETWORK)
+            elif mode == "full":
+                sim.enable(SimulationMode.FULL)
+        except ImportError as e:
+            print(f"[Settings] Could not load simulator: {e}")
+
+    def _update_simulation_status(self):
+        """Update simulation status label"""
+        try:
+            from utils.simulator import get_mesh_simulator, is_simulation_enabled
+
+            if is_simulation_enabled():
+                sim = get_mesh_simulator()
+                node_count = len(sim.get_nodes())
+                self.sim_status_label.set_label(f"Status: Active ({node_count} simulated nodes)")
+                self.sim_status_label.remove_css_class("dim-label")
+                self.sim_status_label.add_css_class("success")
+            else:
+                self.sim_status_label.set_label("Status: Disabled (using real hardware)")
+                self.sim_status_label.remove_css_class("success")
+                self.sim_status_label.add_css_class("dim-label")
+        except ImportError:
+            self.sim_status_label.set_label("Status: Simulator not available")
+            self.sim_status_label.add_css_class("dim-label")
+
     def _on_reset_defaults(self, button):
         """Reset all settings to defaults"""
         def do_reset(confirmed):
             if confirmed:
                 self._settings = {
+                    "theme": "dark",
                     "dark_mode": True,
                     "auto_refresh": True,
                     "refresh_interval": 5,
                     "show_node_ids": True,
                     "compact_mode": False,
+                    "simulation_mode": "disabled",
+                    "simulation_preset": "hawaii",
                 }
                 self._save_settings()
                 self._apply_settings()
 
                 # Update UI
+                self.theme_dropdown.set_selected(1)  # Dark
                 self.dark_switch.set_active(True)
                 self.compact_switch.set_active(False)
                 self.refresh_switch.set_active(True)
                 self.interval_spin.set_value(5)
                 self.nodeid_switch.set_active(True)
+                self.sim_mode_dropdown.set_selected(0)  # Disabled
+                self.preset_dropdown.set_selected(0)  # Hawaii
+
+                # Disable simulation
+                self._apply_simulation_mode("disabled")
+                self._update_simulation_status()
 
                 self.main_window.set_status_message("Settings reset to defaults")
 
