@@ -298,9 +298,9 @@ logger.error("Error occurred")
 
 See the `examples/` directory:
 
-- `rf_calculator/` - RF calculation tools
-- `band_plan/` - Frequency reference
-- `link_budget/` - Link budget analysis
+- `rf_calculator/` - RF calculation tools (FSPL, EIRP, Link Budget)
+- `band_plan/` - Frequency reference (ISM, Amateur, Meshtastic presets)
+- `ai_assistant/` - AI development assistant (code review, debugging, security analysis)
 
 ---
 

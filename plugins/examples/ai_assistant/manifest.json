@@ -1,0 +1,45 @@
+{
+    "id": "com.meshforge.ai_assistant",
+    "name": "AI Development Assistant",
+    "version": "1.0.0",
+    "description": "AI-powered coding, debugging, and code review assistant for mesh development",
+    "author": "MeshForge Team",
+    "type": "panel",
+    "entry_point": "main.py",
+    "min_meshforge_version": "1.0.0",
+    "homepage": "https://github.com/meshforge/plugins",
+    "license": "MIT",
+    "icon": "system-run-symbolic",
+    "category": "Development",
+    "tags": ["ai", "coding", "debugging", "security", "review", "assistant"],
+    "dependencies": [],
+    "permissions": ["file_read", "file_write", "network"],
+    "premium": false,
+    "settings_schema": {
+        "context_project": {
+            "type": "string",
+            "default": "meshforge",
+            "label": "Project Context",
+            "description": "Project name for AI context"
+        },
+        "security_level": {
+            "type": "choice",
+            "choices": ["standard", "strict", "paranoid"],
+            "default": "strict",
+            "label": "Security Review Level",
+            "description": "How strict security checks should be"
+        },
+        "auto_review": {
+            "type": "boolean",
+            "default": true,
+            "label": "Auto Security Review",
+            "description": "Automatically review generated code for security issues"
+        },
+        "show_suggestions": {
+            "type": "boolean",
+            "default": true,
+            "label": "Show Improvement Suggestions",
+            "description": "Display code improvement suggestions"
+        }
+    }
+}
