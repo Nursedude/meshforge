@@ -21,10 +21,94 @@ import shutil
 import subprocess
 import argparse
 import signal
+import threading
+import logging
+import warnings
 from pathlib import Path
 
 # PID file for daemon management
 PID_FILE = Path('/tmp/meshtasticd-manager.pid')
+
+
+def setup_error_suppression():
+    """
+    Suppress noisy errors from the meshtastic library.
+    These occur when the connection drops and heartbeat threads crash.
+    """
+    # Suppress threading exceptions from meshtastic heartbeat threads
+    original_excepthook = threading.excepthook
+
+    def quiet_threading_excepthook(args):
+        # Suppress BrokenPipeError and OSError from meshtastic
+        if args.exc_type in (BrokenPipeError, OSError, ConnectionResetError):
+            exc_str = str(args.exc_value)
+            # Only suppress known meshtastic errors
+            if any(x in exc_str for x in ['Broken pipe', 'Connection reset', 'Errno 32', 'Errno 104']):
+                # Silently ignore - these are expected when connection drops
+                return
+        # Let other exceptions through to the original handler
+        original_excepthook(args)
+
+    threading.excepthook = quiet_threading_excepthook
+
+    # Suppress meshtastic library logging noise
+    for logger_name in ['meshtastic', 'meshtastic.mesh_interface', 'meshtastic.stream_interface',
+                        'meshtastic.tcp_interface', 'meshtastic.serial_interface']:
+        logging.getLogger(logger_name).setLevel(logging.ERROR)
+
+    # Suppress warnings
+    warnings.filterwarnings('ignore', category=DeprecationWarning, module='meshtastic')
+    warnings.filterwarnings('ignore', category=RuntimeWarning, module='meshtastic')
+
+    # Suppress "Connection lost" prints by patching the interface
+    # (the library prints these directly to stdout)
+    _setup_output_filter()
+
+
+def _setup_output_filter():
+    """
+    Filter noisy stdout/stderr messages from meshtastic library.
+    The library prints directly to stdout without using logging.
+    """
+    import io
+
+    class FilteredWriter:
+        """Wrapper that filters out noisy meshtastic messages"""
+
+        SUPPRESS_PATTERNS = [
+            'Connection lost',
+            'Connection failed',
+            'Unexpected OSError',
+            'terminating meshtastic reader',
+            'BrokenPipeError',
+            'Connection reset by peer',
+            'Errno 104',
+            'Errno 32',
+        ]
+
+        def __init__(self, original):
+            self._original = original
+            self._encoding = getattr(original, 'encoding', 'utf-8')
+
+        def write(self, text):
+            # Filter out noisy meshtastic messages
+            if text and isinstance(text, str):
+                for pattern in self.SUPPRESS_PATTERNS:
+                    if pattern in text:
+                        return len(text)  # Pretend we wrote it
+            return self._original.write(text)
+
+        def flush(self):
+            return self._original.flush()
+
+        def __getattr__(self, name):
+            return getattr(self._original, name)
+
+    # Only filter if stdout/stderr are regular streams
+    if hasattr(sys.stdout, 'write') and not isinstance(sys.stdout, FilteredWriter):
+        sys.stdout = FilteredWriter(sys.stdout)
+    if hasattr(sys.stderr, 'write') and not isinstance(sys.stderr, FilteredWriter):
+        sys.stderr = FilteredWriter(sys.stderr)
 
 
 def check_display():
@@ -316,6 +400,9 @@ def main():
     # This prevents: "Unable to acquire the address of the accessibility bus"
     if 'GTK_A11Y' not in os.environ:
         os.environ['GTK_A11Y'] = 'none'
+
+    # Suppress noisy meshtastic library errors (connection drops, heartbeat failures)
+    setup_error_suppression()
 
     # Add src to path
     src_dir = os.path.dirname(os.path.abspath(__file__))
