@@ -1,19 +1,25 @@
 # MeshForge 🤙
 
 ```
-╔╦╗╔═╗╔═╗╦ ╦╔═╗╔═╗╦═╗╔═╗╔═╗
-║║║║╣ ╚═╗╠═╣╠╣ ║ ║╠╦╝║ ╦║╣
-╩ ╩╚═╝╚═╝╩ ╩╚  ╚═╝╩╚═╚═╝╚═╝
- LoRa Mesh Network Development & Operations Suite
+    ╔══════════════════════════════════════════════════════════════╗
+    ║  ███╗   ███╗███████╗███████╗██╗  ██╗███████╗ ██████╗ ██████╗ ██████╗ ███████╗  ║
+    ║  ████╗ ████║██╔════╝██╔════╝██║  ██║██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝  ║
+    ║  ██╔████╔██║█████╗  ███████╗███████║█████╗  ██║   ██║██████╔╝██║  ███╗█████╗    ║
+    ║  ██║╚██╔╝██║██╔══╝  ╚════██║██╔══██║██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝    ║
+    ║  ██║ ╚═╝ ██║███████╗███████║██║  ██║██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗  ║
+    ║  ╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝  ║
+    ║                                                                                   ║
+    ║           LoRa Mesh Network Development & Operations Suite                        ║
+    ╚══════════════════════════════════════════════════════════════╝
 ```
 
 <p align="center">
-  <img src="assets/shaka-simple.svg" alt="Shaka" width="48" height="48"/>
+  <img src="assets/shaka-simple.svg" alt="Shaka" width="64" height="64"/>
+  <br/>
+  <strong>Build. Test. Deploy. Bridge. Monitor.</strong>
 </p>
 
-**Build. Test. Deploy. Bridge. Monitor.**
-
-[![Version](https://img.shields.io/badge/version-0.4.3--beta-blue.svg)](https://github.com/Nursedude/meshforge)
+[![Version](https://img.shields.io/badge/version-4.3.0-blue.svg)](https://github.com/Nursedude/meshforge)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-yellow.svg)](https://python.org)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20Linux-orange.svg)](https://www.raspberrypi.org/)
@@ -61,6 +67,8 @@ MeshForge is a **Network Operations Center (NOC)** for heterogeneous off-grid me
 - [What is MeshForge?](#what-is-meshforge)
 - [Support Levels](#support-levels)
 - [RNS-Meshtastic Gateway](#rns-meshtastic-gateway)
+- [AREDN Integration](#aredn-integration)
+- [MeshForge University](#meshforge-university)
 - [Quick Start](#quick-start)
 - [Interfaces](#interfaces)
 - [Features](#features)
@@ -68,6 +76,7 @@ MeshForge is a **Network Operations Center (NOC)** for heterogeneous off-grid me
 - [RF Engineering Tools](#rf-engineering-tools)
 - [Gateway Diagnostic Wizard](#gateway-diagnostic-wizard)
 - [Plugin System](#plugin-system)
+- [Auto-Claude Review System](#auto-claude-review-system)
 - [Lightweight Monitor (No Sudo)](#lightweight-monitor-no-sudo)
 - [Simulation Mode](#simulation-mode)
 - [Supported Hardware](#supported-hardware)
@@ -354,6 +363,129 @@ sudo python3 src/main_gtk.py
 # 6. Click "Configure Gateway" to set bridge parameters
 # 7. Click "Start" to activate the gateway
 # 8. View unified nodes in "Node Map" panel
+```
+
+---
+
+## AREDN Integration
+
+MeshForge provides **comprehensive AREDN (Amateur Radio Emergency Data Network)** integration for high-bandwidth mesh networking on amateur radio frequencies.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      AREDN INTEGRATION                               │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│   ┌───────────────┐    ┌───────────────┐    ┌───────────────┐       │
+│   │   Hardware    │    │   MikroTik    │    │   Network     │       │
+│   │   Database    │    │   Config      │    │   Simulator   │       │
+│   │   (10+ devs)  │    │   Wizard      │    │   (RF Model)  │       │
+│   └───────┬───────┘    └───────┬───────┘    └───────┬───────┘       │
+│           │                    │                    │               │
+│           └────────────────────┴────────────────────┘               │
+│                               │                                      │
+│                    ┌──────────┴──────────┐                          │
+│                    │  AREDN Advanced     │                          │
+│                    │  Configuration      │                          │
+│                    │  Plugin             │                          │
+│                    └─────────────────────┘                          │
+│                                                                       │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Supported AREDN Hardware
+
+| Manufacturer | Models | Band | Max Power |
+|--------------|--------|------|-----------|
+| **MikroTik** | hAP ac3, hAP ac2, hAP ac lite, mANTBox 52, LHG 5, SXTsq 5 | 5GHz | 25 dBm |
+| **Ubiquiti** | NanoStation M5, Rocket M5, LiteBeam 5AC | 5GHz | 27 dBm |
+| **GL.iNet** | AR750S (Slate) | 2.4/5GHz | 20 dBm |
+
+### Features
+
+| Feature | Description |
+|---------|-------------|
+| **Hardware Database** | 10+ AREDN-compatible devices with full specifications |
+| **MikroTik Config Wizard** | Generate UCI setup scripts for MikroTik routers |
+| **Network Simulator** | Plan network topology with RF propagation modeling |
+| **Link Budget Calculator** | FSPL-based link quality estimation |
+| **Callsign Integration** | Amateur radio callsign management for Part 97 compliance |
+
+### AREDN Advanced Plugin
+
+The `aredn_advanced` plugin provides a full GTK4 interface:
+
+```python
+# Plugin location: plugins/examples/aredn_advanced/
+# Features:
+#   - Hardware Database Browser with filtering
+#   - MikroTik Configuration Generator (UCI commands)
+#   - Network Topology Simulation
+#   - Link Budget Calculator
+```
+
+---
+
+## MeshForge University
+
+MeshForge includes an **integrated learning platform** with courses on mesh networking, RF engineering, and regulatory compliance.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     MESHFORGE UNIVERSITY                             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│  📚 COURSES                                                          │
+│  ├── 1. Introduction to Meshtastic                                   │
+│  ├── 2. Understanding LoRa Technology                                │
+│  ├── 3. Mesh Network Architecture                                    │
+│  ├── 4. RF Propagation Fundamentals                                  │
+│  ├── 5. Advanced Deployment Strategies                               │
+│  ├── 6. Security Best Practices                                      │
+│  ├── 7. Troubleshooting Guide                                        │
+│  ├── 8. Building Custom Hardware                                     │
+│  └── 9. Amateur Radio Compliance & Part 97  ⭐ NEW                   │
+│                                                                       │
+│  🎯 FEATURES                                                         │
+│  • Progress tracking with completion percentage                      │
+│  • Interactive quizzes and hands-on labs                             │
+│  • Difficulty levels: Beginner → Intermediate → Advanced             │
+│  • Estimated time for each course                                    │
+│                                                                       │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Amateur Radio Compliance Course
+
+The **Amateur Radio Compliance & Part 97** course covers FCC regulations for HAM operators:
+
+| Lesson | Topic | Key Content |
+|--------|-------|-------------|
+| 1 | License Classes | Technician, General, Extra privileges |
+| 2 | Encryption Rules | Part 97.113(a)(4) prohibition, exceptions |
+| 3 | Station Identification | Part 97.119 - 10-minute ID requirement |
+| 4 | Frequency Allocations | 70cm, 33cm, 23cm, 13cm band plans |
+| 5 | ARES & RACES | Emergency communications protocols |
+| 6 | Building Compliant Solutions | Dual-mode operation with MeshForge |
+
+### Meshtastic Dual-Mode Operation
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    DUAL-MODE OPERATION                               │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│   ISM BAND (Default)              HAM BAND (Licensed)                │
+│   ┌─────────────────┐            ┌─────────────────┐                │
+│   │ • Encryption OK │            │ • NO encryption │                │
+│   │ • 915 MHz (US)  │            │ • 70cm, 33cm,   │                │
+│   │ • No license    │            │   23cm, 13cm    │                │
+│   │ • Power limited │            │ • Higher power  │                │
+│   └─────────────────┘            └─────────────────┘                │
+│                                                                       │
+│   Use MeshForge to configure appropriate mode for your use case      │
+│                                                                       │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -679,6 +811,71 @@ MeshCore is an **alternative mesh protocol** with different design goals:
 
 **Note**: MeshCore and Meshtastic are **not directly compatible** at the radio level, but both can use **Reticulum (RNS)** as a unifying transport layer.
 
+### Example Plugins
+
+MeshForge includes several ready-to-use example plugins in `plugins/examples/`:
+
+| Plugin | Type | Description |
+|--------|------|-------------|
+| **aredn_advanced** | Panel | AREDN hardware database, MikroTik config, network simulation |
+| **rf_calculator** | Tool | Essential RF calculations (FSPL, EIRP, sensitivity) |
+| **band_plan** | Tool | Amateur radio band plan reference |
+| **ai_assistant** | Integration | AI-powered mesh network assistant |
+
+---
+
+## Auto-Claude Review System
+
+MeshForge includes an **automated code review system** that ensures code quality and security through AI-powered analysis.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    AUTO-CLAUDE REVIEW SYSTEM                         │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│  🔍 REVIEW PRINCIPLES                                                │
+│  ├── Security First: No shell=True, validate all inputs              │
+│  ├── Error Handling: Specific exceptions, no bare except             │
+│  ├── Testing: TDD approach, verify before commit                     │
+│  ├── Documentation: Clear docstrings and type hints                  │
+│  └── Architecture: Single responsibility, clean separation           │
+│                                                                       │
+│  📊 AUTOMATED CHECKS                                                 │
+│  • Security vulnerability scanning                                   │
+│  • Code complexity analysis                                          │
+│  • Import validation and dead code detection                         │
+│  • Style consistency verification                                    │
+│                                                                       │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Security Review Standards
+
+| Category | Requirement | Implementation |
+|----------|-------------|----------------|
+| **Subprocess** | No `shell=True` | Use `subprocess.run()` with list args |
+| **Input Validation** | Sanitize all user input | Regex validation, path checking |
+| **Exception Handling** | Specific exception types | No bare `except:` clauses |
+| **Secrets** | No hardcoded credentials | Environment variables only |
+| **Dependencies** | Minimal attack surface | Only necessary packages |
+
+### Using the Review System
+
+```python
+from utils.auto_review import CodeReviewer
+
+reviewer = CodeReviewer()
+
+# Review a file
+issues = reviewer.review_file("src/new_feature.py")
+
+# Review entire codebase
+report = reviewer.review_codebase("src/")
+
+# Generate security report
+security = reviewer.security_audit()
+```
+
 ---
 
 ## Lightweight Monitor (No Sudo)
@@ -964,7 +1161,9 @@ meshforge/
 │   │   │   ├── dashboard.py  # System dashboard
 │   │   │   ├── radio_config.py # Radio configuration + freq calculator
 │   │   │   ├── rns.py        # RNS/Reticulum management
+│   │   │   ├── aredn.py      # AREDN mesh network panel
 │   │   │   ├── map.py        # Unified node map (RNS + Meshtastic)
+│   │   │   ├── university.py # MeshForge University learning panel
 │   │   │   ├── hardware.py   # Hardware detection
 │   │   │   ├── install.py    # Installation panel
 │   │   │   └── ...
@@ -976,6 +1175,10 @@ meshforge/
 │   │   ├── rns_bridge.py     # RNS-Meshtastic gateway bridge
 │   │   ├── node_tracker.py   # Unified node tracking
 │   │   └── config.py         # Gateway configuration
+│   │
+│   ├── university/
+│   │   ├── courses.py        # Course definitions (9 courses)
+│   │   └── progress.py       # Learning progress tracking
 │   │
 │   ├── config/
 │   │   ├── hardware.py       # Hardware detection logic
@@ -1000,12 +1203,22 @@ meshforge/
 │   │   ├── plugins.py        # Plugin architecture
 │   │   ├── device_scanner.py # USB/Serial port scanner (tested)
 │   │   ├── gateway_diagnostic.py  # Gateway setup wizard
-│   │   └── simulator.py      # RF & mesh hardware simulator (tested)
+│   │   ├── simulator.py      # RF & mesh hardware simulator (tested)
+│   │   ├── aredn.py          # AREDN mesh network utilities
+│   │   ├── aredn_hardware.py # AREDN hardware database & config
+│   │   └── auto_review.py    # Auto-Claude code review system
 │   │
 │   └── plugins/              # Extensible plugin system
 │       ├── mqtt_bridge.py    # MQTT integration (stub)
 │       ├── meshcore.py       # MeshCore protocol (stub)
 │       └── meshing_around.py # Bot framework (stub)
+│
+├── plugins/
+│   └── examples/             # Example plugins ready to use
+│       ├── aredn_advanced/   # AREDN advanced configuration panel
+│       ├── rf_calculator/    # RF calculation tools
+│       ├── band_plan/        # Amateur radio band plan reference
+│       └── ai_assistant/     # AI-powered network assistant
 │
 ├── tests/
 │   ├── test_security.py      # Security validation tests (24)
@@ -1017,7 +1230,7 @@ meshforge/
 │
 ├── assets/
 │   ├── shaka.svg             # Shaka icon (detailed)
-│   └── shaka-simple.svg      # Shaka icon (simple)
+│   └── shaka-simple.svg      # Shaka icon (simple, gradient)
 │
 ├── web/
 │   ├── node_map.html         # Interactive Leaflet map
@@ -1031,6 +1244,39 @@ meshforge/
 ---
 
 ## Version History
+
+### v4.3.0 (2026-01-05) - AREDN Integration & Amateur Radio Compliance
+
+- **NEW**: AREDN (Amateur Radio Emergency Data Network) Integration
+  - Hardware database with 10+ supported devices (MikroTik, Ubiquiti, GL.iNet)
+  - MikroTik configuration wizard generating UCI setup scripts
+  - Network simulator with RF propagation modeling (FSPL)
+  - Link budget calculator for planning deployments
+  - Callsign integration for Part 97 compliance
+- **NEW**: AREDN Advanced Configuration Plugin
+  - Hardware Database Browser with filtering by manufacturer/band
+  - MikroTik Configuration Generator with validation
+  - Network Topology Simulation with Graphviz export
+  - Link Budget Calculator with distance/quality estimation
+- **NEW**: Amateur Radio Compliance & Part 97 Course
+  - License classes overview (Technician, General, Extra)
+  - Part 97.113(a)(4) encryption rules and exceptions
+  - Part 97.119 station identification requirements
+  - Frequency allocations for 70cm, 33cm, 23cm, 13cm bands
+  - ARES vs RACES emergency communications protocols
+  - Building compliant Meshtastic solutions with dual-mode operation
+- **NEW**: Auto-Claude Code Review System
+  - Automated security vulnerability scanning
+  - Code complexity analysis
+  - Import validation and dead code detection
+  - Style consistency verification
+- **NEW**: Example Plugins Directory
+  - `aredn_advanced` - Full AREDN configuration panel
+  - `rf_calculator` - Essential RF calculations
+  - `band_plan` - Amateur radio band plan reference
+  - `ai_assistant` - AI-powered network assistant
+- **IMPROVED**: README with better graphics and comprehensive documentation
+- **IMPROVED**: Shaka icon with gradient for better visibility
 
 ### v4.2.0 (2026-01-03) - Unified Node Map & RNS Integration
 - **NEW**: Unified Node Map Panel
