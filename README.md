@@ -167,6 +167,7 @@ Plugin architecture is complete with 15 tests. These plugins have **stub impleme
 | LXMF/NomadNet UI | High | RNS messaging integration |
 | RNODE detection | Medium | LoRa hardware for RNS |
 | Node flashing | Medium | Flash firmware to USB devices |
+| **NanoVNA plugin** | Medium | Antenna SWR, S11/S21, Smith chart |
 | MQTT dashboard | Low | Real-time metrics via MQTT |
 | I2P overlay | Low | Anonymous network transport |
 
@@ -511,6 +512,7 @@ These require network access or external dependencies—good candidates for **op
 |------|--------|-------|
 | [site.meshtastic.org](https://site.meshtastic.org/) | Link only | ITM/Longley-Rice, coverage maps |
 | Open-Elevation API | Optional | Terrain profiles (network required) |
+| **NanoVNA** | 📋 Planned | Antenna tuning, SWR, Smith chart |
 | APRS-IS | 📋 Planned | Position reporting for HAMs |
 
 **Why plugins?** These fail if network is down. Core RF tools work offline.
@@ -519,12 +521,13 @@ These require network access or external dependencies—good candidates for **op
 
 MeshForge provides **field planning tools**, not full RF simulation:
 
-| Need | Professional Tool | Why Not Core? |
-|------|-------------------|---------------|
-| Antenna design | HFSS, CST, FEKO | Complex, licensed software |
-| Circuit simulation | ADS, AWR, Keysight | Hardware-specific |
-| Lab measurements | VNA, spectrum analyzer | Requires physical instruments |
-| EMC compliance | Pre-compliance gear | Regulatory, specialized |
+| Need | Professional Tool | MeshForge Approach |
+|------|-------------------|-------------------|
+| Antenna design | HFSS, CST, FEKO | Out of scope (licensed CAD) |
+| Circuit simulation | ADS, AWR, Keysight | Out of scope (hardware-specific) |
+| Antenna tuning | NanoVNA, PicoVNA | 📋 **Plugin planned** (USB serial) |
+| Spectrum analysis | SDR, TinySA | 📋 Future consideration |
+| EMC compliance | Pre-compliance gear | Out of scope (regulatory) |
 
 ---
 
