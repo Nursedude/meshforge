@@ -297,16 +297,230 @@ def check_processes():
             print_status(description, False, str(e))
 
 
+def check_system_resources():
+    """Check system resources."""
+    print_header("SYSTEM RESOURCES")
+
+    # CPU info
+    try:
+        with open('/proc/cpuinfo') as f:
+            cpuinfo = f.read()
+            model = None
+            for line in cpuinfo.split('\n'):
+                if 'model name' in line or 'Model' in line:
+                    model = line.split(':')[1].strip()
+                    break
+            if model:
+                print_status("CPU", True, model[:50])
+    except Exception:
+        print_status("CPU", False, "unable to read")
+
+    # Memory
+    try:
+        with open('/proc/meminfo') as f:
+            meminfo = f.read()
+            total = 0
+            available = 0
+            for line in meminfo.split('\n'):
+                if 'MemTotal' in line:
+                    total = int(line.split()[1]) // 1024  # MB
+                elif 'MemAvailable' in line:
+                    available = int(line.split()[1]) // 1024  # MB
+            used = total - available
+            pct = (used / total * 100) if total > 0 else 0
+            ok = pct < 90
+            print_status("Memory", ok, f"{used}MB / {total}MB ({pct:.0f}% used)")
+    except Exception:
+        print_status("Memory", False, "unable to read")
+
+    # Disk space
+    try:
+        result = subprocess.run(['df', '-h', '/'], capture_output=True, text=True, timeout=5)
+        lines = result.stdout.strip().split('\n')
+        if len(lines) >= 2:
+            parts = lines[1].split()
+            if len(parts) >= 5:
+                used_pct = int(parts[4].replace('%', ''))
+                ok = used_pct < 90
+                print_status("Disk space /", ok, f"{parts[2]} used of {parts[1]} ({parts[4]})")
+    except Exception:
+        print_status("Disk space", False, "unable to read")
+
+    # Temperature (Raspberry Pi)
+    try:
+        temp_file = Path('/sys/class/thermal/thermal_zone0/temp')
+        if temp_file.exists():
+            temp_c = int(temp_file.read_text().strip()) / 1000
+            ok = temp_c < 80
+            print_status("CPU Temp", ok, f"{temp_c:.1f}°C")
+    except Exception:
+        pass  # Not all systems have this
+
+
+def check_network_interfaces():
+    """Check network interfaces."""
+    print_header("NETWORK INTERFACES")
+
+    try:
+        result = subprocess.run(['ip', 'addr'], capture_output=True, text=True, timeout=5)
+        lines = result.stdout.strip().split('\n')
+
+        current_iface = None
+        for line in lines:
+            if not line.startswith(' '):
+                # Interface line
+                parts = line.split(':')
+                if len(parts) >= 2:
+                    current_iface = parts[1].strip()
+            elif 'inet ' in line and current_iface:
+                # IPv4 address line
+                parts = line.strip().split()
+                ip = parts[1] if len(parts) >= 2 else 'unknown'
+                if current_iface not in ('lo',):
+                    print_status(current_iface, True, ip)
+    except Exception as e:
+        print_status("Network", False, str(e))
+
+    # Check internet connectivity
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(3)
+        result = sock.connect_ex(('8.8.8.8', 53))
+        sock.close()
+        print_status("Internet", result == 0, "connected" if result == 0 else "no connectivity")
+    except Exception:
+        print_status("Internet", False, "unable to check")
+
+
+def check_spi_gpio():
+    """Check SPI and GPIO interfaces (for LoRa hardware)."""
+    print_header("HARDWARE INTERFACES")
+
+    # SPI devices
+    spi_path = Path('/dev')
+    spi_devices = list(spi_path.glob('spidev*'))
+    if spi_devices:
+        print_status("SPI", True, f"{len(spi_devices)} device(s): {', '.join(d.name for d in spi_devices)}")
+    else:
+        print_status("SPI", False, "no SPI devices found (enable in raspi-config)")
+
+    # I2C devices
+    i2c_devices = list(spi_path.glob('i2c-*'))
+    if i2c_devices:
+        print_status("I2C", True, f"{len(i2c_devices)} bus(es)")
+    else:
+        print_status("I2C", False, "no I2C devices found")
+
+    # GPIO (check if gpiomem available)
+    gpio_mem = Path('/dev/gpiomem')
+    gpio_chip = Path('/dev/gpiochip0')
+    if gpio_mem.exists() or gpio_chip.exists():
+        print_status("GPIO", True, "accessible")
+    else:
+        print_status("GPIO", False, "not accessible")
+
+
+def check_sdr():
+    """Check SDR hardware and software."""
+    print_header("SDR (Software Defined Radio)")
+
+    # Check RTL-SDR
+    rtl_test = shutil.which('rtl_test')
+    if rtl_test:
+        try:
+            result = subprocess.run(['rtl_test', '-t'], capture_output=True, text=True, timeout=5)
+            output = result.stderr + result.stdout
+            if 'Found' in output:
+                print_status("RTL-SDR device", True, "detected")
+            else:
+                print_status("RTL-SDR device", False, "no device found")
+        except subprocess.TimeoutExpired:
+            print_status("RTL-SDR device", True, "detected (test timeout)")
+        except Exception as e:
+            print_status("RTL-SDR", False, str(e))
+    else:
+        print_status("RTL-SDR tools", False, "not installed (apt install rtl-sdr)")
+
+    # Check OpenWebRX
+    openwebrx = shutil.which('openwebrx')
+    if openwebrx:
+        try:
+            result = subprocess.run(['systemctl', 'is-active', 'openwebrx'],
+                                   capture_output=True, text=True, timeout=5)
+            status = result.stdout.strip()
+            print_status("OpenWebRX", status == 'active', status)
+        except Exception:
+            print_status("OpenWebRX", True, "installed")
+    else:
+        print_status("OpenWebRX", False, "not installed")
+
+    # Check GQRX
+    gqrx = shutil.which('gqrx')
+    print_status("GQRX", gqrx is not None, "installed" if gqrx else "not installed")
+
+
+def check_logs():
+    """Check for recent errors in logs."""
+    print_header("RECENT LOG ERRORS")
+
+    log_sources = [
+        ('meshtasticd', ['journalctl', '-u', 'meshtasticd', '-n', '10', '--no-pager', '-p', 'err']),
+        ('rnsd', ['journalctl', '-u', 'rnsd', '-n', '10', '--no-pager', '-p', 'err']),
+    ]
+
+    for name, cmd in log_sources:
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            lines = [l for l in result.stdout.strip().split('\n') if l and '-- No entries --' not in l]
+            if lines:
+                print(f"\n  {name} errors ({len(lines)} recent):")
+                for line in lines[:3]:  # Show first 3
+                    print(f"    {line[:80]}")
+            else:
+                print_status(f"{name} errors", True, "none")
+        except Exception:
+            pass
+
+
+def check_ham_callsign():
+    """Check for ham radio callsign configuration."""
+    print_header("HAM RADIO CONFIG")
+
+    # Check for callsign in various places
+    callsign_found = False
+
+    # Check environment
+    callsign = os.environ.get('CALLSIGN', os.environ.get('HAM_CALLSIGN', ''))
+    if callsign:
+        print_status("Callsign (env)", True, callsign)
+        callsign_found = True
+
+    # Check NomadNet config for identity
+    nomad_config = Path.home() / '.nomadnetwork' / 'config'
+    if nomad_config.exists():
+        try:
+            content = nomad_config.read_text()
+            if 'identity' in content.lower():
+                print_status("NomadNet identity", True, "configured")
+        except Exception:
+            pass
+
+    if not callsign_found:
+        print_status("Callsign", False, "not found in environment (set CALLSIGN=)")
+
+
 def main():
     """Run all diagnostics."""
     print()
     print("MeshForge Diagnostics")
     print("=====================")
+    print("For RF engineers, network operators, and HAMs")
 
     if not check_root():
         print("\nNote: Running without root - some checks may be limited")
         print("      For full diagnostics, run: sudo python3 diagnose.py")
 
+    # Core services and connectivity
     check_services()
     check_serial_ports()
     check_meshtastic_connection()
@@ -315,6 +529,22 @@ def main():
     check_rns_config()
     check_nomadnet()
     check_processes()
+
+    # System health
+    check_system_resources()
+    check_network_interfaces()
+
+    # Hardware interfaces (LoRa)
+    check_spi_gpio()
+
+    # SDR tools
+    check_sdr()
+
+    # Ham radio specific
+    check_ham_callsign()
+
+    # Log analysis
+    check_logs()
 
     print()
     print("=" * 60)

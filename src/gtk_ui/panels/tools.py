@@ -352,6 +352,164 @@ class ToolsPanel(Gtk.Box):
         mudp_frame.set_child(mudp_box)
         content.append(mudp_frame)
 
+        # Config Editor Section
+        cfg_frame = Gtk.Frame()
+        cfg_frame.set_label("Configuration Files (nano)")
+        cfg_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        cfg_box.set_margin_start(15)
+        cfg_box.set_margin_end(15)
+        cfg_box.set_margin_top(10)
+        cfg_box.set_margin_bottom(10)
+
+        cfg_desc = Gtk.Label(label="Edit configuration files in terminal with nano editor")
+        cfg_desc.add_css_class("dim-label")
+        cfg_desc.set_xalign(0)
+        cfg_box.append(cfg_desc)
+
+        # Row 1: Meshtastic configs
+        mesh_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        mesh_row.set_margin_top(5)
+
+        mesh_lbl = Gtk.Label(label="Meshtastic:")
+        mesh_lbl.set_width_chars(12)
+        mesh_lbl.set_xalign(0)
+        mesh_row.append(mesh_lbl)
+
+        mesh_cfg_btn = Gtk.Button(label="config.yaml")
+        mesh_cfg_btn.set_tooltip_text("/etc/meshtasticd/config.yaml")
+        mesh_cfg_btn.connect("clicked", lambda b: self._edit_config("/etc/meshtasticd/config.yaml"))
+        mesh_row.append(mesh_cfg_btn)
+
+        mesh_avail_btn = Gtk.Button(label="available.d/")
+        mesh_avail_btn.set_tooltip_text("Browse /etc/meshtasticd/available.d/")
+        mesh_avail_btn.connect("clicked", lambda b: self._browse_config_dir("/etc/meshtasticd/available.d"))
+        mesh_row.append(mesh_avail_btn)
+
+        mesh_active_btn = Gtk.Button(label="config.d/")
+        mesh_active_btn.set_tooltip_text("Browse /etc/meshtasticd/config.d/")
+        mesh_active_btn.connect("clicked", lambda b: self._browse_config_dir("/etc/meshtasticd/config.d"))
+        mesh_row.append(mesh_active_btn)
+
+        cfg_box.append(mesh_row)
+
+        # Row 2: RNS configs
+        rns_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+
+        rns_lbl = Gtk.Label(label="Reticulum:")
+        rns_lbl.set_width_chars(12)
+        rns_lbl.set_xalign(0)
+        rns_row.append(rns_lbl)
+
+        rns_cfg_btn = Gtk.Button(label="RNS config")
+        rns_cfg_btn.set_tooltip_text("~/.reticulum/config")
+        rns_cfg_btn.connect("clicked", lambda b: self._edit_config_user(".reticulum/config"))
+        rns_row.append(rns_cfg_btn)
+
+        nomad_cfg_btn = Gtk.Button(label="NomadNet config")
+        nomad_cfg_btn.set_tooltip_text("~/.nomadnetwork/config")
+        nomad_cfg_btn.connect("clicked", lambda b: self._edit_config_user(".nomadnetwork/config"))
+        rns_row.append(nomad_cfg_btn)
+
+        rns_iface_btn = Gtk.Button(label="interfaces/")
+        rns_iface_btn.set_tooltip_text("~/.reticulum/interfaces/")
+        rns_iface_btn.connect("clicked", lambda b: self._browse_config_dir_user(".reticulum/interfaces"))
+        rns_row.append(rns_iface_btn)
+
+        cfg_box.append(rns_row)
+
+        # Row 3: MeshForge and system configs
+        app_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+
+        app_lbl = Gtk.Label(label="MeshForge:")
+        app_lbl.set_width_chars(12)
+        app_lbl.set_xalign(0)
+        app_row.append(app_lbl)
+
+        mf_cfg_btn = Gtk.Button(label="settings.json")
+        mf_cfg_btn.set_tooltip_text("~/.config/meshforge/settings.json")
+        mf_cfg_btn.connect("clicked", lambda b: self._edit_config_user(".config/meshforge/settings.json"))
+        app_row.append(mf_cfg_btn)
+
+        hosts_btn = Gtk.Button(label="/etc/hosts")
+        hosts_btn.connect("clicked", lambda b: self._edit_config("/etc/hosts"))
+        app_row.append(hosts_btn)
+
+        fstab_btn = Gtk.Button(label="/etc/fstab")
+        fstab_btn.connect("clicked", lambda b: self._edit_config("/etc/fstab"))
+        app_row.append(fstab_btn)
+
+        cfg_box.append(app_row)
+
+        cfg_frame.set_child(cfg_box)
+        content.append(cfg_frame)
+
+        # SDR / OpenWebRX Section
+        sdr_frame = Gtk.Frame()
+        sdr_frame.set_label("SDR / Software Defined Radio")
+        sdr_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        sdr_box.set_margin_start(15)
+        sdr_box.set_margin_end(15)
+        sdr_box.set_margin_top(10)
+        sdr_box.set_margin_bottom(10)
+
+        # SDR status row
+        sdr_status_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        sdr_status_row.append(Gtk.Label(label="OpenWebRX:"))
+        self.openwebrx_status = Gtk.Label(label="--")
+        sdr_status_row.append(self.openwebrx_status)
+        sdr_status_row.append(Gtk.Label(label="   RTL-SDR:"))
+        self.rtlsdr_status = Gtk.Label(label="--")
+        sdr_status_row.append(self.rtlsdr_status)
+        sdr_box.append(sdr_status_row)
+
+        # SDR buttons row
+        sdr_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        sdr_buttons.set_margin_top(5)
+
+        openwebrx_btn = Gtk.Button(label="Open WebRX")
+        openwebrx_btn.add_css_class("suggested-action")
+        openwebrx_btn.set_tooltip_text("Open OpenWebRX in browser (port 8073)")
+        openwebrx_btn.connect("clicked", self._on_open_webrx)
+        sdr_buttons.append(openwebrx_btn)
+
+        sdr_install_btn = Gtk.Button(label="Install OpenWebRX")
+        sdr_install_btn.connect("clicked", self._on_install_openwebrx)
+        sdr_buttons.append(sdr_install_btn)
+
+        rtl_test_btn = Gtk.Button(label="RTL-SDR Test")
+        rtl_test_btn.set_tooltip_text("Test RTL-SDR device detection")
+        rtl_test_btn.connect("clicked", self._on_rtl_test)
+        sdr_buttons.append(rtl_test_btn)
+
+        sdr_cfg_btn = Gtk.Button(label="SDR Config")
+        sdr_cfg_btn.set_tooltip_text("Edit OpenWebRX config")
+        sdr_cfg_btn.connect("clicked", self._on_sdr_config)
+        sdr_buttons.append(sdr_cfg_btn)
+
+        sdr_box.append(sdr_buttons)
+
+        # SDR tools row
+        sdr_tools = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+
+        gqrx_btn = Gtk.Button(label="GQRX")
+        gqrx_btn.set_tooltip_text("Launch GQRX SDR receiver")
+        gqrx_btn.connect("clicked", self._on_launch_gqrx)
+        sdr_tools.append(gqrx_btn)
+
+        cubicsdr_btn = Gtk.Button(label="CubicSDR")
+        cubicsdr_btn.set_tooltip_text("Launch CubicSDR")
+        cubicsdr_btn.connect("clicked", self._on_launch_cubicsdr)
+        sdr_tools.append(cubicsdr_btn)
+
+        spectrum_btn = Gtk.Button(label="Spectrum Scan")
+        spectrum_btn.set_tooltip_text("Run RTL-SDR power scan")
+        spectrum_btn.connect("clicked", self._on_spectrum_scan)
+        sdr_tools.append(spectrum_btn)
+
+        sdr_box.append(sdr_tools)
+        sdr_frame.set_child(sdr_box)
+        content.append(sdr_frame)
+
         # Tool Manager Section
         mgr_frame = Gtk.Frame()
         mgr_frame.set_label("Tool Manager")
@@ -596,6 +754,9 @@ class ToolsPanel(Gtk.Box):
             GLib.idle_add(self.mudp_status_label.set_text, status)
         except Exception:
             GLib.idle_add(self.mudp_status_label.set_text, "Unknown")
+
+        # Check SDR status
+        self._check_sdr_status()
 
     def _on_ping_test(self, button):
         """Run ping test"""
@@ -1345,3 +1506,347 @@ class ToolsPanel(Gtk.Box):
             self.los_history = self.los_history[-10:]
 
         self._save_los_locations()
+
+    # =====================
+    # Config Editor Methods
+    # =====================
+
+    def _get_real_username(self):
+        """Get the real username even when running as root via sudo"""
+        import os
+        return os.environ.get('SUDO_USER', os.environ.get('USER', 'root'))
+
+    def _get_real_user_home(self):
+        """Get the real user's home directory"""
+        import os
+        real_user = self._get_real_username()
+        if real_user != 'root':
+            return Path(f"/home/{real_user}")
+        return Path.home()
+
+    def _edit_config(self, config_path):
+        """Open a config file in terminal with nano"""
+        import shutil
+        import shlex
+        import os
+
+        config_path = Path(config_path)
+        self._log(f"Opening {config_path} in nano...")
+
+        # Find a terminal emulator
+        real_user = self._get_real_username()
+        is_root = os.geteuid() == 0
+        safe_path = shlex.quote(str(config_path))
+
+        terminals = [
+            ('lxterminal', f'lxterminal -e nano {safe_path}'),
+            ('xfce4-terminal', f'xfce4-terminal -e nano {safe_path}'),
+            ('gnome-terminal', f'gnome-terminal -- nano {safe_path}'),
+            ('konsole', f'konsole -e nano {safe_path}'),
+            ('xterm', f'xterm -e nano {safe_path}'),
+        ]
+
+        for term_name, cmd in terminals:
+            if shutil.which(term_name):
+                subprocess.Popen(cmd, shell=True, start_new_session=True)
+                self._log(f"Opened {config_path.name} in {term_name}")
+                self.main_window.set_status_message(f"Editing {config_path.name}")
+                return
+
+        self._log("No terminal emulator found")
+        self.main_window.set_status_message("No terminal emulator found")
+
+    def _edit_config_user(self, relative_path):
+        """Open a user config file (relative to home) in terminal with nano"""
+        import shutil
+        import shlex
+        import os
+
+        real_home = self._get_real_user_home()
+        config_path = real_home / relative_path
+
+        # Create parent directory if needed
+        if not config_path.parent.exists():
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            self._log(f"Created directory: {config_path.parent}")
+
+        # Create file if it doesn't exist
+        if not config_path.exists():
+            config_path.touch()
+            self._log(f"Created empty config: {config_path}")
+
+        self._log(f"Opening {config_path} in nano...")
+
+        real_user = self._get_real_username()
+        is_root = os.geteuid() == 0
+        safe_path = shlex.quote(str(config_path))
+        safe_user = shlex.quote(real_user)
+
+        # When running as root, run nano as the real user
+        if is_root and real_user != 'root':
+            user_cmd = f"sudo -i -u {safe_user} nano {safe_path}"
+            terminals = [
+                ('lxterminal', f'lxterminal -e {user_cmd}'),
+                ('xfce4-terminal', f'xfce4-terminal -e {user_cmd}'),
+                ('gnome-terminal', f'gnome-terminal -- sudo -i -u {safe_user} nano {safe_path}'),
+                ('konsole', f'konsole -e sudo -i -u {safe_user} nano {safe_path}'),
+                ('xterm', f'xterm -e sudo -i -u {safe_user} nano {safe_path}'),
+            ]
+        else:
+            terminals = [
+                ('lxterminal', f'lxterminal -e nano {safe_path}'),
+                ('xfce4-terminal', f'xfce4-terminal -e nano {safe_path}'),
+                ('gnome-terminal', f'gnome-terminal -- nano {safe_path}'),
+                ('konsole', f'konsole -e nano {safe_path}'),
+                ('xterm', f'xterm -e nano {safe_path}'),
+            ]
+
+        for term_name, cmd in terminals:
+            if shutil.which(term_name):
+                subprocess.Popen(cmd, shell=True, start_new_session=True)
+                self._log(f"Opened {config_path.name} in {term_name}")
+                self.main_window.set_status_message(f"Editing {config_path.name}")
+                return
+
+        self._log("No terminal emulator found")
+
+    def _browse_config_dir(self, dir_path):
+        """Show files in a config directory and let user select one to edit"""
+        dir_path = Path(dir_path)
+
+        if not dir_path.exists():
+            self._log(f"Directory not found: {dir_path}")
+            self.main_window.set_status_message(f"Directory not found: {dir_path}")
+            return
+
+        files = sorted([f.name for f in dir_path.iterdir() if f.is_file()])
+        if not files:
+            self._log(f"No files in {dir_path}")
+            self.main_window.set_status_message("No config files found")
+            return
+
+        # Create a dialog to select file
+        dialog = Gtk.Dialog(
+            title=f"Select Config File",
+            transient_for=self.main_window,
+            modal=True
+        )
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Edit", Gtk.ResponseType.OK)
+
+        content = dialog.get_content_area()
+        content.set_margin_start(20)
+        content.set_margin_end(20)
+        content.set_margin_top(10)
+        content.set_margin_bottom(10)
+        content.set_spacing(10)
+
+        label = Gtk.Label(label=f"Files in {dir_path}:")
+        label.set_xalign(0)
+        content.append(label)
+
+        # File list
+        listbox = Gtk.ListBox()
+        listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        for f in files:
+            row = Gtk.ListBoxRow()
+            row.set_child(Gtk.Label(label=f, xalign=0))
+            row.file_name = f
+            listbox.append(row)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_min_content_height(200)
+        scroll.set_child(listbox)
+        content.append(scroll)
+
+        def on_response(dialog, response):
+            if response == Gtk.ResponseType.OK:
+                row = listbox.get_selected_row()
+                if row:
+                    self._edit_config(dir_path / row.file_name)
+            dialog.destroy()
+
+        dialog.connect("response", on_response)
+        dialog.present()
+
+    def _browse_config_dir_user(self, relative_path):
+        """Browse a user config directory (relative to home)"""
+        real_home = self._get_real_user_home()
+        dir_path = real_home / relative_path
+
+        if not dir_path.exists():
+            dir_path.mkdir(parents=True, exist_ok=True)
+            self._log(f"Created directory: {dir_path}")
+
+        self._browse_config_dir(dir_path)
+
+    # =====================
+    # SDR / OpenWebRX Methods
+    # =====================
+
+    def _check_sdr_status(self):
+        """Check SDR and OpenWebRX status"""
+        import shutil
+
+        # Check OpenWebRX
+        if shutil.which('openwebrx'):
+            try:
+                result = subprocess.run(['systemctl', 'is-active', 'openwebrx'],
+                                       capture_output=True, text=True)
+                status = result.stdout.strip()
+                if status == 'active':
+                    GLib.idle_add(lambda: self.openwebrx_status.set_text("Running"))
+                else:
+                    GLib.idle_add(lambda: self.openwebrx_status.set_text("Installed"))
+            except Exception:
+                GLib.idle_add(lambda: self.openwebrx_status.set_text("Installed"))
+        else:
+            GLib.idle_add(lambda: self.openwebrx_status.set_text("Not installed"))
+
+        # Check RTL-SDR
+        if shutil.which('rtl_test'):
+            try:
+                result = subprocess.run(['rtl_test', '-t'],
+                                       capture_output=True, text=True, timeout=3)
+                if 'Found' in result.stderr or 'Found' in result.stdout:
+                    GLib.idle_add(lambda: self.rtlsdr_status.set_text("Device found"))
+                else:
+                    GLib.idle_add(lambda: self.rtlsdr_status.set_text("No device"))
+            except subprocess.TimeoutExpired:
+                GLib.idle_add(lambda: self.rtlsdr_status.set_text("Device found"))
+            except Exception:
+                GLib.idle_add(lambda: self.rtlsdr_status.set_text("Tools installed"))
+        else:
+            GLib.idle_add(lambda: self.rtlsdr_status.set_text("Not installed"))
+
+    def _on_open_webrx(self, button):
+        """Open OpenWebRX in browser"""
+        import webbrowser
+        webbrowser.open('http://localhost:8073')
+        self._log("Opening OpenWebRX at http://localhost:8073")
+        self.main_window.set_status_message("Opening OpenWebRX in browser")
+
+    def _on_install_openwebrx(self, button):
+        """Show OpenWebRX installation instructions"""
+        dialog = Gtk.MessageDialog(
+            transient_for=self.main_window,
+            modal=True,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.OK,
+            text="Install OpenWebRX"
+        )
+        dialog.format_secondary_text(
+            "OpenWebRX Installation:\n\n"
+            "Debian/Ubuntu:\n"
+            "  wget -O - https://repo.openwebrx.de/install.sh | sudo bash\n"
+            "  sudo apt install openwebrx\n\n"
+            "Raspberry Pi OS:\n"
+            "  Same as above, or use pre-built image from:\n"
+            "  https://www.openwebrx.de/download/\n\n"
+            "RTL-SDR drivers:\n"
+            "  sudo apt install rtl-sdr librtlsdr-dev\n\n"
+            "After install:\n"
+            "  sudo systemctl enable openwebrx\n"
+            "  sudo systemctl start openwebrx"
+        )
+        dialog.connect("response", lambda d, r: d.destroy())
+        dialog.present()
+        self._log("Showed OpenWebRX installation instructions")
+
+    def _on_rtl_test(self, button):
+        """Test RTL-SDR device"""
+        self._log("Testing RTL-SDR device...")
+
+        def run_test():
+            import shutil
+            if not shutil.which('rtl_test'):
+                GLib.idle_add(lambda: self._log("rtl_test not found. Install with: sudo apt install rtl-sdr"))
+                return
+
+            try:
+                result = subprocess.run(['rtl_test', '-t'],
+                                       capture_output=True, text=True, timeout=5)
+                output = result.stderr + result.stdout
+                GLib.idle_add(lambda: self._log(f"RTL-SDR Test:\n{output[:500]}"))
+
+                if 'Found' in output:
+                    GLib.idle_add(lambda: self.rtlsdr_status.set_text("Device found"))
+                else:
+                    GLib.idle_add(lambda: self.rtlsdr_status.set_text("No device"))
+            except subprocess.TimeoutExpired:
+                GLib.idle_add(lambda: self._log("RTL-SDR device found (test timed out - normal)"))
+                GLib.idle_add(lambda: self.rtlsdr_status.set_text("Device found"))
+            except Exception as e:
+                GLib.idle_add(lambda: self._log(f"RTL-SDR test error: {e}"))
+
+        threading.Thread(target=run_test, daemon=True).start()
+
+    def _on_sdr_config(self, button):
+        """Edit OpenWebRX configuration"""
+        config_paths = [
+            '/etc/openwebrx/config_webrx.py',
+            '/etc/openwebrx/openwebrx.conf',
+            '/var/lib/openwebrx/settings.json',
+        ]
+
+        for path in config_paths:
+            if Path(path).exists():
+                self._edit_config(path)
+                return
+
+        self._log("OpenWebRX config not found. Is OpenWebRX installed?")
+        self.main_window.set_status_message("OpenWebRX config not found")
+
+    def _on_launch_gqrx(self, button):
+        """Launch GQRX SDR receiver"""
+        import shutil
+        if shutil.which('gqrx'):
+            subprocess.Popen(['gqrx'], start_new_session=True)
+            self._log("Launching GQRX...")
+            self.main_window.set_status_message("Launching GQRX")
+        else:
+            self._log("GQRX not found. Install with: sudo apt install gqrx-sdr")
+            self.main_window.set_status_message("GQRX not installed")
+
+    def _on_launch_cubicsdr(self, button):
+        """Launch CubicSDR"""
+        import shutil
+        if shutil.which('CubicSDR'):
+            subprocess.Popen(['CubicSDR'], start_new_session=True)
+            self._log("Launching CubicSDR...")
+            self.main_window.set_status_message("Launching CubicSDR")
+        else:
+            self._log("CubicSDR not found. Install with: sudo apt install cubicsdr")
+            self.main_window.set_status_message("CubicSDR not installed")
+
+    def _on_spectrum_scan(self, button):
+        """Run RTL-SDR power spectrum scan"""
+        import shutil
+        if not shutil.which('rtl_power'):
+            self._log("rtl_power not found. Install with: sudo apt install rtl-sdr")
+            return
+
+        self._log("Starting spectrum scan (915 MHz band)...")
+        self.main_window.set_status_message("Scanning spectrum...")
+
+        def run_scan():
+            try:
+                # Quick scan of 915 MHz band (US ISM)
+                result = subprocess.run(
+                    ['rtl_power', '-f', '902M:928M:100k', '-g', '40', '-i', '1', '-1'],
+                    capture_output=True, text=True, timeout=30
+                )
+                if result.stdout:
+                    lines = result.stdout.strip().split('\n')
+                    GLib.idle_add(lambda: self._log(f"Spectrum scan complete: {len(lines)} samples"))
+                    GLib.idle_add(lambda: self._log("Scan data: Use rtl_power for full analysis"))
+                else:
+                    GLib.idle_add(lambda: self._log("Scan complete (no output)"))
+            except subprocess.TimeoutExpired:
+                GLib.idle_add(lambda: self._log("Spectrum scan timed out"))
+            except Exception as e:
+                GLib.idle_add(lambda: self._log(f"Spectrum scan error: {e}"))
+
+            GLib.idle_add(lambda: self.main_window.set_status_message("Scan complete"))
+
+        threading.Thread(target=run_scan, daemon=True).start()
