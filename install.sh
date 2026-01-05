@@ -1,22 +1,25 @@
 #!/bin/bash
 #
-# Meshtasticd Interactive Installer - One-Liner Quick Install
+# MeshForge - One-Liner Quick Install
 #
-# Downloads, installs, and launches the interactive installer automatically.
+# LoRa Mesh Network Development & Operations Suite
+# Downloads, installs, and launches MeshForge automatically.
 #
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_UI/main/install.sh | sudo bash
+#   curl -sSL https://raw.githubusercontent.com/Nursedude/meshforge/main/install.sh | sudo bash
 #
 # Options:
 #   UPGRADE_SYSTEM=yes  - Automatically upgrade all system packages
 #   SKIP_UPGRADE=yes    - Skip the system upgrade prompt entirely
+#   INSTALL_GTK=yes     - Install GTK4/libadwaita for desktop GUI
+#   INSTALL_DESKTOP=yes - Create desktop entry for MeshForge
 #
 # Examples:
-#   # Install with system upgrade
-#   curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_UI/main/install.sh | sudo UPGRADE_SYSTEM=yes bash
+#   # Install with system upgrade and desktop GUI
+#   curl -sSL https://raw.githubusercontent.com/Nursedude/meshforge/main/install.sh | sudo UPGRADE_SYSTEM=yes INSTALL_GTK=yes bash
 #
 #   # Install without upgrade prompt
-#   curl -sSL https://raw.githubusercontent.com/Nursedude/Meshtasticd_interactive_UI/main/install.sh | sudo SKIP_UPGRADE=yes bash
+#   curl -sSL https://raw.githubusercontent.com/Nursedude/meshforge/main/install.sh | sudo SKIP_UPGRADE=yes bash
 #
 
 set -e
@@ -30,8 +33,8 @@ NC='\033[0m' # No Color
 
 echo -e "${CYAN}"
 echo "╔═══════════════════════════════════════════════════════════╗"
-echo "║   Meshtasticd Interactive Installer - Quick Install      ║"
-echo "║   For Raspberry Pi OS                                     ║"
+echo "║   MeshForge - LoRa Mesh Network Operations Suite          ║"
+echo "║   For Raspberry Pi OS & Linux                             ║"
 echo "╚═══════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
@@ -86,23 +89,37 @@ else
 fi
 
 # Install system dependencies
-echo -e "${CYAN}[4/7] Installing required dependencies...${NC}"
+echo -e "${CYAN}[4/8] Installing required dependencies...${NC}"
 apt-get install -y -qq python3 python3-pip python3-venv git wget curl &>/dev/null
-echo -e "${GREEN}  ✓ Required dependencies installed${NC}"
+echo -e "${GREEN}  ✓ Core dependencies installed${NC}"
+
+# Install GTK4/libadwaita for desktop GUI (optional but recommended)
+echo -e "${CYAN}[5/8] Installing GUI dependencies...${NC}"
+if [[ "${INSTALL_GTK}" == "yes" ]] || [[ -n "$DISPLAY" ]] || [[ -n "$WAYLAND_DISPLAY" ]]; then
+    echo "  Installing GTK4/libadwaita for desktop GUI..."
+    apt-get install -y -qq python3-gi python3-gi-cairo gir1.2-gtk-4.0 libadwaita-1-0 gir1.2-adw-1 &>/dev/null || {
+        echo -e "${YELLOW}  ⊘ GTK4 not available (headless mode OK)${NC}"
+    }
+    # Install WebKit for embedded web views (optional)
+    apt-get install -y -qq gir1.2-webkit2-4.1 &>/dev/null || true
+    echo -e "${GREEN}  ✓ GUI dependencies installed${NC}"
+else
+    echo -e "${YELLOW}  ⊘ Skipped (no display detected - use INSTALL_GTK=yes to force)${NC}"
+fi
 
 # Clone or update repository
-INSTALL_DIR="/opt/meshtasticd-installer"
-echo -e "${CYAN}[5/7] Setting up installer...${NC}"
+INSTALL_DIR="/opt/meshforge"
+echo -e "${CYAN}[6/8] Setting up MeshForge...${NC}"
 
 if [[ -d "$INSTALL_DIR" ]]; then
     echo "  Updating existing installation..."
     # Fix git safe directory issue (required when running as root)
     git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
     cd "$INSTALL_DIR"
-    git pull -q
+    git pull -q || echo -e "${YELLOW}  Warning: Could not pull updates${NC}"
 else
     echo "  Cloning repository..."
-    git clone -q https://github.com/Nursedude/Meshtasticd_interactive_UI.git "$INSTALL_DIR"
+    git clone -q https://github.com/Nursedude/meshforge.git "$INSTALL_DIR"
     # Fix git safe directory issue for future updates
     git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
     cd "$INSTALL_DIR"
@@ -111,11 +128,11 @@ fi
 echo -e "${GREEN}  ✓ Repository ready${NC}"
 
 # Install Python dependencies
-echo -e "${CYAN}[6/7] Installing Python dependencies...${NC}"
+echo -e "${CYAN}[7/8] Installing Python dependencies...${NC}"
 # Create virtual environment if it doesn't exist
 if [[ ! -d "$INSTALL_DIR/venv" ]]; then
     echo "  Creating virtual environment..."
-    python3 -m venv "$INSTALL_DIR/venv"
+    python3 -m venv "$INSTALL_DIR/venv" --system-site-packages
 fi
 # Install dependencies in virtual environment
 echo "  Installing packages in virtual environment..."
@@ -124,53 +141,99 @@ echo "  Installing packages in virtual environment..."
 echo -e "${GREEN}  ✓ Python dependencies installed${NC}"
 
 # Create symlink for easy access
-echo -e "${CYAN}[7/7] Creating system commands...${NC}"
+echo -e "${CYAN}[8/8] Creating system commands...${NC}"
 
 # Main launcher wizard (default)
-cat > /usr/local/bin/meshtasticd-installer << 'EOF'
+cat > /usr/local/bin/meshforge << 'EOF'
 #!/bin/bash
-cd /opt/meshtasticd-installer
-exec sudo /opt/meshtasticd-installer/venv/bin/python src/launcher.py "$@"
+cd /opt/meshforge
+exec sudo /opt/meshforge/venv/bin/python src/launcher.py "$@"
 EOF
-chmod +x /usr/local/bin/meshtasticd-installer
+chmod +x /usr/local/bin/meshforge
+
+# Direct GTK GUI access
+cat > /usr/local/bin/meshforge-gtk << 'EOF'
+#!/bin/bash
+cd /opt/meshforge
+exec sudo /opt/meshforge/venv/bin/python src/main_gtk.py "$@"
+EOF
+chmod +x /usr/local/bin/meshforge-gtk
 
 # Direct CLI access
-cat > /usr/local/bin/meshtasticd-cli << 'EOF'
+cat > /usr/local/bin/meshforge-cli << 'EOF'
 #!/bin/bash
-cd /opt/meshtasticd-installer
-exec sudo /opt/meshtasticd-installer/venv/bin/python src/main.py "$@"
+cd /opt/meshforge
+exec sudo /opt/meshforge/venv/bin/python src/main.py "$@"
 EOF
-chmod +x /usr/local/bin/meshtasticd-cli
+chmod +x /usr/local/bin/meshforge-cli
 
-echo -e "${GREEN}  ✓ Commands created: meshtasticd-installer, meshtasticd-cli${NC}"
+# Web UI access
+cat > /usr/local/bin/meshforge-web << 'EOF'
+#!/bin/bash
+cd /opt/meshforge
+exec sudo /opt/meshforge/venv/bin/python src/main_web.py "$@"
+EOF
+chmod +x /usr/local/bin/meshforge-web
+
+# Legacy aliases for backwards compatibility
+ln -sf /usr/local/bin/meshforge /usr/local/bin/meshtasticd-installer 2>/dev/null || true
+ln -sf /usr/local/bin/meshforge-cli /usr/local/bin/meshtasticd-cli 2>/dev/null || true
+
+echo -e "${GREEN}  ✓ Commands created: meshforge, meshforge-gtk, meshforge-cli, meshforge-web${NC}"
+
+# Create desktop entry if display is available
+if [[ "${INSTALL_DESKTOP}" == "yes" ]] || [[ -n "$DISPLAY" ]] || [[ -n "$WAYLAND_DISPLAY" ]]; then
+    echo -e "${CYAN}Creating desktop entry...${NC}"
+    mkdir -p /usr/share/applications
+    cat > /usr/share/applications/meshforge.desktop << 'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=MeshForge
+Comment=LoRa Mesh Network Operations Suite
+Exec=/usr/local/bin/meshforge-gtk
+Icon=/opt/meshforge/assets/shaka.svg
+Terminal=false
+Categories=Network;HamRadio;Settings;
+Keywords=meshtastic;lora;mesh;radio;
+EOF
+    chmod 644 /usr/share/applications/meshforge.desktop
+    echo -e "${GREEN}  ✓ Desktop entry created${NC}"
+fi
 
 # Success message
 echo ""
 echo -e "${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║            Installation Complete!  v3.0.3                 ║${NC}"
+echo -e "${GREEN}║         MeshForge Installation Complete!                  ║${NC}"
 echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${CYAN}Quick Start:${NC}"
-echo "  ${GREEN}sudo meshtasticd-installer${NC}       - Launch interface wizard"
-echo "  ${GREEN}sudo meshtasticd-installer --wizard${NC} - Force wizard (reset preference)"
+echo "  ${GREEN}sudo meshforge${NC}         - Launch interface wizard"
+echo "  ${GREEN}sudo meshforge-gtk${NC}     - GTK desktop application"
+echo "  ${GREEN}sudo meshforge-web${NC}     - Web UI (browser access)"
+echo "  ${GREEN}sudo meshforge-cli${NC}     - Rich CLI interface"
 echo ""
-echo -e "${CYAN}Direct UI Access:${NC}"
-echo "  ${GREEN}sudo meshtasticd-cli${NC}  - Rich CLI (original)"
+echo -e "${CYAN}Features:${NC}"
+echo "  • Meshtastic + Reticulum (RNS) gateway bridge"
+echo "  • RF tools (LOS, Fresnel, path loss)"
+echo "  • Hardware simulation mode"
+echo "  • HamClock space weather integration"
+echo "  • Interactive node map"
 echo ""
-echo -e "${CYAN}Would you like to start the interface wizard now? [Y/n]${NC}"
+echo -e "${CYAN}Would you like to start MeshForge now? [Y/n]${NC}"
 
 # Try to read from TTY if available for interactive prompt
 if [[ -c /dev/tty ]]; then
     read -r response < /dev/tty
     if [[ "$response" =~ ^([nN][oO]|[nN])$ ]]; then
         echo ""
-        echo -e "${YELLOW}Installation complete. Run 'sudo meshtasticd-installer' when ready.${NC}"
+        echo -e "${YELLOW}Installation complete. Run 'sudo meshforge' when ready.${NC}"
         exit 0
     fi
 fi
 
 # Launch installer (default action)
 echo ""
-echo -e "${GREEN}Starting interface wizard...${NC}"
+echo -e "${GREEN}Starting MeshForge...${NC}"
 echo ""
-exec /usr/local/bin/meshtasticd-installer
+exec /usr/local/bin/meshforge

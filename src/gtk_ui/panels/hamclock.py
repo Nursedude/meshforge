@@ -149,6 +149,7 @@ class HamClockPanel(Gtk.Box):
         url_box.append(self.url_entry)
 
         connect_btn = Gtk.Button(label="Connect")
+        connect_btn.set_tooltip_text("Connect to HamClock instance and fetch space weather data")
         connect_btn.connect("clicked", self._on_connect)
         connect_btn.add_css_class("suggested-action")
         url_box.append(connect_btn)
@@ -219,6 +220,7 @@ class HamClockPanel(Gtk.Box):
         refresh_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         refresh_box.set_margin_top(10)
         refresh_btn = Gtk.Button(label="Refresh Data")
+        refresh_btn.set_tooltip_text("Refresh space weather data from HamClock")
         refresh_btn.connect("clicked", self._on_refresh)
         refresh_box.append(refresh_btn)
         weather_box.append(refresh_box)
@@ -303,6 +305,7 @@ class HamClockPanel(Gtk.Box):
             browser_box.append(info_label)
 
             open_btn = Gtk.Button(label="Open HamClock in Browser")
+            open_btn.set_tooltip_text("Open the HamClock live view in your default browser")
             open_btn.connect("clicked", self._on_open_browser)
             browser_box.append(open_btn)
 
@@ -349,16 +352,19 @@ class HamClockPanel(Gtk.Box):
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
 
         self.service_start_btn = Gtk.Button(label="Start")
+        self.service_start_btn.set_tooltip_text("Start the HamClock systemd service")
         self.service_start_btn.add_css_class("suggested-action")
         self.service_start_btn.connect("clicked", lambda b: self._service_action("start"))
         btn_box.append(self.service_start_btn)
 
         self.service_stop_btn = Gtk.Button(label="Stop")
+        self.service_stop_btn.set_tooltip_text("Stop the HamClock systemd service")
         self.service_stop_btn.add_css_class("destructive-action")
         self.service_stop_btn.connect("clicked", lambda b: self._service_action("stop"))
         btn_box.append(self.service_stop_btn)
 
         self.service_restart_btn = Gtk.Button(label="Restart")
+        self.service_restart_btn.set_tooltip_text("Restart the HamClock systemd service")
         self.service_restart_btn.connect("clicked", lambda b: self._service_action("restart"))
         btn_box.append(self.service_restart_btn)
 
@@ -545,6 +551,10 @@ class HamClockPanel(Gtk.Box):
             self.status_label.set_label("Enter HamClock URL")
             return
 
+        # Add http:// prefix if missing
+        if not url.startswith('http://') and not url.startswith('https://'):
+            url = f'http://{url}'
+
         # Remove trailing slash
         url = url.rstrip('/')
 
@@ -554,21 +564,36 @@ class HamClockPanel(Gtk.Box):
         self._settings["live_port"] = int(self.live_port_spin.get_value())
         self._save_settings()
 
+        # Update entry with corrected URL
+        self.url_entry.set_text(url)
+
         self.status_label.set_label("Connecting...")
+        print(f"[HamClock] Connecting to {url}...", flush=True)
 
         def check_connection():
             api_url = f"{url}:{self._settings['api_port']}"
+            full_url = f"{api_url}/get_sys.txt"
+
+            print(f"[HamClock] Testing connection: {full_url}", flush=True)
 
             try:
                 # Try to get version or any API response
-                req = urllib.request.Request(f"{api_url}/get_sys.txt", method='GET')
+                req = urllib.request.Request(full_url, method='GET')
                 req.add_header('User-Agent', 'MeshForge/1.0')
                 with urllib.request.urlopen(req, timeout=5) as response:
                     data = response.read().decode('utf-8')
+                    print(f"[HamClock] Connection successful, got {len(data)} bytes", flush=True)
                     GLib.idle_add(self._on_connected, url, data)
+            except urllib.error.HTTPError as e:
+                error_msg = f"HTTP {e.code}: {e.reason}"
+                print(f"[HamClock] HTTP error: {error_msg}", flush=True)
+                GLib.idle_add(self._on_connection_failed, error_msg)
             except urllib.error.URLError as e:
-                GLib.idle_add(self._on_connection_failed, str(e))
+                error_msg = str(e.reason)
+                print(f"[HamClock] URL error: {error_msg}", flush=True)
+                GLib.idle_add(self._on_connection_failed, error_msg)
             except Exception as e:
+                print(f"[HamClock] Connection error: {e}", flush=True)
                 GLib.idle_add(self._on_connection_failed, str(e))
 
         threading.Thread(target=check_connection, daemon=True).start()
@@ -607,32 +632,70 @@ class HamClockPanel(Gtk.Box):
         api_port = self._settings.get("api_port", 8080)
 
         if not url:
+            print("[HamClock] No URL configured, skipping fetch", flush=True)
             return
 
         def fetch():
             api_url = f"{url}:{api_port}"
             weather_data = {}
+            success_count = 0
+
+            print(f"[HamClock] Fetching from {api_url}...", flush=True)
 
             # Try various HamClock endpoints
             endpoints = [
                 ("get_sys.txt", self._parse_sys),
                 ("get_spacewx.txt", self._parse_spacewx),
+                ("get_bc.txt", self._parse_band_conditions),
             ]
 
             for endpoint, parser in endpoints:
                 try:
-                    req = urllib.request.Request(f"{api_url}/{endpoint}", method='GET')
+                    full_url = f"{api_url}/{endpoint}"
+                    print(f"[HamClock] Trying {full_url}...", flush=True)
+
+                    req = urllib.request.Request(full_url, method='GET')
                     req.add_header('User-Agent', 'MeshForge/1.0')
                     with urllib.request.urlopen(req, timeout=5) as response:
                         data = response.read().decode('utf-8')
+                        print(f"[HamClock] {endpoint} response: {data[:100]}...", flush=True)
                         parsed = parser(data)
                         weather_data.update(parsed)
+                        success_count += 1
+                except urllib.error.HTTPError as e:
+                    print(f"[HamClock] {endpoint}: HTTP {e.code} - {e.reason}", flush=True)
+                except urllib.error.URLError as e:
+                    print(f"[HamClock] {endpoint}: URL Error - {e.reason}", flush=True)
                 except Exception as e:
-                    logger.debug(f"HamClock {endpoint} failed: {e}")
+                    print(f"[HamClock] {endpoint}: Error - {e}", flush=True)
 
+            print(f"[HamClock] Fetched {success_count} endpoints, {len(weather_data)} values", flush=True)
             GLib.idle_add(self._update_weather_display, weather_data)
 
         threading.Thread(target=fetch, daemon=True).start()
+
+    def _parse_band_conditions(self, data):
+        """Parse band conditions response from HamClock API (get_bc.txt)"""
+        result = {}
+        print(f"[HamClock] Parsing band conditions: {data[:200]}...", flush=True)
+
+        for line in data.strip().split('\n'):
+            if '=' in line:
+                key, value = line.split('=', 1)
+                key_lower = key.strip().lower()
+                value = value.strip()
+
+                # Map band condition keys
+                if '80' in key_lower or '40' in key_lower:
+                    result['80m-40m'] = value
+                elif '30' in key_lower or '20' in key_lower:
+                    result['30m-20m'] = value
+                elif '17' in key_lower or '15' in key_lower:
+                    result['17m-15m'] = value
+                elif '12' in key_lower or '10' in key_lower:
+                    result['12m-10m'] = value
+
+        return result
 
     def _parse_sys(self, data):
         """Parse system info response"""
@@ -644,34 +707,64 @@ class HamClockPanel(Gtk.Box):
         return result
 
     def _parse_spacewx(self, data):
-        """Parse space weather response"""
+        """Parse space weather response from HamClock API
+
+        Expected format:
+            SFI=156
+            Kp=2
+            A=8
+            XRay=B5.2
+            SSN=112
+        """
         result = {}
+        print(f"[HamClock] Parsing spacewx data: {data[:200]}...", flush=True)
+
         for line in data.strip().split('\n'):
             if '=' in line:
                 key, value = line.split('=', 1)
-                key = key.strip().lower()
+                key_lower = key.strip().lower()
                 value = value.strip()
 
-                if 'sfi' in key or 'flux' in key:
+                # Map HamClock keys to our display keys
+                if key_lower == 'sfi' or 'flux' in key_lower:
                     result['sfi'] = value
-                elif 'kp' in key:
+                elif key_lower == 'kp':
                     result['kp'] = value
-                elif 'a_index' in key or key == 'a':
+                elif key_lower == 'a' or 'a_index' in key_lower:
                     result['a'] = value
-                elif 'xray' in key:
+                elif key_lower == 'xray':
                     result['xray'] = value
-                elif 'ssn' in key or 'sunspot' in key:
+                elif key_lower == 'ssn' or 'sunspot' in key_lower:
                     result['sunspots'] = value
+                elif key_lower == 'proton' or 'pf' in key_lower:
+                    result['proton'] = value
+                elif key_lower == 'aurora' or 'aur' in key_lower:
+                    result['aurora'] = value
+
+        print(f"[HamClock] Parsed values: {result}", flush=True)
         return result
 
     def _update_weather_display(self, data):
         """Update the weather display with fetched data"""
+        print(f"[HamClock] Updating display with: {data}", flush=True)
+
+        updated_count = 0
+
+        # Update stat labels
         for key, label in self.stat_labels.items():
             if key in data:
                 label.set_label(str(data[key]))
+                updated_count += 1
             # Also check for capitalized versions
             elif key.upper() in data:
                 label.set_label(str(data[key.upper()]))
+                updated_count += 1
+
+        # Update band condition labels
+        for key, label in self.band_labels.items():
+            if key in data:
+                label.set_label(str(data[key]))
+                updated_count += 1
 
         # Update conditions based on Kp
         if 'kp' in data:
@@ -683,10 +776,16 @@ class HamClockPanel(Gtk.Box):
                     self.stat_labels['conditions'].set_label("Moderate")
                 else:
                     self.stat_labels['conditions'].set_label("Disturbed")
+                updated_count += 1
             except ValueError:
                 pass
 
-        self.status_label.set_label(f"Updated {len(data)} values")
+        if updated_count > 0:
+            self.status_label.set_label(f"Updated {updated_count} values")
+            print(f"[HamClock] Updated {updated_count} UI labels", flush=True)
+        else:
+            self.status_label.set_label("No data received")
+            print("[HamClock] No values to update", flush=True)
 
     def _on_open_browser(self, button):
         """Open HamClock live view in browser"""
