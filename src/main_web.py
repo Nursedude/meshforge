@@ -349,7 +349,13 @@ def get_system_stats():
             result = subprocess.run(['vcgencmd', 'measure_temp'],
                                    capture_output=True, text=True)
             if result.returncode == 0 and 'temp=' in result.stdout:
-                temp = float(result.stdout.split('=')[1].replace("'C", "").strip())
+                temp_parts = result.stdout.split('=')
+                if len(temp_parts) >= 2:
+                    temp_str = temp_parts[1].replace("'C", "").strip()
+                    try:
+                        temp = float(temp_str)
+                    except ValueError:
+                        temp = None
         stats['temperature'] = round(temp, 1) if temp else None
     except Exception:
         stats['temperature'] = None

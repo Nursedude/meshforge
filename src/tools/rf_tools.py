@@ -387,7 +387,12 @@ class RFTools:
         t_preamble = (n_preamble + 4.25) * t_sym
 
         # Payload symbols (simplified)
-        cr_val = int(cr.split('/')[1]) - 4
+        # Parse coding rate (format: "4/5", "4/6", etc.)
+        cr_parts = cr.split('/')
+        if len(cr_parts) >= 2 and cr_parts[1].isdigit():
+            cr_val = int(cr_parts[1]) - 4
+        else:
+            cr_val = 1  # Default to 4/5 coding rate if invalid format
         n_payload = 8 + max(math.ceil((8 * payload - 4 * sf + 28) / (4 * sf)) * (cr_val + 4), 0)
         t_payload = n_payload * t_sym
 

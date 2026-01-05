@@ -1237,37 +1237,43 @@ message_storage_limit = 2000
                 logger.debug(f"[RNS] Failed to create config: {e}")
 
         try:
-            # Quote paths/usernames to prevent shell injection
-            safe_path = shlex.quote(str(config_path))
-            safe_user = shlex.quote(real_user)
+            # Security: Use argument lists instead of shell=True to prevent command injection
+            # Terminal configs: (binary, args_before_command, split_args)
+            terminals = [
+                ('lxterminal', ['-e'], False),      # lxterminal -e "command"
+                ('xfce4-terminal', ['-e'], False),  # xfce4-terminal -e "command"
+                ('gnome-terminal', ['--'], True),   # gnome-terminal -- cmd args
+                ('konsole', ['-e'], True),          # konsole -e cmd args
+                ('xterm', ['-e'], True),            # xterm -e cmd args
+            ]
 
-            # When running as root: run terminal as root (has X11), but nano as user
+            # Build the editor command
             if is_root and real_user != 'root':
-                # Use sudo -i for login shell to get user's environment
-                user_cmd = f"sudo -i -u {safe_user} nano {safe_path}"
-                terminals = [
-                    ('lxterminal', f'lxterminal -e {user_cmd}'),
-                    ('xfce4-terminal', f'xfce4-terminal -e {user_cmd}'),
-                    ('gnome-terminal', f'gnome-terminal -- sudo -i -u {safe_user} nano {safe_path}'),
-                    ('konsole', f'konsole -e sudo -i -u {safe_user} nano {safe_path}'),
-                    ('xterm', f'xterm -e sudo -i -u {safe_user} nano {safe_path}'),
-                ]
+                # Run nano as the real user via sudo
+                editor_cmd = ['sudo', '-i', '-u', real_user, 'nano', str(config_path)]
             else:
-                terminals = [
-                    ('lxterminal', f'lxterminal -e nano {safe_path}'),
-                    ('xfce4-terminal', f'xfce4-terminal -e nano {safe_path}'),
-                    ('gnome-terminal', f'gnome-terminal -- nano {safe_path}'),
-                    ('konsole', f'konsole -e nano {safe_path}'),
-                    ('xterm', f'xterm -e nano {safe_path}'),
-                ]
+                editor_cmd = ['nano', str(config_path)]
 
-            for term_name, full_cmd in terminals:
-                if shutil.which(term_name):
-                    logger.debug(f"[RNS] Using terminal: {term_name} (user: {real_user})")
-                    logger.debug(f"[RNS] Command: {full_cmd}")
-                    subprocess.Popen(full_cmd, shell=True, start_new_session=True)
-                    self.main_window.set_status_message(f"Editing {config_path.name} in terminal")
-                    return
+            for term_name, term_args, split_args in terminals:
+                term_path = shutil.which(term_name)
+                if term_path:
+                    try:
+                        if split_args:
+                            # Terminal expects command as separate arguments
+                            full_cmd = [term_path] + term_args + editor_cmd
+                        else:
+                            # Terminal expects command as single string argument
+                            cmd_string = ' '.join(shlex.quote(arg) for arg in editor_cmd)
+                            full_cmd = [term_path] + term_args + [cmd_string]
+
+                        logger.debug(f"[RNS] Using terminal: {term_name} (user: {real_user})")
+                        logger.debug(f"[RNS] Command: {full_cmd}")
+                        subprocess.Popen(full_cmd, start_new_session=True)
+                        self.main_window.set_status_message(f"Editing {config_path.name} in terminal")
+                        return
+                    except Exception as e:
+                        logger.debug(f"[RNS] Failed to launch {term_name}: {e}")
+                        continue
 
             self.main_window.set_status_message("No terminal emulator found")
             logger.debug("[RNS] No terminal emulator found")
