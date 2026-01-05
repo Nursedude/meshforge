@@ -17,7 +17,7 @@
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-yellow.svg)](https://python.org)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20Linux-orange.svg)](https://www.raspberrypi.org/)
-[![Tests](https://img.shields.io/badge/tests-89%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-127%20passing-brightgreen.svg)](tests/)
 
 **The first open-source tool to bridge Meshtastic and Reticulum (RNS) mesh networks.**
 
@@ -69,6 +69,7 @@ MeshForge is a **Network Operations Center (NOC)** for heterogeneous off-grid me
 - [Gateway Diagnostic Wizard](#gateway-diagnostic-wizard)
 - [Plugin System](#plugin-system)
 - [Lightweight Monitor (No Sudo)](#lightweight-monitor-no-sudo)
+- [Simulation Mode](#simulation-mode)
 - [Supported Hardware](#supported-hardware)
 - [Installation](#installation)
 - [Usage Examples](#usage-examples)
@@ -710,6 +711,77 @@ python3 -m src.monitor --watch --interval 10
 
 ---
 
+## Simulation Mode
+
+MeshForge includes a **hardware simulator** for testing RF and mesh features without physical devices. Perfect for development, demos, and learning.
+
+### Enabling Simulation
+
+Go to **Settings → Simulation Mode** and select:
+
+| Mode | Description |
+|------|-------------|
+| **Disabled** | Real hardware only (default) |
+| **RF Only** | Simulate RF path calculations |
+| **Mesh Network** | Full simulated mesh with nodes |
+| **Full** | Complete hardware simulation |
+
+### Simulated Node Presets
+
+| Preset | Nodes | Description |
+|--------|-------|-------------|
+| **Hawaii Islands** | 8 | Realistic inter-island links (Hilo, Kona, Maui, Oahu, Mauna Kea) |
+| **Generic Test** | 5 | Basic test nodes at origin coordinates |
+
+### RF Simulation Features
+
+```python
+from utils.simulator import RFSimulator
+
+rf = RFSimulator(frequency_mhz=915.0)
+
+# Simulate a 10 km path
+result = rf.simulate_path(
+    distance_km=10.0,
+    terrain="suburban",
+    weather="clear"
+)
+
+print(f"FSPL: {result.fspl_db:.1f} dB")
+print(f"Link Quality: {result.link_quality}")
+print(f"Estimated SNR: {result.estimated_snr:.1f} dB")
+```
+
+### Mesh Simulation Features
+
+```python
+from utils.simulator import get_mesh_simulator, SimulationMode
+
+sim = get_mesh_simulator()
+sim.enable(SimulationMode.MESH_NETWORK)
+
+# Get simulated nodes
+for node in sim.get_nodes():
+    print(f"{node.short_name}: {node.latitude}, {node.longitude}")
+
+# Send a simulated message
+sim.send_message("!sim00001", "Hello simulated mesh!")
+
+# Get messages
+for msg in sim.get_messages():
+    print(f"{msg.from_node}: {msg.message}")
+```
+
+### Test Coverage
+
+The simulator has **38 tests** covering:
+- RF path loss calculations (FSPL, Fresnel, Earth bulge)
+- Terrain and weather effects
+- Mesh node management
+- Message routing simulation
+
+---
+
 ## Supported Hardware
 
 ### Raspberry Pi Models
@@ -927,7 +999,8 @@ meshforge/
 │   │   ├── rf.py             # RF calculations (tested)
 │   │   ├── plugins.py        # Plugin architecture
 │   │   ├── device_scanner.py # USB/Serial port scanner (tested)
-│   │   └── gateway_diagnostic.py  # Gateway setup wizard
+│   │   ├── gateway_diagnostic.py  # Gateway setup wizard
+│   │   └── simulator.py      # RF & mesh hardware simulator (tested)
 │   │
 │   └── plugins/              # Extensible plugin system
 │       ├── mqtt_bridge.py    # MQTT integration (stub)
@@ -939,7 +1012,8 @@ meshforge/
 │   ├── test_rf_utils.py      # RF calculation tests (13)
 │   ├── test_gateway_diagnostic.py  # Diagnostic tests (18)
 │   ├── test_plugins.py       # Plugin architecture tests (15)
-│   └── test_device_scanner.py # Device scanner tests (19)
+│   ├── test_device_scanner.py # Device scanner tests (19)
+│   └── test_simulator.py     # Hardware simulation tests (38)
 │
 ├── assets/
 │   ├── shaka.svg             # Shaka icon (detailed)
@@ -1117,12 +1191,13 @@ source venv/bin/activate
 # Install dev dependencies
 pip install rich textual flask meshtastic
 
-# Run tests (TDD approach - 89 total)
+# Run tests (TDD approach - 127 total)
 python3 tests/test_security.py      # 24 security tests
 python3 tests/test_rf_utils.py      # 13 RF calculation tests
 python3 tests/test_gateway_diagnostic.py  # 18 diagnostic tests
 python3 tests/test_plugins.py       # 15 plugin architecture tests
 python3 tests/test_device_scanner.py  # 19 device scanner tests
+python3 tests/test_simulator.py       # 38 hardware simulation tests
 
 # Verify syntax
 python3 -m py_compile src/**/*.py
