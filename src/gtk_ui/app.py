@@ -20,6 +20,23 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from __version__ import __version__, get_full_version, __app_name__
 
+# Edition detection
+try:
+    from core.edition import Edition, detect_edition, has_feature, get_edition_info
+    EDITION_AVAILABLE = True
+except ImportError:
+    EDITION_AVAILABLE = False
+    class Edition:
+        PRO = "pro"
+        AMATEUR = "amateur"
+        IO = "io"
+    def detect_edition():
+        return Edition.PRO
+    def has_feature(f):
+        return True
+    def get_edition_info():
+        return {"edition": "pro", "display_name": "MeshForge PRO"}
+
 
 class MeshForgeApp(Adw.Application):
     """MeshForge GTK4 Application"""
@@ -55,10 +72,31 @@ class MeshForgeWindow(Adw.ApplicationWindow):
     DEFAULT_HEIGHT = 768
     SIDEBAR_COLLAPSE_WIDTH = 900  # Collapse sidebar below this width
 
+    # Edition-specific colors
+    EDITION_COLORS = {
+        "pro": "#1a73e8",      # Blue
+        "amateur": "#fbbc04",   # Gold
+        "io": "#673ab7",        # Purple
+    }
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        self.set_title(f"MeshForge v{__version__}")
+        # Detect edition
+        self.edition = detect_edition()
+        self.edition_info = get_edition_info()
+
+        # Set edition-aware title
+        edition_suffix = ""
+        if EDITION_AVAILABLE:
+            if self.edition == Edition.AMATEUR:
+                edition_suffix = " Amateur"
+            elif self.edition == Edition.IO:
+                edition_suffix = ".io"
+            else:
+                edition_suffix = " PRO"
+
+        self.set_title(f"MeshForge{edition_suffix} v{__version__}")
 
         # Set minimum size constraints
         self.set_size_request(self.MIN_WIDTH, self.MIN_HEIGHT)
@@ -207,7 +245,8 @@ class MeshForgeWindow(Adw.ApplicationWindow):
 
         # Header bar with title and menu
         header = Adw.HeaderBar()
-        header.set_title_widget(Gtk.Label(label=f"MeshForge v{__version__}"))
+        header_title = self.edition_info.get("display_name", "MeshForge")
+        header.set_title_widget(Gtk.Label(label=f"{header_title} v{__version__}"))
 
         # Sidebar toggle button (for responsive layout)
         self._sidebar_toggle_btn = Gtk.Button()
@@ -259,6 +298,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         self._add_hardware_page()
         self._add_tools_page()
         self._add_aredn_page()
+        self._add_amateur_page()
         self._add_university_page()
         self._add_settings_page()
 
@@ -306,16 +346,28 @@ class MeshForgeWindow(Adw.ApplicationWindow):
 
     def _on_about(self, action, param):
         """Show about dialog"""
+        # Edition-aware app name
+        app_name = self.edition_info.get("display_name", "MeshForge")
+        tagline = ""
+        if EDITION_AVAILABLE:
+            if self.edition == Edition.AMATEUR:
+                tagline = "When All Else Fails"
+            elif self.edition == Edition.IO:
+                tagline = "Mesh Made Simple"
+            else:
+                tagline = "Professional Mesh Management"
+
         dialog = Adw.AboutWindow(
             transient_for=self,
-            application_name="Meshtasticd Manager",
+            application_name=app_name,
             application_icon="network-wireless",
             version=get_full_version(),
-            developer_name="Meshtastic Community",
+            developer_name="MeshForge Community",
             license_type=Gtk.License.GPL_3_0,
-            website="https://meshtastic.org",
-            issue_url="https://github.com/Nursedude/Meshtasticd_interactive_UI/issues",
-            developers=["Nursedude", "Contributors"]
+            website="https://meshforge.org",
+            issue_url="https://github.com/Nursedude/meshforge/issues",
+            developers=["Nursedude", "Contributors"],
+            comments=tagline,
         )
         dialog.present()
 
@@ -366,22 +418,32 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         scrolled.set_child(listbox)
 
         # Navigation items
-        nav_items = [
-            ("dashboard", "Dashboard", "utilities-system-monitor-symbolic"),
-            ("service", "Service Management", "system-run-symbolic"),
-            ("install", "Install / Update", "system-software-install-symbolic"),
-            ("config", "Config File Manager", "document-edit-symbolic"),
-            ("radio_config", "Radio Configuration", "network-wireless-symbolic"),
-            ("rns", "Reticulum (RNS)", "network-transmit-receive-symbolic"),
-            ("map", "Node Map", "mark-location-symbolic"),
-            ("hamclock", "HamClock", "weather-clear-symbolic"),
-            ("cli", "Meshtastic CLI", "utilities-terminal-symbolic"),
-            ("hardware", "Hardware Detection", "drive-harddisk-symbolic"),
-            ("tools", "System Tools", "applications-utilities-symbolic"),
-            ("aredn", "AREDN Mesh", "network-server-symbolic"),
-            ("university", "MeshForge University", "school-symbolic"),
-            ("settings", "Settings", "preferences-system-symbolic"),
+        # Navigation items with feature requirements
+        # Format: (page_name, label, icon, required_feature or None)
+        all_nav_items = [
+            ("dashboard", "Dashboard", "utilities-system-monitor-symbolic", None),
+            ("service", "Service Management", "system-run-symbolic", None),
+            ("install", "Install / Update", "system-software-install-symbolic", None),
+            ("config", "Config File Manager", "document-edit-symbolic", None),
+            ("radio_config", "Radio Configuration", "network-wireless-symbolic", None),
+            ("rns", "Reticulum (RNS)", "network-transmit-receive-symbolic", "rns_integration"),
+            ("map", "Node Map", "mark-location-symbolic", None),
+            ("hamclock", "HamClock", "weather-clear-symbolic", "hamclock"),
+            ("cli", "Meshtastic CLI", "utilities-terminal-symbolic", None),
+            ("hardware", "Hardware Detection", "drive-harddisk-symbolic", None),
+            ("tools", "System Tools", "applications-utilities-symbolic", None),
+            ("aredn", "AREDN Mesh", "network-server-symbolic", "aredn_integration"),
+            ("amateur", "Amateur Radio", "audio-speakers-symbolic", "amateur_radio"),
+            ("university", "MeshForge University", "school-symbolic", None),
+            ("settings", "Settings", "preferences-system-symbolic", None),
         ]
+
+        # Filter by edition features
+        nav_items = []
+        for item in all_nav_items:
+            name, label, icon, feature = item
+            if feature is None or has_feature(feature):
+                nav_items.append((name, label, icon))
 
         for name, label, icon in nav_items:
             row = Gtk.ListBoxRow()
@@ -497,6 +559,30 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         panel = AREDNPanel(self)
         self.content_stack.add_named(panel, "aredn")
         self.aredn_panel = panel
+
+    def _add_amateur_page(self):
+        """Add the Amateur Radio page (Amateur Edition)"""
+        try:
+            from .amateur_panel import AmateurPanel
+            panel = AmateurPanel(self)
+            self.content_stack.add_named(panel, "amateur")
+            self.amateur_panel = panel
+        except ImportError:
+            # Create placeholder if amateur module not available
+            placeholder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+            placeholder.set_valign(Gtk.Align.CENTER)
+            placeholder.set_halign(Gtk.Align.CENTER)
+            icon = Gtk.Image.new_from_icon_name("audio-speakers-symbolic")
+            icon.set_pixel_size(64)
+            placeholder.append(icon)
+            label = Gtk.Label(label="Amateur Radio Features")
+            label.add_css_class("title-1")
+            placeholder.append(label)
+            desc = Gtk.Label(label="Ham radio specific features for licensed operators")
+            desc.add_css_class("dim-label")
+            placeholder.append(desc)
+            self.content_stack.add_named(placeholder, "amateur")
+            self.amateur_panel = None
 
     def _add_university_page(self):
         """Add the MeshForge University learning page"""
