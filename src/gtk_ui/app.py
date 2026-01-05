@@ -148,6 +148,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         self._add_cli_page()
         self._add_hardware_page()
         self._add_tools_page()
+        self._add_aredn_page()
         self._add_settings_page()
 
         # Left sidebar navigation (after content_stack exists)
@@ -257,6 +258,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
             ("cli", "Meshtastic CLI", "utilities-terminal-symbolic"),
             ("hardware", "Hardware Detection", "drive-harddisk-symbolic"),
             ("tools", "System Tools", "applications-utilities-symbolic"),
+            ("aredn", "AREDN Mesh", "network-server-symbolic"),
             ("settings", "Settings", "preferences-system-symbolic"),
         ]
 
@@ -367,6 +369,13 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         panel = ToolsPanel(self)
         self.content_stack.add_named(panel, "tools")
         self.tools_panel = panel
+
+    def _add_aredn_page(self):
+        """Add the AREDN mesh network page"""
+        from .panels.aredn import AREDNPanel
+        panel = AREDNPanel(self)
+        self.content_stack.add_named(panel, "aredn")
+        self.aredn_panel = panel
 
     def _add_settings_page(self):
         """Add the settings page"""
