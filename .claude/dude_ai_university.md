@@ -1078,6 +1078,29 @@ Plugins are loaded from:
 2. `~/.config/meshforge/plugins/` - User plugins
 3. `/usr/share/meshforge/plugins/` - System plugins
 
+### Core vs Plugin Philosophy
+
+**Principle: Don't break code. Safety over features.**
+
+| Category | Core (Integrated) | Plugin (Optional) |
+|----------|-------------------|-------------------|
+| **RF Calculations** | Haversine, Fresnel, FSPL, Earth bulge | Elevation APIs, coverage maps |
+| **Gateway** | Meshtastic TCP, RNS bridge | MeshCore, meshing-around |
+| **UI** | GTK, Web, TUI panels | Custom dashboards |
+| **Why Core** | Works offline, no external deps, tested | Needs network or external libs |
+
+**Safety guarantee:** If a plugin fails (missing dependency, network down), core MeshForge continues working. Gateway, RF tools, and UI are never broken by plugin issues.
+
+```python
+# Good: Plugin fails gracefully
+try:
+    import paho.mqtt.client as mqtt
+    self._client = mqtt.Client()
+except ImportError:
+    logger.error("paho-mqtt not installed")
+    return False  # Plugin fails, core continues
+```
+
 ---
 
 ## Heterogeneous Network Architecture

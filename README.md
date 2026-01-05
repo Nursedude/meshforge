@@ -17,19 +17,42 @@
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-yellow.svg)](https://python.org)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20Linux-orange.svg)](https://www.raspberrypi.org/)
-[![Tests](https://img.shields.io/badge/tests-70%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-89%20passing-brightgreen.svg)](tests/)
 
 **The first open-source tool to bridge Meshtastic and Reticulum (RNS) mesh networks.**
 
-MeshForge is a comprehensive network operations suite that enables:
-- **RNS-Meshtastic Gateway**: Bridge two independent mesh networks into a unified system
-- **Unified Node Tracking**: Monitor nodes from both Meshtastic and RNS on a single interactive map
-- **Full Configuration Management**: GUI editors for meshtasticd configs, RNS interfaces, and gateway settings
-- **RF Engineering Tools**: Line-of-sight calculator, frequency slot computation, link budget analysis
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  MESHTASTIC  ◄────►  MESHFORGE  ◄────►  RETICULUM (RNS)            │
+│   (LoRa)              (Bridge)           (Cryptographic Mesh)       │
+│                                                                      │
+│  • 915 MHz LoRa        • Unified Map      • Multi-transport         │
+│  • Simple setup        • Gateway Config   • E2E encryption          │
+│  • Wide adoption       • RF Tools         • 64+ hop routing         │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
-Designed for **RF engineers**, **network operators**, **scientific researchers**, and **amateur radio operators** (HAMs) who need reliable off-grid mesh communications with cryptographic security.
+MeshForge is a **Network Operations Center (NOC)** for heterogeneous off-grid mesh networks. It unifies two powerful but incompatible mesh ecosystems—**Meshtastic** and **Reticulum**—into a single manageable system.
 
-> **Note**: This project was formerly known as "Meshtasticd Interactive Installer". The old repository is deprecated - please use this one.
+### What Makes It Different?
+
+| Problem | MeshForge Solution |
+|---------|-------------------|
+| Meshtastic and RNS can't talk to each other | **Gateway bridge** routes messages between networks |
+| Managing two separate node lists | **Unified map** shows all nodes on one interactive display |
+| Complex config files scattered everywhere | **GUI editors** for meshtasticd, RNS interfaces, and gateway |
+| "Will my link work?" guesswork | **RF tools** calculate LOS, Fresnel zones, path loss |
+| Setup troubleshooting is painful | **Diagnostic wizard** identifies and fixes common issues |
+
+### Who Is It For?
+
+- **HAM Radio Operators** - Reliable emergency comms with cryptographic security
+- **Network Operators** - Manage city-scale mesh infrastructure
+- **RF Engineers** - Analyze propagation and plan deployments
+- **Researchers** - Deploy sensor networks in remote areas
+- **Developers** - Build apps on unified Meshtastic + RNS mesh
+
+> **Note**: Formerly "Meshtasticd Interactive Installer". The old repo is deprecated.
 
 ---
 
@@ -42,6 +65,7 @@ Designed for **RF engineers**, **network operators**, **scientific researchers**
 - [Interfaces](#interfaces)
 - [Features](#features)
 - [Frequency Slot Calculator](#frequency-slot-calculator)
+- [RF Engineering Tools](#rf-engineering-tools)
 - [Gateway Diagnostic Wizard](#gateway-diagnostic-wizard)
 - [Plugin System](#plugin-system)
 - [Lightweight Monitor (No Sudo)](#lightweight-monitor-no-sudo)
@@ -58,32 +82,25 @@ Designed for **RF engineers**, **network operators**, **scientific researchers**
 
 ## What is MeshForge?
 
-MeshForge is a **Network Operations Center (NOC)** for heterogeneous mesh networks, providing unified management of both Meshtastic and Reticulum (RNS) networks from a single interface.
+MeshForge follows the **Build → Test → Deploy → Monitor** lifecycle:
 
-| Capability | Description |
-|------------|-------------|
+| Phase | What You Can Do |
+|-------|-----------------|
 | **BUILD** | Install meshtasticd, configure RNS interfaces, set up gateway bridges |
-| **BRIDGE** | Connect Meshtastic LoRa networks with RNS cryptographic mesh networks |
-| **TEST** | RF line-of-sight analysis, frequency slot calculation, link budget planning |
-| **DEPLOY** | Activate configurations, manage services, enable boot persistence |
-| **MONITOR** | Unified node map showing both networks, real-time telemetry, message routing |
+| **TEST** | RF line-of-sight analysis, frequency slot calculation, diagnostic wizard |
+| **DEPLOY** | Activate configs, manage systemd services, enable boot persistence |
+| **BRIDGE** | Route messages between Meshtastic LoRa and RNS cryptographic networks |
+| **MONITOR** | Unified node map, real-time telemetry, message routing status |
 
-### Why MeshForge?
+### Technical Benefits
 
-**No other tool provides RNS-Meshtastic gateway bridging.** MeshForge enables:
-- Meshtastic nodes to communicate with RNS destinations
-- RNS applications (NomadNet, Sideband, LXMF) to reach Meshtastic devices
-- Unified position/telemetry sharing across both networks
-- Cryptographic end-to-end security via Reticulum's identity system
-
-### Who is it for?
-
-- **RF Engineers** designing mesh infrastructure and analyzing propagation
-- **Amateur Radio Operators** (HAMs) building reliable emergency comms
-- **Scientific Researchers** deploying sensor networks in remote areas
-- **Network Operators** managing heterogeneous mesh deployments
-- **Emergency Response Teams** needing interoperable off-grid communications
-- **Developers** building applications on Meshtastic and/or RNS
+| Feature | Benefit |
+|---------|---------|
+| **Bidirectional Gateway** | Meshtastic nodes talk to NomadNet, Sideband, LXMF apps |
+| **Position Sharing** | GPS coordinates flow between both networks |
+| **End-to-End Encryption** | Reticulum's cryptographic identity layer secures messages |
+| **Multi-Transport** | RNS works over LoRa, TCP, UDP, I2P, serial—simultaneously |
+| **Extensible Plugins** | Add MeshCore, MQTT, or custom integrations |
 
 ---
 
@@ -141,6 +158,8 @@ Plugin architecture is complete with 15 tests. These plugins have **stub impleme
 - Core functionality awaits external library integration
 - Community contributions welcome!
 
+**Safety principle:** Plugins can fail without breaking core MeshForge. If `paho-mqtt` isn't installed, MQTT plugin fails gracefully—RF tools, gateway, and UI continue working.
+
 ### 📋 Planned (Future)
 
 | Feature | Priority | Notes |
@@ -148,6 +167,7 @@ Plugin architecture is complete with 15 tests. These plugins have **stub impleme
 | LXMF/NomadNet UI | High | RNS messaging integration |
 | RNODE detection | Medium | LoRa hardware for RNS |
 | Node flashing | Medium | Flash firmware to USB devices |
+| **NanoVNA plugin** | Medium | Antenna SWR, S11/S21, Smith chart |
 | MQTT dashboard | Low | Real-time metrics via MQTT |
 | I2P overlay | Low | Anonymous network transport |
 
@@ -219,6 +239,7 @@ MeshForge provides **multiple interfaces for different use cases** - choose the 
 | **Rich CLI** | `sudo python3 src/main.py` | Scripting, minimal systems | Rich |
 | **Monitor** | `python3 -m src.monitor` | Quick node check | None (no sudo!) |
 | **Diagnostics** | `python3 src/cli/diagnose.py -g` | Gateway setup wizard | None |
+| **Device Scanner** | `python3 -m src.utils.device_scanner` | Find USB/serial ports | None |
 
 ### Interface Selection Guide
 
@@ -408,6 +429,106 @@ def djb2_hash(channel_name):
 slot = djb2_hash(channel_name) % num_channels
 frequency = freq_start + (bandwidth / 2000) + (slot * bandwidth / 1000)
 ```
+
+---
+
+## RF Engineering Tools
+
+RF engineering encompasses simulation software, test instruments, and analysis tools for designing wireless systems. MeshForge provides **field-ready RF analysis** for mesh network planning.
+
+### Core vs Plugin Strategy
+
+**Principle: Don't break code. Safety over features.**
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     RF TOOLS: CORE vs PLUGIN                         │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│  ✅ CORE (Integrated)              🔧 PLUGIN (Optional)              │
+│  ┌─────────────────────┐          ┌─────────────────────┐           │
+│  │ • Haversine distance│          │ • Site Planner API  │           │
+│  │ • Fresnel radius    │          │ • External elevation│           │
+│  │ • FSPL calculation  │          │ • Coverage heatmaps │           │
+│  │ • Earth bulge       │          │ • APRS integration  │           │
+│  │ • Freq slot calc    │          │ • Antenna modeling  │           │
+│  │ 13 tests, no deps   │          │ External APIs/deps  │           │
+│  └─────────────────────┘          └─────────────────────┘           │
+│                                                                       │
+│  Safety: Core functions work offline with no external dependencies   │
+│                                                                       │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+| Category | Core (Integrated) | Plugin (Optional) |
+|----------|-------------------|-------------------|
+| **Distance** | Haversine (tested) | GPS tracking APIs |
+| **Clearance** | Fresnel, Earth bulge (tested) | Terrain elevation APIs |
+| **Loss** | FSPL formula (tested) | ITM/Longley-Rice models |
+| **Planning** | Freq slot calculator | Site Planner, coverage maps |
+| **Why** | Works offline, no deps | Needs network, external APIs |
+
+### Core Calculations (13 Tested Functions)
+
+| Function | Formula | Use Case |
+|----------|---------|----------|
+| **Haversine Distance** | Great-circle distance | Node-to-node range |
+| **Fresnel Radius** | `17.3 × √(d/4f)` meters | Clearance planning |
+| **Free Space Path Loss** | `20log(d) + 20log(f) + 20log(4π/c)` dB | Link budget |
+| **Earth Bulge** | `d²/12.75` meters | Long-distance LOS |
+
+### Line of Sight Calculator
+
+Integrated LOS analysis with elevation data:
+
+```bash
+# From GUI: Radio Config → RF Tools → Line of Sight
+
+# Enter two coordinates:
+#   Point A: 19.7297, -155.0900 (Hilo)
+#   Point B: 21.3069, -157.8583 (Honolulu)
+
+# Results:
+#   Distance:     337.2 km
+#   Earth Bulge:  2,234 m (at midpoint)
+#   Fresnel 60%:  89.3 m (915 MHz)
+#   FSPL:         128.4 dB
+#   Status:       OBSTRUCTED (terrain blocks LOS)
+```
+
+### Visualization
+
+MeshForge generates **elevation profile charts** showing:
+- Terrain elevation along path
+- Line of sight (direct path)
+- 60% Fresnel zone (minimum clearance)
+- Earth curvature effect
+- Obstruction points
+
+### External Tools (Plugin Candidates)
+
+These require network access or external dependencies—good candidates for **optional plugins**:
+
+| Tool | Status | Notes |
+|------|--------|-------|
+| [site.meshtastic.org](https://site.meshtastic.org/) | Link only | ITM/Longley-Rice, coverage maps |
+| Open-Elevation API | Optional | Terrain profiles (network required) |
+| **NanoVNA** | 📋 Planned | Antenna tuning, SWR, Smith chart |
+| APRS-IS | 📋 Planned | Position reporting for HAMs |
+
+**Why plugins?** These fail if network is down. Core RF tools work offline.
+
+### What MeshForge Doesn't Replace
+
+MeshForge provides **field planning tools**, not full RF simulation:
+
+| Need | Professional Tool | MeshForge Approach |
+|------|-------------------|-------------------|
+| Antenna design | HFSS, CST, FEKO | Out of scope (licensed CAD) |
+| Circuit simulation | ADS, AWR, Keysight | Out of scope (hardware-specific) |
+| Antenna tuning | NanoVNA, PicoVNA | 📋 **Plugin planned** (USB serial) |
+| Spectrum analysis | SDR, TinySA | 📋 Future consideration |
+| EMC compliance | Pre-compliance gear | Out of scope (regulatory) |
 
 ---
 
@@ -601,6 +722,29 @@ python3 -m src.monitor --watch --interval 10
 | Pi Zero W | ⚠️ Limited | Works, slower |
 | Pi 400 | ✅ Full Support | Desktop form factor |
 
+### ClockworkPi Devices
+
+Portable Linux terminals with modular design. See [ClockworkPi Integration Guide](.claude/hardware/clockworkpi.md).
+
+| Device | Display | Core Module | Status |
+|--------|---------|-------------|--------|
+| **uConsole** | 1280×720 5" | CM4, A06, A04, R01 | ✅ Full Support |
+| **DevTerm** | 1280×480 6.8" | CM4, A06, A04, R01 | ✅ Full Support |
+
+**Recommended setup**: CM4 module + [HackerGadgets All-In-One Board](https://hackergadgets.com/products/uconsole-rtl-sdr-lora-gps-rtc-usb-hub-all-in-one-extension-board)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  HACKERGADGETS ALL-IN-ONE EXPANSION BOARD                       │
+├─────────────────────────────────────────────────────────────────┤
+│  LoRa:    SX1262 (860-960MHz, 22dBm) - Meshtastic ready         │
+│  SDR:     RTL2832U (100kHz-1.74GHz) - Spectrum analysis         │
+│  GPS:     Multi-mode (GPS/BDS/GNSS) - Position tracking         │
+│  RTC:     PCF85063A with CR1220 - Timekeeping                   │
+│  USB:     Hub with Type-A, Type-C ports                         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 ### USB LoRa Devices
 | Device | Chip | Status |
 |--------|------|--------|
@@ -782,6 +926,7 @@ meshforge/
 │   │   ├── emoji.py          # Terminal emoji support
 │   │   ├── rf.py             # RF calculations (tested)
 │   │   ├── plugins.py        # Plugin architecture
+│   │   ├── device_scanner.py # USB/Serial port scanner (tested)
 │   │   └── gateway_diagnostic.py  # Gateway setup wizard
 │   │
 │   └── plugins/              # Extensible plugin system
@@ -793,7 +938,8 @@ meshforge/
 │   ├── test_security.py      # Security validation tests (24)
 │   ├── test_rf_utils.py      # RF calculation tests (13)
 │   ├── test_gateway_diagnostic.py  # Diagnostic tests (18)
-│   └── test_plugins.py       # Plugin architecture tests (15)
+│   ├── test_plugins.py       # Plugin architecture tests (15)
+│   └── test_device_scanner.py # Device scanner tests (19)
 │
 ├── assets/
 │   ├── shaka.svg             # Shaka icon (detailed)
@@ -971,11 +1117,12 @@ source venv/bin/activate
 # Install dev dependencies
 pip install rich textual flask meshtastic
 
-# Run tests (TDD approach - 70 total)
+# Run tests (TDD approach - 89 total)
 python3 tests/test_security.py      # 24 security tests
 python3 tests/test_rf_utils.py      # 13 RF calculation tests
 python3 tests/test_gateway_diagnostic.py  # 18 diagnostic tests
 python3 tests/test_plugins.py       # 15 plugin architecture tests
+python3 tests/test_device_scanner.py  # 19 device scanner tests
 
 # Verify syntax
 python3 -m py_compile src/**/*.py
