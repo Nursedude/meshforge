@@ -1,4 +1,4 @@
-# MeshForge
+# MeshForge 🤙
 
 ```
 ╔╦╗╔═╗╔═╗╦ ╦╔═╗╔═╗╦═╗╔═╗╔═╗
@@ -7,12 +7,17 @@
  LoRa Mesh Network Development & Operations Suite
 ```
 
+<p align="center">
+  <img src="assets/shaka-simple.svg" alt="Shaka" width="48" height="48"/>
+</p>
+
 **Build. Test. Deploy. Bridge. Monitor.**
 
-[![Version](https://img.shields.io/badge/version-4.2.0-blue.svg)](https://github.com/Nursedude/meshforge)
+[![Version](https://img.shields.io/badge/version-0.4.3--beta-blue.svg)](https://github.com/Nursedude/meshforge)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-yellow.svg)](https://python.org)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20Linux-orange.svg)](https://www.raspberrypi.org/)
+[![Tests](https://img.shields.io/badge/tests-55%20passing-brightgreen.svg)](tests/)
 
 **The first open-source tool to bridge Meshtastic and Reticulum (RNS) mesh networks.**
 
@@ -36,6 +41,7 @@ Designed for **RF engineers**, **network operators**, **scientific researchers**
 - [Interfaces](#interfaces)
 - [Features](#features)
 - [Frequency Slot Calculator](#frequency-slot-calculator)
+- [Gateway Diagnostic Wizard](#gateway-diagnostic-wizard)
 - [Lightweight Monitor (No Sudo)](#lightweight-monitor-no-sudo)
 - [Supported Hardware](#supported-hardware)
 - [Installation](#installation)
@@ -106,16 +112,50 @@ sudo python3 src/main.py              # Rich CLI
 
 ## Interfaces
 
-MeshForge provides multiple interfaces for different use cases:
+MeshForge provides **multiple interfaces for different use cases** - choose the right tool for your environment:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        MESHFORGE INTERFACES                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐ │
+│   │   GTK UI    │  │   Web UI    │  │  Terminal   │  │    CLI      │ │
+│   │  (Desktop)  │  │  (Browser)  │  │    (TUI)    │  │   (Rich)    │ │
+│   └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘ │
+│          │                │                │                │        │
+│          └────────────────┴────────────────┴────────────────┘        │
+│                                  │                                    │
+│                         ┌───────┴───────┐                            │
+│                         │  Core Engine  │                            │
+│                         │  (Python API) │                            │
+│                         └───────────────┘                            │
+│                                                                       │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 | Interface | Command | Best For | Requires |
 |-----------|---------|----------|----------|
 | **Auto Launcher** | `sudo python3 src/launcher.py` | Auto-selects best UI | - |
-| **Web UI** | `sudo python3 src/main_web.py` | Remote browser access | Flask |
 | **GTK Desktop** | `sudo python3 src/main_gtk.py` | Pi with display, VNC | GTK4, libadwaita |
+| **Web UI** | `sudo python3 src/main_web.py` | Remote browser access | Flask |
 | **Terminal TUI** | `sudo python3 src/main_tui.py` | SSH, headless systems | Textual |
 | **Rich CLI** | `sudo python3 src/main.py` | Scripting, minimal systems | Rich |
 | **Monitor** | `python3 -m src.monitor` | Quick node check | None (no sudo!) |
+| **Diagnostics** | `python3 src/cli/diagnose.py -g` | Gateway setup wizard | None |
+
+### Interface Selection Guide
+
+```
+Use Case                          → Recommended Interface
+─────────────────────────────────────────────────────────
+Pi with HDMI display              → GTK Desktop
+Pi headless, access via laptop    → Web UI (browser)
+SSH into remote Pi                → Terminal TUI
+Automated scripts/cron            → Rich CLI
+Quick node status check           → Monitor (no sudo)
+RNS/Meshtastic gateway setup      → Diagnostics wizard
+```
 
 ### Web UI
 
@@ -291,6 +331,40 @@ def djb2_hash(channel_name):
 
 slot = djb2_hash(channel_name) % num_channels
 frequency = freq_start + (bandwidth / 2000) + (slot * bandwidth / 1000)
+```
+
+---
+
+## Gateway Diagnostic Wizard
+
+MeshForge includes an **AI-like diagnostic wizard** to help you get RNS and Meshtastic gateway working:
+
+```bash
+# Run the gateway setup wizard
+python3 src/cli/diagnose.py --gateway
+
+# Or from the GUI: RNS Panel → "🔧 Diagnose" button
+```
+
+### What It Checks
+
+```
+============================================================
+  🔧 MESHFORGE GATEWAY SETUP WIZARD
+============================================================
+
+✓/✗ Python Version (3.8+ required)
+✓/✗ Required Packages (meshtastic, rns, lxmf)
+✓/✗ RNS Installation and Config
+✓/✗ rnsd Daemon Status
+✓/✗ Meshtastic Library
+✓/✗ Meshtastic_Interface.py
+✓/✗ Serial Ports (USB devices)
+✓/✗ TCP Port 4403 (meshtasticd)
+✓/✗ Bluetooth LE Availability
+
+→ Provides actionable fix hints for each failure
+→ Recommends best connection type (Serial/TCP/BLE)
 ```
 
 ---
@@ -515,7 +589,18 @@ meshforge/
 │   └── utils/
 │       ├── system.py         # System utilities
 │       ├── cli.py            # CLI path detection
-│       └── emoji.py          # Terminal emoji support
+│       ├── emoji.py          # Terminal emoji support
+│       ├── rf.py             # RF calculations (tested)
+│       └── gateway_diagnostic.py  # Gateway setup wizard
+│
+├── tests/
+│   ├── test_security.py      # Security validation tests (24)
+│   ├── test_rf_utils.py      # RF calculation tests (13)
+│   └── test_gateway_diagnostic.py  # Diagnostic tests (18)
+│
+├── assets/
+│   ├── shaka.svg             # Shaka icon (detailed)
+│   └── shaka-simple.svg      # Shaka icon (simple)
 │
 ├── web/
 │   ├── node_map.html         # Interactive Leaflet map
@@ -689,8 +774,25 @@ source venv/bin/activate
 # Install dev dependencies
 pip install rich textual flask meshtastic
 
-# Run tests
+# Run tests (TDD approach)
+python3 tests/test_security.py      # 24 security tests
+python3 tests/test_rf_utils.py      # 13 RF calculation tests
+python3 tests/test_gateway_diagnostic.py  # 18 diagnostic tests
+
+# Verify syntax
 python3 -m py_compile src/**/*.py
+```
+
+### TDD Workflow
+
+We use **Test-Driven Development** - write tests first, then implement:
+
+```
+1. Write failing test     → tests/test_feature.py
+2. Commit tests           → git commit -m "test: Add feature tests"
+3. Implement feature      → src/utils/feature.py
+4. Verify tests pass      → python3 tests/test_feature.py
+5. Commit implementation  → git commit -m "feat: Add feature"
 ```
 
 ---
@@ -719,6 +821,8 @@ GPL-3.0 - See [LICENSE](LICENSE) for details.
 ---
 
 <p align="center">
+  <img src="assets/shaka-simple.svg" alt="Shaka" width="24" height="24"/><br>
   <b>MeshForge</b> - Build. Test. Deploy. Monitor.<br>
-  Made with aloha for the mesh community
+  Made with aloha for the mesh community 🤙<br>
+  <sub>- nurse dude (wh6gxz)</sub>
 </p>
