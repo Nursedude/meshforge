@@ -1,0 +1,40 @@
+{
+    "id": "org.meshforge.plugin.aredn_advanced",
+    "name": "AREDN Advanced Configuration",
+    "version": "1.0.0",
+    "description": "Advanced AREDN mesh network configuration, hardware database, MikroTik setup wizard, and network simulation for infrastructure planning",
+    "author": "MeshForge Community",
+    "type": "panel",
+    "entry_point": "main.py",
+    "min_meshforge_version": "1.0.0",
+    "homepage": "https://github.com/meshforge/plugins",
+    "license": "MIT",
+    "icon": "network-server-symbolic",
+    "category": "Networking",
+    "tags": ["aredn", "mikrotik", "mesh", "amateur-radio", "simulation", "hardware"],
+    "dependencies": [],
+    "permissions": ["network", "files"],
+    "premium": false,
+    "settings_schema": {
+        "default_channel": {
+            "type": "number",
+            "default": 177,
+            "label": "Default 5GHz Channel"
+        },
+        "default_power": {
+            "type": "number",
+            "default": 17,
+            "label": "Default TX Power (dBm)"
+        },
+        "callsign": {
+            "type": "string",
+            "default": "",
+            "label": "Amateur Radio Callsign"
+        },
+        "auto_scan_subnet": {
+            "type": "string",
+            "default": "10.0.0.0/24",
+            "label": "Auto-Scan Subnet"
+        }
+    }
+}
