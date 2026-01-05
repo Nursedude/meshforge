@@ -10,6 +10,7 @@ from gi.repository import Gtk, Adw, GLib
 import subprocess
 import threading
 import os
+import shutil
 
 
 class RadioConfigPanel(Gtk.Box):
@@ -139,6 +140,7 @@ class RadioConfigPanel(Gtk.Box):
         refresh_box.set_margin_top(10)
 
         refresh_btn = Gtk.Button(label="Refresh Radio Info")
+        refresh_btn.set_tooltip_text("Reload radio information from the connected device")
         refresh_btn.connect("clicked", lambda b: self._load_radio_info())
         refresh_box.append(refresh_btn)
 
@@ -408,6 +410,7 @@ class RadioConfigPanel(Gtk.Box):
         role_box.append(self.role_dropdown)
 
         role_apply = Gtk.Button(label="Apply")
+        role_apply.set_tooltip_text("Apply device role setting to the connected node")
         role_apply.connect("clicked", lambda b: self._apply_setting("device.role", self._get_role()))
         role_box.append(role_apply)
         box.append(role_box)
@@ -422,6 +425,7 @@ class RadioConfigPanel(Gtk.Box):
         rebroadcast_box.append(self.rebroadcast_dropdown)
 
         rebroadcast_apply = Gtk.Button(label="Apply")
+        rebroadcast_apply.set_tooltip_text("Apply rebroadcast mode (controls message forwarding behavior)")
         rebroadcast_apply.connect("clicked", lambda b: self._apply_setting("device.rebroadcast_mode", self._get_rebroadcast()))
         rebroadcast_box.append(rebroadcast_apply)
         box.append(rebroadcast_box)
@@ -452,6 +456,7 @@ class RadioConfigPanel(Gtk.Box):
         region_box.append(self.region_dropdown)
 
         region_apply = Gtk.Button(label="Apply")
+        region_apply.set_tooltip_text("Apply LoRa region setting (must match local regulations)")
         region_apply.connect("clicked", lambda b: self._apply_setting("lora.region", self._get_region()))
         region_box.append(region_apply)
         box.append(region_box)
@@ -467,6 +472,7 @@ class RadioConfigPanel(Gtk.Box):
         preset_box.append(self.preset_dropdown)
 
         preset_apply = Gtk.Button(label="Apply")
+        preset_apply.set_tooltip_text("Apply modem preset (affects range vs speed tradeoff)")
         preset_apply.connect("clicked", lambda b: self._apply_setting("lora.modem_preset", self._get_preset()))
         preset_box.append(preset_apply)
         box.append(preset_box)
@@ -481,6 +487,7 @@ class RadioConfigPanel(Gtk.Box):
         hop_box.append(self.hop_spin)
 
         hop_apply = Gtk.Button(label="Apply")
+        hop_apply.set_tooltip_text("Apply hop limit (max number of times a message can be relayed)")
         hop_apply.connect("clicked", lambda b: self._apply_setting("lora.hop_limit", str(int(self.hop_spin.get_value()))))
         hop_box.append(hop_apply)
         box.append(hop_box)
@@ -794,6 +801,7 @@ class RadioConfigPanel(Gtk.Box):
         gps_box.append(self.gps_dropdown)
 
         gps_apply = Gtk.Button(label="Apply")
+        gps_apply.set_tooltip_text("Apply GPS mode setting (enable/disable built-in GPS)")
         gps_apply.connect("clicked", lambda b: self._apply_setting("position.gps_mode", self._get_gps_mode()))
         gps_box.append(gps_apply)
         box.append(gps_box)
@@ -808,6 +816,7 @@ class RadioConfigPanel(Gtk.Box):
         pos_interval_box.append(self.pos_interval_spin)
 
         pos_apply = Gtk.Button(label="Apply")
+        pos_apply.set_tooltip_text("Apply position broadcast interval (how often to share location)")
         pos_apply.connect("clicked", lambda b: self._apply_setting(
             "position.position_broadcast_secs", str(int(self.pos_interval_spin.get_value()))))
         pos_interval_box.append(pos_apply)
@@ -840,6 +849,7 @@ class RadioConfigPanel(Gtk.Box):
         fixed_box.append(self.alt_entry)
 
         fixed_apply = Gtk.Button(label="Set Fixed Position")
+        fixed_apply.set_tooltip_text("Set a fixed location (disables GPS, useful for stationary nodes)")
         fixed_apply.add_css_class("suggested-action")
         fixed_apply.connect("clicked", self._set_fixed_position)
         fixed_box.append(fixed_apply)
@@ -869,6 +879,7 @@ class RadioConfigPanel(Gtk.Box):
         tx_box.append(self.tx_power_spin)
 
         tx_apply = Gtk.Button(label="Apply")
+        tx_apply.set_tooltip_text("Apply transmit power (0 = use device default)")
         tx_apply.connect("clicked", lambda b: self._apply_setting(
             "lora.tx_power", str(int(self.tx_power_spin.get_value()))))
         tx_box.append(tx_apply)
@@ -880,6 +891,7 @@ class RadioConfigPanel(Gtk.Box):
         power_save_box.append(self.power_save_check)
 
         ps_apply = Gtk.Button(label="Apply")
+        ps_apply.set_tooltip_text("Toggle power saving mode (reduces battery usage)")
         ps_apply.connect("clicked", lambda b: self._apply_setting(
             "power.is_power_saving", "true" if self.power_save_check.get_active() else "false"))
         power_save_box.append(ps_apply)
@@ -927,6 +939,7 @@ class RadioConfigPanel(Gtk.Box):
         mqtt_enable_box.append(self.mqtt_enabled_check)
 
         mqtt_enable_apply = Gtk.Button(label="Apply")
+        mqtt_enable_apply.set_tooltip_text("Enable or disable MQTT uplink")
         mqtt_enable_apply.connect("clicked", lambda b: self._apply_setting(
             "mqtt.enabled", "true" if self.mqtt_enabled_check.get_active() else "false"))
         mqtt_enable_box.append(mqtt_enable_apply)
@@ -941,6 +954,7 @@ class RadioConfigPanel(Gtk.Box):
         server_box.append(self.mqtt_server_entry)
 
         server_apply = Gtk.Button(label="Apply")
+        server_apply.set_tooltip_text("Apply MQTT server address")
         server_apply.connect("clicked", lambda b: self._apply_setting(
             "mqtt.address", self.mqtt_server_entry.get_text()))
         server_box.append(server_apply)
@@ -960,6 +974,7 @@ class RadioConfigPanel(Gtk.Box):
         auth_box.append(self.mqtt_pass_entry)
 
         auth_apply = Gtk.Button(label="Apply Auth")
+        auth_apply.set_tooltip_text("Apply MQTT username and password credentials")
         auth_apply.connect("clicked", self._apply_mqtt_auth)
         auth_box.append(auth_apply)
         box.append(auth_box)
@@ -980,6 +995,7 @@ class RadioConfigPanel(Gtk.Box):
         apply_all_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         apply_all_box.set_margin_top(10)
         apply_all_btn = Gtk.Button(label="Apply All MQTT Settings")
+        apply_all_btn.set_tooltip_text("Apply all MQTT settings including server, auth, and encryption options")
         apply_all_btn.add_css_class("suggested-action")
         apply_all_btn.connect("clicked", self._apply_mqtt_preset)
         apply_all_box.append(apply_all_btn)
@@ -1009,6 +1025,7 @@ class RadioConfigPanel(Gtk.Box):
         device_box.append(self.device_metrics_spin)
 
         device_apply = Gtk.Button(label="Apply")
+        device_apply.set_tooltip_text("Apply device metrics broadcast interval (battery, voltage, etc.)")
         device_apply.connect("clicked", lambda b: self._apply_setting(
             "telemetry.device_update_interval", str(int(self.device_metrics_spin.get_value()))))
         device_box.append(device_apply)
@@ -1024,6 +1041,7 @@ class RadioConfigPanel(Gtk.Box):
         env_box.append(self.env_metrics_spin)
 
         env_apply = Gtk.Button(label="Apply")
+        env_apply.set_tooltip_text("Apply environment metrics broadcast interval (temperature, humidity, etc.)")
         env_apply.connect("clicked", lambda b: self._apply_setting(
             "telemetry.environment_update_interval", str(int(self.env_metrics_spin.get_value()))))
         env_box.append(env_apply)
@@ -1046,23 +1064,27 @@ class RadioConfigPanel(Gtk.Box):
 
         # Refresh All Settings - fetches current config from device and updates all UI fields
         refresh_btn = Gtk.Button(label="Refresh All Settings")
+        refresh_btn.set_tooltip_text("Fetch current configuration from device and update all fields")
         refresh_btn.add_css_class("suggested-action")
         refresh_btn.connect("clicked", lambda b: self._load_current_config())
         box.append(refresh_btn)
 
         # View Full Config - shows raw CLI output for debugging
         view_btn = Gtk.Button(label="View Raw Config")
+        view_btn.set_tooltip_text("Show raw configuration output for debugging")
         view_btn.connect("clicked", lambda b: self._view_full_config())
         box.append(view_btn)
 
         # Factory Reset
         reset_btn = Gtk.Button(label="Factory Reset")
+        reset_btn.set_tooltip_text("WARNING: Reset device to factory defaults (erases all settings)")
         reset_btn.add_css_class("destructive-action")
         reset_btn.connect("clicked", lambda b: self._factory_reset())
         box.append(reset_btn)
 
         # Reboot Node
         reboot_btn = Gtk.Button(label="Reboot Node")
+        reboot_btn.set_tooltip_text("Restart the connected Meshtastic device")
         reboot_btn.connect("clicked", lambda b: self._reboot_node())
         box.append(reboot_btn)
 
