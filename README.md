@@ -721,6 +721,29 @@ python3 -m src.monitor --watch --interval 10
 | Pi Zero W | ⚠️ Limited | Works, slower |
 | Pi 400 | ✅ Full Support | Desktop form factor |
 
+### ClockworkPi Devices
+
+Portable Linux terminals with modular design. See [ClockworkPi Integration Guide](.claude/hardware/clockworkpi.md).
+
+| Device | Display | Core Module | Status |
+|--------|---------|-------------|--------|
+| **uConsole** | 1280×720 5" | CM4, A06, A04, R01 | ✅ Full Support |
+| **DevTerm** | 1280×480 6.8" | CM4, A06, A04, R01 | ✅ Full Support |
+
+**Recommended setup**: CM4 module + [HackerGadgets All-In-One Board](https://hackergadgets.com/products/uconsole-rtl-sdr-lora-gps-rtc-usb-hub-all-in-one-extension-board)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  HACKERGADGETS ALL-IN-ONE EXPANSION BOARD                       │
+├─────────────────────────────────────────────────────────────────┤
+│  LoRa:    SX1262 (860-960MHz, 22dBm) - Meshtastic ready         │
+│  SDR:     RTL2832U (100kHz-1.74GHz) - Spectrum analysis         │
+│  GPS:     Multi-mode (GPS/BDS/GNSS) - Position tracking         │
+│  RTC:     PCF85063A with CR1220 - Timekeeping                   │
+│  USB:     Hub with Type-A, Type-C ports                         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 ### USB LoRa Devices
 | Device | Chip | Status |
 |--------|------|--------|
