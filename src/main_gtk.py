@@ -170,16 +170,13 @@ def check_gtk():
 
 def check_root():
     """Check for root privileges"""
-    if os.geteuid() != 0:
-        print("=" * 60)
-        print("ERROR: Root privileges required")
-        print("=" * 60)
-        print()
-        print("This application requires root/sudo privileges.")
-        print("Please run with:")
-        print("  sudo python3 src/main_gtk.py")
-        print("=" * 60)
-        sys.exit(1)
+    from utils.system import require_root
+    require_root(
+        exit_on_fail=True,
+        message="This application requires root/sudo privileges.\n"
+                "Please run with:\n"
+                "  sudo python3 src/main_gtk.py"
+    )
 
 
 def check_meshtastic_cli():

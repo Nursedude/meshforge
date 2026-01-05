@@ -13,11 +13,12 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, GLib, Pango
 
-import logging
 from typing import Optional
 from datetime import datetime
 
-logger = logging.getLogger(__name__)
+# Use centralized logging
+from utils.logging_config import get_logger
+logger = get_logger(__name__)
 
 # Import amateur radio modules with fallback
 try:
@@ -54,6 +55,9 @@ class AmateurPanel(Gtk.Box):
 
         self._build_ui()
         self._start_id_timer()
+
+        # Connect cleanup to widget destruction
+        self.connect("unrealize", self._on_unrealize)
 
     def _show_unavailable_message(self):
         """Show message when amateur modules aren't available"""
@@ -519,8 +523,8 @@ class AmateurPanel(Gtk.Box):
                     "Station ID",
                     f"Identified as {self.callsign_manager.my_callsign}"
                 )
-            except:
-                pass
+            except (AttributeError, Exception) as e:
+                logger.debug(f"Failed to show notification: {e}")
 
     def _on_callsign_changed(self, entry):
         """Handle callsign entry change"""
@@ -706,8 +710,13 @@ class AmateurPanel(Gtk.Box):
         dialog.connect("response", on_response)
         dialog.present()
 
+    def _on_unrealize(self, widget):
+        """Handle widget unrealization - cleanup resources"""
+        self.cleanup()
+
     def cleanup(self):
         """Clean up resources"""
         if self._id_timer:
             GLib.source_remove(self._id_timer)
             self._id_timer = None
+        logger.debug("Amateur panel resources cleaned up")

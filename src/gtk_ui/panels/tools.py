@@ -1434,22 +1434,40 @@ class ToolsPanel(Gtk.Box):
         return Path.home()
 
     def _launch_terminal_with_command(self, command: str, description: str = "") -> bool:
-        """Launch a terminal emulator with the given command. Returns True on success."""
+        """Launch a terminal emulator with the given command. Returns True on success.
+
+        Security: Uses argument lists instead of shell=True to prevent command injection.
+        """
+        # Terminal configs: (binary, args_before_command, args_for_command)
+        # Some terminals use -e, others use -- to separate the command
         terminals = [
-            ('lxterminal', f'lxterminal -e {command}'),
-            ('xfce4-terminal', f'xfce4-terminal -e {command}'),
-            ('gnome-terminal', f'gnome-terminal -- {command}'),
-            ('konsole', f'konsole -e {command}'),
-            ('xterm', f'xterm -e {command}'),
+            ('lxterminal', ['-e'], False),      # lxterminal -e "command"
+            ('xfce4-terminal', ['-e'], False),  # xfce4-terminal -e "command"
+            ('gnome-terminal', ['--'], True),   # gnome-terminal -- command args
+            ('konsole', ['-e'], True),          # konsole -e command args
+            ('xterm', ['-e'], True),            # xterm -e command args
         ]
 
-        for term_name, cmd in terminals:
-            if shutil.which(term_name):
-                subprocess.Popen(cmd, shell=True, start_new_session=True)
-                if description:
-                    self._log(f"{description} in {term_name}")
-                    self.main_window.set_status_message(description)
-                return True
+        for term_name, term_args, split_command in terminals:
+            term_path = shutil.which(term_name)
+            if term_path:
+                try:
+                    if split_command:
+                        # Terminal expects command as separate arguments
+                        cmd_parts = shlex.split(command)
+                        full_cmd = [term_path] + term_args + cmd_parts
+                    else:
+                        # Terminal expects command as single string argument
+                        full_cmd = [term_path] + term_args + [command]
+
+                    subprocess.Popen(full_cmd, start_new_session=True)
+                    if description:
+                        self._log(f"{description} in {term_name}")
+                        self.main_window.set_status_message(description)
+                    return True
+                except Exception as e:
+                    logger.debug(f"Failed to launch {term_name}: {e}")
+                    continue
 
         self._log("No terminal emulator found")
         self.main_window.set_status_message("No terminal emulator found")

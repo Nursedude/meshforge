@@ -386,8 +386,8 @@ class RNSMeshtasticBridge:
         if self._mesh_interface:
             try:
                 self._mesh_interface.close()
-            except:
-                pass
+            except (OSError, Exception) as e:
+                logger.debug(f"Error closing Meshtastic interface: {e}")
             self._mesh_interface = None
         self._connected_mesh = False
 
@@ -669,7 +669,8 @@ class RNSMeshtasticBridge:
             ))
             sock.close()
             return result == 0
-        except:
+        except (OSError, socket.error, socket.timeout) as e:
+            logger.debug(f"Meshtastic connection test failed: {e}")
             return False
 
     def _test_meshtastic_cli(self) -> bool:
@@ -681,7 +682,8 @@ class RNSMeshtasticBridge:
                 timeout=10
             )
             return result.returncode == 0
-        except:
+        except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError) as e:
+            logger.debug(f"Meshtastic CLI test failed: {e}")
             return False
 
     def _test_rns(self) -> bool:
