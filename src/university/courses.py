@@ -1625,6 +1625,607 @@ Add project-specific patterns to `.claude/foundations/auto_review_principles.md`
         )
         self.courses[auto_review_course.id] = auto_review_course
 
+        # Course 9: Amateur Radio Compliance & Part 97
+        ham_compliance_course = Course(
+            id="ham-compliance",
+            title="Amateur Radio Compliance & Part 97",
+            description="FCC regulations, encryption rules, and building compliant mesh solutions",
+            difficulty=Difficulty.INTERMEDIATE,
+            icon="dialog-warning-symbolic",
+            estimated_hours=2.5,
+            tags=["ham", "amateur", "fcc", "part97", "compliance", "encryption", "ares", "races"],
+            lessons=[
+                Lesson(
+                    id="hc-01-licensing",
+                    title="Amateur Radio License Classes",
+                    duration_minutes=20,
+                    content="""# Amateur Radio License Classes
+
+Before operating on amateur radio frequencies, you must obtain an FCC license.
+
+## License Classes (US)
+
+The higher the class, the more frequencies available:
+
+### Technician Class (Entry-Level)
+- **Exam**: 35 questions on radio theory, regulations, operating practices
+- **Privileges**: All VHF/UHF bands (above 30 MHz)
+- **HF Access**: Limited - 80/40/15m CW, 10m all modes
+- **Best For**: Local communications, repeaters, mesh networking
+
+### General Class
+- **Prerequisite**: Must hold Technician license
+- **Exam**: 35 questions (more advanced)
+- **Privileges**: Most HF spectrum below 30 MHz
+- **Best For**: Long-distance HF communications
+
+### Amateur Extra Class
+- **Exam**: 50 questions (comprehensive)
+- **Privileges**: All amateur frequencies and modes
+- **Best For**: Maximum flexibility, DX operations
+
+## License Facts
+
+| Fact | Details |
+|------|---------|
+| Duration | 10 years (renewable) |
+| Fee | $35 application fee (since April 2022) |
+| Morse Code | Not required (since February 2007) |
+| Age Limit | None - children can be licensed |
+
+## Getting Licensed
+
+1. **Study** - Use ARRL resources or online study guides
+2. **Find a Test Session** - Search at arrl.org/find-an-amateur-radio-license-exam-session
+3. **Pass the Exam** - 74% or better to pass
+4. **Receive Call Sign** - FCC issues within days
+
+## Question Pool Updates
+
+| Class | Current Pool Valid | Next Update |
+|-------|-------------------|-------------|
+| Technician | July 2022 - June 2026 | 2026 |
+| General | July 2023 - June 2027 | 2027 |
+| Extra | July 2024 - June 2028 | 2028 |
+
+## Why Get Licensed?
+
+For mesh networking:
+- **Higher Power** - Up to 1.5kW vs 1W unlicensed
+- **More Frequencies** - Access to 33cm, 23cm bands
+- **Legal Protection** - Clear regulatory framework
+- **Emergency Access** - ARES/RACES participation
+""",
+                    has_assessment=True,
+                    resources=[
+                        {"title": "ARRL Getting Licensed", "url": "https://www.arrl.org/getting-licensed"},
+                        {"title": "FCC Question Pools", "url": "http://www.arrl.org/question-pools"},
+                    ]
+                ),
+                Lesson(
+                    id="hc-02-encryption",
+                    title="Encryption Rules: Part 97.113",
+                    duration_minutes=25,
+                    content="""# Encryption on Amateur Radio
+
+This is the most critical regulatory difference between ISM and amateur bands.
+
+## The Core Rule: 47 CFR § 97.113(a)(4)
+
+> Amateur stations shall not transmit "messages encoded for the
+> purpose of obscuring their meaning"
+
+**Key phrase**: "for the purpose of obscuring their meaning"
+
+## What This Means
+
+```
+┌─────────────────────────────────────────────────────────┐
+│         AMATEUR RADIO ENCRYPTION RULES                   │
+├─────────────────────────────────────────────────────────┤
+│                                                          │
+│  ✗ PROHIBITED                  ✓ PERMITTED              │
+│  ─────────────                 ──────────────           │
+│  • Encrypted messages          • Compression codecs     │
+│  • AES/PSK obscured data       • Authentication tokens  │
+│  • VPN tunnels                 • Satellite control      │
+│  • Private mesh channels       • Digital voice (CODEC)  │
+│                                • HTTPS for auth only    │
+└─────────────────────────────────────────────────────────┘
+```
+
+## Intent Matters
+
+The **purpose** determines legality:
+
+| Scenario | Legal? | Why |
+|----------|--------|-----|
+| AES256 to hide messages | ✗ No | Purpose is obscuring |
+| AMBE codec (D-STAR) | ✓ Yes | Purpose is compression |
+| HTTPS to log into server | ✓ Yes | Authentication, not obscuring |
+| VPN tunnel over ham link | ✗ No | Obscures all traffic |
+
+## Digital Modes Are NOT "Encryption"
+
+Common digital modes are legal:
+- **D-STAR** - Uses AMBE voice codec
+- **DMR** - Digital compression
+- **FT8/FT4** - Weak signal modes
+- **Winlink** - Email over radio
+
+These use encoding for efficiency, not secrecy.
+
+## Meshtastic Dual-Mode Operation
+
+Meshtastic can operate in two modes:
+
+### ISM Mode (Part 15) - Encryption OK
+```
+- Frequencies: 902-928 MHz ISM band
+- Power: 1W max
+- Encryption: AES256 enabled
+- Identification: Not required
+```
+
+### Ham Mode (Part 97) - NO Encryption
+```
+- Frequencies: 33cm band (902-928 MHz shared)
+- Power: Up to legal limit
+- Encryption: DISABLED automatically
+- Identification: Callsign required every 10 min
+```
+
+## Why No Encryption Exception for Emergencies?
+
+In 2013, the FCC denied petition RM-11699 requesting encryption
+for emergency services. The ARRL supported denial, stating:
+- Amateur radio's strength is openness
+- No agency has refused ham help due to lack of encryption
+- Other services (public safety, GMRS) exist for encrypted needs
+
+## Compliance Checklist
+
+```
+When operating on amateur frequencies:
+□ Encryption DISABLED
+□ Callsign configured
+□ Auto-ID every 10 minutes
+□ Communications open to monitoring
+□ No obscured or coded messages
+```
+""",
+                    has_assessment=True,
+                    resources=[
+                        {"title": "47 CFR 97.113", "url": "https://www.law.cornell.edu/cfr/text/47/97.113"},
+                        {"title": "FCC Amateur Operations FAQ", "url": "https://www.fcc.gov/wireless/bureau-divisions/mobility-division/amateur-radio-service/amateur-communications-operations"},
+                    ]
+                ),
+                Lesson(
+                    id="hc-03-identification",
+                    title="Station Identification: Part 97.119",
+                    duration_minutes=15,
+                    content="""# Station Identification Requirements
+
+Every amateur transmission must be identified. This is non-negotiable.
+
+## The Rule: 47 CFR § 97.119
+
+> Each amateur station must transmit its assigned call sign at the
+> end of each communication, and at least every 10 minutes during
+> a communication.
+
+## Identification Methods
+
+### For Voice (Phone)
+- Speak your callsign in English
+- Example: "This is Kilo Seven Alpha Bravo Charlie"
+
+### For CW (Morse)
+- Key your callsign
+- If automated, max 20 WPM
+
+### For Digital/Data
+- Transmit callsign using authorized digital code
+- Many digital modes have built-in ID fields
+
+## Meshtastic Ham Mode
+
+When ham mode is enabled in Meshtastic:
+- Device "Long Name" must be set to your callsign
+- Callsign is transmitted with each packet
+- Automatic identification is handled by protocol
+
+## Indicators and Modifiers
+
+You may add indicators to your callsign:
+
+| Indicator | Meaning |
+|-----------|---------|
+| /M | Mobile operation |
+| /P | Portable operation |
+| /R | Repeater |
+| /AG | General upgrade (from Tech) |
+| /AE | Extra upgrade |
+
+Example: `W1ABC/M` = W1ABC operating mobile
+
+## Third-Party Traffic
+
+If you're passing messages for unlicensed persons:
+- YOU must identify the station
+- Third-party traffic is allowed domestically
+- International: only with certain countries
+
+## Penalties for Non-Identification
+
+| Violation | Consequence |
+|-----------|-------------|
+| Unidentified transmission | Warning letter |
+| Repeated violations | Notice of Violation |
+| Willful violation | Fines up to $10,000+ |
+| Malicious interference | Criminal prosecution |
+
+## MeshForge Implementation
+
+MeshForge's amateur mode automatically:
+1. Sets callsign in node configuration
+2. Includes callsign in packet headers
+3. Logs identification for compliance
+4. Warns if callsign not configured
+""",
+                    has_assessment=True,
+                    resources=[
+                        {"title": "47 CFR 97.119", "url": "https://www.law.cornell.edu/cfr/text/47/97.119"},
+                    ]
+                ),
+                Lesson(
+                    id="hc-04-frequencies",
+                    title="Frequency Allocations for Mesh",
+                    duration_minutes=20,
+                    content="""# Amateur Frequency Allocations for Mesh Networking
+
+Understanding band allocations is crucial for legal mesh operation.
+
+## Key Bands for Mesh Networks
+
+### 33cm Band (902-928 MHz)
+```
+┌─────────────────────────────────────────────────────┐
+│                    33cm BAND                         │
+│                  902 - 928 MHz                       │
+├─────────────────────────────────────────────────────┤
+│ License: Technician and above                        │
+│ Status: SECONDARY (shared with ISM)                  │
+│ Power: Up to legal limit (hardware limited)          │
+│ Modes: All modes permitted                           │
+├─────────────────────────────────────────────────────┤
+│ SHARING:                                             │
+│ • ISM devices (Part 15)                             │
+│ • LoRa/Meshtastic (unlicensed)                      │
+│ • Cordless phones, baby monitors                    │
+│ • Industrial equipment                               │
+└─────────────────────────────────────────────────────┘
+```
+
+**Note**: This band overlaps with Meshtastic's ISM operation!
+
+### 70cm Band (420-450 MHz)
+```
+License: Technician and above
+Status: SECONDARY (shared with government)
+Power: Up to 1.5kW
+Popular uses: FM repeaters, ATV, digital modes
+```
+
+### 23cm Band (1240-1300 MHz)
+```
+License: Technician and above
+Status: Secondary
+Power: Up to 1.5kW
+Popular uses: ATV, high-speed data, AREDN
+```
+
+## Primary vs Secondary Status
+
+**Secondary service** means:
+- Must not cause interference to primary users
+- Must accept interference from primary users
+- Cannot claim protection
+
+The 33cm band is secondary to ISM - amateur stations must
+accept interference from unlicensed devices!
+
+## AREDN Frequency Usage
+
+AREDN (Amateur Radio Emergency Data Network) uses:
+
+| Band | Frequencies | Notes |
+|------|-------------|-------|
+| 33cm | 902-928 MHz | Shared with ISM |
+| 13cm | 2390-2450 MHz | Near WiFi 2.4GHz |
+| 5cm | 5650-5925 MHz | Near WiFi 5GHz |
+
+## Power Limits
+
+| Rule | Limit |
+|------|-------|
+| General limit | 1.5 kW PEP |
+| Spread spectrum | 10W PEP |
+| Actual (hardware) | Usually < 10W |
+
+AREDN devices typically output 100mW - 1W due to
+hardware limitations, not legal limits.
+
+## Band Plan Etiquette
+
+Even within legal allocations, follow band plans:
+- Check arrl.org/band-plan for recommended uses
+- Avoid established repeater frequencies
+- Coordinate with local frequency coordinators
+- Use appropriate portions for data/mesh
+
+## MeshForge Frequency Configuration
+
+The RF Tools panel helps ensure compliance:
+1. Validates frequency against license class
+2. Warns about band edges
+3. Shows sharing requirements
+4. Calculates legal power limits
+""",
+                    has_assessment=True,
+                    resources=[
+                        {"title": "ARRL Band Plan", "url": "http://www.arrl.org/band-plan"},
+                        {"title": "AREDN Frequency Bands", "url": "http://docs.arednmesh.org/en/latest/arednNetworkDesign/frequency_bands.html"},
+                    ]
+                ),
+                Lesson(
+                    id="hc-05-emergency",
+                    title="Emergency Communications: ARES & RACES",
+                    duration_minutes=20,
+                    content="""# ARES and RACES Emergency Communications
+
+Amateur radio's motto: "When All Else Fails"
+
+## ARES - Amateur Radio Emergency Service
+
+Organized by ARRL, ARES is a volunteer corps of licensed
+amateurs providing emergency communications.
+
+### Key Characteristics
+- **Voluntary** enrollment with local leadership
+- **Flexible** - can communicate with anyone
+- **Training** through ARRL programs
+- **Deployed** by served agencies (Red Cross, hospitals, etc.)
+
+### ARES Levels (ARRL ARES Plan 2025)
+
+| Level | Description |
+|-------|-------------|
+| Level 1 | Basic training, local events |
+| Level 2 | ICS trained, regional deployment |
+| Level 3 | Advanced, statewide/national |
+
+## RACES - Radio Amateur Civil Emergency Service
+
+Defined in FCC Part 97.407, RACES operates under
+government emergency management authority.
+
+### Key Characteristics
+- **Registered** with civil defense agency (FEMA, local EMA)
+- **Restricted** - can only communicate with other RACES stations
+- **Activated** by government authority only
+- **Limited** drill time (1 hour/week max)
+
+### RACES vs ARES
+
+| Aspect | ARES | RACES |
+|--------|------|-------|
+| Authority | ARRL/served agencies | Government EMA |
+| Flexibility | High | Restricted |
+| Who can communicate | Anyone | RACES stations only |
+| Drill limits | None | 1 hour/week |
+| Dual membership | Recommended | Recommended |
+
+## Digital Emergency Communications
+
+Modern emergency comms include digital modes:
+
+### AREDN (Amateur Radio Emergency Data Network)
+- High-bandwidth mesh (1-50+ Mbps)
+- Video, VoIP, data services
+- Uses modified WiFi routers
+- Part 97 operation (no encryption)
+
+### Winlink
+- Email over radio
+- Store-and-forward
+- Hybrid RF/internet
+- Emergency message forms
+
+### Meshtastic in Emergencies
+- Low bandwidth but long range
+- Can operate ISM (encrypted) or ham (open)
+- GPS location sharing
+- Text messaging
+
+## ICS Integration
+
+All emergency comms should follow ICS (Incident Command System):
+
+```
+Incident Commander
+       │
+       ├── Operations
+       │
+       ├── Planning
+       │
+       ├── Logistics
+       │      └── Communications Unit
+       │             └── Amateur Radio
+       │
+       └── Finance/Admin
+```
+
+## Building Compliant Emergency Tools
+
+When developing for ARES/RACES:
+1. Support both encrypted (ISM) and open (ham) modes
+2. Include ICS-213 message forms
+3. Provide clear mode indicators
+4. Log all traffic for after-action
+5. Support tactical callsigns
+""",
+                    has_assessment=True,
+                    resources=[
+                        {"title": "ARRL ARES", "url": "https://www.arrl.org/ares"},
+                        {"title": "ARES/RACES FAQ", "url": "http://www.arrl.org/ares-races-faq"},
+                    ]
+                ),
+                Lesson(
+                    id="hc-06-meshforge",
+                    title="Building Compliant Solutions with MeshForge",
+                    duration_minutes=20,
+                    content="""# Building Part 97 Compliant Mesh Solutions
+
+Practical guidance for developers using MeshForge for amateur radio.
+
+## MeshForge Edition Selection
+
+| Edition | Encryption | Use Case |
+|---------|------------|----------|
+| MeshForge PRO | Both modes | Professional deployment |
+| MeshForge Amateur | Ham mode only | Licensed operators |
+| MeshForge.io | ISM only | General public |
+
+## Amateur Radio Mode Configuration
+
+### Enabling Ham Mode
+```yaml
+# meshtasticd config for amateur operation
+Lora:
+  Region: US        # Sets legal frequencies
+  TxEnabled: true
+
+Owner:
+  LongName: "W1ABC" # Your callsign - REQUIRED
+  ShortName: "ABC"
+
+Security:
+  # PSK automatically disabled in ham mode
+  AdminKey: ""
+  PrivateKey: ""
+```
+
+### What Ham Mode Disables
+1. **Encryption** - AES256 disabled
+2. **Private channels** - All open
+3. **Admin encryption** - Commands in clear
+
+### What Ham Mode Enables
+1. **Higher power** - Legal up to 1.5kW
+2. **Auto-ID** - Callsign broadcast
+3. **Logging** - Compliance tracking
+
+## Compliance Features in MeshForge
+
+### Amateur Panel Functions
+```
+┌─────────────────────────────────────────────┐
+│          AMATEUR RADIO PANEL                 │
+├─────────────────────────────────────────────┤
+│ [✓] Ham Mode Enabled                         │
+│ Callsign: W1ABC                              │
+│ License Class: General                       │
+│ Grid Square: FN31                            │
+│                                              │
+│ Last ID: 2 minutes ago                       │
+│ Encryption: DISABLED (compliant)             │
+│ Frequency: 906.875 MHz (33cm)               │
+│                                              │
+│ [ARES Tools] [ICS-213] [Traffic Log]        │
+└─────────────────────────────────────────────┘
+```
+
+### Compliance Validation
+
+MeshForge validates:
+- [ ] Callsign format (valid FCC format)
+- [ ] Encryption disabled
+- [ ] Frequency within amateur allocation
+- [ ] Power within limits
+- [ ] Identification interval
+
+## Developer Guidelines
+
+### Do's
+```python
+# Check amateur mode before transmission
+if config.amateur_mode:
+    # Ensure no encryption
+    assert not config.encryption_enabled
+    # Verify callsign set
+    assert validate_callsign(config.callsign)
+    # Include ID in packet
+    packet.source_id = config.callsign
+```
+
+### Don'ts
+```python
+# NEVER allow encryption bypass in ham mode
+if user_wants_encryption and config.amateur_mode:
+    raise ComplianceError("Encryption prohibited under Part 97")
+```
+
+## Testing for Compliance
+
+Before release, verify:
+
+1. **Mode Switching**
+   - Ham mode properly disables encryption
+   - Mode indicator clearly visible
+   - No encryption backdoors
+
+2. **Identification**
+   - Callsign transmitted correctly
+   - 10-minute interval maintained
+   - Clear format in packet headers
+
+3. **Frequency Validation**
+   - Stays within band limits
+   - Respects band plan
+   - Warns on shared allocations
+
+4. **Logging**
+   - Transmissions logged
+   - Timestamps accurate
+   - Exportable for FCC inquiry
+
+## Resources for Developers
+
+| Resource | URL |
+|----------|-----|
+| Part 97 Full Text | arrl.org/part-97-text |
+| ARRL Technical Info | arrl.org/technology |
+| AREDN Documentation | docs.arednmesh.org |
+| MeshForge Amateur Guide | (in-app help) |
+
+## Summary: The Amateur Developer's Oath
+
+```
+I will build tools that:
+✓ Respect Part 97 regulations
+✓ Default to compliant operation
+✓ Make compliance easy, violations hard
+✓ Support emergency communications
+✓ Serve the amateur radio community
+```
+""",
+                    has_assessment=True,
+                ),
+            ]
+        )
+        self.courses[ham_compliance_course.id] = ham_compliance_course
+
     def get_course(self, course_id: str) -> Optional[Course]:
         """Get a course by ID"""
         return self.courses.get(course_id)
