@@ -21,15 +21,38 @@
 
 **The first open-source tool to bridge Meshtastic and Reticulum (RNS) mesh networks.**
 
-MeshForge is a comprehensive network operations suite that enables:
-- **RNS-Meshtastic Gateway**: Bridge two independent mesh networks into a unified system
-- **Unified Node Tracking**: Monitor nodes from both Meshtastic and RNS on a single interactive map
-- **Full Configuration Management**: GUI editors for meshtasticd configs, RNS interfaces, and gateway settings
-- **RF Engineering Tools**: Line-of-sight calculator, frequency slot computation, link budget analysis
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  MESHTASTIC  ◄────►  MESHFORGE  ◄────►  RETICULUM (RNS)            │
+│   (LoRa)              (Bridge)           (Cryptographic Mesh)       │
+│                                                                      │
+│  • 915 MHz LoRa        • Unified Map      • Multi-transport         │
+│  • Simple setup        • Gateway Config   • E2E encryption          │
+│  • Wide adoption       • RF Tools         • 64+ hop routing         │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
-Designed for **RF engineers**, **network operators**, **scientific researchers**, and **amateur radio operators** (HAMs) who need reliable off-grid mesh communications with cryptographic security.
+MeshForge is a **Network Operations Center (NOC)** for heterogeneous off-grid mesh networks. It unifies two powerful but incompatible mesh ecosystems—**Meshtastic** and **Reticulum**—into a single manageable system.
 
-> **Note**: This project was formerly known as "Meshtasticd Interactive Installer". The old repository is deprecated - please use this one.
+### What Makes It Different?
+
+| Problem | MeshForge Solution |
+|---------|-------------------|
+| Meshtastic and RNS can't talk to each other | **Gateway bridge** routes messages between networks |
+| Managing two separate node lists | **Unified map** shows all nodes on one interactive display |
+| Complex config files scattered everywhere | **GUI editors** for meshtasticd, RNS interfaces, and gateway |
+| "Will my link work?" guesswork | **RF tools** calculate LOS, Fresnel zones, path loss |
+| Setup troubleshooting is painful | **Diagnostic wizard** identifies and fixes common issues |
+
+### Who Is It For?
+
+- **HAM Radio Operators** - Reliable emergency comms with cryptographic security
+- **Network Operators** - Manage city-scale mesh infrastructure
+- **RF Engineers** - Analyze propagation and plan deployments
+- **Researchers** - Deploy sensor networks in remote areas
+- **Developers** - Build apps on unified Meshtastic + RNS mesh
+
+> **Note**: Formerly "Meshtasticd Interactive Installer". The old repo is deprecated.
 
 ---
 
@@ -58,32 +81,25 @@ Designed for **RF engineers**, **network operators**, **scientific researchers**
 
 ## What is MeshForge?
 
-MeshForge is a **Network Operations Center (NOC)** for heterogeneous mesh networks, providing unified management of both Meshtastic and Reticulum (RNS) networks from a single interface.
+MeshForge follows the **Build → Test → Deploy → Monitor** lifecycle:
 
-| Capability | Description |
-|------------|-------------|
+| Phase | What You Can Do |
+|-------|-----------------|
 | **BUILD** | Install meshtasticd, configure RNS interfaces, set up gateway bridges |
-| **BRIDGE** | Connect Meshtastic LoRa networks with RNS cryptographic mesh networks |
-| **TEST** | RF line-of-sight analysis, frequency slot calculation, link budget planning |
-| **DEPLOY** | Activate configurations, manage services, enable boot persistence |
-| **MONITOR** | Unified node map showing both networks, real-time telemetry, message routing |
+| **TEST** | RF line-of-sight analysis, frequency slot calculation, diagnostic wizard |
+| **DEPLOY** | Activate configs, manage systemd services, enable boot persistence |
+| **BRIDGE** | Route messages between Meshtastic LoRa and RNS cryptographic networks |
+| **MONITOR** | Unified node map, real-time telemetry, message routing status |
 
-### Why MeshForge?
+### Technical Benefits
 
-**No other tool provides RNS-Meshtastic gateway bridging.** MeshForge enables:
-- Meshtastic nodes to communicate with RNS destinations
-- RNS applications (NomadNet, Sideband, LXMF) to reach Meshtastic devices
-- Unified position/telemetry sharing across both networks
-- Cryptographic end-to-end security via Reticulum's identity system
-
-### Who is it for?
-
-- **RF Engineers** designing mesh infrastructure and analyzing propagation
-- **Amateur Radio Operators** (HAMs) building reliable emergency comms
-- **Scientific Researchers** deploying sensor networks in remote areas
-- **Network Operators** managing heterogeneous mesh deployments
-- **Emergency Response Teams** needing interoperable off-grid communications
-- **Developers** building applications on Meshtastic and/or RNS
+| Feature | Benefit |
+|---------|---------|
+| **Bidirectional Gateway** | Meshtastic nodes talk to NomadNet, Sideband, LXMF apps |
+| **Position Sharing** | GPS coordinates flow between both networks |
+| **End-to-End Encryption** | Reticulum's cryptographic identity layer secures messages |
+| **Multi-Transport** | RNS works over LoRa, TCP, UDP, I2P, serial—simultaneously |
+| **Extensible Plugins** | Add MeshCore, MQTT, or custom integrations |
 
 ---
 
