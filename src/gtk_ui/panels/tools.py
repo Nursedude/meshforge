@@ -6,10 +6,20 @@ import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, GLib
+
+import json
+import math
+import os
+import shlex
+import shutil
+import socket
+import struct
 import subprocess
 import threading
-import socket
-import json
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
 from pathlib import Path
 
 
@@ -582,7 +592,6 @@ class ToolsPanel(Gtk.Box):
 
     def _fetch_system_stats(self):
         """Fetch system stats in background"""
-        import os
 
         # CPU usage
         try:
@@ -879,125 +888,19 @@ class ToolsPanel(Gtk.Box):
 
     def _on_site_planner(self, button):
         """Open Meshtastic Site Planner in browser"""
-        import os
-        url = "https://site.meshtastic.org/"
-        self._log("\n=== Meshtastic Site Planner ===")
-        self._log(f"Opening {url}")
-        self._log("\nFeatures:")
-        self._log("  • RF coverage prediction using ITM/Longley-Rice model")
-        self._log("  • Terrain analysis with NASA SRTM data")
-        self._log("  • Multi-node network planning")
-        self._log("  • Customizable antenna gain, cable loss, clutter")
-
-        def try_open():
-            # Get real user if running as sudo
-            user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
-
-            # Method 1: xdg-open as the real user
-            try:
-                result = subprocess.run(
-                    ['sudo', '-u', user, 'xdg-open', url],
-                    capture_output=True, timeout=10
-                )
-                if result.returncode == 0:
-                    GLib.idle_add(self._log, "Browser opened successfully")
-                    return
-            except Exception:
-                pass
-
-            # Method 2: Try common browsers directly
-            browsers = ['chromium-browser', 'firefox', 'epiphany-browser']
-            for browser in browsers:
-                try:
-                    subprocess.Popen(
-                        ['sudo', '-u', user, browser, url],
-                        start_new_session=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL
-                    )
-                    GLib.idle_add(self._log, f"Browser opened ({browser})")
-                    return
-                except Exception:
-                    continue
-
-            # Method 3: webbrowser module fallback
-            try:
-                import webbrowser
-                webbrowser.open(url)
-                GLib.idle_add(self._log, "Browser opened successfully")
-                return
-            except Exception:
-                pass
-
-            GLib.idle_add(self._log, "Could not open browser automatically")
-            GLib.idle_add(self._log, f"Visit manually: {url}")
-
-        threading.Thread(target=try_open, daemon=True).start()
+        self._log("\nFeatures: RF coverage (ITM model), terrain analysis, multi-node planning")
+        self._open_url_in_browser("https://site.meshtastic.org/", "Meshtastic Site Planner")
 
     def _on_line_of_sight(self, button):
         """Open RF Line of Sight tool in browser"""
-        import os
-        url = "https://www.scadacore.com/tools/rf-path/rf-line-of-sight/"
-        self._log("\n=== RF Line of Sight Tool ===")
-        self._log(f"Opening {url}")
-        self._log("\nFeatures:")
-        self._log("  • Elevation profile between two points")
-        self._log("  • Fresnel zone visualization")
-        self._log("  • Earth curvature calculation")
-        self._log("  • Free online tool - no account needed")
-        self._log("\nTip: Enter coordinates or click on the map to set endpoints")
-
-        def try_open():
-            # Get real user if running as sudo
-            user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
-
-            # Method 1: xdg-open as the real user
-            try:
-                result = subprocess.run(
-                    ['sudo', '-u', user, 'xdg-open', url],
-                    capture_output=True, timeout=10
-                )
-                if result.returncode == 0:
-                    GLib.idle_add(self._log, "Browser opened successfully")
-                    return
-            except Exception:
-                pass
-
-            # Method 2: Try common browsers directly
-            browsers = ['chromium-browser', 'firefox', 'epiphany-browser']
-            for browser in browsers:
-                try:
-                    subprocess.Popen(
-                        ['sudo', '-u', user, browser, url],
-                        start_new_session=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL
-                    )
-                    GLib.idle_add(self._log, f"Browser opened ({browser})")
-                    return
-                except Exception:
-                    continue
-
-            # Method 3: webbrowser module fallback
-            try:
-                import webbrowser
-                webbrowser.open(url)
-                GLib.idle_add(self._log, "Browser opened successfully")
-                return
-            except Exception:
-                pass
-
-            GLib.idle_add(self._log, "Could not open browser automatically")
-            GLib.idle_add(self._log, f"Visit manually: {url}")
-
-        threading.Thread(target=try_open, daemon=True).start()
+        self._log("\nFeatures: Elevation profile, Fresnel zones, Earth curvature")
+        self._open_url_in_browser(
+            "https://www.scadacore.com/tools/rf-path/rf-line-of-sight/",
+            "RF Line of Sight Tool"
+        )
 
     def _on_calculate_los(self, button):
         """Calculate RF Line of Sight between two points"""
-        import math
-        import json
-        import urllib.request
-        import urllib.error
 
         # Get coordinates
         try:
@@ -1109,9 +1012,6 @@ class ToolsPanel(Gtk.Box):
 
     def _on_visualize_los(self, button):
         """Open LOS visualization in browser"""
-        import os
-        import urllib.parse
-        from pathlib import Path
 
         # Get coordinates
         try:
@@ -1149,43 +1049,7 @@ class ToolsPanel(Gtk.Box):
         })
 
         url = f"file://{viz_path}?{params}"
-        self._log(f"\n=== Opening LOS Visualization ===")
-        self._log(f"URL: {url}")
-
-        def try_open():
-            user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
-
-            # Method 1: xdg-open as the real user
-            try:
-                result = subprocess.run(
-                    ['sudo', '-u', user, 'xdg-open', url],
-                    capture_output=True, timeout=10
-                )
-                if result.returncode == 0:
-                    GLib.idle_add(self._log, "Visualization opened in browser")
-                    return
-            except Exception:
-                pass
-
-            # Method 2: Try common browsers directly
-            browsers = ['chromium-browser', 'firefox', 'epiphany-browser']
-            for browser in browsers:
-                try:
-                    subprocess.Popen(
-                        ['sudo', '-u', user, browser, url],
-                        start_new_session=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL
-                    )
-                    GLib.idle_add(self._log, f"Opened in {browser}")
-                    return
-                except Exception:
-                    continue
-
-            GLib.idle_add(self._log, "Could not open browser automatically")
-            GLib.idle_add(self._log, f"Open manually: {url}")
-
-        threading.Thread(target=try_open, daemon=True).start()
+        self._open_url_in_browser(url, "LOS Visualization")
 
     def _on_link_budget(self, button):
         """Show link budget info"""
@@ -1264,7 +1128,6 @@ class ToolsPanel(Gtk.Box):
 
     def _run_multicast_test(self):
         """Run multicast test in background"""
-        import struct
         group = "224.0.0.69"
         port = 4403
 
@@ -1508,122 +1371,142 @@ class ToolsPanel(Gtk.Box):
         self._save_los_locations()
 
     # =====================
-    # Config Editor Methods
+    # Utility Methods
     # =====================
+
+    def _open_url_in_browser(self, url: str, description: str = ""):
+        """Open URL in browser with fallback methods. Thread-safe."""
+        if description:
+            self._log(f"\n=== {description} ===")
+        self._log(f"Opening {url}")
+
+        def try_open():
+            user = self._get_real_username()
+
+            # Method 1: xdg-open as the real user
+            try:
+                result = subprocess.run(
+                    ['sudo', '-u', user, 'xdg-open', url],
+                    capture_output=True, timeout=10
+                )
+                if result.returncode == 0:
+                    GLib.idle_add(lambda: self._log("Browser opened successfully"))
+                    return True
+            except Exception:
+                pass
+
+            # Method 2: Try common browsers directly
+            for browser in ['chromium-browser', 'firefox', 'epiphany-browser']:
+                try:
+                    subprocess.Popen(
+                        ['sudo', '-u', user, browser, url],
+                        start_new_session=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    GLib.idle_add(lambda: self._log(f"Browser opened ({browser})"))
+                    return True
+                except Exception:
+                    continue
+
+            # Method 3: webbrowser module fallback
+            try:
+                webbrowser.open(url)
+                GLib.idle_add(lambda: self._log("Browser opened"))
+                return True
+            except Exception:
+                pass
+
+            GLib.idle_add(lambda: self._log(f"Could not open browser. Visit: {url}"))
+            return False
+
+        threading.Thread(target=try_open, daemon=True).start()
 
     def _get_real_username(self):
         """Get the real username even when running as root via sudo"""
-        import os
         return os.environ.get('SUDO_USER', os.environ.get('USER', 'root'))
 
     def _get_real_user_home(self):
         """Get the real user's home directory"""
-        import os
         real_user = self._get_real_username()
         if real_user != 'root':
             return Path(f"/home/{real_user}")
         return Path.home()
 
+    def _launch_terminal_with_command(self, command: str, description: str = "") -> bool:
+        """Launch a terminal emulator with the given command. Returns True on success."""
+        terminals = [
+            ('lxterminal', f'lxterminal -e {command}'),
+            ('xfce4-terminal', f'xfce4-terminal -e {command}'),
+            ('gnome-terminal', f'gnome-terminal -- {command}'),
+            ('konsole', f'konsole -e {command}'),
+            ('xterm', f'xterm -e {command}'),
+        ]
+
+        for term_name, cmd in terminals:
+            if shutil.which(term_name):
+                subprocess.Popen(cmd, shell=True, start_new_session=True)
+                if description:
+                    self._log(f"{description} in {term_name}")
+                    self.main_window.set_status_message(description)
+                return True
+
+        self._log("No terminal emulator found")
+        self.main_window.set_status_message("No terminal emulator found")
+        return False
+
+    def _launch_desktop_app(self, app_name: str, package_hint: str = None) -> bool:
+        """Launch a desktop application. Returns True on success."""
+        if shutil.which(app_name):
+            subprocess.Popen([app_name], start_new_session=True)
+            self._log(f"Launching {app_name}...")
+            self.main_window.set_status_message(f"Launching {app_name}")
+            return True
+        else:
+            hint = f" Install with: sudo apt install {package_hint}" if package_hint else ""
+            self._log(f"{app_name} not found.{hint}")
+            self.main_window.set_status_message(f"{app_name} not installed")
+            return False
+
     def _edit_config(self, config_path):
         """Open a config file in terminal with nano"""
-        import shutil
-        import shlex
-        import os
-
         try:
             config_path = Path(config_path)
-
-            # Check if file exists
             if not config_path.exists():
                 self._log(f"File not found: {config_path}")
                 self.main_window.set_status_message(f"File not found: {config_path}")
                 return
 
-            self._log(f"Opening {config_path} in nano...")
-
-            # Find a terminal emulator
-            real_user = self._get_real_username()
-            is_root = os.geteuid() == 0
             safe_path = shlex.quote(str(config_path))
-
-            terminals = [
-                ('lxterminal', f'lxterminal -e nano {safe_path}'),
-                ('xfce4-terminal', f'xfce4-terminal -e nano {safe_path}'),
-                ('gnome-terminal', f'gnome-terminal -- nano {safe_path}'),
-                ('konsole', f'konsole -e nano {safe_path}'),
-                ('xterm', f'xterm -e nano {safe_path}'),
-            ]
-
-            for term_name, cmd in terminals:
-                if shutil.which(term_name):
-                    subprocess.Popen(cmd, shell=True, start_new_session=True)
-                    self._log(f"Opened {config_path.name} in {term_name}")
-                    self.main_window.set_status_message(f"Editing {config_path.name}")
-                    return
-
-            self._log("No terminal emulator found")
-            self.main_window.set_status_message("No terminal emulator found")
+            self._launch_terminal_with_command(f"nano {safe_path}", f"Editing {config_path.name}")
         except Exception as e:
             self._log(f"Error opening config: {e}")
             self.main_window.set_status_message(f"Error: {e}")
 
     def _edit_config_user(self, relative_path):
         """Open a user config file (relative to home) in terminal with nano"""
-        import shutil
-        import shlex
-        import os
-
         try:
             real_home = self._get_real_user_home()
             config_path = real_home / relative_path
 
-            # Create parent directory if needed
-            if not config_path.parent.exists():
-                config_path.parent.mkdir(parents=True, exist_ok=True)
-                self._log(f"Created directory: {config_path.parent}")
-
-            # Create file if it doesn't exist
+            # Create parent directory and file if needed
+            config_path.parent.mkdir(parents=True, exist_ok=True)
             if not config_path.exists():
                 config_path.touch()
-                self._log(f"Created empty config: {config_path}")
+                self._log(f"Created: {config_path}")
 
-            self._log(f"Opening {config_path} in nano...")
-
-            real_user = self._get_real_username()
-            is_root = os.geteuid() == 0
             safe_path = shlex.quote(str(config_path))
-            safe_user = shlex.quote(real_user)
+            real_user = self._get_real_username()
 
             # When running as root, run nano as the real user
-            if is_root and real_user != 'root':
-                user_cmd = f"sudo -i -u {safe_user} nano {safe_path}"
-                terminals = [
-                    ('lxterminal', f'lxterminal -e {user_cmd}'),
-                    ('xfce4-terminal', f'xfce4-terminal -e {user_cmd}'),
-                    ('gnome-terminal', f'gnome-terminal -- sudo -i -u {safe_user} nano {safe_path}'),
-                    ('konsole', f'konsole -e sudo -i -u {safe_user} nano {safe_path}'),
-                    ('xterm', f'xterm -e sudo -i -u {safe_user} nano {safe_path}'),
-                ]
+            if os.geteuid() == 0 and real_user != 'root':
+                cmd = f"sudo -i -u {shlex.quote(real_user)} nano {safe_path}"
             else:
-                terminals = [
-                    ('lxterminal', f'lxterminal -e nano {safe_path}'),
-                    ('xfce4-terminal', f'xfce4-terminal -e nano {safe_path}'),
-                    ('gnome-terminal', f'gnome-terminal -- nano {safe_path}'),
-                    ('konsole', f'konsole -e nano {safe_path}'),
-                    ('xterm', f'xterm -e nano {safe_path}'),
-                ]
+                cmd = f"nano {safe_path}"
 
-            for term_name, cmd in terminals:
-                if shutil.which(term_name):
-                    subprocess.Popen(cmd, shell=True, start_new_session=True)
-                    self._log(f"Opened {config_path.name} in {term_name}")
-                    self.main_window.set_status_message(f"Editing {config_path.name}")
-                    return
-
-            self._log("No terminal emulator found")
-            self.main_window.set_status_message("No terminal emulator found")
-        except PermissionError as e:
-            self._log(f"Permission denied: {e}")
+            self._launch_terminal_with_command(cmd, f"Editing {config_path.name}")
+        except PermissionError:
+            self._log("Permission denied")
             self.main_window.set_status_message("Permission denied")
         except Exception as e:
             self._log(f"Error: {e}")
@@ -1715,7 +1598,6 @@ class ToolsPanel(Gtk.Box):
 
     def _check_sdr_status(self):
         """Check SDR and OpenWebRX status"""
-        import shutil
 
         # Check OpenWebRX
         if shutil.which('openwebrx'):
@@ -1751,7 +1633,6 @@ class ToolsPanel(Gtk.Box):
     def _on_open_webrx(self, button):
         """Open OpenWebRX in browser"""
         try:
-            import webbrowser
             webbrowser.open('http://localhost:8073')
             self._log("Opening OpenWebRX at http://localhost:8073")
             self.main_window.set_status_message("Opening OpenWebRX in browser")
@@ -1791,7 +1672,6 @@ class ToolsPanel(Gtk.Box):
         self._log("Testing RTL-SDR device...")
 
         def run_test():
-            import shutil
             if not shutil.which('rtl_test'):
                 GLib.idle_add(lambda: self._log("rtl_test not found. Install with: sudo apt install rtl-sdr"))
                 return
@@ -1832,29 +1712,14 @@ class ToolsPanel(Gtk.Box):
 
     def _on_launch_gqrx(self, button):
         """Launch GQRX SDR receiver"""
-        import shutil
-        if shutil.which('gqrx'):
-            subprocess.Popen(['gqrx'], start_new_session=True)
-            self._log("Launching GQRX...")
-            self.main_window.set_status_message("Launching GQRX")
-        else:
-            self._log("GQRX not found. Install with: sudo apt install gqrx-sdr")
-            self.main_window.set_status_message("GQRX not installed")
+        self._launch_desktop_app('gqrx', 'gqrx-sdr')
 
     def _on_launch_cubicsdr(self, button):
         """Launch CubicSDR"""
-        import shutil
-        if shutil.which('CubicSDR'):
-            subprocess.Popen(['CubicSDR'], start_new_session=True)
-            self._log("Launching CubicSDR...")
-            self.main_window.set_status_message("Launching CubicSDR")
-        else:
-            self._log("CubicSDR not found. Install with: sudo apt install cubicsdr")
-            self.main_window.set_status_message("CubicSDR not installed")
+        self._launch_desktop_app('CubicSDR', 'cubicsdr')
 
     def _on_spectrum_scan(self, button):
         """Run RTL-SDR power spectrum scan"""
-        import shutil
         if not shutil.which('rtl_power'):
             self._log("rtl_power not found. Install with: sudo apt install rtl-sdr")
             return
