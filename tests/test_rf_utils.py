@@ -18,9 +18,9 @@ class TestHaversineDistance:
     """Test haversine distance calculations."""
 
     def test_hilo_to_honolulu(self):
-        """Hilo to Honolulu should be ~308 km."""
+        """Hilo to Honolulu should be ~337 km."""
         dist = haversine_distance(19.7297, -155.09, 21.3069, -157.8583)
-        assert 305_000 < dist < 315_000  # meters
+        assert 335_000 < dist < 340_000  # meters
 
     def test_same_point(self):
         """Same point should return 0."""
@@ -43,9 +43,9 @@ class TestFresnelRadius:
     """Test Fresnel zone radius calculations."""
 
     def test_915mhz_10km(self):
-        """915 MHz at 10km should be ~17m radius."""
+        """915 MHz at 10km should be ~29m radius."""
         radius = fresnel_radius(10, 0.915)
-        assert 15 < radius < 20
+        assert 27 < radius < 30
 
     def test_433mhz_10km(self):
         """Lower frequency = larger Fresnel zone."""
@@ -85,14 +85,14 @@ class TestEarthBulge:
     """Test Earth bulge calculations."""
 
     def test_10km(self):
-        """10km path should have ~2m bulge."""
+        """10km path should have ~1.5m bulge."""
         bulge = earth_bulge(10000)
-        assert 1.5 < bulge < 2.5
+        assert 1.4 < bulge < 1.6
 
     def test_50km(self):
-        """50km path should have ~49m bulge (scales with d^2)."""
+        """50km path should have ~37m bulge (scales with d^2)."""
         bulge = earth_bulge(50000)
-        assert 40 < bulge < 60
+        assert 35 < bulge < 40
 
     def test_short_distance(self):
         """1km should have negligible bulge."""
