@@ -48,11 +48,28 @@ MeshtasticdApp = MeshForgeApp
 class MeshForgeWindow(Adw.ApplicationWindow):
     """MeshForge main application window"""
 
+    # Window constraints
+    MIN_WIDTH = 800
+    MIN_HEIGHT = 600
+    DEFAULT_WIDTH = 1024
+    DEFAULT_HEIGHT = 768
+    SIDEBAR_COLLAPSE_WIDTH = 900  # Collapse sidebar below this width
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
         self.set_title(f"MeshForge v{__version__}")
-        self.set_default_size(900, 700)
+
+        # Set minimum size constraints
+        self.set_size_request(self.MIN_WIDTH, self.MIN_HEIGHT)
+
+        # Get monitor dimensions and set appropriate default size
+        default_width, default_height = self._get_smart_default_size()
+        self.set_default_size(default_width, default_height)
+
+        # Track sidebar visibility for responsive layout
+        self._sidebar_visible = True
+        self._sidebar_widget = None
 
         # Track subprocess for nano/terminal operations
         self.external_process = None
@@ -71,6 +88,70 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         # Check if we're resuming after reboot
         self._check_resume_state()
 
+    def _get_smart_default_size(self):
+        """Calculate smart default window size based on monitor dimensions"""
+        try:
+            # Get the display
+            display = Gdk.Display.get_default()
+            if display:
+                # Get all monitors
+                monitors = display.get_monitors()
+                if monitors and monitors.get_n_items() > 0:
+                    # Use primary or first monitor
+                    monitor = monitors.get_item(0)
+                    if monitor:
+                        geometry = monitor.get_geometry()
+                        mon_width = geometry.width
+                        mon_height = geometry.height
+
+                        # Use 75% of monitor size, but respect min/max bounds
+                        target_width = int(mon_width * 0.75)
+                        target_height = int(mon_height * 0.75)
+
+                        # Clamp to reasonable bounds
+                        width = max(self.MIN_WIDTH, min(target_width, 1600))
+                        height = max(self.MIN_HEIGHT, min(target_height, 1000))
+
+                        return width, height
+        except Exception:
+            pass
+
+        # Fallback to defaults
+        return self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT
+
+    def _setup_responsive_layout(self):
+        """Set up responsive layout handling for window resize"""
+        # Connect to window state changes for resize handling
+        self.connect("notify::default-width", self._on_window_resize)
+
+    def _on_window_resize(self, widget, param):
+        """Handle window resize for responsive layout"""
+        if not self._sidebar_widget:
+            return
+
+        width = self.get_width()
+        if width > 0:
+            if width < self.SIDEBAR_COLLAPSE_WIDTH and self._sidebar_visible:
+                # Hide sidebar on small screens
+                self._sidebar_widget.set_visible(False)
+                if hasattr(self, '_sidebar_separator'):
+                    self._sidebar_separator.set_visible(False)
+                self._sidebar_visible = False
+            elif width >= self.SIDEBAR_COLLAPSE_WIDTH and not self._sidebar_visible:
+                # Show sidebar on larger screens
+                self._sidebar_widget.set_visible(True)
+                if hasattr(self, '_sidebar_separator'):
+                    self._sidebar_separator.set_visible(True)
+                self._sidebar_visible = True
+
+    def toggle_sidebar(self):
+        """Manually toggle sidebar visibility (for menu button)"""
+        if self._sidebar_widget:
+            self._sidebar_visible = not self._sidebar_visible
+            self._sidebar_widget.set_visible(self._sidebar_visible)
+            if hasattr(self, '_sidebar_separator'):
+                self._sidebar_separator.set_visible(self._sidebar_visible)
+
     def _setup_keyboard_shortcuts(self):
         """Set up keyboard shortcuts for the window"""
         # Create key controller
@@ -85,6 +166,10 @@ class MeshForgeWindow(Adw.ApplicationWindow):
             if self.is_fullscreen():
                 self.unfullscreen()
                 return True
+        # F9 - toggle sidebar
+        elif keyval == Gdk.KEY_F9:
+            self.toggle_sidebar()
+            return True
         # F11 - toggle fullscreen
         elif keyval == Gdk.KEY_F11:
             if self.is_fullscreen():
@@ -96,6 +181,22 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         elif keyval == Gdk.KEY_q and (state & Gdk.ModifierType.CONTROL_MASK):
             self.get_application().quit()
             return True
+        # Ctrl+1 through Ctrl+9 - quick page navigation
+        elif state & Gdk.ModifierType.CONTROL_MASK:
+            nav_keys = {
+                Gdk.KEY_1: "dashboard",
+                Gdk.KEY_2: "service",
+                Gdk.KEY_3: "install",
+                Gdk.KEY_4: "config",
+                Gdk.KEY_5: "radio_config",
+                Gdk.KEY_6: "rns",
+                Gdk.KEY_7: "map",
+                Gdk.KEY_8: "hamclock",
+                Gdk.KEY_9: "tools",
+            }
+            if keyval in nav_keys:
+                self.content_stack.set_visible_child_name(nav_keys[keyval])
+                return True
         return False
 
     def _build_ui(self):
@@ -106,12 +207,21 @@ class MeshForgeWindow(Adw.ApplicationWindow):
 
         # Header bar with title and menu
         header = Adw.HeaderBar()
-        header.set_title_widget(Gtk.Label(label=f"Meshtasticd Manager v{__version__}"))
+        header.set_title_widget(Gtk.Label(label=f"MeshForge v{__version__}"))
+
+        # Sidebar toggle button (for responsive layout)
+        self._sidebar_toggle_btn = Gtk.Button()
+        self._sidebar_toggle_btn.set_icon_name("sidebar-show-symbolic")
+        self._sidebar_toggle_btn.set_tooltip_text("Toggle sidebar (F9)")
+        self._sidebar_toggle_btn.connect("clicked", lambda btn: self.toggle_sidebar())
+        header.pack_start(self._sidebar_toggle_btn)
 
         # Menu button
         menu_button = Gtk.MenuButton()
         menu_button.set_icon_name("open-menu-symbolic")
+        menu_button.set_tooltip_text("Application menu")
         menu = Gio.Menu()
+        menu.append("Toggle Sidebar", "app.toggle-sidebar")
         menu.append("About", "app.about")
         menu.append("Quit", "app.quit")
         menu_button.set_menu_model(menu)
@@ -149,15 +259,17 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         self._add_hardware_page()
         self._add_tools_page()
         self._add_aredn_page()
+        self._add_university_page()
         self._add_settings_page()
 
         # Left sidebar navigation (after content_stack exists)
         sidebar = self._create_sidebar()
+        self._sidebar_widget = sidebar  # Store reference for responsive layout
         content_box.append(sidebar)
 
-        # Separator
-        separator = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
-        content_box.append(separator)
+        # Separator (also needs to hide with sidebar)
+        self._sidebar_separator = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        content_box.append(self._sidebar_separator)
 
         # Add content stack to layout
         content_box.append(self.content_stack)
@@ -170,9 +282,17 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         GLib.timeout_add_seconds(5, self._update_status)
         self._update_status()
 
+        # Set up responsive layout handling
+        self._setup_responsive_layout()
+
     def _create_actions(self):
         """Create application actions"""
         app = self.get_application()
+
+        # Toggle sidebar action
+        sidebar_action = Gio.SimpleAction.new("toggle-sidebar", None)
+        sidebar_action.connect("activate", lambda *_: self.toggle_sidebar())
+        app.add_action(sidebar_action)
 
         # About action
         about_action = Gio.SimpleAction.new("about", None)
@@ -259,6 +379,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
             ("hardware", "Hardware Detection", "drive-harddisk-symbolic"),
             ("tools", "System Tools", "applications-utilities-symbolic"),
             ("aredn", "AREDN Mesh", "network-server-symbolic"),
+            ("university", "MeshForge University", "school-symbolic"),
             ("settings", "Settings", "preferences-system-symbolic"),
         ]
 
@@ -376,6 +497,13 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         panel = AREDNPanel(self)
         self.content_stack.add_named(panel, "aredn")
         self.aredn_panel = panel
+
+    def _add_university_page(self):
+        """Add the MeshForge University learning page"""
+        from .panels.university import UniversityPanel
+        panel = UniversityPanel(self)
+        self.content_stack.add_named(panel, "university")
+        self.university_panel = panel
 
     def _add_settings_page(self):
         """Add the settings page"""
