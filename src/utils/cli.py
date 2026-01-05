@@ -162,3 +162,46 @@ def show_table(title, headers, rows):
 def show_panel(content, title=None, style="cyan"):
     """Display a panel"""
     console.print(Panel(content, title=title, border_style=style))
+
+
+def run_meshtastic_async(args, callback, host='localhost', timeout=30):
+    """Run meshtastic CLI command asynchronously with callback.
+
+    Designed for GTK applications where CLI commands should run in
+    background threads. Uses common.run_cli_async_gtk if available.
+
+    Args:
+        args: Command arguments (without meshtastic prefix)
+        callback: Function called with (success: bool, stdout: str, stderr: str)
+        host: Meshtastic host (default: localhost)
+        timeout: Command timeout in seconds
+
+    Returns:
+        The started thread
+    """
+    try:
+        from utils.common import run_cli_async_gtk
+        cli_path = find_meshtastic_cli()
+        return run_cli_async_gtk(args, callback, cli_path=cli_path, host=host, timeout=timeout)
+    except ImportError:
+        # Fallback implementation
+        import threading
+
+        def do_run():
+            cli_path = find_meshtastic_cli()
+            if not cli_path:
+                callback(False, "", "Meshtastic CLI not found")
+                return
+
+            cmd = [cli_path, '--host', host] + args
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+                callback(result.returncode == 0, result.stdout, result.stderr)
+            except subprocess.TimeoutExpired:
+                callback(False, "", f"Command timed out after {timeout}s")
+            except Exception as e:
+                callback(False, "", str(e))
+
+        thread = threading.Thread(target=do_run, daemon=True)
+        thread.start()
+        return thread

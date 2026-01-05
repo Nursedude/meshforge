@@ -259,11 +259,11 @@ class ToolManager:
         console.print("\n[cyan]Installing/Updating Meshtastic CLI...[/cyan]")
 
         # Check if pipx is installed
-        pipx_check = subprocess.run(['which', 'pipx'], capture_output=True)
+        pipx_check = subprocess.run(['which', 'pipx'], capture_output=True, timeout=5)
         if pipx_check.returncode != 0:
             console.print("[yellow]pipx not found, installing...[/yellow]")
-            subprocess.run(['sudo', 'apt', 'install', '-y', 'pipx'], check=False)
-            subprocess.run(['pipx', 'ensurepath'], check=False)
+            subprocess.run(['sudo', 'apt', 'install', '-y', 'pipx'], check=False, timeout=180)
+            subprocess.run(['pipx', 'ensurepath'], check=False, timeout=30)
 
         with Progress(
             SpinnerColumn(),
@@ -315,11 +315,13 @@ class ToolManager:
             try:
                 subprocess.run(
                     ['sudo', 'apt', 'install', '-y'] + missing,
-                    check=True
+                    check=True, timeout=300
                 )
                 console.print("[green]Network tools installed successfully![/green]")
             except subprocess.CalledProcessError as e:
                 console.print(f"[red]Installation failed: {e}[/red]")
+            except subprocess.TimeoutExpired:
+                console.print("[red]Installation timed out[/red]")
 
         input("\nPress Enter to continue...")
 
@@ -395,22 +397,24 @@ class ToolManager:
         if missing_apt:
             console.print("\n[cyan]Installing apt packages...[/cyan]")
             try:
-                subprocess.run(['sudo', 'apt', 'install', '-y'] + missing_apt, check=True)
+                subprocess.run(['sudo', 'apt', 'install', '-y'] + missing_apt, check=True, timeout=300)
             except subprocess.CalledProcessError:
                 console.print("[red]Some apt packages failed to install[/red]")
+            except subprocess.TimeoutExpired:
+                console.print("[red]APT installation timed out[/red]")
 
         # Install pip packages
         for pkg in missing_pip:
             console.print(f"\n[cyan]Installing {pkg}...[/cyan]")
             subprocess.run(
                 ['pip', 'install', '--break-system-packages', pkg],
-                check=False
+                check=False, timeout=120
             )
 
         # Install pipx packages
         for pkg in missing_pipx:
             console.print(f"\n[cyan]Installing {pkg}...[/cyan]")
-            subprocess.run(['pipx', 'install', f'{pkg}[cli]', '--force'], check=False)
+            subprocess.run(['pipx', 'install', f'{pkg}[cli]', '--force'], check=False, timeout=120)
 
         console.print("\n[green]Installation complete![/green]")
         input("\nPress Enter to continue...")

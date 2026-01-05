@@ -6,14 +6,30 @@ import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, GLib, Gio
-import json
 from pathlib import Path
+
+# Use centralized settings manager
+try:
+    from utils.common import SettingsManager
+    HAS_SETTINGS_MANAGER = True
+except ImportError:
+    HAS_SETTINGS_MANAGER = False
 
 
 class SettingsPanel(Gtk.Box):
     """Settings panel with theme, preferences, and simulation options"""
 
-    SETTINGS_FILE = Path.home() / ".config" / "meshforge" / "settings.json"
+    # Settings defaults
+    SETTINGS_DEFAULTS = {
+        "theme": "dark",        # "system", "dark", "light"
+        "dark_mode": True,      # Legacy, kept for compatibility
+        "auto_refresh": True,
+        "refresh_interval": 5,
+        "show_node_ids": True,
+        "compact_mode": False,
+        "simulation_mode": "disabled",
+        "simulation_preset": "hawaii",  # "hawaii" or "generic"
+    }
 
     # Theme options
     THEME_OPTIONS = [
@@ -39,41 +55,46 @@ class SettingsPanel(Gtk.Box):
         self.set_margin_top(20)
         self.set_margin_bottom(20)
 
-        self._settings = self._load_settings()
+        # Use centralized settings manager
+        if HAS_SETTINGS_MANAGER:
+            self._settings_mgr = SettingsManager("settings", defaults=self.SETTINGS_DEFAULTS)
+            self._settings = self._settings_mgr.all()
+        else:
+            # Fallback to legacy method
+            self._settings = self._load_settings_legacy()
+
         self._build_ui()
         self._apply_settings()
 
-    def _load_settings(self):
-        """Load settings from file"""
-        defaults = {
-            "theme": "dark",        # "system", "dark", "light"
-            "dark_mode": True,      # Legacy, kept for compatibility
-            "auto_refresh": True,
-            "refresh_interval": 5,
-            "show_node_ids": True,
-            "compact_mode": False,
-            "simulation_mode": "disabled",
-            "simulation_preset": "hawaii",  # "hawaii" or "generic"
-        }
-
+    def _load_settings_legacy(self):
+        """Legacy settings load for fallback"""
+        import json
+        settings_file = Path.home() / ".config" / "meshforge" / "settings.json"
+        defaults = self.SETTINGS_DEFAULTS.copy()
         try:
-            if self.SETTINGS_FILE.exists():
-                with open(self.SETTINGS_FILE) as f:
+            if settings_file.exists():
+                with open(settings_file) as f:
                     saved = json.load(f)
                     defaults.update(saved)
         except Exception as e:
             print(f"[Settings] Error loading settings: {e}")
-
         return defaults
 
     def _save_settings(self):
         """Save settings to file"""
-        try:
-            self.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.SETTINGS_FILE, 'w') as f:
-                json.dump(self._settings, f, indent=2)
-        except Exception as e:
-            print(f"[Settings] Error saving settings: {e}")
+        if HAS_SETTINGS_MANAGER:
+            self._settings_mgr.update(self._settings)
+            self._settings_mgr.save()
+        else:
+            # Legacy fallback
+            import json
+            settings_file = Path.home() / ".config" / "meshforge" / "settings.json"
+            try:
+                settings_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(settings_file, 'w') as f:
+                    json.dump(self._settings, f, indent=2)
+            except Exception as e:
+                print(f"[Settings] Error saving settings: {e}")
 
     def _build_ui(self):
         """Build the settings UI"""

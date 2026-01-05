@@ -16,11 +16,17 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, GLib, Pango
 import threading
-import json
 import logging
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Use centralized settings manager
+try:
+    from utils.common import SettingsManager
+    HAS_SETTINGS_MANAGER = True
+except ImportError:
+    HAS_SETTINGS_MANAGER = False
 
 # Import AREDN utilities
 try:
@@ -37,7 +43,14 @@ except ImportError:
 class AREDNPanel(Gtk.Box):
     """Panel for AREDN mesh network integration"""
 
-    SETTINGS_FILE = Path.home() / ".config" / "meshforge" / "aredn.json"
+    # Settings defaults
+    SETTINGS_DEFAULTS = {
+        "scan_subnet": "10.0.0.0/24",
+        "timeout": 3,
+        "auto_refresh": False,
+        "refresh_interval": 60,
+        "known_nodes": [],
+    }
 
     def __init__(self, main_window):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -48,25 +61,27 @@ class AREDNPanel(Gtk.Box):
         self.set_margin_top(20)
         self.set_margin_bottom(20)
 
-        self._settings = self._load_settings()
+        # Use centralized settings manager
+        if HAS_SETTINGS_MANAGER:
+            self._settings_mgr = SettingsManager("aredn", defaults=self.SETTINGS_DEFAULTS)
+            self._settings = self._settings_mgr.all()
+        else:
+            self._settings = self._load_settings_legacy()
+
         self._nodes: dict[str, AREDNNode] = {}
         self._scanner = None
         self._scanning = False
 
         self._build_ui()
 
-    def _load_settings(self) -> dict:
-        """Load AREDN settings"""
-        defaults = {
-            "scan_subnet": "10.0.0.0/24",
-            "timeout": 3,
-            "auto_refresh": False,
-            "refresh_interval": 60,
-            "known_nodes": [],
-        }
+    def _load_settings_legacy(self) -> dict:
+        """Legacy settings load for fallback"""
+        import json
+        settings_file = Path.home() / ".config" / "meshforge" / "aredn.json"
+        defaults = self.SETTINGS_DEFAULTS.copy()
         try:
-            if self.SETTINGS_FILE.exists():
-                with open(self.SETTINGS_FILE) as f:
+            if settings_file.exists():
+                with open(settings_file) as f:
                     saved = json.load(f)
                     defaults.update(saved)
         except Exception as e:
@@ -75,12 +90,19 @@ class AREDNPanel(Gtk.Box):
 
     def _save_settings(self):
         """Save AREDN settings"""
-        try:
-            self.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.SETTINGS_FILE, 'w') as f:
-                json.dump(self._settings, f, indent=2)
-        except Exception as e:
-            logger.error(f"Error saving AREDN settings: {e}")
+        if HAS_SETTINGS_MANAGER:
+            self._settings_mgr.update(self._settings)
+            self._settings_mgr.save()
+        else:
+            # Legacy fallback
+            import json
+            settings_file = Path.home() / ".config" / "meshforge" / "aredn.json"
+            try:
+                settings_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(settings_file, 'w') as f:
+                    json.dump(self._settings, f, indent=2)
+            except Exception as e:
+                logger.error(f"Error saving AREDN settings: {e}")
 
     def _build_ui(self):
         """Build the AREDN panel UI"""
