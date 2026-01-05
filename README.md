@@ -17,7 +17,7 @@
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-yellow.svg)](https://python.org)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20Linux-orange.svg)](https://www.raspberrypi.org/)
-[![Tests](https://img.shields.io/badge/tests-55%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-70%20passing-brightgreen.svg)](tests/)
 
 **The first open-source tool to bridge Meshtastic and Reticulum (RNS) mesh networks.**
 
@@ -36,12 +36,14 @@ Designed for **RF engineers**, **network operators**, **scientific researchers**
 ## Table of Contents
 
 - [What is MeshForge?](#what-is-meshforge)
+- [Support Levels](#support-levels)
 - [RNS-Meshtastic Gateway](#rns-meshtastic-gateway)
 - [Quick Start](#quick-start)
 - [Interfaces](#interfaces)
 - [Features](#features)
 - [Frequency Slot Calculator](#frequency-slot-calculator)
 - [Gateway Diagnostic Wizard](#gateway-diagnostic-wizard)
+- [Plugin System](#plugin-system)
 - [Lightweight Monitor (No Sudo)](#lightweight-monitor-no-sudo)
 - [Supported Hardware](#supported-hardware)
 - [Installation](#installation)
@@ -82,6 +84,80 @@ MeshForge is a **Network Operations Center (NOC)** for heterogeneous mesh networ
 - **Network Operators** managing heterogeneous mesh deployments
 - **Emergency Response Teams** needing interoperable off-grid communications
 - **Developers** building applications on Meshtastic and/or RNS
+
+---
+
+## Support Levels
+
+MeshForge uses a **tiered support system** to communicate the maturity and integration level of each feature:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      MESHFORGE SUPPORT LEVELS                        │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│  ✅ FULLY INTEGRATED    Features with tests, GUI panels, and         │
+│     (Core)              full functionality built into MeshForge      │
+│                                                                       │
+│  🔧 PLUGIN STUBS        Architecture ready, awaiting full            │
+│     (Extensible)        implementation or external library deps      │
+│                                                                       │
+│  📋 PLANNED             On roadmap, not yet implemented              │
+│     (Future)                                                          │
+│                                                                       │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### ✅ Fully Integrated (Core)
+
+These features are fully tested and production-ready:
+
+| Feature | Tests | Description |
+|---------|-------|-------------|
+| **GTK Desktop UI** | ✅ | Full tabbed interface with all panels |
+| **Web UI** | ✅ | Browser-based interface with password auth |
+| **Terminal TUI** | ✅ | SSH-friendly terminal interface |
+| **Meshtastic Integration** | ✅ | Install, configure, monitor meshtasticd |
+| **Radio Configuration** | ✅ | Full device settings with freq calculator |
+| **Hardware Detection** | ✅ | USB, SPI HAT, I2C device detection |
+| **Node Monitor** | ✅ | Real-time node tracking (no sudo) |
+| **RF Tools** | 13 tests | Haversine, Fresnel, FSPL, Earth bulge |
+| **Gateway Diagnostic Wizard** | 18 tests | AI-like troubleshooting for RNS/Meshtastic |
+| **Security Validation** | 24 tests | Input validation, subprocess safety |
+
+### 🔧 Plugin Stubs (Extensible)
+
+Plugin architecture is complete with 15 tests. These plugins have **stub implementations** ready for extension:
+
+| Plugin | Type | Status | Description |
+|--------|------|--------|-------------|
+| **mqtt-bridge** | Integration | Stub | MQTT for Home Assistant/Node-RED |
+| **meshcore** | Protocol | Stub | MeshCore protocol (64 hops, repeater routing) |
+| **meshing-around** | Integration | Stub | Bot framework (games, alerts, automation) |
+
+**What "stub" means:**
+- Plugin class structure is complete
+- Metadata, activate/deactivate methods implemented
+- Core functionality awaits external library integration
+- Community contributions welcome!
+
+### 📋 Planned (Future)
+
+| Feature | Priority | Notes |
+|---------|----------|-------|
+| LXMF/NomadNet UI | High | RNS messaging integration |
+| RNODE detection | Medium | LoRa hardware for RNS |
+| Node flashing | Medium | Flash firmware to USB devices |
+| MQTT dashboard | Low | Real-time metrics via MQTT |
+| I2P overlay | Low | Anonymous network transport |
+
+### Understanding the Icons
+
+Throughout MeshForge documentation:
+- ✅ = Fully working, tested, production-ready
+- 🔧 = Plugin stub, architecture ready, needs implementation
+- ⚠️ = Limited support or experimental
+- 📋 = Planned for future release
 
 ---
 
@@ -369,6 +445,120 @@ python3 src/cli/diagnose.py --gateway
 
 ---
 
+## Plugin System
+
+MeshForge features an **extensible plugin architecture** for adding new protocols, integrations, and tools:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      PLUGIN ARCHITECTURE                             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│   PluginManager                                                       │
+│        │                                                              │
+│        ├── register(plugin_class)     # Add plugin to registry       │
+│        ├── activate(name)             # Enable plugin                 │
+│        ├── deactivate(name)           # Disable plugin                │
+│        └── list_by_type(type)         # Filter by category           │
+│                                                                       │
+│   Plugin Types:                                                       │
+│   ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐│
+│   │ PanelPlugin  │ │ Integration  │ │ ToolPlugin   │ │ Protocol     ││
+│   │ (UI panels)  │ │   Plugin     │ │ (utilities)  │ │   Plugin     ││
+│   │              │ │ (bridges)    │ │              │ │ (mesh types) ││
+│   └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘│
+│                                                                       │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Plugin Types
+
+| Type | Base Class | Purpose | Example |
+|------|------------|---------|---------|
+| **Panel** | `PanelPlugin` | Add new UI tabs/views | Custom dashboard |
+| **Integration** | `IntegrationPlugin` | Bridge to external services | MQTT, meshing-around |
+| **Tool** | `ToolPlugin` | Add utility functions | RF calculators |
+| **Protocol** | `ProtocolPlugin` | Support new mesh protocols | MeshCore |
+
+### Available Plugins
+
+| Plugin | Type | Status | Features |
+|--------|------|--------|----------|
+| **mqtt-bridge** | Integration | 🔧 Stub | Home Assistant, Node-RED, custom dashboards |
+| **meshcore** | Protocol | 🔧 Stub | 64-hop routing, fixed repeaters, low congestion |
+| **meshing-around** | Integration | 🔧 Stub | Games (DopeWars), alerts, LLM chat, asset tracking |
+
+### Using Plugins
+
+```python
+from utils.plugins import PluginManager
+from plugins.mqtt_bridge import MQTTBridgePlugin
+from plugins.meshcore import MeshCorePlugin
+
+# Initialize manager
+manager = PluginManager()
+
+# Register plugins
+manager.register(MQTTBridgePlugin)
+manager.register(MeshCorePlugin)
+
+# Activate a plugin
+manager.activate("mqtt-bridge")
+
+# List all protocol plugins
+protocols = manager.list_by_type(PluginType.PROTOCOL)
+```
+
+### Creating a Plugin
+
+```python
+from utils.plugins import IntegrationPlugin, PluginMetadata, PluginType
+
+class MyPlugin(IntegrationPlugin):
+    @staticmethod
+    def get_metadata() -> PluginMetadata:
+        return PluginMetadata(
+            name="my-plugin",
+            version="1.0.0",
+            description="My custom integration",
+            author="Your Name",
+            plugin_type=PluginType.INTEGRATION,
+            dependencies=["some-package"],
+        )
+
+    def activate(self) -> None:
+        # Called when plugin is enabled
+        pass
+
+    def deactivate(self) -> None:
+        # Called when plugin is disabled
+        pass
+
+    def connect(self) -> bool:
+        # IntegrationPlugin: connect to external service
+        return True
+
+    def disconnect(self) -> None:
+        # IntegrationPlugin: disconnect from service
+        pass
+```
+
+### MeshCore vs Meshtastic
+
+MeshCore is an **alternative mesh protocol** with different design goals:
+
+| Feature | Meshtastic | MeshCore |
+|---------|------------|----------|
+| Routing | Client flooding | Fixed repeaters |
+| Max Hops | 7 | 64 |
+| Radio Congestion | Higher | Lower |
+| Battery Life | Good | Better |
+| Compatibility | Wide | Growing |
+
+**Note**: MeshCore and Meshtastic are **not directly compatible** at the radio level, but both can use **Reticulum (RNS)** as a unifying transport layer.
+
+---
+
 ## Lightweight Monitor (No Sudo)
 
 Need a quick way to check your mesh network without root access? Use the standalone monitor:
@@ -586,17 +776,24 @@ meshforge/
 │   │   ├── network.py        # Network diagnostics
 │   │   └── rf_tools.py       # RF calculations
 │   │
-│   └── utils/
-│       ├── system.py         # System utilities
-│       ├── cli.py            # CLI path detection
-│       ├── emoji.py          # Terminal emoji support
-│       ├── rf.py             # RF calculations (tested)
-│       └── gateway_diagnostic.py  # Gateway setup wizard
+│   ├── utils/
+│   │   ├── system.py         # System utilities
+│   │   ├── cli.py            # CLI path detection
+│   │   ├── emoji.py          # Terminal emoji support
+│   │   ├── rf.py             # RF calculations (tested)
+│   │   ├── plugins.py        # Plugin architecture
+│   │   └── gateway_diagnostic.py  # Gateway setup wizard
+│   │
+│   └── plugins/              # Extensible plugin system
+│       ├── mqtt_bridge.py    # MQTT integration (stub)
+│       ├── meshcore.py       # MeshCore protocol (stub)
+│       └── meshing_around.py # Bot framework (stub)
 │
 ├── tests/
 │   ├── test_security.py      # Security validation tests (24)
 │   ├── test_rf_utils.py      # RF calculation tests (13)
-│   └── test_gateway_diagnostic.py  # Diagnostic tests (18)
+│   ├── test_gateway_diagnostic.py  # Diagnostic tests (18)
+│   └── test_plugins.py       # Plugin architecture tests (15)
 │
 ├── assets/
 │   ├── shaka.svg             # Shaka icon (detailed)
@@ -774,10 +971,11 @@ source venv/bin/activate
 # Install dev dependencies
 pip install rich textual flask meshtastic
 
-# Run tests (TDD approach)
+# Run tests (TDD approach - 70 total)
 python3 tests/test_security.py      # 24 security tests
 python3 tests/test_rf_utils.py      # 13 RF calculation tests
 python3 tests/test_gateway_diagnostic.py  # 18 diagnostic tests
+python3 tests/test_plugins.py       # 15 plugin architecture tests
 
 # Verify syntax
 python3 -m py_compile src/**/*.py
