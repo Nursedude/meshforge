@@ -1211,6 +1211,420 @@ A production-ready monitoring component with:
         )
         self.courses[ai_dev_course.id] = ai_dev_course
 
+        # Course 8: Automated Code Review (Auto-Claude principles)
+        auto_review_course = Course(
+            id="auto-review",
+            title="Automated Code Review",
+            description="MeshForge Auto-Review system based on Auto-Claude principles",
+            difficulty=Difficulty.ADVANCED,
+            icon="applications-engineering-symbolic",
+            estimated_hours=2.0,
+            tags=["review", "auto-claude", "security", "reliability", "automation"],
+            lessons=[
+                Lesson(
+                    id="ar-01-intro",
+                    title="Understanding the Auto-Review System",
+                    duration_minutes=15,
+                    content="""# MeshForge Auto-Review System
+
+The Auto-Review system provides systematic, reproducible code reviews inspired by
+Auto-Claude's autonomous multi-agent architecture.
+
+## What is Auto-Review?
+
+An orchestrated review system using 4 specialized agents:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    REVIEW ORCHESTRATOR                       │
+├─────────────┬─────────────┬─────────────┬───────────────────┤
+│  Security   │ Redundancy  │ Performance │   Reliability     │
+│   Agent     │   Agent     │   Agent     │     Agent         │
+└─────────────┴─────────────┴─────────────┴───────────────────┘
+```
+
+## Triggering Auto-Review
+
+Request a full review with phrases like:
+- "exhaustive code review"
+- "security review"
+- "reliability check"
+- "clean up redundancy"
+
+## Foundation Principles
+
+All reviews follow MeshForge's Ethical Hierarchy:
+
+```
+1. Safety First    - Never compromise human safety
+2. Privacy Default - Encryption is non-negotiable
+3. Accessibility   - Technology serves all users
+4. Transparency    - Open source, open knowledge
+5. Sustainability  - Long-term over short-term
+```
+
+## AI Autonomy Spectrum
+
+```
+┌────────────────────────────────────────────────────────┐
+│              AI REVIEW ASSISTANCE SPECTRUM              │
+├────────────────────────────────────────────────────────┤
+│   Report Only  │  Suggest Fix   │  Auto-Fix Safe      │
+│  ──────────── │ ──────────────│ ────────────────     │
+│   AI finds    │ AI recommends  │ AI fixes low-risk   │
+│   issues      │ human approves │ issues directly     │
+└────────────────────────────────────────────────────────┘
+```
+""",
+                    resources=[
+                        {"title": "Auto-Review Principles", "url": ".claude/foundations/auto_review_principles.md"},
+                    ]
+                ),
+                Lesson(
+                    id="ar-02-security",
+                    title="Security Agent Deep Dive",
+                    duration_minutes=20,
+                    content="""# Security Agent
+
+The Security Agent scans for vulnerabilities using priority-based patterns.
+
+## Critical Vulnerability Patterns
+
+| Pattern | Risk | Auto-Fix? |
+|---------|------|-----------|
+| `shell=True` | Command injection | ✓ Yes |
+| `eval()` | Code injection | ✗ No |
+| `pickle.load` | Deserialization | ✗ No |
+| Hardcoded credentials | Data exposure | ✗ No |
+
+## Search Patterns
+
+```python
+# High priority
+"shell=True"                    # Command injection risk
+"eval("                         # Code injection
+"exec("                         # Code execution
+"os.system"                     # Command injection
+
+# Medium priority
+"password.*=.*['\"]"            # Hardcoded credentials
+"api_key.*=.*['\"]"             # Exposed API keys
+```
+
+## Fix Protocol
+
+1. **shell=True** → Convert to argument lists with `shlex.split()`
+2. **Hardcoded secrets** → Move to environment variables
+3. **Path concatenation** → Use `pathlib` with validation
+4. **Unsanitized input** → Add validation before use
+
+## Example Fix
+
+```python
+# BEFORE (vulnerable)
+def run_command(user_input):
+    subprocess.run(f"meshtastic {user_input}", shell=True)
+
+# AFTER (secure)
+ALLOWED_ARGS = {'--info', '--nodes', '--ch-index'}
+
+def run_command(user_input: str):
+    if user_input not in ALLOWED_ARGS:
+        raise ValueError("Invalid command")
+    subprocess.run(['meshtastic', user_input], shell=False)
+```
+""",
+                    has_assessment=True,
+                ),
+                Lesson(
+                    id="ar-03-redundancy",
+                    title="Redundancy Agent Deep Dive",
+                    duration_minutes=15,
+                    content="""# Redundancy Agent
+
+The Redundancy Agent identifies duplicate code and opportunities for consolidation.
+
+## Common Redundancy Patterns
+
+### Object Instantiation
+
+```python
+# PROBLEM: Multiple Console() instances
+from rich.console import Console
+console = Console()  # Repeated 30+ times
+
+# SOLUTION: Singleton pattern
+from utils.console import console  # Single import
+```
+
+### Function Duplication
+
+```python
+# PROBLEM: check_root() defined in 4 files
+def check_root():
+    return os.geteuid() == 0
+
+# SOLUTION: Centralized utility
+from utils.system import require_root
+```
+
+## MeshForge Centralized Utilities
+
+| Utility | Location | Replaces |
+|---------|----------|----------|
+| `console` | `utils/console.py` | Console() instances |
+| `get_logger()` | `utils/logging_config.py` | Logger setups |
+| `require_root()` | `utils/system.py` | Root check functions |
+| `MeshtasticPaths` | `utils/paths.py` | Hardcoded paths |
+
+## DRY Principle
+
+Don't Repeat Yourself - every piece of knowledge should have:
+- **Single authoritative source**
+- **Consistent behavior**
+- **One place to update**
+
+## When to Consolidate
+
+```
+IF (pattern appears 3+ times) AND (behavior is identical):
+    CREATE centralized utility
+    REFACTOR to use utility
+    REMOVE duplicates
+```
+""",
+                    has_assessment=True,
+                ),
+                Lesson(
+                    id="ar-04-performance",
+                    title="Performance Agent Deep Dive",
+                    duration_minutes=15,
+                    content="""# Performance Agent
+
+The Performance Agent identifies bottlenecks and resource management issues.
+
+## Key Focus Areas
+
+### 1. Blocking Operations
+
+```python
+# PROBLEM: No timeout
+result = subprocess.run(['meshtastic', '--info'])
+
+# SOLUTION: Always add timeout
+result = subprocess.run(['meshtastic', '--info'], timeout=30)
+```
+
+### 2. Timer Management
+
+```python
+# PROBLEM: Timers never cleaned up
+self.timer_id = GLib.timeout_add(1000, self.update)
+
+# SOLUTION: Track and cleanup
+class Panel:
+    def __init__(self):
+        self.timer_id = GLib.timeout_add(1000, self.update)
+        self.connect("unrealize", self._cleanup)
+
+    def _cleanup(self, widget):
+        if self.timer_id:
+            GLib.source_remove(self.timer_id)
+```
+
+### 3. Resource Management
+
+```python
+# PROBLEM: Resources not properly closed
+file = open(path)
+data = file.read()
+# file never closed if exception occurs
+
+# SOLUTION: Context manager
+with open(path) as file:
+    data = file.read()
+```
+
+## Performance Patterns
+
+| Issue | Detection | Fix |
+|-------|-----------|-----|
+| Blocking I/O | No timeout param | Add timeout |
+| Timer leak | No cleanup | Add unrealize handler |
+| Memory leak | Global accumulation | Scope properly |
+| Loop inefficiency | String concat in loop | Use join() |
+
+## Mesh-Specific Performance
+
+- **API timeouts**: 30s for TCP operations
+- **Serial timeouts**: 5s for device I/O
+- **Network requests**: 10s with retry logic
+""",
+                    has_assessment=True,
+                ),
+                Lesson(
+                    id="ar-05-reliability",
+                    title="Reliability Agent Deep Dive",
+                    duration_minutes=15,
+                    content="""# Reliability Agent
+
+The Reliability Agent ensures code handles errors gracefully and edge cases safely.
+
+## Error Handling Patterns
+
+### Bare Except Clauses
+
+```python
+# PROBLEM: Catches everything including SystemExit
+try:
+    risky_operation()
+except:
+    pass
+
+# SOLUTION: Specific exceptions
+try:
+    risky_operation()
+except (OSError, ValueError) as e:
+    logger.error(f"Operation failed: {e}")
+```
+
+### Index Access Safety
+
+```python
+# PROBLEM: No bounds check
+first_item = items[0]
+
+# SOLUTION: Validate first
+if items:
+    first_item = items[0]
+else:
+    first_item = None  # or default
+```
+
+### Dictionary Access
+
+```python
+# PROBLEM: KeyError if missing
+value = config['setting']
+
+# SOLUTION: Safe access
+value = config.get('setting', default_value)
+```
+
+## User Archetype Validation
+
+Code must work for all MeshForge user types:
+
+| Archetype | Reliability Focus |
+|-----------|-------------------|
+| Prepared Pragmatist | Predictable behavior, no surprises |
+| Technical Explorer | Advanced options don't crash |
+| Community Builder | Group features stable under load |
+| Emergency Responder | Zero failures in critical paths |
+
+## Stress Response Design
+
+Code handling emergencies must:
+
+```
+Human Response    → Code Requirement
+─────────────────────────────────────────────────
+Tunnel vision     → Single obvious primary action
+Memory impairment → On-screen guidance, no memorization
+Motor degradation → Large touch targets, forgiving inputs
+Time pressure     → Instant feedback, progress indicators
+```
+""",
+                    has_assessment=True,
+                ),
+                Lesson(
+                    id="ar-06-practical",
+                    title="Running an Auto-Review",
+                    duration_minutes=20,
+                    content="""# Practical: Initiating Auto-Review
+
+Learn how to trigger and interpret auto-review results.
+
+## Triggering a Review
+
+To initiate the full review protocol, use phrases like:
+
+```
+"Please run an exhaustive code review on MeshForge"
+
+"Security review of the GTK panels"
+
+"Check reliability in the gateway module"
+
+"Clean up redundancy and optimize performance"
+```
+
+## Review Scope Control
+
+### Full Review (All 4 Agents)
+> "exhaustive code review"
+
+### Single Agent
+> "run security review" → Security Agent only
+> "check reliability" → Reliability Agent only
+
+### Targeted Scope
+> "security review of src/gateway/" → Scoped to directory
+> "reliability check for amateur_panel.py" → Scoped to file
+
+## Interpreting Results
+
+Each agent produces structured output:
+
+```markdown
+## Security Agent Results
+
+### Summary
+- Files scanned: 47
+- Issues found: 3 (2 HIGH, 1 MEDIUM)
+
+### HIGH Priority
+| File | Line | Issue | Fix |
+|------|------|-------|-----|
+| tools.py | 142 | shell=True | Use argument list |
+| rns.py | 89 | shell=True | Use shlex.split() |
+
+### Applied Fixes
+- [x] Fixed shell=True in tools.py:142
+- [x] Fixed shell=True in rns.py:89
+```
+
+## Post-Review Actions
+
+1. **Review auto-applied fixes** - Verify correctness
+2. **Address manual items** - Items requiring human decision
+3. **Run tests** - Ensure fixes didn't break anything
+4. **Commit changes** - With descriptive message
+
+## Creating Custom Rules
+
+Add project-specific patterns to `.claude/foundations/auto_review_principles.md`:
+
+```markdown
+### Project-Specific Patterns
+"mqtt_broker.*=.*['\"]localhost"  # Default MQTT host
+"GPIO.setmode"  # Ensure cleanup registered
+```
+
+## Exercise
+
+1. Request a security review of a module
+2. Analyze the findings
+3. Apply recommended fixes
+4. Verify with tests
+5. Commit changes
+""",
+                    has_assessment=True,
+                ),
+            ]
+        )
+        self.courses[auto_review_course.id] = auto_review_course
+
     def get_course(self, course_id: str) -> Optional[Course]:
         """Get a course by ID"""
         return self.courses.get(course_id)
