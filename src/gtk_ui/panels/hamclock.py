@@ -596,18 +596,16 @@ class HamClockPanel(Gtk.Box):
         install_label.set_xalign(0)
         install_row.append(install_label)
 
-        # Link to hamclock-systemd
-        link_btn = Gtk.LinkButton.new_with_label(
-            "https://github.com/pa28/hamclock-systemd",
-            "hamclock-systemd packages"
-        )
+        # Link to hamclock-systemd - use button instead of LinkButton (works as root)
+        link_btn = Gtk.Button(label="hamclock-systemd packages")
+        link_btn.set_tooltip_text("https://github.com/pa28/hamclock-systemd")
+        link_btn.connect("clicked", lambda b: self._open_url_in_browser("https://github.com/pa28/hamclock-systemd"))
         install_row.append(link_btn)
 
-        # Or official site
-        official_link = Gtk.LinkButton.new_with_label(
-            "https://www.clearskyinstitute.com/ham/HamClock/",
-            "Official HamClock"
-        )
+        # Or official site - use button instead of LinkButton (works as root)
+        official_link = Gtk.Button(label="Official HamClock")
+        official_link.set_tooltip_text("https://www.clearskyinstitute.com/ham/HamClock/")
+        official_link.connect("clicked", lambda b: self._open_url_in_browser("https://www.clearskyinstitute.com/ham/HamClock/"))
         install_row.append(official_link)
 
         box.append(install_row)

@@ -9,6 +9,14 @@ from gi.repository import Gtk, Adw, GLib
 import subprocess
 import threading
 
+# Import admin command helper for privilege escalation
+try:
+    from utils.system import run_admin_command_async, systemctl_admin
+except ImportError:
+    # Fallback if utils.system not available
+    run_admin_command_async = None
+    systemctl_admin = None
+
 
 class ServicePanel(Gtk.Box):
     """Service management panel"""
@@ -264,20 +272,27 @@ class ServicePanel(Gtk.Box):
         """Perform service action (start/stop/restart)"""
         self.main_window.set_status_message(f"{action.capitalize()}ing service...")
 
-        def do_action():
-            try:
-                result = subprocess.run(
-                    ['sudo', 'systemctl', action, 'meshtasticd'],
-                    capture_output=True, text=True
-                )
-                success = result.returncode == 0
-                GLib.idle_add(self._action_complete, action, success, result.stderr)
-            except Exception as e:
-                GLib.idle_add(self._action_complete, action, False, str(e))
+        def on_complete(success, stdout, stderr):
+            self._action_complete(action, success, stderr)
 
-        thread = threading.Thread(target=do_action)
-        thread.daemon = True
-        thread.start()
+        # Use elegant admin helper (pkexec GUI prompt) if available
+        if systemctl_admin:
+            systemctl_admin(action, 'meshtasticd', callback=on_complete)
+        else:
+            # Fallback to direct sudo
+            def do_action():
+                try:
+                    result = subprocess.run(
+                        ['sudo', 'systemctl', action, 'meshtasticd'],
+                        capture_output=True, text=True
+                    )
+                    success = result.returncode == 0
+                    GLib.idle_add(self._action_complete, action, success, result.stderr)
+                except Exception as e:
+                    GLib.idle_add(self._action_complete, action, False, str(e))
+
+            thread = threading.Thread(target=do_action, daemon=True)
+            thread.start()
 
     def _action_complete(self, action, success, error):
         """Handle action completion"""
@@ -291,44 +306,49 @@ class ServicePanel(Gtk.Box):
 
     def _daemon_reload(self):
         """Reload systemd daemon"""
-        def do_reload():
-            try:
-                subprocess.run(['sudo', 'systemctl', 'daemon-reload'], check=True)
-                GLib.idle_add(
-                    self.main_window.set_status_message,
-                    "Daemon reloaded successfully"
-                )
-            except Exception as e:
-                GLib.idle_add(
-                    self.main_window.set_status_message,
-                    f"Failed to reload daemon: {e}"
-                )
+        def on_complete(success, stdout, stderr):
+            if success:
+                self.main_window.set_status_message("Daemon reloaded successfully")
+            else:
+                self.main_window.set_status_message(f"Failed to reload daemon: {stderr}")
 
-        thread = threading.Thread(target=do_reload)
-        thread.daemon = True
-        thread.start()
+        if run_admin_command_async:
+            run_admin_command_async(['systemctl', 'daemon-reload'], on_complete)
+        else:
+            def do_reload():
+                try:
+                    subprocess.run(['sudo', 'systemctl', 'daemon-reload'], check=True)
+                    GLib.idle_add(self.main_window.set_status_message, "Daemon reloaded successfully")
+                except Exception as e:
+                    GLib.idle_add(self.main_window.set_status_message, f"Failed to reload daemon: {e}")
+
+            thread = threading.Thread(target=do_reload, daemon=True)
+            thread.start()
 
     def _toggle_boot(self, enable):
         """Enable or disable service on boot"""
         action = "enable" if enable else "disable"
 
-        def do_toggle():
-            try:
-                subprocess.run(['sudo', 'systemctl', action, 'meshtasticd'], check=True)
-                GLib.idle_add(self._refresh_status)
-                GLib.idle_add(
-                    self.main_window.set_status_message,
-                    f"Service {action}d on boot"
-                )
-            except Exception as e:
-                GLib.idle_add(
-                    self.main_window.set_status_message,
-                    f"Failed to {action} service: {e}"
-                )
+        def on_complete(success, stdout, stderr):
+            self._refresh_status()
+            if success:
+                self.main_window.set_status_message(f"Service {action}d on boot")
+            else:
+                self.main_window.set_status_message(f"Failed to {action} service: {stderr}")
 
-        thread = threading.Thread(target=do_toggle)
-        thread.daemon = True
-        thread.start()
+        if systemctl_admin:
+            systemctl_admin(action, 'meshtasticd', callback=on_complete)
+        else:
+            def do_toggle():
+                try:
+                    subprocess.run(['sudo', 'systemctl', action, 'meshtasticd'], check=True)
+                    GLib.idle_add(self._refresh_status)
+                    GLib.idle_add(self.main_window.set_status_message, f"Service {action}d on boot")
+                except Exception as e:
+                    GLib.idle_add(self.main_window.set_status_message, f"Failed to {action} service: {e}")
+
+            thread = threading.Thread(target=do_toggle, daemon=True)
+            thread.start()
 
     def _fetch_logs(self):
         """Fetch service logs"""

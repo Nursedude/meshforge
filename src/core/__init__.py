@@ -15,6 +15,12 @@ This module contains:
 from .edition import Edition, detect_edition, has_feature, get_edition_features
 from .plugin_base import Plugin, PluginManager, PluginManifest
 
+# Diagnostics engine (lazy import to avoid circular dependencies)
+def get_diagnostic_engine():
+    """Get the singleton DiagnosticEngine instance."""
+    from .diagnostics import DiagnosticEngine
+    return DiagnosticEngine.get_instance()
+
 __all__ = [
     'Edition',
     'detect_edition',
@@ -23,6 +29,7 @@ __all__ = [
     'Plugin',
     'PluginManager',
     'PluginManifest',
+    'get_diagnostic_engine',
 ]
 
 __version__ = '1.0.0'

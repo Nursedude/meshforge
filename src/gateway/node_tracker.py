@@ -272,40 +272,35 @@ class UnifiedNodeTracker:
             import RNS
             logger.info("Initializing RNS for node discovery...")
 
-            # Check if rnsd is already running - if so, connect as client
+            # Check if rnsd is already running
             from utils.gateway_diagnostic import find_rns_processes
             rns_pids = find_rns_processes()
 
             if rns_pids:
-                # rnsd is running - connect as client to avoid port conflicts
-                logger.info(f"rnsd detected (PID: {rns_pids[0]}), connecting as client")
-                try:
-                    # Connect to shared instance - RNS will use existing transport
-                    self._reticulum = RNS.Reticulum(configdir=None)
-                except Exception as e:
-                    # If that fails, try with default config
-                    logger.debug(f"Client mode init failed: {e}, trying default")
-                    self._reticulum = RNS.Reticulum()
+                # rnsd is running - DON'T initialize RNS (it would conflict)
+                # MeshForge should not try to do its own RNS discovery when rnsd is running
+                # Use NomadNet or other RNS tools for RNS-based communications
+                logger.info(f"rnsd detected (PID: {rns_pids[0]}), skipping MeshForge RNS discovery")
+                logger.info("RNS nodes are available through rnsd - use NomadNet for RNS messaging")
+                self._reticulum = None
+                self._rns_connected = False  # Mark as not connected from MeshForge's perspective
+                return  # Skip all RNS operations - rnsd handles them
             else:
-                # No rnsd running - initialize normally
+                # No rnsd running - we need to initialize RNS ourselves
                 try:
                     self._reticulum = RNS.Reticulum()
                 except OSError as e:
-                    # Handle "Address already in use" error (errno 98)
-                    from utils.gateway_diagnostic import handle_address_in_use_error
-                    error_info = handle_address_in_use_error(e, logger)
-
-                    if error_info['is_address_in_use']:
-                        logger.warning(f"RNS port conflict: {error_info['message']}")
-                        for fix in error_info['fix_options']:
-                            logger.info(f"  Fix: {fix}")
+                    if hasattr(e, 'errno') and e.errno == 98:
+                        # Address in use - maybe rnsd started after our check
+                        logger.warning("RNS port conflict - another RNS instance may be running")
+                        logger.info("MeshForge will work without RNS node discovery")
                         self._rns_connected = False
                         return
                     else:
                         raise
                 except Exception as e:
                     if "reinitialise" in str(e).lower() or "already running" in str(e).lower():
-                        logger.info("RNS already initialized, using existing instance")
+                        logger.info("RNS already initialized elsewhere")
                         self._reticulum = None
                     else:
                         raise
