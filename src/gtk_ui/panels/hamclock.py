@@ -28,6 +28,17 @@ import os
 
 logger = logging.getLogger(__name__)
 
+# Import the proper path utility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    # Fallback for standalone usage
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
+
 # Use centralized settings manager
 try:
     from utils.common import SettingsManager
@@ -98,13 +109,14 @@ class HamClockPanel(Gtk.Box):
 
     def _load_settings_legacy(self):
         """Legacy settings load for fallback"""
-        settings_file = Path.home() / ".config" / "meshforge" / "hamclock.json"
+        settings_file = get_real_user_home() / ".config" / "meshforge" / "hamclock.json"
         defaults = self.SETTINGS_DEFAULTS.copy()
         try:
             if settings_file.exists():
                 with open(settings_file) as f:
                     saved = json.load(f)
                     defaults.update(saved)
+                logger.debug(f"[HamClock] Loaded settings from {settings_file}")
         except Exception as e:
             logger.error(f"Error loading HamClock settings: {e}")
         return defaults
@@ -114,13 +126,15 @@ class HamClockPanel(Gtk.Box):
         if HAS_SETTINGS_MANAGER:
             self._settings_mgr.update(self._settings)
             self._settings_mgr.save()
+            logger.debug(f"[HamClock] Settings saved via SettingsManager")
         else:
-            # Legacy fallback
-            settings_file = Path.home() / ".config" / "meshforge" / "hamclock.json"
+            # Legacy fallback - use real user's home, not root's
+            settings_file = get_real_user_home() / ".config" / "meshforge" / "hamclock.json"
             try:
                 settings_file.parent.mkdir(parents=True, exist_ok=True)
                 with open(settings_file, 'w') as f:
                     json.dump(self._settings, f, indent=2)
+                logger.debug(f"[HamClock] Settings saved to {settings_file}")
             except Exception as e:
                 logger.error(f"Error saving HamClock settings: {e}")
 
@@ -323,7 +337,7 @@ class HamClockPanel(Gtk.Box):
             view_frame.set_child(self.webview)
             content_box.append(view_frame)
         else:
-            # Open in browser button
+            # Open in browser button - explain why embedded view isn't available
             browser_frame = Gtk.Frame()
             browser_frame.set_label("Live View")
             browser_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -332,13 +346,25 @@ class HamClockPanel(Gtk.Box):
             browser_box.set_margin_top(10)
             browser_box.set_margin_bottom(10)
 
-            info_label = Gtk.Label(label="WebKit not available - open HamClock in browser")
+            # Explain why embedded view isn't available
+            if _is_root:
+                info_label = Gtk.Label(label="Embedded view disabled (running as root)")
+                info_label.set_tooltip_text(
+                    "WebKit cannot run embedded when MeshForge is started with sudo. "
+                    "Use the button below to open HamClock in your browser instead."
+                )
+            else:
+                info_label = Gtk.Label(label="WebKit not installed - open in browser")
+                info_label.set_tooltip_text(
+                    "Install gir1.2-webkit2-4.1 for embedded HamClock view"
+                )
             info_label.add_css_class("dim-label")
             browser_box.append(info_label)
 
             open_btn = Gtk.Button(label="Open HamClock in Browser")
             open_btn.set_tooltip_text("Open the HamClock live view in your default browser")
             open_btn.connect("clicked", self._on_open_browser)
+            open_btn.add_css_class("suggested-action")
             browser_box.append(open_btn)
 
             browser_frame.set_child(browser_box)
@@ -713,12 +739,27 @@ class HamClockPanel(Gtk.Box):
         self._fetch_space_weather()
 
     def _on_connection_failed(self, error):
-        """Handle connection failure"""
-        # Truncate long error messages for display
-        short_error = str(error)[:50]
-        self.status_label.set_label(f"Not connected")
-        # Only log once, not spam
-        logger.debug(f"HamClock connection failed: {error}")
+        """Handle connection failure with actionable feedback"""
+        error_str = str(error).lower()
+
+        # Provide specific guidance based on error type
+        if 'connection refused' in error_str:
+            self.status_label.set_label("Connection refused - is HamClock running?")
+            logger.info(f"[HamClock] Connection refused - HamClock service may not be running")
+        elif 'name or service not known' in error_str or 'nodename nor servname' in error_str:
+            self.status_label.set_label("Host not found - check URL")
+            logger.info(f"[HamClock] DNS resolution failed for configured host")
+        elif 'timed out' in error_str or 'timeout' in error_str:
+            self.status_label.set_label("Timeout - check network/firewall")
+            logger.info(f"[HamClock] Connection timed out")
+        elif 'no route to host' in error_str:
+            self.status_label.set_label("No route to host - check network")
+            logger.info(f"[HamClock] No route to host")
+        else:
+            # Generic error - show abbreviated version
+            short_error = str(error)[:40]
+            self.status_label.set_label(f"Error: {short_error}")
+            logger.info(f"[HamClock] Connection failed: {error}")
 
     def _on_refresh(self, button):
         """Refresh space weather data"""

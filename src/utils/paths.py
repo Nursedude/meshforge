@@ -2,11 +2,58 @@
 MeshForge Path Constants
 
 Centralized path definitions to reduce hardcoding across the codebase.
+
+IMPORTANT: Always use get_real_user_home() instead of Path.home() when
+the path should be in the user's home directory. This handles the case
+where MeshForge is run with sudo but needs to access the real user's
+config files, not root's.
 """
 
 from pathlib import Path
 import os
 
+
+# ============================================================================
+# Core utility functions - use these instead of Path.home()
+# ============================================================================
+
+def get_real_user_home() -> Path:
+    """
+    Get the real user's home directory, even when running as root via sudo.
+
+    IMPORTANT: Use this instead of Path.home() for user config files.
+    When MeshForge is run with 'sudo python3 src/launcher.py', Path.home()
+    returns /root, but we want /home/<actual_user>.
+
+    Returns:
+        Path to the real user's home directory
+    """
+    # Check SUDO_USER first
+    sudo_user = os.environ.get('SUDO_USER')
+    if sudo_user and sudo_user != 'root':
+        return Path(f'/home/{sudo_user}')
+
+    # Fallback to current user
+    return Path.home()
+
+
+def get_real_username() -> str:
+    """
+    Get the real username, even when running as root via sudo.
+
+    Returns:
+        The real username string
+    """
+    sudo_user = os.environ.get('SUDO_USER')
+    if sudo_user and sudo_user != 'root':
+        return sudo_user
+
+    return os.environ.get('USER', 'unknown')
+
+
+# ============================================================================
+# Path classes
+# ============================================================================
 
 class MeshtasticPaths:
     """Paths related to meshtasticd configuration"""
@@ -33,7 +80,7 @@ class ReticulumPaths:
     @classmethod
     def get_config_dir(cls) -> Path:
         """Get Reticulum config directory"""
-        return Path.home() / '.reticulum'
+        return get_real_user_home() / '.reticulum'
 
     @classmethod
     def get_config_file(cls) -> Path:
@@ -52,17 +99,17 @@ class MeshForgePaths:
     @classmethod
     def get_config_dir(cls) -> Path:
         """Get MeshForge config directory"""
-        return Path.home() / '.config' / 'meshforge'
+        return get_real_user_home() / '.config' / 'meshforge'
 
     @classmethod
     def get_data_dir(cls) -> Path:
         """Get MeshForge data directory"""
-        return Path.home() / '.local' / 'share' / 'meshforge'
+        return get_real_user_home() / '.local' / 'share' / 'meshforge'
 
     @classmethod
     def get_cache_dir(cls) -> Path:
         """Get MeshForge cache directory"""
-        return Path.home() / '.cache' / 'meshforge'
+        return get_real_user_home() / '.cache' / 'meshforge'
 
     @classmethod
     def get_plugins_dir(cls) -> Path:
@@ -108,33 +155,3 @@ class SystemPaths:
         for pattern in ['ttyUSB*', 'ttyACM*', 'ttyAMA*']:
             ports.extend(cls.SERIAL_DEVICES.glob(pattern))
         return sorted(ports)
-
-
-def get_real_user_home() -> Path:
-    """
-    Get the real user's home directory, even when running as root via sudo.
-
-    Returns:
-        Path to the real user's home directory
-    """
-    # Check SUDO_USER first
-    sudo_user = os.environ.get('SUDO_USER')
-    if sudo_user and sudo_user != 'root':
-        return Path(f'/home/{sudo_user}')
-
-    # Fallback to current user
-    return Path.home()
-
-
-def get_real_username() -> str:
-    """
-    Get the real username, even when running as root via sudo.
-
-    Returns:
-        The real username string
-    """
-    sudo_user = os.environ.get('SUDO_USER')
-    if sudo_user and sudo_user != 'root':
-        return sudo_user
-
-    return os.environ.get('USER', 'unknown')
