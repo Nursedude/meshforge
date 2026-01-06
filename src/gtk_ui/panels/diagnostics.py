@@ -17,6 +17,7 @@ import threading
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import List
 
 # Import diagnostic system
 try:

@@ -111,6 +111,62 @@ def signal_handler(signum, frame):
     sys.exit(0)
 
 
+def check_port_available(host: str, port: int) -> tuple:
+    """
+    Check if a port is available for binding.
+
+    Returns:
+        (is_available, process_info) - process_info is populated if port is in use
+    """
+    # First check if we can bind to the port
+    test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    test_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        test_socket.bind((host, port))
+        test_socket.close()
+        return (True, None)
+    except OSError as e:
+        test_socket.close()
+        # Port is in use - try to identify what's using it
+        process_info = None
+        try:
+            # Try lsof to identify the process
+            result = subprocess.run(
+                ['lsof', '-i', f':{port}', '-t'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                pids = result.stdout.strip().split('\n')
+                # Get process name for first PID
+                pid = pids[0]
+                ps_result = subprocess.run(
+                    ['ps', '-p', pid, '-o', 'comm='],
+                    capture_output=True, text=True, timeout=5
+                )
+                if ps_result.returncode == 0:
+                    proc_name = ps_result.stdout.strip()
+                    process_info = f"{proc_name} (PID: {pid})"
+        except Exception:
+            pass
+
+        return (False, process_info)
+
+
+def find_available_port(host: str, preferred_port: int, max_tries: int = 10) -> int:
+    """
+    Find an available port, starting with the preferred port.
+
+    Returns:
+        Available port number, or 0 if none found
+    """
+    for offset in range(max_tries):
+        port = preferred_port + offset
+        is_available, _ = check_port_available(host, port)
+        if is_available:
+            return port
+    return 0
+
+
 def run_subprocess(cmd, **kwargs):
     """Run a subprocess and track it for cleanup"""
     global _shutdown_flag
@@ -2363,7 +2419,23 @@ Environment variables:
                         help='Stop running web UI instance')
     parser.add_argument('--status', action='store_true',
                         help='Check if web UI is running')
+    parser.add_argument('--auto-port', action='store_true',
+                        help='Automatically find an available port if default is in use')
+    parser.add_argument('--list-ports', action='store_true',
+                        help='List what processes are using common ports and exit')
     args = parser.parse_args()
+
+    # Handle --list-ports
+    if args.list_ports:
+        print("Checking common ports...")
+        ports_to_check = [8080, 8081, 4403, 8880, 5000, 9000]
+        for p in ports_to_check:
+            is_available, process_info = check_port_available(args.host, p)
+            if is_available:
+                print(f"  Port {p}: Available")
+            else:
+                print(f"  Port {p}: In use by {process_info or 'unknown process'}")
+        sys.exit(0)
 
     # Handle --stop
     if args.stop:
@@ -2385,6 +2457,54 @@ Environment variables:
         print(f"Web UI already running (PID: {existing_pid})")
         print("Stop it first with: sudo python3 src/main_web.py --stop")
         sys.exit(1)
+
+    # Check if port is available
+    actual_port = args.port
+    is_available, process_info = check_port_available(args.host, actual_port)
+    if not is_available:
+        if args.auto_port:
+            # Try to find an available port
+            print(f"Port {actual_port} is in use, searching for available port...")
+            new_port = find_available_port(args.host, actual_port + 1, max_tries=20)
+            if new_port:
+                print(f"Found available port: {new_port}")
+                actual_port = new_port
+            else:
+                print(f"ERROR: Could not find available port in range {actual_port+1}-{actual_port+20}")
+                sys.exit(1)
+        else:
+            print()
+            print("=" * 60)
+            print(f"ERROR: Port {actual_port} is already in use")
+            print("=" * 60)
+            if process_info:
+                print(f"Process using port: {process_info}")
+            else:
+                print("Could not identify process using the port.")
+                print(f"Check with: sudo lsof -i :{actual_port}")
+            print()
+
+            # Known services that commonly use certain ports
+            known_services = {
+                8080: "AREDN web UI, HamClock API, or other web services",
+                4403: "meshtasticd TCP interface",
+                8081: "HamClock live port",
+            }
+            if actual_port in known_services:
+                print(f"Note: Port {actual_port} is commonly used by: {known_services[actual_port]}")
+                print()
+
+            # Suggest alternatives
+            print("Options:")
+            print(f"  --port 9000      Use a specific port")
+            print(f"  --auto-port      Auto-find an available port")
+            print(f"  --list-ports     Show what's using common ports")
+            alt_port = find_available_port(args.host, actual_port + 1, max_tries=10)
+            if alt_port:
+                print()
+                print(f"Suggested: sudo python3 src/main_web.py --port {alt_port}")
+            print("=" * 60)
+            sys.exit(1)
 
     # Check root
     if os.geteuid() != 0:
@@ -2444,8 +2564,8 @@ Environment variables:
     print("=" * 60)
     print()
     print(f"Access the web interface at:")
-    print(f"  http://localhost:{args.port}/")
-    print(f"  http://{local_ip}:{args.port}/")
+    print(f"  http://localhost:{actual_port}/")
+    print(f"  http://{local_ip}:{actual_port}/")
     print()
     if CONFIG['auth_enabled']:
         print("Authentication: ENABLED")
@@ -2464,7 +2584,7 @@ Environment variables:
     try:
         app.run(
             host=args.host,
-            port=args.port,
+            port=actual_port,
             debug=args.debug,
             threaded=True,
             use_reloader=False  # Prevent duplicate processes

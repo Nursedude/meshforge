@@ -10,7 +10,18 @@ import os
 import subprocess
 import asyncio
 import shlex
+import logging
 from pathlib import Path
+
+# Set up logging for TUI diagnostics
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[
+        logging.FileHandler('/tmp/meshforge-tui.log'),
+    ]
+)
+logger = logging.getLogger('tui')
 
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
@@ -242,6 +253,7 @@ class ServicePane(Container):
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses"""
         button_id = event.button.id
+        logger.info(f"[Service] Button pressed: {button_id}")
         log = self.query_one("#svc-log", Log)
 
         if button_id == "svc-start":
@@ -638,6 +650,7 @@ class CLIPane(Container):
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses"""
         button_id = event.button.id
+        logger.info(f"[CLI] Button pressed: {button_id}")
         output = self.query_one("#cli-output", Log)
         host = self.query_one("#cli-host", Input).value
 
@@ -756,6 +769,7 @@ class ToolsPane(Container):
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses"""
         button_id = event.button.id
+        logger.info(f"[Tools] Button pressed: {button_id}")
         output = self.query_one("#tool-output", Log)
 
         if button_id == "tool-clear":
@@ -833,31 +847,63 @@ class ToolsPane(Container):
 
     @work
     async def _scan_devices(self, output: Log):
-        """Scan for Meshtastic devices"""
+        """Scan for Meshtastic devices - concurrent scan for speed"""
         import socket
         output.write("\n[cyan]Scanning for Meshtastic devices (port 4403)...[/cyan]")
+        logger.info("Starting device scan")
+
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
             local_ip = s.getsockname()[0]
             s.close()
             base = '.'.join(local_ip.split('.')[:3])
-            found = 0
-            for i in range(1, 255):
-                ip = f"{base}.{i}"
+
+            found = []
+
+            async def check_host(ip: str):
+                """Check single host - async"""
                 try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(0.2)
-                    result = sock.connect_ex((ip, 4403))
-                    sock.close()
-                    if result == 0:
+                    # Use asyncio for non-blocking connect
+                    reader, writer = await asyncio.wait_for(
+                        asyncio.open_connection(ip, 4403),
+                        timeout=0.5
+                    )
+                    writer.close()
+                    await writer.wait_closed()
+                    return ip
+                except (asyncio.TimeoutError, OSError, ConnectionRefusedError):
+                    return None
+
+            # Scan in batches of 50 for responsiveness
+            output.write(f"  Scanning {base}.1-254 ...")
+            logger.debug(f"Scanning subnet {base}.0/24")
+
+            batch_size = 50
+            for batch_start in range(1, 255, batch_size):
+                batch_end = min(batch_start + batch_size, 255)
+                tasks = [
+                    check_host(f"{base}.{i}")
+                    for i in range(batch_start, batch_end)
+                ]
+                results = await asyncio.gather(*tasks)
+
+                for ip in results:
+                    if ip:
                         output.write(f"  [green]Found: {ip}:4403[/green]")
-                        found += 1
-                except Exception:
-                    pass
-            output.write(f"Scan complete. Found {found} device(s)")
+                        found.append(ip)
+                        logger.info(f"Found Meshtastic device at {ip}:4403")
+
+                # Update progress
+                progress = (batch_end / 254) * 100
+                output.write(f"  Progress: {progress:.0f}%")
+
+            output.write(f"\n[cyan]Scan complete. Found {len(found)} device(s)[/cyan]")
+            logger.info(f"Scan complete: found {len(found)} devices")
+
         except Exception as e:
             output.write(f"[red]Error: {e}[/red]")
+            logger.error(f"Device scan error: {e}")
 
     def _show_presets(self, output: Log):
         """Show LoRa presets"""
@@ -1110,8 +1156,13 @@ class MeshtasticdTUI(App):
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         """Global button handler"""
+        logger.debug(f"[App] Global button handler: {event.button.id}")
         if event.button.id == "refresh-dashboard":
             self.query_one(DashboardPane).refresh_data()
+
+    async def on_mount(self) -> None:
+        """Called when app is mounted"""
+        logger.info("MeshForge TUI started - logging to /tmp/meshforge-tui.log")
 
 
 def main():
