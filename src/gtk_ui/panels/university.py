@@ -38,6 +38,7 @@ class UniversityPanel(Gtk.Box):
         self.current_course = None
         self.current_lesson = None
         self.current_lesson_index = 0
+        self.current_assessment = None
         self.assessment_answers = {}
 
         self._build_ui()
@@ -312,18 +313,24 @@ class UniversityPanel(Gtk.Box):
 
     def _on_course_start(self, button, course):
         """Handle course start"""
-        self.current_course = course
-        self.current_lesson_index = 0
+        try:
+            logger.debug(f"[University] Starting course: {course.title}")
+            self.current_course = course
+            self.current_lesson_index = 0
 
-        # Find first incomplete lesson
-        if self.progress_tracker:
-            progress = self.progress_tracker.get_course_progress(course.id)
-            for i, lesson in enumerate(course.lessons):
-                if lesson.id not in progress.lessons or not progress.lessons[lesson.id].completed:
-                    self.current_lesson_index = i
-                    break
+            # Find first incomplete lesson
+            if self.progress_tracker:
+                progress = self.progress_tracker.get_course_progress(course.id)
+                for i, lesson in enumerate(course.lessons):
+                    lesson_prog = progress.lessons.get(lesson.id)
+                    if lesson_prog is None or not lesson_prog.completed:
+                        self.current_lesson_index = i
+                        break
 
-        self._show_course_page()
+            self._show_course_page()
+            logger.debug(f"[University] Course page shown for: {course.title}")
+        except Exception as e:
+            logger.error(f"[University] Error starting course: {e}", exc_info=True)
 
     def _build_course_page(self):
         """Build the course detail page"""
@@ -366,29 +373,33 @@ class UniversityPanel(Gtk.Box):
 
     def _show_course_page(self):
         """Show the course page with lessons"""
-        if not self.current_course:
-            return
+        try:
+            if not self.current_course:
+                logger.warning("[University] Cannot show course page - no course selected")
+                return
 
-        self.course_title_label.set_label(self.current_course.title)
+            self.course_title_label.set_label(self.current_course.title)
 
-        # Clear lesson list
-        while True:
-            child = self.lesson_list.get_first_child()
-            if child is None:
-                break
-            self.lesson_list.remove(child)
+            # Clear lesson list
+            while True:
+                child = self.lesson_list.get_first_child()
+                if child is None:
+                    break
+                self.lesson_list.remove(child)
 
-        # Get progress
-        progress = None
-        if self.progress_tracker:
-            progress = self.progress_tracker.get_course_progress(self.current_course.id)
+            # Get progress
+            progress = None
+            if self.progress_tracker:
+                progress = self.progress_tracker.get_course_progress(self.current_course.id)
 
-        # Add lessons
-        for i, lesson in enumerate(self.current_course.lessons):
-            row = self._create_lesson_row(lesson, i, progress)
-            self.lesson_list.append(row)
+            # Add lessons
+            for i, lesson in enumerate(self.current_course.lessons):
+                row = self._create_lesson_row(lesson, i, progress)
+                self.lesson_list.append(row)
 
-        self.main_stack.set_visible_child_name("course")
+            self.main_stack.set_visible_child_name("course")
+        except Exception as e:
+            logger.error(f"[University] Error showing course page: {e}", exc_info=True)
 
     def _create_lesson_row(self, lesson, index: int, progress) -> Gtk.ListBoxRow:
         """Create a row for a lesson"""
@@ -452,14 +463,19 @@ class UniversityPanel(Gtk.Box):
 
     def _on_lesson_start(self, button, lesson, index):
         """Handle lesson start"""
-        self.current_lesson = lesson
-        self.current_lesson_index = index
+        try:
+            logger.debug(f"[University] Starting lesson: {lesson.title}")
+            self.current_lesson = lesson
+            self.current_lesson_index = index
 
-        # Track start
-        if self.progress_tracker and self.current_course:
-            self.progress_tracker.start_lesson(self.current_course.id, lesson.id)
+            # Track start
+            if self.progress_tracker and self.current_course:
+                self.progress_tracker.start_lesson(self.current_course.id, lesson.id)
 
-        self._show_lesson_page()
+            self._show_lesson_page()
+            logger.debug(f"[University] Lesson page shown for: {lesson.title}")
+        except Exception as e:
+            logger.error(f"[University] Error starting lesson: {e}", exc_info=True)
 
     def _build_lesson_page(self):
         """Build the lesson viewer page"""
@@ -551,38 +567,42 @@ class UniversityPanel(Gtk.Box):
 
     def _show_lesson_page(self):
         """Show the lesson content"""
-        if not self.current_lesson or not self.current_course:
-            return
+        try:
+            if not self.current_lesson or not self.current_course:
+                logger.warning("[University] Cannot show lesson - no lesson/course selected")
+                return
 
-        self.lesson_title_label.set_label(self.current_lesson.title)
+            self.lesson_title_label.set_label(self.current_lesson.title)
 
-        # Convert markdown to simple markup (basic conversion)
-        content = self._markdown_to_markup(self.current_lesson.content)
-        self.lesson_content.set_markup(content)
+            # Convert markdown to simple markup (basic conversion)
+            content = self._markdown_to_markup(self.current_lesson.content)
+            self.lesson_content.set_markup(content)
 
-        # Update navigation
-        total = len(self.current_course.lessons)
-        self.lesson_progress_label.set_label(f"{self.current_lesson_index + 1} of {total}")
+            # Update navigation
+            total = len(self.current_course.lessons)
+            self.lesson_progress_label.set_label(f"{self.current_lesson_index + 1} of {total}")
 
-        self.prev_lesson_btn.set_sensitive(self.current_lesson_index > 0)
+            self.prev_lesson_btn.set_sensitive(self.current_lesson_index > 0)
 
-        # Check if this lesson has assessment
-        if self.current_lesson.has_assessment and self.assessment_manager:
-            if self.assessment_manager.has_assessment(self.current_lesson.id):
-                self.next_lesson_btn.set_label("Take Quiz")
+            # Check if this lesson has assessment
+            if self.current_lesson.has_assessment and self.assessment_manager:
+                if self.assessment_manager.has_assessment(self.current_lesson.id):
+                    self.next_lesson_btn.set_label("Take Quiz")
+                else:
+                    self.next_lesson_btn.set_label("Complete" if self.current_lesson_index >= total - 1 else "Next")
             else:
                 self.next_lesson_btn.set_label("Complete" if self.current_lesson_index >= total - 1 else "Next")
-        else:
-            self.next_lesson_btn.set_label("Complete" if self.current_lesson_index >= total - 1 else "Next")
 
-        # Panel link
-        if self.current_lesson.panel_reference:
-            self.panel_link_btn.set_visible(True)
-            self.panel_link_btn.set_tooltip_text(f"Go to {self.current_lesson.panel_reference} panel")
-        else:
-            self.panel_link_btn.set_visible(False)
+            # Panel link
+            if self.current_lesson.panel_reference:
+                self.panel_link_btn.set_visible(True)
+                self.panel_link_btn.set_tooltip_text(f"Go to {self.current_lesson.panel_reference} panel")
+            else:
+                self.panel_link_btn.set_visible(False)
 
-        self.main_stack.set_visible_child_name("lesson")
+            self.main_stack.set_visible_child_name("lesson")
+        except Exception as e:
+            logger.error(f"[University] Error showing lesson page: {e}", exc_info=True)
 
     def _markdown_to_markup(self, text: str) -> str:
         """Convert basic markdown to Pango markup"""
@@ -614,37 +634,50 @@ class UniversityPanel(Gtk.Box):
 
     def _on_prev_lesson(self, button):
         """Go to previous lesson"""
-        if self.current_lesson_index > 0:
-            self.current_lesson_index -= 1
-            self.current_lesson = self.current_course.lessons[self.current_lesson_index]
-            self._show_lesson_page()
+        try:
+            if self.current_lesson_index > 0 and self.current_course:
+                self.current_lesson_index -= 1
+                self.current_lesson = self.current_course.lessons[self.current_lesson_index]
+                logger.debug(f"[University] Previous lesson: {self.current_lesson.title}")
+                self._show_lesson_page()
+        except Exception as e:
+            logger.error(f"[University] Error going to previous lesson: {e}", exc_info=True)
 
     def _on_next_lesson(self, button):
         """Go to next lesson or assessment"""
-        if not self.current_course or not self.current_lesson:
-            return
-
-        # Check for assessment
-        if self.current_lesson.has_assessment and self.assessment_manager:
-            assessment = self.assessment_manager.get_assessment(self.current_lesson.id)
-            if assessment:
-                self._show_assessment_page(assessment)
+        try:
+            if not self.current_course or not self.current_lesson:
+                logger.warning("[University] Next clicked but no course/lesson selected")
                 return
 
-        # Complete current lesson
-        self._complete_current_lesson()
+            logger.debug(f"[University] Next from lesson: {self.current_lesson.title}")
 
-        # Move to next or back to course
-        total = len(self.current_course.lessons)
-        if self.current_lesson_index < total - 1:
-            self.current_lesson_index += 1
-            self.current_lesson = self.current_course.lessons[self.current_lesson_index]
-            if self.progress_tracker:
-                self.progress_tracker.start_lesson(self.current_course.id, self.current_lesson.id)
-            self._show_lesson_page()
-        else:
-            # Course complete
-            self._show_course_complete()
+            # Check for assessment
+            if self.current_lesson.has_assessment and self.assessment_manager:
+                assessment = self.assessment_manager.get_assessment(self.current_lesson.id)
+                if assessment:
+                    logger.debug(f"[University] Showing assessment for: {self.current_lesson.id}")
+                    self._show_assessment_page(assessment)
+                    return
+
+            # Complete current lesson
+            self._complete_current_lesson()
+
+            # Move to next or back to course
+            total = len(self.current_course.lessons)
+            if self.current_lesson_index < total - 1:
+                self.current_lesson_index += 1
+                self.current_lesson = self.current_course.lessons[self.current_lesson_index]
+                logger.debug(f"[University] Moving to lesson: {self.current_lesson.title}")
+                if self.progress_tracker:
+                    self.progress_tracker.start_lesson(self.current_course.id, self.current_lesson.id)
+                self._show_lesson_page()
+            else:
+                # Course complete
+                logger.debug(f"[University] Course complete: {self.current_course.title}")
+                self._show_course_complete()
+        except Exception as e:
+            logger.error(f"[University] Error going to next lesson: {e}", exc_info=True)
 
     def _complete_current_lesson(self, score: Optional[float] = None):
         """Mark current lesson as complete"""
@@ -770,7 +803,8 @@ class UniversityPanel(Gtk.Box):
 
     def _on_submit_assessment(self, button):
         """Submit assessment and show results"""
-        if not hasattr(self, 'current_assessment'):
+        if not self.current_assessment:
+            logger.warning("[University] Submit clicked but no assessment loaded")
             return
 
         # Calculate score
