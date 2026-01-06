@@ -49,10 +49,30 @@ class MeshForgeApp(Adw.Application):
             flags=Gio.ApplicationFlags.NON_UNIQUE
         )
         self.window = None
+        self._icons_registered = False
         self.connect('activate', self.on_activate)
+
+    def _register_custom_icons(self):
+        """Register custom icons from assets directory"""
+        if self._icons_registered:
+            return
+
+        # Find assets directory relative to source
+        src_dir = Path(__file__).parent.parent.parent
+        assets_dir = src_dir / 'assets'
+
+        if assets_dir.exists():
+            display = Gdk.Display.get_default()
+            if display:
+                icon_theme = Gtk.IconTheme.get_for_display(display)
+                icon_theme.add_search_path(str(assets_dir))
+                self._icons_registered = True
 
     def on_activate(self, app):
         """Called when application is activated"""
+        # Register custom icons (display is now available)
+        self._register_custom_icons()
+
         if not self.window:
             self.window = MeshForgeWindow(application=app)
         self.window.present()
@@ -360,7 +380,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         dialog = Adw.AboutWindow(
             transient_for=self,
             application_name=app_name,
-            application_icon="network-wireless",
+            application_icon="meshforge-icon",
             version=get_full_version(),
             developer_name="MeshForge Community",
             license_type=Gtk.License.GPL_3_0,
