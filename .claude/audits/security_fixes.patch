@@ -1,0 +1,317 @@
+From 95faa5c23efd42b8e01b862d316fe97c2b7fd72d Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 6 Jan 2026 01:38:55 +0000
+Subject: [PATCH] security: Fix shell=True, bare except, and add timeouts
+
+Cross-AI collaboration security fixes from Dude AI (Claude/MeshForge):
+
+install.py:
+- Replaced shell=True subprocess calls with pyserial for port detection
+- Added pathlib fallback for Linux/macOS without pyserial
+- Refactored run_command() to use shlex.split() instead of shell=True
+- Added timeout parameter (default 120s, pip installs 180s)
+- Added proper exception handling (TimeoutExpired, FileNotFoundError)
+
+supervisor.py:
+- Fixed bare except: clauses with specific exceptions
+- Added 30s timeouts to all subprocess.run() calls
+- Fixed get_rns_config_path() to use env vars instead of os.getlogin()
+- Replaced os.system('clear') with ANSI escape sequence
+- Added cross-platform Windows support for config paths
+- Fixed typo: "unmutes" -> "unmuted"
+
+Patterns adopted from MeshForge security audit.
+Reference: https://github.com/Nursedude/meshforge/.claude/audits/
+---
+ install.py    | 69 +++++++++++++++++++++++++++++----------------
+ supervisor.py | 78 ++++++++++++++++++++++++++++++++++++++-------------
+ 2 files changed, 104 insertions(+), 43 deletions(-)
+
+diff --git a/install.py b/install.py
+index 5875f4d..4778d1c 100755
+--- a/install.py
++++ b/install.py
+@@ -289,28 +289,28 @@ class MeshtasticChannelConfig:
+         return port
+ 
+     def _find_serial_ports(self):
+-        """Find available serial ports"""
++        """Find available serial ports - cross-platform without shell=True"""
+         ports = []
+ 
++        # Try pyserial first (most reliable, cross-platform)
++        try:
++            import serial.tools.list_ports
++            ports = [port.device for port in serial.tools.list_ports.comports()]
++            return [p for p in ports if p]
++        except ImportError:
++            pass
++
++        # Fallback to pathlib (no shell commands)
++        from pathlib import Path
++
+         if platform.system() == "Linux":
+-            for pattern in ["/dev/ttyUSB*", "/dev/ttyACM*"]:
+-                result = subprocess.run(f"ls {pattern} 2>/dev/null", shell=True,
+-                                        capture_output=True, text=True)
+-                if result.stdout:
+-                    ports.extend(result.stdout.strip().split('\n'))
++            dev_path = Path("/dev")
++            for pattern in ["ttyUSB*", "ttyACM*", "ttyAMA*"]:
++                ports.extend([str(p) for p in dev_path.glob(pattern)])
+ 
+         elif platform.system() == "Darwin":
+-            result = subprocess.run("ls /dev/cu.* 2>/dev/null", shell=True,
+-                                    capture_output=True, text=True)
+-            if result.stdout:
+-                ports.extend(result.stdout.strip().split('\n'))
+-
+-        elif platform.system() == "Windows":
+-            try:
+-                import serial.tools.list_ports
+-                ports = [port.device for port in serial.tools.list_ports.comports()]
+-            except ImportError:
+-                pass
++            dev_path = Path("/dev")
++            ports.extend([str(p) for p in dev_path.glob("cu.*")])
+ 
+         return [p for p in ports if p]
+ 
+@@ -554,16 +554,30 @@ class Installer:
+         """Check if a command exists"""
+         return shutil.which(command) is not None
+ 
+-    def run_command(self, command, description, check=True):
+-        """Run a shell command with error handling"""
++    def run_command(self, command, description, check=True, timeout=120):
++        """Run a command with error handling - NO shell=True for security
++
++        Args:
++            command: List of command arguments (preferred) or string
++            description: Human-readable description for logging
++            check: Whether to check return code
++            timeout: Timeout in seconds (default 120)
++        """
+         UI.print_info(f"{description}...")
+         try:
++            # Convert string to list if needed (safer than shell=True)
++            if isinstance(command, str):
++                import shlex
++                cmd_list = shlex.split(command)
++            else:
++                cmd_list = command
++
+             result = subprocess.run(
+-                command,
+-                shell=True,
++                cmd_list,
+                 check=check,
+                 capture_output=True,
+-                text=True
++                text=True,
++                timeout=timeout
+             )
+             if result.returncode == 0:
+                 UI.print_success(f"{description} completed")
+@@ -571,15 +585,22 @@ class Installer:
+             else:
+                 UI.print_error(f"{description} failed: {result.stderr}")
+                 return False, result.stderr
++        except subprocess.TimeoutExpired:
++            UI.print_error(f"{description} timed out after {timeout}s")
++            return False, "Command timed out"
+         except subprocess.CalledProcessError as e:
+             UI.print_error(f"{description} failed: {e}")
+             return False, str(e)
++        except (OSError, FileNotFoundError) as e:
++            UI.print_error(f"{description} failed: {e}")
++            return False, str(e)
+ 
+     def install_pip_package(self, package, description=None):
+         """Install a Python package via pip"""
+         desc = description or f"Installing {package}"
+-        cmd = f"{sys.executable} -m pip install {package}"
+-        return self.run_command(cmd, desc)
++        # Use list form for security
++        cmd = [sys.executable, "-m", "pip", "install", package]
++        return self.run_command(cmd, desc, timeout=180)
+ 
+     def check_prerequisites(self):
+         """Check and validate system prerequisites"""
+diff --git a/supervisor.py b/supervisor.py
+index 0625760..9757c96 100644
+--- a/supervisor.py
++++ b/supervisor.py
+@@ -3,9 +3,11 @@ import sys
+ import subprocess
+ import shutil
+ import time
++import platform
+ 
+ # =================================================================
+ #  RNS & Meshtastic Supervisor v2.0 (The Fixer)
++#  Updated: 2026-01-06 - Security fixes by Dude AI (Claude)
+ # =================================================================
+ 
+ SPEED_OPTIONS = {
+@@ -17,21 +19,41 @@ SPEED_OPTIONS = {
+ }
+ 
+ def clear_screen():
+-    os.system('cls' if os.name == 'nt' else 'clear')
++    """Clear terminal screen - cross-platform"""
++    # Use ANSI escape instead of os.system for security
++    print("\033[2J\033[H", end="")
+ 
+ def check_meshtastic_command():
++    """Check if meshtastic command is available"""
+     try:
+-        subprocess.run([sys.executable, "-m", "meshtastic", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++        subprocess.run(
++            [sys.executable, "-m", "meshtastic", "--version"],
++            stdout=subprocess.DEVNULL,
++            stderr=subprocess.DEVNULL,
++            timeout=10
++        )
+         return True
+-    except:
++    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+         return False
+ 
+ def get_rns_config_path():
+-    home = os.path.expanduser("~")
++    """Get RNS config path - cross-platform"""
++    # Use environment variables instead of os.getlogin() which can fail
++    if platform.system() == "Windows":
++        home = os.environ.get('USERPROFILE') or os.environ.get('APPDATA') or os.path.expanduser("~")
++    else:
++        home = os.path.expanduser("~")
++
+     paths = [
+         os.path.join(home, ".reticulum", "config"),
+-        os.path.join("C:", "Users", os.getlogin(), ".reticulum", "config")
+     ]
++
++    # Add Windows APPDATA path as fallback
++    if platform.system() == "Windows":
++        appdata = os.environ.get('APPDATA')
++        if appdata:
++            paths.append(os.path.join(appdata, "Reticulum", "config"))
++
+     for p in paths:
+         if os.path.exists(p):
+             return p
+@@ -43,7 +65,7 @@ def fix_node_permissions():
+     print("1. Enabling Uplink/Downlink on Channel 0 & 1")
+     print("2. Setting Role to CLIENT (Unmuted)")
+     print("3. Enabling Serial Module")
+-    
++
+     commands = [
+         # Enable Primary Channel (0)
+         ["--ch-index", "0", "--set", "uplink_enabled", "true", "--set", "downlink_enabled", "true"],
+@@ -59,29 +81,39 @@ def fix_node_permissions():
+         full_cmd = [sys.executable, "-m", "meshtastic"] + cmd_args
+         print(f"Executing: {' '.join(cmd_args[:4])}...")
+         try:
+-            subprocess.run(full_cmd, check=True)
++            subprocess.run(full_cmd, check=True, timeout=30)
+         except subprocess.CalledProcessError:
+             print("[ERROR] Command failed. Check connection.")
+             return
++        except subprocess.TimeoutExpired:
++            print("[ERROR] Command timed out.")
++            return
+ 
+-    print("\n[SUCCESS] Node is now unmutes and channels are open!")
++    print("\n[SUCCESS] Node is now unmuted and channels are open!")
+     print("You may need to reboot the node manually if it doesn't restart.")
+ 
+ def setup_hardware(preset_name, preset_code):
++    """Configure hardware with proper error handling"""
+     print(f"\n--- Configuring Hardware to {preset_name} ---")
+     cmd = [sys.executable, "-m", "meshtastic", "--set", "lora.modem_preset", preset_code]
+     try:
+-        subprocess.run(cmd, check=True)
++        subprocess.run(cmd, check=True, timeout=30)
+         print("\n[SUCCESS] Radio preset applied.")
+         return True
+-    except:
+-        print("\n[ERROR] Device not found.")
++    except subprocess.CalledProcessError:
++        print("\n[ERROR] Command failed. Check device connection.")
++        return False
++    except subprocess.TimeoutExpired:
++        print("\n[ERROR] Command timed out.")
++        return False
++    except (FileNotFoundError, OSError) as e:
++        print(f"\n[ERROR] Device not found: {e}")
+         return False
+ 
+ def setup_rns(speed_id, preset_name):
+     print("\n--- Configuring Reticulum (RNS) ---")
+     config_path = get_rns_config_path()
+-    
++
+     if not config_path:
+         print("[ERROR] .reticulum/config not found.")
+         return
+@@ -89,7 +121,7 @@ def setup_rns(speed_id, preset_name):
+     # Check for Interface File
+     script_dir = os.path.dirname(os.path.abspath(__file__))
+     source_interface = os.path.join(script_dir, "Meshtastic_Interface.py")
+-    
++
+     if os.path.exists(source_interface):
+         rns_dir = os.path.dirname(config_path)
+         interface_dir = os.path.join(rns_dir, "Interfaces")
+@@ -125,9 +157,9 @@ def main_menu():
+         print("2) Check Node Info")
+         print("3) [URGENT] Fix Channel & Role Permissions")
+         print("4) Exit")
+-        
++
+         choice = input("\nSelect Option: ")
+-        
++
+         if choice == '1':
+             print("\nSelect Speed:")
+             for k, v in SPEED_OPTIONS.items(): print(f"{k}) {v['name']}")
+@@ -136,16 +168,24 @@ def main_menu():
+             if setup_hardware(selected['name'], selected['preset']):
+                 setup_rns(selected['id'], selected['name'])
+             input("\nPress Enter...")
+-            
++
+         elif choice == '2':
+-            subprocess.run([sys.executable, "-m", "meshtastic", "--info"])
++            try:
++                subprocess.run(
++                    [sys.executable, "-m", "meshtastic", "--info"],
++                    timeout=30
++                )
++            except subprocess.TimeoutExpired:
++                print("[ERROR] Command timed out")
++            except (FileNotFoundError, OSError) as e:
++                print(f"[ERROR] {e}")
+             input("\nPress Enter...")
+ 
+         elif choice == '3':
+             # Run the fix
+             fix_node_permissions()
+             input("\nPress Enter...")
+-            
++
+         elif choice == '4':
+             sys.exit()
+ 
+@@ -153,4 +193,4 @@ if __name__ == "__main__":
+     try:
+         main_menu()
+     except KeyboardInterrupt:
+-        pass
+\ No newline at end of file
++        pass
+-- 
+2.43.0
+
