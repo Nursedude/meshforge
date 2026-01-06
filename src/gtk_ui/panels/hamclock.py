@@ -324,6 +324,108 @@ class HamClockPanel(Gtk.Box):
         bands_frame.set_child(bands_box)
         content_box.append(bands_frame)
 
+        # VOACAP Propagation Predictions Frame
+        voacap_frame = Gtk.Frame()
+        voacap_frame.set_label("VOACAP Propagation Predictions")
+        voacap_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        voacap_box.set_margin_start(15)
+        voacap_box.set_margin_end(15)
+        voacap_box.set_margin_top(10)
+        voacap_box.set_margin_bottom(10)
+
+        # VOACAP explanation
+        voacap_info = Gtk.Label(
+            label="Voice of America Coverage Analysis Program - HF propagation reliability"
+        )
+        voacap_info.set_xalign(0)
+        voacap_info.add_css_class("dim-label")
+        voacap_box.append(voacap_info)
+
+        # Individual band predictions with reliability percentages
+        self.voacap_labels = {}
+        voacap_bands = [
+            ("160m", "160m (1.8 MHz)"),
+            ("80m", "80m (3.5 MHz)"),
+            ("40m", "40m (7 MHz)"),
+            ("30m", "30m (10 MHz)"),
+            ("20m", "20m (14 MHz)"),
+            ("17m", "17m (18 MHz)"),
+            ("15m", "15m (21 MHz)"),
+            ("12m", "12m (24 MHz)"),
+            ("10m", "10m (28 MHz)"),
+            ("6m", "6m (50 MHz)"),
+        ]
+
+        # Create a grid for better layout
+        voacap_grid = Gtk.Grid()
+        voacap_grid.set_column_spacing(15)
+        voacap_grid.set_row_spacing(5)
+        voacap_grid.set_margin_top(10)
+
+        # Headers
+        band_header = Gtk.Label(label="Band")
+        band_header.add_css_class("heading")
+        band_header.set_xalign(0)
+        voacap_grid.attach(band_header, 0, 0, 1, 1)
+
+        rel_header = Gtk.Label(label="Reliability")
+        rel_header.add_css_class("heading")
+        rel_header.set_xalign(0)
+        voacap_grid.attach(rel_header, 1, 0, 1, 1)
+
+        snr_header = Gtk.Label(label="SNR")
+        snr_header.add_css_class("heading")
+        snr_header.set_xalign(0)
+        voacap_grid.attach(snr_header, 2, 0, 1, 1)
+
+        for i, (key, label_text) in enumerate(voacap_bands):
+            row = i + 1
+
+            band_label = Gtk.Label(label=label_text)
+            band_label.set_xalign(0)
+            voacap_grid.attach(band_label, 0, row, 1, 1)
+
+            rel_label = Gtk.Label(label="--")
+            rel_label.set_xalign(0)
+            voacap_grid.attach(rel_label, 1, row, 1, 1)
+
+            snr_label = Gtk.Label(label="--")
+            snr_label.set_xalign(0)
+            voacap_grid.attach(snr_label, 2, row, 1, 1)
+
+            self.voacap_labels[key] = {
+                'reliability': rel_label,
+                'snr': snr_label
+            }
+
+        voacap_box.append(voacap_grid)
+
+        # VOACAP target/path info
+        self.voacap_path_label = Gtk.Label(label="Path: --")
+        self.voacap_path_label.set_xalign(0)
+        self.voacap_path_label.add_css_class("dim-label")
+        self.voacap_path_label.set_margin_top(10)
+        voacap_box.append(self.voacap_path_label)
+
+        # VOACAP buttons
+        voacap_btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        voacap_btn_row.set_margin_top(10)
+
+        voacap_btn = Gtk.Button(label="Fetch VOACAP")
+        voacap_btn.connect("clicked", self._on_fetch_voacap)
+        voacap_btn.set_tooltip_text("Get VOACAP predictions from HamClock")
+        voacap_btn.add_css_class("suggested-action")
+        voacap_btn_row.append(voacap_btn)
+
+        voacap_web_btn = Gtk.Button(label="VOACAP Online")
+        voacap_web_btn.connect("clicked", self._on_open_voacap_online)
+        voacap_web_btn.set_tooltip_text("Open VOACAP Online in browser for detailed analysis")
+        voacap_btn_row.append(voacap_web_btn)
+
+        voacap_box.append(voacap_btn_row)
+        voacap_frame.set_child(voacap_box)
+        content_box.append(voacap_frame)
+
         # Live view (if WebKit available)
         if HAS_WEBKIT:
             view_frame = Gtk.Frame()
@@ -1099,4 +1201,194 @@ class HamClockPanel(Gtk.Box):
         logger.info("[HamClock] DX Propagation button clicked")
         # N0NBH Solar-Terrestrial Data page
         url = "https://www.hamqsl.com/solar.html"
+        self._open_url_in_browser(url)
+
+    def _on_fetch_voacap(self, button):
+        """Fetch VOACAP propagation predictions from HamClock"""
+        logger.info("[HamClock] VOACAP fetch button clicked")
+
+        url = self._settings.get("url", "").rstrip('/')
+        api_port = self._settings.get("api_port", 8080)
+
+        if not url:
+            self.status_label.set_label("Configure HamClock URL first")
+            return
+
+        self.status_label.set_label("Fetching VOACAP data...")
+
+        def fetch():
+            api_url = f"{url}:{api_port}"
+            voacap_data = {}
+
+            try:
+                # HamClock VOACAP endpoint
+                full_url = f"{api_url}/get_voacap.txt"
+                logger.debug(f"[HamClock] Fetching VOACAP: {full_url}")
+
+                req = urllib.request.Request(full_url, method='GET')
+                req.add_header('User-Agent', 'MeshForge/1.0')
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    data = response.read().decode('utf-8')
+                    logger.debug(f"[HamClock] VOACAP response: {data[:500]}...")
+                    voacap_data = self._parse_voacap(data)
+
+            except urllib.error.HTTPError as e:
+                logger.debug(f"[HamClock] VOACAP HTTP error: {e.code}")
+                GLib.idle_add(
+                    lambda: self.status_label.set_label(f"VOACAP not available (HTTP {e.code})")
+                )
+                return
+            except urllib.error.URLError as e:
+                logger.debug(f"[HamClock] VOACAP URL error: {e.reason}")
+                GLib.idle_add(
+                    lambda: self.status_label.set_label(f"Connection error: {e.reason}")
+                )
+                return
+            except Exception as e:
+                logger.error(f"[HamClock] VOACAP fetch error: {e}")
+                GLib.idle_add(
+                    lambda: self.status_label.set_label(f"VOACAP error: {e}")
+                )
+                return
+
+            GLib.idle_add(self._update_voacap_display, voacap_data)
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _parse_voacap(self, data):
+        """
+        Parse VOACAP response from HamClock.
+
+        HamClock VOACAP response format (example):
+            Path=DE to DX
+            UTC=14
+            80m=23,12
+            40m=67,24
+            30m=89,32
+            20m=95,38
+            17m=78,28
+            15m=45,18
+            12m=12,8
+            10m=5,2
+
+        Where values are reliability%,SNR_dB
+
+        Args:
+            data: Raw text response from HamClock
+
+        Returns:
+            Dictionary with parsed VOACAP data
+        """
+        result = {
+            'bands': {},
+            'path': '',
+            'utc': '',
+            'raw': data
+        }
+
+        logger.debug(f"[HamClock] Parsing VOACAP data...")
+
+        for line in data.strip().split('\n'):
+            line = line.strip()
+            if not line or '=' not in line:
+                continue
+
+            key, value = line.split('=', 1)
+            key = key.strip().lower()
+            value = value.strip()
+
+            if key == 'path':
+                result['path'] = value
+            elif key == 'utc':
+                result['utc'] = value
+            elif 'm' in key:
+                # Band data (e.g., "80m", "40m")
+                band_key = key.replace('m', 'm')  # Normalize
+                try:
+                    if ',' in value:
+                        rel, snr = value.split(',', 1)
+                        result['bands'][band_key] = {
+                            'reliability': int(rel.strip()),
+                            'snr': int(snr.strip())
+                        }
+                    else:
+                        # Just reliability
+                        result['bands'][band_key] = {
+                            'reliability': int(value),
+                            'snr': 0
+                        }
+                except ValueError as e:
+                    logger.debug(f"[HamClock] Could not parse band {key}: {value} - {e}")
+
+        logger.debug(f"[HamClock] Parsed VOACAP: {len(result['bands'])} bands, path={result['path']}")
+        return result
+
+    def _update_voacap_display(self, data):
+        """Update the VOACAP display with parsed data"""
+        logger.debug(f"[HamClock] Updating VOACAP display: {data}")
+
+        if not data.get('bands'):
+            self.status_label.set_label("No VOACAP data available")
+            # Reset labels
+            for band_key, labels in self.voacap_labels.items():
+                labels['reliability'].set_label("--")
+                labels['snr'].set_label("--")
+            self.voacap_path_label.set_label("Path: --")
+            return
+
+        updated = 0
+
+        for band_key, labels in self.voacap_labels.items():
+            if band_key in data['bands']:
+                band_data = data['bands'][band_key]
+                rel = band_data.get('reliability', 0)
+                snr = band_data.get('snr', 0)
+
+                # Color code reliability
+                if rel >= 80:
+                    rel_text = f"{rel}%"
+                    labels['reliability'].remove_css_class("warning")
+                    labels['reliability'].remove_css_class("error")
+                    labels['reliability'].add_css_class("success")
+                elif rel >= 50:
+                    rel_text = f"{rel}%"
+                    labels['reliability'].remove_css_class("success")
+                    labels['reliability'].remove_css_class("error")
+                    labels['reliability'].add_css_class("warning")
+                elif rel > 0:
+                    rel_text = f"{rel}%"
+                    labels['reliability'].remove_css_class("success")
+                    labels['reliability'].remove_css_class("warning")
+                    labels['reliability'].add_css_class("error")
+                else:
+                    rel_text = "Closed"
+                    labels['reliability'].remove_css_class("success")
+                    labels['reliability'].remove_css_class("warning")
+                    labels['reliability'].add_css_class("error")
+
+                labels['reliability'].set_label(rel_text)
+                labels['snr'].set_label(f"{snr} dB" if snr else "--")
+                updated += 1
+            else:
+                labels['reliability'].set_label("--")
+                labels['snr'].set_label("--")
+
+        # Update path info
+        path_info = []
+        if data.get('path'):
+            path_info.append(data['path'])
+        if data.get('utc'):
+            path_info.append(f"UTC {data['utc']}:00")
+        self.voacap_path_label.set_label(f"Path: {' | '.join(path_info) if path_info else '--'}")
+
+        if updated > 0:
+            self.status_label.set_label(f"VOACAP: {updated} bands updated")
+        else:
+            self.status_label.set_label("VOACAP data received but no bands parsed")
+
+    def _on_open_voacap_online(self, button):
+        """Open VOACAP Online in browser for detailed propagation analysis"""
+        logger.info("[HamClock] VOACAP Online button clicked")
+        # VOACAP Online - comprehensive HF propagation prediction
+        url = "https://www.voacap.com/hf/"
         self._open_url_in_browser(url)
