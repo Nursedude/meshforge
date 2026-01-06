@@ -16,6 +16,11 @@ It bridges two incompatible mesh ecosystems:
 
 Target audience: **HAM radio operators** who need reliable off-grid communications.
 
+### User Decisions (2026-01-06)
+- **Viewer-mode-by-default**: Confirmed - target audience has policies against sudo overuse
+- **Monitoring must be robust**: Work without elevation
+- **All HAM integrations wanted**: HamClock, AREDN, RF tools - must be fully capable
+
 ---
 
 ## 2. Privilege Model (Resolving the sudo Tension)
