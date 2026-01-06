@@ -6,12 +6,23 @@ Radio Amateur Civil Emergency Service (RACES) functionality.
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from enum import Enum
 import json
 from pathlib import Path
+
+# Import centralized path utility for sudo compatibility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
 
 logger = logging.getLogger(__name__)
 
@@ -247,7 +258,7 @@ class ARESRACESTools:
 
     def __init__(self, config_dir: Optional[Path] = None):
         """Initialize ARES/RACES tools"""
-        self.config_dir = config_dir or Path.home() / '.config' / 'meshforge'
+        self.config_dir = config_dir or get_real_user_home() / '.config' / 'meshforge'
         self.data_dir = self.config_dir / 'ares_races'
         self.data_dir.mkdir(parents=True, exist_ok=True)
 

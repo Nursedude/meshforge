@@ -1,9 +1,20 @@
 """Logging utilities for the installer"""
 
 import logging
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
+
+# Import centralized path utility for sudo compatibility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
 
 
 # Global logger instance
@@ -50,7 +61,7 @@ def setup_logger(debug=False, log_file='/var/log/meshtasticd-installer.log'):
         logger.addHandler(file_handler)
     except PermissionError:
         # If we can't write to /var/log, try user directory
-        home_log = Path.home() / '.meshtasticd-installer.log'
+        home_log = get_real_user_home() / '.meshtasticd-installer.log'
         file_handler = logging.FileHandler(home_log)
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(file_formatter)

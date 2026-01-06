@@ -27,6 +27,7 @@ Configuration (~/.config/meshforge/plugins/mqtt_bridge.json):
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -35,6 +36,16 @@ from utils.plugins import (
     PluginMetadata,
     PluginType,
 )
+
+# Import centralized path utility for sudo compatibility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +72,7 @@ class MQTTBridgePlugin(IntegrationPlugin):
 
     def _load_config(self) -> Dict[str, Any]:
         """Load plugin configuration."""
-        config_path = Path.home() / ".config" / "meshforge" / "plugins" / "mqtt_bridge.json"
+        config_path = get_real_user_home() / ".config" / "meshforge" / "plugins" / "mqtt_bridge.json"
         if config_path.exists():
             try:
                 return json.loads(config_path.read_text())

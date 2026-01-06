@@ -15,6 +15,16 @@ import subprocess
 import shutil
 from pathlib import Path
 
+# Import centralized path utility for sudo compatibility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
+
 
 def print_header(title: str):
     """Print a section header."""
@@ -190,15 +200,11 @@ def check_rns_config():
     """Check RNS configuration."""
     print_header("RNS CONFIGURATION")
 
-    # Check for config file
+    # Check for config file - use real user home for sudo compatibility
     config_locations = [
-        Path.home() / '.reticulum' / 'config',
+        get_real_user_home() / '.reticulum' / 'config',
         Path('/etc/reticulum/config'),
     ]
-
-    sudo_user = os.environ.get('SUDO_USER')
-    if sudo_user:
-        config_locations.insert(0, Path(f'/home/{sudo_user}/.reticulum/config'))
 
     config_found = False
     for config_path in config_locations:
@@ -495,7 +501,7 @@ def check_ham_callsign():
         callsign_found = True
 
     # Check NomadNet config for identity
-    nomad_config = Path.home() / '.nomadnetwork' / 'config'
+    nomad_config = get_real_user_home() / '.nomadnetwork' / 'config'
     if nomad_config.exists():
         try:
             content = nomad_config.read_text()

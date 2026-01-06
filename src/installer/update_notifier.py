@@ -9,6 +9,16 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm
 
+# Import centralized path utility for sudo compatibility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
+
 console = Console()
 
 
@@ -16,7 +26,7 @@ class UpdateNotifier:
     """Manages automatic update checking and notifications"""
 
     def __init__(self):
-        self.cache_dir = Path.home() / '.cache' / 'meshtasticd-installer'
+        self.cache_dir = get_real_user_home() / '.cache' / 'meshtasticd-installer'
         self.cache_file = self.cache_dir / 'update_cache.json'
         self.check_interval_hours = 24  # Check once per day
 

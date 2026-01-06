@@ -5,10 +5,21 @@ Tracks user progress through courses and assessments.
 """
 
 import json
+import os
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
+
+# Import centralized path utility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
 
 
 @dataclass
@@ -106,7 +117,7 @@ class ProgressTracker:
 
     def __init__(self, config_dir: Optional[Path] = None):
         if config_dir is None:
-            config_dir = Path.home() / '.config' / 'meshforge'
+            config_dir = get_real_user_home() / '.config' / 'meshforge'
         self.config_dir = config_dir
         self.progress_file = config_dir / 'university_progress.json'
         self.courses: Dict[str, CourseProgress] = {}

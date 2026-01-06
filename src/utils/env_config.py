@@ -6,6 +6,16 @@ from typing import Dict, Optional, Any
 from rich.console import Console
 from rich.table import Table
 
+# Import centralized path utility for sudo compatibility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
+
 console = Console()
 
 # Default configuration values
@@ -46,7 +56,7 @@ def find_env_file() -> Optional[Path]:
     search_paths = [
         Path.cwd() / '.env',
         Path('/opt/meshtasticd-installer/.env'),
-        Path.home() / '.meshtasticd-installer.env',
+        get_real_user_home() / '.meshtasticd-installer.env',
         Path(__file__).parent.parent.parent / '.env',
     ]
 

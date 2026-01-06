@@ -22,6 +22,7 @@ Usage:
 """
 
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -31,6 +32,16 @@ from utils.plugins import (
     PluginMetadata,
     PluginType,
 )
+
+# Import centralized path utility for sudo compatibility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +84,12 @@ class MeshingAroundPlugin(IntegrationPlugin):
 
     def _find_bot_installation(self) -> Optional[Path]:
         """Find meshing-around installation."""
+        user_home = get_real_user_home()
         search_paths = [
-            Path.home() / "meshing-around",
-            Path.home() / "src" / "meshing-around",
+            user_home / "meshing-around",
+            user_home / "src" / "meshing-around",
             Path("/opt/meshing-around"),
-            Path.home() / ".local" / "share" / "meshing-around",
+            user_home / ".local" / "share" / "meshing-around",
         ]
 
         for path in search_paths:
@@ -150,7 +162,7 @@ class MeshingAroundPlugin(IntegrationPlugin):
     def install_bot(self) -> bool:
         """Install meshing-around from GitHub."""
         try:
-            install_dir = Path.home() / "meshing-around"
+            install_dir = get_real_user_home() / "meshing-around"
 
             if install_dir.exists():
                 logger.info("meshing-around already installed")

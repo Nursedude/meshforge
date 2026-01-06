@@ -20,8 +20,18 @@ try:
 except ImportError:
     __version__ = "3.0.3"
 
+# Import centralized path utility for sudo compatibility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
+
 # Config file location
-CONFIG_DIR = Path.home() / '.config' / 'meshtasticd-installer'
+CONFIG_DIR = get_real_user_home() / '.config' / 'meshtasticd-installer'
 CONFIG_FILE = CONFIG_DIR / 'preferences.json'
 
 

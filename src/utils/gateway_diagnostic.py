@@ -14,6 +14,16 @@ from enum import Enum
 from pathlib import Path
 from typing import List, Dict, Optional
 
+# Import centralized path utility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
+
 
 class CheckStatus(Enum):
     """Status of a diagnostic check."""
@@ -239,7 +249,7 @@ class GatewayDiagnostic:
 
     def check_rns_config(self) -> CheckResult:
         """Check RNS configuration file."""
-        config_path = Path.home() / ".reticulum" / "config"
+        config_path = get_real_user_home() / ".reticulum" / "config"
 
         if not config_path.exists():
             return CheckResult(
@@ -351,7 +361,7 @@ class GatewayDiagnostic:
 
     def check_meshtastic_interface(self) -> CheckResult:
         """Check Meshtastic_Interface.py for RNS."""
-        interface_path = Path.home() / ".reticulum" / "interfaces" / "Meshtastic_Interface.py"
+        interface_path = get_real_user_home() / ".reticulum" / "interfaces" / "Meshtastic_Interface.py"
 
         if interface_path.exists():
             # Check file size (should be > 10KB for real interface)

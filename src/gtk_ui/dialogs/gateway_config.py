@@ -8,11 +8,22 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, GLib
 import json
+import os
 from pathlib import Path
 import sys
 
 # Add parent path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+# Import centralized path utility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
 
 try:
     from gateway.config import GatewayConfig, MeshtasticConfig, RNSConfig, TelemetryConfig, RoutingRule
@@ -376,7 +387,7 @@ class GatewayConfigDialog(Adw.Window):
         box.append(self.anomaly_switch)
 
         # Config file location
-        config_path = Path.home() / ".config" / "meshforge" / "gateway.json"
+        config_path = get_real_user_home() / ".config" / "meshforge" / "gateway.json"
         path_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         path_row.set_margin_top(10)
         path_label = Gtk.Label(label="Config File:")
