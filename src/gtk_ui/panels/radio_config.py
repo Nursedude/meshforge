@@ -226,6 +226,13 @@ class RadioConfigPanel(Gtk.Box):
         import re
         import ast
 
+        # Meshtastic protobuf enum mapping (numeric value -> preset name)
+        preset_enum_map = {
+            0: "LONG_FAST", 1: "LONG_SLOW", 2: "VERY_LONG_SLOW",
+            3: "MEDIUM_SLOW", 4: "MEDIUM_FAST", 5: "SHORT_SLOW",
+            6: "SHORT_FAST", 7: "LONG_MODERATE", 8: "SHORT_TURBO"
+        }
+
         # Extract Owner line - format: "Owner: LongName (ShortName/NodeID)"
         # Examples: "Owner: MyNode (MYND) !abcd1234" or "Owner: MyNode (!abcd1234)"
         owner_patterns = [
@@ -352,13 +359,19 @@ class RadioConfigPanel(Gtk.Box):
             if prefs.get('region') and self.radio_region.get_label() == "--":
                 self.radio_region.set_label(str(prefs['region']))
             if prefs.get('modem_preset') and self.radio_preset.get_label() == "--":
-                preset_val = str(prefs['modem_preset'])
+                preset_val = prefs['modem_preset']
+                # Convert numeric enum to string name
+                if isinstance(preset_val, int) or (isinstance(preset_val, str) and preset_val.isdigit()):
+                    preset_val = preset_enum_map.get(int(preset_val), str(preset_val))
                 logger.debug(f"Setting modem preset from prefs.modem_preset: '{preset_val}'")
-                self.radio_preset.set_label(preset_val)
+                self.radio_preset.set_label(str(preset_val))
             if prefs.get('modemPreset') and self.radio_preset.get_label() == "--":
-                preset_val = str(prefs['modemPreset'])
+                preset_val = prefs['modemPreset']
+                # Convert numeric enum to string name
+                if isinstance(preset_val, int) or (isinstance(preset_val, str) and preset_val.isdigit()):
+                    preset_val = preset_enum_map.get(int(preset_val), str(preset_val))
                 logger.debug(f"Setting modem preset from prefs.modemPreset: '{preset_val}'")
-                self.radio_preset.set_label(preset_val)
+                self.radio_preset.set_label(str(preset_val))
 
         # Fallback: Parse line by line for any remaining "--" fields
         lines = output.strip().split('\n')
@@ -383,14 +396,24 @@ class RadioConfigPanel(Gtk.Box):
                     if match and match.group(1) not in ['True', 'False', 'None', 'UNSET']:
                         self.radio_region.set_label(match.group(1))
 
-            # Modem preset from various formats
+            # Modem preset from various formats (string name or numeric enum)
             if self.radio_preset.get_label() == "--":
                 if 'modem' in line_lower and ('preset' in line_lower or ':' in line):
+                    # Try string match first
                     match = re.search(r':\s*([A-Z_]+(?:FAST|SLOW|TURBO|MODERATE))', line, re.IGNORECASE)
                     if match:
                         preset_val = match.group(1).upper()
                         logger.debug(f"Fallback preset parse from line '{line}': '{preset_val}'")
                         self.radio_preset.set_label(preset_val)
+                    else:
+                        # Try numeric enum match
+                        match = re.search(r':\s*(\d+)', line)
+                        if match:
+                            preset_num = int(match.group(1))
+                            preset_val = preset_enum_map.get(preset_num)
+                            if preset_val:
+                                logger.debug(f"Fallback numeric preset {preset_num} -> '{preset_val}'")
+                                self.radio_preset.set_label(preset_val)
 
             # Hardware model fallback
             if self.radio_hardware.get_label() == "--":
@@ -479,12 +502,12 @@ class RadioConfigPanel(Gtk.Box):
         region_box.append(region_apply)
         box.append(region_box)
 
-        # Modem Preset
+        # Modem Preset (order must match presets list in _parse_config_output)
         preset_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         preset_box.append(Gtk.Label(label="Modem Preset:"))
         self.preset_dropdown = Gtk.DropDown.new_from_strings([
-            "LONG_FAST", "LONG_SLOW", "LONG_MODERATE", "MEDIUM_SLOW", "MEDIUM_FAST",
-            "SHORT_SLOW", "SHORT_FAST", "SHORT_TURBO"
+            "LONG_FAST", "LONG_SLOW", "VERY_LONG_SLOW", "LONG_MODERATE",
+            "MEDIUM_SLOW", "MEDIUM_FAST", "SHORT_SLOW", "SHORT_FAST", "SHORT_TURBO"
         ])
         self.preset_dropdown.set_selected(0)
         preset_box.append(self.preset_dropdown)
@@ -1166,8 +1189,8 @@ class RadioConfigPanel(Gtk.Box):
 
     def _get_preset(self):
         """Get selected modem preset"""
-        presets = ["LONG_FAST", "LONG_SLOW", "LONG_MODERATE", "MEDIUM_SLOW", "MEDIUM_FAST",
-                   "SHORT_SLOW", "SHORT_FAST", "SHORT_TURBO"]
+        presets = ["LONG_FAST", "LONG_SLOW", "VERY_LONG_SLOW", "LONG_MODERATE",
+                   "MEDIUM_SLOW", "MEDIUM_FAST", "SHORT_SLOW", "SHORT_FAST", "SHORT_TURBO"]
         return presets[self.preset_dropdown.get_selected()]
 
     def _get_gps_mode(self):
@@ -1319,8 +1342,15 @@ class RadioConfigPanel(Gtk.Box):
         regions = ["UNSET", "US", "EU_433", "EU_868", "CN", "JP", "ANZ", "KR", "TW", "RU",
                    "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919",
                    "SG_923", "PH", "UK_868", "SINGAPORE"]
-        presets = ["LONG_FAST", "LONG_SLOW", "LONG_MODERATE", "MEDIUM_SLOW", "MEDIUM_FAST",
-                   "SHORT_SLOW", "SHORT_FAST", "SHORT_TURBO"]
+        # Presets must match UI dropdown order
+        presets = ["LONG_FAST", "LONG_SLOW", "VERY_LONG_SLOW", "LONG_MODERATE",
+                   "MEDIUM_SLOW", "MEDIUM_FAST", "SHORT_SLOW", "SHORT_FAST", "SHORT_TURBO"]
+        # Meshtastic protobuf enum mapping (numeric value -> preset name)
+        preset_enum_map = {
+            0: "LONG_FAST", 1: "LONG_SLOW", 2: "VERY_LONG_SLOW",
+            3: "MEDIUM_SLOW", 4: "MEDIUM_FAST", 5: "SHORT_SLOW",
+            6: "SHORT_FAST", 7: "LONG_MODERATE", 8: "SHORT_TURBO"
+        }
         gps_modes = ["DISABLED", "ENABLED", "NOT_PRESENT"]
         rebroadcast_modes = ["ALL", "ALL_SKIP_DECODING", "LOCAL_ONLY", "KNOWN_ONLY", "NONE"]
 
@@ -1450,10 +1480,16 @@ class RadioConfigPanel(Gtk.Box):
 
             # --- Modem Preset ---
             if not fields_set['preset'] and ('modem' in line_lower and 'preset' in line_lower):
-                match = re.search(r'(?:modem_?preset|preset)[:\s]+([A-Z_]+)', line, re.IGNORECASE)
+                # Try to match string value (LONG_FAST) or numeric enum (0)
+                match = re.search(r'(?:modem_?preset|preset)[:\s]+([A-Z_]+|\d+)', line, re.IGNORECASE)
                 if match:
                     preset_val = match.group(1)
                     logger.debug(f"Parsing modem preset from config line '{line}': '{preset_val}'")
+                    # Convert numeric enum to string name
+                    if preset_val.isdigit():
+                        preset_num = int(preset_val)
+                        preset_val = preset_enum_map.get(preset_num, preset_val)
+                        logger.debug(f"Converted numeric preset {preset_num} to '{preset_val}'")
                     if set_dropdown_by_value(self.preset_dropdown, presets, preset_val):
                         fields_set['preset'] = True
                         logger.info(f"Set preset dropdown to: {preset_val}")
