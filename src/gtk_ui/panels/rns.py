@@ -10,11 +10,22 @@ from gi.repository import Gtk, Adw, GLib
 import subprocess
 import threading
 import shutil
+import os
 from pathlib import Path
 from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Import centralized path utility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
 
 
 class RNSPanel(Gtk.Box):
@@ -459,7 +470,7 @@ class RNSPanel(Gtk.Box):
         mesh_iface_box.append(self.mesh_iface_status)
 
         # Check if already installed
-        iface_file = Path.home() / ".reticulum" / "interfaces" / "Meshtastic_Interface.py"
+        iface_file = get_real_user_home() / ".reticulum" / "interfaces" / "Meshtastic_Interface.py"
         if iface_file.exists():
             self.mesh_iface_status.set_label("✓ Meshtastic_Interface.py installed")
 
@@ -709,11 +720,7 @@ class RNSPanel(Gtk.Box):
 
     def _get_real_user_home(self):
         """Get the real user's home directory, even when running as root via sudo"""
-        import os
-        sudo_user = os.environ.get('SUDO_USER')
-        if sudo_user and os.geteuid() == 0:
-            return Path('/home') / sudo_user
-        return Path.home()
+        return get_real_user_home()
 
     def _get_real_username(self):
         """Get the real username, even when running as root via sudo"""
@@ -1291,7 +1298,7 @@ message_storage_limit = 2000
                 import urllib.request
 
                 # Create interfaces directory
-                interfaces_dir = Path.home() / ".reticulum" / "interfaces"
+                interfaces_dir = get_real_user_home() / ".reticulum" / "interfaces"
                 interfaces_dir.mkdir(parents=True, exist_ok=True)
 
                 # Download the interface file
@@ -1340,7 +1347,7 @@ message_storage_limit = 2000
         """Add Meshtastic Interface config template to RNS config"""
         logger.debug("[RNS] Adding Meshtastic Interface config...")
 
-        config_file = Path.home() / ".reticulum" / "config"
+        config_file = get_real_user_home() / ".reticulum" / "config"
 
         # Config template - based on Nursedude/RNS_Over_Meshtastic_Gateway
         config_template = '''

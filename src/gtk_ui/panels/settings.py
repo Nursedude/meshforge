@@ -7,6 +7,17 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, GLib, Gio
 from pathlib import Path
+import os
+
+# Import centralized path utility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
 
 # Use centralized settings manager
 try:
@@ -20,7 +31,7 @@ class SettingsPanel(Gtk.Box):
     """Settings panel with theme, preferences, and simulation options"""
 
     # Settings file location
-    SETTINGS_FILE = Path.home() / ".config" / "meshforge" / "settings.json"
+    SETTINGS_FILE = get_real_user_home() / ".config" / "meshforge" / "settings.json"
 
     # Settings defaults
     SETTINGS_DEFAULTS = {
@@ -72,7 +83,7 @@ class SettingsPanel(Gtk.Box):
     def _load_settings_legacy(self):
         """Legacy settings load for fallback"""
         import json
-        settings_file = Path.home() / ".config" / "meshforge" / "settings.json"
+        settings_file = get_real_user_home() / ".config" / "meshforge" / "settings.json"
         defaults = self.SETTINGS_DEFAULTS.copy()
         try:
             if settings_file.exists():
@@ -91,7 +102,7 @@ class SettingsPanel(Gtk.Box):
         else:
             # Legacy fallback
             import json
-            settings_file = Path.home() / ".config" / "meshforge" / "settings.json"
+            settings_file = get_real_user_home() / ".config" / "meshforge" / "settings.json"
             try:
                 settings_file.parent.mkdir(parents=True, exist_ok=True)
                 with open(settings_file, 'w') as f:
