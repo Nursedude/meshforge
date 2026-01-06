@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 
 # Import amateur radio modules with fallback
 try:
-    from amateur.callsign import CallsignManager, CallsignInfo
+    from amateur.callsign import CallsignManager, CallsignInfo, StationIDTimer
     from amateur.compliance import Part97Reference, ComplianceChecker, LicenseClass
     from amateur.ares_races import ARESRACESTools, TrafficMessage, MessagePriority
     AMATEUR_AVAILABLE = True
@@ -49,9 +49,9 @@ class AmateurPanel(Gtk.Box):
         self.ares_tools = ARESRACESTools()
         self.compliance_checker = ComplianceChecker()
 
-        # Station ID timer
-        self._id_timer = None
-        self._last_id_check = datetime.now()
+        # Station ID timer - use new StationIDTimer class
+        self._station_id_timer: Optional[StationIDTimer] = None
+        self._ui_update_timer = None
 
         self._build_ui()
         self._start_id_timer()
@@ -486,32 +486,88 @@ class AmateurPanel(Gtk.Box):
             self.band_list.append(row)
 
     def _start_id_timer(self):
-        """Start the station ID reminder timer"""
-        def check_id():
-            if self.callsign_manager.should_identify():
-                self.id_status.set_text("ID NOW!")
-                self.id_status.remove_css_class("success")
-                self.id_status.add_css_class("error")
-            else:
-                elapsed = (datetime.now() - (self.callsign_manager.last_id_time or datetime.now())).seconds // 60
-                remaining = 10 - elapsed
-                if remaining <= 2:
-                    self.id_status.set_text(f"{remaining}m remaining")
-                    self.id_status.remove_css_class("success")
-                    self.id_status.add_css_class("warning")
-                else:
-                    self.id_status.set_text(f"{remaining}m remaining")
-                    self.id_status.remove_css_class("error")
-                    self.id_status.remove_css_class("warning")
-                    self.id_status.add_css_class("success")
-            return True  # Keep timer running
+        """Start the station ID reminder timer using StationIDTimer"""
+        callsign = self.callsign_manager.my_callsign or "NOCALL"
 
-        self._id_timer = GLib.timeout_add_seconds(30, check_id)
+        # Callback when ID is due - runs on background thread, use GLib.idle_add for UI
+        def on_id_due():
+            GLib.idle_add(self._show_id_due_alert)
+
+        # Callback for warning - runs on background thread
+        def on_warning(seconds_remaining):
+            GLib.idle_add(self._show_id_warning, seconds_remaining)
+
+        # Create and start the timer
+        self._station_id_timer = StationIDTimer(
+            callsign=callsign,
+            interval_minutes=10,
+            warning_minutes=1,
+            on_id_due=on_id_due,
+            on_warning=on_warning,
+        )
+        self._station_id_timer.start()
+
+        # Start UI update timer (every second for real-time countdown)
+        self._ui_update_timer = GLib.timeout_add(1000, self._update_id_display)
+
+    def _update_id_display(self) -> bool:
+        """Update the ID countdown display every second"""
+        if not self._station_id_timer:
+            return False
+
+        time_str = self._station_id_timer.time_until_id_due()
+        seconds = self._station_id_timer.seconds_until_id_due()
+
+        # Update display
+        self.id_status.set_text(time_str)
+
+        # Update styling based on urgency
+        self.id_status.remove_css_class("success")
+        self.id_status.remove_css_class("warning")
+        self.id_status.remove_css_class("error")
+
+        if seconds <= 0:
+            self.id_status.add_css_class("error")
+        elif seconds <= 60:
+            self.id_status.add_css_class("warning")
+        else:
+            self.id_status.add_css_class("success")
+
+        return True  # Keep timer running
+
+    def _show_id_due_alert(self):
+        """Show alert that station ID is due"""
+        self.id_status.set_text("ID NOW!")
+        self.id_status.remove_css_class("success")
+        self.id_status.remove_css_class("warning")
+        self.id_status.add_css_class("error")
+
+        # Show notification if app supports it
+        if self.app:
+            try:
+                self.app.show_notification(
+                    "Station ID Required",
+                    f"Time to identify as {self._station_id_timer.callsign}"
+                )
+            except (AttributeError, Exception) as e:
+                logger.debug(f"Could not show notification: {e}")
+
+    def _show_id_warning(self, seconds_remaining: int):
+        """Show warning that ID is due soon"""
+        self.id_status.remove_css_class("success")
+        self.id_status.add_css_class("warning")
 
     # Event handlers
     def _on_id_now(self, button):
-        """Handle ID now button"""
-        self.callsign_manager.record_identification()
+        """Handle ID now button - record station identification"""
+        if self._station_id_timer:
+            self._station_id_timer.record_id()
+            callsign = self._station_id_timer.callsign
+        else:
+            self.callsign_manager.record_identification()
+            callsign = self.callsign_manager.my_callsign
+
+        # Update UI immediately
         self.id_status.set_text("ID Complete")
         self.id_status.remove_css_class("error")
         self.id_status.remove_css_class("warning")
@@ -521,10 +577,12 @@ class AmateurPanel(Gtk.Box):
             try:
                 self.app.show_notification(
                     "Station ID",
-                    f"Identified as {self.callsign_manager.my_callsign}"
+                    f"Identified as {callsign}"
                 )
             except (AttributeError, Exception) as e:
                 logger.debug(f"Failed to show notification: {e}")
+
+        logger.info(f"Station ID recorded: {callsign}")
 
     def _on_callsign_changed(self, entry):
         """Handle callsign entry change"""
@@ -716,7 +774,14 @@ class AmateurPanel(Gtk.Box):
 
     def cleanup(self):
         """Clean up resources"""
-        if self._id_timer:
-            GLib.source_remove(self._id_timer)
-            self._id_timer = None
+        # Stop the Station ID timer background thread
+        if self._station_id_timer:
+            self._station_id_timer.stop()
+            self._station_id_timer = None
+
+        # Stop the UI update timer
+        if self._ui_update_timer:
+            GLib.source_remove(self._ui_update_timer)
+            self._ui_update_timer = None
+
         logger.debug("Amateur panel resources cleaned up")

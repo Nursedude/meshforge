@@ -7,9 +7,10 @@ Provides callsign lookup, validation, and management features.
 import re
 import os
 import logging
+import threading
 from dataclasses import dataclass, field
-from typing import Optional, Dict, List, Any
-from datetime import datetime
+from typing import Optional, Dict, List, Any, Callable
+from datetime import datetime, timedelta
 from pathlib import Path
 import json
 
@@ -313,3 +314,188 @@ class CallsignManager:
         """Clear the callsign cache"""
         self._cache.clear()
         self._save_cache()
+
+
+class StationIDTimer:
+    """
+    Station Identification Timer per FCC Part 97.119.
+
+    FCC requires station identification:
+    - At the end of each communication
+    - At least every 10 minutes during a communication
+
+    This timer helps operators stay compliant by:
+    - Tracking time since last ID
+    - Alerting when ID is due
+    - Showing countdown to next required ID
+    """
+
+    def __init__(
+        self,
+        callsign: str,
+        interval_minutes: int = 10,
+        warning_minutes: int = 1,
+        on_id_due: Optional[Callable[[], None]] = None,
+        on_warning: Optional[Callable[[int], None]] = None,
+    ):
+        """
+        Initialize Station ID Timer.
+
+        Args:
+            callsign: Operator's callsign for ID string
+            interval_minutes: ID interval (default 10 per FCC)
+            warning_minutes: Minutes before due to warn
+            on_id_due: Callback when ID is required
+            on_warning: Callback with seconds remaining when warning
+        """
+        self.callsign = callsign.upper()
+        self.interval_minutes = interval_minutes
+        self.warning_minutes = warning_minutes
+        self.on_id_due = on_id_due
+        self.on_warning = on_warning
+
+        self._last_id_time: Optional[datetime] = None
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self._warned = False
+
+        # Persistence
+        self._state_file = get_real_user_home() / '.config' / 'meshforge' / 'station_id_state.json'
+        self._load_state()
+
+    def _load_state(self) -> None:
+        """Load timer state from disk"""
+        try:
+            if self._state_file.exists():
+                with open(self._state_file, 'r') as f:
+                    data = json.load(f)
+                    if data.get('callsign') == self.callsign:
+                        last_id = data.get('last_id_time')
+                        if last_id:
+                            self._last_id_time = datetime.fromisoformat(last_id)
+                            logger.debug(f"Loaded last ID time: {self._last_id_time}")
+        except Exception as e:
+            logger.debug(f"Could not load ID timer state: {e}")
+
+    def _save_state(self) -> None:
+        """Save timer state to disk"""
+        try:
+            self._state_file.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                'callsign': self.callsign,
+                'last_id_time': self._last_id_time.isoformat() if self._last_id_time else None,
+            }
+            with open(self._state_file, 'w') as f:
+                json.dump(data, f)
+        except Exception as e:
+            logger.debug(f"Could not save ID timer state: {e}")
+
+    def start(self) -> None:
+        """Start the ID timer background thread"""
+        if self._running:
+            return
+
+        self._running = True
+        self._thread = threading.Thread(target=self._timer_loop, daemon=True)
+        self._thread.start()
+        logger.info(f"Station ID timer started for {self.callsign}")
+
+    def stop(self) -> None:
+        """Stop the ID timer"""
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=2)
+            self._thread = None
+        logger.info("Station ID timer stopped")
+
+    def _timer_loop(self) -> None:
+        """Background timer loop - checks every second"""
+        import time
+        while self._running:
+            try:
+                seconds_remaining = self.seconds_until_id_due()
+
+                # Check if warning threshold reached
+                warning_threshold = self.warning_minutes * 60
+                if 0 < seconds_remaining <= warning_threshold:
+                    if not self._warned and self.on_warning:
+                        self._warned = True
+                        self.on_warning(seconds_remaining)
+
+                # Check if ID is due
+                if seconds_remaining <= 0:
+                    if self.on_id_due:
+                        self.on_id_due()
+                    # Reset warning flag after ID is due
+                    self._warned = False
+
+                time.sleep(1)
+            except Exception as e:
+                logger.error(f"Error in ID timer loop: {e}")
+                time.sleep(1)
+
+    def record_id(self) -> None:
+        """Record that station ID was made"""
+        self._last_id_time = datetime.now()
+        self._warned = False
+        self._save_state()
+        logger.info(f"Station ID recorded: {self.callsign} at {self._last_id_time}")
+
+    def seconds_until_id_due(self) -> int:
+        """
+        Get seconds until next ID is required.
+
+        Returns:
+            Seconds remaining (0 or negative means ID is due now)
+        """
+        if not self._last_id_time:
+            return 0  # Never ID'd, due now
+
+        elapsed = datetime.now() - self._last_id_time
+        interval_seconds = self.interval_minutes * 60
+        remaining = interval_seconds - elapsed.total_seconds()
+        return max(0, int(remaining))
+
+    def time_until_id_due(self) -> str:
+        """
+        Get human-readable time until next ID.
+
+        Returns:
+            String like "9:45" or "ID NOW"
+        """
+        seconds = self.seconds_until_id_due()
+        if seconds <= 0:
+            return "ID NOW"
+
+        minutes = seconds // 60
+        secs = seconds % 60
+        return f"{minutes}:{secs:02d}"
+
+    def is_id_due(self) -> bool:
+        """Check if station ID is due now"""
+        return self.seconds_until_id_due() <= 0
+
+    def get_id_string(self, tactical: Optional[str] = None) -> str:
+        """
+        Get proper station identification string.
+
+        Args:
+            tactical: Optional tactical callsign
+
+        Returns:
+            Identification string per Part 97.119
+        """
+        if tactical:
+            # Tactical ID followed by FCC callsign
+            return f"{tactical}, {self.callsign}"
+        return self.callsign
+
+    @property
+    def last_id_time(self) -> Optional[datetime]:
+        """Get the time of last station identification"""
+        return self._last_id_time
+
+    @property
+    def is_running(self) -> bool:
+        """Check if timer is running"""
+        return self._running
