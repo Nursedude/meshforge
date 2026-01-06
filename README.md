@@ -151,22 +151,11 @@ git clone https://github.com/Nursedude/meshforge.git
 
 MeshForge uses a **tiered support system** to communicate feature maturity:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     MESHFORGE SUPPORT LEVELS                        │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  ✅ FULLY INTEGRATED  Features with tests, GUI panels, and full    │
-│     (Core)            functionality built into MeshForge            │
-│                                                                     │
-│  🔧 PLUGIN STUBS     Architecture ready, awaiting full              │
-│     (Extensible)      implementation or external library deps       │
-│                                                                     │
-│  📋 PLANNED          On roadmap, not yet implemented                │
-│     (Future)                                                        │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
+| Level | Status | Description |
+|-------|--------|-------------|
+| **Core** | ✅ Integrated | Features with tests, GUI panels, full functionality |
+| **Extensible** | 🔧 Plugin Stubs | Architecture ready, awaiting implementation |
+| **Future** | 📋 Planned | On roadmap, not yet implemented |
 
 ### ✅ Fully Integrated (Core)
 
