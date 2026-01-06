@@ -159,10 +159,10 @@ MeshForge uses a **tiered support system** to communicate feature maturity:
 │  ✅ FULLY INTEGRATED  Features with tests, GUI panels, and full    │
 │     (Core)            functionality built into MeshForge            │
 │                                                                     │
-│  🔧 PLUGIN STUBS      Architecture ready, awaiting full             │
+│  🔧 PLUGIN STUBS     Architecture ready, awaiting full              │
 │     (Extensible)      implementation or external library deps       │
 │                                                                     │
-│  📋 PLANNED           On roadmap, not yet implemented               │
+│  📋 PLANNED          On roadmap, not yet implemented                │
 │     (Future)                                                        │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
