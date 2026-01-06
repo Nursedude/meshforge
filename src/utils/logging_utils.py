@@ -30,12 +30,22 @@ import functools
 import time
 import traceback
 import threading
+import os
 from pathlib import Path
 from typing import Optional, Callable, Any
 from datetime import datetime
 
-# Default log directory
-LOG_DIR = Path.home() / ".config" / "meshforge" / "logs"
+
+def _get_real_user_home() -> Path:
+    """Get the real user's home directory, even when running as root via sudo."""
+    sudo_user = os.environ.get('SUDO_USER')
+    if sudo_user and sudo_user != 'root':
+        return Path(f'/home/{sudo_user}')
+    return Path.home()
+
+
+# Default log directory - use real user's home even when running with sudo
+LOG_DIR = _get_real_user_home() / ".config" / "meshforge" / "logs"
 
 # Global log level setting (can be changed at runtime)
 _global_log_level = logging.DEBUG

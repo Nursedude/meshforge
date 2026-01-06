@@ -12,6 +12,14 @@ import threading
 import os
 import shutil
 
+# Import logging
+try:
+    from utils.logging_utils import get_logger
+    logger = get_logger(__name__)
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
+
 
 class RadioConfigPanel(Gtk.Box):
     """Radio configuration panel with all Meshtastic radio settings"""
@@ -331,18 +339,26 @@ class RadioConfigPanel(Gtk.Box):
             if label.get_label() == "--":
                 match = re.search(pattern, output)
                 if match:
-                    label.set_label(match.group(1).strip())
+                    value = match.group(1).strip()
+                    label.set_label(value)
+                    if field_name == 'modemPreset':
+                        logger.debug(f"Parsed modem preset from regex: '{value}'")
 
         # Parse Preferences block for region and modem_preset
         prefs_match = re.search(r"Preferences:\s*(\{.+?\})", output, re.DOTALL)
         if prefs_match:
             prefs = parse_python_dict(prefs_match.group(1))
+            logger.debug(f"Parsed Preferences block: {prefs}")
             if prefs.get('region') and self.radio_region.get_label() == "--":
                 self.radio_region.set_label(str(prefs['region']))
             if prefs.get('modem_preset') and self.radio_preset.get_label() == "--":
-                self.radio_preset.set_label(str(prefs['modem_preset']))
+                preset_val = str(prefs['modem_preset'])
+                logger.debug(f"Setting modem preset from prefs.modem_preset: '{preset_val}'")
+                self.radio_preset.set_label(preset_val)
             if prefs.get('modemPreset') and self.radio_preset.get_label() == "--":
-                self.radio_preset.set_label(str(prefs['modemPreset']))
+                preset_val = str(prefs['modemPreset'])
+                logger.debug(f"Setting modem preset from prefs.modemPreset: '{preset_val}'")
+                self.radio_preset.set_label(preset_val)
 
         # Fallback: Parse line by line for any remaining "--" fields
         lines = output.strip().split('\n')
@@ -372,7 +388,9 @@ class RadioConfigPanel(Gtk.Box):
                 if 'modem' in line_lower and ('preset' in line_lower or ':' in line):
                     match = re.search(r':\s*([A-Z_]+(?:FAST|SLOW|TURBO|MODERATE))', line, re.IGNORECASE)
                     if match:
-                        self.radio_preset.set_label(match.group(1).upper())
+                        preset_val = match.group(1).upper()
+                        logger.debug(f"Fallback preset parse from line '{line}': '{preset_val}'")
+                        self.radio_preset.set_label(preset_val)
 
             # Hardware model fallback
             if self.radio_hardware.get_label() == "--":
@@ -1368,7 +1386,7 @@ class RadioConfigPanel(Gtk.Box):
             # Skip if this line is about rebroadcast_mode or other role-containing words
             if not fields_set['role'] and 'role' in line_lower and 'rebroadcast' not in line_lower:
                 # Debug: log all lines containing 'role' to help debug
-                print(f"[RadioConfig] Checking line for role: '{line_stripped}'")
+                logger.debug(f"Checking line for role: '{line_stripped}'")
 
                 # Meshtastic device role enum values (numeric to string mapping)
                 role_enum_map = {
@@ -1391,10 +1409,10 @@ class RadioConfigPanel(Gtk.Box):
                     role_num = int(num_match.group(1))
                     if role_num in role_enum_map:
                         role_value = role_enum_map[role_num]
-                        print(f"[RadioConfig] Found numeric role: {role_num} -> '{role_value}'")
+                        logger.debug(f"Found numeric role: {role_num} -> '{role_value}'")
                         if set_dropdown_by_value(self.role_dropdown, roles, role_value):
                             fields_set['role'] = True
-                            print(f"[RadioConfig] Set role dropdown to: {role_value}")
+                            logger.info(f"Set role dropdown to: {role_value}")
                         continue
 
                 # Pattern: look for role at word boundary, followed by colon and string value
@@ -1415,13 +1433,13 @@ class RadioConfigPanel(Gtk.Box):
                         # Has mixed case - convert camelCase to SNAKE_CASE
                         role_value = re.sub(r'([a-z])([A-Z])', r'\1_\2', role_raw).upper()
 
-                    print(f"[RadioConfig] Found role: '{role_raw}' -> '{role_value}'")
+                    logger.debug(f"Found role: '{role_raw}' -> '{role_value}'")
 
                     if set_dropdown_by_value(self.role_dropdown, roles, role_value):
                         fields_set['role'] = True
-                        print(f"[RadioConfig] Set role dropdown to: {role_value}")
+                        logger.info(f"Set role dropdown to: {role_value}")
                 else:
-                    print(f"[RadioConfig] No match for role in line: '{line_stripped}'")
+                    logger.debug(f"No match for role in line: '{line_stripped}'")
 
             # --- Region ---
             if not fields_set['region'] and 'region' in line_lower:
@@ -1434,8 +1452,11 @@ class RadioConfigPanel(Gtk.Box):
             if not fields_set['preset'] and ('modem' in line_lower and 'preset' in line_lower):
                 match = re.search(r'(?:modem_?preset|preset)[:\s]+([A-Z_]+)', line, re.IGNORECASE)
                 if match:
-                    if set_dropdown_by_value(self.preset_dropdown, presets, match.group(1)):
+                    preset_val = match.group(1)
+                    logger.debug(f"Parsing modem preset from config line '{line}': '{preset_val}'")
+                    if set_dropdown_by_value(self.preset_dropdown, presets, preset_val):
                         fields_set['preset'] = True
+                        logger.info(f"Set preset dropdown to: {preset_val}")
 
             # --- Hop Limit ---
             if not fields_set['hop_limit'] and 'hop' in line_lower and 'limit' in line_lower:
