@@ -298,13 +298,16 @@ def ensure_config_dir(subdir: Optional[str] = None) -> Path:
 def get_data_dir(app_name: str = "meshforge") -> Path:
     """Get the application data directory.
 
+    Uses real user's home when running with sudo.
+
     Args:
         app_name: Application name for directory
 
     Returns:
         Path to data directory
     """
-    xdg_data = os.environ.get('XDG_DATA_HOME', str(Path.home() / '.local' / 'share'))
+    real_home = _get_real_user_home()
+    xdg_data = os.environ.get('XDG_DATA_HOME', str(real_home / '.local' / 'share'))
     data_dir = Path(xdg_data) / app_name
     data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir
@@ -313,13 +316,16 @@ def get_data_dir(app_name: str = "meshforge") -> Path:
 def get_cache_dir(app_name: str = "meshforge") -> Path:
     """Get the application cache directory.
 
+    Uses real user's home when running with sudo.
+
     Args:
         app_name: Application name for directory
 
     Returns:
         Path to cache directory
     """
-    xdg_cache = os.environ.get('XDG_CACHE_HOME', str(Path.home() / '.cache'))
+    real_home = _get_real_user_home()
+    xdg_cache = os.environ.get('XDG_CACHE_HOME', str(real_home / '.cache'))
     cache_dir = Path(xdg_cache) / app_name
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir

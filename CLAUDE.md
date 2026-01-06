@@ -83,7 +83,30 @@ print(f'Issues: {report.total_issues}')
 Deep documentation in `.claude/`:
 - `dude_ai_university.md` - Complete project knowledge base
 - `foundations/ai_principles.md` - Human-centered design philosophy
+- `foundations/persistent_issues.md` - **CRITICAL: Known issues & fixes**
+- `foundations/documentation_audit.md` - Doc structure & conflicts
 - `research/` - Technical deep dives (RNS, AREDN, HamClock)
+
+## Persistent Issues (MUST READ)
+
+Before making changes, review `.claude/foundations/persistent_issues.md`:
+
+### Path.home() Bug
+**NEVER use `Path.home()`** for user config files. It returns `/root` when running with sudo.
+```python
+# WRONG
+config = Path.home() / ".config" / "meshforge"
+
+# CORRECT
+from utils.paths import get_real_user_home
+config = get_real_user_home() / ".config" / "meshforge"
+```
+
+### WebKit Root Sandbox
+WebKit doesn't work when running as root. Always provide browser fallback.
+
+### Service Verification
+Always check if services (rnsd, HamClock, meshtasticd) are running before using. Provide actionable error messages.
 
 ## File Size Guidelines
 
