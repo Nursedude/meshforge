@@ -1,11 +1,23 @@
-"""System utilities for OS detection and information"""
+"""
+System utilities for OS detection, cross-platform support, and security.
+
+Version: 0.4.3-beta
+Updated: 2026-01-06
+
+Patterns adopted from RNS_Over_Meshtastic_Gateway for cross-platform reliability.
+"""
 
 import os
 import sys
 import platform
 import subprocess
-import distro
-from typing import Optional, Callable
+from pathlib import Path
+from typing import Optional, Callable, List, Tuple, Dict, Any
+
+try:
+    import distro
+except ImportError:
+    distro = None  # Handle Windows where distro isn't available
 
 
 def check_root() -> bool:
@@ -116,10 +128,15 @@ def get_system_info():
     """Get comprehensive system information"""
     info = {}
 
-    # OS information
-    info['os'] = distro.name() or 'Unknown Linux'
-    info['os_version'] = distro.version() or 'Unknown'
-    info['os_codename'] = distro.codename() or ''
+    # OS information (handle Windows where distro isn't available)
+    if distro:
+        info['os'] = distro.name() or 'Unknown Linux'
+        info['os_version'] = distro.version() or 'Unknown'
+        info['os_codename'] = distro.codename() or ''
+    else:
+        info['os'] = platform.system()
+        info['os_version'] = platform.release()
+        info['os_codename'] = ''
 
     # Architecture
     info['arch'] = platform.machine()
@@ -405,3 +422,216 @@ def get_disk_space(path: str = '/') -> int:
                 if len(parts) >= 4:
                     return int(parts[3])
         return 0
+
+
+# =============================================================================
+# Cross-Platform Serial Port Detection
+# Pattern from RNS_Over_Meshtastic_Gateway for Windows compatibility
+# =============================================================================
+
+def get_serial_ports() -> List[str]:
+    """
+    Get available serial ports - cross-platform.
+
+    Uses pyserial when available, falls back to filesystem scan on Linux/macOS.
+    Pattern adopted from RNS Gateway for Windows support.
+
+    Returns:
+        List of available serial port paths (e.g., ['COM3'] or ['/dev/ttyUSB0'])
+    """
+    ports = []
+
+    # Try pyserial first (most reliable, cross-platform)
+    try:
+        import serial.tools.list_ports
+        ports = [p.device for p in serial.tools.list_ports.comports()]
+        return sorted(ports)
+    except ImportError:
+        pass
+
+    # Fallback for Linux/macOS without pyserial
+    if platform.system() == 'Linux':
+        dev_path = Path('/dev')
+        patterns = ['ttyUSB*', 'ttyACM*', 'ttyAMA*']
+        for pattern in patterns:
+            ports.extend([str(p) for p in dev_path.glob(pattern)])
+    elif platform.system() == 'Darwin':
+        dev_path = Path('/dev')
+        ports.extend([str(p) for p in dev_path.glob('cu.*')])
+
+    return sorted(ports)
+
+
+def get_config_dir(app_name: str = 'meshforge') -> Path:
+    """
+    Get configuration directory - cross-platform.
+
+    Args:
+        app_name: Application name for the config folder
+
+    Returns:
+        Path to configuration directory
+    """
+    if platform.system() == 'Windows':
+        base = Path(os.environ.get('APPDATA', Path.home()))
+        return base / app_name
+    elif platform.system() == 'Darwin':
+        return Path.home() / 'Library' / 'Application Support' / app_name
+    else:
+        # Linux / Unix
+        xdg_config = os.environ.get('XDG_CONFIG_HOME')
+        if xdg_config:
+            return Path(xdg_config) / app_name
+        return Path.home() / '.config' / app_name
+
+
+def get_rns_config_dir() -> Path:
+    """
+    Get Reticulum configuration directory - cross-platform.
+
+    Returns:
+        Path to ~/.reticulum or %APPDATA%/Reticulum
+    """
+    if platform.system() == 'Windows':
+        return Path(os.environ.get('APPDATA', Path.home())) / 'Reticulum'
+    return Path.home() / '.reticulum'
+
+
+def get_rns_interfaces_dir() -> Path:
+    """Get RNS interfaces directory for custom interfaces."""
+    return get_rns_config_dir() / 'interfaces'
+
+
+# =============================================================================
+# Safe Subprocess Execution
+# Enhanced with patterns from MeshForge security audit
+# =============================================================================
+
+def safe_run(
+    cmd: List[str],
+    timeout: int = 30,
+    capture: bool = True
+) -> Tuple[bool, str, str]:
+    """
+    Run subprocess safely with timeout and proper exception handling.
+
+    NEVER uses shell=True. All commands must be passed as list.
+
+    Args:
+        cmd: Command as list (e.g., ['meshtastic', '--info'])
+        timeout: Timeout in seconds (default 30)
+        capture: Whether to capture output
+
+    Returns:
+        Tuple of (success, stdout, stderr)
+    """
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=capture,
+            text=True,
+            timeout=timeout
+        )
+        return (
+            result.returncode == 0,
+            result.stdout or '',
+            result.stderr or ''
+        )
+    except subprocess.TimeoutExpired:
+        return False, '', f'Command timed out after {timeout}s'
+    except FileNotFoundError:
+        return False, '', f'Command not found: {cmd[0]}'
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, '', str(e)
+
+
+def check_command_exists(command: str) -> bool:
+    """
+    Check if a command exists in PATH.
+
+    Args:
+        command: Command name to check
+
+    Returns:
+        True if command exists
+    """
+    import shutil
+    return shutil.which(command) is not None
+
+
+# =============================================================================
+# Dependency Checking
+# Pattern from RNS Gateway's graceful degradation
+# =============================================================================
+
+def check_dependency(module_name: str) -> bool:
+    """
+    Check if a Python module is available.
+
+    Args:
+        module_name: Name of module to check (e.g., 'meshtastic')
+
+    Returns:
+        True if module can be imported
+    """
+    import importlib.util
+    return importlib.util.find_spec(module_name) is not None
+
+
+def get_dependency_status() -> Dict[str, bool]:
+    """
+    Get status of all optional dependencies.
+
+    Returns:
+        Dict mapping dependency name to availability
+    """
+    deps = {
+        'meshtastic': check_dependency('meshtastic'),
+        'rns': check_dependency('RNS'),
+        'lxmf': check_dependency('LXMF'),
+        'flask': check_dependency('flask'),
+        'textual': check_dependency('textual'),
+        'rich': check_dependency('rich'),
+        'pyserial': check_dependency('serial'),
+    }
+
+    # GTK4 requires special handling
+    try:
+        import gi
+        gi.require_version('Gtk', '4.0')
+        from gi.repository import Gtk
+        deps['gtk4'] = True
+    except (ImportError, ValueError):
+        deps['gtk4'] = False
+
+    return deps
+
+
+# =============================================================================
+# LoRa Speed Presets
+# Mapping from RNS_Over_Meshtastic_Gateway
+# =============================================================================
+
+LORA_SPEED_PRESETS = {
+    8: {'name': 'SHORT_TURBO', 'delay': 0.4, 'desc': 'Fastest, recommended for RNS'},
+    6: {'name': 'SHORT_FAST', 'delay': 1.0, 'desc': 'High speed, good for dense networks'},
+    5: {'name': 'SHORT_SLOW', 'delay': 3.0, 'desc': 'Better range than fast'},
+    7: {'name': 'LONG_MODERATE', 'delay': 12.0, 'desc': 'Long range, moderate speed'},
+    4: {'name': 'MEDIUM_FAST', 'delay': 4.0, 'desc': 'Slowest recommended for RNS'},
+    3: {'name': 'MEDIUM_SLOW', 'delay': 6.0, 'desc': 'Extended range'},
+    1: {'name': 'LONG_SLOW', 'delay': 15.0, 'desc': 'Very long range'},
+    0: {'name': 'LONG_FAST', 'delay': 8.0, 'desc': 'Default Meshtastic'},
+}
+
+
+def get_lora_delay(speed: int) -> float:
+    """
+    Get transmission delay for a LoRa speed preset.
+
+    Args:
+        speed: Speed preset ID (0-8)
+
+    Returns:
+        Delay in seconds between transmissions
+    """
+    return LORA_SPEED_PRESETS.get(speed, {}).get('delay', 7.0)

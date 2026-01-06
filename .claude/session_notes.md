@@ -3,9 +3,16 @@
 > **LoRa Mesh Network Development & Operations Suite**
 > *Build. Test. Deploy. Monitor.*
 
-## Current Version: 4.1.0
-## Last Updated: 2026-01-03
+## Current Version: 0.4.3-beta
+## Last Updated: 2026-01-06
 ## Branch: `claude/continue-previous-work-YB9x9`
+
+---
+
+## Active Research Links
+
+- **RNS Gateway**: https://github.com/Nursedude/RNS_Over_Meshtastic_Gateway
+- **MeshForge**: https://github.com/Nursedude/meshforge
 
 ---
 

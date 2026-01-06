@@ -1,5 +1,8 @@
 # RNS/Reticulum Integration Research
 
+> **Updated**: 2026-01-06 (Cross-AI collaboration with Gemini Pro)
+> **Status**: Active integration
+
 ## Overview
 
 MeshForge can become a unified **Mesh Network Operations Center** by integrating:
@@ -7,9 +10,46 @@ MeshForge can become a unified **Mesh Network Operations Center** by integrating
 2. Reticulum Network Stack (RNS - encrypted mesh)
 3. Gateway bridging between networks
 
-## Source Repositories
+## Primary Reference Repository
 
-### RNS-Meshtastic-Gateway-Tool
+### RNS_Over_Meshtastic_Gateway
+- **URL**: https://github.com/Nursedude/RNS_Over_Meshtastic_Gateway
+- **Purpose**: Bridges Reticulum Network Stack with Meshtastic hardware
+- **Version**: 1.1.0
+- **Contributors**: Mark Qvist, Claude, Gemini Pro
+- **Key Files**:
+  - `Meshtastic_Interface.py` - Core RNS interface (production-quality)
+  - `install.py` - Interactive installer with device configuration
+  - `supervisor.py` - Process management
+  - `config_templates/` - RNS configuration examples
+
+### Patterns Adopted from RNS Gateway
+
+1. **LoRa Speed Presets** (now in `utils/system.py`):
+   ```python
+   LORA_SPEED_PRESETS = {
+       8: {'name': 'SHORT_TURBO', 'delay': 0.4},  # Recommended for RNS
+       6: {'name': 'SHORT_FAST', 'delay': 1.0},
+       # ... etc
+   }
+   ```
+
+2. **Cross-Platform Serial Detection**:
+   - Use `pyserial` for reliable cross-platform port detection
+   - Fallback to filesystem scan on Linux/macOS
+
+3. **Configuration Templates**:
+   - Added `config_templates/rns_meshtastic_gateway.conf`
+   - Added `config_templates/rns_minimal.conf`
+
+4. **Packet Fragmentation** (from Gateway's PacketHandler):
+   - 564-byte RNS packets split into 200-byte Meshtastic fragments
+   - Metadata tracking with sequence verification
+   - Retry mechanisms for lost fragments
+
+## Legacy Source Repositories
+
+### RNS-Meshtastic-Gateway-Tool (Older)
 - **Purpose**: Bridges Reticulum Network Stack with Meshtastic hardware
 - **Features**:
   - AI-powered diagnostics for signal quality
