@@ -1135,14 +1135,19 @@ class RadioConfigPanel(Gtk.Box):
     def _find_cli(self):
         """Find the meshtastic CLI path - uses centralized utils.cli"""
         if self._cli_path:
+            logger.debug(f"Using cached CLI path: {self._cli_path}")
             return self._cli_path
 
         try:
             from utils.cli import find_meshtastic_cli
             self._cli_path = find_meshtastic_cli()
+            logger.info(f"Found meshtastic CLI via utils.cli: {self._cli_path}")
         except ImportError:
             self._cli_path = shutil.which('meshtastic')
+            logger.info(f"Found meshtastic CLI via shutil.which: {self._cli_path}")
 
+        if not self._cli_path:
+            logger.warning("Meshtastic CLI not found in PATH")
         return self._cli_path
 
     def _run_cli(self, args, callback=None):
@@ -1150,19 +1155,28 @@ class RadioConfigPanel(Gtk.Box):
         def do_run():
             cli = self._find_cli()
             if not cli:
+                logger.error("Cannot run CLI command - CLI not found")
                 if callback:
                     GLib.idle_add(callback, False, "", "Meshtastic CLI not found")
                 return
 
             cmd = [cli, '--host', 'localhost'] + args
+            logger.info(f"Running CLI: {' '.join(cmd)}")
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                logger.debug(f"CLI exit code: {result.returncode}")
+                if result.stdout:
+                    logger.debug(f"CLI stdout ({len(result.stdout)} chars): {result.stdout[:500]}...")
+                if result.stderr:
+                    logger.warning(f"CLI stderr: {result.stderr[:200]}")
                 if callback:
                     GLib.idle_add(callback, result.returncode == 0, result.stdout, result.stderr)
             except subprocess.TimeoutExpired:
+                logger.error(f"CLI command timed out after 30s: {cmd}")
                 if callback:
                     GLib.idle_add(callback, False, "", "Command timed out")
             except Exception as e:
+                logger.error(f"CLI command failed: {e}")
                 if callback:
                     GLib.idle_add(callback, False, "", str(e))
 
@@ -1293,26 +1307,33 @@ class RadioConfigPanel(Gtk.Box):
         """Load current configuration from device"""
         import socket
 
+        logger.info("Loading current radio configuration...")
+
         # Quick pre-check: is meshtasticd reachable?
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(2.0)
             sock.connect(("localhost", 4403))
             sock.close()
-        except (socket.timeout, socket.error, OSError):
+            logger.debug("meshtasticd port 4403 is reachable")
+        except (socket.timeout, socket.error, OSError) as e:
+            logger.warning(f"Cannot connect to meshtasticd: {e}")
             self.status_label.set_label("Cannot connect to meshtasticd (port 4403)")
             return
 
         self.status_label.set_label("Loading current configuration...")
 
         def on_result(success, stdout, stderr):
+            logger.info(f"Config load result: success={success}, stdout_len={len(stdout) if stdout else 0}")
             if success and stdout.strip():
                 self.status_label.set_label("Configuration loaded")
                 self._parse_and_populate_config(stdout)
             elif "not found" in stderr.lower() or not self._find_cli():
+                logger.error("Meshtastic CLI not found during config load")
                 self.status_label.set_label("Meshtastic CLI not found")
             else:
                 error_msg = stderr.strip() if stderr else "No response"
+                logger.error(f"Config load failed: {error_msg}")
                 self.status_label.set_label(f"Failed: {error_msg[:50]}")
 
         self._run_cli(['--get', 'lora', '--get', 'device', '--get', 'position', '--get', 'mqtt', '--get', 'telemetry'], on_result)
@@ -1320,6 +1341,7 @@ class RadioConfigPanel(Gtk.Box):
     def _auto_load_config(self):
         """Auto-load configuration when panel is first shown"""
         if not self._config_loaded:
+            logger.info("Auto-loading radio config (first panel view)")
             self._config_loaded = True
             # Use GLib.idle_add to avoid race conditions
             GLib.idle_add(self._load_radio_info)  # Load radio info first
@@ -1328,6 +1350,7 @@ class RadioConfigPanel(Gtk.Box):
 
     def _delayed_load_config(self):
         """Load config after radio info has had time to load"""
+        logger.debug("Delayed config load triggered")
         self._load_current_config()
         return False  # Don't repeat
 
@@ -1335,6 +1358,9 @@ class RadioConfigPanel(Gtk.Box):
         """Parse CLI output and populate UI fields"""
         import re
         import ast
+
+        logger.info(f"Parsing config output ({len(output)} chars)")
+        logger.debug(f"Config output preview: {output[:300]}...")
 
         # Option lists for dropdowns (must match dropdown order)
         roles = ["CLIENT", "CLIENT_MUTE", "ROUTER", "ROUTER_CLIENT",
@@ -1602,6 +1628,13 @@ class RadioConfigPanel(Gtk.Box):
             self.current_pos_label.set_label(pos_str)
         else:
             self.current_pos_label.set_label("Not set or GPS disabled")
+
+        # Log parsing summary
+        set_fields = [k for k, v in fields_set.items() if v]
+        unset_fields = [k for k, v in fields_set.items() if not v]
+        logger.info(f"Config parse complete: set={set_fields}")
+        if unset_fields:
+            logger.debug(f"Fields not found in config: {unset_fields}")
 
         self.main_window.set_status_message("Configuration loaded from device")
 
