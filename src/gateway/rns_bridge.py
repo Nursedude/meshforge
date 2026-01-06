@@ -7,6 +7,7 @@ import threading
 import time
 import logging
 import subprocess
+import os
 from queue import Queue, Empty
 from datetime import datetime
 from typing import Optional, Callable, Dict, Any
@@ -17,6 +18,16 @@ from .config import GatewayConfig
 from .node_tracker import UnifiedNodeTracker, UnifiedNode
 
 logger = logging.getLogger(__name__)
+
+# Import centralized path utility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
 
 
 @dataclass
@@ -428,7 +439,7 @@ class RNSMeshtasticBridge:
                     raise
 
             # Create or load identity
-            identity_path = Path.home() / ".config" / "meshforge" / "gateway_identity"
+            identity_path = get_real_user_home() / ".config" / "meshforge" / "gateway_identity"
             if identity_path.exists():
                 self._identity = RNS.Identity.from_file(str(identity_path))
             else:
@@ -437,7 +448,7 @@ class RNSMeshtasticBridge:
                 self._identity.to_file(str(identity_path))
 
             # Create LXMF router
-            storage_path = Path.home() / ".config" / "meshforge" / "lxmf_storage"
+            storage_path = get_real_user_home() / ".config" / "meshforge" / "lxmf_storage"
             storage_path.mkdir(parents=True, exist_ok=True)
             self._lxmf_router = LXMF.LXMRouter(storagepath=str(storage_path))
 

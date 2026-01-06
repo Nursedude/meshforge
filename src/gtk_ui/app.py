@@ -18,6 +18,16 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Import centralized path utility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
+
 from __version__ import __version__, get_full_version, __app_name__
 
 # Edition detection
@@ -728,7 +738,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
                 if sudo_user and sudo_user != 'root':
                     log_dir = Path(f'/home/{sudo_user}/.config/meshforge/logs')
                 else:
-                    log_dir = Path.home() / '.config' / 'meshforge' / 'logs'
+                    log_dir = get_real_user_home() / '.config' / 'meshforge' / 'logs'
 
             log_path_label.set_label(f"Log directory: {log_dir}")
 
@@ -772,7 +782,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
                 if sudo_user and sudo_user != 'root':
                     log_dir = Path(f'/home/{sudo_user}/.config/meshforge/logs')
                 else:
-                    log_dir = Path.home() / '.config' / 'meshforge' / 'logs'
+                    log_dir = get_real_user_home() / '.config' / 'meshforge' / 'logs'
 
             if log_dir.exists():
                 subprocess.Popen(['xdg-open', str(log_dir)])
@@ -1140,7 +1150,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
 
     def _save_resume_state(self, reason):
         """Save state for resume after reboot"""
-        state_file = Path.home() / '.meshtasticd-installer-resume'
+        state_file = get_real_user_home() / '.meshtasticd-installer-resume'
         try:
             state_file.write_text(f"reason={reason}\npage=config\n")
         except Exception as e:
@@ -1148,7 +1158,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
 
     def _check_resume_state(self):
         """Check if we're resuming after reboot"""
-        state_file = Path.home() / '.meshtasticd-installer-resume'
+        state_file = get_real_user_home() / '.meshtasticd-installer-resume'
         if state_file.exists():
             try:
                 content = state_file.read_text()
@@ -1178,7 +1188,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
 
     def _enable_autostart(self):
         """Enable autostart for the installer after reboot"""
-        autostart_dir = Path.home() / '.config' / 'autostart'
+        autostart_dir = get_real_user_home() / '.config' / 'autostart'
         autostart_dir.mkdir(parents=True, exist_ok=True)
 
         desktop_entry = f"""[Desktop Entry]
@@ -1199,7 +1209,7 @@ Comment=Resume Meshtasticd Manager after reboot
 
     def _disable_autostart(self):
         """Disable autostart"""
-        desktop_file = Path.home() / '.config' / 'autostart' / 'meshtasticd-manager.desktop'
+        desktop_file = get_real_user_home() / '.config' / 'autostart' / 'meshtasticd-manager.desktop'
         try:
             if desktop_file.exists():
                 desktop_file.unlink()

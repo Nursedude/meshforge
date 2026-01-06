@@ -22,6 +22,16 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
+# Import centralized path utility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
+
 
 class ToolsPanel(Gtk.Box):
     """Tools panel for network, RF, and MUDP utilities"""
@@ -1204,7 +1214,7 @@ class ToolsPanel(Gtk.Box):
 
     # === LOS Location Management ===
 
-    LOS_LOCATIONS_FILE = Path.home() / ".config" / "meshforge" / "los_locations.json"
+    LOS_LOCATIONS_FILE = get_real_user_home() / ".config" / "meshforge" / "los_locations.json"
 
     # Default preset locations - major cities and Meshtastic community areas
     DEFAULT_LOCATIONS = [
@@ -1428,10 +1438,7 @@ class ToolsPanel(Gtk.Box):
 
     def _get_real_user_home(self):
         """Get the real user's home directory"""
-        real_user = self._get_real_username()
-        if real_user != 'root':
-            return Path(f"/home/{real_user}")
-        return Path.home()
+        return get_real_user_home()
 
     def _launch_terminal_with_command(self, command: str, description: str = "") -> bool:
         """Launch a terminal emulator with the given command. Returns True on success.

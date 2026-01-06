@@ -6,6 +6,7 @@ Tracks nodes from both networks with position and telemetry data
 import threading
 import time
 import logging
+import os
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Callable
@@ -13,6 +14,16 @@ from pathlib import Path
 import json
 
 logger = logging.getLogger(__name__)
+
+# Import centralized path utility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
 
 
 @dataclass
@@ -227,7 +238,7 @@ class UnifiedNodeTracker:
     Provides unified view for map display and monitoring.
     """
 
-    CACHE_FILE = Path.home() / ".config" / "meshforge" / "node_cache.json"
+    CACHE_FILE = get_real_user_home() / ".config" / "meshforge" / "node_cache.json"
     OFFLINE_THRESHOLD = 3600  # 1 hour
 
     def __init__(self):

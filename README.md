@@ -1,17 +1,6 @@
 # MeshForge
 
-```
-╔═══════════════════════════════════════════════════════════════════════╗
-║  ███╗   ███╗███████╗███████╗██╗  ██╗███████╗ ██████╗ ██████╗  ██████╗ ███████╗  ║
-║  ████╗ ████║██╔════╝██╔════╝██║  ██║██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝  ║
-║  ██╔████╔██║█████╗  ███████╗███████║█████╗  ██║   ██║██████╔╝██║  ███╗█████╗    ║
-║  ██║╚██╔╝██║██╔══╝  ╚════██║██╔══██║██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝    ║
-║  ██║ ╚═╝ ██║███████╗███████║██║  ██║██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗  ║
-║  ╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝  ║
-║                                                                                 ║
-║              LoRa Mesh Network Development & Operations Suite                   ║
-╚═══════════════════════════════════════════════════════════════════════╝
-```
+**LoRa Mesh Network Development & Operations Suite**
 
 <p align="center">
   <img src="assets/shaka-simple.svg" alt="Shaka" width="64" height="64"/>
@@ -28,14 +17,14 @@
 **The first open-source tool to bridge Meshtastic and Reticulum (RNS) mesh networks.**
 
 ```
-┌───────────────────────────────────────────────────────────────────────┐
-│  MESHTASTIC  ◄────►  MESHFORGE  ◄────►  RETICULUM (RNS)               │
-│   (LoRa)              (Bridge)           (Cryptographic Mesh)         │
-│                                                                       │
-│  • 915 MHz LoRa        • Unified Map      • Multi-transport           │
-│  • Simple setup        • Gateway Config   • E2E encryption            │
-│  • Wide adoption       • RF Tools         • 64+ hop routing           │
-└───────────────────────────────────────────────────────────────────────┘
++-----------------------------------------------------------------------+
+|  MESHTASTIC  <---->  MESHFORGE  <---->  RETICULUM (RNS)               |
+|   (LoRa)              (Bridge)           (Cryptographic Mesh)         |
+|                                                                       |
+|  * 915 MHz LoRa        * Unified Map      * Multi-transport           |
+|  * Simple setup        * Gateway Config   * E2E encryption            |
+|  * Wide adoption       * RF Tools         * 64+ hop routing           |
++-----------------------------------------------------------------------+
 ```
 
 MeshForge is a **Network Operations Center (NOC)** for heterogeneous off-grid mesh networks. It unifies two powerful but incompatible mesh ecosystems—**Meshtastic** and **Reticulum**—into a single manageable system.
