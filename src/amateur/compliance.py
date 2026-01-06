@@ -5,8 +5,8 @@ Provides FCC Part 97 reference and compliance checking features.
 """
 
 import logging
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Any, Tuple
 from enum import Enum
 
 logger = logging.getLogger(__name__)
@@ -21,9 +21,57 @@ class LicenseClass(Enum):
     EXTRA = "Amateur Extra"
 
 
+class RegulatoryFramework(Enum):
+    """Regulatory frameworks for operation"""
+    PART_97 = "Part 97"    # FCC Amateur Radio (licensed)
+    PART_15 = "Part 15"    # FCC ISM/Unlicensed
+    ITU_REGION_1 = "ITU Region 1"  # Europe, Africa, Middle East
+    ITU_REGION_2 = "ITU Region 2"  # Americas
+    ITU_REGION_3 = "ITU Region 3"  # Asia, Pacific
+
+
+class EmissionMode(Enum):
+    """Common emission modes"""
+    CW = "CW"           # Continuous Wave (Morse)
+    SSB = "SSB"         # Single Sideband (Voice)
+    LSB = "LSB"         # Lower Sideband
+    USB = "USB"         # Upper Sideband
+    AM = "AM"           # Amplitude Modulation
+    FM = "FM"           # Frequency Modulation
+    DIGITAL = "Digital" # Digital modes (FT8, JS8Call, etc.)
+    RTTY = "RTTY"       # Radio Teletype
+    DATA = "Data"       # Data modes
+    IMAGE = "Image"     # SSTV, FAX
+    ATV = "ATV"         # Amateur Television
+    LORA = "LoRa"       # LoRa spread spectrum (Meshtastic)
+
+
+@dataclass
+class BandSegment:
+    """
+    Detailed band segment with privileges by license class.
+
+    This provides granular control over who can operate where
+    and with what modes - essential for Part 97 compliance.
+    """
+    band: str                      # Band name (e.g., "80m")
+    segment_name: str              # Segment description
+    frequency_start: float         # MHz
+    frequency_end: float           # MHz
+    modes: List[EmissionMode]      # Allowed modes
+    max_power_watts: int           # Maximum power
+    license_classes: List[LicenseClass]  # Who can operate
+    notes: str = ""                # Additional notes
+
+
 @dataclass
 class BandPrivilege:
-    """Band privileges by license class"""
+    """
+    Band privileges by license class.
+
+    Backwards-compatible class for simple band lookups.
+    For detailed segment info, use BandSegment.
+    """
     band: str
     frequency_start: float  # MHz
     frequency_end: float  # MHz
@@ -31,6 +79,41 @@ class BandPrivilege:
     max_power_watts: int
     license_classes: List[LicenseClass]
     notes: str = ""
+
+
+@dataclass
+class ComplianceResult:
+    """Result of a compliance check"""
+    authorized: bool
+    frequency_mhz: float
+    band: Optional[str] = None
+    segment: Optional[str] = None
+    modes_allowed: List[str] = field(default_factory=list)
+    max_power_watts: int = 0
+    license_required: Optional[str] = None
+    warnings: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+
+    def is_compliant(self) -> bool:
+        """Check if operation is fully compliant"""
+        return self.authorized and len(self.errors) == 0
+
+    def summary(self) -> str:
+        """Get human-readable summary"""
+        if not self.authorized:
+            return f"NOT AUTHORIZED: {', '.join(self.errors)}"
+
+        status = "AUTHORIZED"
+        if self.warnings:
+            status += f" (with {len(self.warnings)} warning(s))"
+
+        return (
+            f"{status}\n"
+            f"Band: {self.band or 'Unknown'}\n"
+            f"Segment: {self.segment or 'N/A'}\n"
+            f"Modes: {', '.join(self.modes_allowed)}\n"
+            f"Max Power: {self.max_power_watts}W"
+        )
 
 
 class Part97Reference:
@@ -270,6 +353,373 @@ class Part97Reference:
             notes="Microwave, satellite uplinks"
         ),
     ]
+
+    # Detailed band segments with license-specific privileges
+    # This is the authoritative data for compliance checking
+    BAND_SEGMENTS: List[BandSegment] = [
+        # 160m - General/Advanced/Extra only
+        BandSegment("160m", "CW", 1.800, 1.810, [EmissionMode.CW], 1500,
+                   [LicenseClass.EXTRA], "Extra CW exclusive"),
+        BandSegment("160m", "CW/RTTY/Data", 1.810, 2.000, [EmissionMode.CW, EmissionMode.RTTY, EmissionMode.DATA], 1500,
+                   [LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA]),
+
+        # 80m - Tech has limited CW privileges
+        BandSegment("80m", "Extra CW", 3.500, 3.525, [EmissionMode.CW], 1500,
+                   [LicenseClass.EXTRA], "Extra CW exclusive"),
+        BandSegment("80m", "CW/RTTY/Data", 3.525, 3.600, [EmissionMode.CW, EmissionMode.RTTY, EmissionMode.DATA], 1500,
+                   [LicenseClass.TECHNICIAN, LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA],
+                   "Tech CW privileges"),
+        BandSegment("80m", "Extra CW/Phone", 3.600, 3.700, [EmissionMode.CW, EmissionMode.SSB], 1500,
+                   [LicenseClass.EXTRA]),
+        BandSegment("80m", "Adv/Extra Phone", 3.700, 3.800, [EmissionMode.CW, EmissionMode.SSB], 1500,
+                   [LicenseClass.ADVANCED, LicenseClass.EXTRA]),
+        BandSegment("80m", "Gen/Adv/Extra Phone", 3.800, 4.000, [EmissionMode.CW, EmissionMode.SSB], 1500,
+                   [LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA]),
+
+        # 40m
+        BandSegment("40m", "Extra CW", 7.000, 7.025, [EmissionMode.CW], 1500,
+                   [LicenseClass.EXTRA]),
+        BandSegment("40m", "CW/RTTY/Data", 7.025, 7.125, [EmissionMode.CW, EmissionMode.RTTY, EmissionMode.DATA], 1500,
+                   [LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA]),
+        BandSegment("40m", "Extra Phone", 7.125, 7.175, [EmissionMode.CW, EmissionMode.SSB], 1500,
+                   [LicenseClass.EXTRA]),
+        BandSegment("40m", "Gen/Adv/Extra Phone", 7.175, 7.300, [EmissionMode.CW, EmissionMode.SSB], 1500,
+                   [LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA]),
+
+        # 30m - CW/Digital only, 200W max
+        BandSegment("30m", "CW/RTTY/Data", 10.100, 10.150, [EmissionMode.CW, EmissionMode.RTTY, EmissionMode.DATA], 200,
+                   [LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA],
+                   "200W max, CW/Digital only"),
+
+        # 20m
+        BandSegment("20m", "Extra CW", 14.000, 14.025, [EmissionMode.CW], 1500,
+                   [LicenseClass.EXTRA]),
+        BandSegment("20m", "CW/RTTY/Data", 14.025, 14.150, [EmissionMode.CW, EmissionMode.RTTY, EmissionMode.DATA], 1500,
+                   [LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA]),
+        BandSegment("20m", "Extra Phone", 14.150, 14.175, [EmissionMode.CW, EmissionMode.SSB], 1500,
+                   [LicenseClass.EXTRA]),
+        BandSegment("20m", "Adv/Extra Phone", 14.175, 14.225, [EmissionMode.CW, EmissionMode.SSB], 1500,
+                   [LicenseClass.ADVANCED, LicenseClass.EXTRA]),
+        BandSegment("20m", "Gen/Adv/Extra Phone", 14.225, 14.350, [EmissionMode.CW, EmissionMode.SSB], 1500,
+                   [LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA]),
+
+        # 17m - General and up
+        BandSegment("17m", "CW/RTTY/Data", 18.068, 18.110, [EmissionMode.CW, EmissionMode.RTTY, EmissionMode.DATA], 1500,
+                   [LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA]),
+        BandSegment("17m", "Phone", 18.110, 18.168, [EmissionMode.CW, EmissionMode.SSB], 1500,
+                   [LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA]),
+
+        # 15m - Tech has limited CW
+        BandSegment("15m", "Extra CW", 21.000, 21.025, [EmissionMode.CW], 1500,
+                   [LicenseClass.EXTRA]),
+        BandSegment("15m", "CW/RTTY/Data", 21.025, 21.200, [EmissionMode.CW, EmissionMode.RTTY, EmissionMode.DATA], 1500,
+                   [LicenseClass.TECHNICIAN, LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA],
+                   "Tech CW privileges"),
+        BandSegment("15m", "Extra Phone", 21.200, 21.225, [EmissionMode.CW, EmissionMode.SSB], 1500,
+                   [LicenseClass.EXTRA]),
+        BandSegment("15m", "Adv/Extra Phone", 21.225, 21.275, [EmissionMode.CW, EmissionMode.SSB], 1500,
+                   [LicenseClass.ADVANCED, LicenseClass.EXTRA]),
+        BandSegment("15m", "Gen/Adv/Extra Phone", 21.275, 21.450, [EmissionMode.CW, EmissionMode.SSB], 1500,
+                   [LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA]),
+
+        # 12m - General and up
+        BandSegment("12m", "CW/RTTY/Data", 24.890, 24.930, [EmissionMode.CW, EmissionMode.RTTY, EmissionMode.DATA], 1500,
+                   [LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA]),
+        BandSegment("12m", "Phone", 24.930, 24.990, [EmissionMode.CW, EmissionMode.SSB], 1500,
+                   [LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA]),
+
+        # 10m - Tech has full privileges
+        BandSegment("10m", "CW", 28.000, 28.300, [EmissionMode.CW, EmissionMode.RTTY, EmissionMode.DATA], 1500,
+                   [LicenseClass.TECHNICIAN, LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA]),
+        BandSegment("10m", "Phone/CW", 28.300, 29.700, [EmissionMode.CW, EmissionMode.SSB, EmissionMode.FM], 1500,
+                   [LicenseClass.TECHNICIAN, LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA],
+                   "Tech full privileges"),
+
+        # 6m - Tech full privileges
+        BandSegment("6m", "All Modes", 50.000, 54.000,
+                   [EmissionMode.CW, EmissionMode.SSB, EmissionMode.FM, EmissionMode.DIGITAL, EmissionMode.RTTY], 1500,
+                   [LicenseClass.TECHNICIAN, LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA],
+                   "Magic band - sporadic E"),
+
+        # 2m - Tech full privileges
+        BandSegment("2m", "All Modes", 144.000, 148.000,
+                   [EmissionMode.CW, EmissionMode.SSB, EmissionMode.FM, EmissionMode.DIGITAL, EmissionMode.DATA], 1500,
+                   [LicenseClass.TECHNICIAN, LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA],
+                   "Most popular VHF band"),
+
+        # 1.25m - Tech full privileges
+        BandSegment("1.25m", "All Modes", 222.000, 225.000,
+                   [EmissionMode.CW, EmissionMode.SSB, EmissionMode.FM, EmissionMode.DIGITAL], 1500,
+                   [LicenseClass.TECHNICIAN, LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA]),
+
+        # 70cm - Tech full privileges
+        BandSegment("70cm", "All Modes", 420.000, 450.000,
+                   [EmissionMode.CW, EmissionMode.SSB, EmissionMode.FM, EmissionMode.DIGITAL, EmissionMode.ATV], 1500,
+                   [LicenseClass.TECHNICIAN, LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA],
+                   "UHF, ATV, Repeaters"),
+
+        # 33cm
+        BandSegment("33cm", "All Modes", 902.000, 928.000,
+                   [EmissionMode.CW, EmissionMode.SSB, EmissionMode.FM, EmissionMode.DIGITAL], 1500,
+                   [LicenseClass.TECHNICIAN, LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA],
+                   "ISM shared"),
+
+        # 23cm
+        BandSegment("23cm", "All Modes", 1240.000, 1300.000,
+                   [EmissionMode.CW, EmissionMode.SSB, EmissionMode.FM, EmissionMode.DIGITAL, EmissionMode.ATV], 1500,
+                   [LicenseClass.TECHNICIAN, LicenseClass.GENERAL, LicenseClass.ADVANCED, LicenseClass.EXTRA],
+                   "Microwave entry"),
+    ]
+
+    # ISM (Part 15) Bands - Unlicensed operation
+    # These overlap with some amateur bands but have different rules
+    ISM_BANDS = {
+        'US': [
+            {
+                'name': '900 MHz ISM',
+                'frequency_start': 902.0,
+                'frequency_end': 928.0,
+                'max_power_dbm': 30,  # 1W EIRP
+                'max_power_watts': 1.0,
+                'notes': 'Meshtastic US default, spread spectrum required',
+                'meshtastic_region': 'US',
+            },
+            {
+                'name': '2.4 GHz ISM',
+                'frequency_start': 2400.0,
+                'frequency_end': 2483.5,
+                'max_power_dbm': 30,
+                'max_power_watts': 1.0,
+                'notes': 'WiFi, Bluetooth, LoRa 2.4G',
+                'meshtastic_region': None,
+            },
+        ],
+        'EU': [
+            {
+                'name': '868 MHz ISM',
+                'frequency_start': 863.0,
+                'frequency_end': 870.0,
+                'max_power_dbm': 14,  # 25mW ERP
+                'max_power_watts': 0.025,
+                'duty_cycle': 0.01,  # 1% duty cycle
+                'notes': 'EU LoRa band, strict duty cycle limits',
+                'meshtastic_region': 'EU_868',
+            },
+        ],
+        'AU_NZ': [
+            {
+                'name': '915 MHz ISM',
+                'frequency_start': 915.0,
+                'frequency_end': 928.0,
+                'max_power_dbm': 30,
+                'max_power_watts': 1.0,
+                'notes': 'Australia/NZ LoRa band',
+                'meshtastic_region': 'ANZ',
+            },
+        ],
+    }
+
+    # Meshtastic-specific frequency presets (for quick reference)
+    MESHTASTIC_PRESETS = {
+        'US': {'freq': 906.875, 'bw': 250, 'sf': 11, 'power_dbm': 30},
+        'EU_868': {'freq': 869.525, 'bw': 125, 'sf': 12, 'power_dbm': 14},
+        'ANZ': {'freq': 916.0, 'bw': 250, 'sf': 11, 'power_dbm': 30},
+        'JP': {'freq': 920.9, 'bw': 125, 'sf': 10, 'power_dbm': 13},
+        'KR': {'freq': 921.9, 'bw': 125, 'sf': 12, 'power_dbm': 14},
+        'TW': {'freq': 923.0, 'bw': 125, 'sf': 12, 'power_dbm': 27},
+    }
+
+    @classmethod
+    def get_ism_band(cls, freq_mhz: float, region: str = 'US') -> Optional[Dict]:
+        """Get ISM band info for a frequency"""
+        if region not in cls.ISM_BANDS:
+            return None
+        for band in cls.ISM_BANDS[region]:
+            if band['frequency_start'] <= freq_mhz <= band['frequency_end']:
+                return band
+        return None
+
+    @classmethod
+    def check_ism_compliance(
+        cls,
+        freq_mhz: float,
+        power_dbm: float,
+        region: str = 'US'
+    ) -> ComplianceResult:
+        """
+        Check ISM (Part 15) compliance for unlicensed operation.
+
+        Args:
+            freq_mhz: Frequency in MHz
+            power_dbm: Transmit power in dBm
+            region: Geographic region (US, EU, AU_NZ, etc.)
+
+        Returns:
+            ComplianceResult for ISM operation
+        """
+        band = cls.get_ism_band(freq_mhz, region)
+
+        if not band:
+            return ComplianceResult(
+                authorized=False,
+                frequency_mhz=freq_mhz,
+                errors=[f"{freq_mhz} MHz is not in ISM band for {region}"]
+            )
+
+        warnings = []
+        errors = []
+
+        # Check power limit
+        if power_dbm > band['max_power_dbm']:
+            errors.append(
+                f"Power {power_dbm} dBm exceeds ISM limit of {band['max_power_dbm']} dBm"
+            )
+
+        # Add duty cycle warning for EU
+        if 'duty_cycle' in band:
+            warnings.append(f"Duty cycle limit: {band['duty_cycle']*100}%")
+
+        if band.get('notes'):
+            warnings.append(band['notes'])
+
+        return ComplianceResult(
+            authorized=len(errors) == 0,
+            frequency_mhz=freq_mhz,
+            band=band['name'],
+            segment="ISM/Unlicensed",
+            modes_allowed=["LoRa", "Spread Spectrum"],
+            max_power_watts=band['max_power_watts'],
+            warnings=warnings,
+            errors=errors
+        )
+
+    @classmethod
+    def compare_part97_vs_ism(cls, freq_mhz: float, license_class: LicenseClass) -> Dict[str, Any]:
+        """
+        Compare Part 97 vs ISM operation for a frequency.
+
+        Helps operators choose which regulatory framework to use.
+
+        Args:
+            freq_mhz: Frequency in MHz
+            license_class: Operator's license class
+
+        Returns:
+            Comparison of Part 97 and ISM options
+        """
+        part97_result = cls.check_frequency_privilege(freq_mhz, license_class)
+        ism_result = cls.check_ism_compliance(freq_mhz, 30)  # Check at 1W
+
+        return {
+            'frequency_mhz': freq_mhz,
+            'part_97': {
+                'authorized': part97_result.authorized,
+                'max_power_watts': part97_result.max_power_watts,
+                'requires_license': True,
+                'station_id_required': True,
+                'advantages': [
+                    'Higher power allowed (up to 1500W)',
+                    'Full amateur privileges',
+                    'Can use any amateur mode',
+                ],
+                'notes': part97_result.warnings,
+            },
+            'ism_part_15': {
+                'authorized': ism_result.authorized,
+                'max_power_watts': ism_result.max_power_watts if ism_result.authorized else 0,
+                'requires_license': False,
+                'station_id_required': False,
+                'advantages': [
+                    'No license required',
+                    'No station ID required',
+                    'Good for public deployment',
+                ],
+                'limitations': [
+                    f"Max power: {ism_result.max_power_watts}W" if ism_result.authorized else "Not available",
+                    'Must accept interference',
+                    'Duty cycle limits may apply',
+                ],
+                'notes': ism_result.warnings,
+            },
+            'recommendation': (
+                'Part 97' if part97_result.authorized and part97_result.max_power_watts > 100
+                else 'ISM' if ism_result.authorized
+                else 'Neither available'
+            ),
+        }
+
+    @classmethod
+    def get_segment_by_frequency(cls, freq_mhz: float) -> Optional[BandSegment]:
+        """Get detailed band segment by frequency"""
+        for segment in cls.BAND_SEGMENTS:
+            if segment.frequency_start <= freq_mhz <= segment.frequency_end:
+                return segment
+        return None
+
+    @classmethod
+    def get_segments_for_license(cls, license_class: LicenseClass) -> List[BandSegment]:
+        """Get all band segments available for a license class"""
+        return [seg for seg in cls.BAND_SEGMENTS if license_class in seg.license_classes]
+
+    @classmethod
+    def check_frequency_privilege(
+        cls,
+        freq_mhz: float,
+        license_class: LicenseClass,
+        mode: Optional[EmissionMode] = None
+    ) -> ComplianceResult:
+        """
+        Comprehensive frequency privilege check.
+
+        Args:
+            freq_mhz: Frequency in MHz
+            license_class: Operator's license class
+            mode: Optional emission mode to validate
+
+        Returns:
+            ComplianceResult with detailed authorization info
+        """
+        segment = cls.get_segment_by_frequency(freq_mhz)
+
+        if not segment:
+            return ComplianceResult(
+                authorized=False,
+                frequency_mhz=freq_mhz,
+                errors=[f"{freq_mhz} MHz is outside amateur allocations"]
+            )
+
+        # Check license class privilege
+        authorized = license_class in segment.license_classes
+        warnings = []
+        errors = []
+
+        if not authorized:
+            required = min(segment.license_classes, key=lambda x: list(LicenseClass).index(x))
+            errors.append(
+                f"{segment.band} {segment.segment_name} requires {required.value} or higher"
+            )
+
+        # Check mode if specified
+        modes_allowed = [m.value for m in segment.modes]
+        if mode and mode not in segment.modes:
+            errors.append(f"{mode.value} not permitted in this segment. Allowed: {', '.join(modes_allowed)}")
+            authorized = False
+
+        # Add notes as warnings
+        if segment.notes:
+            warnings.append(segment.notes)
+
+        return ComplianceResult(
+            authorized=authorized,
+            frequency_mhz=freq_mhz,
+            band=segment.band,
+            segment=segment.segment_name,
+            modes_allowed=modes_allowed,
+            max_power_watts=segment.max_power_watts,
+            license_required=min(segment.license_classes, key=lambda x: list(LicenseClass).index(x)).value if segment.license_classes else None,
+            warnings=warnings,
+            errors=errors
+        )
 
     @classmethod
     def get_rule(cls, rule_number: str) -> Optional[Dict[str, str]]:
