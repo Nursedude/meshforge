@@ -22,8 +22,17 @@ logger = logging.getLogger(__name__)
 # Type variable for generic settings
 T = TypeVar('T', bound=Dict[str, Any])
 
-# Default config directory
-CONFIG_DIR = Path.home() / ".config" / "meshforge"
+
+def _get_real_user_home() -> Path:
+    """Get the real user's home directory, even when running as root via sudo."""
+    sudo_user = os.environ.get('SUDO_USER')
+    if sudo_user and sudo_user != 'root':
+        return Path(f'/home/{sudo_user}')
+    return Path.home()
+
+
+# Default config directory - use real user's home when running with sudo
+CONFIG_DIR = _get_real_user_home() / ".config" / "meshforge"
 
 
 class SettingsManager:

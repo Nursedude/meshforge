@@ -20,6 +20,13 @@ except ImportError:
     import logging
     logger = logging.getLogger(__name__)
 
+# Import network diagnostics for event logging
+try:
+    from utils.network_diagnostics import get_diagnostics, EventCategory, EventSeverity
+    diag = get_diagnostics()
+except ImportError:
+    diag = None
+
 # Try to import WebKit for embedded map
 # Note: WebKit doesn't work when running as root (sandbox issues)
 import os
@@ -73,7 +80,7 @@ class MapPanel(Gtk.Box):
         GLib.timeout_add_seconds(5, self._auto_refresh)
 
     def _init_node_tracker(self):
-        """Initialize the node tracker (but don't start - it grabs RNS port)"""
+        """Initialize the node tracker for RNS discovery"""
         try:
             # Try relative import first (when run as package)
             from ...gateway.node_tracker import UnifiedNodeTracker
@@ -87,9 +94,9 @@ class MapPanel(Gtk.Box):
 
         try:
             self.node_tracker = UnifiedNodeTracker()
-            # Don't auto-start - it initializes RNS and blocks NomadNet/rnsd
-            # User can start manually if needed via gateway controls
-            logger.info("Node tracker available (not started - use gateway to enable RNS)")
+            # Start the tracker - it will reuse existing RNS instance if rnsd is running
+            self.node_tracker.start()
+            logger.info("Node tracker started - RNS nodes will be discovered")
         except Exception as e:
             logger.error(f"Failed to initialize node tracker: {e}")
 
@@ -135,10 +142,16 @@ class MapPanel(Gtk.Box):
                 sock.settimeout(3.0)
                 if sock.connect_ex(('localhost', 4403)) != 0:
                     sock.close()
-                    return None, "meshtasticd not running (port 4403)"
+                    error_msg = "meshtasticd not running (port 4403)"
+                    if diag:
+                        diag.log_connection("map", "meshtasticd:4403", False, error_msg)
+                    return None, error_msg
                 sock.close()
             except Exception as e:
-                return None, f"Cannot check port: {e}"
+                error_msg = f"Cannot check port: {e}"
+                if diag:
+                    diag.log_connection("map", "meshtasticd:4403", False, str(e))
+                return None, error_msg
 
             try:
                 monitor = NodeMonitor(host='localhost', port=4403)
@@ -159,11 +172,23 @@ class MapPanel(Gtk.Box):
                             last_count = count
                     cls._monitor = monitor
                     logger.info(f"NodeMonitor connected, {monitor.get_node_count()} nodes")
+                    if diag:
+                        diag.log_connection("map", "meshtasticd:4403", True)
+                        diag.log_event(
+                            EventCategory.NETWORK, EventSeverity.INFO, "map",
+                            f"Discovered {monitor.get_node_count()} Meshtastic nodes"
+                        )
                     return monitor, None
                 else:
-                    return None, "Failed to connect to meshtasticd"
+                    error_msg = "Failed to connect to meshtasticd"
+                    if diag:
+                        diag.log_connection("map", "meshtasticd:4403", False, error_msg)
+                    return None, error_msg
             except Exception as e:
-                return None, f"Connection error: {e}"
+                error_msg = f"Connection error: {e}"
+                if diag:
+                    diag.log_connection("map", "meshtasticd:4403", False, str(e))
+                return None, error_msg
 
     def _build_ui(self):
         """Build the map panel UI"""
