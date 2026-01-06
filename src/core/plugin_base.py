@@ -13,6 +13,7 @@ Plugin Types:
 import json
 import logging
 import importlib.util
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,16 @@ from enum import Enum
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# Import centralized path utility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
 
 
 class PluginType(Enum):
@@ -341,7 +352,7 @@ class PluginManager:
 
     def __init__(self, plugins_dir: Optional[Path] = None):
         if plugins_dir is None:
-            plugins_dir = Path.home() / ".config" / "meshforge" / "plugins"
+            plugins_dir = get_real_user_home() / ".config" / "meshforge" / "plugins"
         self.plugins_dir = plugins_dir
         self.plugins_dir.mkdir(parents=True, exist_ok=True)
 

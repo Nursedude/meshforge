@@ -44,8 +44,19 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Type, Any
 import importlib.util
 import logging
+import os
 
 logger = logging.getLogger(__name__)
+
+# Import centralized path utility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
 
 
 class PluginType(Enum):
@@ -235,7 +246,7 @@ class PluginManager:
             self.plugins_dir = Path(__file__).parent.parent / "plugins"
 
         # User plugins directory
-        self.user_plugins_dir = Path.home() / ".config" / "meshforge" / "plugins"
+        self.user_plugins_dir = get_real_user_home() / ".config" / "meshforge" / "plugins"
 
     def discover(self) -> List[str]:
         """Discover plugins in configured directories."""

@@ -778,8 +778,17 @@ class DiagnosticsPanel(Gtk.Box):
         except Exception as e:
             results.append(f"[WARN] Could not check rnsd: {e}")
 
-        # Check config
-        rns_config = Path.home() / '.reticulum' / 'config'
+        # Check config - use real user home for sudo compatibility
+        try:
+            from utils.paths import get_real_user_home
+            rns_config = get_real_user_home() / '.reticulum' / 'config'
+        except ImportError:
+            import os as os_mod
+            sudo_user = os_mod.environ.get('SUDO_USER')
+            if sudo_user and sudo_user != 'root':
+                rns_config = Path(f'/home/{sudo_user}') / '.reticulum' / 'config'
+            else:
+                rns_config = Path.home() / '.reticulum' / 'config'
         if rns_config.exists():
             results.append(f"[PASS] RNS config exists: {rns_config}")
         else:

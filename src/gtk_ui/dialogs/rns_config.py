@@ -13,11 +13,21 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Import centralized path utility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
+
 
 class RNSConfigDialog(Adw.Window):
     """Dialog for editing RNS configuration file"""
 
-    DEFAULT_CONFIG_PATH = Path.home() / ".reticulum" / "config"
+    DEFAULT_CONFIG_PATH = get_real_user_home() / ".reticulum" / "config"
 
     # Default RNS configuration template
     DEFAULT_CONFIG = """# Reticulum Network Stack Configuration

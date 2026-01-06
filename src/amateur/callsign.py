@@ -5,12 +5,23 @@ Provides callsign lookup, validation, and management features.
 """
 
 import re
+import os
 import logging
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Any
 from datetime import datetime
 from pathlib import Path
 import json
+
+# Import centralized path utility for sudo compatibility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +125,7 @@ class CallsignManager:
 
     def __init__(self, config_dir: Optional[Path] = None):
         """Initialize callsign manager"""
-        self.config_dir = config_dir or Path.home() / '.config' / 'meshforge'
+        self.config_dir = config_dir or get_real_user_home() / '.config' / 'meshforge'
         self.cache_file = self.config_dir / 'callsign_cache.json'
         self.my_callsign: Optional[str] = None
         self.my_info: Optional[CallsignInfo] = None

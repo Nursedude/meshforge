@@ -19,6 +19,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Import centralized path utility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
+
 
 class Edition(Enum):
     """MeshForge edition identifiers"""
@@ -173,7 +183,7 @@ def detect_edition() -> Edition:
         return _cached_edition
 
     # 2. Check config file
-    config_dir = Path.home() / ".config" / "meshforge"
+    config_dir = get_real_user_home() / ".config" / "meshforge"
     edition_file = config_dir / "edition.json"
 
     if edition_file.exists():
@@ -215,7 +225,7 @@ def set_edition(edition: Edition) -> None:
     """
     global _cached_edition
 
-    config_dir = Path.home() / ".config" / "meshforge"
+    config_dir = get_real_user_home() / ".config" / "meshforge"
     config_dir.mkdir(parents=True, exist_ok=True)
 
     edition_file = config_dir / "edition.json"

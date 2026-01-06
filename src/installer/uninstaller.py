@@ -11,6 +11,16 @@ from rich.panel import Panel
 from utils.system import run_command, is_service_running
 from utils.logger import log
 
+# Import centralized path utility for sudo compatibility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
+
 console = Console()
 
 
@@ -20,7 +30,7 @@ class MeshtasticdUninstaller:
     def __init__(self):
         self.config_dir = Path('/etc/meshtasticd')
         self.installer_dir = Path('/opt/meshtasticd-installer')
-        self.user_config_dir = Path.home() / '.config' / 'meshtasticd-installer'
+        self.user_config_dir = get_real_user_home() / '.config' / 'meshtasticd-installer'
         self.log_files = [
             Path('/var/log/meshtasticd-installer.log'),
             Path('/var/log/meshtasticd-installer-error.log')
