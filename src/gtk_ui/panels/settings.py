@@ -19,6 +19,9 @@ except ImportError:
 class SettingsPanel(Gtk.Box):
     """Settings panel with theme, preferences, and simulation options"""
 
+    # Settings file location
+    SETTINGS_FILE = Path.home() / ".config" / "meshforge" / "settings.json"
+
     # Settings defaults
     SETTINGS_DEFAULTS = {
         "theme": "dark",        # "system", "dark", "light"
