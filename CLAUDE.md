@@ -82,10 +82,23 @@ print(f'Issues: {report.total_issues}')
 
 Deep documentation in `.claude/`:
 - `dude_ai_university.md` - Complete project knowledge base
+- `foundations/domain_architecture.md` - **ARCHITECTURE: Core vs Plugin model**
 - `foundations/ai_principles.md` - Human-centered design philosophy
 - `foundations/persistent_issues.md` - **CRITICAL: Known issues & fixes**
 - `foundations/documentation_audit.md` - Doc structure & conflicts
 - `research/` - Technical deep dives (RNS, AREDN, HamClock)
+
+## Architecture Model
+
+**Privilege Separation** (see `foundations/domain_architecture.md`):
+- **Viewer Mode** (default, no sudo): Monitoring, RF calcs, API data
+- **Admin Mode** (sudo): Service control, /etc/ config, hardware
+
+**Core vs Plugin**:
+- **Core**: Gateway bridge, node tracker, RF tools, diagnostics
+- **Plugins**: HamClock, AREDN, MQTT, third-party integrations
+
+**Services run independently** - MeshForge connects to them, doesn't embed them.
 
 ## Persistent Issues (MUST READ)
 
