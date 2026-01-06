@@ -16,6 +16,7 @@ import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, GLib
+import json
 import threading
 import subprocess
 import urllib.request
@@ -96,7 +97,6 @@ class HamClockPanel(Gtk.Box):
 
     def _load_settings_legacy(self):
         """Legacy settings load for fallback"""
-        import json
         settings_file = Path.home() / ".config" / "meshforge" / "hamclock.json"
         defaults = self.SETTINGS_DEFAULTS.copy()
         try:
@@ -115,7 +115,6 @@ class HamClockPanel(Gtk.Box):
             self._settings_mgr.save()
         else:
             # Legacy fallback
-            import json
             settings_file = Path.home() / ".config" / "meshforge" / "hamclock.json"
             try:
                 settings_file.parent.mkdir(parents=True, exist_ok=True)
@@ -468,8 +467,14 @@ class HamClockPanel(Gtk.Box):
                         status['installed'] = True
                         status['service_name'] = name
 
-                except Exception:
-                    pass
+                except subprocess.TimeoutExpired:
+                    logger.debug(f"[HamClock] Timeout checking service: {name}")
+                except FileNotFoundError:
+                    # systemctl not available (non-systemd system)
+                    logger.debug("[HamClock] systemctl not found")
+                    break
+                except Exception as e:
+                    logger.debug(f"[HamClock] Error checking service {name}: {e}")
 
             # Also check for running hamclock process (might be started manually)
             if not status['running']:
@@ -481,8 +486,12 @@ class HamClockPanel(Gtk.Box):
                     if result.returncode == 0 and result.stdout.strip():
                         status['running'] = True
                         status['service_name'] = 'hamclock (process)'
-                except Exception:
-                    pass
+                except subprocess.TimeoutExpired:
+                    logger.debug("[HamClock] Timeout checking process")
+                except FileNotFoundError:
+                    logger.debug("[HamClock] pgrep not found")
+                except Exception as e:
+                    logger.debug(f"[HamClock] Error checking process: {e}")
 
             GLib.idle_add(self._update_service_status, status)
 
@@ -580,6 +589,33 @@ class HamClockPanel(Gtk.Box):
         self._on_connect(None)
         return False  # Don't repeat
 
+    def _validate_url(self, url):
+        """Validate URL format and return (valid, error_message)"""
+        if not url:
+            return False, "Enter HamClock URL"
+
+        # Basic URL format validation
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+
+            # Must have a valid host
+            if not parsed.netloc and not parsed.path:
+                return False, "Invalid URL format"
+
+            # Check for obvious mistakes
+            if parsed.netloc and ':' in parsed.netloc:
+                # URL includes port - warn user to use port fields instead
+                host_part = parsed.netloc.split(':')[0]
+                port_part = parsed.netloc.split(':')[1]
+                if port_part.isdigit():
+                    return False, f"Don't include port in URL. Use '{parsed.scheme}://{host_part}' and set ports below"
+
+        except Exception:
+            return False, "Invalid URL format"
+
+        return True, None
+
     def _on_connect(self, button):
         """Connect to HamClock"""
         url = self.url_entry.get_text().strip()
@@ -594,10 +630,26 @@ class HamClockPanel(Gtk.Box):
         # Remove trailing slash
         url = url.rstrip('/')
 
+        # Validate URL format
+        valid, error = self._validate_url(url)
+        if not valid:
+            self.status_label.set_label(error)
+            return
+
+        # Validate ports
+        api_port = int(self.api_port_spin.get_value())
+        live_port = int(self.live_port_spin.get_value())
+        if api_port < 1 or api_port > 65535:
+            self.status_label.set_label("API port must be 1-65535")
+            return
+        if live_port < 1 or live_port > 65535:
+            self.status_label.set_label("Live port must be 1-65535")
+            return
+
         # Save settings
         self._settings["url"] = url
-        self._settings["api_port"] = int(self.api_port_spin.get_value())
-        self._settings["live_port"] = int(self.live_port_spin.get_value())
+        self._settings["api_port"] = api_port
+        self._settings["live_port"] = live_port
         self._save_settings()
 
         # Update entry with corrected URL
@@ -840,37 +892,77 @@ class HamClockPanel(Gtk.Box):
         logger.debug(f"[HamClock] Opening URL: {url}")
 
         user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
-        display = os.environ.get('DISPLAY', ':0')
+
+        # Detect display environment (Wayland or X11)
+        wayland_display = os.environ.get('WAYLAND_DISPLAY', '')
+        x11_display = os.environ.get('DISPLAY', '')
+
+        # Build environment variables for browser
+        env_vars = []
+        if wayland_display:
+            env_vars.append(f'WAYLAND_DISPLAY={wayland_display}')
+            # XDG_RUNTIME_DIR is needed for Wayland
+            runtime_dir = os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
+            env_vars.append(f'XDG_RUNTIME_DIR={runtime_dir}')
+        if x11_display:
+            env_vars.append(f'DISPLAY={x11_display}')
+        if not env_vars:
+            # Fallback to default X11 display
+            env_vars.append('DISPLAY=:0')
 
         # Try multiple browser open methods
-        methods = [
-            # Method 1: Run as original user with their display
-            lambda: subprocess.Popen(
-                ['sudo', '-u', user, 'env', f'DISPLAY={display}', 'xdg-open', url],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            ),
-            # Method 2: Direct xdg-open (if not root)
+        methods = []
+
+        # Method 1: Run as original user with their display (for root)
+        if os.geteuid() == 0 and user:
+            methods.append(
+                lambda: subprocess.Popen(
+                    ['sudo', '-u', user, 'env'] + env_vars + ['xdg-open', url],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+            )
+
+        # Method 2: Direct xdg-open (if not root or as fallback)
+        methods.append(
             lambda: subprocess.Popen(
                 ['xdg-open', url],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            ),
-            # Method 3: Try specific browsers
-            lambda: subprocess.Popen(
-                ['sudo', '-u', user, 'chromium-browser', url],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            ),
-            lambda: subprocess.Popen(
-                ['sudo', '-u', user, 'firefox', url],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            ),
-        ]
+            )
+        )
+
+        # Method 3: Try specific browsers with env
+        if os.geteuid() == 0 and user:
+            methods.extend([
+                lambda: subprocess.Popen(
+                    ['sudo', '-u', user, 'env'] + env_vars + ['chromium-browser', url],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                ),
+                lambda: subprocess.Popen(
+                    ['sudo', '-u', user, 'env'] + env_vars + ['firefox', url],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                ),
+            ])
+        else:
+            methods.extend([
+                lambda: subprocess.Popen(
+                    ['chromium-browser', url],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                ),
+                lambda: subprocess.Popen(
+                    ['firefox', url],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                ),
+            ])
 
         for i, method in enumerate(methods):
             try:
                 method()
-                self.status_label.set_label(f"Opened in browser")
+                self.status_label.set_label("Opened in browser")
                 logger.debug(f"[HamClock] Browser opened using method {i+1}")
                 return
+            except FileNotFoundError:
+                logger.debug(f"[HamClock] Method {i+1}: command not found")
+                continue
             except Exception as e:
                 logger.debug(f"[HamClock] Method {i+1} failed: {e}")
                 continue
