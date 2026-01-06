@@ -409,6 +409,20 @@ def main():
     from utils.env_config import initialize_config
     initialize_config()
 
+    # Initialize comprehensive logging system
+    try:
+        from utils.logging_utils import setup_logging
+        # Enable debug logging if running in foreground (not daemon)
+        log_level = logging.INFO if is_daemon_subprocess else logging.DEBUG
+        setup_logging(log_level=log_level, log_to_file=True, log_to_console=True)
+    except ImportError:
+        # Fallback to basic logging if logging_utils not available
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(asctime)s | %(name)s | %(levelname)s | %(message)s',
+            datefmt='%H:%M:%S'
+        )
+
     # Launch GTK application
     from gtk_ui.app import MeshtasticdApp
     app = MeshtasticdApp()
