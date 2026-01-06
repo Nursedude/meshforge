@@ -408,35 +408,37 @@ class RNSMeshtasticBridge:
             import RNS
             import LXMF
 
-            # Initialize Reticulum (or connect to existing shared instance)
-            config_dir = self.config.rns.config_dir or None
-            try:
-                self._reticulum = RNS.Reticulum(configdir=config_dir)
-            except OSError as e:
-                # Handle "Address already in use" error (errno 98)
-                from utils.gateway_diagnostic import handle_address_in_use_error
-                error_info = handle_address_in_use_error(e, logger)
+            # Check if rnsd is already running BEFORE trying to initialize
+            from utils.gateway_diagnostic import find_rns_processes
+            rns_pids = find_rns_processes()
 
-                if error_info['is_address_in_use']:
-                    if error_info['can_use_shared']:
-                        # An RNS daemon is running, use shared transport
-                        logger.info("RNS already running (rnsd), using shared instance")
-                        self._reticulum = None  # Use shared transport
+            if rns_pids:
+                # rnsd is running - DON'T try to initialize RNS (it would conflict)
+                # MeshForge gateway bridge cannot coexist with rnsd
+                # Use rnsd + NomadNet for RNS-based communications instead
+                logger.info(f"rnsd detected (PID: {rns_pids[0]}), skipping gateway RNS initialization")
+                logger.info("Gateway bridge RNS features disabled - use NomadNet for RNS messaging")
+                self._reticulum = None
+                self._connected_rns = False
+                self._rns_init_failed_permanently = True  # Don't retry
+                return  # Skip all RNS/LXMF operations - rnsd handles them
+            else:
+                # No rnsd - initialize RNS ourselves
+                config_dir = self.config.rns.config_dir or None
+                try:
+                    self._reticulum = RNS.Reticulum(configdir=config_dir)
+                except OSError as e:
+                    if hasattr(e, 'errno') and e.errno == 98:
+                        logger.warning("RNS port conflict - will use shared transport if available")
+                        self._reticulum = None
                     else:
-                        # Port in use but no rnsd - likely a stale process
-                        logger.error(f"Cannot initialize RNS: {error_info['message']}")
-                        for fix in error_info['fix_options']:
-                            logger.info(f"  Fix: {fix}")
-                        self._connected_rns = False
-                        return
-                else:
-                    raise
-            except Exception as e:
-                if "reinitialise" in str(e).lower() or "already running" in str(e).lower():
-                    logger.info("RNS already running, using shared instance")
-                    self._reticulum = None  # Use shared instance
-                else:
-                    raise
+                        raise
+                except Exception as e:
+                    if "reinitialise" in str(e).lower() or "already running" in str(e).lower():
+                        logger.info("RNS already running, using shared instance")
+                        self._reticulum = None
+                    else:
+                        raise
 
             # Create or load identity
             identity_path = get_real_user_home() / ".config" / "meshforge" / "gateway_identity"
