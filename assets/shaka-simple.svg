@@ -1,20 +1,49 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-  <!-- Simplified shaka icon - works at small sizes, visible on light/dark -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- MeshForge Shaka - Radio wave hand gesture -->
   <defs>
-    <linearGradient id="shakaGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#4a90d9;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#2d5a87;stop-opacity:1" />
+    <linearGradient id="meshGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00d4aa;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#4a90d9;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#7c3aed;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="waveGrad" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" style="stop-color:#00d4aa;stop-opacity:0.8" />
+      <stop offset="100%" style="stop-color:#00d4aa;stop-opacity:0" />
     </linearGradient>
   </defs>
-  <g fill="url(#shakaGrad)" stroke="#1a3a5c" stroke-width="0.5">
+
+  <!-- Radio waves emanating from shaka -->
+  <g fill="none" stroke="url(#waveGrad)" stroke-width="1.5" opacity="0.6">
+    <path d="M 8 20 Q 2 32, 8 44" />
+    <path d="M 4 16 Q -4 32, 4 48" />
+  </g>
+
+  <!-- Shaka hand -->
+  <g fill="url(#meshGrad)" stroke="#1a365d" stroke-width="1">
     <!-- Thumb pointing left -->
-    <ellipse cx="6" cy="16" rx="4" ry="2.5" transform="rotate(-20 6 16)"/>
-    <!-- Pinky pointing up -->
-    <ellipse cx="24" cy="7" rx="2" ry="5"/>
+    <ellipse cx="14" cy="32" rx="8" ry="4" transform="rotate(-15 14 32)"/>
+    <!-- Pinky pointing up-right -->
+    <ellipse cx="48" cy="14" rx="4" ry="10" transform="rotate(15 48 14)"/>
     <!-- Palm/fist -->
-    <rect x="12" y="11" width="14" height="12" rx="4"/>
+    <rect x="26" y="22" width="22" height="20" rx="6"/>
+    <!-- Curled fingers hint -->
+    <ellipse cx="38" cy="24" rx="8" ry="3"/>
     <!-- Wrist -->
-    <rect x="14" y="23" width="10" height="6" rx="2"/>
+    <rect x="30" y="42" width="14" height="10" rx="3"/>
+  </g>
+
+  <!-- Mesh network nodes -->
+  <g fill="#00d4aa" opacity="0.9">
+    <circle cx="56" cy="8" r="2"/>
+    <circle cx="60" cy="16" r="1.5"/>
+    <circle cx="58" cy="24" r="1.5"/>
+  </g>
+
+  <!-- Connection lines between nodes -->
+  <g stroke="#00d4aa" stroke-width="0.75" opacity="0.5">
+    <line x1="56" y1="8" x2="60" y2="16"/>
+    <line x1="60" y1="16" x2="58" y2="24"/>
+    <line x1="48" y1="14" x2="56" y2="8"/>
   </g>
 </svg>

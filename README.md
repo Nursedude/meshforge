@@ -1,16 +1,16 @@
-# MeshForge 🤙
+# MeshForge
 
 ```
-    ╔══════════════════════════════════════════════════════════════╗
-    ║  ███╗   ███╗███████╗███████╗██╗  ██╗███████╗ ██████╗ ██████╗ ██████╗ ███████╗  ║
-    ║  ████╗ ████║██╔════╝██╔════╝██║  ██║██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝  ║
-    ║  ██╔████╔██║█████╗  ███████╗███████║█████╗  ██║   ██║██████╔╝██║  ███╗█████╗    ║
-    ║  ██║╚██╔╝██║██╔══╝  ╚════██║██╔══██║██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝    ║
-    ║  ██║ ╚═╝ ██║███████╗███████║██║  ██║██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗  ║
-    ║  ╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝  ║
-    ║                                                                                   ║
-    ║           LoRa Mesh Network Development & Operations Suite                        ║
-    ╚══════════════════════════════════════════════════════════════╝
+╔═══════════════════════════════════════════════════════════════════════╗
+║  ███╗   ███╗███████╗███████╗██╗  ██╗███████╗ ██████╗ ██████╗  ██████╗ ███████╗  ║
+║  ████╗ ████║██╔════╝██╔════╝██║  ██║██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝  ║
+║  ██╔████╔██║█████╗  ███████╗███████║█████╗  ██║   ██║██████╔╝██║  ███╗█████╗    ║
+║  ██║╚██╔╝██║██╔══╝  ╚════██║██╔══██║██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝    ║
+║  ██║ ╚═╝ ██║███████╗███████║██║  ██║██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗  ║
+║  ╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝  ║
+║                                                                                 ║
+║              LoRa Mesh Network Development & Operations Suite                   ║
+╚═══════════════════════════════════════════════════════════════════════╝
 ```
 
 <p align="center">
@@ -19,7 +19,7 @@
   <strong>Build. Test. Deploy. Bridge. Monitor.</strong>
 </p>
 
-[![Version](https://img.shields.io/badge/version-4.3.0-blue.svg)](https://github.com/Nursedude/meshforge)
+[![Version](https://img.shields.io/badge/version-0.4.3--beta-blue.svg)](https://github.com/Nursedude/meshforge)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-yellow.svg)](https://python.org)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20Linux-orange.svg)](https://www.raspberrypi.org/)
@@ -28,14 +28,14 @@
 **The first open-source tool to bridge Meshtastic and Reticulum (RNS) mesh networks.**
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  MESHTASTIC  ◄────►  MESHFORGE  ◄────►  RETICULUM (RNS)            │
-│   (LoRa)              (Bridge)           (Cryptographic Mesh)       │
-│                                                                      │
-│  • 915 MHz LoRa        • Unified Map      • Multi-transport         │
-│  • Simple setup        • Gateway Config   • E2E encryption          │
-│  • Wide adoption       • RF Tools         • 64+ hop routing         │
-└─────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────┐
+│  MESHTASTIC  ◄────►  MESHFORGE  ◄────►  RETICULUM (RNS)               │
+│   (LoRa)              (Bridge)           (Cryptographic Mesh)         │
+│                                                                       │
+│  • 915 MHz LoRa        • Unified Map      • Multi-transport           │
+│  • Simple setup        • Gateway Config   • E2E encryption            │
+│  • Wide adoption       • RF Tools         • 64+ hop routing           │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 MeshForge is a **Network Operations Center (NOC)** for heterogeneous off-grid mesh networks. It unifies two powerful but incompatible mesh ecosystems—**Meshtastic** and **Reticulum**—into a single manageable system.
@@ -65,6 +65,7 @@ MeshForge is a **Network Operations Center (NOC)** for heterogeneous off-grid me
 ## Table of Contents
 
 - [What is MeshForge?](#what-is-meshforge)
+- [Upgrade Path](#upgrade-path)
 - [Support Levels](#support-levels)
 - [RNS-Meshtastic Gateway](#rns-meshtastic-gateway)
 - [AREDN Integration](#aredn-integration)
@@ -74,14 +75,10 @@ MeshForge is a **Network Operations Center (NOC)** for heterogeneous off-grid me
 - [Features](#features)
 - [Frequency Slot Calculator](#frequency-slot-calculator)
 - [RF Engineering Tools](#rf-engineering-tools)
-- [Gateway Diagnostic Wizard](#gateway-diagnostic-wizard)
 - [Plugin System](#plugin-system)
-- [Auto-Claude Review System](#auto-claude-review-system)
-- [Lightweight Monitor (No Sudo)](#lightweight-monitor-no-sudo)
 - [Simulation Mode](#simulation-mode)
 - [Supported Hardware](#supported-hardware)
 - [Installation](#installation)
-- [Usage Examples](#usage-examples)
 - [Project Structure](#project-structure)
 - [Version History](#version-history)
 - [Roadmap](#roadmap)
@@ -114,14 +111,61 @@ MeshForge follows the **Build → Test → Deploy → Monitor** lifecycle:
 
 ---
 
+## Upgrade Path
+
+### Upgrading MeshForge
+
+```bash
+# Navigate to your MeshForge directory
+cd meshforge
+
+# Pull latest changes
+git fetch origin
+git pull origin main
+
+# Check for dependency updates
+pip3 install --upgrade rich textual flask meshtastic --break-system-packages
+
+# Verify the upgrade
+python3 -c "from src.__version__ import __version__; print(f'MeshForge v{__version__}')"
+
+# Restart if running as service
+sudo systemctl restart meshforge  # If you have it set up as a service
+```
+
+### Version Upgrade Notes
+
+| From | To | Notes |
+|------|-----|-------|
+| v3.x | v4.x | Project renamed from "Meshtasticd Installer" to "MeshForge" |
+| v4.0 | v4.1 | Node map added, new dependencies (leaflet.js bundled) |
+| v4.1 | v4.2 | RNS gateway added, install RNS ecosystem: `pip3 install rns lxmf` |
+| v4.2 | v4.3 | AREDN integration, no new dependencies |
+
+### Migrating from Old Repository
+
+If you were using `Meshtasticd_interactive_UI`:
+
+```bash
+# Backup your configs
+cp -r ~/.config/meshforge ~/.config/meshforge.backup
+
+# Clone new repo
+git clone https://github.com/Nursedude/meshforge.git
+
+# Your settings will be preserved in ~/.config/meshforge/
+```
+
+---
+
 ## Support Levels
 
-MeshForge uses a **tiered support system** to communicate the maturity and integration level of each feature:
+MeshForge uses a **tiered support system** to communicate feature maturity:
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                      MESHFORGE SUPPORT LEVELS                        │
-├─────────────────────────────────────────────────────────────────────┤
+┌───────────────────────────────────────────────────────────────────────┐
+│                      MESHFORGE SUPPORT LEVELS                         │
+├───────────────────────────────────────────────────────────────────────┤
 │                                                                       │
 │  ✅ FULLY INTEGRATED    Features with tests, GUI panels, and         │
 │     (Core)              full functionality built into MeshForge      │
@@ -132,12 +176,10 @@ MeshForge uses a **tiered support system** to communicate the maturity and integ
 │  📋 PLANNED             On roadmap, not yet implemented              │
 │     (Future)                                                          │
 │                                                                       │
-└─────────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 ### ✅ Fully Integrated (Core)
-
-These features are fully tested and production-ready:
 
 | Feature | Tests | Description |
 |---------|-------|-------------|
@@ -149,45 +191,24 @@ These features are fully tested and production-ready:
 | **Hardware Detection** | ✅ | USB, SPI HAT, I2C device detection |
 | **Node Monitor** | ✅ | Real-time node tracking (no sudo) |
 | **RF Tools** | 13 tests | Haversine, Fresnel, FSPL, Earth bulge |
-| **Gateway Diagnostic Wizard** | 18 tests | AI-like troubleshooting for RNS/Meshtastic |
+| **Gateway Diagnostic** | 18 tests | AI-like troubleshooting for RNS/Meshtastic |
 | **Security Validation** | 24 tests | Input validation, subprocess safety |
 
 ### 🔧 Plugin Stubs (Extensible)
 
-Plugin architecture is complete with 15 tests. These plugins have **stub implementations** ready for extension:
-
 | Plugin | Type | Status | Description |
 |--------|------|--------|-------------|
 | **mqtt-bridge** | Integration | Stub | MQTT for Home Assistant/Node-RED |
-| **meshcore** | Protocol | Stub | MeshCore protocol (64 hops, repeater routing) |
-| **meshing-around** | Integration | Stub | Bot framework (games, alerts, automation) |
-
-**What "stub" means:**
-- Plugin class structure is complete
-- Metadata, activate/deactivate methods implemented
-- Core functionality awaits external library integration
-- Community contributions welcome!
-
-**Safety principle:** Plugins can fail without breaking core MeshForge. If `paho-mqtt` isn't installed, MQTT plugin fails gracefully—RF tools, gateway, and UI continue working.
+| **meshcore** | Protocol | Stub | MeshCore protocol (64 hops) |
+| **meshing-around** | Integration | Stub | Bot framework (games, alerts) |
 
 ### 📋 Planned (Future)
 
 | Feature | Priority | Notes |
 |---------|----------|-------|
 | LXMF/NomadNet UI | High | RNS messaging integration |
-| RNODE detection | Medium | LoRa hardware for RNS |
 | Node flashing | Medium | Flash firmware to USB devices |
-| **NanoVNA plugin** | Medium | Antenna SWR, S11/S21, Smith chart |
-| MQTT dashboard | Low | Real-time metrics via MQTT |
-| I2P overlay | Low | Anonymous network transport |
-
-### Understanding the Icons
-
-Throughout MeshForge documentation:
-- ✅ = Fully working, tested, production-ready
-- 🔧 = Plugin stub, architecture ready, needs implementation
-- ⚠️ = Limited support or experimental
-- 📋 = Planned for future release
+| NanoVNA plugin | Medium | Antenna SWR, Smith chart |
 
 ---
 
@@ -204,113 +225,56 @@ sudo apt install -y python3-pip python3-gi python3-gi-cairo \
     gir1.2-gtk-4.0 libadwaita-1-0 gir1.2-adw-1
 
 # Install Python dependencies
-pip3 install rich textual flask
+pip3 install rich textual flask --break-system-packages
 
 # Launch MeshForge (choose your interface)
 sudo python3 src/launcher.py          # Auto-detect best interface
 sudo python3 src/main_gtk.py          # GTK Desktop UI
 sudo python3 src/main_web.py          # Web UI (browser)
 sudo python3 src/main_tui.py          # Terminal UI (SSH)
-sudo python3 src/main.py              # Rich CLI
+python3 src/standalone.py             # Zero-dependency mode
 ```
 
 ---
 
 ## Interfaces
 
-MeshForge provides **multiple interfaces for different use cases** - choose the right tool for your environment:
+MeshForge provides **multiple interfaces for different use cases**:
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        MESHFORGE INTERFACES                          │
-├─────────────────────────────────────────────────────────────────────┤
+┌───────────────────────────────────────────────────────────────────────┐
+│                        MESHFORGE INTERFACES                           │
+├───────────────────────────────────────────────────────────────────────┤
 │                                                                       │
 │   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐ │
-│   │   GTK UI    │  │   Web UI    │  │  Terminal   │  │    CLI      │ │
-│   │  (Desktop)  │  │  (Browser)  │  │    (TUI)    │  │   (Rich)    │ │
+│   │   GTK UI    │  │   Web UI    │  │  Terminal   │  │  Standalone │ │
+│   │  (Desktop)  │  │  (Browser)  │  │    (TUI)    │  │  (No Deps)  │ │
 │   └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘ │
 │          │                │                │                │        │
 │          └────────────────┴────────────────┴────────────────┘        │
 │                                  │                                    │
-│                         ┌───────┴───────┐                            │
-│                         │  Core Engine  │                            │
-│                         │  (Python API) │                            │
-│                         └───────────────┘                            │
+│                         ┌────────┴────────┐                          │
+│                         │   Core Engine   │                          │
+│                         │   (Python API)  │                          │
+│                         └─────────────────┘                          │
 │                                                                       │
-└─────────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 | Interface | Command | Best For | Requires |
 |-----------|---------|----------|----------|
 | **Auto Launcher** | `sudo python3 src/launcher.py` | Auto-selects best UI | - |
-| **GTK Desktop** | `sudo python3 src/main_gtk.py` | Pi with display, VNC | GTK4, libadwaita |
+| **GTK Desktop** | `sudo python3 src/main_gtk.py` | Pi with display, VNC | GTK4 |
 | **Web UI** | `sudo python3 src/main_web.py` | Remote browser access | Flask |
-| **Terminal TUI** | `sudo python3 src/main_tui.py` | SSH, headless systems | Textual |
-| **Rich CLI** | `sudo python3 src/main.py` | Scripting, minimal systems | Rich |
-| **Monitor** | `python3 -m src.monitor` | Quick node check | None (no sudo!) |
-| **Diagnostics** | `python3 src/cli/diagnose.py -g` | Gateway setup wizard | None |
-| **Device Scanner** | `python3 -m src.utils.device_scanner` | Find USB/serial ports | None |
-
-### Interface Selection Guide
-
-```
-Use Case                          → Recommended Interface
-─────────────────────────────────────────────────────────
-Pi with HDMI display              → GTK Desktop
-Pi headless, access via laptop    → Web UI (browser)
-SSH into remote Pi                → Terminal TUI
-Automated scripts/cron            → Rich CLI
-Quick node status check           → Monitor (no sudo)
-RNS/Meshtastic gateway setup      → Diagnostics wizard
-```
-
-### Web UI
-
-Access MeshForge from any device on your network:
-
-```bash
-# Start on default port 8080
-sudo python3 src/main_web.py
-
-# With password protection
-sudo python3 src/main_web.py --password yourpassword
-
-# Custom port
-sudo python3 src/main_web.py --port 9000
-
-# Check status / stop
-sudo python3 src/main_web.py --status
-sudo python3 src/main_web.py --stop
-```
-
-Then open `http://your-pi-ip:8080` in your browser.
-
-### GTK Desktop UI
-
-Modern libadwaita interface with tabbed navigation:
-
-```bash
-sudo python3 src/main_gtk.py
-
-# Keyboard shortcuts:
-# F11     - Toggle fullscreen
-# Escape  - Exit fullscreen
-# Ctrl+Q  - Quit
-```
+| **Terminal TUI** | `sudo python3 src/main_tui.py` | SSH, headless | Textual |
+| **Standalone** | `python3 src/standalone.py` | Zero dependencies | Python only |
+| **Monitor** | `python3 -m src.monitor` | Quick node check | None |
 
 ---
 
 ## RNS-Meshtastic Gateway
 
-MeshForge provides the **first open-source gateway between Meshtastic and Reticulum (RNS)** mesh networks.
-
-### What is Reticulum (RNS)?
-
-[Reticulum](https://reticulum.network/) is a cryptographic networking stack designed for reliable communication over high-latency, low-bandwidth links. Unlike Meshtastic, RNS provides:
-- **Strong cryptographic identities** - Every node has a unique, verifiable identity
-- **End-to-end encryption** - Messages encrypted from source to destination
-- **Protocol flexibility** - Works over LoRa, TCP, UDP, I2P, serial, and more
-- **Application ecosystem** - NomadNet, Sideband, LXMF messaging
+MeshForge provides the **first open-source gateway between Meshtastic and Reticulum (RNS)**.
 
 ### Gateway Architecture
 
@@ -323,169 +287,77 @@ MeshForge provides the **first open-source gateway between Meshtastic and Reticu
        │                            │                           │
    Meshtastic                  Unified Node                 NomadNet
      Nodes                       Tracker                    Sideband
-                                   │                         LXMF
-                              Interactive
-                                 Map
 ```
 
 ### Gateway Features
 
 | Feature | Description |
 |---------|-------------|
-| **Bidirectional Messaging** | Route messages between Meshtastic and RNS networks |
-| **Unified Node Map** | See all nodes from both networks on one interactive map |
-| **Telemetry Sharing** | Share position, battery, and sensor data across networks |
-| **Configuration GUI** | Full graphical editor for gateway settings |
-| **RNS Config Editor** | Built-in editor for `~/.reticulum/config` with interface templates |
-| **Connection Testing** | Verify connectivity to both networks before bridging |
-
-### Supported RNS Interfaces
-
-MeshForge can configure RNS to communicate over:
-- **TCP/UDP** - Internet or local network connectivity
-- **RNode** - LoRa radio with RNode firmware (separate from Meshtastic)
-- **Serial** - Direct serial connections
-- **AutoInterface** - Automatic peer discovery on local networks
-- **I2P** - Anonymous network overlay (future)
-
-### Quick Gateway Setup
-
-```bash
-# 1. Install RNS ecosystem
-pip3 install rns lxmf nomadnet
-
-# 2. Launch MeshForge
-sudo python3 src/main_gtk.py
-
-# 3. Navigate to "Reticulum (RNS)" panel
-# 4. Click "Install All" to install RNS components
-# 5. Click "Config Editor" to set up RNS interfaces
-# 6. Click "Configure Gateway" to set bridge parameters
-# 7. Click "Start" to activate the gateway
-# 8. View unified nodes in "Node Map" panel
-```
+| **Bidirectional Messaging** | Route messages between networks |
+| **Unified Node Map** | All nodes on one interactive map |
+| **Telemetry Sharing** | Share position and battery data |
+| **Configuration GUI** | Full graphical settings editor |
+| **RNS Config Editor** | Built-in ~/.reticulum/config editor |
 
 ---
 
 ## AREDN Integration
 
-MeshForge provides **comprehensive AREDN (Amateur Radio Emergency Data Network)** integration for high-bandwidth mesh networking on amateur radio frequencies.
+MeshForge provides **comprehensive AREDN integration** for high-bandwidth amateur radio mesh networking:
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                      AREDN INTEGRATION                               │
-├─────────────────────────────────────────────────────────────────────┤
+┌───────────────────────────────────────────────────────────────────────┐
+│                        AREDN INTEGRATION                              │
+├───────────────────────────────────────────────────────────────────────┤
 │                                                                       │
-│   ┌───────────────┐    ┌───────────────┐    ┌───────────────┐       │
-│   │   Hardware    │    │   MikroTik    │    │   Network     │       │
-│   │   Database    │    │   Config      │    │   Simulator   │       │
-│   │   (10+ devs)  │    │   Wizard      │    │   (RF Model)  │       │
-│   └───────┬───────┘    └───────┬───────┘    └───────┬───────┘       │
-│           │                    │                    │               │
-│           └────────────────────┴────────────────────┘               │
-│                               │                                      │
-│                    ┌──────────┴──────────┐                          │
-│                    │  AREDN Advanced     │                          │
-│                    │  Configuration      │                          │
-│                    │  Plugin             │                          │
-│                    └─────────────────────┘                          │
+│   ┌───────────────┐    ┌───────────────┐    ┌───────────────┐        │
+│   │   Hardware    │    │   MikroTik    │    │   Network     │        │
+│   │   Database    │    │   Config      │    │   Simulator   │        │
+│   │   (10+ devs)  │    │   Wizard      │    │   (RF Model)  │        │
+│   └───────┬───────┘    └───────┬───────┘    └───────┬───────┘        │
+│           └────────────────────┴────────────────────┘                │
+│                               │                                       │
+│                    ┌──────────┴──────────┐                           │
+│                    │  AREDN Advanced     │                           │
+│                    │  Configuration      │                           │
+│                    └─────────────────────┘                           │
 │                                                                       │
-└─────────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Supported AREDN Hardware
 
-| Manufacturer | Models | Band | Max Power |
-|--------------|--------|------|-----------|
-| **MikroTik** | hAP ac3, hAP ac2, hAP ac lite, mANTBox 52, LHG 5, SXTsq 5 | 5GHz | 25 dBm |
-| **Ubiquiti** | NanoStation M5, Rocket M5, LiteBeam 5AC | 5GHz | 27 dBm |
-| **GL.iNet** | AR750S (Slate) | 2.4/5GHz | 20 dBm |
-
-### Features
-
-| Feature | Description |
-|---------|-------------|
-| **Hardware Database** | 10+ AREDN-compatible devices with full specifications |
-| **MikroTik Config Wizard** | Generate UCI setup scripts for MikroTik routers |
-| **Network Simulator** | Plan network topology with RF propagation modeling |
-| **Link Budget Calculator** | FSPL-based link quality estimation |
-| **Callsign Integration** | Amateur radio callsign management for Part 97 compliance |
-
-### AREDN Advanced Plugin
-
-The `aredn_advanced` plugin provides a full GTK4 interface:
-
-```python
-# Plugin location: plugins/examples/aredn_advanced/
-# Features:
-#   - Hardware Database Browser with filtering
-#   - MikroTik Configuration Generator (UCI commands)
-#   - Network Topology Simulation
-#   - Link Budget Calculator
-```
+| Manufacturer | Models | Band |
+|--------------|--------|------|
+| **MikroTik** | hAP ac3, hAP ac2, mANTBox 52, LHG 5 | 5GHz |
+| **Ubiquiti** | NanoStation M5, Rocket M5, LiteBeam 5AC | 5GHz |
+| **GL.iNet** | AR750S (Slate) | 2.4/5GHz |
 
 ---
 
 ## MeshForge University
 
-MeshForge includes an **integrated learning platform** with courses on mesh networking, RF engineering, and regulatory compliance.
+MeshForge includes an **integrated learning platform**:
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     MESHFORGE UNIVERSITY                             │
-├─────────────────────────────────────────────────────────────────────┤
+┌───────────────────────────────────────────────────────────────────────┐
+│                       MESHFORGE UNIVERSITY                            │
+├───────────────────────────────────────────────────────────────────────┤
 │                                                                       │
-│  📚 COURSES                                                          │
-│  ├── 1. Introduction to Meshtastic                                   │
-│  ├── 2. Understanding LoRa Technology                                │
-│  ├── 3. Mesh Network Architecture                                    │
-│  ├── 4. RF Propagation Fundamentals                                  │
-│  ├── 5. Advanced Deployment Strategies                               │
-│  ├── 6. Security Best Practices                                      │
-│  ├── 7. Troubleshooting Guide                                        │
-│  ├── 8. Building Custom Hardware                                     │
-│  └── 9. Amateur Radio Compliance & Part 97  ⭐ NEW                   │
+│  📚 COURSES                                                           │
+│  ├── 1. Introduction to Meshtastic                                    │
+│  ├── 2. Understanding LoRa Technology                                 │
+│  ├── 3. Mesh Network Architecture                                     │
+│  ├── 4. RF Propagation Fundamentals                                   │
+│  ├── 5. Advanced Deployment Strategies                                │
+│  ├── 6. Security Best Practices                                       │
+│  ├── 7. Troubleshooting Guide                                         │
+│  ├── 8. Building Custom Hardware                                      │
+│  └── 9. Amateur Radio Compliance & Part 97                            │
 │                                                                       │
-│  🎯 FEATURES                                                         │
-│  • Progress tracking with completion percentage                      │
-│  • Interactive quizzes and hands-on labs                             │
-│  • Difficulty levels: Beginner → Intermediate → Advanced             │
-│  • Estimated time for each course                                    │
+│  🎯 Progress tracking • Interactive quizzes • Hands-on labs           │
 │                                                                       │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### Amateur Radio Compliance Course
-
-The **Amateur Radio Compliance & Part 97** course covers FCC regulations for HAM operators:
-
-| Lesson | Topic | Key Content |
-|--------|-------|-------------|
-| 1 | License Classes | Technician, General, Extra privileges |
-| 2 | Encryption Rules | Part 97.113(a)(4) prohibition, exceptions |
-| 3 | Station Identification | Part 97.119 - 10-minute ID requirement |
-| 4 | Frequency Allocations | 70cm, 33cm, 23cm, 13cm band plans |
-| 5 | ARES & RACES | Emergency communications protocols |
-| 6 | Building Compliant Solutions | Dual-mode operation with MeshForge |
-
-### Meshtastic Dual-Mode Operation
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    DUAL-MODE OPERATION                               │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                       │
-│   ISM BAND (Default)              HAM BAND (Licensed)                │
-│   ┌─────────────────┐            ┌─────────────────┐                │
-│   │ • Encryption OK │            │ • NO encryption │                │
-│   │ • 915 MHz (US)  │            │ • 70cm, 33cm,   │                │
-│   │ • No license    │            │   23cm, 13cm    │                │
-│   │ • Power limited │            │ • Higher power  │                │
-│   └─────────────────┘            └─────────────────┘                │
-│                                                                       │
-│   Use MeshForge to configure appropriate mode for your use case      │
-│                                                                       │
-└─────────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -493,64 +365,29 @@ The **Amateur Radio Compliance & Part 97** course covers FCC regulations for HAM
 ## Features
 
 ### Installation & Setup
-- **One-click meshtasticd installation** from official Meshtastic repos
+- **One-click meshtasticd installation** from official repos
 - **Multiple release channels**: stable, beta, daily, alpha
-- **Automatic dependency resolution**
 - **Config templates** for common hardware setups
 
 ### Hardware Detection
-- **Auto-detect USB LoRa devices**: CH340/CH341, CP2102, ESP32-S3, nRF52840
+- **USB LoRa devices**: CH340/CH341, CP2102, ESP32-S3, nRF52840
 - **SPI HAT detection**: Waveshare, Adafruit, MeshAdv
-- **I2C device scanning**: OLED displays, sensors, GPS
-- **Interface enablement**: SPI, I2C via raspi-config
+- **I2C scanning**: OLED displays, sensors, GPS
 
 ### Radio Configuration
 - **Full radio settings panel** with all Meshtastic options
-- **Device settings**: Role, region, preset, hop limit
-- **Position settings**: GPS mode, fixed position, broadcast intervals
-- **Power settings**: TX power, low power mode
-- **MQTT settings**: Server, encryption, JSON output
-- **Telemetry settings**: Device metrics, environment sensors
+- **Device/Position/Power/MQTT/Telemetry settings**
 
 ### Service Management
 - **Start/Stop/Restart** meshtasticd service
-- **View live logs** with journalctl integration
-- **Enable/disable** boot persistence
-- **Status monitoring** with uptime tracking
-
-### System Monitoring
-- **Real-time dashboard**: CPU, memory, disk, temperature
-- **Node list** with hardware info and last heard times
-- **Message sending**: Broadcast and direct messages
-- **Connection status** indicator
+- **Live logs** with journalctl integration
+- **Boot persistence** management
 
 ---
 
 ## Frequency Slot Calculator
 
-MeshForge includes a **Frequency Slot Calculator** that uses the same djb2 hash algorithm as the Meshtastic firmware. This helps you understand which frequency your channel will use.
-
-### How It Works
-
-1. Enter a **channel name** (e.g., "LongFast", "MyMesh")
-2. Select your **region** (US, EU_868, EU_433, etc.)
-3. Select your **modem preset** (LONG_FAST, MEDIUM_SLOW, etc.)
-4. Click **Calculate** to see:
-   - Hash value (djb2)
-   - Frequency slot number
-   - Total available slots
-   - Center frequency in MHz
-
-### Example Calculations
-
-| Channel Name | Region | Preset | Slot | Frequency |
-|-------------|--------|--------|------|-----------|
-| LongFast | US | LONG_FAST | 20 | 906.875 MHz |
-| MediumSlow | US | MEDIUM_SLOW | 52 | 914.875 MHz |
-| ShortFast | US | SHORT_FAST | 68 | 918.875 MHz |
-| MyMesh | US | LONG_FAST | 41 | 912.125 MHz |
-
-### Algorithm
+Uses the same **djb2 hash algorithm** as Meshtastic firmware:
 
 ```python
 def djb2_hash(channel_name):
@@ -563,358 +400,81 @@ slot = djb2_hash(channel_name) % num_channels
 frequency = freq_start + (bandwidth / 2000) + (slot * bandwidth / 1000)
 ```
 
+| Channel Name | Region | Preset | Slot | Frequency |
+|-------------|--------|--------|------|-----------|
+| LongFast | US | LONG_FAST | 20 | 906.875 MHz |
+| MediumSlow | US | MEDIUM_SLOW | 52 | 914.875 MHz |
+
 ---
 
 ## RF Engineering Tools
 
-RF engineering encompasses simulation software, test instruments, and analysis tools for designing wireless systems. MeshForge provides **field-ready RF analysis** for mesh network planning.
-
-### Core vs Plugin Strategy
-
-**Principle: Don't break code. Safety over features.**
-
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     RF TOOLS: CORE vs PLUGIN                         │
-├─────────────────────────────────────────────────────────────────────┤
+┌───────────────────────────────────────────────────────────────────────┐
+│                    RF TOOLS: CORE vs PLUGIN                           │
+├───────────────────────────────────────────────────────────────────────┤
 │                                                                       │
-│  ✅ CORE (Integrated)              🔧 PLUGIN (Optional)              │
-│  ┌─────────────────────┐          ┌─────────────────────┐           │
-│  │ • Haversine distance│          │ • Site Planner API  │           │
-│  │ • Fresnel radius    │          │ • External elevation│           │
-│  │ • FSPL calculation  │          │ • Coverage heatmaps │           │
-│  │ • Earth bulge       │          │ • APRS integration  │           │
-│  │ • Freq slot calc    │          │ • Antenna modeling  │           │
-│  │ 13 tests, no deps   │          │ External APIs/deps  │           │
-│  └─────────────────────┘          └─────────────────────┘           │
+│  ✅ CORE (Integrated)              🔧 PLUGIN (Optional)               │
+│  ┌─────────────────────┐          ┌─────────────────────┐            │
+│  │ • Haversine distance│          │ • Site Planner API  │            │
+│  │ • Fresnel radius    │          │ • External elevation│            │
+│  │ • FSPL calculation  │          │ • Coverage heatmaps │            │
+│  │ • Earth bulge       │          │ • APRS integration  │            │
+│  │ 13 tests, no deps   │          │ External APIs/deps  │            │
+│  └─────────────────────┘          └─────────────────────┘            │
 │                                                                       │
-│  Safety: Core functions work offline with no external dependencies   │
+│  Safety: Core functions work offline with no dependencies             │
 │                                                                       │
-└─────────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
-| Category | Core (Integrated) | Plugin (Optional) |
-|----------|-------------------|-------------------|
-| **Distance** | Haversine (tested) | GPS tracking APIs |
-| **Clearance** | Fresnel, Earth bulge (tested) | Terrain elevation APIs |
-| **Loss** | FSPL formula (tested) | ITM/Longley-Rice models |
-| **Planning** | Freq slot calculator | Site Planner, coverage maps |
-| **Why** | Works offline, no deps | Needs network, external APIs |
-
-### Core Calculations (13 Tested Functions)
+### Core Calculations
 
 | Function | Formula | Use Case |
 |----------|---------|----------|
-| **Haversine Distance** | Great-circle distance | Node-to-node range |
-| **Fresnel Radius** | `17.3 × √(d/4f)` meters | Clearance planning |
-| **Free Space Path Loss** | `20log(d) + 20log(f) + 20log(4π/c)` dB | Link budget |
+| **Haversine** | Great-circle distance | Node-to-node range |
+| **Fresnel** | `17.3 × √(d/4f)` meters | Clearance planning |
+| **FSPL** | `20log(d) + 20log(f) + 20log(4π/c)` dB | Link budget |
 | **Earth Bulge** | `d²/12.75` meters | Long-distance LOS |
-
-### Line of Sight Calculator
-
-Integrated LOS analysis with elevation data:
-
-```bash
-# From GUI: Radio Config → RF Tools → Line of Sight
-
-# Enter two coordinates:
-#   Point A: 19.7297, -155.0900 (Hilo)
-#   Point B: 21.3069, -157.8583 (Honolulu)
-
-# Results:
-#   Distance:     337.2 km
-#   Earth Bulge:  2,234 m (at midpoint)
-#   Fresnel 60%:  89.3 m (915 MHz)
-#   FSPL:         128.4 dB
-#   Status:       OBSTRUCTED (terrain blocks LOS)
-```
-
-### Visualization
-
-MeshForge generates **elevation profile charts** showing:
-- Terrain elevation along path
-- Line of sight (direct path)
-- 60% Fresnel zone (minimum clearance)
-- Earth curvature effect
-- Obstruction points
-
-### External Tools (Plugin Candidates)
-
-These require network access or external dependencies—good candidates for **optional plugins**:
-
-| Tool | Status | Notes |
-|------|--------|-------|
-| [site.meshtastic.org](https://site.meshtastic.org/) | Link only | ITM/Longley-Rice, coverage maps |
-| Open-Elevation API | Optional | Terrain profiles (network required) |
-| **NanoVNA** | 📋 Planned | Antenna tuning, SWR, Smith chart |
-| APRS-IS | 📋 Planned | Position reporting for HAMs |
-
-**Why plugins?** These fail if network is down. Core RF tools work offline.
-
-### What MeshForge Doesn't Replace
-
-MeshForge provides **field planning tools**, not full RF simulation:
-
-| Need | Professional Tool | MeshForge Approach |
-|------|-------------------|-------------------|
-| Antenna design | HFSS, CST, FEKO | Out of scope (licensed CAD) |
-| Circuit simulation | ADS, AWR, Keysight | Out of scope (hardware-specific) |
-| Antenna tuning | NanoVNA, PicoVNA | 📋 **Plugin planned** (USB serial) |
-| Spectrum analysis | SDR, TinySA | 📋 Future consideration |
-| EMC compliance | Pre-compliance gear | Out of scope (regulatory) |
-
----
-
-## Gateway Diagnostic Wizard
-
-MeshForge includes an **AI-like diagnostic wizard** to help you get RNS and Meshtastic gateway working:
-
-```bash
-# Run the gateway setup wizard
-python3 src/cli/diagnose.py --gateway
-
-# Or from the GUI: RNS Panel → "🔧 Diagnose" button
-```
-
-### What It Checks
-
-```
-============================================================
-  🔧 MESHFORGE GATEWAY SETUP WIZARD
-============================================================
-
-✓/✗ Python Version (3.8+ required)
-✓/✗ Required Packages (meshtastic, rns, lxmf)
-✓/✗ RNS Installation and Config
-✓/✗ rnsd Daemon Status
-✓/✗ Meshtastic Library
-✓/✗ Meshtastic_Interface.py
-✓/✗ Serial Ports (USB devices)
-✓/✗ TCP Port 4403 (meshtasticd)
-✓/✗ Bluetooth LE Availability
-
-→ Provides actionable fix hints for each failure
-→ Recommends best connection type (Serial/TCP/BLE)
-```
 
 ---
 
 ## Plugin System
 
-MeshForge features an **extensible plugin architecture** for adding new protocols, integrations, and tools:
-
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                      PLUGIN ARCHITECTURE                             │
-├─────────────────────────────────────────────────────────────────────┤
+┌───────────────────────────────────────────────────────────────────────┐
+│                        PLUGIN ARCHITECTURE                            │
+├───────────────────────────────────────────────────────────────────────┤
 │                                                                       │
 │   PluginManager                                                       │
 │        │                                                              │
-│        ├── register(plugin_class)     # Add plugin to registry       │
+│        ├── register(plugin_class)     # Add plugin to registry        │
 │        ├── activate(name)             # Enable plugin                 │
 │        ├── deactivate(name)           # Disable plugin                │
-│        └── list_by_type(type)         # Filter by category           │
+│        └── list_by_type(type)         # Filter by category            │
 │                                                                       │
 │   Plugin Types:                                                       │
 │   ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐│
 │   │ PanelPlugin  │ │ Integration  │ │ ToolPlugin   │ │ Protocol     ││
 │   │ (UI panels)  │ │   Plugin     │ │ (utilities)  │ │   Plugin     ││
-│   │              │ │ (bridges)    │ │              │ │ (mesh types) ││
 │   └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘│
 │                                                                       │
-└─────────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────────────┘
 ```
-
-### Plugin Types
-
-| Type | Base Class | Purpose | Example |
-|------|------------|---------|---------|
-| **Panel** | `PanelPlugin` | Add new UI tabs/views | Custom dashboard |
-| **Integration** | `IntegrationPlugin` | Bridge to external services | MQTT, meshing-around |
-| **Tool** | `ToolPlugin` | Add utility functions | RF calculators |
-| **Protocol** | `ProtocolPlugin` | Support new mesh protocols | MeshCore |
-
-### Available Plugins
-
-| Plugin | Type | Status | Features |
-|--------|------|--------|----------|
-| **mqtt-bridge** | Integration | 🔧 Stub | Home Assistant, Node-RED, custom dashboards |
-| **meshcore** | Protocol | 🔧 Stub | 64-hop routing, fixed repeaters, low congestion |
-| **meshing-around** | Integration | 🔧 Stub | Games (DopeWars), alerts, LLM chat, asset tracking |
-
-### Using Plugins
-
-```python
-from utils.plugins import PluginManager
-from plugins.mqtt_bridge import MQTTBridgePlugin
-from plugins.meshcore import MeshCorePlugin
-
-# Initialize manager
-manager = PluginManager()
-
-# Register plugins
-manager.register(MQTTBridgePlugin)
-manager.register(MeshCorePlugin)
-
-# Activate a plugin
-manager.activate("mqtt-bridge")
-
-# List all protocol plugins
-protocols = manager.list_by_type(PluginType.PROTOCOL)
-```
-
-### Creating a Plugin
-
-```python
-from utils.plugins import IntegrationPlugin, PluginMetadata, PluginType
-
-class MyPlugin(IntegrationPlugin):
-    @staticmethod
-    def get_metadata() -> PluginMetadata:
-        return PluginMetadata(
-            name="my-plugin",
-            version="1.0.0",
-            description="My custom integration",
-            author="Your Name",
-            plugin_type=PluginType.INTEGRATION,
-            dependencies=["some-package"],
-        )
-
-    def activate(self) -> None:
-        # Called when plugin is enabled
-        pass
-
-    def deactivate(self) -> None:
-        # Called when plugin is disabled
-        pass
-
-    def connect(self) -> bool:
-        # IntegrationPlugin: connect to external service
-        return True
-
-    def disconnect(self) -> None:
-        # IntegrationPlugin: disconnect from service
-        pass
-```
-
-### MeshCore vs Meshtastic
-
-MeshCore is an **alternative mesh protocol** with different design goals:
-
-| Feature | Meshtastic | MeshCore |
-|---------|------------|----------|
-| Routing | Client flooding | Fixed repeaters |
-| Max Hops | 7 | 64 |
-| Radio Congestion | Higher | Lower |
-| Battery Life | Good | Better |
-| Compatibility | Wide | Growing |
-
-**Note**: MeshCore and Meshtastic are **not directly compatible** at the radio level, but both can use **Reticulum (RNS)** as a unifying transport layer.
 
 ### Example Plugins
 
-MeshForge includes several ready-to-use example plugins in `plugins/examples/`:
-
 | Plugin | Type | Description |
 |--------|------|-------------|
-| **aredn_advanced** | Panel | AREDN hardware database, MikroTik config, network simulation |
-| **rf_calculator** | Tool | Essential RF calculations (FSPL, EIRP, sensitivity) |
+| **aredn_advanced** | Panel | AREDN hardware database, network simulation |
+| **rf_calculator** | Tool | Essential RF calculations |
 | **band_plan** | Tool | Amateur radio band plan reference |
-| **ai_assistant** | Integration | AI-powered mesh network assistant |
-
----
-
-## Auto-Claude Review System
-
-MeshForge includes an **automated code review system** that ensures code quality and security through AI-powered analysis.
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    AUTO-CLAUDE REVIEW SYSTEM                         │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                       │
-│  🔍 REVIEW PRINCIPLES                                                │
-│  ├── Security First: No shell=True, validate all inputs              │
-│  ├── Error Handling: Specific exceptions, no bare except             │
-│  ├── Testing: TDD approach, verify before commit                     │
-│  ├── Documentation: Clear docstrings and type hints                  │
-│  └── Architecture: Single responsibility, clean separation           │
-│                                                                       │
-│  📊 AUTOMATED CHECKS                                                 │
-│  • Security vulnerability scanning                                   │
-│  • Code complexity analysis                                          │
-│  • Import validation and dead code detection                         │
-│  • Style consistency verification                                    │
-│                                                                       │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### Security Review Standards
-
-| Category | Requirement | Implementation |
-|----------|-------------|----------------|
-| **Subprocess** | No `shell=True` | Use `subprocess.run()` with list args |
-| **Input Validation** | Sanitize all user input | Regex validation, path checking |
-| **Exception Handling** | Specific exception types | No bare `except:` clauses |
-| **Secrets** | No hardcoded credentials | Environment variables only |
-| **Dependencies** | Minimal attack surface | Only necessary packages |
-
-### Using the Review System
-
-```python
-from utils.auto_review import CodeReviewer
-
-reviewer = CodeReviewer()
-
-# Review a file
-issues = reviewer.review_file("src/new_feature.py")
-
-# Review entire codebase
-report = reviewer.review_codebase("src/")
-
-# Generate security report
-security = reviewer.security_audit()
-```
-
----
-
-## Lightweight Monitor (No Sudo)
-
-Need a quick way to check your mesh network without root access? Use the standalone monitor:
-
-```bash
-# Quick node list (no sudo required!)
-python3 -m src.monitor
-
-# Continuous monitoring
-python3 -m src.monitor --watch
-
-# JSON output for scripting
-python3 -m src.monitor --json
-
-# Connect to remote meshtasticd
-python3 -m src.monitor --host 192.168.1.100 --port 4403
-
-# Custom update interval
-python3 -m src.monitor --watch --interval 10
-```
-
-### Features
-- **No root/sudo required** - runs as regular user
-- **Connects via TCP** to meshtasticd (port 4403)
-- **Real-time node updates** with last heard times
-- **JSON output** for integration with other tools
-- **Config persistence** in `~/.config/meshtastic-monitor/`
 
 ---
 
 ## Simulation Mode
 
-MeshForge includes a **hardware simulator** for testing RF and mesh features without physical devices. Perfect for development, demos, and learning.
-
-### Enabling Simulation
-
-Go to **Settings → Simulation Mode** and select:
+MeshForge includes a **hardware simulator** for testing without physical devices:
 
 | Mode | Description |
 |------|-------------|
@@ -927,115 +487,34 @@ Go to **Settings → Simulation Mode** and select:
 
 | Preset | Nodes | Description |
 |--------|-------|-------------|
-| **Hawaii Islands** | 8 | Realistic inter-island links (Hilo, Kona, Maui, Oahu, Mauna Kea) |
-| **Generic Test** | 5 | Basic test nodes at origin coordinates |
-
-### RF Simulation Features
-
-```python
-from utils.simulator import RFSimulator
-
-rf = RFSimulator(frequency_mhz=915.0)
-
-# Simulate a 10 km path
-result = rf.simulate_path(
-    distance_km=10.0,
-    terrain="suburban",
-    weather="clear"
-)
-
-print(f"FSPL: {result.fspl_db:.1f} dB")
-print(f"Link Quality: {result.link_quality}")
-print(f"Estimated SNR: {result.estimated_snr:.1f} dB")
-```
-
-### Mesh Simulation Features
-
-```python
-from utils.simulator import get_mesh_simulator, SimulationMode
-
-sim = get_mesh_simulator()
-sim.enable(SimulationMode.MESH_NETWORK)
-
-# Get simulated nodes
-for node in sim.get_nodes():
-    print(f"{node.short_name}: {node.latitude}, {node.longitude}")
-
-# Send a simulated message
-sim.send_message("!sim00001", "Hello simulated mesh!")
-
-# Get messages
-for msg in sim.get_messages():
-    print(f"{msg.from_node}: {msg.message}")
-```
-
-### Test Coverage
-
-The simulator has **38 tests** covering:
-- RF path loss calculations (FSPL, Fresnel, Earth bulge)
-- Terrain and weather effects
-- Mesh node management
-- Message routing simulation
+| **Hawaii Islands** | 8 | Inter-island links (Hilo, Kona, Maui, Oahu) |
+| **Generic Test** | 5 | Basic test nodes |
 
 ---
 
 ## Supported Hardware
 
-### Raspberry Pi Models
-| Model | Status | Notes |
-|-------|--------|-------|
-| Pi 5 | ✅ Full Support | Best performance |
-| Pi 4 | ✅ Full Support | Recommended |
-| Pi 3 | ✅ Full Support | Good performance |
-| Pi Zero 2 W | ✅ Full Support | Compact option |
-| Pi Zero W | ⚠️ Limited | Works, slower |
-| Pi 400 | ✅ Full Support | Desktop form factor |
-
-### ClockworkPi Devices
-
-Portable Linux terminals with modular design. See [ClockworkPi Integration Guide](.claude/hardware/clockworkpi.md).
-
-| Device | Display | Core Module | Status |
-|--------|---------|-------------|--------|
-| **uConsole** | 1280×720 5" | CM4, A06, A04, R01 | ✅ Full Support |
-| **DevTerm** | 1280×480 6.8" | CM4, A06, A04, R01 | ✅ Full Support |
-
-**Recommended setup**: CM4 module + [HackerGadgets All-In-One Board](https://hackergadgets.com/products/uconsole-rtl-sdr-lora-gps-rtc-usb-hub-all-in-one-extension-board)
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  HACKERGADGETS ALL-IN-ONE EXPANSION BOARD                       │
-├─────────────────────────────────────────────────────────────────┤
-│  LoRa:    SX1262 (860-960MHz, 22dBm) - Meshtastic ready         │
-│  SDR:     RTL2832U (100kHz-1.74GHz) - Spectrum analysis         │
-│  GPS:     Multi-mode (GPS/BDS/GNSS) - Position tracking         │
-│  RTC:     PCF85063A with CR1220 - Timekeeping                   │
-│  USB:     Hub with Type-A, Type-C ports                         │
-└─────────────────────────────────────────────────────────────────┘
-```
+### Raspberry Pi
+| Model | Status |
+|-------|--------|
+| Pi 5, Pi 4, Pi 3 | ✅ Full Support |
+| Pi Zero 2 W | ✅ Full Support |
+| Pi Zero W | ⚠️ Limited |
 
 ### USB LoRa Devices
 | Device | Chip | Status |
 |--------|------|--------|
-| MeshToad | ESP32-S3 | ✅ Auto-detected |
-| MeshTadpole | ESP32-S3 | ✅ Auto-detected |
-| MeshStick | nRF52840 | ✅ Auto-detected |
+| MeshToad, MeshTadpole | ESP32-S3 | ✅ Auto-detected |
 | Heltec V3 | ESP32-S3 | ✅ Auto-detected |
-| RAK4631 | nRF52840 | ✅ Auto-detected |
+| RAK4631, MeshStick | nRF52840 | ✅ Auto-detected |
 | T-Beam | ESP32 | ✅ Auto-detected |
 
 ### SPI LoRa HATs
 | HAT | Chip | Status |
 |-----|------|--------|
-| MeshAdv-Pi-Hat | SX1262 | ✅ Supported |
-| MeshAdv-Mini | SX1262 | ✅ Supported |
+| MeshAdv-Pi-Hat, MeshAdv-Mini | SX1262 | ✅ Supported |
 | Waveshare SX126x | SX1262/SX1268 | ✅ Supported |
 | Adafruit RFM9x | RFM95/96 | ✅ Supported |
-
-### I2C Devices
-- **Displays**: SSD1306, SH1106 OLED
-- **Sensors**: BME280, BME680
-- **GPS**: NEO-6M, NEO-7M, NEO-8M
 
 ---
 
@@ -1043,13 +522,11 @@ Portable Linux terminals with modular design. See [ClockworkPi Integration Guide
 
 ### Prerequisites
 
-**Raspberry Pi OS (Bookworm) or Debian 12+**
-
 ```bash
 # Update system
 sudo apt update && sudo apt upgrade -y
 
-# Install GTK4 and libadwaita (for desktop UI)
+# Install GTK4 (for desktop UI)
 sudo apt install -y python3-gi python3-gi-cairo \
     gir1.2-gtk-4.0 libadwaita-1-0 gir1.2-adw-1
 
@@ -1063,81 +540,19 @@ pip3 install rich textual flask meshtastic --break-system-packages
 git clone https://github.com/Nursedude/meshforge.git
 cd meshforge
 
-# Test the installation
+# Verify installation
 python3 -c "from src.__version__ import __version__; print(f'MeshForge v{__version__}')"
 
 # Launch
 sudo python3 src/launcher.py
 ```
 
-### Enable SPI and I2C (for HATs)
+### Enable SPI/I2C (for HATs)
 
 ```bash
-# Enable SPI
 sudo raspi-config nonint do_spi 0
-
-# Enable I2C
 sudo raspi-config nonint do_i2c 0
-
-# Reboot to apply
 sudo reboot
-```
-
----
-
-## Usage Examples
-
-### Install meshtasticd
-
-```bash
-# Launch MeshForge
-sudo python3 src/launcher.py
-
-# Navigate to: Install/Update → Install meshtasticd
-# Select release channel (stable recommended)
-# Follow prompts
-```
-
-### Configure a Radio
-
-```bash
-# In MeshForge GTK or Web UI:
-# 1. Go to "Radio Config" tab
-# 2. Click "Load Current Config"
-# 3. Adjust settings (region, preset, name, etc.)
-# 4. Click "Apply" for each setting
-# 5. Restart service when prompted
-```
-
-### Monitor Your Mesh
-
-```bash
-# Quick check (no sudo)
-python3 -m src.monitor
-
-# Output:
-# ╔═══════════════════════════════════════════════════════════╗
-# ║         Meshtastic Node Monitor (No Sudo Required)        ║
-# ╚═══════════════════════════════════════════════════════════╝
-#
-# Connecting to localhost:4403...
-# Connected! My node: !abcd1234
-# Node count: 5
-#
-#   ID           Name             Short  Hardware           Battery  Last Heard
-#   ----         ----             -----  --------           -------  ----------
-#   abcd1234     MyNode           MYND   TBEAM              85%      2m ago *
-#   ef567890     Neighbor1        NBR1   HELTEC_V3          --       15m ago
-```
-
-### Calculate Frequency Slot
-
-```bash
-# In MeshForge GTK UI:
-# 1. Go to "Radio Config" tab
-# 2. Scroll to "Frequency Slot Calculator"
-# 3. Enter channel name, select region/preset
-# 4. Click "Calculate Frequency"
 ```
 
 ---
@@ -1151,93 +566,35 @@ meshforge/
 │   ├── main_gtk.py           # GTK Desktop entry point
 │   ├── main_web.py           # Web UI entry point
 │   ├── main_tui.py           # Terminal TUI entry point
-│   ├── main.py               # Rich CLI entry point
-│   ├── monitor.py            # Lightweight node monitor (no sudo)
+│   ├── standalone.py         # Zero-dependency entry point
 │   ├── __version__.py        # Version info and changelog
 │   │
-│   ├── gtk_ui/
-│   │   ├── app.py            # MeshForgeApp GTK application
-│   │   ├── panels/
-│   │   │   ├── dashboard.py  # System dashboard
-│   │   │   ├── radio_config.py # Radio configuration + freq calculator
-│   │   │   ├── rns.py        # RNS/Reticulum management
-│   │   │   ├── aredn.py      # AREDN mesh network panel
-│   │   │   ├── map.py        # Unified node map (RNS + Meshtastic)
-│   │   │   ├── university.py # MeshForge University learning panel
-│   │   │   ├── hardware.py   # Hardware detection
-│   │   │   ├── install.py    # Installation panel
-│   │   │   └── ...
-│   │   └── dialogs/
-│   │       ├── gateway_config.py # Gateway settings editor
-│   │       └── rns_config.py     # RNS config file editor
+│   ├── gtk_ui/               # GTK4 Desktop Interface
+│   │   ├── app.py            # Main application
+│   │   └── panels/           # Feature panels
 │   │
-│   ├── gateway/
-│   │   ├── rns_bridge.py     # RNS-Meshtastic gateway bridge
-│   │   ├── node_tracker.py   # Unified node tracking
-│   │   └── config.py         # Gateway configuration
+│   ├── gateway/              # RNS-Meshtastic Bridge
+│   │   ├── rns_bridge.py     # Gateway bridge service
+│   │   └── node_tracker.py   # Unified node tracking
 │   │
-│   ├── university/
-│   │   ├── courses.py        # Course definitions (9 courses)
-│   │   └── progress.py       # Learning progress tracking
+│   ├── university/           # Learning platform
+│   │   └── courses.py        # 9 courses
 │   │
-│   ├── config/
-│   │   ├── hardware.py       # Hardware detection logic
-│   │   ├── radio_config.py   # CLI-based radio config
-│   │   └── config_file_manager.py # YAML config management
+│   ├── utils/                # Shared utilities
+│   │   ├── rf.py             # RF calculations
+│   │   ├── rf_fast.pyx       # Cython-optimized RF
+│   │   ├── common.py         # Centralized settings
+│   │   ├── auto_review.py    # Code review system
+│   │   └── aredn_hardware.py # AREDN integration
 │   │
-│   ├── monitoring/
-│   │   └── node_monitor.py   # Node tracking via TCP
-│   │
-│   ├── services/
-│   │   └── systemd.py        # Service management
-│   │
-│   ├── tools/
-│   │   ├── network.py        # Network diagnostics
-│   │   └── rf_tools.py       # RF calculations
-│   │
-│   ├── utils/
-│   │   ├── system.py         # System utilities
-│   │   ├── cli.py            # CLI path detection
-│   │   ├── emoji.py          # Terminal emoji support
-│   │   ├── rf.py             # RF calculations (tested)
-│   │   ├── plugins.py        # Plugin architecture
-│   │   ├── device_scanner.py # USB/Serial port scanner (tested)
-│   │   ├── gateway_diagnostic.py  # Gateway setup wizard
-│   │   ├── simulator.py      # RF & mesh hardware simulator (tested)
-│   │   ├── aredn.py          # AREDN mesh network utilities
-│   │   ├── aredn_hardware.py # AREDN hardware database & config
-│   │   └── auto_review.py    # Auto-Claude code review system
-│   │
-│   └── plugins/              # Extensible plugin system
-│       ├── mqtt_bridge.py    # MQTT integration (stub)
-│       ├── meshcore.py       # MeshCore protocol (stub)
-│       └── meshing_around.py # Bot framework (stub)
+│   └── plugins/              # Plugin system
+│       ├── mqtt_bridge.py    # MQTT (stub)
+│       └── meshcore.py       # MeshCore (stub)
 │
-├── plugins/
-│   └── examples/             # Example plugins ready to use
-│       ├── aredn_advanced/   # AREDN advanced configuration panel
-│       ├── rf_calculator/    # RF calculation tools
-│       ├── band_plan/        # Amateur radio band plan reference
-│       └── ai_assistant/     # AI-powered network assistant
-│
-├── tests/
-│   ├── test_security.py      # Security validation tests (24)
-│   ├── test_rf_utils.py      # RF calculation tests (13)
-│   ├── test_gateway_diagnostic.py  # Diagnostic tests (18)
-│   ├── test_plugins.py       # Plugin architecture tests (15)
-│   ├── test_device_scanner.py # Device scanner tests (19)
-│   └── test_simulator.py     # Hardware simulation tests (38)
-│
-├── assets/
-│   ├── shaka.svg             # Shaka icon (detailed)
-│   └── shaka-simple.svg      # Shaka icon (simple, gradient)
-│
-├── web/
-│   ├── node_map.html         # Interactive Leaflet map
-│   └── los_visualization.html # LOS profile visualization
-│
-├── templates/                 # Config templates
-├── .claude/                   # Development notes
+├── plugins/examples/         # Example plugins
+├── tests/                    # 127 tests
+├── assets/                   # Icons and images
+├── ARCHITECTURE.md           # AI self-audit report
 └── README.md
 ```
 
@@ -1245,221 +602,86 @@ meshforge/
 
 ## Version History
 
-### v4.3.0 (2026-01-05) - AREDN Integration & Amateur Radio Compliance
+### v0.4.3-beta (2026-01-05) - Current
 
-- **NEW**: AREDN (Amateur Radio Emergency Data Network) Integration
-  - Hardware database with 10+ supported devices (MikroTik, Ubiquiti, GL.iNet)
-  - MikroTik configuration wizard generating UCI setup scripts
-  - Network simulator with RF propagation modeling (FSPL)
-  - Link budget calculator for planning deployments
-  - Callsign integration for Part 97 compliance
-- **NEW**: AREDN Advanced Configuration Plugin
-  - Hardware Database Browser with filtering by manufacturer/band
-  - MikroTik Configuration Generator with validation
-  - Network Topology Simulation with Graphviz export
-  - Link Budget Calculator with distance/quality estimation
-- **NEW**: Amateur Radio Compliance & Part 97 Course
-  - License classes overview (Technician, General, Extra)
-  - Part 97.113(a)(4) encryption rules and exceptions
-  - Part 97.119 station identification requirements
-  - Frequency allocations for 70cm, 33cm, 23cm, 13cm bands
-  - ARES vs RACES emergency communications protocols
-  - Building compliant Meshtastic solutions with dual-mode operation
-- **NEW**: Auto-Claude Code Review System
-  - Automated security vulnerability scanning
-  - Code complexity analysis
-  - Import validation and dead code detection
-  - Style consistency verification
-- **NEW**: Example Plugins Directory
-  - `aredn_advanced` - Full AREDN configuration panel
-  - `rf_calculator` - Essential RF calculations
-  - `band_plan` - Amateur radio band plan reference
-  - `ai_assistant` - AI-powered network assistant
-- **IMPROVED**: README with better graphics and comprehensive documentation
-- **IMPROVED**: Shaka icon with gradient for better visibility
+- **NEW**: Standalone boot mode with zero external dependencies
+- **NEW**: AREDN Integration with hardware database
+- **NEW**: Amateur Radio Compliance & Part 97 course
+- **NEW**: Auto-Claude code review system
+- **NEW**: AI self-audit architecture documentation
+- **IMPROVED**: Subprocess timeout parameters for reliability
+- **IMPROVED**: Centralized SettingsManager to reduce code duplication
 
-### v4.2.0 (2026-01-03) - Unified Node Map & RNS Integration
-- **NEW**: Unified Node Map Panel
-  - Shows nodes from both Meshtastic AND RNS networks
-  - Leaflet.js interactive map with WebKit or browser display
-  - Filter by network type, online status
-  - Real-time statistics and auto-refresh
-  - Node markers with popups showing name, network, status, position
-- **NEW**: RNS Configuration Editor
-  - Full-featured editor for ~/.reticulum/config
-  - One-click interface templates: TCP, UDP, RNode, Auto-discovery
-  - Syntax validation and helpful error messages
-  - Default configuration template with all interface types
-  - Insert templates for quick setup
+### v4.2.x (2026-01-03-04)
+
+- **NEW**: Unified Node Map (Meshtastic + RNS)
+- **NEW**: RNS Configuration Editor with templates
 - **NEW**: Gateway Configuration Dialog
-  - Complete gateway settings editor
-  - Meshtastic connection settings (host, port, channel)
-  - RNS settings (config dir, identity, propagation)
-  - Telemetry sharing options
-  - Message routing rules
-  - Export/Import configuration
+- **SECURITY**: Fixed command injection vulnerabilities
 
-### v4.1.0 (2026-01-03) - Map, Updates & RF Tools
+### v4.1.x (2026-01-03)
+
 - **NEW**: Mesh Network Map with Leaflet.js
-  - Interactive map showing node positions
-  - Color-coded markers (green=my node, blue=online, orange=stale, gray=offline)
-  - Click nodes for detailed popups (battery, SNR, hardware, altitude)
-  - Auto-zoom to fit all nodes
 - **NEW**: RF Line of Sight Calculator
-  - Built-in LOS calculator with elevation data from Open-Elevation API
-  - Calculates: distance, earth bulge, Fresnel zone, FSPL
-  - Web-based visualization with Chart.js elevation profile
-  - Shows terrain, LOS line, 60% Fresnel zone, earth curvature
-  - Status indicators: Clear/Marginal/Obstructed
-- **NEW**: Settings Panel with Dark Mode
-  - Dark/Light mode toggle with instant theme switching
-  - Compact mode for smaller screens
-  - Auto-refresh and interval settings
-  - Settings persisted to ~/.config/meshforge/settings.json
-- **NEW**: In-App Config File Editor
-  - Full YAML editor built into Config File Manager
-  - Save and Revert buttons with change tracking
-  - Unsaved changes indicator
-  - Option to use terminal editor (nano) if preferred
 - **NEW**: Version Checker & Updates tab
-  - Check installed versions of meshtasticd, CLI, firmware
-  - Compare against latest available versions
-  - Update availability notifications
-- **NEW**: Desktop Integration
-  - `.desktop` launcher for Raspberry Pi menu (Internet, System Tools)
-  - SVG icon for application menu
-  - Install script: `sudo ./scripts/install-desktop.sh`
-  - Terminal-based sudo authentication for reliable launching
-- **NEW**: Site Planner Integration
-  - Opens [site.meshtastic.org](https://site.meshtastic.org/) for RF coverage planning
-  - Button in Tools → RF Tools section
-  - Uses ITM/Longley-Rice model with NASA SRTM terrain data
-- **NEW**: Frequency Slot Calculator Redesign
-  - All 22 Meshtastic regions supported
-  - Channel Preset dropdown for quick slot selection
-  - Auto-calculated frequency display
-- **FIX**: Device role parsing now handles numeric enum values from CLI
-  - Correctly maps 0=CLIENT, 1=CLIENT_MUTE, 2=ROUTER, etc.
-- **NEW**: `/api/nodes/full` endpoint with rich node data
 
-### v4.0.1 (2026-01-03) - Security & Features
-- **SECURITY**: Replaced `os.system()` with `subprocess.run()`
-- **SECURITY**: Removed `shell=True` from subprocess calls
-- **SECURITY**: Fixed bare except clauses across 12 files
-- **NEW**: Frequency Slot Calculator with djb2 hash algorithm
-- **NEW**: Region and modem preset selection for frequency calculation
-- **IMPROVED**: Better exception handling with specific types
+### v4.0.x (2026-01-03)
 
-### v4.0.0 (2026-01-03) - MeshForge Rebrand
 - **REBRAND**: Project renamed to MeshForge
-- **NEW**: Professional suite branding
-- **NEW**: Enhanced Radio Config parsing
-- **NEW**: USB LoRa device detection
-- **NEW**: Serial port detection for GPS
-
-### v3.2.7 (2026-01-02)
-- Web UI with live dashboard
-- Node and message tabs
-- Password authentication option
+- **NEW**: Frequency Slot Calculator
+- **SECURITY**: Replaced os.system(), removed shell=True
 
 ### v3.x (2025-12-30 - 2026-01-02)
+
 - GTK4 and Textual TUI interfaces
-- Config file manager
-- System diagnostics
+- Config file manager, system diagnostics
 
-### v2.x (2025-12-29)
-- Service management
-- CLI integration
-- Channel presets
+### v2.x - v1.x (2025-11-15 - 2025-12-29)
 
-### v1.x (2025-11-15)
-- Initial release
+- Initial release through service management
 
 ---
 
 ## Roadmap
 
-### ✅ v4.2 - Auto-Update System (Completed in v4.1)
-- [x] Component version detection (meshtasticd, CLI, firmware)
-- [x] Update notifications in Updates tab
-- [ ] One-click updates with rollback
+### Completed ✅
+- [x] GTK4 Desktop UI
+- [x] Unified Node Map
+- [x] RNS-Meshtastic Gateway
+- [x] AREDN Integration
+- [x] Amateur Radio Compliance course
+- [x] Standalone boot mode
 
-### ✅ v4.3 - Desktop Integration (Completed in v4.1)
-- [x] `.desktop` launcher for Pi menu
-- [x] SVG application icon
-- [ ] System tray icon
-- [ ] Autostart on boot option
+### In Progress 🔧
+- [ ] LXMF/NomadNet UI integration
+- [ ] Node firmware flashing
 
-### v4.4 - Site Planner API Integration
-- [x] Link to site.meshtastic.org (completed)
-- [x] Built-in RF Line of Sight calculator
-- [ ] Embed Site Planner in WebKitGTK view
-- [ ] Auto-populate node positions from mesh
-- [ ] Local Docker deployment option
-
-### ✅ v4.5 - RNS/Reticulum Integration (Completed in v4.2)
-- [x] RNS Management panel (install, configure, monitor rnsd)
-- [x] Unified Node Map with RNS + Meshtastic nodes
-- [x] RNS Configuration Editor with interface templates
-- [x] RNS-Meshtastic Gateway bridge with full configuration
-- [x] Gateway Configuration Dialog with all settings
-- [ ] LXMF/NomadNet/MeshChat UI integration
-- [ ] LXST voice streaming support
-- [ ] RNODE device detection and configuration
-
-### v4.6 - Node Flashing
-- [ ] Flash Meshtastic firmware to USB devices
-- [ ] Firmware version management
-- [ ] Backup/restore node configs
-
-### v5.0 - Network Operations
-- [x] Map visualization of mesh topology (completed)
-- [ ] MQTT integration for multi-node monitoring
-- [ ] Message history and analytics
-- [ ] Coverage analytics with Site Planner API
+### Planned 📋
+- [ ] NanoVNA plugin for antenna tuning
+- [ ] MQTT dashboard
+- [ ] Coverage analytics
 
 ---
 
 ## Contributing
 
-Contributions are welcome! Please see `.claude/session_notes.md` for development patterns and architecture notes.
-
-### Development Setup
+Contributions welcome! See `ARCHITECTURE.md` for codebase overview.
 
 ```bash
-git clone https://github.com/Nursedude/meshforge.git
-cd meshforge
-
-# Create virtual environment (optional)
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dev dependencies
-pip install rich textual flask meshtastic
-
-# Run tests (TDD approach - 127 total)
-python3 tests/test_security.py      # 24 security tests
-python3 tests/test_rf_utils.py      # 13 RF calculation tests
-python3 tests/test_gateway_diagnostic.py  # 18 diagnostic tests
-python3 tests/test_plugins.py       # 15 plugin architecture tests
-python3 tests/test_device_scanner.py  # 19 device scanner tests
-python3 tests/test_simulator.py       # 38 hardware simulation tests
+# Run tests
+python3 -m pytest tests/ -v
 
 # Verify syntax
 python3 -m py_compile src/**/*.py
 ```
 
-### TDD Workflow
+### Development Notes
 
-We use **Test-Driven Development** - write tests first, then implement:
+**Public vs Template Repository:**
+- **Public**: Standard open-source repo. Best for active development with contributors.
+- **Template**: For creating new projects from this base. Adds "Use this template" button.
 
-```
-1. Write failing test     → tests/test_feature.py
-2. Commit tests           → git commit -m "test: Add feature tests"
-3. Implement feature      → src/utils/feature.py
-4. Verify tests pass      → python3 tests/test_feature.py
-5. Commit implementation  → git commit -m "feat: Add feature"
-```
+**Recommendation**: Keep as **Public** for now. Template is useful when MeshForge becomes a stable framework others want to fork as a starting point.
 
 ---
 
@@ -1472,23 +694,14 @@ GPL-3.0 - See [LICENSE](LICENSE) for details.
 ## Resources
 
 - [Meshtastic Documentation](https://meshtastic.org/docs/)
-- [Meshtastic GitHub](https://github.com/meshtastic)
-- [Meshtastic Firmware](https://github.com/meshtastic/firmware)
-- [MtnMesh Community](https://mtnme.sh/)
-
----
-
-## Acknowledgments
-
-- The [Meshtastic](https://meshtastic.org/) project and community
-- Contributors and testers
-- [heypete](https://github.com/heypete) for frequency calculator inspiration
+- [Reticulum Network Stack](https://reticulum.network/)
+- [AREDN Documentation](https://www.arednmesh.org/)
 
 ---
 
 <p align="center">
-  <img src="assets/shaka-simple.svg" alt="Shaka" width="24" height="24"/><br>
-  <b>MeshForge</b> - Build. Test. Deploy. Monitor.<br>
-  Made with aloha for the mesh community 🤙<br>
+  <img src="assets/shaka-simple.svg" alt="Shaka" width="32" height="32"/><br>
+  <b>MeshForge</b> - Build. Test. Deploy. Bridge. Monitor.<br>
+  Made with aloha for the mesh community<br>
   <sub>- nurse dude (wh6gxz)</sub>
 </p>
