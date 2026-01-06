@@ -317,6 +317,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         self._add_cli_page()
         self._add_hardware_page()
         self._add_tools_page()
+        self._add_diagnostics_page()
         self._add_aredn_page()
         self._add_amateur_page()
         self._add_university_page()
@@ -462,6 +463,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
             ("cli", "Meshtastic CLI", "utilities-terminal-symbolic", None),
             ("hardware", "Hardware Detection", "drive-harddisk-symbolic", None),
             ("tools", "System Tools", "applications-utilities-symbolic", None),
+            ("diagnostics", "Network Diagnostics", "dialog-information-symbolic", None),
             ("aredn", "AREDN Mesh", "network-server-symbolic", "aredn_integration"),
             ("amateur", "Amateur Radio", "audio-speakers-symbolic", "amateur_radio"),
             ("university", "MeshForge University", "school-symbolic", None),
@@ -582,6 +584,13 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         panel = ToolsPanel(self)
         self.content_stack.add_named(panel, "tools")
         self.tools_panel = panel
+
+    def _add_diagnostics_page(self):
+        """Add the network diagnostics page"""
+        from .panels.diagnostics import DiagnosticsPanel
+        panel = DiagnosticsPanel(self)
+        self.content_stack.add_named(panel, "diagnostics")
+        self.diagnostics_panel = panel
 
     def _add_aredn_page(self):
         """Add the AREDN mesh network page"""
