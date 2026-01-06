@@ -15,6 +15,11 @@ import subprocess
 import shutil
 from pathlib import Path
 
+# Ensure src directory is in path for imports
+_src_dir = Path(__file__).parent.parent
+if str(_src_dir) not in sys.path:
+    sys.path.insert(0, str(_src_dir))
+
 # Import centralized path utility for sudo compatibility
 try:
     from utils.paths import get_real_user_home
@@ -542,12 +547,26 @@ Examples:
   python3 diagnose.py              Full system diagnostics
   python3 diagnose.py --gateway    RNS/Meshtastic gateway wizard
   python3 diagnose.py -g           Gateway wizard (short form)
+  python3 diagnose.py -v           Verbose output
         """
     )
     parser.add_argument('--gateway', '-g', action='store_true',
                         help='Run RNS/Meshtastic gateway setup wizard')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                        help='Verbose output with debug info')
+    parser.add_argument('--json', action='store_true',
+                        help='Output results as JSON')
 
     args = parser.parse_args()
+
+    # Set up logging based on verbosity
+    if args.verbose:
+        import logging
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+        )
+        print("Verbose mode enabled - debug logging active\n")
 
     if args.gateway:
         run_gateway_wizard()
