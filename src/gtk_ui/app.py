@@ -13,7 +13,18 @@ import sys
 import os
 import subprocess
 import threading
+import logging
 from pathlib import Path
+
+# Set up logging for GTK app diagnostics
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[
+        logging.FileHandler('/tmp/meshforge-gtk.log'),
+    ]
+)
+logger = logging.getLogger('gtk_app')
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -80,12 +91,17 @@ class MeshForgeApp(Adw.Application):
 
     def on_activate(self, app):
         """Called when application is activated"""
+        logger.info("MeshForge GTK application activating...")
+        logger.info(f"Logging to /tmp/meshforge-gtk.log")
+
         # Register custom icons (display is now available)
         self._register_custom_icons()
 
         if not self.window:
+            logger.debug("Creating main window")
             self.window = MeshForgeWindow(application=app)
         self.window.present()
+        logger.info("MeshForge GTK application ready")
 
 
 # Backwards compatibility alias
@@ -316,22 +332,35 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         self.content_stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
 
         # Add content pages BEFORE sidebar (so stack has pages when nav callback fires)
-        self._add_dashboard_page()
-        self._add_service_page()
-        self._add_install_page()
-        self._add_config_page()
-        self._add_radio_config_page()
-        self._add_rns_page()
-        self._add_map_page()
-        self._add_hamclock_page()
-        self._add_cli_page()
-        self._add_hardware_page()
-        self._add_tools_page()
-        self._add_diagnostics_page()
-        self._add_aredn_page()
-        self._add_amateur_page()
-        self._add_university_page()
-        self._add_settings_page()
+        logger.info("Loading GTK panels...")
+        panel_loaders = [
+            ("dashboard", self._add_dashboard_page),
+            ("service", self._add_service_page),
+            ("install", self._add_install_page),
+            ("config", self._add_config_page),
+            ("radio_config", self._add_radio_config_page),
+            ("rns", self._add_rns_page),
+            ("map", self._add_map_page),
+            ("hamclock", self._add_hamclock_page),
+            ("cli", self._add_cli_page),
+            ("hardware", self._add_hardware_page),
+            ("tools", self._add_tools_page),
+            ("diagnostics", self._add_diagnostics_page),
+            ("aredn", self._add_aredn_page),
+            ("amateur", self._add_amateur_page),
+            ("university", self._add_university_page),
+            ("settings", self._add_settings_page),
+        ]
+
+        for name, loader in panel_loaders:
+            try:
+                logger.debug(f"Loading panel: {name}")
+                loader()
+                logger.debug(f"Loaded panel: {name} OK")
+            except Exception as e:
+                logger.error(f"Failed to load panel {name}: {e}", exc_info=True)
+                # Create error placeholder
+                self._add_error_placeholder(name, str(e))
 
         # Left sidebar navigation (after content_stack exists)
         sidebar = self._create_sidebar()
@@ -646,6 +675,34 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         panel = SettingsPanel(self)
         self.content_stack.add_named(panel, "settings")
         self.settings_panel = panel
+
+    def _add_error_placeholder(self, panel_name: str, error_message: str):
+        """Add a placeholder for a panel that failed to load"""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+        box.set_valign(Gtk.Align.CENTER)
+        box.set_halign(Gtk.Align.CENTER)
+        box.set_margin_start(40)
+        box.set_margin_end(40)
+
+        icon = Gtk.Image.new_from_icon_name("dialog-error-symbolic")
+        icon.set_pixel_size(64)
+        box.append(icon)
+
+        title = Gtk.Label(label=f"Failed to load: {panel_name}")
+        title.add_css_class("title-2")
+        box.append(title)
+
+        error_label = Gtk.Label(label=error_message)
+        error_label.set_wrap(True)
+        error_label.set_max_width_chars(60)
+        error_label.add_css_class("error")
+        box.append(error_label)
+
+        hint = Gtk.Label(label="Check /tmp/meshforge-gtk.log for details")
+        hint.add_css_class("dim-label")
+        box.append(hint)
+
+        self.content_stack.add_named(box, panel_name)
 
     def _create_bottom_status(self):
         """Create bottom status bar"""
