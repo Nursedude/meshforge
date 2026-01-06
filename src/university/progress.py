@@ -53,11 +53,11 @@ class CourseProgress:
 
     @property
     def completed_count(self) -> int:
-        return sum(1 for lp in self.lessons.values() if lp.completed)
+        return sum(1 for lp in self.lessons.values() if lp and lp.completed)
 
     @property
     def total_count(self) -> int:
-        return len(self.lessons)
+        return sum(1 for lp in self.lessons.values() if lp is not None)
 
     @property
     def percentage(self) -> float:
@@ -71,7 +71,7 @@ class CourseProgress:
 
     @property
     def average_score(self) -> Optional[float]:
-        scores = [lp.assessment_score for lp in self.lessons.values() if lp.assessment_score is not None]
+        scores = [lp.assessment_score for lp in self.lessons.values() if lp and lp.assessment_score is not None]
         if not scores:
             return None
         return sum(scores) / len(scores)
@@ -79,7 +79,7 @@ class CourseProgress:
     def to_dict(self) -> Dict[str, Any]:
         return {
             'course_id': self.course_id,
-            'lessons': {k: v.to_dict() for k, v in self.lessons.items()},
+            'lessons': {k: v.to_dict() for k, v in self.lessons.items() if v is not None},
             'started_at': self.started_at,
             'completed_at': self.completed_at,
         }
@@ -88,7 +88,11 @@ class CourseProgress:
     def from_dict(cls, data: Dict[str, Any]) -> 'CourseProgress':
         lessons = {}
         for lesson_id, lesson_data in data.get('lessons', {}).items():
-            lessons[lesson_id] = LessonProgress.from_dict(lesson_data)
+            if lesson_data is not None and isinstance(lesson_data, dict):
+                try:
+                    lessons[lesson_id] = LessonProgress.from_dict(lesson_data)
+                except (KeyError, TypeError):
+                    pass  # Skip corrupted lesson data
         return cls(
             course_id=data['course_id'],
             lessons=lessons,
@@ -185,9 +189,10 @@ class ProgressTracker:
             total_lessons += course.total_count
             completed_lessons += course.completed_count
             for lesson in course.lessons.values():
-                total_time += lesson.time_spent_seconds
-                if lesson.assessment_score is not None:
-                    scores.append(lesson.assessment_score)
+                if lesson is not None:
+                    total_time += lesson.time_spent_seconds
+                    if lesson.assessment_score is not None:
+                        scores.append(lesson.assessment_score)
 
         return {
             'total_courses': len(self.courses),
