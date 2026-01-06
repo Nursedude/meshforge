@@ -1323,20 +1323,134 @@ class RadioConfigPanel(Gtk.Box):
 
         self.status_label.set_label("Loading current configuration...")
 
-        def on_result(success, stdout, stderr):
-            logger.info(f"Config load result: success={success}, stdout_len={len(stdout) if stdout else 0}")
-            if success and stdout.strip():
-                self.status_label.set_label("Configuration loaded")
-                self._parse_and_populate_config(stdout)
-            elif "not found" in stderr.lower() or not self._find_cli():
-                logger.error("Meshtastic CLI not found during config load")
-                self.status_label.set_label("Meshtastic CLI not found")
-            else:
-                error_msg = stderr.strip() if stderr else "No response"
-                logger.error(f"Config load failed: {error_msg}")
-                self.status_label.set_label(f"Failed: {error_msg[:50]}")
+        # Try direct library access first (more reliable than CLI parsing)
+        def load_via_library():
+            try:
+                import meshtastic.tcp_interface
+                logger.info("Loading config via meshtastic library (direct)")
+                iface = meshtastic.tcp_interface.TCPInterface(hostname='localhost')
+                config = self._extract_config_from_interface(iface)
+                iface.close()
+                return config
+            except Exception as e:
+                logger.debug(f"Library load failed: {e}, falling back to CLI")
+                return None
 
-        self._run_cli(['--get', 'lora', '--get', 'device', '--get', 'position', '--get', 'mqtt', '--get', 'telemetry'], on_result)
+        def do_load():
+            # Try library first
+            config = load_via_library()
+            if config:
+                GLib.idle_add(self._apply_config_dict, config)
+                return
+
+            # Fall back to CLI parsing
+            cli = self._find_cli()
+            if not cli:
+                GLib.idle_add(lambda: self.status_label.set_label("Meshtastic CLI not found"))
+                return
+
+            cmd = [cli, '--host', 'localhost', '--get', 'lora', '--get', 'device', '--get', 'position', '--get', 'mqtt', '--get', 'telemetry']
+            logger.info(f"Running CLI: {' '.join(cmd)}")
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                if result.returncode == 0 and result.stdout.strip():
+                    GLib.idle_add(self._parse_and_populate_config, result.stdout)
+                else:
+                    error_msg = result.stderr.strip() if result.stderr else "No response"
+                    GLib.idle_add(lambda: self.status_label.set_label(f"Failed: {error_msg[:50]}"))
+            except Exception as e:
+                GLib.idle_add(lambda: self.status_label.set_label(f"Error: {str(e)[:50]}"))
+
+        thread = threading.Thread(target=do_load, daemon=True)
+        thread.start()
+
+    def _extract_config_from_interface(self, iface):
+        """Extract config dict from meshtastic interface"""
+        config = {}
+        try:
+            node = iface.getMyNodeInfo()
+            if node:
+                config['node_id'] = node.get('user', {}).get('id', '')
+                config['long_name'] = node.get('user', {}).get('longName', '')
+                config['short_name'] = node.get('user', {}).get('shortName', '')
+                config['hw_model'] = node.get('user', {}).get('hwModel', '')
+
+            # Get local config
+            local_config = iface.localNode.localConfig if hasattr(iface, 'localNode') else None
+            if local_config:
+                # LoRa config
+                if hasattr(local_config, 'lora'):
+                    lora = local_config.lora
+                    config['modem_preset'] = lora.modem_preset if hasattr(lora, 'modem_preset') else None
+                    config['region'] = lora.region if hasattr(lora, 'region') else None
+                    config['hop_limit'] = lora.hop_limit if hasattr(lora, 'hop_limit') else None
+                    config['tx_power'] = lora.tx_power if hasattr(lora, 'tx_power') else None
+
+                # Device config
+                if hasattr(local_config, 'device'):
+                    device = local_config.device
+                    config['role'] = device.role if hasattr(device, 'role') else None
+                    config['rebroadcast_mode'] = device.rebroadcast_mode if hasattr(device, 'rebroadcast_mode') else None
+
+                # Position config
+                if hasattr(local_config, 'position'):
+                    pos = local_config.position
+                    config['gps_mode'] = pos.gps_mode if hasattr(pos, 'gps_mode') else None
+                    config['position_broadcast_secs'] = pos.position_broadcast_secs if hasattr(pos, 'position_broadcast_secs') else None
+
+            logger.info(f"Extracted config via library: {list(config.keys())}")
+        except Exception as e:
+            logger.warning(f"Config extraction error: {e}")
+        return config
+
+    def _apply_config_dict(self, config):
+        """Apply config dictionary to UI elements"""
+        logger.info(f"Applying config dict: {config}")
+
+        # Modem preset enum mapping
+        preset_enum_map = {
+            0: "LONG_FAST", 1: "LONG_SLOW", 2: "VERY_LONG_SLOW",
+            3: "MEDIUM_SLOW", 4: "MEDIUM_FAST", 5: "SHORT_SLOW",
+            6: "SHORT_FAST", 7: "LONG_MODERATE", 8: "SHORT_TURBO"
+        }
+        presets = ["LONG_FAST", "LONG_SLOW", "VERY_LONG_SLOW", "LONG_MODERATE",
+                   "MEDIUM_SLOW", "MEDIUM_FAST", "SHORT_SLOW", "SHORT_FAST", "SHORT_TURBO"]
+        roles = ["CLIENT", "CLIENT_MUTE", "ROUTER", "ROUTER_CLIENT",
+                 "REPEATER", "TRACKER", "SENSOR", "TAK", "TAK_TRACKER", "CLIENT_HIDDEN", "LOST_AND_FOUND"]
+        regions = ["UNSET", "US", "EU_433", "EU_868", "CN", "JP", "ANZ", "KR", "TW", "RU",
+                   "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919",
+                   "SG_923", "PH", "UK_868", "SINGAPORE"]
+
+        def set_dropdown(dropdown, options, value):
+            if value is None:
+                return
+            # Convert enum int to string if needed
+            if isinstance(value, int):
+                if dropdown == self.preset_dropdown:
+                    value = preset_enum_map.get(value, str(value))
+                else:
+                    value = str(value)
+            value_str = str(value).upper().replace('_', '')
+            for i, opt in enumerate(options):
+                if opt.upper().replace('_', '') == value_str:
+                    dropdown.set_selected(i)
+                    logger.info(f"Set dropdown to {opt} (index {i})")
+                    return
+
+        # Apply values
+        if 'modem_preset' in config:
+            set_dropdown(self.preset_dropdown, presets, config['modem_preset'])
+        if 'region' in config:
+            set_dropdown(self.region_dropdown, regions, config['region'])
+        if 'role' in config:
+            set_dropdown(self.role_dropdown, roles, config['role'])
+        if 'hop_limit' in config and config['hop_limit']:
+            self.hop_spin.set_value(int(config['hop_limit']))
+        if 'tx_power' in config and config['tx_power']:
+            self.tx_power_spin.set_value(int(config['tx_power']))
+
+        self.status_label.set_label("Configuration loaded (via library)")
+        self.main_window.set_status_message("Radio configuration loaded")
 
     def _auto_load_config(self):
         """Auto-load configuration when panel is first shown"""
