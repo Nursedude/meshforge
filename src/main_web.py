@@ -2419,7 +2419,23 @@ Environment variables:
                         help='Stop running web UI instance')
     parser.add_argument('--status', action='store_true',
                         help='Check if web UI is running')
+    parser.add_argument('--auto-port', action='store_true',
+                        help='Automatically find an available port if default is in use')
+    parser.add_argument('--list-ports', action='store_true',
+                        help='List what processes are using common ports and exit')
     args = parser.parse_args()
+
+    # Handle --list-ports
+    if args.list_ports:
+        print("Checking common ports...")
+        ports_to_check = [8080, 8081, 4403, 8880, 5000, 9000]
+        for p in ports_to_check:
+            is_available, process_info = check_port_available(args.host, p)
+            if is_available:
+                print(f"  Port {p}: Available")
+            else:
+                print(f"  Port {p}: In use by {process_info or 'unknown process'}")
+        sys.exit(0)
 
     # Handle --stop
     if args.stop:
@@ -2443,38 +2459,52 @@ Environment variables:
         sys.exit(1)
 
     # Check if port is available
-    is_available, process_info = check_port_available(args.host, args.port)
+    actual_port = args.port
+    is_available, process_info = check_port_available(args.host, actual_port)
     if not is_available:
-        print()
-        print("=" * 60)
-        print(f"ERROR: Port {args.port} is already in use")
-        print("=" * 60)
-        if process_info:
-            print(f"Process using port: {process_info}")
+        if args.auto_port:
+            # Try to find an available port
+            print(f"Port {actual_port} is in use, searching for available port...")
+            new_port = find_available_port(args.host, actual_port + 1, max_tries=20)
+            if new_port:
+                print(f"Found available port: {new_port}")
+                actual_port = new_port
+            else:
+                print(f"ERROR: Could not find available port in range {actual_port+1}-{actual_port+20}")
+                sys.exit(1)
         else:
-            print("Could not identify process using the port.")
-            print(f"Check with: sudo lsof -i :{args.port}")
-        print()
-
-        # Known services that commonly use certain ports
-        known_services = {
-            8080: "AREDN web UI, HamClock API, or other web services",
-            4403: "meshtasticd TCP interface",
-            8081: "HamClock live port",
-        }
-        if args.port in known_services:
-            print(f"Note: Port {args.port} is commonly used by: {known_services[args.port]}")
+            print()
+            print("=" * 60)
+            print(f"ERROR: Port {actual_port} is already in use")
+            print("=" * 60)
+            if process_info:
+                print(f"Process using port: {process_info}")
+            else:
+                print("Could not identify process using the port.")
+                print(f"Check with: sudo lsof -i :{actual_port}")
             print()
 
-        # Suggest alternative
-        alt_port = find_available_port(args.host, args.port + 1, max_tries=10)
-        if alt_port:
-            print(f"Try an alternative port:")
-            print(f"  sudo python3 src/main_web.py --port {alt_port}")
-        else:
-            print("Try specifying a different port with --port <number>")
-        print("=" * 60)
-        sys.exit(1)
+            # Known services that commonly use certain ports
+            known_services = {
+                8080: "AREDN web UI, HamClock API, or other web services",
+                4403: "meshtasticd TCP interface",
+                8081: "HamClock live port",
+            }
+            if actual_port in known_services:
+                print(f"Note: Port {actual_port} is commonly used by: {known_services[actual_port]}")
+                print()
+
+            # Suggest alternatives
+            print("Options:")
+            print(f"  --port 9000      Use a specific port")
+            print(f"  --auto-port      Auto-find an available port")
+            print(f"  --list-ports     Show what's using common ports")
+            alt_port = find_available_port(args.host, actual_port + 1, max_tries=10)
+            if alt_port:
+                print()
+                print(f"Suggested: sudo python3 src/main_web.py --port {alt_port}")
+            print("=" * 60)
+            sys.exit(1)
 
     # Check root
     if os.geteuid() != 0:
@@ -2534,8 +2564,8 @@ Environment variables:
     print("=" * 60)
     print()
     print(f"Access the web interface at:")
-    print(f"  http://localhost:{args.port}/")
-    print(f"  http://{local_ip}:{args.port}/")
+    print(f"  http://localhost:{actual_port}/")
+    print(f"  http://{local_ip}:{actual_port}/")
     print()
     if CONFIG['auth_enabled']:
         print("Authentication: ENABLED")
@@ -2554,7 +2584,7 @@ Environment variables:
     try:
         app.run(
             host=args.host,
-            port=args.port,
+            port=actual_port,
             debug=args.debug,
             threaded=True,
             use_reloader=False  # Prevent duplicate processes

@@ -12,6 +12,7 @@ import subprocess
 import json
 import logging
 import socket
+import argparse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 import threading
@@ -382,28 +383,88 @@ def check_port_available(host: str, port: int) -> tuple:
         return (False, process_info)
 
 
+def find_available_port(host: str, start_port: int, max_tries: int = 20) -> int:
+    """Find an available port starting from start_port."""
+    for offset in range(max_tries):
+        port = start_port + offset
+        is_available, _ = check_port_available(host, port)
+        if is_available:
+            return port
+    return 0
+
+
 def main():
-    host = '0.0.0.0'
-    port = 8080
+    parser = argparse.ArgumentParser(
+        description='Meshtasticd Web-Based Installer',
+        epilog='''
+Examples:
+  sudo python3 web_installer.py                # Default port 8080
+  sudo python3 web_installer.py --port 9000    # Custom port
+  sudo python3 web_installer.py --auto-port    # Auto-find available port
+  sudo python3 web_installer.py --list-ports   # Show what's using common ports
+
+Environment variables:
+  WEB_INSTALLER_PORT=9000  # Set default port
+'''
+    )
+    parser.add_argument('--port', '-p', type=int,
+                        default=int(os.environ.get('WEB_INSTALLER_PORT', '8080')),
+                        help='Port to listen on (default: 8080, env: WEB_INSTALLER_PORT)')
+    parser.add_argument('--host', default='0.0.0.0',
+                        help='Host to bind to (default: 0.0.0.0)')
+    parser.add_argument('--auto-port', action='store_true',
+                        help='Automatically find an available port if default is in use')
+    parser.add_argument('--list-ports', action='store_true',
+                        help='List what processes are using common ports and exit')
+    args = parser.parse_args()
+
+    # Handle --list-ports
+    if args.list_ports:
+        print("Checking common ports...")
+        ports_to_check = [8080, 8081, 4403, 8880, 5000]
+        for p in ports_to_check:
+            is_available, process_info = check_port_available(args.host, p)
+            if is_available:
+                print(f"  Port {p}: Available")
+            else:
+                print(f"  Port {p}: In use by {process_info or 'unknown process'}")
+        sys.exit(0)
+
+    host = args.host
+    port = args.port
 
     # Check if port is available before starting
     is_available, process_info = check_port_available(host, port)
     if not is_available:
-        print()
-        print("=" * 60)
-        print(f"ERROR: Port {port} is already in use")
-        print("=" * 60)
-        if process_info:
-            print(f"Process using port: {process_info}")
+        if args.auto_port:
+            # Try to find an available port
+            print(f"Port {port} is in use, searching for available port...")
+            new_port = find_available_port(host, port + 1, max_tries=20)
+            if new_port:
+                print(f"Found available port: {new_port}")
+                port = new_port
+            else:
+                print(f"ERROR: Could not find available port in range {port+1}-{port+20}")
+                sys.exit(1)
         else:
-            print("Could not identify process using the port.")
-            print(f"Check with: sudo lsof -i :{port}")
-        print()
-        print("Note: Port 8080 is commonly used by AREDN web UI or HamClock API")
-        print()
-        print("To use a different port, modify the 'port' variable in web_installer.py")
-        print("=" * 60)
-        sys.exit(1)
+            print()
+            print("=" * 60)
+            print(f"ERROR: Port {port} is already in use")
+            print("=" * 60)
+            if process_info:
+                print(f"Process using port: {process_info}")
+            else:
+                print("Could not identify process using the port.")
+                print(f"Check with: sudo lsof -i :{port}")
+            print()
+            print("Note: Port 8080 is commonly used by AREDN web UI or HamClock API")
+            print()
+            print("Options:")
+            print(f"  --port 9000      Use a specific port")
+            print(f"  --auto-port      Auto-find an available port")
+            print(f"  --list-ports     Show what's using common ports")
+            print("=" * 60)
+            sys.exit(1)
 
     logger.info(f"Starting web installer on {host}:{port}")
     server = HTTPServer((host, port), InstallerHandler)
