@@ -11,9 +11,14 @@ import threading
 import json
 import urllib.parse
 from pathlib import Path
-import logging
 
-logger = logging.getLogger(__name__)
+# Import logging - try comprehensive utils first, fall back to standard
+try:
+    from utils.logging_utils import get_logger
+    logger = get_logger(__name__)
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 
 # Try to import WebKit for embedded map
 # Note: WebKit doesn't work when running as root (sandbox issues)

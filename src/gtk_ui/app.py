@@ -423,6 +423,16 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         self.uptime_label = Gtk.Label(label="Uptime: --")
         box.append(self.uptime_label)
 
+        # Separator
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+
+        # View Logs button
+        logs_btn = Gtk.Button()
+        logs_btn.set_icon_name("utilities-terminal-symbolic")
+        logs_btn.set_tooltip_text("View Application Logs")
+        logs_btn.connect("clicked", self._on_view_logs)
+        box.append(logs_btn)
+
         return box
 
     def _create_sidebar(self):
@@ -638,6 +648,131 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         # Defensive check: bottom_message may not exist during panel initialization
         if hasattr(self, 'bottom_message') and self.bottom_message:
             self.bottom_message.set_label(message)
+
+    def _on_view_logs(self, button):
+        """Show log viewer dialog"""
+        dialog = Adw.Window(transient_for=self, modal=True)
+        dialog.set_title("Application Logs")
+        dialog.set_default_size(800, 500)
+
+        # Main layout
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+
+        # Header bar
+        header = Adw.HeaderBar()
+        header.set_show_end_title_buttons(True)
+
+        # Refresh button
+        refresh_btn = Gtk.Button()
+        refresh_btn.set_icon_name("view-refresh-symbolic")
+        refresh_btn.set_tooltip_text("Refresh Logs")
+        header.pack_start(refresh_btn)
+
+        # Open in file manager button
+        open_btn = Gtk.Button()
+        open_btn.set_icon_name("folder-open-symbolic")
+        open_btn.set_tooltip_text("Open Log Directory")
+        header.pack_start(open_btn)
+
+        main_box.append(header)
+
+        # Log content area
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_vexpand(True)
+
+        text_view = Gtk.TextView()
+        text_view.set_editable(False)
+        text_view.set_monospace(True)
+        text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        text_view.set_left_margin(10)
+        text_view.set_right_margin(10)
+        text_view.set_top_margin(10)
+        text_view.set_bottom_margin(10)
+        buffer = text_view.get_buffer()
+        scrolled.set_child(text_view)
+        main_box.append(scrolled)
+
+        # Status bar at bottom
+        status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        status_box.set_margin_start(10)
+        status_box.set_margin_end(10)
+        status_box.set_margin_top(5)
+        status_box.set_margin_bottom(5)
+        log_path_label = Gtk.Label()
+        log_path_label.set_xalign(0)
+        log_path_label.add_css_class("dim-label")
+        status_box.append(log_path_label)
+        main_box.append(status_box)
+
+        dialog.set_content(main_box)
+
+        # Load log content
+        def load_logs():
+            try:
+                from utils.logging_utils import LOG_DIR
+                log_dir = LOG_DIR
+            except ImportError:
+                # Fallback path
+                import os
+                sudo_user = os.environ.get('SUDO_USER')
+                if sudo_user and sudo_user != 'root':
+                    log_dir = Path(f'/home/{sudo_user}/.config/meshforge/logs')
+                else:
+                    log_dir = Path.home() / '.config' / 'meshforge' / 'logs'
+
+            log_path_label.set_label(f"Log directory: {log_dir}")
+
+            if not log_dir.exists():
+                buffer.set_text(f"Log directory not found: {log_dir}\n\nLogs will appear here after the application is restarted.")
+                return
+
+            # Find most recent log file
+            log_files = sorted(log_dir.glob("meshforge_*.log"), reverse=True)
+            if not log_files:
+                buffer.set_text("No log files found yet.\n\nLogs will appear after application activity.")
+                return
+
+            log_file = log_files[0]
+            try:
+                # Read last 500 lines of log
+                with open(log_file, 'r') as f:
+                    lines = f.readlines()
+                    recent_lines = lines[-500:] if len(lines) > 500 else lines
+                    content = ''.join(recent_lines)
+                    if len(lines) > 500:
+                        content = f"[... showing last 500 of {len(lines)} lines ...]\n\n" + content
+                    buffer.set_text(content)
+
+                    # Scroll to end
+                    end_iter = buffer.get_end_iter()
+                    text_view.scroll_to_iter(end_iter, 0.0, True, 0.0, 1.0)
+            except Exception as e:
+                buffer.set_text(f"Error reading log file: {e}")
+
+        def on_refresh(btn):
+            load_logs()
+
+        def on_open_dir(btn):
+            try:
+                from utils.logging_utils import LOG_DIR
+                log_dir = LOG_DIR
+            except ImportError:
+                import os
+                sudo_user = os.environ.get('SUDO_USER')
+                if sudo_user and sudo_user != 'root':
+                    log_dir = Path(f'/home/{sudo_user}/.config/meshforge/logs')
+                else:
+                    log_dir = Path.home() / '.config' / 'meshforge' / 'logs'
+
+            if log_dir.exists():
+                subprocess.Popen(['xdg-open', str(log_dir)])
+
+        refresh_btn.connect("clicked", on_refresh)
+        open_btn.connect("clicked", on_open_dir)
+
+        load_logs()
+        dialog.present()
 
     def _update_status(self):
         """Update status bar information"""

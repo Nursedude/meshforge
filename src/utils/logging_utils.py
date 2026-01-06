@@ -64,6 +64,59 @@ _file_handler: Optional[logging.Handler] = None
 _console_handler: Optional[logging.Handler] = None
 
 
+def _get_sudo_user_ids():
+    """Get the UID and GID of the real user when running with sudo."""
+    import pwd
+
+    sudo_user = os.environ.get('SUDO_USER')
+    if not sudo_user or sudo_user == 'root':
+        return None, None
+
+    try:
+        pw = pwd.getpwnam(sudo_user)
+        return pw.pw_uid, pw.pw_gid
+    except KeyError:
+        return None, None
+
+
+def _fix_directory_ownership(path: Path) -> None:
+    """
+    Fix directory ownership when running with sudo.
+
+    When running with sudo, directories are created as root. This function
+    changes ownership back to the real user (SUDO_USER) so they can access
+    the logs without root privileges.
+    """
+    uid, gid = _get_sudo_user_ids()
+    if uid is None:
+        return
+
+    try:
+        # Change ownership of the log directory and parents up to .config
+        current = path
+        while current != Path('/'):
+            if current.exists() and current.owner() == 'root':
+                os.chown(current, uid, gid)
+            if current.name == '.config':
+                break
+            current = current.parent
+    except (PermissionError, OSError):
+        pass  # Silently fail - logging should still work even if ownership can't be changed
+
+
+def _fix_file_ownership(path: Path) -> None:
+    """Fix file ownership when running with sudo."""
+    uid, gid = _get_sudo_user_ids()
+    if uid is None:
+        return
+
+    try:
+        if path.exists():
+            os.chown(path, uid, gid)
+    except (PermissionError, OSError):
+        pass
+
+
 def setup_logging(
     log_level: int = logging.DEBUG,
     log_to_file: bool = True,
@@ -87,9 +140,11 @@ def setup_logging(
 
     _global_log_level = log_level
 
-    # Create log directory
+    # Create log directory with proper ownership
     if log_to_file:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
+        # Fix ownership if running with sudo
+        _fix_directory_ownership(LOG_DIR)
 
     # Configure root logger
     root_logger = logging.getLogger()
@@ -120,6 +175,8 @@ def setup_logging(
         _file_handler.setLevel(logging.DEBUG)  # Log everything to file
         _file_handler.setFormatter(detailed_formatter)
         root_logger.addHandler(_file_handler)
+        # Fix log file ownership for sudo user
+        _fix_file_ownership(log_file)
 
     # Console handler
     if log_to_console:
