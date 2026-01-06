@@ -79,7 +79,12 @@ class HamClockPanel(Gtk.Box):
         "url": "",
         "api_port": 8080,
         "live_port": 8081,
+        "auto_refresh_enabled": False,
+        "auto_refresh_minutes": 10,
     }
+
+    # Stale data threshold (minutes without update before showing warning)
+    STALE_DATA_THRESHOLD_MINUTES = 15
 
     def __init__(self, main_window):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -90,6 +95,13 @@ class HamClockPanel(Gtk.Box):
         self.set_margin_end(20)
         self.set_margin_top(20)
         self.set_margin_bottom(20)
+
+        # Auto-refresh state
+        self._auto_refresh_timer_id = None
+        self._last_update_time = None
+        self._update_check_timer_id = None
+        self._retry_count = 0
+        self._max_retries = 3
 
         # Use centralized settings manager
         if HAS_SETTINGS_MANAGER:
@@ -106,6 +118,13 @@ class HamClockPanel(Gtk.Box):
         # Auto-connect if URL is configured
         if self._settings.get("url"):
             GLib.timeout_add(1000, self._auto_connect)
+
+        # Start auto-refresh if enabled
+        if self._settings.get("auto_refresh_enabled"):
+            GLib.timeout_add(2000, self._start_auto_refresh)
+
+        # Start update time checker (updates "last updated" display)
+        self._update_check_timer_id = GLib.timeout_add(60000, self._check_data_freshness)
 
     def _load_settings_legacy(self):
         """Legacy settings load for fallback"""
@@ -262,13 +281,48 @@ class HamClockPanel(Gtk.Box):
 
             weather_box.append(row)
 
-        # Refresh button
+        # Last updated indicator
+        self.last_update_label = Gtk.Label(label="Last updated: Never")
+        self.last_update_label.set_xalign(0)
+        self.last_update_label.add_css_class("dim-label")
+        self.last_update_label.set_margin_top(10)
+        weather_box.append(self.last_update_label)
+
+        # Refresh and auto-refresh controls
         refresh_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         refresh_box.set_margin_top(10)
-        refresh_btn = Gtk.Button(label="Refresh Data")
+
+        refresh_btn = Gtk.Button(label="Refresh Now")
         refresh_btn.set_tooltip_text("Refresh space weather data from HamClock")
         refresh_btn.connect("clicked", self._on_refresh)
         refresh_box.append(refresh_btn)
+
+        # Auto-refresh toggle
+        self.auto_refresh_switch = Gtk.Switch()
+        self.auto_refresh_switch.set_active(self._settings.get("auto_refresh_enabled", False))
+        self.auto_refresh_switch.set_tooltip_text("Enable automatic data refresh")
+        self.auto_refresh_switch.connect("notify::active", self._on_auto_refresh_toggled)
+
+        auto_refresh_label = Gtk.Label(label="Auto-refresh:")
+        refresh_box.append(auto_refresh_label)
+        refresh_box.append(self.auto_refresh_switch)
+
+        # Interval spinner
+        interval_label = Gtk.Label(label="every")
+        refresh_box.append(interval_label)
+
+        self.refresh_interval_spin = Gtk.SpinButton()
+        self.refresh_interval_spin.set_range(1, 60)
+        self.refresh_interval_spin.set_value(self._settings.get("auto_refresh_minutes", 10))
+        self.refresh_interval_spin.set_increments(1, 5)
+        self.refresh_interval_spin.set_width_chars(3)
+        self.refresh_interval_spin.set_tooltip_text("Refresh interval in minutes")
+        self.refresh_interval_spin.connect("value-changed", self._on_refresh_interval_changed)
+        refresh_box.append(self.refresh_interval_spin)
+
+        min_label = Gtk.Label(label="min")
+        refresh_box.append(min_label)
+
         weather_box.append(refresh_box)
 
         weather_frame.set_child(weather_box)
@@ -1029,6 +1083,8 @@ class HamClockPanel(Gtk.Box):
         if updated_count > 0:
             self.status_label.set_label(f"Updated {updated_count} values")
             logger.debug(f"[HamClock] Updated {updated_count} UI labels")
+            # Record successful update time
+            self._record_update_time()
         else:
             self.status_label.set_label("No data received")
             logger.debug("[HamClock] No values to update")
@@ -1392,3 +1448,168 @@ class HamClockPanel(Gtk.Box):
         # VOACAP Online - comprehensive HF propagation prediction
         url = "https://www.voacap.com/hf/"
         self._open_url_in_browser(url)
+
+    # ==================== Auto-Refresh Methods ====================
+
+    def _on_auto_refresh_toggled(self, switch, gparam):
+        """Handle auto-refresh toggle"""
+        enabled = switch.get_active()
+        logger.info(f"[HamClock] Auto-refresh toggled: {enabled}")
+
+        self._settings["auto_refresh_enabled"] = enabled
+        self._save_settings()
+
+        if enabled:
+            self._start_auto_refresh()
+        else:
+            self._stop_auto_refresh()
+
+    def _on_refresh_interval_changed(self, spinbutton):
+        """Handle refresh interval change"""
+        interval = int(spinbutton.get_value())
+        logger.info(f"[HamClock] Refresh interval changed: {interval} minutes")
+
+        self._settings["auto_refresh_minutes"] = interval
+        self._save_settings()
+
+        # Restart auto-refresh with new interval if enabled
+        if self._settings.get("auto_refresh_enabled"):
+            self._stop_auto_refresh()
+            self._start_auto_refresh()
+
+    def _start_auto_refresh(self):
+        """Start the auto-refresh timer"""
+        if self._auto_refresh_timer_id:
+            # Already running
+            return False
+
+        interval_minutes = self._settings.get("auto_refresh_minutes", 10)
+        interval_ms = interval_minutes * 60 * 1000
+
+        logger.info(f"[HamClock] Starting auto-refresh every {interval_minutes} minutes")
+
+        # Reset retry count
+        self._retry_count = 0
+
+        # Schedule periodic refresh
+        self._auto_refresh_timer_id = GLib.timeout_add(interval_ms, self._do_auto_refresh)
+
+        # Update UI
+        self.status_label.set_label(f"Auto-refresh: every {interval_minutes} min")
+
+        return False  # Don't repeat (used with GLib.timeout_add)
+
+    def _stop_auto_refresh(self):
+        """Stop the auto-refresh timer"""
+        if self._auto_refresh_timer_id:
+            GLib.source_remove(self._auto_refresh_timer_id)
+            self._auto_refresh_timer_id = None
+            logger.info("[HamClock] Auto-refresh stopped")
+            self.status_label.set_label("Auto-refresh disabled")
+
+    def _do_auto_refresh(self):
+        """Perform auto-refresh (called by timer)"""
+        logger.debug("[HamClock] Auto-refresh triggered")
+
+        url = self._settings.get("url", "")
+        if not url:
+            logger.debug("[HamClock] No URL configured, skipping auto-refresh")
+            return True  # Keep timer running
+
+        # Perform the fetch
+        self._fetch_space_weather_with_retry()
+
+        return True  # Keep timer running
+
+    def _fetch_space_weather_with_retry(self):
+        """Fetch space weather with retry on failure"""
+        url = self._settings.get("url", "").rstrip('/')
+        api_port = self._settings.get("api_port", 8080)
+
+        if not url:
+            return
+
+        def fetch():
+            api_url = f"{url}:{api_port}"
+            weather_data = {}
+            success = False
+
+            logger.debug(f"[HamClock] Auto-refresh fetch from {api_url}...")
+
+            endpoints = [
+                ("get_sys.txt", self._parse_sys),
+                ("get_spacewx.txt", self._parse_spacewx),
+                ("get_bc.txt", self._parse_band_conditions),
+            ]
+
+            for endpoint, parser in endpoints:
+                try:
+                    full_url = f"{api_url}/{endpoint}"
+                    req = urllib.request.Request(full_url, method='GET')
+                    req.add_header('User-Agent', 'MeshForge/1.0')
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        data = response.read().decode('utf-8')
+                        parsed = parser(data)
+                        weather_data.update(parsed)
+                        success = True
+                except Exception as e:
+                    logger.debug(f"[HamClock] Auto-refresh {endpoint}: {e}")
+
+            if success:
+                self._retry_count = 0
+                GLib.idle_add(self._update_weather_display, weather_data)
+            else:
+                self._retry_count += 1
+                if self._retry_count <= self._max_retries:
+                    # Schedule retry with exponential backoff (2s, 4s, 8s)
+                    backoff_ms = 2000 * (2 ** (self._retry_count - 1))
+                    logger.info(f"[HamClock] Auto-refresh failed, retry {self._retry_count}/{self._max_retries} in {backoff_ms}ms")
+                    GLib.timeout_add(backoff_ms, lambda: self._fetch_space_weather_with_retry() or False)
+                else:
+                    logger.warning(f"[HamClock] Auto-refresh failed after {self._max_retries} retries")
+                    GLib.idle_add(
+                        lambda: self.status_label.set_label("Auto-refresh failed - check connection")
+                    )
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _check_data_freshness(self):
+        """Check if data is stale and update the last-updated display"""
+        if self._last_update_time:
+            elapsed = time.time() - self._last_update_time
+            elapsed_minutes = int(elapsed / 60)
+
+            if elapsed_minutes < 1:
+                time_str = "just now"
+            elif elapsed_minutes == 1:
+                time_str = "1 minute ago"
+            elif elapsed_minutes < 60:
+                time_str = f"{elapsed_minutes} minutes ago"
+            else:
+                hours = elapsed_minutes // 60
+                time_str = f"{hours} hour{'s' if hours > 1 else ''} ago"
+
+            # Check for stale data
+            if elapsed_minutes >= self.STALE_DATA_THRESHOLD_MINUTES:
+                self.last_update_label.set_label(f"Last updated: {time_str} (STALE)")
+                self.last_update_label.add_css_class("warning")
+            else:
+                self.last_update_label.set_label(f"Last updated: {time_str}")
+                self.last_update_label.remove_css_class("warning")
+        else:
+            self.last_update_label.set_label("Last updated: Never")
+
+        return True  # Keep timer running
+
+    def _record_update_time(self):
+        """Record that data was updated"""
+        self._last_update_time = time.time()
+        self._check_data_freshness()  # Immediately update display
+
+    def cleanup(self):
+        """Clean up resources when panel is destroyed"""
+        logger.debug("[HamClock] Cleaning up panel resources")
+        self._stop_auto_refresh()
+        if self._update_check_timer_id:
+            GLib.source_remove(self._update_check_timer_id)
+            self._update_check_timer_id = None
