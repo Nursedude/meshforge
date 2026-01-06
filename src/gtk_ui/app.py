@@ -577,8 +577,9 @@ class MeshForgeWindow(Adw.ApplicationWindow):
 
     def _add_radio_config_page(self):
         """Add the radio configuration page"""
-        from .panels.radio_config import RadioConfigPanel
-        panel = RadioConfigPanel(self)
+        # Use simplified panel - direct library access, no CLI parsing
+        from .panels.radio_config_simple import RadioConfigSimple
+        panel = RadioConfigSimple(self)
         self.content_stack.add_named(panel, "radio_config")
         self.radio_config_panel = panel
 
