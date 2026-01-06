@@ -248,7 +248,7 @@ def check_service_status():
     # Method 1: systemctl
     try:
         result = subprocess.run(['systemctl', 'is-active', 'meshtasticd'],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, timeout=5)
         if result.stdout.strip() == 'active':
             is_running = True
             status_detail = "Running (systemd)"
@@ -259,7 +259,7 @@ def check_service_status():
     if not is_running:
         try:
             result = subprocess.run(['pgrep', '-f', 'meshtasticd'],
-                                   capture_output=True, text=True)
+                                   capture_output=True, text=True, timeout=5)
             if result.returncode == 0 and result.stdout.strip():
                 is_running = True
                 status_detail = "Running (process)"
@@ -347,7 +347,7 @@ def get_system_stats():
             temp = int(temp_file.read_text().strip()) / 1000
         if temp is None:
             result = subprocess.run(['vcgencmd', 'measure_temp'],
-                                   capture_output=True, text=True)
+                                   capture_output=True, text=True, timeout=5)
             if result.returncode == 0 and 'temp=' in result.stdout:
                 temp_parts = result.stdout.split('=')
                 if len(temp_parts) >= 2:

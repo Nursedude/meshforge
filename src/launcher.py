@@ -243,20 +243,24 @@ def install_dependencies():
                 'sudo', 'apt', 'install', '-y',
                 'python3-gi', 'python3-gi-cairo',
                 'gir1.2-gtk-4.0', 'libadwaita-1-0', 'gir1.2-adw-1'
-            ], check=True)
+            ], check=True, timeout=300)
             print(f"{Colors.GREEN}GTK4 dependencies installed!{Colors.NC}")
         except subprocess.CalledProcessError as e:
             print(f"{Colors.RED}Failed to install GTK4 dependencies: {e}{Colors.NC}")
+        except subprocess.TimeoutExpired:
+            print(f"{Colors.RED}Installation timed out (5 min limit){Colors.NC}")
 
     if choice in ["2", "3"]:
         print(f"\n{Colors.CYAN}Installing Textual...{Colors.NC}")
         try:
             subprocess.run([
                 'sudo', 'pip', 'install', '--break-system-packages', '--ignore-installed', 'textual'
-            ], check=True)
+            ], check=True, timeout=180)
             print(f"{Colors.GREEN}Textual installed!{Colors.NC}")
         except subprocess.CalledProcessError as e:
             print(f"{Colors.RED}Failed to install Textual: {e}{Colors.NC}")
+        except subprocess.TimeoutExpired:
+            print(f"{Colors.RED}Installation timed out (3 min limit){Colors.NC}")
 
     print(f"\n{Colors.GREEN}Installation complete! Returning to menu...{Colors.NC}")
     input(f"{Colors.DIM}Press Enter to continue...{Colors.NC}")
@@ -324,7 +328,7 @@ def main():
     while True:
         # Clear screen (using subprocess for security)
         import subprocess
-        subprocess.run(['clear'] if os.name == 'posix' else ['cls'], shell=False, check=False)
+        subprocess.run(['clear'] if os.name == 'posix' else ['cls'], shell=False, check=False, timeout=5)
 
         # Print banner and info
         print_banner()
