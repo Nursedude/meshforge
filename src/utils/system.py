@@ -124,6 +124,164 @@ def drop_privileges() -> bool:
         return False
 
 
+# =============================================================================
+# Admin Mode - Elevated Command Execution
+# =============================================================================
+
+def run_admin_command(
+    cmd: List[str],
+    use_gui: bool = True,
+    timeout: int = 30,
+    capture_output: bool = True
+) -> Tuple[bool, str, str]:
+    """
+    Run a command with elevated privileges.
+
+    Uses pkexec (GUI password dialog) when available and use_gui=True,
+    falls back to sudo for terminal use.
+
+    Args:
+        cmd: Command and arguments as list (e.g., ['systemctl', 'start', 'meshtasticd'])
+        use_gui: If True, prefer pkexec for GUI password prompt
+        timeout: Command timeout in seconds
+        capture_output: If True, capture stdout/stderr
+
+    Returns:
+        Tuple of (success: bool, stdout: str, stderr: str)
+
+    Example:
+        success, out, err = run_admin_command(['systemctl', 'restart', 'meshtasticd'])
+        if not success:
+            print(f"Failed: {err}")
+    """
+    import shutil
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # Already root? Run directly
+    if check_root():
+        logger.debug(f"Running as root: {' '.join(cmd)}")
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=capture_output,
+                text=True,
+                timeout=timeout
+            )
+            return result.returncode == 0, result.stdout or "", result.stderr or ""
+        except subprocess.TimeoutExpired:
+            return False, "", "Command timed out"
+        except Exception as e:
+            return False, "", str(e)
+
+    # Try pkexec for GUI (shows password dialog)
+    pkexec_path = shutil.which('pkexec')
+    if use_gui and pkexec_path and os.environ.get('DISPLAY'):
+        logger.debug(f"Using pkexec for: {' '.join(cmd)}")
+        try:
+            result = subprocess.run(
+                [pkexec_path] + cmd,
+                capture_output=capture_output,
+                text=True,
+                timeout=timeout
+            )
+            # pkexec returns 126 if user cancelled, 127 if command not found
+            if result.returncode == 126:
+                return False, "", "Authentication cancelled by user"
+            return result.returncode == 0, result.stdout or "", result.stderr or ""
+        except subprocess.TimeoutExpired:
+            return False, "", "Command timed out"
+        except Exception as e:
+            logger.debug(f"pkexec failed: {e}, trying sudo")
+
+    # Fall back to sudo
+    sudo_path = shutil.which('sudo')
+    if sudo_path:
+        logger.debug(f"Using sudo for: {' '.join(cmd)}")
+        try:
+            result = subprocess.run(
+                [sudo_path] + cmd,
+                capture_output=capture_output,
+                text=True,
+                timeout=timeout
+            )
+            return result.returncode == 0, result.stdout or "", result.stderr or ""
+        except subprocess.TimeoutExpired:
+            return False, "", "Command timed out"
+        except Exception as e:
+            return False, "", str(e)
+
+    return False, "", "No privilege escalation method available (need pkexec or sudo)"
+
+
+def run_admin_command_async(
+    cmd: List[str],
+    callback: Callable[[bool, str, str], None],
+    use_gui: bool = True,
+    timeout: int = 30
+) -> None:
+    """
+    Run an admin command asynchronously (for GTK/GUI apps).
+
+    Args:
+        cmd: Command and arguments as list
+        callback: Function to call with (success, stdout, stderr) when done
+        use_gui: If True, prefer pkexec for GUI password prompt
+        timeout: Command timeout in seconds
+
+    Example:
+        def on_done(success, out, err):
+            if success:
+                print("Service restarted!")
+            else:
+                print(f"Failed: {err}")
+
+        run_admin_command_async(['systemctl', 'restart', 'meshtasticd'], on_done)
+    """
+    import threading
+
+    def do_run():
+        success, stdout, stderr = run_admin_command(cmd, use_gui, timeout)
+        # Use GLib.idle_add if available (GTK apps)
+        try:
+            from gi.repository import GLib
+            GLib.idle_add(callback, success, stdout, stderr)
+        except ImportError:
+            callback(success, stdout, stderr)
+
+    thread = threading.Thread(target=do_run, daemon=True)
+    thread.start()
+
+
+def systemctl_admin(action: str, service: str, callback: Callable[[bool, str, str], None] = None) -> Tuple[bool, str, str]:
+    """
+    Convenience function for systemctl admin operations.
+
+    Args:
+        action: systemctl action (start, stop, restart, enable, disable)
+        service: Service name (e.g., 'meshtasticd')
+        callback: If provided, runs async and calls callback when done
+
+    Returns:
+        If callback is None: Tuple of (success, stdout, stderr)
+        If callback provided: None (result passed to callback)
+
+    Example:
+        # Synchronous
+        success, _, err = systemctl_admin('restart', 'meshtasticd')
+
+        # Async for GTK
+        systemctl_admin('restart', 'meshtasticd', callback=on_done)
+    """
+    cmd = ['systemctl', action, service]
+
+    if callback:
+        run_admin_command_async(cmd, callback)
+        return None
+    else:
+        return run_admin_command(cmd)
+
+
 def get_system_info():
     """Get comprehensive system information"""
     info = {}
