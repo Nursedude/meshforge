@@ -272,37 +272,43 @@ class UnifiedNodeTracker:
             import RNS
             logger.info("Initializing RNS for node discovery...")
 
-            # Initialize Reticulum - this sets up signal handlers
-            # Must be done from main thread
-            # If RNS is already running (e.g., rnsd), we'll use the shared instance
-            try:
-                self._reticulum = RNS.Reticulum()
-            except OSError as e:
-                # Handle "Address already in use" error (errno 98)
-                from utils.gateway_diagnostic import handle_address_in_use_error
-                error_info = handle_address_in_use_error(e, logger)
+            # Check if rnsd is already running - if so, connect as client
+            from utils.gateway_diagnostic import find_rns_processes
+            rns_pids = find_rns_processes()
 
-                if error_info['is_address_in_use']:
-                    if error_info['can_use_shared']:
-                        # An RNS daemon is running, use shared transport
-                        logger.info("RNS already running (rnsd), using shared instance")
-                        self._reticulum = None  # Use shared transport
-                    else:
-                        # Port in use but no rnsd - likely a stale process
-                        logger.error(f"Cannot initialize RNS: {error_info['message']}")
+            if rns_pids:
+                # rnsd is running - connect as client to avoid port conflicts
+                logger.info(f"rnsd detected (PID: {rns_pids[0]}), connecting as client")
+                try:
+                    # Connect to shared instance - RNS will use existing transport
+                    self._reticulum = RNS.Reticulum(configdir=None)
+                except Exception as e:
+                    # If that fails, try with default config
+                    logger.debug(f"Client mode init failed: {e}, trying default")
+                    self._reticulum = RNS.Reticulum()
+            else:
+                # No rnsd running - initialize normally
+                try:
+                    self._reticulum = RNS.Reticulum()
+                except OSError as e:
+                    # Handle "Address already in use" error (errno 98)
+                    from utils.gateway_diagnostic import handle_address_in_use_error
+                    error_info = handle_address_in_use_error(e, logger)
+
+                    if error_info['is_address_in_use']:
+                        logger.warning(f"RNS port conflict: {error_info['message']}")
                         for fix in error_info['fix_options']:
                             logger.info(f"  Fix: {fix}")
                         self._rns_connected = False
                         return
-                else:
-                    raise
-            except Exception as e:
-                if "reinitialise" in str(e).lower() or "already running" in str(e).lower():
-                    # RNS is already running (rnsd), use shared transport
-                    logger.info("RNS already running, using shared instance")
-                    self._reticulum = None  # We don't need a direct reference
-                else:
-                    raise
+                    else:
+                        raise
+                except Exception as e:
+                    if "reinitialise" in str(e).lower() or "already running" in str(e).lower():
+                        logger.info("RNS already initialized, using existing instance")
+                        self._reticulum = None
+                    else:
+                        raise
 
             # Create announce handler
             class NodeAnnounceHandler:
@@ -600,7 +606,16 @@ class UnifiedNodeTracker:
 
             # Try to access known destinations from Transport
             if hasattr(RNS.Transport, 'destinations') and RNS.Transport.destinations:
-                for dest_hash, dest in RNS.Transport.destinations.items():
+                destinations = RNS.Transport.destinations
+                # Handle both dict and list types (RNS API varies by version)
+                if isinstance(destinations, dict):
+                    dest_items = destinations.items()
+                elif isinstance(destinations, list):
+                    dest_items = enumerate(destinations)
+                else:
+                    dest_items = []
+
+                for _, dest in dest_items:
                     try:
                         if hasattr(dest, 'hash'):
                             node = UnifiedNode.from_rns(dest.hash, name="", app_data=None)
@@ -611,7 +626,14 @@ class UnifiedNodeTracker:
 
             # Also check the identity known destinations
             if hasattr(RNS.Identity, 'known_destinations') and RNS.Identity.known_destinations:
-                for dest_hash in RNS.Identity.known_destinations:
+                known_dests = RNS.Identity.known_destinations
+                # Handle both dict (hash->identity) and list (hashes) formats
+                if isinstance(known_dests, dict):
+                    dest_hashes = known_dests.keys()
+                else:
+                    dest_hashes = known_dests
+
+                for dest_hash in dest_hashes:
                     try:
                         if isinstance(dest_hash, bytes) and len(dest_hash) == 16:
                             # Check if we already have this node

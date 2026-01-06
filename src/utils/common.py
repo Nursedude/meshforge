@@ -93,11 +93,23 @@ class SettingsManager:
             self._settings = self._defaults.copy()
             try:
                 if self._settings_file.exists():
-                    with open(self._settings_file, 'r') as f:
-                        saved = json.load(f)
+                    content = self._settings_file.read_text().strip()
+                    if not content:
+                        # Empty file - treat as fresh start
+                        logger.info(f"Empty settings file {self._settings_file}, using defaults")
+                    else:
+                        saved = json.loads(content)
                         self._settings.update(saved)
             except json.JSONDecodeError as e:
-                logger.error(f"Invalid JSON in {self._settings_file}: {e}")
+                logger.warning(f"Corrupted settings in {self._settings_file}: {e}")
+                logger.info("Using default settings. File will be fixed on next save.")
+                # Backup corrupted file for debugging
+                try:
+                    backup = self._settings_file.with_suffix('.json.bak')
+                    self._settings_file.rename(backup)
+                    logger.info(f"Corrupted file backed up to {backup}")
+                except Exception:
+                    pass
             except IOError as e:
                 logger.error(f"Error reading {self._settings_file}: {e}")
             return self._settings.copy()

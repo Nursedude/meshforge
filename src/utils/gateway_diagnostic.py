@@ -186,31 +186,34 @@ class GatewayDiagnostic:
 
     def check_pip_packages(self) -> CheckResult:
         """Check required pip packages."""
-        required = ['meshtastic', 'rns', 'lxmf']
+        # Check using direct imports (same Python environment)
+        import importlib
+        required = {
+            'meshtastic': 'meshtastic',
+            'rns': 'RNS',
+            'lxmf': 'LXMF'
+        }
         missing = []
+        installed = []
 
-        for pkg in required:
+        for display_name, module_name in required.items():
             try:
-                result = subprocess.run(
-                    ['pip3', 'show', pkg],
-                    capture_output=True, text=True, timeout=10
-                )
-                if result.returncode != 0:
-                    missing.append(pkg)
-            except Exception:
-                missing.append(pkg)
+                importlib.import_module(module_name)
+                installed.append(display_name)
+            except ImportError:
+                missing.append(display_name)
 
         if not missing:
             return CheckResult(
                 name="Required Packages",
                 status=CheckStatus.PASS,
-                message="meshtastic, rns, lxmf installed"
+                message=f"{', '.join(installed)} installed"
             )
         else:
             return CheckResult(
                 name="Required Packages",
-                status=CheckStatus.FAIL,
-                message=f"Missing: {', '.join(missing)}",
+                status=CheckStatus.WARN if installed else CheckStatus.FAIL,
+                message=f"Missing: {', '.join(missing)}" + (f" (have: {', '.join(installed)})" if installed else ""),
                 fix_hint=f"pip3 install --user {' '.join(missing)}"
             )
 
@@ -220,31 +223,28 @@ class GatewayDiagnostic:
 
     def check_rns_installed(self) -> CheckResult:
         """Check if RNS is installed and importable."""
+        # Try direct import (same Python environment)
         try:
-            result = subprocess.run(
-                ['python3', '-c', 'import RNS; print(RNS.__version__)'],
-                capture_output=True, text=True, timeout=10
+            import RNS
+            version = getattr(RNS, '__version__', 'unknown')
+            return CheckResult(
+                name="RNS Installation",
+                status=CheckStatus.PASS,
+                message=f"Reticulum {version} installed"
             )
-            if result.returncode == 0:
-                version = result.stdout.strip()
-                return CheckResult(
-                    name="RNS Installation",
-                    status=CheckStatus.PASS,
-                    message=f"Reticulum {version} installed"
-                )
-            else:
-                return CheckResult(
-                    name="RNS Installation",
-                    status=CheckStatus.FAIL,
-                    message="RNS not installed or import error",
-                    fix_hint="pip3 install --user rns"
-                )
-        except Exception as e:
+        except ImportError:
             return CheckResult(
                 name="RNS Installation",
                 status=CheckStatus.FAIL,
-                message=f"Check failed: {e}",
+                message="RNS not installed",
                 fix_hint="pip3 install --user rns"
+            )
+        except Exception as e:
+            return CheckResult(
+                name="RNS Installation",
+                status=CheckStatus.WARN,
+                message=f"RNS installed but error: {e}",
+                fix_hint="Try: pip3 install --user --upgrade rns"
             )
 
     def check_rns_config(self) -> CheckResult:
@@ -332,9 +332,23 @@ class GatewayDiagnostic:
 
     def check_meshtastic_installed(self) -> CheckResult:
         """Check if meshtastic library is installed."""
+        # Try direct import first (same Python environment)
         try:
+            import meshtastic
+            version = getattr(meshtastic, '__version__', 'unknown')
+            return CheckResult(
+                name="Meshtastic Library",
+                status=CheckStatus.PASS,
+                message=f"meshtastic {version} installed"
+            )
+        except ImportError:
+            pass
+
+        # Fallback: try subprocess with sys.executable
+        try:
+            import sys
             result = subprocess.run(
-                ['python3', '-c', 'import meshtastic; print(meshtastic.__version__)'],
+                [sys.executable, '-c', 'import meshtastic; print(meshtastic.__version__)'],
                 capture_output=True, text=True, timeout=10
             )
             if result.returncode == 0:
@@ -344,20 +358,15 @@ class GatewayDiagnostic:
                     status=CheckStatus.PASS,
                     message=f"meshtastic {version} installed"
                 )
-            else:
-                return CheckResult(
-                    name="Meshtastic Library",
-                    status=CheckStatus.FAIL,
-                    message="meshtastic library not installed",
-                    fix_hint="pip3 install --user meshtastic"
-                )
-        except Exception as e:
-            return CheckResult(
-                name="Meshtastic Library",
-                status=CheckStatus.FAIL,
-                message=f"Check failed: {e}",
-                fix_hint="pip3 install --user meshtastic"
-            )
+        except Exception:
+            pass
+
+        return CheckResult(
+            name="Meshtastic Library",
+            status=CheckStatus.FAIL,
+            message="meshtastic library not installed",
+            fix_hint="pip3 install --user meshtastic"
+        )
 
     def check_meshtastic_interface(self) -> CheckResult:
         """Check Meshtastic_Interface.py for RNS."""
