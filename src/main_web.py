@@ -111,6 +111,62 @@ def signal_handler(signum, frame):
     sys.exit(0)
 
 
+def check_port_available(host: str, port: int) -> tuple:
+    """
+    Check if a port is available for binding.
+
+    Returns:
+        (is_available, process_info) - process_info is populated if port is in use
+    """
+    # First check if we can bind to the port
+    test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    test_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        test_socket.bind((host, port))
+        test_socket.close()
+        return (True, None)
+    except OSError as e:
+        test_socket.close()
+        # Port is in use - try to identify what's using it
+        process_info = None
+        try:
+            # Try lsof to identify the process
+            result = subprocess.run(
+                ['lsof', '-i', f':{port}', '-t'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                pids = result.stdout.strip().split('\n')
+                # Get process name for first PID
+                pid = pids[0]
+                ps_result = subprocess.run(
+                    ['ps', '-p', pid, '-o', 'comm='],
+                    capture_output=True, text=True, timeout=5
+                )
+                if ps_result.returncode == 0:
+                    proc_name = ps_result.stdout.strip()
+                    process_info = f"{proc_name} (PID: {pid})"
+        except Exception:
+            pass
+
+        return (False, process_info)
+
+
+def find_available_port(host: str, preferred_port: int, max_tries: int = 10) -> int:
+    """
+    Find an available port, starting with the preferred port.
+
+    Returns:
+        Available port number, or 0 if none found
+    """
+    for offset in range(max_tries):
+        port = preferred_port + offset
+        is_available, _ = check_port_available(host, port)
+        if is_available:
+            return port
+    return 0
+
+
 def run_subprocess(cmd, **kwargs):
     """Run a subprocess and track it for cleanup"""
     global _shutdown_flag
@@ -2384,6 +2440,40 @@ Environment variables:
     if existing_pid:
         print(f"Web UI already running (PID: {existing_pid})")
         print("Stop it first with: sudo python3 src/main_web.py --stop")
+        sys.exit(1)
+
+    # Check if port is available
+    is_available, process_info = check_port_available(args.host, args.port)
+    if not is_available:
+        print()
+        print("=" * 60)
+        print(f"ERROR: Port {args.port} is already in use")
+        print("=" * 60)
+        if process_info:
+            print(f"Process using port: {process_info}")
+        else:
+            print("Could not identify process using the port.")
+            print(f"Check with: sudo lsof -i :{args.port}")
+        print()
+
+        # Known services that commonly use certain ports
+        known_services = {
+            8080: "AREDN web UI, HamClock API, or other web services",
+            4403: "meshtasticd TCP interface",
+            8081: "HamClock live port",
+        }
+        if args.port in known_services:
+            print(f"Note: Port {args.port} is commonly used by: {known_services[args.port]}")
+            print()
+
+        # Suggest alternative
+        alt_port = find_available_port(args.host, args.port + 1, max_tries=10)
+        if alt_port:
+            print(f"Try an alternative port:")
+            print(f"  sudo python3 src/main_web.py --port {alt_port}")
+        else:
+            print("Try specifying a different port with --port <number>")
+        print("=" * 60)
         sys.exit(1)
 
     # Check root

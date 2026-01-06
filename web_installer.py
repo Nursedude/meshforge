@@ -11,6 +11,7 @@ import sys
 import subprocess
 import json
 import logging
+import socket
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 import threading
@@ -345,9 +346,64 @@ class InstallerHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+def check_port_available(host: str, port: int) -> tuple:
+    """
+    Check if a port is available for binding.
+
+    Returns:
+        (is_available, process_info) - process_info is populated if port is in use
+    """
+    test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    test_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        test_socket.bind((host, port))
+        test_socket.close()
+        return (True, None)
+    except OSError:
+        test_socket.close()
+        # Try to identify what's using the port
+        process_info = None
+        try:
+            result = subprocess.run(
+                ['lsof', '-i', f':{port}', '-t'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                pid = result.stdout.strip().split('\n')[0]
+                ps_result = subprocess.run(
+                    ['ps', '-p', pid, '-o', 'comm='],
+                    capture_output=True, text=True, timeout=5
+                )
+                if ps_result.returncode == 0:
+                    proc_name = ps_result.stdout.strip()
+                    process_info = f"{proc_name} (PID: {pid})"
+        except Exception:
+            pass
+        return (False, process_info)
+
+
 def main():
     host = '0.0.0.0'
     port = 8080
+
+    # Check if port is available before starting
+    is_available, process_info = check_port_available(host, port)
+    if not is_available:
+        print()
+        print("=" * 60)
+        print(f"ERROR: Port {port} is already in use")
+        print("=" * 60)
+        if process_info:
+            print(f"Process using port: {process_info}")
+        else:
+            print("Could not identify process using the port.")
+            print(f"Check with: sudo lsof -i :{port}")
+        print()
+        print("Note: Port 8080 is commonly used by AREDN web UI or HamClock API")
+        print()
+        print("To use a different port, modify the 'port' variable in web_installer.py")
+        print("=" * 60)
+        sys.exit(1)
 
     logger.info(f"Starting web installer on {host}:{port}")
     server = HTTPServer((host, port), InstallerHandler)
