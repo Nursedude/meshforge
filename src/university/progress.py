@@ -154,7 +154,8 @@ class ProgressTracker:
         if course.started_at is None:
             course.started_at = datetime.now().isoformat()
 
-        if lesson_id not in course.lessons:
+        # Create or fix lesson entry (handles None values from corrupted data)
+        if lesson_id not in course.lessons or course.lessons[lesson_id] is None:
             course.lessons[lesson_id] = LessonProgress(lesson_id=lesson_id)
 
         lesson = course.lessons[lesson_id]
@@ -167,7 +168,8 @@ class ProgressTracker:
         """Mark a lesson as completed"""
         course = self.get_course_progress(course_id)
 
-        if lesson_id not in course.lessons:
+        # Create or fix lesson entry (handles None values from corrupted data)
+        if lesson_id not in course.lessons or course.lessons[lesson_id] is None:
             course.lessons[lesson_id] = LessonProgress(lesson_id=lesson_id)
 
         lesson = course.lessons[lesson_id]
@@ -185,8 +187,9 @@ class ProgressTracker:
     def update_time_spent(self, course_id: str, lesson_id: str, seconds: int):
         """Update time spent on a lesson"""
         course = self.get_course_progress(course_id)
-        if lesson_id in course.lessons:
-            course.lessons[lesson_id].time_spent_seconds += seconds
+        lesson = course.lessons.get(lesson_id)
+        if lesson is not None:
+            lesson.time_spent_seconds += seconds
             self._save()
 
     def get_overall_stats(self) -> Dict[str, Any]:
