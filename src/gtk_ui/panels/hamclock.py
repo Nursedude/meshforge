@@ -79,7 +79,12 @@ class HamClockPanel(Gtk.Box):
         "url": "",
         "api_port": 8080,
         "live_port": 8081,
+        "auto_refresh_enabled": False,
+        "auto_refresh_minutes": 10,
     }
+
+    # Stale data threshold (minutes without update before showing warning)
+    STALE_DATA_THRESHOLD_MINUTES = 15
 
     def __init__(self, main_window):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -90,6 +95,13 @@ class HamClockPanel(Gtk.Box):
         self.set_margin_end(20)
         self.set_margin_top(20)
         self.set_margin_bottom(20)
+
+        # Auto-refresh state
+        self._auto_refresh_timer_id = None
+        self._last_update_time = None
+        self._update_check_timer_id = None
+        self._retry_count = 0
+        self._max_retries = 3
 
         # Use centralized settings manager
         if HAS_SETTINGS_MANAGER:
@@ -106,6 +118,13 @@ class HamClockPanel(Gtk.Box):
         # Auto-connect if URL is configured
         if self._settings.get("url"):
             GLib.timeout_add(1000, self._auto_connect)
+
+        # Start auto-refresh if enabled
+        if self._settings.get("auto_refresh_enabled"):
+            GLib.timeout_add(2000, self._start_auto_refresh)
+
+        # Start update time checker (updates "last updated" display)
+        self._update_check_timer_id = GLib.timeout_add(60000, self._check_data_freshness)
 
     def _load_settings_legacy(self):
         """Legacy settings load for fallback"""
@@ -262,13 +281,48 @@ class HamClockPanel(Gtk.Box):
 
             weather_box.append(row)
 
-        # Refresh button
+        # Last updated indicator
+        self.last_update_label = Gtk.Label(label="Last updated: Never")
+        self.last_update_label.set_xalign(0)
+        self.last_update_label.add_css_class("dim-label")
+        self.last_update_label.set_margin_top(10)
+        weather_box.append(self.last_update_label)
+
+        # Refresh and auto-refresh controls
         refresh_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         refresh_box.set_margin_top(10)
-        refresh_btn = Gtk.Button(label="Refresh Data")
+
+        refresh_btn = Gtk.Button(label="Refresh Now")
         refresh_btn.set_tooltip_text("Refresh space weather data from HamClock")
         refresh_btn.connect("clicked", self._on_refresh)
         refresh_box.append(refresh_btn)
+
+        # Auto-refresh toggle
+        self.auto_refresh_switch = Gtk.Switch()
+        self.auto_refresh_switch.set_active(self._settings.get("auto_refresh_enabled", False))
+        self.auto_refresh_switch.set_tooltip_text("Enable automatic data refresh")
+        self.auto_refresh_switch.connect("notify::active", self._on_auto_refresh_toggled)
+
+        auto_refresh_label = Gtk.Label(label="Auto-refresh:")
+        refresh_box.append(auto_refresh_label)
+        refresh_box.append(self.auto_refresh_switch)
+
+        # Interval spinner
+        interval_label = Gtk.Label(label="every")
+        refresh_box.append(interval_label)
+
+        self.refresh_interval_spin = Gtk.SpinButton()
+        self.refresh_interval_spin.set_range(1, 60)
+        self.refresh_interval_spin.set_value(self._settings.get("auto_refresh_minutes", 10))
+        self.refresh_interval_spin.set_increments(1, 5)
+        self.refresh_interval_spin.set_width_chars(3)
+        self.refresh_interval_spin.set_tooltip_text("Refresh interval in minutes")
+        self.refresh_interval_spin.connect("value-changed", self._on_refresh_interval_changed)
+        refresh_box.append(self.refresh_interval_spin)
+
+        min_label = Gtk.Label(label="min")
+        refresh_box.append(min_label)
+
         weather_box.append(refresh_box)
 
         weather_frame.set_child(weather_box)
@@ -323,6 +377,108 @@ class HamClockPanel(Gtk.Box):
         bands_box.append(noaa_row)
         bands_frame.set_child(bands_box)
         content_box.append(bands_frame)
+
+        # VOACAP Propagation Predictions Frame
+        voacap_frame = Gtk.Frame()
+        voacap_frame.set_label("VOACAP Propagation Predictions")
+        voacap_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        voacap_box.set_margin_start(15)
+        voacap_box.set_margin_end(15)
+        voacap_box.set_margin_top(10)
+        voacap_box.set_margin_bottom(10)
+
+        # VOACAP explanation
+        voacap_info = Gtk.Label(
+            label="Voice of America Coverage Analysis Program - HF propagation reliability"
+        )
+        voacap_info.set_xalign(0)
+        voacap_info.add_css_class("dim-label")
+        voacap_box.append(voacap_info)
+
+        # Individual band predictions with reliability percentages
+        self.voacap_labels = {}
+        voacap_bands = [
+            ("160m", "160m (1.8 MHz)"),
+            ("80m", "80m (3.5 MHz)"),
+            ("40m", "40m (7 MHz)"),
+            ("30m", "30m (10 MHz)"),
+            ("20m", "20m (14 MHz)"),
+            ("17m", "17m (18 MHz)"),
+            ("15m", "15m (21 MHz)"),
+            ("12m", "12m (24 MHz)"),
+            ("10m", "10m (28 MHz)"),
+            ("6m", "6m (50 MHz)"),
+        ]
+
+        # Create a grid for better layout
+        voacap_grid = Gtk.Grid()
+        voacap_grid.set_column_spacing(15)
+        voacap_grid.set_row_spacing(5)
+        voacap_grid.set_margin_top(10)
+
+        # Headers
+        band_header = Gtk.Label(label="Band")
+        band_header.add_css_class("heading")
+        band_header.set_xalign(0)
+        voacap_grid.attach(band_header, 0, 0, 1, 1)
+
+        rel_header = Gtk.Label(label="Reliability")
+        rel_header.add_css_class("heading")
+        rel_header.set_xalign(0)
+        voacap_grid.attach(rel_header, 1, 0, 1, 1)
+
+        snr_header = Gtk.Label(label="SNR")
+        snr_header.add_css_class("heading")
+        snr_header.set_xalign(0)
+        voacap_grid.attach(snr_header, 2, 0, 1, 1)
+
+        for i, (key, label_text) in enumerate(voacap_bands):
+            row = i + 1
+
+            band_label = Gtk.Label(label=label_text)
+            band_label.set_xalign(0)
+            voacap_grid.attach(band_label, 0, row, 1, 1)
+
+            rel_label = Gtk.Label(label="--")
+            rel_label.set_xalign(0)
+            voacap_grid.attach(rel_label, 1, row, 1, 1)
+
+            snr_label = Gtk.Label(label="--")
+            snr_label.set_xalign(0)
+            voacap_grid.attach(snr_label, 2, row, 1, 1)
+
+            self.voacap_labels[key] = {
+                'reliability': rel_label,
+                'snr': snr_label
+            }
+
+        voacap_box.append(voacap_grid)
+
+        # VOACAP target/path info
+        self.voacap_path_label = Gtk.Label(label="Path: --")
+        self.voacap_path_label.set_xalign(0)
+        self.voacap_path_label.add_css_class("dim-label")
+        self.voacap_path_label.set_margin_top(10)
+        voacap_box.append(self.voacap_path_label)
+
+        # VOACAP buttons
+        voacap_btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        voacap_btn_row.set_margin_top(10)
+
+        voacap_btn = Gtk.Button(label="Fetch VOACAP")
+        voacap_btn.connect("clicked", self._on_fetch_voacap)
+        voacap_btn.set_tooltip_text("Get VOACAP predictions from HamClock")
+        voacap_btn.add_css_class("suggested-action")
+        voacap_btn_row.append(voacap_btn)
+
+        voacap_web_btn = Gtk.Button(label="VOACAP Online")
+        voacap_web_btn.connect("clicked", self._on_open_voacap_online)
+        voacap_web_btn.set_tooltip_text("Open VOACAP Online in browser for detailed analysis")
+        voacap_btn_row.append(voacap_web_btn)
+
+        voacap_box.append(voacap_btn_row)
+        voacap_frame.set_child(voacap_box)
+        content_box.append(voacap_frame)
 
         # Live view (if WebKit available)
         if HAS_WEBKIT:
@@ -927,6 +1083,8 @@ class HamClockPanel(Gtk.Box):
         if updated_count > 0:
             self.status_label.set_label(f"Updated {updated_count} values")
             logger.debug(f"[HamClock] Updated {updated_count} UI labels")
+            # Record successful update time
+            self._record_update_time()
         else:
             self.status_label.set_label("No data received")
             logger.debug("[HamClock] No values to update")
@@ -1100,3 +1258,358 @@ class HamClockPanel(Gtk.Box):
         # N0NBH Solar-Terrestrial Data page
         url = "https://www.hamqsl.com/solar.html"
         self._open_url_in_browser(url)
+
+    def _on_fetch_voacap(self, button):
+        """Fetch VOACAP propagation predictions from HamClock"""
+        logger.info("[HamClock] VOACAP fetch button clicked")
+
+        url = self._settings.get("url", "").rstrip('/')
+        api_port = self._settings.get("api_port", 8080)
+
+        if not url:
+            self.status_label.set_label("Configure HamClock URL first")
+            return
+
+        self.status_label.set_label("Fetching VOACAP data...")
+
+        def fetch():
+            api_url = f"{url}:{api_port}"
+            voacap_data = {}
+
+            try:
+                # HamClock VOACAP endpoint
+                full_url = f"{api_url}/get_voacap.txt"
+                logger.debug(f"[HamClock] Fetching VOACAP: {full_url}")
+
+                req = urllib.request.Request(full_url, method='GET')
+                req.add_header('User-Agent', 'MeshForge/1.0')
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    data = response.read().decode('utf-8')
+                    logger.debug(f"[HamClock] VOACAP response: {data[:500]}...")
+                    voacap_data = self._parse_voacap(data)
+
+            except urllib.error.HTTPError as e:
+                logger.debug(f"[HamClock] VOACAP HTTP error: {e.code}")
+                GLib.idle_add(
+                    lambda: self.status_label.set_label(f"VOACAP not available (HTTP {e.code})")
+                )
+                return
+            except urllib.error.URLError as e:
+                logger.debug(f"[HamClock] VOACAP URL error: {e.reason}")
+                GLib.idle_add(
+                    lambda: self.status_label.set_label(f"Connection error: {e.reason}")
+                )
+                return
+            except Exception as e:
+                logger.error(f"[HamClock] VOACAP fetch error: {e}")
+                GLib.idle_add(
+                    lambda: self.status_label.set_label(f"VOACAP error: {e}")
+                )
+                return
+
+            GLib.idle_add(self._update_voacap_display, voacap_data)
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _parse_voacap(self, data):
+        """
+        Parse VOACAP response from HamClock.
+
+        HamClock VOACAP response format (example):
+            Path=DE to DX
+            UTC=14
+            80m=23,12
+            40m=67,24
+            30m=89,32
+            20m=95,38
+            17m=78,28
+            15m=45,18
+            12m=12,8
+            10m=5,2
+
+        Where values are reliability%,SNR_dB
+
+        Args:
+            data: Raw text response from HamClock
+
+        Returns:
+            Dictionary with parsed VOACAP data
+        """
+        result = {
+            'bands': {},
+            'path': '',
+            'utc': '',
+            'raw': data
+        }
+
+        logger.debug(f"[HamClock] Parsing VOACAP data...")
+
+        for line in data.strip().split('\n'):
+            line = line.strip()
+            if not line or '=' not in line:
+                continue
+
+            key, value = line.split('=', 1)
+            key = key.strip().lower()
+            value = value.strip()
+
+            if key == 'path':
+                result['path'] = value
+            elif key == 'utc':
+                result['utc'] = value
+            elif 'm' in key:
+                # Band data (e.g., "80m", "40m")
+                band_key = key.replace('m', 'm')  # Normalize
+                try:
+                    if ',' in value:
+                        rel, snr = value.split(',', 1)
+                        result['bands'][band_key] = {
+                            'reliability': int(rel.strip()),
+                            'snr': int(snr.strip())
+                        }
+                    else:
+                        # Just reliability
+                        result['bands'][band_key] = {
+                            'reliability': int(value),
+                            'snr': 0
+                        }
+                except ValueError as e:
+                    logger.debug(f"[HamClock] Could not parse band {key}: {value} - {e}")
+
+        logger.debug(f"[HamClock] Parsed VOACAP: {len(result['bands'])} bands, path={result['path']}")
+        return result
+
+    def _update_voacap_display(self, data):
+        """Update the VOACAP display with parsed data"""
+        logger.debug(f"[HamClock] Updating VOACAP display: {data}")
+
+        if not data.get('bands'):
+            self.status_label.set_label("No VOACAP data available")
+            # Reset labels
+            for band_key, labels in self.voacap_labels.items():
+                labels['reliability'].set_label("--")
+                labels['snr'].set_label("--")
+            self.voacap_path_label.set_label("Path: --")
+            return
+
+        updated = 0
+
+        for band_key, labels in self.voacap_labels.items():
+            if band_key in data['bands']:
+                band_data = data['bands'][band_key]
+                rel = band_data.get('reliability', 0)
+                snr = band_data.get('snr', 0)
+
+                # Color code reliability
+                if rel >= 80:
+                    rel_text = f"{rel}%"
+                    labels['reliability'].remove_css_class("warning")
+                    labels['reliability'].remove_css_class("error")
+                    labels['reliability'].add_css_class("success")
+                elif rel >= 50:
+                    rel_text = f"{rel}%"
+                    labels['reliability'].remove_css_class("success")
+                    labels['reliability'].remove_css_class("error")
+                    labels['reliability'].add_css_class("warning")
+                elif rel > 0:
+                    rel_text = f"{rel}%"
+                    labels['reliability'].remove_css_class("success")
+                    labels['reliability'].remove_css_class("warning")
+                    labels['reliability'].add_css_class("error")
+                else:
+                    rel_text = "Closed"
+                    labels['reliability'].remove_css_class("success")
+                    labels['reliability'].remove_css_class("warning")
+                    labels['reliability'].add_css_class("error")
+
+                labels['reliability'].set_label(rel_text)
+                labels['snr'].set_label(f"{snr} dB" if snr else "--")
+                updated += 1
+            else:
+                labels['reliability'].set_label("--")
+                labels['snr'].set_label("--")
+
+        # Update path info
+        path_info = []
+        if data.get('path'):
+            path_info.append(data['path'])
+        if data.get('utc'):
+            path_info.append(f"UTC {data['utc']}:00")
+        self.voacap_path_label.set_label(f"Path: {' | '.join(path_info) if path_info else '--'}")
+
+        if updated > 0:
+            self.status_label.set_label(f"VOACAP: {updated} bands updated")
+        else:
+            self.status_label.set_label("VOACAP data received but no bands parsed")
+
+    def _on_open_voacap_online(self, button):
+        """Open VOACAP Online in browser for detailed propagation analysis"""
+        logger.info("[HamClock] VOACAP Online button clicked")
+        # VOACAP Online - comprehensive HF propagation prediction
+        url = "https://www.voacap.com/hf/"
+        self._open_url_in_browser(url)
+
+    # ==================== Auto-Refresh Methods ====================
+
+    def _on_auto_refresh_toggled(self, switch, gparam):
+        """Handle auto-refresh toggle"""
+        enabled = switch.get_active()
+        logger.info(f"[HamClock] Auto-refresh toggled: {enabled}")
+
+        self._settings["auto_refresh_enabled"] = enabled
+        self._save_settings()
+
+        if enabled:
+            self._start_auto_refresh()
+        else:
+            self._stop_auto_refresh()
+
+    def _on_refresh_interval_changed(self, spinbutton):
+        """Handle refresh interval change"""
+        interval = int(spinbutton.get_value())
+        logger.info(f"[HamClock] Refresh interval changed: {interval} minutes")
+
+        self._settings["auto_refresh_minutes"] = interval
+        self._save_settings()
+
+        # Restart auto-refresh with new interval if enabled
+        if self._settings.get("auto_refresh_enabled"):
+            self._stop_auto_refresh()
+            self._start_auto_refresh()
+
+    def _start_auto_refresh(self):
+        """Start the auto-refresh timer"""
+        if self._auto_refresh_timer_id:
+            # Already running
+            return False
+
+        interval_minutes = self._settings.get("auto_refresh_minutes", 10)
+        interval_ms = interval_minutes * 60 * 1000
+
+        logger.info(f"[HamClock] Starting auto-refresh every {interval_minutes} minutes")
+
+        # Reset retry count
+        self._retry_count = 0
+
+        # Schedule periodic refresh
+        self._auto_refresh_timer_id = GLib.timeout_add(interval_ms, self._do_auto_refresh)
+
+        # Update UI
+        self.status_label.set_label(f"Auto-refresh: every {interval_minutes} min")
+
+        return False  # Don't repeat (used with GLib.timeout_add)
+
+    def _stop_auto_refresh(self):
+        """Stop the auto-refresh timer"""
+        if self._auto_refresh_timer_id:
+            GLib.source_remove(self._auto_refresh_timer_id)
+            self._auto_refresh_timer_id = None
+            logger.info("[HamClock] Auto-refresh stopped")
+            self.status_label.set_label("Auto-refresh disabled")
+
+    def _do_auto_refresh(self):
+        """Perform auto-refresh (called by timer)"""
+        logger.debug("[HamClock] Auto-refresh triggered")
+
+        url = self._settings.get("url", "")
+        if not url:
+            logger.debug("[HamClock] No URL configured, skipping auto-refresh")
+            return True  # Keep timer running
+
+        # Perform the fetch
+        self._fetch_space_weather_with_retry()
+
+        return True  # Keep timer running
+
+    def _fetch_space_weather_with_retry(self):
+        """Fetch space weather with retry on failure"""
+        url = self._settings.get("url", "").rstrip('/')
+        api_port = self._settings.get("api_port", 8080)
+
+        if not url:
+            return
+
+        def fetch():
+            api_url = f"{url}:{api_port}"
+            weather_data = {}
+            success = False
+
+            logger.debug(f"[HamClock] Auto-refresh fetch from {api_url}...")
+
+            endpoints = [
+                ("get_sys.txt", self._parse_sys),
+                ("get_spacewx.txt", self._parse_spacewx),
+                ("get_bc.txt", self._parse_band_conditions),
+            ]
+
+            for endpoint, parser in endpoints:
+                try:
+                    full_url = f"{api_url}/{endpoint}"
+                    req = urllib.request.Request(full_url, method='GET')
+                    req.add_header('User-Agent', 'MeshForge/1.0')
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        data = response.read().decode('utf-8')
+                        parsed = parser(data)
+                        weather_data.update(parsed)
+                        success = True
+                except Exception as e:
+                    logger.debug(f"[HamClock] Auto-refresh {endpoint}: {e}")
+
+            if success:
+                self._retry_count = 0
+                GLib.idle_add(self._update_weather_display, weather_data)
+            else:
+                self._retry_count += 1
+                if self._retry_count <= self._max_retries:
+                    # Schedule retry with exponential backoff (2s, 4s, 8s)
+                    backoff_ms = 2000 * (2 ** (self._retry_count - 1))
+                    logger.info(f"[HamClock] Auto-refresh failed, retry {self._retry_count}/{self._max_retries} in {backoff_ms}ms")
+                    GLib.timeout_add(backoff_ms, lambda: self._fetch_space_weather_with_retry() or False)
+                else:
+                    logger.warning(f"[HamClock] Auto-refresh failed after {self._max_retries} retries")
+                    GLib.idle_add(
+                        lambda: self.status_label.set_label("Auto-refresh failed - check connection")
+                    )
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _check_data_freshness(self):
+        """Check if data is stale and update the last-updated display"""
+        if self._last_update_time:
+            elapsed = time.time() - self._last_update_time
+            elapsed_minutes = int(elapsed / 60)
+
+            if elapsed_minutes < 1:
+                time_str = "just now"
+            elif elapsed_minutes == 1:
+                time_str = "1 minute ago"
+            elif elapsed_minutes < 60:
+                time_str = f"{elapsed_minutes} minutes ago"
+            else:
+                hours = elapsed_minutes // 60
+                time_str = f"{hours} hour{'s' if hours > 1 else ''} ago"
+
+            # Check for stale data
+            if elapsed_minutes >= self.STALE_DATA_THRESHOLD_MINUTES:
+                self.last_update_label.set_label(f"Last updated: {time_str} (STALE)")
+                self.last_update_label.add_css_class("warning")
+            else:
+                self.last_update_label.set_label(f"Last updated: {time_str}")
+                self.last_update_label.remove_css_class("warning")
+        else:
+            self.last_update_label.set_label("Last updated: Never")
+
+        return True  # Keep timer running
+
+    def _record_update_time(self):
+        """Record that data was updated"""
+        self._last_update_time = time.time()
+        self._check_data_freshness()  # Immediately update display
+
+    def cleanup(self):
+        """Clean up resources when panel is destroyed"""
+        logger.debug("[HamClock] Cleaning up panel resources")
+        self._stop_auto_refresh()
+        if self._update_check_timer_id:
+            GLib.source_remove(self._update_check_timer_id)
+            self._update_check_timer_id = None
