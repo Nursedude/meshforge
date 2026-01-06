@@ -19,6 +19,7 @@ from gi.repository import Gtk, GLib
 import json
 import threading
 import subprocess
+import time
 import urllib.request
 import urllib.error
 import logging
@@ -618,45 +619,57 @@ class HamClockPanel(Gtk.Box):
 
     def _on_connect(self, button):
         """Connect to HamClock"""
-        url = self.url_entry.get_text().strip()
-        if not url:
-            self.status_label.set_label("Enter HamClock URL")
+        logger.info("[HamClock] Connect button clicked")
+
+        try:
+            url = self.url_entry.get_text().strip()
+            if not url:
+                logger.debug("[HamClock] No URL entered")
+                self.status_label.set_label("Enter HamClock URL")
+                return
+
+            # Add http:// prefix if missing
+            if not url.startswith('http://') and not url.startswith('https://'):
+                url = f'http://{url}'
+
+            # Remove trailing slash
+            url = url.rstrip('/')
+
+            # Validate URL format
+            valid, error = self._validate_url(url)
+            if not valid:
+                logger.warning(f"[HamClock] URL validation failed: {error}")
+                self.status_label.set_label(error)
+                return
+
+            # Validate ports
+            api_port = int(self.api_port_spin.get_value())
+            live_port = int(self.live_port_spin.get_value())
+            if api_port < 1 or api_port > 65535:
+                logger.warning(f"[HamClock] Invalid API port: {api_port}")
+                self.status_label.set_label("API port must be 1-65535")
+                return
+            if live_port < 1 or live_port > 65535:
+                logger.warning(f"[HamClock] Invalid Live port: {live_port}")
+                self.status_label.set_label("Live port must be 1-65535")
+                return
+
+            logger.info(f"[HamClock] Connecting to {url} (API:{api_port}, Live:{live_port})")
+
+            # Save settings
+            self._settings["url"] = url
+            self._settings["api_port"] = api_port
+            self._settings["live_port"] = live_port
+            self._save_settings()
+
+            # Update entry with corrected URL
+            self.url_entry.set_text(url)
+
+            self.status_label.set_label("Connecting...")
+        except Exception as e:
+            logger.error(f"[HamClock] Error in connect handler: {e}", exc_info=True)
+            self.status_label.set_label(f"Error: {e}")
             return
-
-        # Add http:// prefix if missing
-        if not url.startswith('http://') and not url.startswith('https://'):
-            url = f'http://{url}'
-
-        # Remove trailing slash
-        url = url.rstrip('/')
-
-        # Validate URL format
-        valid, error = self._validate_url(url)
-        if not valid:
-            self.status_label.set_label(error)
-            return
-
-        # Validate ports
-        api_port = int(self.api_port_spin.get_value())
-        live_port = int(self.live_port_spin.get_value())
-        if api_port < 1 or api_port > 65535:
-            self.status_label.set_label("API port must be 1-65535")
-            return
-        if live_port < 1 or live_port > 65535:
-            self.status_label.set_label("Live port must be 1-65535")
-            return
-
-        # Save settings
-        self._settings["url"] = url
-        self._settings["api_port"] = api_port
-        self._settings["live_port"] = live_port
-        self._save_settings()
-
-        # Update entry with corrected URL
-        self.url_entry.set_text(url)
-
-        self.status_label.set_label("Connecting...")
-        logger.debug(f"[HamClock] Connecting to {url}...")
 
         def check_connection():
             api_url = f"{url}:{self._settings['api_port']}"
@@ -709,7 +722,9 @@ class HamClockPanel(Gtk.Box):
 
     def _on_refresh(self, button):
         """Refresh space weather data"""
+        logger.info("[HamClock] Refresh button clicked")
         if not self._settings.get("url"):
+            logger.debug("[HamClock] No URL configured, cannot refresh")
             self.status_label.set_label("Not connected")
             return
         self._fetch_space_weather()
@@ -877,10 +892,12 @@ class HamClockPanel(Gtk.Box):
 
     def _on_open_browser(self, button):
         """Open HamClock live view in browser"""
+        logger.info("[HamClock] Open Browser button clicked")
         url = self._settings.get("url", "").rstrip('/')
         live_port = self._settings.get("live_port", 8081)
 
         if not url:
+            logger.debug("[HamClock] No URL configured")
             self.status_label.set_label("Enter HamClock URL first")
             return
 
@@ -889,89 +906,88 @@ class HamClockPanel(Gtk.Box):
 
     def _open_url_in_browser(self, url):
         """Open a URL in the user's default browser (handles running as root)"""
-        logger.debug(f"[HamClock] Opening URL: {url}")
+        logger.info(f"[HamClock] Opening URL in browser: {url}")
 
         user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
+        is_root = os.geteuid() == 0
 
         # Detect display environment (Wayland or X11)
         wayland_display = os.environ.get('WAYLAND_DISPLAY', '')
         x11_display = os.environ.get('DISPLAY', '')
 
+        logger.debug(f"[HamClock] User: {user}, Root: {is_root}, WAYLAND: {wayland_display}, X11: {x11_display}")
+
         # Build environment variables for browser
         env_vars = []
         if wayland_display:
             env_vars.append(f'WAYLAND_DISPLAY={wayland_display}')
-            # XDG_RUNTIME_DIR is needed for Wayland
             runtime_dir = os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
             env_vars.append(f'XDG_RUNTIME_DIR={runtime_dir}')
         if x11_display:
             env_vars.append(f'DISPLAY={x11_display}')
         if not env_vars:
-            # Fallback to default X11 display
             env_vars.append('DISPLAY=:0')
 
-        # Try multiple browser open methods
-        methods = []
+        logger.debug(f"[HamClock] Environment vars: {env_vars}")
 
-        # Method 1: Run as original user with their display (for root)
-        if os.geteuid() == 0 and user:
-            methods.append(
-                lambda: subprocess.Popen(
-                    ['sudo', '-u', user, 'env'] + env_vars + ['xdg-open', url],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                )
-            )
+        # Define browser commands with descriptions
+        browser_methods = []
 
-        # Method 2: Direct xdg-open (if not root or as fallback)
-        methods.append(
-            lambda: subprocess.Popen(
-                ['xdg-open', url],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
-        )
+        if is_root and user:
+            browser_methods.append(('xdg-open as user', ['sudo', '-u', user, 'env'] + env_vars + ['xdg-open', url]))
 
-        # Method 3: Try specific browsers with env
-        if os.geteuid() == 0 and user:
-            methods.extend([
-                lambda: subprocess.Popen(
-                    ['sudo', '-u', user, 'env'] + env_vars + ['chromium-browser', url],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                ),
-                lambda: subprocess.Popen(
-                    ['sudo', '-u', user, 'env'] + env_vars + ['firefox', url],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                ),
+        browser_methods.append(('xdg-open direct', ['xdg-open', url]))
+
+        if is_root and user:
+            browser_methods.extend([
+                ('chromium as user', ['sudo', '-u', user, 'env'] + env_vars + ['chromium-browser', url]),
+                ('firefox as user', ['sudo', '-u', user, 'env'] + env_vars + ['firefox', url]),
             ])
         else:
-            methods.extend([
-                lambda: subprocess.Popen(
-                    ['chromium-browser', url],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                ),
-                lambda: subprocess.Popen(
-                    ['firefox', url],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                ),
+            browser_methods.extend([
+                ('chromium direct', ['chromium-browser', url]),
+                ('firefox direct', ['firefox', url]),
             ])
 
-        for i, method in enumerate(methods):
+        # Try each method
+        for i, (desc, cmd) in enumerate(browser_methods):
             try:
-                method()
-                self.status_label.set_label("Opened in browser")
-                logger.debug(f"[HamClock] Browser opened using method {i+1}")
-                return
-            except FileNotFoundError:
-                logger.debug(f"[HamClock] Method {i+1}: command not found")
-                continue
-            except Exception as e:
-                logger.debug(f"[HamClock] Method {i+1} failed: {e}")
-                continue
+                logger.debug(f"[HamClock] Trying method {i+1} ({desc}): {' '.join(cmd[:4])}...")
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    start_new_session=True  # Detach from parent
+                )
 
-        self.status_label.set_label("Could not open browser - copy URL manually")
-        logger.debug(f"[HamClock] All browser methods failed for {url}")
+                # Give it a moment to start, then check if it failed immediately
+                time.sleep(0.2)
+
+                # Check if process started (None means still running)
+                ret = proc.poll()
+                if ret is None or ret == 0:
+                    logger.info(f"[HamClock] Browser opened successfully using {desc}")
+                    self.status_label.set_label(f"Opened in browser")
+                    return
+                else:
+                    stderr = proc.stderr.read().decode('utf-8', errors='ignore')[:200]
+                    logger.debug(f"[HamClock] Method {desc} returned {ret}: {stderr}")
+
+            except FileNotFoundError as e:
+                logger.debug(f"[HamClock] Method {desc}: command not found - {e}")
+            except PermissionError as e:
+                logger.debug(f"[HamClock] Method {desc}: permission denied - {e}")
+            except Exception as e:
+                logger.warning(f"[HamClock] Method {desc} failed: {type(e).__name__}: {e}")
+
+        # All methods failed
+        error_msg = "Could not open browser - copy URL manually"
+        logger.error(f"[HamClock] {error_msg}: {url}")
+        self.status_label.set_label(error_msg)
 
     def _on_fetch_noaa(self, button):
         """Fetch space weather data from NOAA"""
+        logger.info("[HamClock] NOAA fetch button clicked")
         self.status_label.set_label("Fetching NOAA data...")
 
         def fetch():
@@ -1039,6 +1055,7 @@ class HamClockPanel(Gtk.Box):
 
     def _on_open_dx_propagation(self, button):
         """Open DX propagation charts in browser"""
+        logger.info("[HamClock] DX Propagation button clicked")
         # N0NBH Solar-Terrestrial Data page
         url = "https://www.hamqsl.com/solar.html"
         self._open_url_in_browser(url)
