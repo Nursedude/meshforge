@@ -497,6 +497,24 @@ class GatewayDiagnostic:
         except Exception:
             return False
 
+    def check_rns_port_available(self, port: int = 29716) -> CheckResult:
+        """Check if RNS AutoInterface UDP port is available for binding."""
+        result = check_rns_port_available(port)
+        if result['available']:
+            return CheckResult(
+                name="RNS Port Availability",
+                status=CheckStatus.PASS,
+                message=f"UDP port {port} is available"
+            )
+        else:
+            fix_hint = result.get('fix_hint', "Kill existing RNS process or wait for it to exit")
+            return CheckResult(
+                name="RNS Port Availability",
+                status=CheckStatus.FAIL,
+                message=result['reason'],
+                fix_hint=fix_hint
+            )
+
     def _check_ble_available(self) -> bool:
         """Check if Bluetooth LE is available."""
         try:
@@ -577,6 +595,243 @@ class GatewayDiagnostic:
         lines.append("\n" + "=" * 60)
 
         return "\n".join(lines)
+
+
+# ========================================
+# Standalone Utility Functions
+# ========================================
+
+def check_rns_port_available(port: int = 29716) -> Dict[str, any]:
+    """
+    Check if the RNS AutoInterface UDP port is available for binding.
+
+    The RNS AutoInterface uses UDP multicast on port 29716 by default.
+    If another RNS instance (or rnsd) is running, this port will be in use.
+
+    Args:
+        port: UDP port to check (default 29716 for RNS AutoInterface)
+
+    Returns:
+        dict with keys:
+            - available: bool - True if port is available
+            - reason: str - Description of the result
+            - fix_hint: str - Suggested fix if port is unavailable
+            - pids: List[int] - PIDs of processes using the port (if any)
+    """
+    result = {
+        'available': True,
+        'reason': f"UDP port {port} is available",
+        'fix_hint': None,
+        'pids': []
+    }
+
+    # First try to bind to the port
+    try:
+        # Try IPv6 first (covers IPv4 on most systems)
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(('::', port))
+        sock.close()
+    except OSError as e:
+        if e.errno == 98:  # Address already in use
+            result['available'] = False
+            result['reason'] = f"UDP port {port} is already in use"
+
+            # Find what's using the port
+            pids = find_rns_processes()
+            result['pids'] = pids
+
+            if pids:
+                result['fix_hint'] = (
+                    f"Kill existing RNS process: sudo kill {pids[0]}\n"
+                    f"Or stop rnsd: pkill -f rnsd\n"
+                    f"Or use the shared RNS instance by running rnsd separately"
+                )
+            else:
+                result['fix_hint'] = (
+                    f"Another process is using port {port}.\n"
+                    f"Find it with: sudo lsof -i UDP:{port}\n"
+                    f"Or wait a few seconds and try again"
+                )
+        else:
+            # Try IPv4 fallback
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(('0.0.0.0', port))
+                sock.close()
+            except OSError as e2:
+                if e2.errno == 98:
+                    result['available'] = False
+                    result['reason'] = f"UDP port {port} is already in use"
+                    pids = find_rns_processes()
+                    result['pids'] = pids
+                    result['fix_hint'] = (
+                        f"Kill existing RNS process or stop rnsd: pkill -f rnsd"
+                    )
+
+    return result
+
+
+def find_rns_processes() -> List[int]:
+    """
+    Find running RNS-related processes.
+
+    Returns:
+        List of PIDs for rnsd or other RNS processes
+    """
+    pids = []
+
+    # Check for rnsd
+    try:
+        result = subprocess.run(
+            ['pgrep', '-f', 'rnsd'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for pid_str in result.stdout.strip().split('\n'):
+                try:
+                    pids.append(int(pid_str))
+                except ValueError:
+                    pass
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    # Also check for python processes running RNS
+    try:
+        result = subprocess.run(
+            ['pgrep', '-f', 'RNS.Reticulum'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for pid_str in result.stdout.strip().split('\n'):
+                try:
+                    pid = int(pid_str)
+                    if pid not in pids:
+                        pids.append(pid)
+                except ValueError:
+                    pass
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    return pids
+
+
+def kill_rns_processes(force: bool = False) -> Dict[str, any]:
+    """
+    Kill running RNS processes to free up the port.
+
+    Args:
+        force: If True, use SIGKILL instead of SIGTERM
+
+    Returns:
+        dict with keys:
+            - success: bool
+            - killed: List[int] - PIDs that were killed
+            - message: str
+    """
+    pids = find_rns_processes()
+
+    if not pids:
+        return {
+            'success': True,
+            'killed': [],
+            'message': "No RNS processes found"
+        }
+
+    killed = []
+    signal_name = '-9' if force else '-15'
+
+    for pid in pids:
+        try:
+            subprocess.run(
+                ['kill', signal_name, str(pid)],
+                capture_output=True, timeout=5
+            )
+            killed.append(pid)
+        except subprocess.SubprocessError:
+            pass
+
+    # Also try pkill for any we might have missed
+    try:
+        subprocess.run(
+            ['pkill', '-f', 'rnsd'],
+            capture_output=True, timeout=5
+        )
+    except subprocess.SubprocessError:
+        pass
+
+    return {
+        'success': len(killed) > 0 or len(pids) == 0,
+        'killed': killed,
+        'message': f"Killed {len(killed)} RNS process(es)" if killed else "No processes killed"
+    }
+
+
+def handle_address_in_use_error(error: Exception, logger=None) -> Dict[str, any]:
+    """
+    Handle the "Address already in use" error from RNS initialization.
+
+    This is the main helper function to call when catching OSError during
+    RNS.Reticulum() initialization.
+
+    Args:
+        error: The exception that was raised
+        logger: Optional logger instance for output
+
+    Returns:
+        dict with keys:
+            - is_address_in_use: bool - True if this is an address-in-use error
+            - can_use_shared: bool - True if a shared RNS instance is available
+            - rns_pids: List[int] - PIDs of existing RNS processes
+            - message: str - User-friendly error message
+            - fix_options: List[str] - Possible fixes
+    """
+    error_str = str(error).lower()
+
+    result = {
+        'is_address_in_use': False,
+        'can_use_shared': False,
+        'rns_pids': [],
+        'message': str(error),
+        'fix_options': []
+    }
+
+    # Check if this is an address-in-use error
+    if 'address already in use' in error_str or (hasattr(error, 'errno') and error.errno == 98):
+        result['is_address_in_use'] = True
+        result['rns_pids'] = find_rns_processes()
+
+        if result['rns_pids']:
+            result['can_use_shared'] = True
+            result['message'] = (
+                f"RNS port is in use by existing process (PID: {result['rns_pids'][0]}). "
+                f"This is likely rnsd or another MeshForge instance."
+            )
+            result['fix_options'] = [
+                "Use the shared RNS instance (recommended if rnsd is running)",
+                f"Stop existing RNS: pkill -f rnsd",
+                f"Kill specific process: sudo kill {result['rns_pids'][0]}",
+                "Wait a few seconds and try again"
+            ]
+        else:
+            result['message'] = (
+                "RNS port is in use by an unknown process. "
+                "A previous instance may not have shut down cleanly."
+            )
+            result['fix_options'] = [
+                "Find the process: sudo lsof -i UDP:29716",
+                "Wait 30 seconds for socket timeout and try again",
+                "Restart your system if the issue persists"
+            ]
+
+        if logger:
+            logger.warning(result['message'])
+            logger.info("Fix options:")
+            for opt in result['fix_options']:
+                logger.info(f"  - {opt}")
+
+    return result
 
 
 def main():
