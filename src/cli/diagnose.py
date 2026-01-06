@@ -15,6 +15,11 @@ import subprocess
 import shutil
 from pathlib import Path
 
+# Ensure src directory is in path for imports
+_src_dir = Path(__file__).parent.parent
+if str(_src_dir) not in sys.path:
+    sys.path.insert(0, str(_src_dir))
+
 # Import centralized path utility for sudo compatibility
 try:
     from utils.paths import get_real_user_home
