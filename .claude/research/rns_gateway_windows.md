@@ -336,6 +336,75 @@ Filename: "{app}\RNS_Meshtastic_Gateway.exe"; Flags: nowait postinstall
 
 ---
 
+## Session Notes (2026-01-07)
+
+### MeshForge GTK Improvements Applied
+
+The following patterns were successfully used in MeshForge GTK that could benefit RNS Gateway:
+
+1. **Thread-safe GUI updates**: All GTK updates via `GLib.idle_add()` from background threads
+2. **Connection timeout handling**: Meshtastic TCPInterface with proper timeout handling
+3. **Singleton diagnostic engine**: Shared state across all UI components
+4. **Direct library access**: Using meshtastic Python library instead of parsing CLI output
+
+### Priority Fixes for RNS Gateway (from code review)
+
+Before adding Windows support, fix these in existing code:
+
+```python
+# install.py line 297, 303, 563 - Replace shell=True
+# BEFORE:
+result = subprocess.run(f"ls {pattern} 2>/dev/null", shell=True, ...)
+
+# AFTER:
+from pathlib import Path
+ports = [str(p) for p in Path('/dev').glob('ttyUSB*')]
+```
+
+```python
+# supervisor.py - Add timeouts to ALL subprocess calls
+# BEFORE:
+subprocess.run(cmd)
+
+# AFTER:
+subprocess.run(cmd, timeout=30)
+```
+
+```python
+# supervisor.py line 26, 77 - Specific exceptions
+# BEFORE:
+except:
+    return False
+
+# AFTER:
+except (subprocess.SubprocessError, FileNotFoundError, OSError):
+    return False
+```
+
+### Cross-Platform Path Helper
+
+```python
+# Recommended helper for RNS Gateway
+import platform
+import os
+from pathlib import Path
+
+def get_config_dir():
+    """Get config directory - cross-platform."""
+    if platform.system() == 'Windows':
+        base = Path(os.environ.get('APPDATA', Path.home()))
+        return base / 'Reticulum'
+    return Path.home() / '.reticulum'
+
+def get_serial_ports():
+    """Get serial ports - cross-platform."""
+    import serial.tools.list_ports
+    return [p.device for p in serial.tools.list_ports.comports()]
+```
+
+---
+
 *Created: 2026-01-06*
+*Updated: 2026-01-07*
 *Status: Active Research*
 *For: Gemini Pro Collaboration*
