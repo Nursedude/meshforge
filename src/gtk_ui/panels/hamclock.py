@@ -1391,19 +1391,40 @@ class HamClockPanel(Gtk.Box):
         # Detect display environment (Wayland or X11)
         wayland_display = os.environ.get('WAYLAND_DISPLAY', '')
         x11_display = os.environ.get('DISPLAY', '')
+        dbus_session = os.environ.get('DBUS_SESSION_BUS_ADDRESS', '')
 
         logger.debug(f"[HamClock] User: {user}, Root: {is_root}, WAYLAND: {wayland_display}, X11: {x11_display}")
+
+        # Get real user's UID for runtime dir
+        real_uid = None
+        if is_root and user and user != 'root':
+            try:
+                import pwd
+                real_uid = pwd.getpwnam(user).pw_uid
+            except (KeyError, ImportError):
+                real_uid = 1000  # Common default
 
         # Build environment variables for browser
         env_vars = []
         if wayland_display:
             env_vars.append(f'WAYLAND_DISPLAY={wayland_display}')
-            runtime_dir = os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
-            env_vars.append(f'XDG_RUNTIME_DIR={runtime_dir}')
         if x11_display:
             env_vars.append(f'DISPLAY={x11_display}')
-        if not env_vars:
+        if not wayland_display and not x11_display:
             env_vars.append('DISPLAY=:0')
+
+        # Add XDG_RUNTIME_DIR - critical for DBUS and browser launch
+        if real_uid:
+            env_vars.append(f'XDG_RUNTIME_DIR=/run/user/{real_uid}')
+        else:
+            runtime_dir = os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
+            env_vars.append(f'XDG_RUNTIME_DIR={runtime_dir}')
+
+        # Add DBUS session address - needed for xdg-open to work
+        if dbus_session:
+            env_vars.append(f'DBUS_SESSION_BUS_ADDRESS={dbus_session}')
+        elif real_uid:
+            env_vars.append(f'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{real_uid}/bus')
 
         logger.debug(f"[HamClock] Environment vars: {env_vars}")
 

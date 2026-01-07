@@ -435,13 +435,85 @@ class ToolsPanel(Gtk.Box):
         voacap_box.set_margin_top(10)
         voacap_box.set_margin_bottom(10)
 
-        voacap_desc = Gtk.Label(label="HF propagation prediction tools for amateur radio")
+        # Solar conditions display
+        solar_frame = Gtk.Frame()
+        solar_frame.set_label("Current Solar Conditions")
+        solar_inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        solar_inner.set_margin_start(10)
+        solar_inner.set_margin_end(10)
+        solar_inner.set_margin_top(8)
+        solar_inner.set_margin_bottom(8)
+
+        # Solar data grid
+        solar_grid = Gtk.Grid()
+        solar_grid.set_column_spacing(20)
+        solar_grid.set_row_spacing(5)
+
+        # Row 0: SFI, SN, A-Index, K-Index
+        solar_grid.attach(Gtk.Label(label="SFI:"), 0, 0, 1, 1)
+        self.solar_sfi_label = Gtk.Label(label="--")
+        self.solar_sfi_label.set_xalign(0)
+        solar_grid.attach(self.solar_sfi_label, 1, 0, 1, 1)
+
+        solar_grid.attach(Gtk.Label(label="Sunspots:"), 2, 0, 1, 1)
+        self.solar_sn_label = Gtk.Label(label="--")
+        self.solar_sn_label.set_xalign(0)
+        solar_grid.attach(self.solar_sn_label, 3, 0, 1, 1)
+
+        solar_grid.attach(Gtk.Label(label="A-Index:"), 4, 0, 1, 1)
+        self.solar_a_label = Gtk.Label(label="--")
+        self.solar_a_label.set_xalign(0)
+        solar_grid.attach(self.solar_a_label, 5, 0, 1, 1)
+
+        solar_grid.attach(Gtk.Label(label="K-Index:"), 6, 0, 1, 1)
+        self.solar_k_label = Gtk.Label(label="--")
+        self.solar_k_label.set_xalign(0)
+        solar_grid.attach(self.solar_k_label, 7, 0, 1, 1)
+
+        solar_inner.append(solar_grid)
+
+        # Band conditions row
+        band_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=15)
+        band_box.set_margin_top(5)
+
+        self.band_80m_label = Gtk.Label(label="80m: --")
+        band_box.append(self.band_80m_label)
+        self.band_40m_label = Gtk.Label(label="40m: --")
+        band_box.append(self.band_40m_label)
+        self.band_20m_label = Gtk.Label(label="20m: --")
+        band_box.append(self.band_20m_label)
+        self.band_15m_label = Gtk.Label(label="15m: --")
+        band_box.append(self.band_15m_label)
+        self.band_10m_label = Gtk.Label(label="10m: --")
+        band_box.append(self.band_10m_label)
+
+        solar_inner.append(band_box)
+
+        # Status and refresh
+        status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.solar_status_label = Gtk.Label(label="Click Refresh to load solar data")
+        self.solar_status_label.add_css_class("dim-label")
+        self.solar_status_label.set_xalign(0)
+        self.solar_status_label.set_hexpand(True)
+        status_box.append(self.solar_status_label)
+
+        refresh_solar_btn = Gtk.Button(label="Refresh")
+        refresh_solar_btn.set_tooltip_text("Fetch current solar conditions")
+        refresh_solar_btn.connect("clicked", self._on_refresh_solar)
+        status_box.append(refresh_solar_btn)
+
+        solar_inner.append(status_box)
+        solar_frame.set_child(solar_inner)
+        voacap_box.append(solar_frame)
+
+        # External tools buttons
+        voacap_desc = Gtk.Label(label="External propagation tools:")
         voacap_desc.add_css_class("dim-label")
         voacap_desc.set_xalign(0)
+        voacap_desc.set_margin_top(5)
         voacap_box.append(voacap_desc)
 
         voacap_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        voacap_buttons.set_margin_top(5)
 
         voacap_online_btn = Gtk.Button(label="VOACAP Online")
         voacap_online_btn.set_tooltip_text("HF propagation prediction - coverage maps, point-to-point")
@@ -469,12 +541,12 @@ class ToolsPanel(Gtk.Box):
         # Second row - solar data and contests
         voacap_buttons2 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
 
-        solar_btn = Gtk.Button(label="Solar Data")
+        solar_btn = Gtk.Button(label="NOAA Space Weather")
         solar_btn.set_tooltip_text("Solar flux, K-index, A-index from NOAA")
         solar_btn.connect("clicked", self._on_solar_data)
         voacap_buttons2.append(solar_btn)
 
-        hamqsl_btn = Gtk.Button(label="HamQSL Prop")
+        hamqsl_btn = Gtk.Button(label="HamQSL Widget")
         hamqsl_btn.set_tooltip_text("Band conditions widget and propagation forecast")
         hamqsl_btn.connect("clicked", self._on_hamqsl)
         voacap_buttons2.append(hamqsl_btn)
@@ -1121,6 +1193,108 @@ class ToolsPanel(Gtk.Box):
             "https://www.contestcalendar.com/contestcal.html",
             "Contest Calendar"
         )
+
+    def _on_refresh_solar(self, button):
+        """Fetch and display current solar conditions"""
+        self.solar_status_label.set_text("Fetching solar data...")
+        self._log("\nFetching solar conditions from HamQSL...")
+
+        def fetch_solar():
+            try:
+                import urllib.request
+                import xml.etree.ElementTree as ET
+
+                # Fetch solar data from HamQSL XML feed
+                url = "https://www.hamqsl.com/solarxml.php"
+                req = urllib.request.Request(url)
+                req.add_header('User-Agent', 'MeshForge/1.0')
+
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    xml_data = response.read().decode('utf-8')
+
+                # Parse XML
+                root = ET.fromstring(xml_data)
+                solar = root.find('.//solardata')
+
+                if solar is not None:
+                    data = {
+                        'sfi': solar.findtext('solarflux', '--'),
+                        'sn': solar.findtext('sunspots', '--'),
+                        'a_index': solar.findtext('aindex', '--'),
+                        'k_index': solar.findtext('kindex', '--'),
+                        'updated': solar.findtext('updated', ''),
+                        # Band conditions
+                        'band_80m_day': solar.findtext('calculatedconditions/band[@name="80m-40m"][@time="day"]', '--'),
+                        'band_40m_day': solar.findtext('calculatedconditions/band[@name="30m-20m"][@time="day"]', '--'),
+                        'band_20m_day': solar.findtext('calculatedconditions/band[@name="17m-15m"][@time="day"]', '--'),
+                        'band_15m_day': solar.findtext('calculatedconditions/band[@name="12m-10m"][@time="day"]', '--'),
+                    }
+
+                    # Try alternate band condition paths
+                    for band in solar.findall('.//calculatedconditions/band'):
+                        name = band.get('name', '')
+                        time_of_day = band.get('time', '')
+                        condition = band.text or '--'
+                        if time_of_day == 'day':
+                            if '80' in name or '40' in name:
+                                data['band_80m_day'] = condition
+                            elif '30' in name or '20' in name:
+                                data['band_40m_day'] = condition
+                            elif '17' in name or '15' in name:
+                                data['band_20m_day'] = condition
+                            elif '12' in name or '10' in name:
+                                data['band_15m_day'] = condition
+
+                    GLib.idle_add(self._update_solar_display, data)
+                else:
+                    GLib.idle_add(self._solar_fetch_error, "Could not parse solar data")
+
+            except urllib.error.URLError as e:
+                GLib.idle_add(self._solar_fetch_error, f"Network error: {e.reason}")
+            except ET.ParseError as e:
+                GLib.idle_add(self._solar_fetch_error, f"XML parse error: {e}")
+            except Exception as e:
+                GLib.idle_add(self._solar_fetch_error, str(e))
+
+        threading.Thread(target=fetch_solar, daemon=True).start()
+
+    def _update_solar_display(self, data):
+        """Update solar data labels with fetched data"""
+        self.solar_sfi_label.set_text(data.get('sfi', '--'))
+        self.solar_sn_label.set_text(data.get('sn', '--'))
+        self.solar_a_label.set_text(data.get('a_index', '--'))
+        self.solar_k_label.set_text(data.get('k_index', '--'))
+
+        # Update band conditions with color coding
+        def set_band_label(label, band_name, condition):
+            label.set_text(f"{band_name}: {condition}")
+            # Remove old CSS classes
+            label.remove_css_class("success")
+            label.remove_css_class("warning")
+            label.remove_css_class("error")
+            # Add color based on condition
+            cond_lower = condition.lower()
+            if 'good' in cond_lower:
+                label.add_css_class("success")
+            elif 'fair' in cond_lower:
+                label.add_css_class("warning")
+            elif 'poor' in cond_lower:
+                label.add_css_class("error")
+
+        set_band_label(self.band_80m_label, "80m", data.get('band_80m_day', '--'))
+        set_band_label(self.band_40m_label, "40m", data.get('band_40m_day', '--'))
+        set_band_label(self.band_20m_label, "20m", data.get('band_20m_day', '--'))
+        set_band_label(self.band_15m_label, "15m", data.get('band_15m_day', '--'))
+        set_band_label(self.band_10m_label, "10m", data.get('band_15m_day', '--'))  # 10m usually similar to 15m
+
+        updated = data.get('updated', '')
+        self.solar_status_label.set_text(f"Updated: {updated}" if updated else "Data loaded")
+        self._log(f"Solar data loaded - SFI: {data.get('sfi')}, K: {data.get('k_index')}")
+
+    def _solar_fetch_error(self, error_msg):
+        """Handle solar data fetch error"""
+        self.solar_status_label.set_text(f"Error: {error_msg}")
+        self._log(f"Solar fetch error: {error_msg}")
 
     def _on_calculate_los(self, button):
         """Calculate RF Line of Sight between two points"""
