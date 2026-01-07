@@ -426,6 +426,69 @@ class ToolsPanel(Gtk.Box):
         rf_frame.set_child(rf_box)
         content.append(rf_frame)
 
+        # VOACAP HF Propagation Section
+        voacap_frame = Gtk.Frame()
+        voacap_frame.set_label("HF Propagation (VOACAP)")
+        voacap_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        voacap_box.set_margin_start(15)
+        voacap_box.set_margin_end(15)
+        voacap_box.set_margin_top(10)
+        voacap_box.set_margin_bottom(10)
+
+        voacap_desc = Gtk.Label(label="HF propagation prediction tools for amateur radio")
+        voacap_desc.add_css_class("dim-label")
+        voacap_desc.set_xalign(0)
+        voacap_box.append(voacap_desc)
+
+        voacap_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        voacap_buttons.set_margin_top(5)
+
+        voacap_online_btn = Gtk.Button(label="VOACAP Online")
+        voacap_online_btn.set_tooltip_text("HF propagation prediction - coverage maps, point-to-point")
+        voacap_online_btn.add_css_class("suggested-action")
+        voacap_online_btn.connect("clicked", self._on_voacap_online)
+        voacap_buttons.append(voacap_online_btn)
+
+        hfprop_btn = Gtk.Button(label="HF Prop Conditions")
+        hfprop_btn.set_tooltip_text("Current HF band conditions and solar data")
+        hfprop_btn.connect("clicked", self._on_hf_conditions)
+        voacap_buttons.append(hfprop_btn)
+
+        psk_btn = Gtk.Button(label="PSK Reporter")
+        psk_btn.set_tooltip_text("Real-time digital mode reception reports")
+        psk_btn.connect("clicked", self._on_psk_reporter)
+        voacap_buttons.append(psk_btn)
+
+        dxmaps_btn = Gtk.Button(label="DX Maps")
+        dxmaps_btn.set_tooltip_text("VHF/UHF propagation maps and DX clusters")
+        dxmaps_btn.connect("clicked", self._on_dx_maps)
+        voacap_buttons.append(dxmaps_btn)
+
+        voacap_box.append(voacap_buttons)
+
+        # Second row - solar data and contests
+        voacap_buttons2 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+
+        solar_btn = Gtk.Button(label="Solar Data")
+        solar_btn.set_tooltip_text("Solar flux, K-index, A-index from NOAA")
+        solar_btn.connect("clicked", self._on_solar_data)
+        voacap_buttons2.append(solar_btn)
+
+        hamqsl_btn = Gtk.Button(label="HamQSL Prop")
+        hamqsl_btn.set_tooltip_text("Band conditions widget and propagation forecast")
+        hamqsl_btn.connect("clicked", self._on_hamqsl)
+        voacap_buttons2.append(hamqsl_btn)
+
+        contest_btn = Gtk.Button(label="Contest Calendar")
+        contest_btn.set_tooltip_text("Upcoming amateur radio contests")
+        contest_btn.connect("clicked", self._on_contest_calendar)
+        voacap_buttons2.append(contest_btn)
+
+        voacap_box.append(voacap_buttons2)
+
+        voacap_frame.set_child(voacap_box)
+        content.append(voacap_frame)
+
         # MUDP Tools Section
         mudp_frame = Gtk.Frame()
         mudp_frame.set_label("MUDP Tools (Meshtastic UDP)")
@@ -992,6 +1055,71 @@ class ToolsPanel(Gtk.Box):
         self._open_url_in_browser(
             "https://www.scadacore.com/tools/rf-path/rf-line-of-sight/",
             "RF Line of Sight Tool"
+        )
+
+    # --- VOACAP / HF Propagation Methods ---
+
+    def _on_voacap_online(self, button):
+        """Open VOACAP Online HF propagation prediction"""
+        self._log("\nVOACAP Online - HF propagation prediction")
+        self._log("Features: Coverage maps, point-to-point prediction, antenna patterns")
+        self._open_url_in_browser(
+            "https://www.voacap.com/hf/",
+            "VOACAP Online"
+        )
+
+    def _on_hf_conditions(self, button):
+        """Open HF propagation conditions page"""
+        self._log("\nCurrent HF band conditions")
+        self._log("Shows: Solar flux index, sunspot number, K/A indices")
+        self._open_url_in_browser(
+            "https://www.hamqsl.com/solar.html",
+            "HF Propagation Conditions"
+        )
+
+    def _on_psk_reporter(self, button):
+        """Open PSK Reporter for digital mode reception reports"""
+        self._log("\nPSK Reporter - Real-time digital mode spots")
+        self._log("Shows: FT8, JS8, WSPR, PSK31 reception reports worldwide")
+        self._open_url_in_browser(
+            "https://pskreporter.info/pskmap.html",
+            "PSK Reporter Map"
+        )
+
+    def _on_dx_maps(self, button):
+        """Open DX Maps for VHF/UHF propagation"""
+        self._log("\nDX Maps - VHF/UHF propagation monitoring")
+        self._log("Shows: Sporadic-E, tropospheric ducting, meteor scatter")
+        self._open_url_in_browser(
+            "https://www.dxmaps.com/spots/mapg.php",
+            "DX Maps"
+        )
+
+    def _on_solar_data(self, button):
+        """Open NOAA space weather data"""
+        self._log("\nNOAA Space Weather - Solar data for HF propagation")
+        self._log("Shows: Solar wind, geomagnetic activity, aurora forecast")
+        self._open_url_in_browser(
+            "https://www.swpc.noaa.gov/products/solar-cycle-progression",
+            "NOAA Space Weather"
+        )
+
+    def _on_hamqsl(self, button):
+        """Open HamQSL propagation widget page"""
+        self._log("\nHamQSL Solar-Terrestrial Data")
+        self._log("Shows: Band conditions, solar flux, MUF predictions")
+        self._open_url_in_browser(
+            "https://www.hamqsl.com/solar.html",
+            "HamQSL Propagation"
+        )
+
+    def _on_contest_calendar(self, button):
+        """Open amateur radio contest calendar"""
+        self._log("\nAmateur Radio Contest Calendar")
+        self._log("Shows: Upcoming contests, rules, exchange info")
+        self._open_url_in_browser(
+            "https://www.contestcalendar.com/contestcal.html",
+            "Contest Calendar"
         )
 
     def _on_calculate_los(self, button):

@@ -588,6 +588,8 @@ meshforge/
 - **NEW**: Quick-action buttons (Kill Clients, Stop RNS, Watch API)
 - **NEW**: NomadNet launch from GTK with proper terminal wrapper
 - **NEW**: RNS/Meshtastic port conflict detection (ports 29716, 4403)
+- **NEW**: VOACAP HF Propagation tools (VOACAP Online, PSK Reporter, DX Maps, Solar Data)
+- **NEW**: MeshChat web interface integration (start/stop server, browser launch)
 - **IMPROVED**: Standalone boot mode with zero external dependencies
 - **IMPROVED**: AREDN Integration with hardware database
 - **IMPROVED**: Subprocess timeout parameters for reliability
@@ -632,10 +634,12 @@ meshforge/
 - [x] AREDN Integration
 - [x] Amateur Radio Compliance course
 - [x] Standalone boot mode
+- [x] MeshChat web interface integration
+- [x] Network Diagnostics panel
 
 ### In Progress 🔧
-- [ ] MeshChat web integration
 - [ ] Node firmware flashing
+- [ ] VOACAP propagation predictions
 
 ### Planned 📋
 - [x] NomadNet launch from GTK (completed 2026-01-07)

@@ -736,6 +736,17 @@ class ToolsPane(Container):
             yield Button("Interfaces", id="tool-ifaces")
             yield Button("Find Devices", id="tool-scan")
 
+        yield Static("## Network Diagnostics", classes="section-title")
+        with Horizontal(classes="button-row"):
+            yield Button("UDP Listeners", id="tool-udp")
+            yield Button("TCP Listeners", id="tool-tcp")
+            yield Button("RNS Ports", id="tool-rns-ports")
+            yield Button("Mesh Ports", id="tool-mesh-ports")
+        with Horizontal(classes="button-row"):
+            yield Button("Kill Clients", id="tool-kill-clients", variant="error")
+            yield Button("Stop RNS", id="tool-stop-rns", variant="error")
+            yield Button("Full Diag", id="tool-full-diag", variant="primary")
+
         yield Static("## RF Tools", classes="section-title")
         with Horizontal(classes="button-row"):
             yield Button("LoRa Presets", id="tool-presets")
@@ -798,6 +809,21 @@ class ToolsPane(Container):
             self._install_mudp(output)
         elif button_id == "tool-multicast":
             self._test_multicast(output)
+        # Network Diagnostics
+        elif button_id == "tool-udp":
+            self._show_udp_listeners(output)
+        elif button_id == "tool-tcp":
+            self._show_tcp_listeners(output)
+        elif button_id == "tool-rns-ports":
+            self._check_rns_ports(output)
+        elif button_id == "tool-mesh-ports":
+            self._check_mesh_ports(output)
+        elif button_id == "tool-kill-clients":
+            self._kill_clients(output)
+        elif button_id == "tool-stop-rns":
+            self._stop_rns(output)
+        elif button_id == "tool-full-diag":
+            self._full_diagnostics(output)
 
     @work
     async def _run_ping(self, output: Log):
@@ -1010,6 +1036,150 @@ class ToolsPane(Container):
                 output.write(f"  [red]Error: {e}[/red]")
         except Exception as e:
             output.write(f"  [red]Error: {e}[/red]")
+
+    # Network Diagnostics Methods
+    def _parse_proc_net(self, protocol: str) -> list:
+        """Parse /proc/net/udp or /proc/net/tcp"""
+        results = []
+        try:
+            with open(f"/proc/net/{protocol}", 'r') as f:
+                lines = f.readlines()[1:]
+            for line in lines:
+                parts = line.split()
+                if len(parts) >= 10:
+                    addr_parts = parts[1].split(':')
+                    try:
+                        ip_int = int(addr_parts[0], 16)
+                        ip_bytes = [(ip_int >> i) & 0xFF for i in (0, 8, 16, 24)]
+                        ip_str = '.'.join(str(b) for b in ip_bytes)
+                        port = int(addr_parts[1], 16)
+                        state_names = {'01': 'ESTABLISHED', '0A': 'LISTEN', '06': 'TIME_WAIT'}
+                        results.append({
+                            'ip': ip_str, 'port': port,
+                            'state': state_names.get(parts[3].upper(), parts[3])
+                        })
+                    except (ValueError, IndexError):
+                        continue
+        except (FileNotFoundError, PermissionError):
+            pass
+        return results
+
+    @work
+    async def _show_udp_listeners(self, output: Log):
+        """Show UDP listeners"""
+        output.write("\n[cyan]UDP Listeners[/cyan]")
+        entries = self._parse_proc_net('udp')
+        output.write(f"{'IP':>15} : {'Port':>5}")
+        output.write("-" * 25)
+        for e in entries:
+            if e['port'] != 0:
+                output.write(f"{e['ip']:>15} : {e['port']:>5}")
+        output.write(f"\nTotal: {len([e for e in entries if e['port'] != 0])} sockets")
+
+    @work
+    async def _show_tcp_listeners(self, output: Log):
+        """Show TCP listeners"""
+        output.write("\n[cyan]TCP Listeners[/cyan]")
+        entries = self._parse_proc_net('tcp')
+        listen = [e for e in entries if e['state'] == 'LISTEN']
+        output.write(f"{'IP':>15} : {'Port':>5}  State")
+        output.write("-" * 35)
+        for e in listen:
+            output.write(f"{e['ip']:>15} : {e['port']:>5}  {e['state']}")
+        output.write(f"\nTotal: {len(listen)} listening")
+
+    @work
+    async def _check_rns_ports(self, output: Log):
+        """Check RNS port 29716"""
+        output.write("\n[cyan]RNS Port Check (29716)[/cyan]")
+        entries = self._parse_proc_net('udp')
+        found = [e for e in entries if e['port'] == 29716]
+        if found:
+            output.write(f"  [red]✗ Port 29716 IN USE[/red]")
+        else:
+            output.write(f"  [green]✓ Port 29716 FREE[/green]")
+        # Check processes
+        try:
+            result = await asyncio.create_subprocess_exec(
+                'pgrep', '-a', '-f', 'rnsd|nomadnet|lxmf',
+                stdout=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await result.communicate()
+            if stdout:
+                output.write("\nRNS Processes:")
+                for line in stdout.decode().strip().split('\n'):
+                    output.write(f"  {line}")
+            else:
+                output.write("\n  No RNS processes running")
+        except Exception:
+            pass
+
+    @work
+    async def _check_mesh_ports(self, output: Log):
+        """Check Meshtastic ports"""
+        output.write("\n[cyan]Meshtastic Port Check[/cyan]")
+        tcp = self._parse_proc_net('tcp')
+        for port in [4403, 9443]:
+            found = [e for e in tcp if e['port'] == port and e['state'] == 'LISTEN']
+            if found:
+                output.write(f"  [green]✓ TCP {port} LISTENING[/green]")
+            else:
+                output.write(f"  [red]✗ TCP {port} NOT listening[/red]")
+
+    @work
+    async def _kill_clients(self, output: Log):
+        """Kill competing clients"""
+        output.write("\n[cyan]Killing competing clients...[/cyan]")
+        killed = []
+        for pattern in ['nomadnet', 'lxmf']:
+            try:
+                result = await asyncio.create_subprocess_exec(
+                    'pkill', '-9', '-f', pattern,
+                    stdout=asyncio.subprocess.PIPE
+                )
+                await result.communicate()
+                if result.returncode == 0:
+                    killed.append(pattern)
+            except Exception:
+                pass
+        if killed:
+            output.write(f"  [green]Killed: {', '.join(killed)}[/green]")
+        else:
+            output.write("  [yellow]No clients found[/yellow]")
+
+    @work
+    async def _stop_rns(self, output: Log):
+        """Stop all RNS processes"""
+        output.write("\n[cyan]Stopping all RNS processes...[/cyan]")
+        killed = []
+        for proc in ['rnsd', 'nomadnet', 'lxmf', 'RNS']:
+            try:
+                result = await asyncio.create_subprocess_exec(
+                    'pkill', '-9', '-f', proc,
+                    stdout=asyncio.subprocess.PIPE
+                )
+                await result.communicate()
+                if result.returncode == 0:
+                    killed.append(proc)
+            except Exception:
+                pass
+        if killed:
+            output.write(f"  [green]Killed: {', '.join(killed)}[/green]")
+        else:
+            output.write("  [yellow]No RNS processes found[/yellow]")
+
+    @work
+    async def _full_diagnostics(self, output: Log):
+        """Run full network diagnostics"""
+        output.write("\n[cyan]" + "=" * 40 + "[/cyan]")
+        output.write("[cyan]FULL NETWORK DIAGNOSTICS[/cyan]")
+        output.write("[cyan]" + "=" * 40 + "[/cyan]\n")
+        await self._show_udp_listeners(output)
+        await self._show_tcp_listeners(output)
+        await self._check_rns_ports(output)
+        await self._check_mesh_ports(output)
+        output.write("\n[cyan]" + "=" * 40 + "[/cyan]")
+        output.write("[green]DIAGNOSTICS COMPLETE[/green]")
 
 
 class MeshtasticdTUI(App):

@@ -1281,6 +1281,274 @@ def api_logs_stream():
 
 
 # ============================================================================
+# Network Diagnostics API
+# ============================================================================
+
+def parse_proc_net(protocol: str) -> list:
+    """Parse /proc/net/udp or /proc/net/tcp"""
+    results = []
+    proc_file = f"/proc/net/{protocol}"
+    try:
+        with open(proc_file, 'r') as f:
+            lines = f.readlines()[1:]
+        for line in lines:
+            parts = line.split()
+            if len(parts) >= 10:
+                local_addr = parts[1]
+                state = parts[3]
+                inode = parts[9]
+                addr_parts = local_addr.split(':')
+                hex_ip = addr_parts[0]
+                hex_port = addr_parts[1]
+                try:
+                    ip_int = int(hex_ip, 16)
+                    ip_bytes = [(ip_int >> i) & 0xFF for i in (0, 8, 16, 24)]
+                    ip_str = '.'.join(str(b) for b in ip_bytes)
+                    port = int(hex_port, 16)
+                    state_names = {
+                        '01': 'ESTABLISHED', '0A': 'LISTEN', '06': 'TIME_WAIT',
+                        '08': 'CLOSE_WAIT', '07': 'CLOSE'
+                    }
+                    results.append({
+                        'ip': ip_str, 'port': port,
+                        'state': state_names.get(state.upper(), state),
+                        'inode': inode
+                    })
+                except (ValueError, IndexError):
+                    continue
+    except (FileNotFoundError, PermissionError):
+        pass
+    return results
+
+
+def parse_proc_net_v6(protocol: str) -> list:
+    """Parse /proc/net/udp6 or /proc/net/tcp6 for IPv6"""
+    results = []
+    proc_file = f"/proc/net/{protocol}"
+    try:
+        with open(proc_file, 'r') as f:
+            lines = f.readlines()[1:]
+        for line in lines:
+            parts = line.split()
+            if len(parts) >= 10:
+                local_addr = parts[1]
+                state = parts[3]
+                inode = parts[9]
+                addr_parts = local_addr.split(':')
+                hex_ip = addr_parts[0]
+                hex_port = addr_parts[1]
+                try:
+                    port = int(hex_port, 16)
+                    ip_str = hex_ip if len(hex_ip) != 32 else ':'.join(
+                        hex_ip[i:i+4] for i in range(0, 32, 4)
+                    ).lower()
+                    results.append({
+                        'ip': ip_str, 'port': port,
+                        'state': state, 'inode': inode
+                    })
+                except (ValueError, IndexError):
+                    continue
+    except (FileNotFoundError, PermissionError):
+        pass
+    return results
+
+
+@app.route('/api/network/udp')
+@login_required
+def api_network_udp():
+    """Get UDP listeners (IPv4 and IPv6)"""
+    return jsonify({
+        'ipv4': [e for e in parse_proc_net('udp') if e['port'] != 0],
+        'ipv6': [e for e in parse_proc_net_v6('udp6') if e['port'] != 0]
+    })
+
+
+@app.route('/api/network/tcp')
+@login_required
+def api_network_tcp():
+    """Get TCP listeners (IPv4 and IPv6)"""
+    return jsonify({
+        'ipv4': parse_proc_net('tcp'),
+        'ipv6': parse_proc_net_v6('tcp6')
+    })
+
+
+@app.route('/api/network/rns-ports')
+@login_required
+def api_network_rns_ports():
+    """Check RNS AutoInterface port 29716"""
+    rns_port = 29716
+    udp_v4 = parse_proc_net('udp')
+    udp_v6 = parse_proc_net_v6('udp6')
+
+    in_use_v4 = [e for e in udp_v4 if e['port'] == rns_port]
+    in_use_v6 = [e for e in udp_v6 if e['port'] == rns_port]
+
+    # Check RNS processes
+    try:
+        result = subprocess.run(
+            ['pgrep', '-a', '-f', 'rnsd|nomadnet|lxmf'],
+            capture_output=True, text=True, timeout=5
+        )
+        processes = result.stdout.strip().split('\n') if result.stdout.strip() else []
+    except Exception:
+        processes = []
+
+    return jsonify({
+        'port': rns_port,
+        'in_use_v4': in_use_v4,
+        'in_use_v6': in_use_v6,
+        'free': len(in_use_v4) == 0 and len(in_use_v6) == 0,
+        'processes': processes
+    })
+
+
+@app.route('/api/network/meshtastic-ports')
+@login_required
+def api_network_meshtastic_ports():
+    """Check meshtasticd ports 4403, 9443"""
+    tcp_ports = [4403, 9443]
+    tcp_entries = parse_proc_net('tcp')
+
+    results = {}
+    for port in tcp_ports:
+        listening = [e for e in tcp_entries if e['port'] == port and e['state'] == 'LISTEN']
+        results[str(port)] = {
+            'listening': len(listening) > 0,
+            'entries': listening
+        }
+
+    # Check meshtasticd process
+    try:
+        result = subprocess.run(
+            ['pgrep', '-a', '-f', 'meshtasticd'],
+            capture_output=True, text=True, timeout=5
+        )
+        process = result.stdout.strip() if result.stdout.strip() else None
+    except Exception:
+        process = None
+
+    return jsonify({
+        'ports': results,
+        'process': process
+    })
+
+
+@app.route('/api/network/multicast')
+@login_required
+def api_network_multicast():
+    """Get multicast group memberships"""
+    groups = []
+
+    # Parse /proc/net/igmp
+    try:
+        with open('/proc/net/igmp', 'r') as f:
+            lines = f.readlines()
+        current_device = None
+        for line in lines[1:]:
+            if line[0].isdigit():
+                parts = line.split()
+                if len(parts) >= 2:
+                    current_device = parts[1].rstrip(':')
+            elif line.strip() and current_device:
+                parts = line.split()
+                if parts:
+                    try:
+                        group_int = int(parts[0], 16)
+                        group_bytes = [(group_int >> i) & 0xFF for i in (0, 8, 16, 24)]
+                        group_ip = '.'.join(str(b) for b in group_bytes)
+                        groups.append({'device': current_device, 'group': group_ip})
+                    except ValueError:
+                        pass
+    except (FileNotFoundError, PermissionError):
+        pass
+
+    return jsonify({'groups': groups})
+
+
+@app.route('/api/network/process-ports')
+@login_required
+def api_network_process_ports():
+    """Get process-to-port mapping using ss"""
+    try:
+        result = subprocess.run(
+            ['ss', '-tulnp'],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            return jsonify({'output': result.stdout, 'tool': 'ss'})
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+    # Fallback to netstat
+    try:
+        result = subprocess.run(
+            ['netstat', '-tulnp'],
+            capture_output=True, text=True, timeout=10
+        )
+        return jsonify({'output': result.stdout, 'tool': 'netstat'})
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+
+@app.route('/api/network/full-diagnostics')
+@login_required
+def api_network_full_diagnostics():
+    """Run full network diagnostics"""
+    return jsonify({
+        'udp': {
+            'ipv4': [e for e in parse_proc_net('udp') if e['port'] != 0],
+            'ipv6': [e for e in parse_proc_net_v6('udp6') if e['port'] != 0]
+        },
+        'tcp': {
+            'ipv4': [e for e in parse_proc_net('tcp') if e['state'] == 'LISTEN'],
+            'ipv6': [e for e in parse_proc_net_v6('tcp6')]
+        },
+        'rns_port_29716_free': len([e for e in parse_proc_net('udp') if e['port'] == 29716]) == 0,
+        'meshtastic_4403_listening': len([e for e in parse_proc_net('tcp') if e['port'] == 4403 and e['state'] == 'LISTEN']) > 0,
+        'timestamp': datetime.now().isoformat()
+    })
+
+
+@app.route('/api/network/kill-clients', methods=['POST'])
+@login_required
+def api_network_kill_clients():
+    """Kill competing RNS/Meshtastic clients"""
+    killed = []
+    for pattern in ['nomadnet', 'python.*meshtastic', 'lxmf']:
+        try:
+            result = subprocess.run(
+                ['pkill', '-9', '-f', pattern],
+                capture_output=True, timeout=5
+            )
+            if result.returncode == 0:
+                killed.append(pattern)
+        except Exception:
+            pass
+    return jsonify({'killed': killed, 'success': True})
+
+
+@app.route('/api/network/stop-rns', methods=['POST'])
+@login_required
+def api_network_stop_rns():
+    """Stop all RNS processes"""
+    killed = []
+    for proc in ['rnsd', 'nomadnet', 'lxmf', 'RNS']:
+        try:
+            result = subprocess.run(
+                ['pkill', '-9', '-f', proc],
+                capture_output=True, timeout=5
+            )
+            if result.returncode == 0:
+                killed.append(proc)
+        except Exception:
+            pass
+    return jsonify({'killed': killed, 'success': True})
+
+
+# ============================================================================
 # HTML Templates
 # ============================================================================
 

@@ -69,6 +69,7 @@ class MapPanel(Gtk.Box):
         self.node_tracker = None
         self.webview = None
         self._current_geojson = {"type": "FeatureCollection", "features": []}
+        self._refresh_timer_id = None  # Track timer for cleanup
 
         self.set_margin_start(20)
         self.set_margin_end(20)
@@ -77,7 +78,8 @@ class MapPanel(Gtk.Box):
 
         self._init_node_tracker()
         self._build_ui()
-        GLib.timeout_add_seconds(5, self._auto_refresh)
+        # Store timer ID for cleanup - refresh every 30 seconds to reduce memory pressure
+        self._refresh_timer_id = GLib.timeout_add_seconds(30, self._auto_refresh)
 
     def _init_node_tracker(self):
         """Initialize the node tracker for RNS discovery"""
@@ -916,8 +918,27 @@ document.addEventListener('DOMContentLoaded', function() {{
 
     def cleanup(self):
         """Cleanup when panel is destroyed"""
+        # Remove auto-refresh timer to prevent memory leaks
+        if self._refresh_timer_id:
+            try:
+                GLib.source_remove(self._refresh_timer_id)
+                self._refresh_timer_id = None
+            except Exception:
+                pass
+
+        # Stop node tracker
         if self.node_tracker:
             try:
                 self.node_tracker.stop()
             except Exception:
                 pass
+
+        # Clear WebView to free memory
+        if self.webview:
+            try:
+                self.webview.load_uri("about:blank")
+            except Exception:
+                pass
+
+        # Clear cached data
+        self._current_geojson = {"type": "FeatureCollection", "features": []}
