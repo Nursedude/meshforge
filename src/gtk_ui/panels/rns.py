@@ -1283,22 +1283,26 @@ class RNSPanel(Gtk.Box):
                     import time
                     time.sleep(0.5)  # Brief pause for process to terminate
 
-                # Build the terminal command based on terminal type
+                # Build the terminal command - wrap in bash to keep terminal open on exit
                 if is_root and real_user != 'root':
                     # Running as root but need to launch as real user
                     nomadnet_cmd = f"sudo -i -u {real_user} {nomadnet_path}"
                 else:
-                    nomadnet_cmd = nomadnet_path
+                    nomadnet_cmd = str(nomadnet_path)
+
+                # Wrap command in bash script that keeps terminal open
+                # This handles both normal exit and errors
+                bash_wrapper = f'''bash -c '{nomadnet_cmd}; echo ""; echo "NomadNet exited. Press Enter to close..."; read' '''
 
                 # Different terminals have different exec syntax
                 if terminal in ['lxterminal', 'xfce4-terminal']:
-                    term_cmd = [terminal, '-e', nomadnet_cmd]
+                    term_cmd = [terminal, '-e', bash_wrapper]
                 elif terminal == 'gnome-terminal':
-                    term_cmd = [terminal, '--', 'bash', '-c', nomadnet_cmd]
+                    term_cmd = [terminal, '--', 'bash', '-c', f'{nomadnet_cmd}; echo ""; echo "NomadNet exited. Press Enter to close..."; read']
                 elif terminal == 'konsole':
-                    term_cmd = [terminal, '-e', nomadnet_cmd]
+                    term_cmd = [terminal, '-e', bash_wrapper]
                 else:  # xterm
-                    term_cmd = [terminal, '-e', nomadnet_cmd]
+                    term_cmd = [terminal, '-hold', '-e', nomadnet_cmd]  # xterm has -hold flag
 
                 logger.debug(f"[RNS] Terminal command: {term_cmd}")
                 subprocess.Popen(
