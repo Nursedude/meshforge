@@ -1308,25 +1308,25 @@ class RNSPanel(Gtk.Box):
                     GLib.timeout_add(3000, lambda: self._refresh_all() or False)
 
                 # Build the terminal command - wrap in bash to keep terminal open on exit
+                # Standard paths: ~/.nomadnetwork (NomadNet), ~/.reticulum (RNS)
+                nomadnet_config = real_home / ".nomadnetwork"
+                rns_config = real_home / ".reticulum"
                 if is_root and real_user != 'root':
                     # Running as root but need to launch as real user
-                    nomadnet_cmd = f"sudo -i -u {real_user} {nomadnet_path}"
+                    nomadnet_cmd = f"sudo -i -u {real_user} {nomadnet_path} --config {nomadnet_config} --rnsconfig {rns_config}"
                 else:
-                    nomadnet_cmd = str(nomadnet_path)
-
-                # Wrap command in bash script that keeps terminal open
-                # This handles both normal exit and errors
-                bash_wrapper = f'''bash -c '{nomadnet_cmd}; echo ""; echo "NomadNet exited. Press Enter to close..."; read' '''
+                    nomadnet_cmd = f"{nomadnet_path} --config {nomadnet_config} --rnsconfig {rns_config}"
 
                 # Different terminals have different exec syntax
+                # Use bash -c 'cmd; read' format - tested working with lxterminal
                 if terminal in ['lxterminal', 'xfce4-terminal']:
-                    term_cmd = [terminal, '-e', bash_wrapper]
+                    term_cmd = [terminal, '-e', f"bash -c '{nomadnet_cmd}; read'"]
                 elif terminal == 'gnome-terminal':
-                    term_cmd = [terminal, '--', 'bash', '-c', f'{nomadnet_cmd}; echo ""; echo "NomadNet exited. Press Enter to close..."; read']
+                    term_cmd = [terminal, '--', 'bash', '-c', f"{nomadnet_cmd}; read"]
                 elif terminal == 'konsole':
-                    term_cmd = [terminal, '-e', bash_wrapper]
+                    term_cmd = [terminal, '-e', 'bash', '-c', f"{nomadnet_cmd}; read"]
                 else:  # xterm
-                    term_cmd = [terminal, '-hold', '-e', nomadnet_cmd]  # xterm has -hold flag
+                    term_cmd = [terminal, '-hold', '-e', nomadnet_cmd]
 
                 logger.debug(f"[RNS] Terminal command: {term_cmd}")
                 subprocess.Popen(
