@@ -737,15 +737,30 @@ class RadioConfigSimple(Gtk.Box):
                 # Get channel info (primary channel)
                 channels = iface.localNode.channels
                 ch0_name = ''
-                ch0_psk = ''
+                ch0_psk_status = 'Unknown'
                 ch0_uplink = False
                 ch0_downlink = False
+                ch0_role = ''
                 if channels and len(channels) > 0:
                     ch0 = channels[0]
                     if hasattr(ch0, 'settings'):
                         ch0_name = str(ch0.settings.name) if hasattr(ch0.settings, 'name') else ''
                         ch0_uplink = bool(ch0.settings.uplink_enabled) if hasattr(ch0.settings, 'uplink_enabled') else False
                         ch0_downlink = bool(ch0.settings.downlink_enabled) if hasattr(ch0.settings, 'downlink_enabled') else False
+                        # Check PSK status
+                        if hasattr(ch0.settings, 'psk'):
+                            psk = ch0.settings.psk
+                            if psk and len(psk) > 0:
+                                if len(psk) == 1 and psk[0] == 1:
+                                    ch0_psk_status = 'Default (AQ==)'
+                                elif len(psk) == 1 and psk[0] == 0:
+                                    ch0_psk_status = 'None (Open)'
+                                else:
+                                    ch0_psk_status = f'Custom ({len(psk)*8}-bit)'
+                            else:
+                                ch0_psk_status = 'None (Open)'
+                    if hasattr(ch0, 'role'):
+                        ch0_role = str(ch0.role)
 
                 # Build info text
                 info = f"=== LoRa ===\n"
@@ -786,6 +801,9 @@ class RadioConfigSimple(Gtk.Box):
                     info += f"NTP: {ntp_server}\n"
                 info += f"\n=== Channel 0 ===\n"
                 info += f"Name: {ch0_name or '(default)'}\n"
+                info += f"PSK: {ch0_psk_status}\n"
+                if ch0_role:
+                    info += f"Role: {ch0_role}\n"
                 info += f"Uplink: {'Yes' if ch0_uplink else 'No'}\n"
                 info += f"Downlink: {'Yes' if ch0_downlink else 'No'}\n\n"
 

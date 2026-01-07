@@ -784,6 +784,50 @@ def get_nodes_full():
 
                 nodes.append(node_data)
 
+            # Try to add RNS nodes from gateway
+            rns_nodes_added = 0
+            try:
+                from gateway.node_tracker import UnifiedNodeTracker
+                # Check if there's a running tracker instance we can query
+                # This is a singleton-ish pattern - try to get cached instance
+                tracker_file = '/tmp/meshforge_rns_nodes.json'
+                import json
+                import os
+                if os.path.exists(tracker_file):
+                    with open(tracker_file) as f:
+                        rns_data = json.load(f)
+                        for rnode in rns_data.get('nodes', []):
+                            # Only add if not already in list (by matching name or RNS hash)
+                            existing_ids = {n.get('id') for n in nodes}
+                            if rnode.get('rns_hash') and rnode.get('rns_hash') not in existing_ids:
+                                node_data = {
+                                    'id': rnode.get('rns_hash', '')[:16],
+                                    'name': rnode.get('name', 'RNS Node'),
+                                    'short': rnode.get('short_name', 'RNS'),
+                                    'hardware': 'RNS',
+                                    'network': 'rns',
+                                    'is_me': False,
+                                }
+                                if rnode.get('position'):
+                                    pos = rnode['position']
+                                    if pos.get('latitude') and pos.get('longitude'):
+                                        node_data['position'] = {
+                                            'latitude': pos['latitude'],
+                                            'longitude': pos['longitude'],
+                                            'altitude': pos.get('altitude', 0),
+                                        }
+                                if rnode.get('last_seen'):
+                                    node_data['last_heard'] = rnode['last_seen']
+                                nodes.append(node_data)
+                                rns_nodes_added += 1
+            except Exception as e:
+                logger.debug(f"Could not load RNS nodes: {e}")
+
+            # Mark meshtastic nodes with network type
+            for node in nodes:
+                if 'network' not in node:
+                    node['network'] = 'meshtastic'
+
             # Count nodes with positions
             nodes_with_position = sum(1 for n in nodes if 'position' in n)
 
@@ -792,6 +836,7 @@ def get_nodes_full():
                 'my_node_id': _node_monitor.my_node_id,
                 'total_nodes': len(nodes),
                 'nodes_with_position': nodes_with_position,
+                'rns_nodes': rns_nodes_added,
             }
 
     except Exception as e:
