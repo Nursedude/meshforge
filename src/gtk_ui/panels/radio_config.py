@@ -1553,13 +1553,15 @@ class RadioConfigPanel(Gtk.Box):
         def load_via_library():
             try:
                 import meshtastic.tcp_interface
-                logger.info("Loading config via meshtastic library (direct)")
+                logger.info("[RadioConfig] Creating TCPInterface to localhost...")
                 iface = meshtastic.tcp_interface.TCPInterface(hostname='localhost')
+                logger.info("[RadioConfig] TCPInterface connected, extracting config...")
                 config = self._extract_config_from_interface(iface)
+                logger.info(f"[RadioConfig] Closing interface, extracted: {config}")
                 iface.close()
                 return config
             except Exception as e:
-                logger.debug(f"Library load failed: {e}, falling back to CLI")
+                logger.warning(f"[RadioConfig] Library load failed: {e}, falling back to CLI")
                 return None
 
         def do_load():
@@ -1611,12 +1613,15 @@ class RadioConfigPanel(Gtk.Box):
                     config['region'] = lora.region if hasattr(lora, 'region') else None
                     config['hop_limit'] = lora.hop_limit if hasattr(lora, 'hop_limit') else None
                     config['tx_power'] = lora.tx_power if hasattr(lora, 'tx_power') else None
+                    # DEBUG: Log raw values from device
+                    logger.info(f"[RadioConfig] RAW from device: modem_preset={lora.modem_preset} (type={type(lora.modem_preset).__name__}), region={lora.region} (type={type(lora.region).__name__})")
 
                 # Device config
                 if hasattr(local_config, 'device'):
                     device = local_config.device
                     config['role'] = device.role if hasattr(device, 'role') else None
                     config['rebroadcast_mode'] = device.rebroadcast_mode if hasattr(device, 'rebroadcast_mode') else None
+                    logger.info(f"[RadioConfig] RAW from device: role={device.role} (type={type(device.role).__name__})")
 
                 # Position config
                 if hasattr(local_config, 'position'):
@@ -1624,7 +1629,7 @@ class RadioConfigPanel(Gtk.Box):
                     config['gps_mode'] = pos.gps_mode if hasattr(pos, 'gps_mode') else None
                     config['position_broadcast_secs'] = pos.position_broadcast_secs if hasattr(pos, 'position_broadcast_secs') else None
 
-            logger.info(f"Extracted config via library: {list(config.keys())}")
+            logger.info(f"Extracted config via library: {config}")
         except Exception as e:
             logger.warning(f"Config extraction error: {e}")
         return config
@@ -1662,29 +1667,33 @@ class RadioConfigPanel(Gtk.Box):
         roles = ["CLIENT", "CLIENT_MUTE", "ROUTER", "ROUTER_CLIENT",
                  "REPEATER", "TRACKER", "SENSOR", "TAK", "TAK_TRACKER", "CLIENT_HIDDEN", "LOST_AND_FOUND"]
 
-        def set_dropdown(dropdown, options, value, enum_map=None):
+        def set_dropdown(dropdown, options, value, enum_map=None, name="dropdown"):
             if value is None:
+                logger.debug(f"[RadioConfig] {name}: value is None, skipping")
                 return
+            original_value = value
             # Convert enum int to string if needed
             if isinstance(value, int) and enum_map:
                 value = enum_map.get(value, str(value))
+                logger.info(f"[RadioConfig] {name}: converted enum {original_value} -> '{value}'")
             elif isinstance(value, int):
                 value = str(value)
+                logger.warning(f"[RadioConfig] {name}: int {original_value} without enum_map, converted to string '{value}'")
             value_str = str(value).upper().replace('_', '')
             for i, opt in enumerate(options):
                 if opt.upper().replace('_', '') == value_str:
                     dropdown.set_selected(i)
-                    logger.info(f"Set dropdown to {opt} (index {i})")
+                    logger.info(f"[RadioConfig] {name}: set to '{opt}' (index {i})")
                     return
-            logger.warning(f"Could not find '{value}' in dropdown options")
+            logger.warning(f"[RadioConfig] {name}: could not find '{value}' (from {original_value}) in options")
 
         # Apply values with proper enum mappings
         if 'modem_preset' in config:
-            set_dropdown(self.preset_dropdown, presets, config['modem_preset'], preset_enum_map)
+            set_dropdown(self.preset_dropdown, presets, config['modem_preset'], preset_enum_map, "modem_preset")
         if 'region' in config:
-            set_dropdown(self.region_dropdown, regions, config['region'], region_enum_map)
+            set_dropdown(self.region_dropdown, regions, config['region'], region_enum_map, "region")
         if 'role' in config:
-            set_dropdown(self.role_dropdown, roles, config['role'], role_enum_map)
+            set_dropdown(self.role_dropdown, roles, config['role'], role_enum_map, "role")
         if 'hop_limit' in config and config['hop_limit']:
             self.hop_spin.set_value(int(config['hop_limit']))
         if 'tx_power' in config and config['tx_power']:
