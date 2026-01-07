@@ -1289,7 +1289,7 @@ class RNSPanel(Gtk.Box):
                     self._gateway_bridge.stop()
                     self._gateway_bridge = None
                     import time
-                    time.sleep(0.5)  # Wait for port to be released
+                    time.sleep(1.0)  # Wait for RNS to release ports
                     self.main_window.set_status_message("Stopped gateway for NomadNet")
                     GLib.idle_add(self._update_gateway_status)
 
@@ -1342,7 +1342,7 @@ class RNSPanel(Gtk.Box):
                     self._gateway_bridge.stop()
                     self._gateway_bridge = None
                     import time
-                    time.sleep(0.5)
+                    time.sleep(1.0)  # Wait for RNS to release ports
                     GLib.idle_add(self._update_gateway_status)
 
                 # Stop rnsd if running - NomadNet manages its own RNS instance
@@ -1350,7 +1350,7 @@ class RNSPanel(Gtk.Box):
                     logger.debug("[RNS] rnsd running - stopping it before NomadNet daemon")
                     subprocess.run(['pkill', '-f', 'rnsd'], capture_output=True, timeout=5)
                     import time
-                    time.sleep(0.5)  # Wait for port to be released
+                    time.sleep(1.0)  # Wait for port to be released
 
                 # Run as daemon using full path
                 # When running as root, run as real user
