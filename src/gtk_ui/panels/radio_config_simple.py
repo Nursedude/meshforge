@@ -500,6 +500,107 @@ class RadioConfigSimple(Gtk.Box):
         net_frame.set_child(net_box)
         main_box.append(net_frame)
 
+        # === CHANNEL SETTINGS ===
+        chan_frame = Gtk.Frame()
+        chan_frame.set_label("Channel Settings")
+        chan_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        chan_box.set_margin_start(12)
+        chan_box.set_margin_end(12)
+        chan_box.set_margin_top(8)
+        chan_box.set_margin_bottom(8)
+
+        # Channel selector
+        chansel_row = self._make_row("Channel Index:", None)
+        self.chanidx_spin = Gtk.SpinButton.new_with_range(0, 7, 1)
+        self.chanidx_spin.set_value(0)
+        self.chanidx_spin.set_tooltip_text("0=Primary, 1-7=Secondary channels")
+        chansel_row.append(self.chanidx_spin)
+        chan_box.append(chansel_row)
+
+        # Channel Name
+        channame_row = self._make_row("Channel Name:", None)
+        self.channame_entry = Gtk.Entry()
+        self.channame_entry.set_max_length(12)
+        self.channame_entry.set_placeholder_text("LongFast")
+        self.channame_entry.set_hexpand(True)
+        channame_row.append(self.channame_entry)
+        channame_row.append(self._make_apply_btn(self._apply_channel_name))
+        chan_box.append(channame_row)
+
+        # Channel PSK (Pre-Shared Key)
+        psk_row = self._make_row("Channel PSK:", None)
+        self.chanpsk_entry = Gtk.Entry()
+        self.chanpsk_entry.set_visibility(False)
+        self.chanpsk_entry.set_placeholder_text("base64 or 'random' or 'none' or 'default'")
+        self.chanpsk_entry.set_hexpand(True)
+        psk_row.append(self.chanpsk_entry)
+        psk_row.append(self._make_apply_btn(self._apply_channel_psk))
+        chan_box.append(psk_row)
+
+        # PSK options row
+        psk_opts_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        psk_opts_row.set_margin_start(120)
+
+        default_btn = Gtk.Button(label="Default")
+        default_btn.set_tooltip_text("Use default PSK (AQ==)")
+        default_btn.connect("clicked", lambda b: self.chanpsk_entry.set_text("default"))
+        psk_opts_row.append(default_btn)
+
+        random_btn = Gtk.Button(label="Random")
+        random_btn.set_tooltip_text("Generate random PSK")
+        random_btn.connect("clicked", lambda b: self.chanpsk_entry.set_text("random"))
+        psk_opts_row.append(random_btn)
+
+        none_btn = Gtk.Button(label="None")
+        none_btn.set_tooltip_text("No encryption (open channel)")
+        none_btn.connect("clicked", lambda b: self.chanpsk_entry.set_text("none"))
+        psk_opts_row.append(none_btn)
+
+        chan_box.append(psk_opts_row)
+
+        # Uplink Enabled
+        uplink_row = self._make_row("Uplink Enabled:", None)
+        self.uplink_switch = Gtk.Switch()
+        self.uplink_switch.set_halign(Gtk.Align.START)
+        self.uplink_switch.set_tooltip_text("Allow MQTT uplink for this channel")
+        uplink_row.append(self.uplink_switch)
+        uplink_row.append(self._make_apply_btn(self._apply_channel_uplink))
+        chan_box.append(uplink_row)
+
+        # Downlink Enabled
+        downlink_row = self._make_row("Downlink Enabled:", None)
+        self.downlink_switch = Gtk.Switch()
+        self.downlink_switch.set_halign(Gtk.Align.START)
+        self.downlink_switch.set_tooltip_text("Allow MQTT downlink for this channel")
+        downlink_row.append(self.downlink_switch)
+        downlink_row.append(self._make_apply_btn(self._apply_channel_downlink))
+        chan_box.append(downlink_row)
+
+        # Channel URL (display/generate)
+        url_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        url_label = Gtk.Label(label="Share URL:")
+        url_label.set_width_chars(16)
+        url_label.set_xalign(0)
+        url_row.append(url_label)
+
+        gen_url_btn = Gtk.Button(label="Generate Channel URL")
+        gen_url_btn.set_tooltip_text("Generate shareable URL for current channel config")
+        gen_url_btn.connect("clicked", self._generate_channel_url)
+        url_row.append(gen_url_btn)
+
+        chan_box.append(url_row)
+
+        # Channel URL display
+        self.channel_url_label = Gtk.Label(label="")
+        self.channel_url_label.set_wrap(True)
+        self.channel_url_label.set_selectable(True)
+        self.channel_url_label.set_xalign(0)
+        self.channel_url_label.add_css_class("dim-label")
+        chan_box.append(self.channel_url_label)
+
+        chan_frame.set_child(chan_box)
+        main_box.append(chan_frame)
+
         # === INFO DISPLAY ===
         info_frame = Gtk.Frame()
         info_frame.set_label("Current Config (Read-Only)")
@@ -864,6 +965,94 @@ class RadioConfigSimple(Gtk.Box):
             self._apply_setting("network.ntp_server", ntp, f"NTP: {ntp}")
         else:
             self._update_status("Enter an NTP server")
+
+    # === CHANNEL SETTINGS ===
+    def _apply_channel_name(self, button):
+        """Apply channel name."""
+        idx = int(self.chanidx_spin.get_value())
+        name = self.channame_entry.get_text().strip()
+        if name:
+            self._apply_channel_setting(idx, "name", name, f"Ch{idx} Name: {name}")
+        else:
+            self._update_status("Enter a channel name")
+
+    def _apply_channel_psk(self, button):
+        """Apply channel PSK."""
+        idx = int(self.chanidx_spin.get_value())
+        psk = self.chanpsk_entry.get_text().strip()
+        if psk:
+            self._apply_channel_setting(idx, "psk", psk, f"Ch{idx} PSK: [set]")
+        else:
+            self._update_status("Enter a PSK (or 'default', 'random', 'none')")
+
+    def _apply_channel_uplink(self, button):
+        """Apply channel uplink setting."""
+        idx = int(self.chanidx_spin.get_value())
+        enabled = self.uplink_switch.get_active()
+        self._apply_channel_setting(idx, "uplink_enabled", str(enabled).lower(),
+                                    f"Ch{idx} Uplink: {'On' if enabled else 'Off'}")
+
+    def _apply_channel_downlink(self, button):
+        """Apply channel downlink setting."""
+        idx = int(self.chanidx_spin.get_value())
+        enabled = self.downlink_switch.get_active()
+        self._apply_channel_setting(idx, "downlink_enabled", str(enabled).lower(),
+                                    f"Ch{idx} Downlink: {'On' if enabled else 'Off'}")
+
+    def _apply_channel_setting(self, channel_idx, setting, value, desc):
+        """Apply a channel setting using meshtastic CLI."""
+        def do_apply():
+            try:
+                import subprocess
+                cmd = ['/usr/local/bin/meshtastic', '--host', 'localhost',
+                       '--ch-index', str(channel_idx), f'--ch-set', setting, value]
+                logger.info(f"Running: {' '.join(cmd)}")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+                if result.returncode == 0:
+                    GLib.idle_add(self._update_status, f"Applied: {desc}")
+                    GLib.timeout_add(2000, self._load_config)
+                else:
+                    error = result.stderr or result.stdout or "Unknown error"
+                    GLib.idle_add(self._update_status, f"Failed: {error[:50]}")
+                    logger.error(f"Apply failed: {error}")
+            except Exception as e:
+                logger.error(f"Apply error: {e}")
+                GLib.idle_add(self._update_status, f"Error: {e}")
+
+        self._update_status(f"Applying {desc}...")
+        threading.Thread(target=do_apply, daemon=True).start()
+
+    def _generate_channel_url(self, button):
+        """Generate shareable channel URL."""
+        def do_generate():
+            try:
+                import subprocess
+                cmd = ['/usr/local/bin/meshtastic', '--host', 'localhost', '--qr']
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+                if result.returncode == 0:
+                    # Extract URL from output
+                    output = result.stdout
+                    # Look for URL pattern
+                    import re
+                    url_match = re.search(r'https://meshtastic\.org/e/#[^\s]+', output)
+                    if url_match:
+                        url = url_match.group(0)
+                        GLib.idle_add(self.channel_url_label.set_label, url)
+                        GLib.idle_add(self._update_status, "Channel URL generated")
+                    else:
+                        GLib.idle_add(self.channel_url_label.set_label, output[:200])
+                        GLib.idle_add(self._update_status, "URL generated (see output)")
+                else:
+                    error = result.stderr or result.stdout or "Unknown error"
+                    GLib.idle_add(self._update_status, f"Failed: {error[:50]}")
+            except Exception as e:
+                logger.error(f"Generate URL error: {e}")
+                GLib.idle_add(self._update_status, f"Error: {e}")
+
+        self._update_status("Generating channel URL...")
+        threading.Thread(target=do_generate, daemon=True).start()
 
     def _apply_setting(self, setting, value, desc):
         """Apply a setting using meshtastic CLI."""
