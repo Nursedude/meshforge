@@ -733,6 +733,13 @@ class RNSPanel(Gtk.Box):
         load_btn.connect("clicked", self._load_rnode_config)
         btn_row.append(load_btn)
 
+        # Edit in terminal with nano (per configurable files rule)
+        config_path = get_real_user_home() / ".reticulum" / "config"
+        terminal_btn = Gtk.Button(label="Edit (Terminal)")
+        terminal_btn.set_tooltip_text("Edit ~/.reticulum/config in nano")
+        terminal_btn.connect("clicked", lambda b: self._edit_config_terminal(config_path))
+        btn_row.append(terminal_btn)
+
         box.append(btn_row)
 
         # Status
