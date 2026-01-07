@@ -504,7 +504,17 @@ class RNSMeshtasticBridge:
             self._connected_rns = False
 
     def _disconnect_rns(self):
-        """Disconnect from RNS"""
+        """Disconnect from RNS and release ports"""
+        # Properly shut down RNS to release ports
+        if self._reticulum:
+            try:
+                import RNS
+                # RNS.Transport.exithandler() closes all interfaces and releases ports
+                RNS.Transport.exithandler()
+                logger.debug("RNS Transport shut down")
+            except Exception as e:
+                logger.debug(f"Error shutting down RNS Transport: {e}")
+
         self._lxmf_router = None
         self._lxmf_source = None
         self._identity = None
