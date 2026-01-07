@@ -255,6 +255,28 @@ class ToolsPanel(Gtk.Box):
         diag_buttons2.append(all_diag_btn)
 
         diag_box.append(diag_buttons2)
+
+        # Diagnostic buttons row 3 - Quick actions
+        diag_buttons3 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+
+        watch_btn = Gtk.Button(label="Watch API Connections")
+        watch_btn.set_tooltip_text("Live view of connections to meshtasticd (port 4403)")
+        watch_btn.connect("clicked", self._on_watch_api_connections)
+        diag_buttons3.append(watch_btn)
+
+        kill_clients_btn = Gtk.Button(label="Kill Competing Clients")
+        kill_clients_btn.set_tooltip_text("Stop nomadnet/python meshtastic clients")
+        kill_clients_btn.add_css_class("destructive-action")
+        kill_clients_btn.connect("clicked", self._on_kill_competing_clients)
+        diag_buttons3.append(kill_clients_btn)
+
+        stop_rns_btn = Gtk.Button(label="Stop All RNS")
+        stop_rns_btn.set_tooltip_text("Kill rnsd, nomadnet, lxmf processes")
+        stop_rns_btn.add_css_class("destructive-action")
+        stop_rns_btn.connect("clicked", self._on_stop_all_rns)
+        diag_buttons3.append(stop_rns_btn)
+
+        diag_box.append(diag_buttons3)
         diag_frame.set_child(diag_box)
         content.append(diag_frame)
 
@@ -2365,3 +2387,181 @@ class ToolsPanel(Gtk.Box):
         GLib.idle_add(self._log, "\n" + "=" * 60)
         GLib.idle_add(self._log, "DIAGNOSTICS COMPLETE")
         GLib.idle_add(self._log, "=" * 60)
+
+    def _on_watch_api_connections(self, button):
+        """Watch connections to meshtasticd API port"""
+        self._log("\n=== Watching API Connections (port 4403) ===")
+        self._log("Refreshing every 2 seconds... Click again to refresh.\n")
+        threading.Thread(target=self._watch_api_connections_thread, daemon=True).start()
+
+    def _watch_api_connections_thread(self):
+        """Show current connections to port 4403"""
+        try:
+            # Use ss to show connections
+            result = subprocess.run(
+                ['ss', '-tnp', 'sport', '=', ':4403', 'or', 'dport', '=', ':4403'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                lines = result.stdout.strip().split('\n')
+                GLib.idle_add(self._log, f"Active connections to meshtasticd:")
+                for line in lines:
+                    GLib.idle_add(self._log, f"  {line[:90]}")
+            else:
+                # Fallback - check who has the port open
+                result = subprocess.run(
+                    ['ss', '-tlnp'],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    for line in result.stdout.split('\n'):
+                        if '4403' in line:
+                            GLib.idle_add(self._log, line[:90])
+
+            # Also show established connections
+            tcp_entries = self._parse_proc_net('tcp')
+            inode_map = self._get_inode_to_process()
+
+            connected = []
+            for entry in tcp_entries:
+                if entry['port'] == 4403 and entry['state'] == 'ESTABLISHED':
+                    proc = inode_map.get(entry['inode'], 'unknown')
+                    connected.append(f"{entry['ip']}:{entry['port']} - {proc}")
+
+            if connected:
+                GLib.idle_add(self._log, f"\nEstablished connections:")
+                for c in connected:
+                    GLib.idle_add(self._log, f"  {c}")
+            else:
+                GLib.idle_add(self._log, "\nNo active client connections to port 4403")
+
+        except Exception as e:
+            GLib.idle_add(self._log, f"Error: {e}")
+
+    def _on_kill_competing_clients(self, button):
+        """Kill processes that compete for meshtasticd connection"""
+        self._log("\n=== Killing Competing Clients ===")
+        threading.Thread(target=self._kill_competing_clients_thread, daemon=True).start()
+
+    def _kill_competing_clients_thread(self):
+        """Kill nomadnet and python meshtastic clients"""
+        killed = []
+
+        # Kill nomadnet
+        try:
+            result = subprocess.run(
+                ['pkill', '-9', '-f', 'nomadnet'],
+                capture_output=True, timeout=5
+            )
+            if result.returncode == 0:
+                killed.append('nomadnet')
+        except Exception:
+            pass
+
+        # Kill python meshtastic clients (but not meshtasticd itself)
+        try:
+            result = subprocess.run(
+                ['pkill', '-9', '-f', 'python.*meshtastic'],
+                capture_output=True, timeout=5
+            )
+            if result.returncode == 0:
+                killed.append('python meshtastic')
+        except Exception:
+            pass
+
+        # Kill any lxmf processes
+        try:
+            result = subprocess.run(
+                ['pkill', '-9', '-f', 'lxmf'],
+                capture_output=True, timeout=5
+            )
+            if result.returncode == 0:
+                killed.append('lxmf')
+        except Exception:
+            pass
+
+        if killed:
+            GLib.idle_add(self._log, f"Killed: {', '.join(killed)}")
+        else:
+            GLib.idle_add(self._log, "No competing clients found to kill")
+
+        # Verify
+        GLib.idle_add(self._log, "\nRemaining processes:")
+        try:
+            result = subprocess.run(
+                ['pgrep', '-a', '-f', 'nomadnet|lxmf|meshtastic'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.stdout.strip():
+                for line in result.stdout.strip().split('\n'):
+                    # Filter out meshtasticd itself
+                    if 'meshtasticd' not in line:
+                        GLib.idle_add(self._log, f"  {line}")
+                    else:
+                        GLib.idle_add(self._log, f"  {line} (daemon - OK)")
+            else:
+                GLib.idle_add(self._log, "  None (clean)")
+        except Exception:
+            pass
+
+    def _on_stop_all_rns(self, button):
+        """Stop all RNS-related processes"""
+        self._log("\n=== Stopping All RNS Processes ===")
+        threading.Thread(target=self._stop_all_rns_thread, daemon=True).start()
+
+    def _stop_all_rns_thread(self):
+        """Kill all RNS processes"""
+        killed = []
+
+        processes = ['rnsd', 'nomadnet', 'lxmf', 'RNS']
+        for proc in processes:
+            try:
+                result = subprocess.run(
+                    ['pkill', '-9', '-f', proc],
+                    capture_output=True, timeout=5
+                )
+                if result.returncode == 0:
+                    killed.append(proc)
+            except Exception:
+                pass
+
+        if killed:
+            GLib.idle_add(self._log, f"Killed: {', '.join(killed)}")
+        else:
+            GLib.idle_add(self._log, "No RNS processes found")
+
+        # Check what's left
+        GLib.idle_add(self._log, "\nVerifying...")
+        import time
+        time.sleep(0.5)
+
+        try:
+            result = subprocess.run(
+                ['pgrep', '-a', '-f', 'rnsd|nomadnet|lxmf|RNS'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.stdout.strip():
+                GLib.idle_add(self._log, "Still running:")
+                for line in result.stdout.strip().split('\n'):
+                    GLib.idle_add(self._log, f"  {line}")
+            else:
+                GLib.idle_add(self._log, "All RNS processes stopped ✓")
+        except Exception:
+            GLib.idle_add(self._log, "Verification complete")
+
+        # Check port 29716
+        GLib.idle_add(self._log, "\nChecking port 29716...")
+        try:
+            result = subprocess.run(
+                ['ss', '-ulnp'],
+                capture_output=True, text=True, timeout=5
+            )
+            found = False
+            for line in result.stdout.split('\n'):
+                if '29716' in line:
+                    found = True
+                    GLib.idle_add(self._log, f"  Still bound: {line[:80]}")
+            if not found:
+                GLib.idle_add(self._log, "  Port 29716 is free ✓")
+        except Exception:
+            pass
