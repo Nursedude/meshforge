@@ -1283,39 +1283,16 @@ class RNSPanel(Gtk.Box):
                     import time
                     time.sleep(0.5)  # Brief pause for process to terminate
 
-                # Ensure rnsd is running - NomadNet needs it to share RNS transport
-                # Otherwise NomadNet tries to create its own interface which causes "Address already in use"
-                if not self._check_rns_service():
-                    logger.debug("[RNS] rnsd not running - starting it before NomadNet")
-                    # Try to start rnsd in background
-                    rnsd_path = shutil.which('rnsd')
-                    if rnsd_path:
-                        # Run rnsd as the real user
-                        if is_root and real_user != 'root':
-                            subprocess.Popen(
-                                ['sudo', '-u', real_user, rnsd_path],
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                stdin=subprocess.DEVNULL,
-                                start_new_session=True
-                            )
-                        else:
-                            subprocess.Popen(
-                                [rnsd_path],
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                stdin=subprocess.DEVNULL,
-                                start_new_session=True
-                            )
-                        import time
-                        time.sleep(1.5)  # Give rnsd time to initialize
-                        logger.debug("[RNS] Started rnsd for NomadNet transport")
-                        self.main_window.set_status_message("Started rnsd for NomadNet")
-                        # Refresh RNS service status after launch completes
-                        GLib.timeout_add(2000, lambda: self._refresh_all() or False)
-                    else:
-                        # No rnsd available - NomadNet will try to create own instance
-                        logger.warning("[RNS] rnsd not found - NomadNet may have port conflicts")
+                # Stop rnsd if running - NomadNet manages its own RNS instance
+                # Running both causes "Address already in use" conflicts
+                if self._check_rns_service():
+                    logger.debug("[RNS] rnsd running - stopping it before NomadNet")
+                    subprocess.run(['pkill', '-f', 'rnsd'], capture_output=True, timeout=5)
+                    import time
+                    time.sleep(0.5)  # Wait for port to be released
+                    self.main_window.set_status_message("Stopped rnsd for NomadNet")
+                    # Refresh RNS service status after launch completes
+                    GLib.timeout_add(2000, lambda: self._refresh_all() or False)
 
                 # Build the terminal command - wrap in bash to keep terminal open on exit
                 if is_root and real_user != 'root':
@@ -1349,30 +1326,12 @@ class RNSPanel(Gtk.Box):
                 self.main_window.set_status_message("NomadNet launched in terminal")
                 return
             elif mode == "daemon":
-                # Ensure rnsd is running before starting NomadNet daemon
-                if not self._check_rns_service():
-                    logger.debug("[RNS] rnsd not running - starting it before NomadNet daemon")
-                    rnsd_path = shutil.which('rnsd')
-                    if rnsd_path:
-                        if is_root and real_user != 'root':
-                            subprocess.Popen(
-                                ['sudo', '-u', real_user, rnsd_path],
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                stdin=subprocess.DEVNULL,
-                                start_new_session=True
-                            )
-                        else:
-                            subprocess.Popen(
-                                [rnsd_path],
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                stdin=subprocess.DEVNULL,
-                                start_new_session=True
-                            )
-                        import time
-                        time.sleep(1.5)  # Give rnsd time to initialize
-                        logger.debug("[RNS] Started rnsd for NomadNet daemon")
+                # Stop rnsd if running - NomadNet manages its own RNS instance
+                if self._check_rns_service():
+                    logger.debug("[RNS] rnsd running - stopping it before NomadNet daemon")
+                    subprocess.run(['pkill', '-f', 'rnsd'], capture_output=True, timeout=5)
+                    import time
+                    time.sleep(0.5)  # Wait for port to be released
 
                 # Run as daemon using full path
                 # When running as root, run as real user
