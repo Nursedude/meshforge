@@ -1308,11 +1308,14 @@ class RNSPanel(Gtk.Box):
                     GLib.timeout_add(3000, lambda: self._refresh_all() or False)
 
                 # Build the terminal command - wrap in bash to keep terminal open on exit
+                # Use --config for NomadNet config dir and --rnsconfig for Reticulum config
+                nomadnet_config = real_home / ".nomadnetwork"
+                rns_config_path = real_home / ".reticulum"
                 if is_root and real_user != 'root':
                     # Running as root but need to launch as real user
-                    nomadnet_cmd = f"sudo -i -u {real_user} {nomadnet_path}"
+                    nomadnet_cmd = f"sudo -i -u {real_user} {nomadnet_path} --config {nomadnet_config} --rnsconfig {rns_config_path}"
                 else:
-                    nomadnet_cmd = str(nomadnet_path)
+                    nomadnet_cmd = f"{nomadnet_path} --config {nomadnet_config} --rnsconfig {rns_config_path}"
 
                 # Wrap command in bash script that keeps terminal open
                 # This handles both normal exit and errors
