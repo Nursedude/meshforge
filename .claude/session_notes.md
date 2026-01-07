@@ -4,8 +4,8 @@
 > *Build. Test. Deploy. Monitor.*
 
 ## Current Version: 0.4.3-beta
-## Last Updated: 2026-01-06
-## Branch: `claude/continue-previous-work-YB9x9`
+## Last Updated: 2026-01-07
+## Branch: `claude/fix-address-in-use-qYem5`
 
 ---
 
@@ -51,6 +51,61 @@ sudo ./scripts/install-desktop.sh
 ---
 
 ## Recent Work Summary
+
+### Session: 2026-01-06/07 - GTK Stabilization & HamClock
+
+**Key Accomplishments:**
+
+1. **NomadNet Terminal Fix** (`src/gtk_ui/panels/rns.py`)
+   - Terminal was closing immediately after NomadNet exit
+   - Wrapped command in bash with "Press Enter to close..." message
+   - Uses xterm's native `-hold` flag when available
+   - Fixed terminal detection for multiple emulators (lxterminal, xfce4, gnome, konsole, xterm)
+
+2. **Region Dropdown** (`src/gtk_ui/panels/radio_config_simple.py`)
+   - Converted region from display-only label to configurable dropdown
+   - All 22 Meshtastic regions: US, EU_433, EU_868, CN, JP, ANZ, KR, TW, RU, IN, NZ_865, TH, LORA_24, UA_433, UA_868, MY_433, MY_919, SG_923, PH, UK_868, SINGAPORE
+   - Warning tooltip about local radio regulations compliance
+
+3. **Radio Config - Load ALL Settings on Refresh**
+   - LoRa: Region, Preset, Hop Limit, TX Power, TX Enabled, Channel Num
+   - Advanced LoRa: Bandwidth, SF, CR, Freq Offset, RX Boost, Duty Cycle
+   - Device: Role, Rebroadcast, Node Info, Buzzer, LED
+   - Position: GPS Mode, Broadcast interval, Smart, Fixed
+   - Display: Screen timeout, Flip, Units, OLED type
+   - Bluetooth: Enabled, Mode, PIN
+   - Network: WiFi enabled, SSID, NTP server
+   - Channel: Name, Uplink, Downlink
+   - All values populate UI widgets AND show in info display
+
+4. **HamClock Web Setup Button** (`src/gtk_ui/panels/hamclock.py`)
+   - Added prominent "Open Web Setup" button (blue/suggested-action style)
+   - Opens `http://localhost:8081/live.html` for configuration
+   - Removed misleading nano edit button (eeprom is binary, not text)
+   - HamClock uses web interface for all configuration
+
+5. **HamClock Headless Pi Setup** (documented in `.claude/research/hamclock.md`)
+   - Pre-built framebuffer packages need `libbcm_host.so` (unavailable on arm64)
+   - Solution: Build from source with `make hamclock-web-1600x960`
+   - Systemd service runs as user (needs HOME env and ~/.hamclock write access)
+   - Ports: 8081 (live view), 8082 (REST API)
+   - Fixed permission issues, corrupted config recovery
+
+6. **RNS Reinitialize Loop Fix** (`src/gateway/rns_bridge.py`)
+   - Fixed "Attempt to reinitialise Reticulum" error spam
+   - Sets `_rns_init_failed_permanently = True` when catching reinitialize exception
+   - Prevents infinite retry loop
+
+**Files Modified:**
+| File | Change |
+|------|--------|
+| `src/gtk_ui/panels/rns.py` | NomadNet terminal fix |
+| `src/gtk_ui/panels/radio_config_simple.py` | Region dropdown, load all settings |
+| `src/gtk_ui/panels/hamclock.py` | Web setup button |
+| `src/gateway/rns_bridge.py` | RNS reinitialize fix |
+| `.claude/research/hamclock.md` | NEW - Headless Pi setup docs |
+
+---
 
 ### Session: 2026-01-03 (v4.1.0) - Map, Updates & Calculator
 
@@ -173,8 +228,17 @@ get_version_summary()
 
 ---
 
-## Testing Checklist for v4.1.0
+## Testing Checklist
 
+### v4.1.x GTK Stabilization
+- [x] NomadNet terminal stays open after exit
+- [x] Region dropdown shows all 22 regions
+- [x] Radio config loads ALL settings on refresh
+- [x] HamClock "Open Web Setup" opens browser to :8081
+- [x] HamClock running headless on arm64 Pi
+- [ ] RNS reinitialize loop no longer spams errors
+
+### v4.1.0 Features
 - [ ] Web UI Map tab loads without errors
 - [ ] Map shows nodes with GPS positions
 - [ ] Map popups display correct node details
@@ -232,13 +296,13 @@ get_version_summary()
 
 ```bash
 # Current branch
-git checkout claude/continue-previous-work-YB9x9
+git checkout claude/fix-address-in-use-qYem5
 
 # View recent changes
 git log --oneline -10
 
 # Push changes
-git push -u origin claude/continue-previous-work-YB9x9
+git push -u origin claude/fix-address-in-use-qYem5
 ```
 
 ---
@@ -258,9 +322,30 @@ git push -u origin claude/continue-previous-work-YB9x9
 ## Contact / Repository
 
 - **GitHub:** https://github.com/Nursedude/meshforge
-- **Branch:** claude/continue-previous-work-YB9x9
+- **Branch:** claude/fix-address-in-use-qYem5
+- **Callsign:** WH6GXZ
 - **License:** GPL-3.0
 
 ---
 
-*Mahalo for using MeshForge!*
+## HamClock Quick Reference
+
+```bash
+# Service
+sudo systemctl status hamclock
+sudo systemctl restart hamclock
+
+# URLs (replace with your Pi IP)
+Live View: http://192.168.x.x:8081/live.html
+REST API:  http://192.168.x.x:8082/
+
+# Logs
+journalctl -u hamclock -n 50 --no-pager
+
+# Config location
+~/.hamclock/eeprom (binary - use web UI to configure)
+```
+
+---
+
+*Mahalo for using MeshForge!* 🤙

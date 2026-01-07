@@ -550,12 +550,21 @@ class UnifiedNodeTracker:
             with self._lock:
                 nodes_data = [n.to_dict() for n in self._nodes.values()]
 
+            cache_data = {
+                'version': 1,
+                'saved_at': datetime.now().isoformat(),
+                'nodes': nodes_data
+            }
+
             with open(self.CACHE_FILE, 'w') as f:
-                json.dump({
-                    'version': 1,
-                    'saved_at': datetime.now().isoformat(),
-                    'nodes': nodes_data
-                }, f, indent=2)
+                json.dump(cache_data, f, indent=2)
+
+            # Also save to /tmp for web API access (cross-process sharing)
+            try:
+                with open('/tmp/meshforge_rns_nodes.json', 'w') as f:
+                    json.dump(cache_data, f)
+            except Exception as e:
+                logger.debug(f"Could not save web API cache: {e}")
 
         except Exception as e:
             logger.warning(f"Failed to save node cache: {e}")
