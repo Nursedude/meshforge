@@ -1420,11 +1420,15 @@ class RadioConfigPanel(Gtk.Box):
     def _apply_setting(self, setting, value):
         """Apply a single setting"""
         self.status_label.set_label(f"Applying {setting}={value}...")
+        logger.info(f"[RadioConfig] Applying setting: {setting}={value}")
 
         def on_result(success, stdout, stderr):
             if success:
                 self.status_label.set_label(f"Applied {setting}={value}")
                 self.main_window.set_status_message(f"Setting applied: {setting}")
+                logger.info(f"[RadioConfig] Successfully applied {setting}={value}")
+                # Refresh config after 2 seconds to show updated value from device
+                GLib.timeout_add(2000, self._refresh_after_apply)
             else:
                 # Parse common errors for better messages
                 error_msg = stderr.strip() if stderr else "Unknown error"
@@ -1441,6 +1445,12 @@ class RadioConfigPanel(Gtk.Box):
                 logger.warning(f"[RadioConfig] Apply {setting}={value} failed: {stderr}")
 
         self._run_cli(['--set', setting, value], on_result)
+
+    def _refresh_after_apply(self):
+        """Refresh config after applying a setting to show actual device values"""
+        logger.info("[RadioConfig] Refreshing config after apply...")
+        self._load_current_config()
+        return False  # Don't repeat
 
     def _set_fixed_position(self, button):
         """Set fixed position from entry fields using --setlat --setlon format"""
