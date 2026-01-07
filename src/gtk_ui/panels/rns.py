@@ -1276,33 +1276,36 @@ class RNSPanel(Gtk.Box):
 
         try:
             if mode == "textui":
-                # Stop NomadNet daemon first if running - it conflicts with Text UI
-                if self._is_nomadnet_daemon_running():
-                    logger.debug("[RNS] NomadNet daemon running - stopping it first")
-                    subprocess.run(['pkill', '-f', 'nomadnet'], capture_output=True, timeout=5)
-                    import time
-                    time.sleep(0.5)  # Brief pause for process to terminate
+                # Stop all RNS-related processes to free ports
+                # NomadNet needs exclusive access to RNS AutoInterface ports
+                import time
+                stopped_something = False
 
-                # Stop MeshForge gateway bridge if running - it holds RNS ports
+                # Stop NomadNet daemon first if running
+                if self._is_nomadnet_daemon_running():
+                    logger.debug("[RNS] Stopping NomadNet daemon")
+                    subprocess.run(['pkill', '-9', '-f', 'nomadnet'], capture_output=True, timeout=5)
+                    stopped_something = True
+
+                # Stop MeshForge gateway bridge if running
                 if self._gateway_bridge and self._gateway_bridge.is_running:
-                    logger.debug("[RNS] Gateway bridge running - stopping it before NomadNet")
+                    logger.debug("[RNS] Stopping gateway bridge")
                     self._gateway_bridge.stop()
                     self._gateway_bridge = None
-                    import time
-                    time.sleep(1.0)  # Wait for RNS to release ports
-                    self.main_window.set_status_message("Stopped gateway for NomadNet")
+                    stopped_something = True
                     GLib.idle_add(self._update_gateway_status)
 
-                # Stop rnsd if running - NomadNet manages its own RNS instance
-                # Running both causes "Address already in use" conflicts
+                # Stop rnsd if running
                 if self._check_rns_service():
-                    logger.debug("[RNS] rnsd running - stopping it before NomadNet")
-                    subprocess.run(['pkill', '-f', 'rnsd'], capture_output=True, timeout=5)
-                    import time
-                    time.sleep(0.5)  # Wait for port to be released
-                    self.main_window.set_status_message("Stopped rnsd for NomadNet")
-                    # Refresh RNS service status after launch completes
-                    GLib.timeout_add(2000, lambda: self._refresh_all() or False)
+                    logger.debug("[RNS] Stopping rnsd")
+                    subprocess.run(['pkill', '-9', '-f', 'rnsd'], capture_output=True, timeout=5)
+                    stopped_something = True
+
+                # If we stopped anything, wait for kernel to release sockets
+                if stopped_something:
+                    self.main_window.set_status_message("Releasing RNS ports...")
+                    time.sleep(2.0)  # Wait for TIME_WAIT to clear
+                    GLib.timeout_add(3000, lambda: self._refresh_all() or False)
 
                 # Build the terminal command - wrap in bash to keep terminal open on exit
                 if is_root and real_user != 'root':
@@ -1336,21 +1339,24 @@ class RNSPanel(Gtk.Box):
                 self.main_window.set_status_message("NomadNet launched in terminal")
                 return
             elif mode == "daemon":
-                # Stop MeshForge gateway bridge if running - it holds RNS ports
+                # Stop all RNS-related processes to free ports
+                import time
+                stopped_something = False
+
                 if self._gateway_bridge and self._gateway_bridge.is_running:
-                    logger.debug("[RNS] Gateway bridge running - stopping it before NomadNet daemon")
+                    logger.debug("[RNS] Stopping gateway bridge")
                     self._gateway_bridge.stop()
                     self._gateway_bridge = None
-                    import time
-                    time.sleep(1.0)  # Wait for RNS to release ports
+                    stopped_something = True
                     GLib.idle_add(self._update_gateway_status)
 
-                # Stop rnsd if running - NomadNet manages its own RNS instance
                 if self._check_rns_service():
-                    logger.debug("[RNS] rnsd running - stopping it before NomadNet daemon")
-                    subprocess.run(['pkill', '-f', 'rnsd'], capture_output=True, timeout=5)
-                    import time
-                    time.sleep(1.0)  # Wait for port to be released
+                    logger.debug("[RNS] Stopping rnsd")
+                    subprocess.run(['pkill', '-9', '-f', 'rnsd'], capture_output=True, timeout=5)
+                    stopped_something = True
+
+                if stopped_something:
+                    time.sleep(2.0)  # Wait for TIME_WAIT to clear
 
                 # Run as daemon using full path
                 # When running as root, run as real user
