@@ -831,8 +831,16 @@ class HamClockPanel(Gtk.Box):
 
                 # Map to GitHub release naming - hamclock-systemd only available for armhf
                 # hamclock available for armhf and amd64
+                # arm64 (aarch64) can run armhf packages via multiarch on Pi
                 version = "2.65.5"
-                if arch == 'armhf':
+                if arch in ['armhf', 'arm64', 'aarch64']:
+                    # arm64 Pi can run armhf packages - enable multiarch first
+                    if arch in ['arm64', 'aarch64']:
+                        logger.info("[HamClock] arm64 detected, enabling armhf multiarch")
+                        GLib.idle_add(self.main_window.set_status_message, "Enabling armhf multiarch for arm64...")
+                        subprocess.run(['sudo', 'dpkg', '--add-architecture', 'armhf'],
+                                       capture_output=True, timeout=30)
+                        subprocess.run(['sudo', 'apt', 'update'], capture_output=True, timeout=120)
                     # Use hamclock-systemd for Pi (includes web service)
                     deb_name = f"hamclock-systemd_{version}_armhf.deb"
                 elif arch == 'amd64':
