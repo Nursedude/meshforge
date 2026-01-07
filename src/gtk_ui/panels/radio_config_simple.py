@@ -677,6 +677,9 @@ class RadioConfigSimple(Gtk.Box):
                 device = config.device
                 position = config.position
                 power = config.power
+                display = config.display
+                bluetooth = config.bluetooth
+                network = config.network
 
                 # Debug: log raw values
                 logger.debug(f"[RadioConfig] Raw modem_preset: {lora.modem_preset} type: {type(lora.modem_preset)}")
@@ -686,15 +689,28 @@ class RadioConfigSimple(Gtk.Box):
                 preset_val = int(lora.modem_preset) if hasattr(lora, 'modem_preset') else 0
                 hop_val = int(lora.hop_limit) if hasattr(lora, 'hop_limit') else 3
                 tx_val = int(lora.tx_power) if hasattr(lora, 'tx_power') else 20
+                tx_enabled = bool(lora.tx_enabled) if hasattr(lora, 'tx_enabled') else True
                 region_val = str(lora.region) if hasattr(lora, 'region') else 'Unknown'
+                channel_num = int(lora.channel_num) if hasattr(lora, 'channel_num') else 0
+
+                # Advanced LoRa
+                bandwidth = float(lora.bandwidth) if hasattr(lora, 'bandwidth') else 250
+                spread_factor = int(lora.spread_factor) if hasattr(lora, 'spread_factor') else 0
+                coding_rate = int(lora.coding_rate) if hasattr(lora, 'coding_rate') else 0
+                freq_offset = float(lora.frequency_offset) if hasattr(lora, 'frequency_offset') else 0
+                rx_boosted = bool(lora.sx126x_rx_boosted_gain) if hasattr(lora, 'sx126x_rx_boosted_gain') else False
+                override_duty = bool(lora.override_duty_cycle) if hasattr(lora, 'override_duty_cycle') else False
 
                 # Get device values
                 role_val = int(device.role) if hasattr(device, 'role') else 0
                 rebroadcast_val = int(device.rebroadcast_mode) if hasattr(device, 'rebroadcast_mode') else 0
                 nodeinfo_val = int(device.node_info_broadcast_secs) if hasattr(device, 'node_info_broadcast_secs') else 900
+                buzzer_val = int(device.buzzer_mode) if hasattr(device, 'buzzer_mode') else 0
+                led_heartbeat = bool(device.led_heartbeat_disabled) if hasattr(device, 'led_heartbeat_disabled') else False
 
                 # Get position values
                 gps_enabled = bool(position.gps_enabled) if hasattr(position, 'gps_enabled') else True
+                gps_mode = int(position.gps_mode) if hasattr(position, 'gps_mode') else 1
                 pos_broadcast = int(position.position_broadcast_secs) if hasattr(position, 'position_broadcast_secs') else 900
                 smart_pos = bool(position.position_broadcast_smart_enabled) if hasattr(position, 'position_broadcast_smart_enabled') else True
                 fixed_pos = bool(position.fixed_position) if hasattr(position, 'fixed_position') else False
@@ -702,21 +718,77 @@ class RadioConfigSimple(Gtk.Box):
                 # Get power values
                 power_saving = bool(power.is_power_saving) if hasattr(power, 'is_power_saving') else False
 
+                # Get display values
+                screen_on_secs = int(display.screen_on_secs) if hasattr(display, 'screen_on_secs') else 60
+                flip_screen = bool(display.flip_screen) if hasattr(display, 'flip_screen') else False
+                units_val = int(display.units) if hasattr(display, 'units') else 0
+                oled_val = int(display.oled) if hasattr(display, 'oled') else 0
+
+                # Get bluetooth values
+                bt_enabled = bool(bluetooth.enabled) if hasattr(bluetooth, 'enabled') else True
+                bt_mode = int(bluetooth.mode) if hasattr(bluetooth, 'mode') else 0
+                bt_pin = int(bluetooth.fixed_pin) if hasattr(bluetooth, 'fixed_pin') else 123456
+
+                # Get network values
+                wifi_enabled = bool(network.wifi_enabled) if hasattr(network, 'wifi_enabled') else False
+                wifi_ssid = str(network.wifi_ssid) if hasattr(network, 'wifi_ssid') else ''
+                ntp_server = str(network.ntp_server) if hasattr(network, 'ntp_server') else ''
+
+                # Get channel info (primary channel)
+                channels = iface.localNode.channels
+                ch0_name = ''
+                ch0_psk = ''
+                ch0_uplink = False
+                ch0_downlink = False
+                if channels and len(channels) > 0:
+                    ch0 = channels[0]
+                    if hasattr(ch0, 'settings'):
+                        ch0_name = str(ch0.settings.name) if hasattr(ch0.settings, 'name') else ''
+                        ch0_uplink = bool(ch0.settings.uplink_enabled) if hasattr(ch0.settings, 'uplink_enabled') else False
+                        ch0_downlink = bool(ch0.settings.downlink_enabled) if hasattr(ch0.settings, 'downlink_enabled') else False
+
                 # Build info text
                 info = f"=== LoRa ===\n"
                 info += f"Region: {region_val}\n"
                 info += f"Preset: {PRESETS.get(preset_val, preset_val)} ({preset_val})\n"
                 info += f"Hop Limit: {hop_val}\n"
-                info += f"TX Power: {tx_val} dBm\n\n"
+                info += f"TX Power: {tx_val} dBm\n"
+                info += f"TX Enabled: {'Yes' if tx_enabled else 'No'}\n"
+                info += f"Channel Num: {channel_num}\n\n"
+
                 info += f"=== Device ===\n"
                 info += f"Role: {ROLES.get(role_val, role_val)} ({role_val})\n"
                 info += f"Rebroadcast: {REBROADCAST_MODES[rebroadcast_val] if rebroadcast_val < len(REBROADCAST_MODES) else rebroadcast_val}\n"
-                info += f"Node Info: {nodeinfo_val}s\n\n"
+                info += f"Node Info: {nodeinfo_val}s\n"
+                info += f"Buzzer: {BUZZER_MODES[buzzer_val] if buzzer_val < len(BUZZER_MODES) else buzzer_val}\n"
+                info += f"LED: {'Disabled' if led_heartbeat else 'Enabled'}\n\n"
+
                 info += f"=== Position ===\n"
-                info += f"GPS: {'Enabled' if gps_enabled else 'Disabled'}\n"
+                info += f"GPS Mode: {GPS_MODES[gps_mode] if gps_mode < len(GPS_MODES) else gps_mode}\n"
                 info += f"Broadcast: {pos_broadcast}s\n"
                 info += f"Smart: {'Yes' if smart_pos else 'No'}\n"
                 info += f"Fixed: {'Yes' if fixed_pos else 'No'}\n\n"
+
+                info += f"=== Display ===\n"
+                info += f"Screen On: {screen_on_secs}s\n"
+                info += f"Flip: {'Yes' if flip_screen else 'No'}\n"
+                info += f"Units: {DISPLAY_UNITS[units_val] if units_val < len(DISPLAY_UNITS) else units_val}\n\n"
+
+                info += f"=== Bluetooth ===\n"
+                info += f"Enabled: {'Yes' if bt_enabled else 'No'}\n"
+                info += f"Mode: {BT_MODES[bt_mode] if bt_mode < len(BT_MODES) else bt_mode}\n\n"
+
+                info += f"=== Network ===\n"
+                info += f"WiFi: {'Enabled' if wifi_enabled else 'Disabled'}\n"
+                if wifi_ssid:
+                    info += f"SSID: {wifi_ssid}\n"
+                if ntp_server:
+                    info += f"NTP: {ntp_server}\n"
+                info += f"\n=== Channel 0 ===\n"
+                info += f"Name: {ch0_name or '(default)'}\n"
+                info += f"Uplink: {'Yes' if ch0_uplink else 'No'}\n"
+                info += f"Downlink: {'Yes' if ch0_downlink else 'No'}\n\n"
+
                 info += f"=== Power ===\n"
                 info += f"Power Saving: {'Yes' if power_saving else 'No'}"
 
@@ -728,10 +800,30 @@ class RadioConfigSimple(Gtk.Box):
 
                 # Update UI
                 config_data = {
+                    # LoRa
                     'preset': preset_val, 'hop': hop_val, 'tx': tx_val, 'region': region_val,
+                    'tx_enabled': tx_enabled, 'channel_num': channel_num,
+                    # Advanced LoRa
+                    'bandwidth': bandwidth, 'spread_factor': spread_factor, 'coding_rate': coding_rate,
+                    'freq_offset': freq_offset, 'rx_boosted': rx_boosted, 'override_duty': override_duty,
+                    # Device
                     'role': role_val, 'rebroadcast': rebroadcast_val, 'nodeinfo': nodeinfo_val,
-                    'gps': gps_enabled, 'pos_broadcast': pos_broadcast, 'smart': smart_pos,
-                    'fixed': fixed_pos, 'power_saving': power_saving, 'info': info
+                    'buzzer': buzzer_val, 'led_disabled': led_heartbeat,
+                    # Position
+                    'gps': gps_enabled, 'gps_mode': gps_mode, 'pos_broadcast': pos_broadcast,
+                    'smart': smart_pos, 'fixed': fixed_pos,
+                    # Power
+                    'power_saving': power_saving,
+                    # Display
+                    'screen_on': screen_on_secs, 'flip': flip_screen, 'units': units_val, 'oled': oled_val,
+                    # Bluetooth
+                    'bt_enabled': bt_enabled, 'bt_mode': bt_mode, 'bt_pin': bt_pin,
+                    # Network
+                    'wifi_enabled': wifi_enabled, 'wifi_ssid': wifi_ssid, 'ntp': ntp_server,
+                    # Channel
+                    'ch_name': ch0_name, 'ch_uplink': ch0_uplink, 'ch_downlink': ch0_downlink,
+                    # Info text
+                    'info': info
                 }
                 GLib.idle_add(self._update_ui, config_data)
                 GLib.idle_add(self._update_status, f"Connected{config_warning}")
@@ -764,20 +856,68 @@ class RadioConfigSimple(Gtk.Box):
         self.preset_dropdown.set_selected(data.get('preset', 0))
         self.hop_spin.set_value(data.get('hop', 3))
         self.tx_spin.set_value(data.get('tx', 20))
+        self.txen_switch.set_active(data.get('tx_enabled', True))
+        self.chan_spin.set_value(data.get('channel_num', 0))
+
+        # Advanced LoRa - map bandwidth to dropdown index
+        bw = data.get('bandwidth', 250)
+        bw_str = str(bw) if bw != int(bw) else str(int(bw))
+        if bw_str in BANDWIDTHS:
+            self.bw_dropdown.set_selected(BANDWIDTHS.index(bw_str))
+        sf = data.get('spread_factor', 0)
+        if sf > 0 and str(sf) in SPREADING_FACTORS:
+            self.sf_dropdown.set_selected(SPREADING_FACTORS.index(str(sf)))
+        self.freq_offset_spin.set_value(data.get('freq_offset', 0))
+        self.rxboost_switch.set_active(data.get('rx_boosted', False))
+        self.duty_switch.set_active(data.get('override_duty', False))
 
         # Device
         self.role_dropdown.set_selected(data.get('role', 0))
         self.rebroadcast_dropdown.set_selected(data.get('rebroadcast', 0))
         self.nodeinfo_spin.set_value(data.get('nodeinfo', 900))
+        buzzer = data.get('buzzer', 0)
+        if buzzer < len(BUZZER_MODES):
+            self.buzzer_dropdown.set_selected(buzzer)
+        self.led_switch.set_active(not data.get('led_disabled', False))
 
         # Position
-        self.gps_switch.set_active(data.get('gps', True))
+        gps_mode = data.get('gps_mode', 1)
+        if gps_mode < len(GPS_MODES):
+            self.gpsmode_dropdown.set_selected(gps_mode)
         self.posint_spin.set_value(data.get('pos_broadcast', 900))
         self.smart_switch.set_active(data.get('smart', True))
         self.fixed_switch.set_active(data.get('fixed', False))
 
         # Power
         self.powersave_switch.set_active(data.get('power_saving', False))
+
+        # Display
+        self.screen_spin.set_value(data.get('screen_on', 60))
+        self.flip_switch.set_active(data.get('flip', False))
+        units = data.get('units', 0)
+        if units < len(DISPLAY_UNITS):
+            self.units_dropdown.set_selected(units)
+        oled = data.get('oled', 0)
+        if oled < len(OLED_TYPES):
+            self.oled_dropdown.set_selected(oled)
+
+        # Bluetooth
+        self.bt_switch.set_active(data.get('bt_enabled', True))
+        bt_mode = data.get('bt_mode', 0)
+        if bt_mode < len(BT_MODES):
+            self.btmode_dropdown.set_selected(bt_mode)
+        bt_pin = data.get('bt_pin', 123456)
+        self.btpin_entry.set_text(str(bt_pin))
+
+        # Network
+        self.wifi_switch.set_active(data.get('wifi_enabled', False))
+        self.ssid_entry.set_text(data.get('wifi_ssid', ''))
+        self.ntp_entry.set_text(data.get('ntp', ''))
+
+        # Channel
+        self.channame_entry.set_text(data.get('ch_name', ''))
+        self.uplink_switch.set_active(data.get('ch_uplink', False))
+        self.downlink_switch.set_active(data.get('ch_downlink', False))
 
         # Info
         self.info_label.set_label(data.get('info', ''))
