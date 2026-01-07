@@ -163,12 +163,58 @@ class TestConfigDictApplication:
         idx = self.find_dropdown_index(self.REGIONS, 1, None)
         assert idx is None, "Without enum map, int 1 should not match 'US'"
 
+    def test_short_turbo_enum_8(self):
+        """SHORT_TURBO is enum 8, should find correct dropdown index."""
+        idx = self.find_dropdown_index(self.PRESETS, 8, self.PRESET_ENUM_MAP)
+        assert idx == 8, f"SHORT_TURBO (enum 8) should be at index 8, got {idx}"
+        assert self.PRESETS[idx] == "SHORT_TURBO"
+
+    def test_long_moderate_enum_7(self):
+        """LONG_MODERATE is enum 7, should find correct dropdown index."""
+        idx = self.find_dropdown_index(self.PRESETS, 7, self.PRESET_ENUM_MAP)
+        # LONG_MODERATE is at index 3 in dropdown, enum value 7
+        assert idx == 3, f"LONG_MODERATE (enum 7) should be at index 3, got {idx}"
+        assert self.PRESETS[idx] == "LONG_MODERATE"
+
+    def test_all_presets_round_trip(self):
+        """Loading any preset enum should return the correct string for CLI."""
+        for enum_val, preset_name in self.PRESET_ENUM_MAP.items():
+            # Simulate loading from device
+            idx = self.find_dropdown_index(self.PRESETS, enum_val, self.PRESET_ENUM_MAP)
+            assert idx is not None, f"Enum {enum_val} ({preset_name}) should find index"
+            # Simulate getting value for CLI
+            cli_value = self.PRESETS[idx]
+            assert cli_value == preset_name, f"Enum {enum_val}: expected {preset_name}, got {cli_value}"
+
+
+class TestPresetGetValue:
+    """Test _get_preset simulation - dropdown index to CLI value."""
+
+    PRESETS = ["LONG_FAST", "LONG_SLOW", "VERY_LONG_SLOW", "LONG_MODERATE",
+               "MEDIUM_SLOW", "MEDIUM_FAST", "SHORT_SLOW", "SHORT_FAST", "SHORT_TURBO"]
+
+    def get_preset(self, selected_index):
+        """Simulate _get_preset function."""
+        return self.PRESETS[selected_index]
+
+    def test_get_preset_long_fast(self):
+        """Selecting index 0 should return LONG_FAST."""
+        assert self.get_preset(0) == "LONG_FAST"
+
+    def test_get_preset_short_turbo(self):
+        """Selecting index 8 should return SHORT_TURBO."""
+        assert self.get_preset(8) == "SHORT_TURBO"
+
+    def test_get_preset_long_moderate(self):
+        """Selecting index 3 should return LONG_MODERATE."""
+        assert self.get_preset(3) == "LONG_MODERATE"
+
 
 def run_tests():
     """Simple test runner without pytest."""
     import traceback
 
-    test_classes = [TestRegionEnumMapping, TestChannelParsing, TestConfigDictApplication]
+    test_classes = [TestRegionEnumMapping, TestChannelParsing, TestConfigDictApplication, TestPresetGetValue]
     passed = 0
     failed = 0
     errors = []
