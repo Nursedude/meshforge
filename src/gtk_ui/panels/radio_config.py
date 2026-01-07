@@ -1357,6 +1357,12 @@ class RadioConfigPanel(Gtk.Box):
 
     def _run_cli(self, args, callback=None):
         """Run meshtastic CLI command in background thread"""
+        # Log if this is a WRITE operation
+        if '--set' in args or '--setlat' in args:
+            import traceback
+            logger.warning(f"[RadioConfig] !!! CLI WRITE OPERATION: {args}")
+            logger.warning(f"[RadioConfig] CLI call stack:\n{''.join(traceback.format_stack()[-5:])}")
+
         def do_run():
             cli = self._find_cli()
             if not cli:
@@ -1420,7 +1426,10 @@ class RadioConfigPanel(Gtk.Box):
     def _apply_setting(self, setting, value):
         """Apply a single setting"""
         self.status_label.set_label(f"Applying {setting}={value}...")
-        logger.info(f"[RadioConfig] Applying setting: {setting}={value}")
+        # CRITICAL: Log stack trace to see WHO called this
+        import traceback
+        logger.warning(f"[RadioConfig] !!! APPLY SETTING CALLED: {setting}={value}")
+        logger.warning(f"[RadioConfig] Call stack:\n{''.join(traceback.format_stack()[-5:])}")
 
         def on_result(success, stdout, stderr):
             if success:
