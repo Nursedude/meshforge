@@ -228,7 +228,7 @@ class MapPanel(Gtk.Box):
 
         self.append(header_box)
 
-        subtitle = Gtk.Label(label="Unified view of Meshtastic and RNS nodes with positions")
+        subtitle = Gtk.Label(label="Unified view of Meshtastic and RNS mesh networks")
         subtitle.add_css_class("dim-label")
         subtitle.set_xalign(0)
         self.append(subtitle)
@@ -248,6 +248,11 @@ class MapPanel(Gtk.Box):
         # Add tooltip explaining RNS status
         if self.node_tracker is None:
             self.stat_rns.set_tooltip_text("RNS not available - install RNS and configure TCPClientInterface")
+        else:
+            self.stat_rns.set_tooltip_text(
+                "RNS nodes discovered via announces. "
+                "Nodes appear in list below. Map markers require position data."
+            )
         stats_box.append(self.stat_rns)
 
         self.stat_online = self._create_stat_label("Online", "0")

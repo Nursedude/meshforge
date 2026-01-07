@@ -63,6 +63,7 @@ class RadioConfigPanel(Gtk.Box):
 
         # Create expandable sections
         self._add_radio_info_section(content_box)
+        self._add_channel_list_section(content_box)
         self._add_device_section(content_box)
         self._add_lora_section(content_box)
         self._add_frequency_calculator_section(content_box)
@@ -155,6 +156,210 @@ class RadioConfigPanel(Gtk.Box):
         box.append(refresh_box)
         frame.set_child(box)
         parent.append(frame)
+
+    def _add_channel_list_section(self, parent):
+        """Add channel list section showing all configured channels"""
+        frame = Gtk.Frame()
+        frame.set_label("Channels")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_start(15)
+        box.set_margin_end(15)
+        box.set_margin_top(10)
+        box.set_margin_bottom(10)
+
+        # Channel list container (will be populated dynamically)
+        self.channel_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+
+        # Initial placeholder
+        placeholder = Gtk.Label(label="Click 'Refresh Channels' to load channel list")
+        placeholder.add_css_class("dim-label")
+        self.channel_list_box.append(placeholder)
+
+        box.append(self.channel_list_box)
+
+        # Refresh button
+        refresh_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        refresh_box.set_margin_top(10)
+
+        refresh_btn = Gtk.Button(label="Refresh Channels")
+        refresh_btn.set_tooltip_text("Load channel configuration from device")
+        refresh_btn.connect("clicked", lambda b: self._load_channels())
+        refresh_box.append(refresh_btn)
+
+        box.append(refresh_box)
+        frame.set_child(box)
+        parent.append(frame)
+
+    def _load_channels(self):
+        """Load channel list from device"""
+        import socket
+
+        # Clear existing channel list
+        while True:
+            child = self.channel_list_box.get_first_child()
+            if child is None:
+                break
+            self.channel_list_box.remove(child)
+
+        # Add loading indicator
+        loading = Gtk.Label(label="Loading channels...")
+        loading.add_css_class("dim-label")
+        self.channel_list_box.append(loading)
+
+        # Check if meshtasticd is reachable
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2.0)
+            sock.connect(("localhost", 4403))
+            sock.close()
+        except (socket.timeout, socket.error, OSError):
+            self._display_channel_error("meshtasticd not running on port 4403")
+            return
+
+        def load_via_library():
+            try:
+                import meshtastic.tcp_interface
+                iface = meshtastic.tcp_interface.TCPInterface(hostname='localhost')
+                channels = self._get_channels_from_interface(iface)
+                iface.close()
+                return channels
+            except Exception as e:
+                logger.warning(f"Channel load failed: {e}")
+                return None
+
+        def on_complete(channels):
+            # Remove loading indicator
+            while True:
+                child = self.channel_list_box.get_first_child()
+                if child is None:
+                    break
+                self.channel_list_box.remove(child)
+
+            if channels:
+                self._display_channels(channels)
+            else:
+                self._display_channel_error("Could not load channels")
+
+        def run_load():
+            channels = load_via_library()
+            GLib.idle_add(on_complete, channels)
+
+        thread = threading.Thread(target=run_load, daemon=True)
+        thread.start()
+
+    def _get_channels_from_interface(self, iface):
+        """Extract channel information from meshtastic interface"""
+        channels = []
+        try:
+            if hasattr(iface, 'localNode') and iface.localNode:
+                local_node = iface.localNode
+                if hasattr(local_node, 'channels'):
+                    for idx, ch in enumerate(local_node.channels):
+                        channel_info = {
+                            'index': idx,
+                            'role': 'DISABLED',
+                            'name': '',
+                            'psk': None
+                        }
+
+                        if hasattr(ch, 'role'):
+                            role_val = ch.role
+                            if isinstance(role_val, int):
+                                role_map = {0: 'DISABLED', 1: 'PRIMARY', 2: 'SECONDARY'}
+                                channel_info['role'] = role_map.get(role_val, str(role_val))
+                            else:
+                                channel_info['role'] = str(role_val)
+
+                        if hasattr(ch, 'settings'):
+                            settings = ch.settings
+                            if hasattr(settings, 'name'):
+                                channel_info['name'] = settings.name or f"Channel {idx}"
+                            if hasattr(settings, 'psk'):
+                                # Just indicate if PSK is set (don't show actual key)
+                                channel_info['psk'] = bool(settings.psk)
+
+                        # Only add non-disabled channels or the first few
+                        if channel_info['role'] != 'DISABLED' or idx < 2:
+                            channels.append(channel_info)
+
+            logger.info(f"Loaded {len(channels)} channels from device")
+        except Exception as e:
+            logger.warning(f"Channel extraction error: {e}")
+        return channels
+
+    def _display_channels(self, channels):
+        """Display channel list in UI"""
+        if not channels:
+            no_ch = Gtk.Label(label="No channels configured")
+            no_ch.add_css_class("dim-label")
+            self.channel_list_box.append(no_ch)
+            return
+
+        # Create a grid for channel display
+        grid = Gtk.Grid()
+        grid.set_column_spacing(15)
+        grid.set_row_spacing(5)
+
+        # Headers
+        headers = ["#", "Role", "Name", "PSK"]
+        for col, header in enumerate(headers):
+            label = Gtk.Label(label=header)
+            label.add_css_class("heading")
+            label.set_xalign(0)
+            grid.attach(label, col, 0, 1, 1)
+
+        # Channel rows
+        for row, ch in enumerate(channels, start=1):
+            # Index
+            idx_label = Gtk.Label(label=str(ch['index']))
+            idx_label.set_xalign(0)
+            grid.attach(idx_label, 0, row, 1, 1)
+
+            # Role with color
+            role_label = Gtk.Label(label=ch['role'])
+            role_label.set_xalign(0)
+            if ch['role'] == 'PRIMARY':
+                role_label.add_css_class("success")
+            elif ch['role'] == 'SECONDARY':
+                role_label.add_css_class("accent")
+            else:
+                role_label.add_css_class("dim-label")
+            grid.attach(role_label, 1, row, 1, 1)
+
+            # Name
+            name = ch.get('name') or f"Channel {ch['index']}"
+            name_label = Gtk.Label(label=name)
+            name_label.set_xalign(0)
+            grid.attach(name_label, 2, row, 1, 1)
+
+            # PSK indicator
+            psk_text = "✓ Set" if ch.get('psk') else "Default"
+            psk_label = Gtk.Label(label=psk_text)
+            psk_label.set_xalign(0)
+            if ch.get('psk'):
+                psk_label.add_css_class("success")
+            else:
+                psk_label.add_css_class("dim-label")
+            grid.attach(psk_label, 3, row, 1, 1)
+
+        self.channel_list_box.append(grid)
+
+        # Update the radio_channels label with count
+        active_count = sum(1 for ch in channels if ch['role'] != 'DISABLED')
+        self.radio_channels.set_label(f"{active_count} active")
+
+    def _display_channel_error(self, error_msg):
+        """Display error in channel list"""
+        while True:
+            child = self.channel_list_box.get_first_child()
+            if child is None:
+                break
+            self.channel_list_box.remove(child)
+
+        error_label = Gtk.Label(label=error_msg)
+        error_label.add_css_class("error")
+        self.channel_list_box.append(error_label)
 
     def _load_radio_info(self):
         """Load radio info from device using --info command"""
@@ -1418,7 +1623,7 @@ class RadioConfigPanel(Gtk.Box):
         """Apply config dictionary to UI elements"""
         logger.info(f"Applying config dict: {config}")
 
-        # Modem preset enum mapping
+        # Modem preset enum mapping (Meshtastic protobuf values)
         preset_enum_map = {
             0: "LONG_FAST", 1: "LONG_SLOW", 2: "VERY_LONG_SLOW",
             3: "MEDIUM_SLOW", 4: "MEDIUM_FAST", 5: "SHORT_SLOW",
@@ -1426,35 +1631,50 @@ class RadioConfigPanel(Gtk.Box):
         }
         presets = ["LONG_FAST", "LONG_SLOW", "VERY_LONG_SLOW", "LONG_MODERATE",
                    "MEDIUM_SLOW", "MEDIUM_FAST", "SHORT_SLOW", "SHORT_FAST", "SHORT_TURBO"]
-        roles = ["CLIENT", "CLIENT_MUTE", "ROUTER", "ROUTER_CLIENT",
-                 "REPEATER", "TRACKER", "SENSOR", "TAK", "TAK_TRACKER", "CLIENT_HIDDEN", "LOST_AND_FOUND"]
+
+        # Region enum mapping (Meshtastic protobuf values)
+        region_enum_map = {
+            0: "UNSET", 1: "US", 2: "EU_433", 3: "EU_868", 4: "CN", 5: "JP",
+            6: "ANZ", 7: "KR", 8: "TW", 9: "RU", 10: "IN", 11: "NZ_865",
+            12: "TH", 13: "LORA_24", 14: "UA_433", 15: "UA_868", 16: "MY_433",
+            17: "MY_919", 18: "SG_923", 19: "PH", 20: "UK_868", 21: "SINGAPORE"
+        }
         regions = ["UNSET", "US", "EU_433", "EU_868", "CN", "JP", "ANZ", "KR", "TW", "RU",
                    "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919",
                    "SG_923", "PH", "UK_868", "SINGAPORE"]
 
-        def set_dropdown(dropdown, options, value):
+        # Role enum mapping (Meshtastic protobuf values)
+        role_enum_map = {
+            0: "CLIENT", 1: "CLIENT_MUTE", 2: "ROUTER", 3: "ROUTER_CLIENT",
+            4: "REPEATER", 5: "TRACKER", 6: "SENSOR", 7: "TAK",
+            8: "TAK_TRACKER", 9: "CLIENT_HIDDEN", 10: "LOST_AND_FOUND"
+        }
+        roles = ["CLIENT", "CLIENT_MUTE", "ROUTER", "ROUTER_CLIENT",
+                 "REPEATER", "TRACKER", "SENSOR", "TAK", "TAK_TRACKER", "CLIENT_HIDDEN", "LOST_AND_FOUND"]
+
+        def set_dropdown(dropdown, options, value, enum_map=None):
             if value is None:
                 return
             # Convert enum int to string if needed
-            if isinstance(value, int):
-                if dropdown == self.preset_dropdown:
-                    value = preset_enum_map.get(value, str(value))
-                else:
-                    value = str(value)
+            if isinstance(value, int) and enum_map:
+                value = enum_map.get(value, str(value))
+            elif isinstance(value, int):
+                value = str(value)
             value_str = str(value).upper().replace('_', '')
             for i, opt in enumerate(options):
                 if opt.upper().replace('_', '') == value_str:
                     dropdown.set_selected(i)
                     logger.info(f"Set dropdown to {opt} (index {i})")
                     return
+            logger.warning(f"Could not find '{value}' in dropdown options")
 
-        # Apply values
+        # Apply values with proper enum mappings
         if 'modem_preset' in config:
-            set_dropdown(self.preset_dropdown, presets, config['modem_preset'])
+            set_dropdown(self.preset_dropdown, presets, config['modem_preset'], preset_enum_map)
         if 'region' in config:
-            set_dropdown(self.region_dropdown, regions, config['region'])
+            set_dropdown(self.region_dropdown, regions, config['region'], region_enum_map)
         if 'role' in config:
-            set_dropdown(self.role_dropdown, roles, config['role'])
+            set_dropdown(self.role_dropdown, roles, config['role'], role_enum_map)
         if 'hop_limit' in config and config['hop_limit']:
             self.hop_spin.set_value(int(config['hop_limit']))
         if 'tx_power' in config and config['tx_power']:
