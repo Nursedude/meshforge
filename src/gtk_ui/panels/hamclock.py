@@ -1382,106 +1382,69 @@ class HamClockPanel(Gtk.Box):
             self.main_window.set_status_message(f"Failed: {e}")
 
     def _open_url_in_browser(self, url):
-        """Open a URL in the user's default browser (handles running as root)"""
+        """Open a URL in the user's default browser (handles running as root)
+
+        Simple approach: use sudo -u to run xdg-open as the real user.
+        This matches what works when typing `xdg-open URL` in the terminal.
+        """
         logger.info(f"[HamClock] Opening URL in browser: {url}")
 
         user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
         is_root = os.geteuid() == 0
 
-        # Detect display environment (Wayland or X11)
-        wayland_display = os.environ.get('WAYLAND_DISPLAY', '')
-        x11_display = os.environ.get('DISPLAY', '')
-        dbus_session = os.environ.get('DBUS_SESSION_BUS_ADDRESS', '')
+        logger.debug(f"[HamClock] User: {user}, Root: {is_root}")
 
-        logger.debug(f"[HamClock] User: {user}, Root: {is_root}, WAYLAND: {wayland_display}, X11: {x11_display}")
+        def try_open_browser():
+            """Background thread to open browser"""
+            methods = []
 
-        # Get real user's UID for runtime dir
-        real_uid = None
-        if is_root and user and user != 'root':
-            try:
-                import pwd
-                real_uid = pwd.getpwnam(user).pw_uid
-            except (KeyError, ImportError):
-                real_uid = 1000  # Common default
+            if is_root and user and user != 'root':
+                # Running as root - use sudo -u to run as real user
+                # This is the simple approach that works from terminal
+                methods.append(('sudo -u xdg-open', ['sudo', '-u', user, 'xdg-open', url]))
+                methods.append(('sudo -u chromium', ['sudo', '-u', user, 'chromium-browser', url]))
+                methods.append(('sudo -u firefox', ['sudo', '-u', user, 'firefox', url]))
+            else:
+                # Running as regular user - direct call
+                methods.append(('xdg-open', ['xdg-open', url]))
+                methods.append(('chromium', ['chromium-browser', url]))
+                methods.append(('firefox', ['firefox', url]))
 
-        # Build environment variables for browser
-        env_vars = []
-        if wayland_display:
-            env_vars.append(f'WAYLAND_DISPLAY={wayland_display}')
-        if x11_display:
-            env_vars.append(f'DISPLAY={x11_display}')
-        if not wayland_display and not x11_display:
-            env_vars.append('DISPLAY=:0')
+            for desc, cmd in methods:
+                try:
+                    logger.debug(f"[HamClock] Trying: {' '.join(cmd)}")
 
-        # Add XDG_RUNTIME_DIR - critical for DBUS and browser launch
-        if real_uid:
-            env_vars.append(f'XDG_RUNTIME_DIR=/run/user/{real_uid}')
-        else:
-            runtime_dir = os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
-            env_vars.append(f'XDG_RUNTIME_DIR={runtime_dir}')
+                    # Run subprocess detached from parent
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        stdin=subprocess.DEVNULL,
+                        start_new_session=True
+                    )
 
-        # Add DBUS session address - needed for xdg-open to work
-        if dbus_session:
-            env_vars.append(f'DBUS_SESSION_BUS_ADDRESS={dbus_session}')
-        elif real_uid:
-            env_vars.append(f'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{real_uid}/bus')
+                    # Give it a moment to check if it started
+                    time.sleep(0.3)
+                    ret = proc.poll()
 
-        logger.debug(f"[HamClock] Environment vars: {env_vars}")
+                    if ret is None or ret == 0:
+                        logger.info(f"[HamClock] Browser opened via {desc}")
+                        GLib.idle_add(lambda: self.status_label.set_label("Opened in browser"))
+                        return
+                    else:
+                        logger.debug(f"[HamClock] {desc} exited with {ret}")
 
-        # Define browser commands with descriptions
-        browser_methods = []
+                except FileNotFoundError:
+                    logger.debug(f"[HamClock] {desc}: not found")
+                except Exception as e:
+                    logger.debug(f"[HamClock] {desc} failed: {e}")
 
-        if is_root and user:
-            browser_methods.append(('xdg-open as user', ['sudo', '-u', user, 'env'] + env_vars + ['xdg-open', url]))
+            # All methods failed
+            logger.error(f"[HamClock] Could not open browser for: {url}")
+            GLib.idle_add(lambda: self.status_label.set_label(f"Browser failed - copy URL: {url}"))
 
-        browser_methods.append(('xdg-open direct', ['xdg-open', url]))
-
-        if is_root and user:
-            browser_methods.extend([
-                ('chromium as user', ['sudo', '-u', user, 'env'] + env_vars + ['chromium-browser', url]),
-                ('firefox as user', ['sudo', '-u', user, 'env'] + env_vars + ['firefox', url]),
-            ])
-        else:
-            browser_methods.extend([
-                ('chromium direct', ['chromium-browser', url]),
-                ('firefox direct', ['firefox', url]),
-            ])
-
-        # Try each method
-        for i, (desc, cmd) in enumerate(browser_methods):
-            try:
-                logger.debug(f"[HamClock] Trying method {i+1} ({desc}): {' '.join(cmd[:4])}...")
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    start_new_session=True  # Detach from parent
-                )
-
-                # Give it a moment to start, then check if it failed immediately
-                time.sleep(0.2)
-
-                # Check if process started (None means still running)
-                ret = proc.poll()
-                if ret is None or ret == 0:
-                    logger.info(f"[HamClock] Browser opened successfully using {desc}")
-                    self.status_label.set_label(f"Opened in browser")
-                    return
-                else:
-                    stderr = proc.stderr.read().decode('utf-8', errors='ignore')[:200]
-                    logger.debug(f"[HamClock] Method {desc} returned {ret}: {stderr}")
-
-            except FileNotFoundError as e:
-                logger.debug(f"[HamClock] Method {desc}: command not found - {e}")
-            except PermissionError as e:
-                logger.debug(f"[HamClock] Method {desc}: permission denied - {e}")
-            except Exception as e:
-                logger.warning(f"[HamClock] Method {desc} failed: {type(e).__name__}: {e}")
-
-        # All methods failed
-        error_msg = "Could not open browser - copy URL manually"
-        logger.error(f"[HamClock] {error_msg}: {url}")
-        self.status_label.set_label(error_msg)
+        # Run in background thread to avoid blocking UI
+        threading.Thread(target=try_open_browser, daemon=True).start()
 
     def _on_fetch_noaa(self, button):
         """Fetch space weather data from NOAA"""
