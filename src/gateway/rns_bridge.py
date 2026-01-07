@@ -495,6 +495,10 @@ class RNSMeshtasticBridge:
                 # RNS must be initialized from main thread - don't retry from background thread
                 logger.warning("RNS must be initialized from main thread (run rnsd separately)")
                 self._rns_init_failed_permanently = True  # Don't retry
+            elif "reinitialise" in error_msg or "already running" in error_msg:
+                # RNS singleton already exists - don't retry
+                logger.info("RNS already initialized elsewhere, skipping gateway RNS init")
+                self._rns_init_failed_permanently = True  # Don't retry
             else:
                 logger.error(f"Failed to initialize RNS: {e}")
             self._connected_rns = False
