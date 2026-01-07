@@ -1317,17 +1317,15 @@ class RNSPanel(Gtk.Box):
                 else:
                     nomadnet_cmd = f"{nomadnet_path} --config {nomadnet_config} --rnsconfig {rns_config_path}"
 
-                # Wrap command in bash script that keeps terminal open
-                # This handles both normal exit and errors
-                bash_wrapper = f'''bash -c '{nomadnet_cmd}; echo ""; echo "NomadNet exited. Press Enter to close..."; read' '''
-
                 # Different terminals have different exec syntax
+                # Use simple command without bash wrapper for reliability
                 if terminal in ['lxterminal', 'xfce4-terminal']:
-                    term_cmd = [terminal, '-e', bash_wrapper]
+                    # These terminals close immediately on exit, so wrap in bash
+                    term_cmd = [terminal, '-e', f'bash -c "{nomadnet_cmd}; echo NomadNet exited. Press Enter...; read"']
                 elif terminal == 'gnome-terminal':
-                    term_cmd = [terminal, '--', 'bash', '-c', f'{nomadnet_cmd}; echo ""; echo "NomadNet exited. Press Enter to close..."; read']
+                    term_cmd = [terminal, '--', 'bash', '-c', f'{nomadnet_cmd}; echo "NomadNet exited. Press Enter..."; read']
                 elif terminal == 'konsole':
-                    term_cmd = [terminal, '-e', bash_wrapper]
+                    term_cmd = [terminal, '-e', 'bash', '-c', f'{nomadnet_cmd}; echo "NomadNet exited. Press Enter..."; read']
                 else:  # xterm
                     term_cmd = [terminal, '-hold', '-e', nomadnet_cmd]  # xterm has -hold flag
 
