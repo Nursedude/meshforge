@@ -54,6 +54,21 @@ ROLE_NAMES = list(ROLES.values())
 # Rebroadcast modes
 REBROADCAST_MODES = ["ALL", "ALL_SKIP_DECODING", "LOCAL_ONLY", "KNOWN_ONLY"]
 
+# GPS modes
+GPS_MODES = ["DISABLED", "ENABLED", "NOT_PRESENT"]
+
+# Display units
+DISPLAY_UNITS = ["METRIC", "IMPERIAL"]
+
+# Bluetooth modes
+BT_MODES = ["RANDOM_PIN", "FIXED_PIN", "NO_PIN"]
+
+# Buzzer modes
+BUZZER_MODES = ["SYSTEM_DEFAULT", "OFF", "ON"]
+
+# OLED types
+OLED_TYPES = ["AUTO", "SSD1306", "SH1106", "SH1107"]
+
 
 class RadioConfigSimple(Gtk.Box):
     """Simple radio configuration panel using direct library access."""
@@ -143,6 +158,24 @@ class RadioConfigSimple(Gtk.Box):
         tx_row.append(self._make_apply_btn(self._apply_tx_power))
         lora_box.append(tx_row)
 
+        # TX Enabled
+        txen_row = self._make_row("TX Enabled:", None)
+        self.txen_switch = Gtk.Switch()
+        self.txen_switch.set_halign(Gtk.Align.START)
+        self.txen_switch.set_active(True)
+        txen_row.append(self.txen_switch)
+        txen_row.append(self._make_apply_btn(self._apply_tx_enabled))
+        lora_box.append(txen_row)
+
+        # Channel Number (advanced)
+        chan_row = self._make_row("Channel Num:", None)
+        self.chan_spin = Gtk.SpinButton.new_with_range(0, 255, 1)
+        self.chan_spin.set_value(0)
+        self.chan_spin.set_tooltip_text("Override channel number (0=auto)")
+        chan_row.append(self.chan_spin)
+        chan_row.append(self._make_apply_btn(self._apply_channel_num))
+        lora_box.append(chan_row)
+
         lora_frame.set_child(lora_box)
         main_box.append(lora_frame)
 
@@ -179,6 +212,23 @@ class RadioConfigSimple(Gtk.Box):
         nodeinfo_row.append(self._make_apply_btn(self._apply_nodeinfo))
         device_box.append(nodeinfo_row)
 
+        # Buzzer Mode
+        buzzer_row = self._make_row("Buzzer Mode:", None)
+        self.buzzer_dropdown = Gtk.DropDown.new_from_strings(BUZZER_MODES)
+        self.buzzer_dropdown.set_hexpand(True)
+        buzzer_row.append(self.buzzer_dropdown)
+        buzzer_row.append(self._make_apply_btn(self._apply_buzzer))
+        device_box.append(buzzer_row)
+
+        # LED Heartbeat
+        led_row = self._make_row("LED Heartbeat:", None)
+        self.led_switch = Gtk.Switch()
+        self.led_switch.set_halign(Gtk.Align.START)
+        self.led_switch.set_active(True)
+        led_row.append(self.led_switch)
+        led_row.append(self._make_apply_btn(self._apply_led))
+        device_box.append(led_row)
+
         device_frame.set_child(device_box)
         main_box.append(device_frame)
 
@@ -191,13 +241,13 @@ class RadioConfigSimple(Gtk.Box):
         pos_box.set_margin_top(8)
         pos_box.set_margin_bottom(8)
 
-        # GPS Enabled
-        gps_row = self._make_row("GPS Enabled:", None)
-        self.gps_switch = Gtk.Switch()
-        self.gps_switch.set_halign(Gtk.Align.START)
-        gps_row.append(self.gps_switch)
-        gps_row.append(self._make_apply_btn(self._apply_gps))
-        pos_box.append(gps_row)
+        # GPS Mode
+        gpsmode_row = self._make_row("GPS Mode:", None)
+        self.gpsmode_dropdown = Gtk.DropDown.new_from_strings(GPS_MODES)
+        self.gpsmode_dropdown.set_hexpand(True)
+        gpsmode_row.append(self.gpsmode_dropdown)
+        gpsmode_row.append(self._make_apply_btn(self._apply_gps_mode))
+        pos_box.append(gpsmode_row)
 
         # Position Broadcast Interval
         posint_row = self._make_row("Broadcast (sec):", None)
@@ -245,6 +295,90 @@ class RadioConfigSimple(Gtk.Box):
 
         power_frame.set_child(power_box)
         main_box.append(power_frame)
+
+        # === DISPLAY SETTINGS ===
+        display_frame = Gtk.Frame()
+        display_frame.set_label("Display Settings")
+        display_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        display_box.set_margin_start(12)
+        display_box.set_margin_end(12)
+        display_box.set_margin_top(8)
+        display_box.set_margin_bottom(8)
+
+        # Screen On Time
+        screen_row = self._make_row("Screen On (sec):", None)
+        self.screen_spin = Gtk.SpinButton.new_with_range(0, 3600, 10)
+        self.screen_spin.set_value(60)
+        self.screen_spin.set_tooltip_text("0 = always on")
+        screen_row.append(self.screen_spin)
+        screen_row.append(self._make_apply_btn(self._apply_screen_time))
+        display_box.append(screen_row)
+
+        # Flip Screen
+        flip_row = self._make_row("Flip Screen:", None)
+        self.flip_switch = Gtk.Switch()
+        self.flip_switch.set_halign(Gtk.Align.START)
+        flip_row.append(self.flip_switch)
+        flip_row.append(self._make_apply_btn(self._apply_flip))
+        display_box.append(flip_row)
+
+        # Units
+        units_row = self._make_row("Units:", None)
+        self.units_dropdown = Gtk.DropDown.new_from_strings(DISPLAY_UNITS)
+        self.units_dropdown.set_hexpand(True)
+        units_row.append(self.units_dropdown)
+        units_row.append(self._make_apply_btn(self._apply_units))
+        display_box.append(units_row)
+
+        # OLED Type
+        oled_row = self._make_row("OLED Type:", None)
+        self.oled_dropdown = Gtk.DropDown.new_from_strings(OLED_TYPES)
+        self.oled_dropdown.set_hexpand(True)
+        oled_row.append(self.oled_dropdown)
+        oled_row.append(self._make_apply_btn(self._apply_oled))
+        display_box.append(oled_row)
+
+        display_frame.set_child(display_box)
+        main_box.append(display_frame)
+
+        # === BLUETOOTH SETTINGS ===
+        bt_frame = Gtk.Frame()
+        bt_frame.set_label("Bluetooth Settings")
+        bt_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        bt_box.set_margin_start(12)
+        bt_box.set_margin_end(12)
+        bt_box.set_margin_top(8)
+        bt_box.set_margin_bottom(8)
+
+        # BT Enabled
+        bten_row = self._make_row("Bluetooth:", None)
+        self.bt_switch = Gtk.Switch()
+        self.bt_switch.set_halign(Gtk.Align.START)
+        self.bt_switch.set_active(True)
+        bten_row.append(self.bt_switch)
+        bten_row.append(self._make_apply_btn(self._apply_bt_enabled))
+        bt_box.append(bten_row)
+
+        # BT Mode
+        btmode_row = self._make_row("Pairing Mode:", None)
+        self.btmode_dropdown = Gtk.DropDown.new_from_strings(BT_MODES)
+        self.btmode_dropdown.set_hexpand(True)
+        btmode_row.append(self.btmode_dropdown)
+        btmode_row.append(self._make_apply_btn(self._apply_bt_mode))
+        bt_box.append(btmode_row)
+
+        # Fixed PIN
+        btpin_row = self._make_row("Fixed PIN:", None)
+        self.btpin_entry = Gtk.Entry()
+        self.btpin_entry.set_max_length(6)
+        self.btpin_entry.set_placeholder_text("123456")
+        self.btpin_entry.set_hexpand(True)
+        btpin_row.append(self.btpin_entry)
+        btpin_row.append(self._make_apply_btn(self._apply_bt_pin))
+        bt_box.append(btpin_row)
+
+        bt_frame.set_child(bt_box)
+        main_box.append(bt_frame)
 
         # === INFO DISPLAY ===
         info_frame = Gtk.Frame()
@@ -454,11 +588,6 @@ class RadioConfigSimple(Gtk.Box):
         secs = int(self.nodeinfo_spin.get_value())
         self._apply_setting("device.node_info_broadcast_secs", str(secs), f"Node Info: {secs}s")
 
-    def _apply_gps(self, button):
-        """Apply GPS enabled setting."""
-        enabled = self.gps_switch.get_active()
-        self._apply_setting("position.gps_enabled", str(enabled).lower(), f"GPS: {'Enabled' if enabled else 'Disabled'}")
-
     def _apply_pos_interval(self, button):
         """Apply position broadcast interval."""
         secs = int(self.posint_spin.get_value())
@@ -478,6 +607,75 @@ class RadioConfigSimple(Gtk.Box):
         """Apply power saving mode."""
         enabled = self.powersave_switch.get_active()
         self._apply_setting("power.is_power_saving", str(enabled).lower(), f"Power Saving: {'On' if enabled else 'Off'}")
+
+    def _apply_tx_enabled(self, button):
+        """Apply TX enabled setting."""
+        enabled = self.txen_switch.get_active()
+        self._apply_setting("lora.tx_enabled", str(enabled).lower(), f"TX: {'Enabled' if enabled else 'Disabled'}")
+
+    def _apply_channel_num(self, button):
+        """Apply channel number override."""
+        val = int(self.chan_spin.get_value())
+        self._apply_setting("lora.channel_num", str(val), f"Channel: {val}")
+
+    def _apply_buzzer(self, button):
+        """Apply buzzer mode."""
+        idx = self.buzzer_dropdown.get_selected()
+        mode = BUZZER_MODES[idx]
+        self._apply_setting("device.buzzer_mode", mode, f"Buzzer: {mode}")
+
+    def _apply_led(self, button):
+        """Apply LED heartbeat setting."""
+        # Note: led_heartbeat_disabled is inverted
+        enabled = self.led_switch.get_active()
+        self._apply_setting("device.led_heartbeat_disabled", str(not enabled).lower(), f"LED: {'On' if enabled else 'Off'}")
+
+    def _apply_gps_mode(self, button):
+        """Apply GPS mode."""
+        idx = self.gpsmode_dropdown.get_selected()
+        mode = GPS_MODES[idx]
+        self._apply_setting("position.gps_mode", mode, f"GPS Mode: {mode}")
+
+    def _apply_screen_time(self, button):
+        """Apply screen on time."""
+        val = int(self.screen_spin.get_value())
+        self._apply_setting("display.screen_on_secs", str(val), f"Screen: {val}s")
+
+    def _apply_flip(self, button):
+        """Apply flip screen setting."""
+        enabled = self.flip_switch.get_active()
+        self._apply_setting("display.flip_screen", str(enabled).lower(), f"Flip: {'Yes' if enabled else 'No'}")
+
+    def _apply_units(self, button):
+        """Apply display units."""
+        idx = self.units_dropdown.get_selected()
+        unit = DISPLAY_UNITS[idx]
+        self._apply_setting("display.units", unit, f"Units: {unit}")
+
+    def _apply_oled(self, button):
+        """Apply OLED type."""
+        idx = self.oled_dropdown.get_selected()
+        oled = OLED_TYPES[idx]
+        self._apply_setting("display.oled", oled, f"OLED: {oled}")
+
+    def _apply_bt_enabled(self, button):
+        """Apply Bluetooth enabled setting."""
+        enabled = self.bt_switch.get_active()
+        self._apply_setting("bluetooth.enabled", str(enabled).lower(), f"Bluetooth: {'On' if enabled else 'Off'}")
+
+    def _apply_bt_mode(self, button):
+        """Apply Bluetooth pairing mode."""
+        idx = self.btmode_dropdown.get_selected()
+        mode = BT_MODES[idx]
+        self._apply_setting("bluetooth.mode", mode, f"BT Mode: {mode}")
+
+    def _apply_bt_pin(self, button):
+        """Apply Bluetooth fixed PIN."""
+        pin = self.btpin_entry.get_text().strip()
+        if pin and len(pin) >= 4:
+            self._apply_setting("bluetooth.fixed_pin", pin, f"BT PIN: {pin}")
+        else:
+            self._update_status("PIN must be at least 4 digits")
 
     def _apply_setting(self, setting, value, desc):
         """Apply a setting using meshtastic CLI."""
