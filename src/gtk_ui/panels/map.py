@@ -187,7 +187,20 @@ class MapPanel(Gtk.Box):
                         diag.log_connection("map", "meshtasticd:4403", False, error_msg)
                     return None, error_msg
             except Exception as e:
-                error_msg = f"Connection error: {e}"
+                error_str = str(e).lower()
+                # Detect common connection conflicts
+                if 'connection refused' in error_str or 'refused' in error_str:
+                    error_msg = "Connection refused - another client may be connected"
+                elif 'timed out' in error_str or 'timeout' in error_str:
+                    error_msg = "Connection timeout - meshtasticd may be busy with another client"
+                elif 'broken pipe' in error_str:
+                    error_msg = "Connection lost - another client took over"
+                elif 'already in use' in error_str:
+                    error_msg = "Port in use by another client (meshing-around, nomadnet?)"
+                else:
+                    error_msg = f"Connection error: {e}"
+
+                logger.warning(f"[Map] {error_msg}")
                 if diag:
                     diag.log_connection("map", "meshtasticd:4403", False, str(e))
                 return None, error_msg
