@@ -1681,13 +1681,32 @@ class RadioConfigPanel(Gtk.Box):
                 logger.debug(f"[RadioConfig] {name}: value is None, skipping")
                 return
             original_value = value
-            # Convert enum int to string if needed
-            if isinstance(value, int) and enum_map:
-                value = enum_map.get(value, str(value))
-                logger.info(f"[RadioConfig] {name}: converted enum {original_value} -> '{value}'")
-            elif isinstance(value, int):
-                value = str(value)
-                logger.warning(f"[RadioConfig] {name}: int {original_value} without enum_map, converted to string '{value}'")
+            logger.info(f"[RadioConfig] {name}: received value={value} type={type(value).__name__}")
+
+            # Handle protobuf enums and integers - convert to int for enum_map lookup
+            # Protobuf enums are NOT isinstance(x, int) but support int() conversion
+            int_value = None
+            try:
+                int_value = int(value)
+                logger.info(f"[RadioConfig] {name}: converted to int: {int_value}")
+            except (ValueError, TypeError):
+                pass
+
+            # Convert enum int to string if we have both int_value and enum_map
+            if int_value is not None and enum_map:
+                mapped = enum_map.get(int_value)
+                if mapped:
+                    value = mapped
+                    logger.info(f"[RadioConfig] {name}: mapped enum {int_value} -> '{value}'")
+                else:
+                    # int but not in map - try string representation
+                    value = str(original_value)
+                    logger.warning(f"[RadioConfig] {name}: int {int_value} not in enum_map, using str: '{value}'")
+            elif int_value is not None:
+                value = str(int_value)
+                logger.warning(f"[RadioConfig] {name}: int {int_value} without enum_map")
+
+            # Match against options (case-insensitive, underscore-insensitive)
             value_str = str(value).upper().replace('_', '')
             for i, opt in enumerate(options):
                 if opt.upper().replace('_', '') == value_str:

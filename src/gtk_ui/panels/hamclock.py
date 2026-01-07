@@ -1070,10 +1070,14 @@ class HamClockPanel(Gtk.Box):
         self.status_label.set_label(f"Connected to {url}")
         self.main_window.set_status_message("HamClock connected")
 
-        # Load live view if WebKit available
+        # Load live view - either in WebKit or open browser as fallback
+        live_url = f"{url}:{self._settings['live_port']}/live.html"
         if self.webview:
-            live_url = f"{url}:{self._settings['live_port']}/live.html"
             self.webview.load_uri(live_url)
+        else:
+            # WebKit not available (running as root) - open in browser
+            logger.info("[HamClock] WebKit not available, opening in browser")
+            self._open_url_in_browser(live_url)
 
         # Fetch space weather data
         self._fetch_space_weather()
