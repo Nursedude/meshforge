@@ -195,6 +195,69 @@ class ToolsPanel(Gtk.Box):
         net_frame.set_child(net_box)
         content.append(net_frame)
 
+        # Network Diagnostics Section
+        diag_frame = Gtk.Frame()
+        diag_frame.set_label("Network Diagnostics")
+        diag_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        diag_box.set_margin_start(15)
+        diag_box.set_margin_end(15)
+        diag_box.set_margin_top(10)
+        diag_box.set_margin_bottom(10)
+
+        diag_desc = Gtk.Label(label="Port listeners, multicast groups, and process mapping")
+        diag_desc.add_css_class("dim-label")
+        diag_desc.set_xalign(0)
+        diag_box.append(diag_desc)
+
+        # Diagnostic buttons row 1
+        diag_buttons1 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        diag_buttons1.set_margin_top(5)
+
+        udp_btn = Gtk.Button(label="UDP Listeners")
+        udp_btn.set_tooltip_text("Show UDP ports in use (/proc/net/udp)")
+        udp_btn.connect("clicked", self._on_show_udp_listeners)
+        diag_buttons1.append(udp_btn)
+
+        tcp_btn = Gtk.Button(label="TCP Listeners")
+        tcp_btn.set_tooltip_text("Show TCP ports in use (/proc/net/tcp)")
+        tcp_btn.connect("clicked", self._on_show_tcp_listeners)
+        diag_buttons1.append(tcp_btn)
+
+        mcast_btn = Gtk.Button(label="Multicast Groups")
+        mcast_btn.set_tooltip_text("Show multicast group memberships")
+        mcast_btn.connect("clicked", self._on_show_multicast)
+        diag_buttons1.append(mcast_btn)
+
+        proc_btn = Gtk.Button(label="Process→Port Map")
+        proc_btn.set_tooltip_text("Show which processes own which ports")
+        proc_btn.connect("clicked", self._on_show_process_ports)
+        diag_buttons1.append(proc_btn)
+
+        diag_box.append(diag_buttons1)
+
+        # Diagnostic buttons row 2 - RNS specific
+        diag_buttons2 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+
+        rns_port_btn = Gtk.Button(label="Check RNS Ports")
+        rns_port_btn.set_tooltip_text("Check RNS AutoInterface port 29716")
+        rns_port_btn.add_css_class("suggested-action")
+        rns_port_btn.connect("clicked", self._on_check_rns_ports)
+        diag_buttons2.append(rns_port_btn)
+
+        mesh_port_btn = Gtk.Button(label="Check Meshtastic Ports")
+        mesh_port_btn.set_tooltip_text("Check meshtasticd ports 4403, 9443")
+        mesh_port_btn.connect("clicked", self._on_check_mesh_ports)
+        diag_buttons2.append(mesh_port_btn)
+
+        all_diag_btn = Gtk.Button(label="Full Diagnostics")
+        all_diag_btn.set_tooltip_text("Run all network diagnostics")
+        all_diag_btn.connect("clicked", self._on_full_network_diagnostics)
+        diag_buttons2.append(all_diag_btn)
+
+        diag_box.append(diag_buttons2)
+        diag_frame.set_child(diag_box)
+        content.append(diag_frame)
+
         # RF Tools Section
         rf_frame = Gtk.Frame()
         rf_frame.set_label("RF Tools")
@@ -1775,3 +1838,417 @@ class ToolsPanel(Gtk.Box):
             GLib.idle_add(lambda: self.main_window.set_status_message("Scan complete"))
 
         threading.Thread(target=run_scan, daemon=True).start()
+
+    # =====================
+    # Network Diagnostics Methods
+    # =====================
+
+    def _parse_proc_net(self, protocol: str) -> list:
+        """Parse /proc/net/udp or /proc/net/tcp and return list of (local_addr, port, state, inode)"""
+        results = []
+        proc_file = f"/proc/net/{protocol}"
+
+        try:
+            with open(proc_file, 'r') as f:
+                lines = f.readlines()[1:]  # Skip header
+
+            for line in lines:
+                parts = line.split()
+                if len(parts) >= 10:
+                    # local_address is in hex format: IP:PORT
+                    local_addr = parts[1]
+                    state = parts[3]
+                    inode = parts[9]
+
+                    # Parse hex address
+                    addr_parts = local_addr.split(':')
+                    hex_ip = addr_parts[0]
+                    hex_port = addr_parts[1]
+
+                    # Convert hex IP (little-endian for IPv4)
+                    try:
+                        ip_int = int(hex_ip, 16)
+                        ip_bytes = [
+                            (ip_int >> 0) & 0xFF,
+                            (ip_int >> 8) & 0xFF,
+                            (ip_int >> 16) & 0xFF,
+                            (ip_int >> 24) & 0xFF,
+                        ]
+                        ip_str = '.'.join(str(b) for b in ip_bytes)
+                        port = int(hex_port, 16)
+
+                        # State names (TCP only, UDP is stateless)
+                        state_names = {
+                            '01': 'ESTABLISHED',
+                            '02': 'SYN_SENT',
+                            '03': 'SYN_RECV',
+                            '04': 'FIN_WAIT1',
+                            '05': 'FIN_WAIT2',
+                            '06': 'TIME_WAIT',
+                            '07': 'CLOSE',
+                            '08': 'CLOSE_WAIT',
+                            '09': 'LAST_ACK',
+                            '0A': 'LISTEN',
+                            '0B': 'CLOSING',
+                        }
+                        state_str = state_names.get(state.upper(), state)
+
+                        results.append({
+                            'ip': ip_str,
+                            'port': port,
+                            'state': state_str,
+                            'inode': inode
+                        })
+                    except (ValueError, IndexError):
+                        continue
+
+        except FileNotFoundError:
+            pass
+        except PermissionError:
+            pass
+
+        return results
+
+    def _get_inode_to_process(self) -> dict:
+        """Map socket inodes to process names"""
+        inode_map = {}
+
+        try:
+            # Iterate through /proc/*/fd/* to find socket inodes
+            for pid_dir in Path('/proc').iterdir():
+                if not pid_dir.name.isdigit():
+                    continue
+
+                pid = pid_dir.name
+                try:
+                    # Get process name
+                    comm_file = pid_dir / 'comm'
+                    if comm_file.exists():
+                        proc_name = comm_file.read_text().strip()
+                    else:
+                        proc_name = "unknown"
+
+                    # Check fd directory for sockets
+                    fd_dir = pid_dir / 'fd'
+                    if fd_dir.exists():
+                        for fd_link in fd_dir.iterdir():
+                            try:
+                                target = fd_link.resolve()
+                                target_str = str(fd_link.readlink())
+                                if target_str.startswith('socket:['):
+                                    inode = target_str[8:-1]  # Extract inode from socket:[12345]
+                                    inode_map[inode] = f"{proc_name} (PID {pid})"
+                            except (OSError, PermissionError):
+                                continue
+                except (OSError, PermissionError):
+                    continue
+        except Exception:
+            pass
+
+        return inode_map
+
+    def _on_show_udp_listeners(self, button):
+        """Show UDP port listeners"""
+        self._log("\n=== UDP Listeners (/proc/net/udp) ===")
+        threading.Thread(target=self._fetch_udp_listeners, daemon=True).start()
+
+    def _fetch_udp_listeners(self):
+        """Fetch UDP listeners in background"""
+        entries = self._parse_proc_net('udp')
+        inode_map = self._get_inode_to_process()
+
+        if not entries:
+            GLib.idle_add(self._log, "No UDP listeners found")
+            return
+
+        GLib.idle_add(self._log, f"{'IP Address':>15} : {'Port':>5}  Process")
+        GLib.idle_add(self._log, "-" * 50)
+
+        for entry in entries:
+            if entry['port'] == 0:
+                continue  # Skip port 0
+            proc = inode_map.get(entry['inode'], 'unknown')
+            line = f"{entry['ip']:>15} : {entry['port']:>5}  {proc}"
+            GLib.idle_add(self._log, line)
+
+        GLib.idle_add(self._log, f"\nTotal: {len([e for e in entries if e['port'] != 0])} UDP sockets")
+
+    def _on_show_tcp_listeners(self, button):
+        """Show TCP port listeners"""
+        self._log("\n=== TCP Listeners (/proc/net/tcp) ===")
+        threading.Thread(target=self._fetch_tcp_listeners, daemon=True).start()
+
+    def _fetch_tcp_listeners(self):
+        """Fetch TCP listeners in background"""
+        entries = self._parse_proc_net('tcp')
+        inode_map = self._get_inode_to_process()
+
+        if not entries:
+            GLib.idle_add(self._log, "No TCP listeners found")
+            return
+
+        GLib.idle_add(self._log, f"{'IP Address':>15} : {'Port':>5}  {'State':<12} Process")
+        GLib.idle_add(self._log, "-" * 65)
+
+        # Show LISTEN sockets first
+        listen_entries = [e for e in entries if e['state'] == 'LISTEN']
+        other_entries = [e for e in entries if e['state'] != 'LISTEN']
+
+        for entry in listen_entries:
+            proc = inode_map.get(entry['inode'], 'unknown')
+            line = f"{entry['ip']:>15} : {entry['port']:>5}  {entry['state']:<12} {proc}"
+            GLib.idle_add(self._log, line)
+
+        if other_entries:
+            GLib.idle_add(self._log, "\n-- Other TCP states --")
+            for entry in other_entries[:10]:  # Limit to avoid spam
+                proc = inode_map.get(entry['inode'], 'unknown')
+                line = f"{entry['ip']:>15} : {entry['port']:>5}  {entry['state']:<12} {proc}"
+                GLib.idle_add(self._log, line)
+
+        GLib.idle_add(self._log, f"\nTotal: {len(listen_entries)} listening, {len(other_entries)} other")
+
+    def _on_show_multicast(self, button):
+        """Show multicast group memberships"""
+        self._log("\n=== Multicast Group Memberships ===")
+        threading.Thread(target=self._fetch_multicast, daemon=True).start()
+
+    def _fetch_multicast(self):
+        """Fetch multicast groups in background"""
+        # Method 1: Parse /proc/net/igmp
+        GLib.idle_add(self._log, "\n-- IGMP Groups (/proc/net/igmp) --")
+        try:
+            with open('/proc/net/igmp', 'r') as f:
+                lines = f.readlines()
+
+            current_device = None
+            for line in lines[1:]:  # Skip header
+                if line[0].isdigit():
+                    # Device line
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        current_device = parts[1].rstrip(':')
+                        GLib.idle_add(self._log, f"\n{current_device}:")
+                elif line.strip().startswith(('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F')):
+                    # Group line - hex address (little-endian)
+                    parts = line.split()
+                    if parts:
+                        hex_group = parts[0]
+                        try:
+                            # Convert hex to IP (multicast addresses)
+                            group_int = int(hex_group, 16)
+                            group_bytes = [
+                                (group_int >> 0) & 0xFF,
+                                (group_int >> 8) & 0xFF,
+                                (group_int >> 16) & 0xFF,
+                                (group_int >> 24) & 0xFF,
+                            ]
+                            group_ip = '.'.join(str(b) for b in group_bytes)
+                            GLib.idle_add(self._log, f"  {group_ip}")
+                        except ValueError:
+                            GLib.idle_add(self._log, f"  {hex_group}")
+
+        except FileNotFoundError:
+            GLib.idle_add(self._log, "  /proc/net/igmp not found")
+        except PermissionError:
+            GLib.idle_add(self._log, "  Permission denied")
+
+        # Method 2: Use ip maddr command
+        GLib.idle_add(self._log, "\n-- IP Multicast Addresses (ip maddr) --")
+        try:
+            result = subprocess.run(
+                ['ip', 'maddr', 'show'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                for line in result.stdout.strip().split('\n'):
+                    GLib.idle_add(self._log, line)
+            else:
+                GLib.idle_add(self._log, "  ip maddr command failed")
+        except FileNotFoundError:
+            GLib.idle_add(self._log, "  ip command not found")
+        except Exception as e:
+            GLib.idle_add(self._log, f"  Error: {e}")
+
+    def _on_show_process_ports(self, button):
+        """Show process to port mapping"""
+        self._log("\n=== Process → Port Mapping ===")
+        threading.Thread(target=self._fetch_process_ports, daemon=True).start()
+
+    def _fetch_process_ports(self):
+        """Fetch process-port mapping using ss"""
+        # Try ss first (faster), fall back to netstat
+        try:
+            result = subprocess.run(
+                ['ss', '-tulnp'],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                GLib.idle_add(self._log, "Using: ss -tulnp")
+                GLib.idle_add(self._log, "-" * 80)
+                for line in result.stdout.strip().split('\n'):
+                    GLib.idle_add(self._log, line[:100])
+                return
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+
+        # Fall back to netstat
+        try:
+            result = subprocess.run(
+                ['netstat', '-tulnp'],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                GLib.idle_add(self._log, "Using: netstat -tulnp")
+                GLib.idle_add(self._log, "-" * 80)
+                for line in result.stdout.strip().split('\n'):
+                    GLib.idle_add(self._log, line[:100])
+                return
+        except FileNotFoundError:
+            GLib.idle_add(self._log, "Neither ss nor netstat found. Install: sudo apt install iproute2")
+        except Exception as e:
+            GLib.idle_add(self._log, f"Error: {e}")
+
+    def _on_check_rns_ports(self, button):
+        """Check RNS-specific ports"""
+        self._log("\n=== RNS Port Check ===")
+        threading.Thread(target=self._check_rns_ports_thread, daemon=True).start()
+
+    def _check_rns_ports_thread(self):
+        """Check RNS ports in background"""
+        # RNS AutoInterface uses UDP multicast on port 29716
+        rns_port = 29716
+
+        GLib.idle_add(self._log, f"Checking RNS AutoInterface port: {rns_port}")
+
+        # Check /proc/net/udp for the port
+        entries = self._parse_proc_net('udp')
+        inode_map = self._get_inode_to_process()
+
+        found = False
+        for entry in entries:
+            if entry['port'] == rns_port:
+                found = True
+                proc = inode_map.get(entry['inode'], 'unknown')
+                GLib.idle_add(self._log, f"  ✗ Port {rns_port} IN USE by: {proc}")
+
+        if not found:
+            GLib.idle_add(self._log, f"  ✓ Port {rns_port} is FREE")
+
+        # Also check if rnsd is running
+        GLib.idle_add(self._log, "\nRNS Processes:")
+        try:
+            result = subprocess.run(
+                ['pgrep', '-a', '-f', 'rnsd|nomadnet|lxmf'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.stdout.strip():
+                for line in result.stdout.strip().split('\n'):
+                    GLib.idle_add(self._log, f"  {line}")
+            else:
+                GLib.idle_add(self._log, "  No RNS processes running")
+        except Exception:
+            GLib.idle_add(self._log, "  Could not check processes")
+
+        # Check rnstatus if available
+        try:
+            result = subprocess.run(
+                ['rnstatus'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                GLib.idle_add(self._log, "\nrnstatus output:")
+                for line in result.stdout.strip().split('\n')[:10]:
+                    GLib.idle_add(self._log, f"  {line}")
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+
+    def _on_check_mesh_ports(self, button):
+        """Check Meshtastic-specific ports"""
+        self._log("\n=== Meshtastic Port Check ===")
+        threading.Thread(target=self._check_mesh_ports_thread, daemon=True).start()
+
+    def _check_mesh_ports_thread(self):
+        """Check Meshtastic ports in background"""
+        # meshtasticd uses TCP 4403 (API) and TCP 9443 (HTTPS)
+        tcp_ports = [4403, 9443]
+        udp_broadcast = 4403  # For multicast discovery
+
+        GLib.idle_add(self._log, "Checking meshtasticd ports:")
+
+        # Check TCP ports
+        tcp_entries = self._parse_proc_net('tcp')
+        inode_map = self._get_inode_to_process()
+
+        for port in tcp_ports:
+            found = False
+            for entry in tcp_entries:
+                if entry['port'] == port and entry['state'] == 'LISTEN':
+                    found = True
+                    proc = inode_map.get(entry['inode'], 'unknown')
+                    GLib.idle_add(self._log, f"  ✓ TCP {port} LISTENING ({proc})")
+                    break
+            if not found:
+                GLib.idle_add(self._log, f"  ✗ TCP {port} NOT listening")
+
+        # Check if meshtasticd is running
+        GLib.idle_add(self._log, "\nMeshtastic Processes:")
+        try:
+            result = subprocess.run(
+                ['pgrep', '-a', '-f', 'meshtasticd'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.stdout.strip():
+                for line in result.stdout.strip().split('\n'):
+                    GLib.idle_add(self._log, f"  {line}")
+            else:
+                GLib.idle_add(self._log, "  meshtasticd not running")
+        except Exception:
+            GLib.idle_add(self._log, "  Could not check processes")
+
+        # Check systemd service status
+        try:
+            result = subprocess.run(
+                ['systemctl', 'is-active', 'meshtasticd'],
+                capture_output=True, text=True, timeout=5
+            )
+            status = result.stdout.strip()
+            GLib.idle_add(self._log, f"\nService status: {status}")
+        except Exception:
+            pass
+
+    def _on_full_network_diagnostics(self, button):
+        """Run all network diagnostics"""
+        self._log("\n" + "=" * 60)
+        self._log("FULL NETWORK DIAGNOSTICS")
+        self._log("=" * 60)
+        threading.Thread(target=self._run_full_diagnostics, daemon=True).start()
+
+    def _run_full_diagnostics(self):
+        """Run comprehensive network diagnostics"""
+        # 1. UDP Listeners
+        self._fetch_udp_listeners()
+        GLib.idle_add(self._log, "")
+
+        # 2. TCP Listeners
+        self._fetch_tcp_listeners()
+        GLib.idle_add(self._log, "")
+
+        # 3. RNS Ports
+        self._check_rns_ports_thread()
+        GLib.idle_add(self._log, "")
+
+        # 4. Meshtastic Ports
+        self._check_mesh_ports_thread()
+        GLib.idle_add(self._log, "")
+
+        # 5. Multicast Groups
+        self._fetch_multicast()
+
+        GLib.idle_add(self._log, "\n" + "=" * 60)
+        GLib.idle_add(self._log, "DIAGNOSTICS COMPLETE")
+        GLib.idle_add(self._log, "=" * 60)
