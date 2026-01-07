@@ -1308,14 +1308,13 @@ class RNSPanel(Gtk.Box):
                     GLib.timeout_add(3000, lambda: self._refresh_all() or False)
 
                 # Build the terminal command - wrap in bash to keep terminal open on exit
-                # Standard paths: ~/.nomadnetwork (NomadNet), ~/.reticulum (RNS)
+                # NomadNet finds RNS config in ~/.reticulum by default
                 nomadnet_config = real_home / ".nomadnetwork"
-                rns_config = real_home / ".reticulum"
                 if is_root and real_user != 'root':
                     # Running as root but need to launch as real user
-                    nomadnet_cmd = f"sudo -i -u {real_user} {nomadnet_path} --config {nomadnet_config} --rnsconfig {rns_config}"
+                    nomadnet_cmd = f"sudo -i -u {real_user} {nomadnet_path} --config {nomadnet_config}"
                 else:
-                    nomadnet_cmd = f"{nomadnet_path} --config {nomadnet_config} --rnsconfig {rns_config}"
+                    nomadnet_cmd = f"{nomadnet_path} --config {nomadnet_config}"
 
                 # Different terminals have different exec syntax
                 # Use bash -c 'cmd; read' format - tested working with lxterminal
