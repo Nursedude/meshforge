@@ -1283,6 +1283,16 @@ class RNSPanel(Gtk.Box):
                     import time
                     time.sleep(0.5)  # Brief pause for process to terminate
 
+                # Stop MeshForge gateway bridge if running - it holds RNS ports
+                if self._gateway_bridge and self._gateway_bridge.is_running:
+                    logger.debug("[RNS] Gateway bridge running - stopping it before NomadNet")
+                    self._gateway_bridge.stop()
+                    self._gateway_bridge = None
+                    import time
+                    time.sleep(0.5)  # Wait for port to be released
+                    self.main_window.set_status_message("Stopped gateway for NomadNet")
+                    GLib.idle_add(self._update_gateway_status)
+
                 # Stop rnsd if running - NomadNet manages its own RNS instance
                 # Running both causes "Address already in use" conflicts
                 if self._check_rns_service():
@@ -1326,6 +1336,15 @@ class RNSPanel(Gtk.Box):
                 self.main_window.set_status_message("NomadNet launched in terminal")
                 return
             elif mode == "daemon":
+                # Stop MeshForge gateway bridge if running - it holds RNS ports
+                if self._gateway_bridge and self._gateway_bridge.is_running:
+                    logger.debug("[RNS] Gateway bridge running - stopping it before NomadNet daemon")
+                    self._gateway_bridge.stop()
+                    self._gateway_bridge = None
+                    import time
+                    time.sleep(0.5)
+                    GLib.idle_add(self._update_gateway_status)
+
                 # Stop rnsd if running - NomadNet manages its own RNS instance
                 if self._check_rns_service():
                     logger.debug("[RNS] rnsd running - stopping it before NomadNet daemon")
