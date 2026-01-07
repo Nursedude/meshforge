@@ -69,6 +69,18 @@ BUZZER_MODES = ["SYSTEM_DEFAULT", "OFF", "ON"]
 # OLED types
 OLED_TYPES = ["AUTO", "SSD1306", "SH1106", "SH1107"]
 
+# Display modes
+DISPLAY_MODES = ["DEFAULT", "TWOCOLOR", "INVERTED", "COLOR"]
+
+# Bandwidths in kHz
+BANDWIDTHS = ["31.25", "62.5", "125", "250", "500"]
+
+# Spreading factors
+SPREADING_FACTORS = ["7", "8", "9", "10", "11", "12"]
+
+# Coding rates
+CODING_RATES = ["4/5", "4/6", "4/7", "4/8"]
+
 
 class RadioConfigSimple(Gtk.Box):
     """Simple radio configuration panel using direct library access."""
@@ -175,6 +187,65 @@ class RadioConfigSimple(Gtk.Box):
         chan_row.append(self.chan_spin)
         chan_row.append(self._make_apply_btn(self._apply_channel_num))
         lora_box.append(chan_row)
+
+        # Advanced LoRa Settings (expander)
+        adv_lora_expander = Gtk.Expander(label="Advanced LoRa (override preset)")
+        adv_lora_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        adv_lora_box.set_margin_start(12)
+        adv_lora_box.set_margin_top(8)
+
+        # Bandwidth
+        bw_row = self._make_row("Bandwidth (kHz):", None)
+        self.bw_dropdown = Gtk.DropDown.new_from_strings(BANDWIDTHS)
+        self.bw_dropdown.set_hexpand(True)
+        self.bw_dropdown.set_selected(3)  # Default 250kHz
+        bw_row.append(self.bw_dropdown)
+        bw_row.append(self._make_apply_btn(self._apply_bandwidth))
+        adv_lora_box.append(bw_row)
+
+        # Spreading Factor
+        sf_row = self._make_row("Spreading Factor:", None)
+        self.sf_dropdown = Gtk.DropDown.new_from_strings(SPREADING_FACTORS)
+        self.sf_dropdown.set_hexpand(True)
+        sf_row.append(self.sf_dropdown)
+        sf_row.append(self._make_apply_btn(self._apply_spread_factor))
+        adv_lora_box.append(sf_row)
+
+        # Coding Rate
+        cr_row = self._make_row("Coding Rate:", None)
+        self.cr_dropdown = Gtk.DropDown.new_from_strings(CODING_RATES)
+        self.cr_dropdown.set_hexpand(True)
+        cr_row.append(self.cr_dropdown)
+        cr_row.append(self._make_apply_btn(self._apply_coding_rate))
+        adv_lora_box.append(cr_row)
+
+        # Frequency Offset
+        freq_row = self._make_row("Freq Offset (Hz):", None)
+        self.freq_offset_spin = Gtk.SpinButton.new_with_range(-100000, 100000, 100)
+        self.freq_offset_spin.set_value(0)
+        freq_row.append(self.freq_offset_spin)
+        freq_row.append(self._make_apply_btn(self._apply_freq_offset))
+        adv_lora_box.append(freq_row)
+
+        # RX Boosted Gain
+        rxboost_row = self._make_row("RX Boost (SX126x):", None)
+        self.rxboost_switch = Gtk.Switch()
+        self.rxboost_switch.set_halign(Gtk.Align.START)
+        rxboost_row.append(self.rxboost_switch)
+        rxboost_row.append(self._make_apply_btn(self._apply_rx_boost))
+        adv_lora_box.append(rxboost_row)
+
+        # Override Duty Cycle
+        duty_row = self._make_row("Override Duty Cycle:", None)
+        self.duty_switch = Gtk.Switch()
+        self.duty_switch.set_halign(Gtk.Align.START)
+        self.duty_switch.set_tooltip_text("Override regional duty cycle limits (use responsibly)")
+        duty_row.append(self.duty_switch)
+        duty_row.append(self._make_apply_btn(self._apply_duty_cycle))
+        adv_lora_box.append(duty_row)
+
+        adv_lora_expander.set_child(adv_lora_box)
+        lora_box.append(adv_lora_expander)
 
         lora_frame.set_child(lora_box)
         main_box.append(lora_frame)
@@ -379,6 +450,55 @@ class RadioConfigSimple(Gtk.Box):
 
         bt_frame.set_child(bt_box)
         main_box.append(bt_frame)
+
+        # === NETWORK SETTINGS (WiFi) ===
+        net_frame = Gtk.Frame()
+        net_frame.set_label("Network Settings (WiFi)")
+        net_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        net_box.set_margin_start(12)
+        net_box.set_margin_end(12)
+        net_box.set_margin_top(8)
+        net_box.set_margin_bottom(8)
+
+        # WiFi Enabled
+        wifi_row = self._make_row("WiFi Enabled:", None)
+        self.wifi_switch = Gtk.Switch()
+        self.wifi_switch.set_halign(Gtk.Align.START)
+        wifi_row.append(self.wifi_switch)
+        wifi_row.append(self._make_apply_btn(self._apply_wifi_enabled))
+        net_box.append(wifi_row)
+
+        # WiFi SSID
+        ssid_row = self._make_row("WiFi SSID:", None)
+        self.ssid_entry = Gtk.Entry()
+        self.ssid_entry.set_max_length(32)
+        self.ssid_entry.set_placeholder_text("Network name")
+        self.ssid_entry.set_hexpand(True)
+        ssid_row.append(self.ssid_entry)
+        ssid_row.append(self._make_apply_btn(self._apply_wifi_ssid))
+        net_box.append(ssid_row)
+
+        # WiFi Password
+        psk_row = self._make_row("WiFi Password:", None)
+        self.psk_entry = Gtk.Entry()
+        self.psk_entry.set_visibility(False)
+        self.psk_entry.set_placeholder_text("Password")
+        self.psk_entry.set_hexpand(True)
+        psk_row.append(self.psk_entry)
+        psk_row.append(self._make_apply_btn(self._apply_wifi_psk))
+        net_box.append(psk_row)
+
+        # NTP Server
+        ntp_row = self._make_row("NTP Server:", None)
+        self.ntp_entry = Gtk.Entry()
+        self.ntp_entry.set_placeholder_text("pool.ntp.org")
+        self.ntp_entry.set_hexpand(True)
+        ntp_row.append(self.ntp_entry)
+        ntp_row.append(self._make_apply_btn(self._apply_ntp))
+        net_box.append(ntp_row)
+
+        net_frame.set_child(net_box)
+        main_box.append(net_frame)
 
         # === INFO DISPLAY ===
         info_frame = Gtk.Frame()
@@ -676,6 +796,74 @@ class RadioConfigSimple(Gtk.Box):
             self._apply_setting("bluetooth.fixed_pin", pin, f"BT PIN: {pin}")
         else:
             self._update_status("PIN must be at least 4 digits")
+
+    # === ADVANCED LORA ===
+    def _apply_bandwidth(self, button):
+        """Apply bandwidth setting."""
+        idx = self.bw_dropdown.get_selected()
+        bw = BANDWIDTHS[idx]
+        # Convert kHz to Hz for meshtastic
+        bw_hz = int(float(bw) * 1000)
+        self._apply_setting("lora.bandwidth", str(bw_hz), f"Bandwidth: {bw} kHz")
+
+    def _apply_spread_factor(self, button):
+        """Apply spreading factor."""
+        idx = self.sf_dropdown.get_selected()
+        sf = SPREADING_FACTORS[idx]
+        self._apply_setting("lora.spread_factor", sf, f"SF: {sf}")
+
+    def _apply_coding_rate(self, button):
+        """Apply coding rate."""
+        idx = self.cr_dropdown.get_selected()
+        cr = CODING_RATES[idx]
+        # Convert 4/5 -> 5, 4/6 -> 6, etc.
+        cr_val = cr.split('/')[1]
+        self._apply_setting("lora.coding_rate", cr_val, f"CR: {cr}")
+
+    def _apply_freq_offset(self, button):
+        """Apply frequency offset."""
+        val = int(self.freq_offset_spin.get_value())
+        self._apply_setting("lora.frequency_offset", str(val), f"Freq Offset: {val} Hz")
+
+    def _apply_rx_boost(self, button):
+        """Apply RX boosted gain (SX126x)."""
+        enabled = self.rxboost_switch.get_active()
+        self._apply_setting("lora.sx126x_rx_boosted_gain", str(enabled).lower(), f"RX Boost: {'On' if enabled else 'Off'}")
+
+    def _apply_duty_cycle(self, button):
+        """Apply duty cycle override."""
+        enabled = self.duty_switch.get_active()
+        self._apply_setting("lora.override_duty_cycle", str(enabled).lower(), f"Duty Override: {'On' if enabled else 'Off'}")
+
+    # === NETWORK/WIFI ===
+    def _apply_wifi_enabled(self, button):
+        """Apply WiFi enabled setting."""
+        enabled = self.wifi_switch.get_active()
+        self._apply_setting("network.wifi_enabled", str(enabled).lower(), f"WiFi: {'On' if enabled else 'Off'}")
+
+    def _apply_wifi_ssid(self, button):
+        """Apply WiFi SSID."""
+        ssid = self.ssid_entry.get_text().strip()
+        if ssid:
+            self._apply_setting("network.wifi_ssid", ssid, f"SSID: {ssid}")
+        else:
+            self._update_status("Enter an SSID")
+
+    def _apply_wifi_psk(self, button):
+        """Apply WiFi password."""
+        psk = self.psk_entry.get_text()
+        if psk and len(psk) >= 8:
+            self._apply_setting("network.wifi_psk", psk, "WiFi Password: [set]")
+        else:
+            self._update_status("Password must be at least 8 characters")
+
+    def _apply_ntp(self, button):
+        """Apply NTP server."""
+        ntp = self.ntp_entry.get_text().strip()
+        if ntp:
+            self._apply_setting("network.ntp_server", ntp, f"NTP: {ntp}")
+        else:
+            self._update_status("Enter an NTP server")
 
     def _apply_setting(self, setting, value, desc):
         """Apply a setting using meshtastic CLI."""

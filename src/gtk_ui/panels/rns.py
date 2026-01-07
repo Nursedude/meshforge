@@ -1237,6 +1237,7 @@ class RNSPanel(Gtk.Box):
     def _launch_nomadnet(self, mode):
         """Launch NomadNet in specified mode"""
         import os
+        import shutil
 
         logger.debug(f"[RNS] Launching NomadNet ({mode})...")
 
@@ -1248,7 +1249,7 @@ class RNSPanel(Gtk.Box):
 
         nomadnet_path = self._find_nomadnet()
         if not nomadnet_path:
-            self.main_window.set_status_message("NomadNet not installed - install it first")
+            self.main_window.set_status_message("NomadNet not installed - install with: pip3 install nomadnet")
             logger.debug("[RNS] NomadNet not found")
             return
 
@@ -1257,6 +1258,21 @@ class RNSPanel(Gtk.Box):
         # Check if running as root via sudo
         is_root = os.geteuid() == 0
         real_user = self._get_real_username()
+        real_home = self._get_real_user_home()
+        config_dir = real_home / ".nomadnetwork"
+
+        # Find available terminal emulator
+        terminals = ['lxterminal', 'xfce4-terminal', 'gnome-terminal', 'konsole', 'xterm']
+        terminal = None
+        for t in terminals:
+            if shutil.which(t):
+                terminal = t
+                break
+
+        if not terminal:
+            self.main_window.set_status_message("No terminal emulator found - install lxterminal")
+            logger.error("[RNS] No terminal emulator found")
+            return
 
         try:
             if mode == "textui":
@@ -1267,42 +1283,31 @@ class RNSPanel(Gtk.Box):
                     import time
                     time.sleep(0.5)  # Brief pause for process to terminate
 
-                # Launch terminal as root (has X11), run nomadnet as user inside
+                # Build the terminal command based on terminal type
                 if is_root and real_user != 'root':
-                    # Get user's home for proper environment
-                    real_home = self._get_real_user_home()
-
-                    # Create temp script - runs nomadnet as user with full environment
-                    import tempfile
-                    script_content = f'''#!/bin/bash
-cd {real_home}
-sudo -i -u {real_user} nomadnet --config CONFIG
-echo ""
-echo "Press Enter to close..."
-read
-'''
-                    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
-                        f.write(script_content)
-                        script_path = f.name
-                    os.chmod(script_path, 0o755)
-                    logger.debug(f"[RNS] Script: {script_path}")
-
-                    # Use subprocess with proper detachment
-                    subprocess.Popen(
-                        ['lxterminal', '-e', script_path],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        stdin=subprocess.DEVNULL,
-                        start_new_session=True
-                    )
+                    # Running as root but need to launch as real user
+                    nomadnet_cmd = f"sudo -i -u {real_user} {nomadnet_path}"
                 else:
-                    subprocess.Popen(
-                        ['lxterminal', '-e', 'nomadnet --config CONFIG'],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        stdin=subprocess.DEVNULL,
-                        start_new_session=True
-                    )
+                    nomadnet_cmd = nomadnet_path
+
+                # Different terminals have different exec syntax
+                if terminal in ['lxterminal', 'xfce4-terminal']:
+                    term_cmd = [terminal, '-e', nomadnet_cmd]
+                elif terminal == 'gnome-terminal':
+                    term_cmd = [terminal, '--', 'bash', '-c', nomadnet_cmd]
+                elif terminal == 'konsole':
+                    term_cmd = [terminal, '-e', nomadnet_cmd]
+                else:  # xterm
+                    term_cmd = [terminal, '-e', nomadnet_cmd]
+
+                logger.debug(f"[RNS] Terminal command: {term_cmd}")
+                subprocess.Popen(
+                    term_cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    start_new_session=True
+                )
                 self.main_window.set_status_message("NomadNet launched in terminal")
                 return
             elif mode == "daemon":
