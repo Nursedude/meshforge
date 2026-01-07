@@ -1221,8 +1221,19 @@ class RadioConfigPanel(Gtk.Box):
                 self.status_label.set_label(f"Applied {setting}={value}")
                 self.main_window.set_status_message(f"Setting applied: {setting}")
             else:
-                self.status_label.set_label(f"Failed: {stderr}")
-                self.main_window.set_status_message(f"Failed to apply setting: {stderr}")
+                # Parse common errors for better messages
+                error_msg = stderr.strip() if stderr else "Unknown error"
+                if "Connection refused" in error_msg or "refused" in error_msg.lower():
+                    error_msg = "meshtasticd not running or port 4403 blocked"
+                elif "not found" in error_msg.lower():
+                    error_msg = "Meshtastic CLI not found - pip install meshtastic"
+                elif "Invalid" in error_msg or "invalid" in error_msg.lower():
+                    error_msg = f"Invalid value '{value}' for {setting}"
+                elif "timeout" in error_msg.lower():
+                    error_msg = "Connection timeout - check meshtasticd"
+                self.status_label.set_label(f"Failed: {error_msg}")
+                self.main_window.set_status_message(f"Failed: {error_msg}")
+                logger.warning(f"[RadioConfig] Apply {setting}={value} failed: {stderr}")
 
         self._run_cli(['--set', setting, value], on_result)
 
