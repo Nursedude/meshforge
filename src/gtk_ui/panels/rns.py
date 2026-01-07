@@ -1283,6 +1283,40 @@ class RNSPanel(Gtk.Box):
                     import time
                     time.sleep(0.5)  # Brief pause for process to terminate
 
+                # Ensure rnsd is running - NomadNet needs it to share RNS transport
+                # Otherwise NomadNet tries to create its own interface which causes "Address already in use"
+                if not self._check_rns_service():
+                    logger.debug("[RNS] rnsd not running - starting it before NomadNet")
+                    # Try to start rnsd in background
+                    rnsd_path = shutil.which('rnsd')
+                    if rnsd_path:
+                        # Run rnsd as the real user
+                        if is_root and real_user != 'root':
+                            subprocess.Popen(
+                                ['sudo', '-u', real_user, rnsd_path],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                stdin=subprocess.DEVNULL,
+                                start_new_session=True
+                            )
+                        else:
+                            subprocess.Popen(
+                                [rnsd_path],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                stdin=subprocess.DEVNULL,
+                                start_new_session=True
+                            )
+                        import time
+                        time.sleep(1.5)  # Give rnsd time to initialize
+                        logger.debug("[RNS] Started rnsd for NomadNet transport")
+                        self.main_window.set_status_message("Started rnsd for NomadNet")
+                        # Refresh RNS service status after launch completes
+                        GLib.timeout_add(2000, lambda: self._refresh_all() or False)
+                    else:
+                        # No rnsd available - NomadNet will try to create own instance
+                        logger.warning("[RNS] rnsd not found - NomadNet may have port conflicts")
+
                 # Build the terminal command - wrap in bash to keep terminal open on exit
                 if is_root and real_user != 'root':
                     # Running as root but need to launch as real user
@@ -1315,6 +1349,31 @@ class RNSPanel(Gtk.Box):
                 self.main_window.set_status_message("NomadNet launched in terminal")
                 return
             elif mode == "daemon":
+                # Ensure rnsd is running before starting NomadNet daemon
+                if not self._check_rns_service():
+                    logger.debug("[RNS] rnsd not running - starting it before NomadNet daemon")
+                    rnsd_path = shutil.which('rnsd')
+                    if rnsd_path:
+                        if is_root and real_user != 'root':
+                            subprocess.Popen(
+                                ['sudo', '-u', real_user, rnsd_path],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                stdin=subprocess.DEVNULL,
+                                start_new_session=True
+                            )
+                        else:
+                            subprocess.Popen(
+                                [rnsd_path],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                stdin=subprocess.DEVNULL,
+                                start_new_session=True
+                            )
+                        import time
+                        time.sleep(1.5)  # Give rnsd time to initialize
+                        logger.debug("[RNS] Started rnsd for NomadNet daemon")
+
                 # Run as daemon using full path
                 # When running as root, run as real user
                 if is_root and real_user != 'root':
