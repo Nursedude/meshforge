@@ -75,9 +75,10 @@ class HamClockPanel(Gtk.Box):
     """Panel for HamClock integration"""
 
     # Settings defaults
+    # Note: HamClock web version uses 8081 for live, 8082 for REST API
     SETTINGS_DEFAULTS = {
         "url": "",
-        "api_port": 8080,
+        "api_port": 8082,
         "live_port": 8081,
         "auto_refresh_enabled": False,
         "auto_refresh_minutes": 10,
