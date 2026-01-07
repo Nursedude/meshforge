@@ -106,6 +106,9 @@ class RNSPanel(Gtk.Box):
         # Gateway Section
         self._build_gateway_section(content)
 
+        # Discovered RNS Nodes Section
+        self._build_discovered_nodes_section(content)
+
         # Configuration Section
         self._build_config_section(content)
 
@@ -483,6 +486,150 @@ class RNSPanel(Gtk.Box):
         # Initialize gateway state
         self._gateway_bridge = None
         self._update_gateway_status()
+
+    def _build_discovered_nodes_section(self, parent):
+        """Build discovered RNS nodes section"""
+        frame = Gtk.Frame()
+        frame.set_label("Discovered RNS Nodes")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_start(15)
+        box.set_margin_end(15)
+        box.set_margin_top(10)
+        box.set_margin_bottom(10)
+
+        # Description
+        desc = Gtk.Label(label="RNS nodes discovered via announces (does not require GPS)")
+        desc.set_xalign(0)
+        desc.add_css_class("dim-label")
+        box.append(desc)
+
+        # Nodes count label
+        count_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.rns_nodes_count = Gtk.Label(label="Nodes: 0")
+        self.rns_nodes_count.set_xalign(0)
+        count_row.append(self.rns_nodes_count)
+
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        count_row.append(spacer)
+
+        refresh_btn = Gtk.Button(label="Refresh")
+        refresh_btn.connect("clicked", self._refresh_rns_nodes)
+        count_row.append(refresh_btn)
+        box.append(count_row)
+
+        # Scrollable node list
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_min_content_height(150)
+        scroll.set_max_content_height(300)
+
+        # ListBox for nodes
+        self.rns_nodes_list = Gtk.ListBox()
+        self.rns_nodes_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.rns_nodes_list.add_css_class("boxed-list")
+
+        # Placeholder row
+        placeholder = Gtk.Label(label="No RNS nodes discovered yet")
+        placeholder.add_css_class("dim-label")
+        placeholder.set_margin_top(20)
+        placeholder.set_margin_bottom(20)
+        self.rns_nodes_list.append(placeholder)
+
+        scroll.set_child(self.rns_nodes_list)
+        box.append(scroll)
+
+        frame.set_child(box)
+        parent.append(frame)
+
+        # Auto-refresh nodes on panel load
+        GLib.timeout_add(1000, self._refresh_rns_nodes)
+
+    def _refresh_rns_nodes(self, button=None):
+        """Refresh the RNS nodes list from node tracker"""
+        def do_refresh():
+            nodes = []
+            try:
+                # Try to get node tracker from main window
+                if hasattr(self.main_window, 'node_tracker') and self.main_window.node_tracker:
+                    rns_nodes = self.main_window.node_tracker.get_rns_nodes()
+                    for node in rns_nodes:
+                        nodes.append({
+                            'id': node.id,
+                            'name': node.name or node.short_name or 'Unknown',
+                            'hash': node.rns_hash.hex()[:16] if node.rns_hash else '?',
+                            'last_seen': node.last_seen.strftime('%H:%M:%S') if node.last_seen else 'Unknown',
+                            'online': node.is_online
+                        })
+            except Exception as e:
+                logger.error(f"Error getting RNS nodes: {e}")
+
+            GLib.idle_add(self._update_rns_nodes_ui, nodes)
+
+        threading.Thread(target=do_refresh, daemon=True).start()
+        return False  # Don't repeat for GLib.timeout_add
+
+    def _update_rns_nodes_ui(self, nodes):
+        """Update the RNS nodes list UI"""
+        # Clear existing rows
+        while True:
+            row = self.rns_nodes_list.get_row_at_index(0)
+            if row:
+                self.rns_nodes_list.remove(row)
+            else:
+                break
+
+        # Update count
+        self.rns_nodes_count.set_label(f"Nodes: {len(nodes)}")
+
+        if not nodes:
+            # Add placeholder
+            placeholder = Gtk.Label(label="No RNS nodes discovered yet")
+            placeholder.add_css_class("dim-label")
+            placeholder.set_margin_top(20)
+            placeholder.set_margin_bottom(20)
+            self.rns_nodes_list.append(placeholder)
+            return
+
+        # Add node rows
+        for node in nodes:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            row.set_margin_start(10)
+            row.set_margin_end(10)
+            row.set_margin_top(5)
+            row.set_margin_bottom(5)
+
+            # Online indicator
+            status_icon = Gtk.Image.new_from_icon_name(
+                "emblem-ok-symbolic" if node['online'] else "emblem-important-symbolic"
+            )
+            status_icon.set_pixel_size(16)
+            row.append(status_icon)
+
+            # Node info
+            info_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            info_box.set_hexpand(True)
+
+            name_label = Gtk.Label(label=node['name'])
+            name_label.set_xalign(0)
+            name_label.add_css_class("heading")
+            info_box.append(name_label)
+
+            hash_label = Gtk.Label(label=f"<{node['hash']}>")
+            hash_label.set_xalign(0)
+            hash_label.add_css_class("dim-label")
+            hash_label.add_css_class("monospace")
+            info_box.append(hash_label)
+
+            row.append(info_box)
+
+            # Last seen
+            time_label = Gtk.Label(label=node['last_seen'])
+            time_label.add_css_class("dim-label")
+            row.append(time_label)
+
+            self.rns_nodes_list.append(row)
 
     def _build_config_section(self, parent):
         """Build RNS configuration section"""
