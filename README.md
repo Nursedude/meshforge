@@ -170,6 +170,7 @@ MeshForge uses a **tiered support system** to communicate feature maturity:
 | **Node Monitor** | ✅ | Real-time node tracking (no sudo) |
 | **RF Tools** | 13 tests | Haversine, Fresnel, FSPL, Earth bulge |
 | **Gateway Diagnostic** | 18 tests | AI-like troubleshooting for RNS/Meshtastic |
+| **Network Diagnostics** | ✅ | UDP/TCP/IPv6 listeners, port mapping, multicast |
 | **Security Validation** | 24 tests | Input validation, subprocess safety |
 
 ### 🔧 Plugin Stubs (Extensible)
@@ -580,13 +581,15 @@ meshforge/
 
 ## Version History
 
-### v0.4.3-beta (2026-01-05) - Current
+### v0.4.3-beta (2026-01-07) - Current
 
-- **NEW**: Standalone boot mode with zero external dependencies
-- **NEW**: AREDN Integration with hardware database
-- **NEW**: Amateur Radio Compliance & Part 97 course
-- **NEW**: Auto-Claude code review system
-- **NEW**: AI self-audit architecture documentation
+- **NEW**: Network Diagnostics panel with UDP/TCP/IPv6 listener display
+- **NEW**: Multicast group viewer and process-to-port mapping
+- **NEW**: Quick-action buttons (Kill Clients, Stop RNS, Watch API)
+- **NEW**: NomadNet launch from GTK with proper terminal wrapper
+- **NEW**: RNS/Meshtastic port conflict detection (ports 29716, 4403)
+- **IMPROVED**: Standalone boot mode with zero external dependencies
+- **IMPROVED**: AREDN Integration with hardware database
 - **IMPROVED**: Subprocess timeout parameters for reliability
 - **IMPROVED**: Centralized SettingsManager to reduce code duplication
 
@@ -631,10 +634,11 @@ meshforge/
 - [x] Standalone boot mode
 
 ### In Progress 🔧
-- [ ] LXMF/NomadNet UI integration
+- [ ] MeshChat web integration
 - [ ] Node firmware flashing
 
 ### Planned 📋
+- [x] NomadNet launch from GTK (completed 2026-01-07)
 - [ ] NanoVNA plugin for antenna tuning
 - [ ] MQTT dashboard
 - [ ] Coverage analytics
