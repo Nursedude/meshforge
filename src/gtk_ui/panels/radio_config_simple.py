@@ -29,10 +29,11 @@ PRESETS = {
 }
 PRESET_NAMES = list(PRESETS.values())
 
-# LoRa regions
+# LoRa regions (from Meshtastic protobuf)
 REGIONS = [
     "UNSET", "US", "EU_433", "EU_868", "CN", "JP", "ANZ", "KR", "TW", "RU",
-    "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919", "SG_923"
+    "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919",
+    "SG_923", "PH", "UK_868", "SINGAPORE"
 ]
 
 # Device roles
@@ -138,12 +139,13 @@ class RadioConfigSimple(Gtk.Box):
         lora_box.set_margin_top(8)
         lora_box.set_margin_bottom(8)
 
-        # Region (display only - dangerous to change)
+        # Region - dropdown with warning (must match local regulations)
         region_row = self._make_row("Region:", None)
-        self.region_label = Gtk.Label(label="...")
-        self.region_label.set_hexpand(True)
-        self.region_label.set_xalign(0)
-        region_row.append(self.region_label)
+        self.region_dropdown = Gtk.DropDown.new_from_strings(REGIONS)
+        self.region_dropdown.set_hexpand(True)
+        self.region_dropdown.set_tooltip_text("⚠️ IMPORTANT: Must match your local radio regulations!")
+        region_row.append(self.region_dropdown)
+        region_row.append(self._make_apply_btn(self._apply_region))
         lora_box.append(region_row)
 
         # Modem Preset
@@ -749,8 +751,16 @@ class RadioConfigSimple(Gtk.Box):
 
     def _update_ui(self, data):
         """Update UI with loaded values."""
-        # LoRa
-        self.region_label.set_label(data.get('region', '...'))
+        # LoRa - region dropdown
+        region_val = data.get('region', 'UNSET')
+        if region_val in REGIONS:
+            self.region_dropdown.set_selected(REGIONS.index(region_val))
+        else:
+            # Try to match by stripping Config.LoRaConfig.RegionCode prefix
+            for i, r in enumerate(REGIONS):
+                if r in region_val:
+                    self.region_dropdown.set_selected(i)
+                    break
         self.preset_dropdown.set_selected(data.get('preset', 0))
         self.hop_spin.set_value(data.get('hop', 3))
         self.tx_spin.set_value(data.get('tx', 20))
@@ -781,6 +791,12 @@ class RadioConfigSimple(Gtk.Box):
         preset_idx = self.preset_dropdown.get_selected()
         preset_name = PRESET_NAMES[preset_idx]
         self._apply_setting("lora.modem_preset", preset_name, f"Preset: {preset_name}")
+
+    def _apply_region(self, button):
+        """Apply LoRa region. WARNING: Must comply with local regulations!"""
+        region_idx = self.region_dropdown.get_selected()
+        region_name = REGIONS[region_idx]
+        self._apply_setting("lora.region", region_name, f"Region: {region_name}")
 
     def _apply_role(self, button):
         """Apply device role."""
