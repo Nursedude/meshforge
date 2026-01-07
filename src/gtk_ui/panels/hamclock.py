@@ -596,14 +596,21 @@ class HamClockPanel(Gtk.Box):
         install_label.set_xalign(0)
         install_row.append(install_label)
 
+        # One-click install button for hamclock-web (headless Pi)
+        self.install_btn = Gtk.Button(label="Install hamclock-web")
+        self.install_btn.set_tooltip_text("Install hamclock-web for headless Pi (requires internet)")
+        self.install_btn.add_css_class("suggested-action")
+        self.install_btn.connect("clicked", self._install_hamclock_web)
+        install_row.append(self.install_btn)
+
         # Link to hamclock-systemd - use button instead of LinkButton (works as root)
-        link_btn = Gtk.Button(label="hamclock-systemd packages")
+        link_btn = Gtk.Button(label="Packages Info")
         link_btn.set_tooltip_text("https://github.com/pa28/hamclock-systemd")
         link_btn.connect("clicked", lambda b: self._open_url_in_browser("https://github.com/pa28/hamclock-systemd"))
         install_row.append(link_btn)
 
         # Or official site - use button instead of LinkButton (works as root)
-        official_link = Gtk.Button(label="Official HamClock")
+        official_link = Gtk.Button(label="Official Site")
         official_link.set_tooltip_text("https://www.clearskyinstitute.com/ham/HamClock/")
         official_link.connect("clicked", lambda b: self._open_url_in_browser("https://www.clearskyinstitute.com/ham/HamClock/"))
         install_row.append(official_link)
@@ -763,6 +770,142 @@ class HamClockPanel(Gtk.Box):
 
         # Refresh status
         GLib.timeout_add(1000, self._check_service_status)
+        return False
+
+    def _install_hamclock_web(self, button):
+        """Install hamclock-web package for headless Pi operation.
+
+        Uses pa28 repository: https://github.com/pa28/hamclock-systemd
+        """
+        logger.info("[HamClock] Starting hamclock-web installation")
+        self.main_window.set_status_message("Installing hamclock-web...")
+        button.set_sensitive(False)
+
+        def do_install():
+            import subprocess
+            import shutil
+
+            errors = []
+
+            try:
+                # Check if already installed
+                result = subprocess.run(
+                    ['dpkg', '-l', 'hamclock-web'],
+                    capture_output=True, text=True, timeout=10
+                )
+                if result.returncode == 0 and 'ii' in result.stdout:
+                    GLib.idle_add(self._install_complete, True, "hamclock-web already installed", button)
+                    return
+
+                # Step 1: Download GPG key
+                GLib.idle_add(self.main_window.set_status_message, "Adding pa28 repository key...")
+
+                # Create keyrings directory if needed
+                keyring_dir = '/usr/share/keyrings'
+                key_path = f'{keyring_dir}/pa28-archive-keyring.gpg'
+
+                # Download key using wget
+                key_url = 'https://pa28.github.io/pa28-pkg/pa28-pkg.gpg.key'
+                wget_cmd = ['wget', '-qO-', key_url]
+
+                wget_result = subprocess.run(wget_cmd, capture_output=True, timeout=30)
+                if wget_result.returncode != 0:
+                    errors.append(f"Failed to download GPG key: {wget_result.stderr.decode()}")
+                    GLib.idle_add(self._install_complete, False, "; ".join(errors), button)
+                    return
+
+                # Convert key to GPG format and save (requires sudo)
+                gpg_cmd = ['sudo', 'gpg', '--dearmor', '-o', key_path]
+                gpg_result = subprocess.run(gpg_cmd, input=wget_result.stdout, capture_output=True, timeout=30)
+
+                if gpg_result.returncode != 0:
+                    # Try with pkexec for graphical sudo
+                    gpg_cmd = ['pkexec', 'gpg', '--dearmor', '-o', key_path]
+                    gpg_result = subprocess.run(gpg_cmd, input=wget_result.stdout, capture_output=True, timeout=60)
+                    if gpg_result.returncode != 0:
+                        errors.append(f"Failed to install GPG key: {gpg_result.stderr.decode()}")
+                        GLib.idle_add(self._install_complete, False, "; ".join(errors), button)
+                        return
+
+                # Step 2: Add repository
+                GLib.idle_add(self.main_window.set_status_message, "Adding pa28 repository...")
+
+                repo_line = f'deb [signed-by={key_path}] https://pa28.github.io/pa28-pkg ./'
+                sources_file = '/etc/apt/sources.list.d/pa28.list'
+
+                # Write sources file (requires sudo)
+                echo_cmd = ['sudo', 'tee', sources_file]
+                echo_result = subprocess.run(echo_cmd, input=repo_line.encode(), capture_output=True, timeout=10)
+
+                if echo_result.returncode != 0:
+                    echo_cmd = ['pkexec', 'tee', sources_file]
+                    echo_result = subprocess.run(echo_cmd, input=repo_line.encode(), capture_output=True, timeout=30)
+                    if echo_result.returncode != 0:
+                        errors.append(f"Failed to add repository: {echo_result.stderr.decode()}")
+                        GLib.idle_add(self._install_complete, False, "; ".join(errors), button)
+                        return
+
+                # Step 3: Update apt
+                GLib.idle_add(self.main_window.set_status_message, "Updating package lists...")
+
+                update_cmd = ['sudo', 'apt', 'update']
+                update_result = subprocess.run(update_cmd, capture_output=True, timeout=120)
+
+                if update_result.returncode != 0:
+                    update_cmd = ['pkexec', 'apt', 'update']
+                    update_result = subprocess.run(update_cmd, capture_output=True, timeout=120)
+
+                # Step 4: Install hamclock-web
+                GLib.idle_add(self.main_window.set_status_message, "Installing hamclock-web package...")
+
+                install_cmd = ['sudo', 'apt', 'install', '-y', 'hamclock-web']
+                install_result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=300)
+
+                if install_result.returncode != 0:
+                    install_cmd = ['pkexec', 'apt', 'install', '-y', 'hamclock-web']
+                    install_result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=300)
+                    if install_result.returncode != 0:
+                        errors.append(f"Failed to install: {install_result.stderr}")
+                        GLib.idle_add(self._install_complete, False, "; ".join(errors), button)
+                        return
+
+                # Step 5: Enable and start service
+                GLib.idle_add(self.main_window.set_status_message, "Enabling hamclock service...")
+
+                enable_cmd = ['sudo', 'systemctl', 'enable', '--now', 'hamclock']
+                enable_result = subprocess.run(enable_cmd, capture_output=True, text=True, timeout=30)
+
+                if enable_result.returncode != 0:
+                    enable_cmd = ['pkexec', 'systemctl', 'enable', '--now', 'hamclock']
+                    subprocess.run(enable_cmd, capture_output=True, timeout=60)
+
+                GLib.idle_add(self._install_complete, True, "hamclock-web installed successfully!", button)
+
+            except subprocess.TimeoutExpired:
+                errors.append("Installation timed out")
+                GLib.idle_add(self._install_complete, False, "; ".join(errors), button)
+            except Exception as e:
+                logger.error(f"[HamClock] Install error: {e}")
+                errors.append(str(e))
+                GLib.idle_add(self._install_complete, False, "; ".join(errors), button)
+
+        threading.Thread(target=do_install, daemon=True).start()
+
+    def _install_complete(self, success, message, button):
+        """Handle installation completion."""
+        button.set_sensitive(True)
+
+        if success:
+            self.main_window.set_status_message(message)
+            logger.info(f"[HamClock] Install: {message}")
+            # Update URL to localhost since we just installed locally
+            self.url_entry.set_text("http://localhost")
+            # Refresh service status
+            GLib.timeout_add(2000, self._check_service_status)
+        else:
+            self.main_window.set_status_message(f"Install failed: {message}")
+            logger.error(f"[HamClock] Install failed: {message}")
+
         return False
 
     def _auto_connect(self):
