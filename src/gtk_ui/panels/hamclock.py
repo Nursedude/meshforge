@@ -620,22 +620,24 @@ class HamClockPanel(Gtk.Box):
         # Config editing row
         config_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
 
-        # Edit HamClock config (nano)
-        edit_config_btn = Gtk.Button(label="Edit Config (Terminal)")
-        edit_config_btn.set_tooltip_text("Edit ~/.hamclock/eeprom in terminal with nano")
-        edit_config_btn.connect("clicked", self._edit_hamclock_config)
-        config_row.append(edit_config_btn)
+        # Web Setup button - primary configuration method
+        web_setup_btn = Gtk.Button(label="Open Web Setup")
+        web_setup_btn.set_tooltip_text("Configure HamClock via web browser (callsign, location, satellites, etc)")
+        web_setup_btn.add_css_class("suggested-action")
+        web_setup_btn.connect("clicked", self._open_web_setup)
+        config_row.append(web_setup_btn)
 
-        # Open config folder
-        open_folder_btn = Gtk.Button(label="Open Config Folder")
-        open_folder_btn.set_tooltip_text("Open ~/.hamclock/ folder")
+        # Open config folder (for advanced users)
+        open_folder_btn = Gtk.Button(label="Config Folder")
+        open_folder_btn.set_tooltip_text("Open ~/.hamclock/ folder (binary config)")
         open_folder_btn.connect("clicked", self._open_hamclock_folder)
         config_row.append(open_folder_btn)
 
-        # Setup wizard info
-        setup_label = Gtk.Label(label="First run: Configure via web UI at :8081/live.html")
+        # Setup info
+        setup_label = Gtk.Label(label="Setup: callsign, QTH, satellites, DX cluster")
         setup_label.add_css_class("dim-label")
         setup_label.set_xalign(0)
+        setup_label.set_hexpand(True)
         config_row.append(setup_label)
 
         box.append(config_row)
@@ -1283,6 +1285,15 @@ class HamClockPanel(Gtk.Box):
 
         live_url = f"{url}:{live_port}/live.html"
         self._open_url_in_browser(live_url)
+
+    def _open_web_setup(self, button):
+        """Open HamClock web setup page in browser for configuration"""
+        logger.info("[HamClock] Open Web Setup button clicked")
+        live_port = self._settings.get("live_port", 8081)
+        # Use localhost for local setup - this is where HamClock runs
+        setup_url = f"http://localhost:{live_port}/live.html"
+        self.status_label.set_label("Opening web setup...")
+        self._open_url_in_browser(setup_url)
 
     def _edit_hamclock_config(self, button):
         """Edit HamClock config file in terminal with nano"""
