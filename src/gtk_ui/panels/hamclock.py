@@ -800,78 +800,94 @@ class HamClockPanel(Gtk.Box):
                     GLib.idle_add(self._install_complete, True, "hamclock-web already installed", button)
                     return
 
-                # Step 1: Download and install vfrott-repo bootstrap package to set up apt repository
-                GLib.idle_add(self.main_window.set_status_message, "Setting up pa28 repository...")
+                # Detect architecture
+                arch_result = subprocess.run(['dpkg', '--print-architecture'], capture_output=True, text=True, timeout=5)
+                arch = arch_result.stdout.strip() if arch_result.returncode == 0 else 'armhf'
+                logger.info(f"[HamClock] Detected architecture: {arch}")
+
+                # Map to GitHub release naming - hamclock-systemd only available for armhf
+                # hamclock available for armhf and amd64
+                version = "2.65.5"
+                if arch == 'armhf':
+                    # Use hamclock-systemd for Pi (includes web service)
+                    deb_name = f"hamclock-systemd_{version}_armhf.deb"
+                elif arch == 'amd64':
+                    deb_name = f"hamclock_{version}_amd64.deb"
+                else:
+                    errors.append(f"Unsupported architecture: {arch}")
+                    GLib.idle_add(self._install_complete, False, "; ".join(errors), button)
+                    return
+
+                deb_url = f"https://github.com/pa28/hamclock-systemd/releases/download/V2.65/{deb_name}"
+                logger.info(f"[HamClock] Downloading: {deb_url}")
+
+                # Step 1: Download .deb directly from GitHub
+                GLib.idle_add(self.main_window.set_status_message, f"Downloading {deb_name}...")
 
                 with tempfile.TemporaryDirectory() as tmpdir:
-                    # Download repo bootstrap package (architecture-independent)
-                    repo_url = "https://github.com/pa28/hamclock-systemd/releases/download/V2.65/vfrott-repo_0.0.1-1_all.deb"
-                    repo_deb_path = os.path.join(tmpdir, "vfrott-repo.deb")
-
-                    logger.info(f"[HamClock] Downloading repo bootstrap: {repo_url}")
+                    deb_path = os.path.join(tmpdir, deb_name)
 
                     # Try wget first
-                    wget_cmd = ['wget', '-q', '-O', repo_deb_path, repo_url]
-                    wget_result = subprocess.run(wget_cmd, capture_output=True, timeout=60)
+                    wget_cmd = ['wget', '-q', '-O', deb_path, deb_url]
+                    wget_result = subprocess.run(wget_cmd, capture_output=True, timeout=120)
 
                     if wget_result.returncode != 0:
                         # Try curl as fallback
-                        curl_cmd = ['curl', '-sL', '-o', repo_deb_path, repo_url]
-                        curl_result = subprocess.run(curl_cmd, capture_output=True, timeout=60)
+                        curl_cmd = ['curl', '-sL', '-o', deb_path, deb_url]
+                        curl_result = subprocess.run(curl_cmd, capture_output=True, timeout=120)
                         if curl_result.returncode != 0:
-                            errors.append("Failed to download repository package")
+                            errors.append(f"Failed to download {deb_name}")
                             GLib.idle_add(self._install_complete, False, "; ".join(errors), button)
                             return
 
                     # Verify download
-                    if not os.path.exists(repo_deb_path) or os.path.getsize(repo_deb_path) < 1000:
-                        errors.append("Downloaded repo package is invalid")
+                    if not os.path.exists(deb_path) or os.path.getsize(deb_path) < 10000:
+                        errors.append("Downloaded package is invalid or too small")
                         GLib.idle_add(self._install_complete, False, "; ".join(errors), button)
                         return
 
-                    # Install repo bootstrap package
-                    GLib.idle_add(self.main_window.set_status_message, "Installing repository configuration...")
-                    install_repo_cmd = ['sudo', 'apt', 'install', '-y', repo_deb_path]
-                    install_repo_result = subprocess.run(install_repo_cmd, capture_output=True, text=True, timeout=60)
+                    # Step 2: Install the .deb
+                    GLib.idle_add(self.main_window.set_status_message, "Installing HamClock...")
 
-                    if install_repo_result.returncode != 0:
-                        # Try dpkg directly
-                        dpkg_cmd = ['sudo', 'dpkg', '-i', repo_deb_path]
-                        subprocess.run(dpkg_cmd, capture_output=True, timeout=30)
-
-                # Step 2: Update apt
-                GLib.idle_add(self.main_window.set_status_message, "Updating package lists...")
-                update_cmd = ['sudo', 'apt', 'update']
-                subprocess.run(update_cmd, capture_output=True, timeout=120)
-
-                # Step 3: Install hamclock-web
-                GLib.idle_add(self.main_window.set_status_message, "Installing hamclock-web package...")
-                install_cmd = ['sudo', 'apt', 'install', '-y', 'hamclock-web']
-                install_result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=300)
-
-                if install_result.returncode != 0:
-                    # hamclock-web might not be available, try hamclock instead
-                    logger.warning("[HamClock] hamclock-web not found, trying hamclock package")
-                    install_cmd = ['sudo', 'apt', 'install', '-y', 'hamclock']
+                    # Use apt to install (handles dependencies)
+                    install_cmd = ['sudo', 'apt', 'install', '-y', '-f', deb_path]
                     install_result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=300)
 
                     if install_result.returncode != 0:
-                        errors.append(f"Failed to install hamclock: {install_result.stderr[:200]}")
-                        GLib.idle_add(self._install_complete, False, "; ".join(errors), button)
-                        return
+                        # Try dpkg + fix dependencies
+                        dpkg_cmd = ['sudo', 'dpkg', '-i', deb_path]
+                        dpkg_result = subprocess.run(dpkg_cmd, capture_output=True, text=True, timeout=120)
 
-                # Step 4: Enable and start service
+                        # Fix any missing dependencies
+                        fix_cmd = ['sudo', 'apt-get', '-f', 'install', '-y']
+                        subprocess.run(fix_cmd, capture_output=True, timeout=120)
+
+                        # Verify install
+                        check = subprocess.run(['dpkg', '-l', 'hamclock-systemd'], capture_output=True, text=True, timeout=10)
+                        if check.returncode != 0 or 'ii' not in check.stdout:
+                            check2 = subprocess.run(['dpkg', '-l', 'hamclock'], capture_output=True, text=True, timeout=10)
+                            if check2.returncode != 0 or 'ii' not in check2.stdout:
+                                errors.append(f"Install failed: {dpkg_result.stderr[:200]}")
+                                GLib.idle_add(self._install_complete, False, "; ".join(errors), button)
+                                return
+
+                # Step 3: Enable and start service
                 GLib.idle_add(self.main_window.set_status_message, "Enabling hamclock service...")
 
-                # Try hamclock-web service first, then hamclock
-                for service_name in ['hamclock-web', 'hamclock']:
+                # Try service names in order of preference
+                service_enabled = False
+                for service_name in ['hamclock-systemd', 'hamclock-web', 'hamclock']:
                     enable_cmd = ['sudo', 'systemctl', 'enable', '--now', service_name]
                     enable_result = subprocess.run(enable_cmd, capture_output=True, text=True, timeout=30)
                     if enable_result.returncode == 0:
                         logger.info(f"[HamClock] Enabled service: {service_name}")
+                        service_enabled = True
                         break
 
-                GLib.idle_add(self._install_complete, True, "HamClock installed successfully!", button)
+                if service_enabled:
+                    GLib.idle_add(self._install_complete, True, "HamClock installed successfully!", button)
+                else:
+                    GLib.idle_add(self._install_complete, True, "HamClock installed (start service manually)", button)
 
             except subprocess.TimeoutExpired:
                 errors.append("Installation timed out")
