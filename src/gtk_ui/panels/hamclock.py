@@ -775,7 +775,8 @@ class HamClockPanel(Gtk.Box):
     def _install_hamclock_web(self, button):
         """Install hamclock-web package for headless Pi operation.
 
-        Uses pa28 repository: https://github.com/pa28/hamclock-systemd
+        Downloads .deb directly from GitHub releases (more reliable than apt repo).
+        https://github.com/pa28/hamclock-systemd
         """
         logger.info("[HamClock] Starting hamclock-web installation")
         self.main_window.set_status_message("Installing hamclock-web...")
@@ -784,6 +785,8 @@ class HamClockPanel(Gtk.Box):
         def do_install():
             import subprocess
             import shutil
+            import tempfile
+            import os
 
             errors = []
 
@@ -797,99 +800,78 @@ class HamClockPanel(Gtk.Box):
                     GLib.idle_add(self._install_complete, True, "hamclock-web already installed", button)
                     return
 
-                # Step 1: Download GPG key
-                GLib.idle_add(self.main_window.set_status_message, "Downloading pa28 repository key...")
+                # Step 1: Download and install vfrott-repo bootstrap package to set up apt repository
+                GLib.idle_add(self.main_window.set_status_message, "Setting up pa28 repository...")
 
-                # Create keyrings directory if needed
-                keyring_dir = '/usr/share/keyrings'
-                key_path = f'{keyring_dir}/pa28-archive-keyring.gpg'
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    # Download repo bootstrap package (architecture-independent)
+                    repo_url = "https://github.com/pa28/hamclock-systemd/releases/download/V2.65/vfrott-repo_0.0.1-1_all.deb"
+                    repo_deb_path = os.path.join(tmpdir, "vfrott-repo.deb")
 
-                # Download key - try wget first, then curl
-                key_url = 'https://pa28.github.io/pa28-pkg/pa28-pkg.gpg.key'
-                key_data = None
+                    logger.info(f"[HamClock] Downloading repo bootstrap: {repo_url}")
 
-                # Try wget
-                wget_result = subprocess.run(['wget', '-qO-', key_url], capture_output=True, timeout=30)
-                if wget_result.returncode == 0 and wget_result.stdout:
-                    key_data = wget_result.stdout
-                else:
-                    # Try curl as fallback
-                    curl_result = subprocess.run(['curl', '-sL', key_url], capture_output=True, timeout=30)
-                    if curl_result.returncode == 0 and curl_result.stdout:
-                        key_data = curl_result.stdout
+                    # Try wget first
+                    wget_cmd = ['wget', '-q', '-O', repo_deb_path, repo_url]
+                    wget_result = subprocess.run(wget_cmd, capture_output=True, timeout=60)
 
-                if not key_data:
-                    errors.append("Failed to download GPG key - check internet connection")
-                    GLib.idle_add(self._install_complete, False, "; ".join(errors), button)
-                    return
+                    if wget_result.returncode != 0:
+                        # Try curl as fallback
+                        curl_cmd = ['curl', '-sL', '-o', repo_deb_path, repo_url]
+                        curl_result = subprocess.run(curl_cmd, capture_output=True, timeout=60)
+                        if curl_result.returncode != 0:
+                            errors.append("Failed to download repository package")
+                            GLib.idle_add(self._install_complete, False, "; ".join(errors), button)
+                            return
 
-                # Convert key to GPG format and save (requires sudo)
-                GLib.idle_add(self.main_window.set_status_message, "Installing repository key...")
-                gpg_cmd = ['sudo', 'gpg', '--dearmor', '-o', key_path]
-                gpg_result = subprocess.run(gpg_cmd, input=key_data, capture_output=True, timeout=30)
-
-                if gpg_result.returncode != 0:
-                    # Try with pkexec for graphical sudo
-                    gpg_cmd = ['pkexec', 'gpg', '--dearmor', '-o', key_path]
-                    gpg_result = subprocess.run(gpg_cmd, input=key_data, capture_output=True, timeout=60)
-                    if gpg_result.returncode != 0:
-                        errors.append(f"Failed to install GPG key: {gpg_result.stderr.decode()}")
+                    # Verify download
+                    if not os.path.exists(repo_deb_path) or os.path.getsize(repo_deb_path) < 1000:
+                        errors.append("Downloaded repo package is invalid")
                         GLib.idle_add(self._install_complete, False, "; ".join(errors), button)
                         return
 
-                # Step 2: Add repository
-                GLib.idle_add(self.main_window.set_status_message, "Adding pa28 repository...")
+                    # Install repo bootstrap package
+                    GLib.idle_add(self.main_window.set_status_message, "Installing repository configuration...")
+                    install_repo_cmd = ['sudo', 'apt', 'install', '-y', repo_deb_path]
+                    install_repo_result = subprocess.run(install_repo_cmd, capture_output=True, text=True, timeout=60)
 
-                repo_line = f'deb [signed-by={key_path}] https://pa28.github.io/pa28-pkg ./'
-                sources_file = '/etc/apt/sources.list.d/pa28.list'
+                    if install_repo_result.returncode != 0:
+                        # Try dpkg directly
+                        dpkg_cmd = ['sudo', 'dpkg', '-i', repo_deb_path]
+                        subprocess.run(dpkg_cmd, capture_output=True, timeout=30)
 
-                # Write sources file (requires sudo)
-                echo_cmd = ['sudo', 'tee', sources_file]
-                echo_result = subprocess.run(echo_cmd, input=repo_line.encode(), capture_output=True, timeout=10)
-
-                if echo_result.returncode != 0:
-                    echo_cmd = ['pkexec', 'tee', sources_file]
-                    echo_result = subprocess.run(echo_cmd, input=repo_line.encode(), capture_output=True, timeout=30)
-                    if echo_result.returncode != 0:
-                        errors.append(f"Failed to add repository: {echo_result.stderr.decode()}")
-                        GLib.idle_add(self._install_complete, False, "; ".join(errors), button)
-                        return
-
-                # Step 3: Update apt
+                # Step 2: Update apt
                 GLib.idle_add(self.main_window.set_status_message, "Updating package lists...")
-
                 update_cmd = ['sudo', 'apt', 'update']
-                update_result = subprocess.run(update_cmd, capture_output=True, timeout=120)
+                subprocess.run(update_cmd, capture_output=True, timeout=120)
 
-                if update_result.returncode != 0:
-                    update_cmd = ['pkexec', 'apt', 'update']
-                    update_result = subprocess.run(update_cmd, capture_output=True, timeout=120)
-
-                # Step 4: Install hamclock-web
+                # Step 3: Install hamclock-web
                 GLib.idle_add(self.main_window.set_status_message, "Installing hamclock-web package...")
-
                 install_cmd = ['sudo', 'apt', 'install', '-y', 'hamclock-web']
                 install_result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=300)
 
                 if install_result.returncode != 0:
-                    install_cmd = ['pkexec', 'apt', 'install', '-y', 'hamclock-web']
+                    # hamclock-web might not be available, try hamclock instead
+                    logger.warning("[HamClock] hamclock-web not found, trying hamclock package")
+                    install_cmd = ['sudo', 'apt', 'install', '-y', 'hamclock']
                     install_result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=300)
+
                     if install_result.returncode != 0:
-                        errors.append(f"Failed to install: {install_result.stderr}")
+                        errors.append(f"Failed to install hamclock: {install_result.stderr[:200]}")
                         GLib.idle_add(self._install_complete, False, "; ".join(errors), button)
                         return
 
-                # Step 5: Enable and start service
+                # Step 4: Enable and start service
                 GLib.idle_add(self.main_window.set_status_message, "Enabling hamclock service...")
 
-                enable_cmd = ['sudo', 'systemctl', 'enable', '--now', 'hamclock']
-                enable_result = subprocess.run(enable_cmd, capture_output=True, text=True, timeout=30)
+                # Try hamclock-web service first, then hamclock
+                for service_name in ['hamclock-web', 'hamclock']:
+                    enable_cmd = ['sudo', 'systemctl', 'enable', '--now', service_name]
+                    enable_result = subprocess.run(enable_cmd, capture_output=True, text=True, timeout=30)
+                    if enable_result.returncode == 0:
+                        logger.info(f"[HamClock] Enabled service: {service_name}")
+                        break
 
-                if enable_result.returncode != 0:
-                    enable_cmd = ['pkexec', 'systemctl', 'enable', '--now', 'hamclock']
-                    subprocess.run(enable_cmd, capture_output=True, timeout=60)
-
-                GLib.idle_add(self._install_complete, True, "hamclock-web installed successfully!", button)
+                GLib.idle_add(self._install_complete, True, "HamClock installed successfully!", button)
 
             except subprocess.TimeoutExpired:
                 errors.append("Installation timed out")

@@ -561,7 +561,14 @@ class MapPanel(Gtk.Box):
 
         # Update node list if in fallback mode
         if hasattr(self, 'node_list'):
-            self._update_node_list_raw(nodes)
+            # Get RNS nodes too
+            rns_nodes_for_list = []
+            if self.node_tracker:
+                try:
+                    rns_nodes_for_list = self.node_tracker.get_rns_nodes()
+                except Exception:
+                    pass
+            self._update_node_list_raw(nodes, rns_nodes_for_list)
 
         # Update status with error or success
         if error_msg:
@@ -598,7 +605,7 @@ class MapPanel(Gtk.Box):
             empty_label.set_margin_bottom(20)
             self.node_list.append(empty_label)
 
-    def _update_node_list_raw(self, nodes):
+    def _update_node_list_raw(self, nodes, rns_nodes=None):
         """Update the fallback node list with raw NodeInfo objects from NodeMonitor"""
         from datetime import datetime
 
@@ -609,17 +616,82 @@ class MapPanel(Gtk.Box):
                 break
             self.node_list.remove(child)
 
-        # Add nodes
+        total_count = len(nodes) + (len(rns_nodes) if rns_nodes else 0)
+
+        # Add Meshtastic nodes
         for node in nodes:
             row = self._create_node_row_raw(node)
             self.node_list.append(row)
 
-        if not nodes:
+        # Add RNS nodes
+        if rns_nodes:
+            for rns_node in rns_nodes:
+                row = self._create_rns_node_row(rns_node)
+                self.node_list.append(row)
+
+        if total_count == 0:
             empty_label = Gtk.Label(label="No nodes found - is meshtasticd running?")
             empty_label.add_css_class("dim-label")
             empty_label.set_margin_top(20)
             empty_label.set_margin_bottom(20)
             self.node_list.append(empty_label)
+
+    def _create_rns_node_row(self, node):
+        """Create a list row for an RNS node"""
+        from datetime import datetime
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=15)
+        box.set_margin_start(10)
+        box.set_margin_end(10)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+
+        # Check if online
+        is_online = node.is_online if hasattr(node, 'is_online') else False
+        age_str = node.get_age_string() if hasattr(node, 'get_age_string') else "Unknown"
+
+        # Status indicator
+        status_icon = Gtk.Label()
+        if is_online:
+            status_icon.set_label("\u25CF")  # Filled circle
+            status_icon.add_css_class("success")
+        else:
+            status_icon.set_label("\u25CB")  # Empty circle
+            status_icon.add_css_class("warning")
+        box.append(status_icon)
+
+        # Node info
+        info_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        info_box.set_hexpand(True)
+
+        # Name
+        name = node.name or node.short_name or "Unknown"
+        name_label = Gtk.Label(label=name)
+        name_label.set_xalign(0)
+        name_label.add_css_class("heading")
+        info_box.append(name_label)
+
+        # Hash (short form)
+        hash_str = node.rns_hash.hex()[:12] if node.rns_hash else "?"
+        hash_label = Gtk.Label(label=f"<{hash_str}>")
+        hash_label.set_xalign(0)
+        hash_label.add_css_class("dim-label")
+        hash_label.add_css_class("monospace")
+        info_box.append(hash_label)
+
+        box.append(info_box)
+
+        # Network badge - RNS
+        network_label = Gtk.Label(label="RNS")
+        network_label.add_css_class("accent")
+        box.append(network_label)
+
+        # Age
+        age_label = Gtk.Label(label=age_str)
+        age_label.add_css_class("dim-label")
+        box.append(age_label)
+
+        return box
 
     def _create_node_row_raw(self, node):
         """Create a list row for a raw NodeInfo from NodeMonitor"""

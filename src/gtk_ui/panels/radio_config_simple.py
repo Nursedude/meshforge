@@ -14,7 +14,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Modem presets - enum value to display name
+# Modem presets - enum value to display name (from meshtastic/config.proto)
 PRESETS = {
     0: "LONG_FAST",
     1: "LONG_SLOW",
@@ -25,6 +25,7 @@ PRESETS = {
     6: "SHORT_FAST",
     7: "LONG_MODERATE",
     8: "SHORT_TURBO",
+    9: "LONG_TURBO",  # Added from protobuf
 }
 PRESET_NAMES = list(PRESETS.values())
 
@@ -283,7 +284,11 @@ class RadioConfigSimple(Gtk.Box):
         """Get a meshtastic TCP interface."""
         try:
             from meshtastic.tcp_interface import TCPInterface
-            return TCPInterface(hostname='localhost', noProto=False)
+            import time
+            iface = TCPInterface(hostname='localhost', noProto=False)
+            # Give it a moment to receive config from device
+            time.sleep(0.5)
+            return iface
         except Exception as e:
             logger.error(f"Failed to connect: {e}")
             return None
@@ -291,17 +296,34 @@ class RadioConfigSimple(Gtk.Box):
     def _load_config(self):
         """Load current config from device."""
         def do_load():
+            iface = None
             try:
                 iface = self._get_interface()
                 if not iface:
                     GLib.idle_add(self._update_status, "Failed to connect to meshtasticd")
                     return
 
+                # Wait for config to be received
+                import time
+                max_wait = 3.0  # seconds
+                waited = 0
+                while waited < max_wait:
+                    config = iface.localNode.localConfig
+                    # Check if region is set (indicates config was received)
+                    if hasattr(config.lora, 'region') and str(config.lora.region) != '0':
+                        break
+                    time.sleep(0.2)
+                    waited += 0.2
+
                 config = iface.localNode.localConfig
                 lora = config.lora
                 device = config.device
                 position = config.position
                 power = config.power
+
+                # Debug: log raw values
+                logger.debug(f"[RadioConfig] Raw modem_preset: {lora.modem_preset} type: {type(lora.modem_preset)}")
+                logger.debug(f"[RadioConfig] Raw region: {lora.region}")
 
                 # Get LoRa values
                 preset_val = int(lora.modem_preset) if hasattr(lora, 'modem_preset') else 0
@@ -341,7 +363,11 @@ class RadioConfigSimple(Gtk.Box):
                 info += f"=== Power ===\n"
                 info += f"Power Saving: {'Yes' if power_saving else 'No'}"
 
-                iface.close()
+                # Check if config was actually received
+                config_warning = ""
+                if region_val == '0' or region_val == 'UNSET':
+                    config_warning = " (config may be stale - try again)"
+                    logger.warning("[RadioConfig] Config may not have been fully received (region=0)")
 
                 # Update UI
                 config_data = {
@@ -351,11 +377,17 @@ class RadioConfigSimple(Gtk.Box):
                     'fixed': fixed_pos, 'power_saving': power_saving, 'info': info
                 }
                 GLib.idle_add(self._update_ui, config_data)
-                GLib.idle_add(self._update_status, "Connected")
+                GLib.idle_add(self._update_status, f"Connected{config_warning}")
 
             except Exception as e:
                 logger.error(f"Load config error: {e}")
                 GLib.idle_add(self._update_status, f"Error: {e}")
+            finally:
+                if iface:
+                    try:
+                        iface.close()
+                    except Exception:
+                        pass
 
         threading.Thread(target=do_load, daemon=True).start()
         return False  # Don't repeat
