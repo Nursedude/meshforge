@@ -1947,31 +1947,116 @@ class ToolsPanel(Gtk.Box):
 
         return inode_map
 
+    def _parse_proc_net_v6(self, protocol: str) -> list:
+        """Parse /proc/net/udp6 or /proc/net/tcp6 for IPv6 sockets"""
+        results = []
+        proc_file = f"/proc/net/{protocol}"
+
+        try:
+            with open(proc_file, 'r') as f:
+                lines = f.readlines()[1:]  # Skip header
+
+            for line in lines:
+                parts = line.split()
+                if len(parts) >= 10:
+                    local_addr = parts[1]
+                    state = parts[3]
+                    inode = parts[9]
+
+                    # Parse hex address (IPv6:PORT)
+                    addr_parts = local_addr.split(':')
+                    hex_ip = addr_parts[0]
+                    hex_port = addr_parts[1]
+
+                    try:
+                        port = int(hex_port, 16)
+
+                        # Convert hex IPv6 to readable format
+                        # IPv6 is stored as 32 hex chars
+                        if len(hex_ip) == 32:
+                            # Split into 8 groups of 4 hex chars
+                            groups = []
+                            for i in range(0, 32, 8):
+                                # Each 8-char segment is little-endian 32-bit
+                                segment = hex_ip[i:i+8]
+                                # Reverse byte order within each 32-bit word
+                                reversed_seg = segment[6:8] + segment[4:6] + segment[2:4] + segment[0:2]
+                                groups.append(reversed_seg[0:4])
+                                groups.append(reversed_seg[4:8])
+                            ip_str = ':'.join(groups)
+                            # Simplify :: notation
+                            ip_str = ip_str.lower()
+                        else:
+                            ip_str = hex_ip
+
+                        state_names = {
+                            '01': 'ESTABLISHED', '02': 'SYN_SENT', '03': 'SYN_RECV',
+                            '04': 'FIN_WAIT1', '05': 'FIN_WAIT2', '06': 'TIME_WAIT',
+                            '07': 'CLOSE', '08': 'CLOSE_WAIT', '09': 'LAST_ACK',
+                            '0A': 'LISTEN', '0B': 'CLOSING',
+                        }
+                        state_str = state_names.get(state.upper(), state)
+
+                        results.append({
+                            'ip': ip_str,
+                            'port': port,
+                            'state': state_str,
+                            'inode': inode
+                        })
+                    except (ValueError, IndexError):
+                        continue
+
+        except FileNotFoundError:
+            pass
+        except PermissionError:
+            pass
+
+        return results
+
     def _on_show_udp_listeners(self, button):
         """Show UDP port listeners"""
-        self._log("\n=== UDP Listeners (/proc/net/udp) ===")
+        self._log("\n=== UDP Listeners ===")
         threading.Thread(target=self._fetch_udp_listeners, daemon=True).start()
 
     def _fetch_udp_listeners(self):
-        """Fetch UDP listeners in background"""
-        entries = self._parse_proc_net('udp')
+        """Fetch UDP listeners in background (IPv4 and IPv6)"""
+        entries_v4 = self._parse_proc_net('udp')
+        entries_v6 = self._parse_proc_net_v6('udp6')
         inode_map = self._get_inode_to_process()
 
-        if not entries:
-            GLib.idle_add(self._log, "No UDP listeners found")
-            return
+        # IPv4
+        GLib.idle_add(self._log, "\n-- IPv4 (/proc/net/udp) --")
+        v4_count = 0
+        if entries_v4:
+            GLib.idle_add(self._log, f"{'IP Address':>15} : {'Port':>5}  Process")
+            GLib.idle_add(self._log, "-" * 50)
+            for entry in entries_v4:
+                if entry['port'] == 0:
+                    continue
+                v4_count += 1
+                proc = inode_map.get(entry['inode'], 'unknown')
+                line = f"{entry['ip']:>15} : {entry['port']:>5}  {proc}"
+                GLib.idle_add(self._log, line)
+        if v4_count == 0:
+            GLib.idle_add(self._log, "  No IPv4 UDP listeners")
 
-        GLib.idle_add(self._log, f"{'IP Address':>15} : {'Port':>5}  Process")
-        GLib.idle_add(self._log, "-" * 50)
+        # IPv6
+        GLib.idle_add(self._log, "\n-- IPv6 (/proc/net/udp6) --")
+        v6_count = 0
+        if entries_v6:
+            for entry in entries_v6:
+                if entry['port'] == 0:
+                    continue
+                v6_count += 1
+                proc = inode_map.get(entry['inode'], 'unknown')
+                # Truncate long IPv6 addresses for display
+                ip_short = entry['ip'][:32] + "..." if len(entry['ip']) > 35 else entry['ip']
+                line = f"  [{ip_short}]:{entry['port']} - {proc}"
+                GLib.idle_add(self._log, line)
+        if v6_count == 0:
+            GLib.idle_add(self._log, "  No IPv6 UDP listeners")
 
-        for entry in entries:
-            if entry['port'] == 0:
-                continue  # Skip port 0
-            proc = inode_map.get(entry['inode'], 'unknown')
-            line = f"{entry['ip']:>15} : {entry['port']:>5}  {proc}"
-            GLib.idle_add(self._log, line)
-
-        GLib.idle_add(self._log, f"\nTotal: {len([e for e in entries if e['port'] != 0])} UDP sockets")
+        GLib.idle_add(self._log, f"\nTotal: {v4_count} IPv4 + {v6_count} IPv6 = {v4_count + v6_count} UDP sockets")
 
     def _on_show_tcp_listeners(self, button):
         """Show TCP port listeners"""
@@ -2123,19 +2208,47 @@ class ToolsPanel(Gtk.Box):
 
         GLib.idle_add(self._log, f"Checking RNS AutoInterface port: {rns_port}")
 
-        # Check /proc/net/udp for the port
-        entries = self._parse_proc_net('udp')
+        # Check /proc/net/udp for the port (IPv4)
+        entries_v4 = self._parse_proc_net('udp')
+        entries_v6 = self._parse_proc_net_v6('udp6')
         inode_map = self._get_inode_to_process()
 
-        found = False
-        for entry in entries:
-            if entry['port'] == rns_port:
-                found = True
-                proc = inode_map.get(entry['inode'], 'unknown')
-                GLib.idle_add(self._log, f"  ✗ Port {rns_port} IN USE by: {proc}")
+        found_v4 = False
+        found_v6 = False
 
-        if not found:
-            GLib.idle_add(self._log, f"  ✓ Port {rns_port} is FREE")
+        # Check IPv4
+        for entry in entries_v4:
+            if entry['port'] == rns_port:
+                found_v4 = True
+                proc = inode_map.get(entry['inode'], 'unknown')
+                GLib.idle_add(self._log, f"  ✗ IPv4 Port {rns_port} IN USE by: {proc}")
+
+        # Check IPv6 (RNS AutoInterface often uses IPv6 multicast!)
+        for entry in entries_v6:
+            if entry['port'] == rns_port:
+                found_v6 = True
+                proc = inode_map.get(entry['inode'], 'unknown')
+                ip_short = entry['ip'][:24] + "..." if len(entry['ip']) > 27 else entry['ip']
+                GLib.idle_add(self._log, f"  ✗ IPv6 Port {rns_port} IN USE: [{ip_short}]")
+                GLib.idle_add(self._log, f"    Process: {proc}")
+
+        if not found_v4 and not found_v6:
+            GLib.idle_add(self._log, f"  ✓ Port {rns_port} is FREE (IPv4 and IPv6)")
+        elif found_v6 and not found_v4:
+            GLib.idle_add(self._log, f"  ! IPv6 multicast bound - this is the RNS AutoInterface")
+
+        # Quick check with ss for more detail
+        try:
+            result = subprocess.run(
+                ['ss', '-ulnp'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if '29716' in line:
+                        GLib.idle_add(self._log, f"\nss output: {line[:90]}")
+        except Exception:
+            pass
 
         # Also check if rnsd is running
         GLib.idle_add(self._log, "\nRNS Processes:")
