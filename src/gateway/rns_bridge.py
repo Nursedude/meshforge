@@ -435,8 +435,12 @@ class RNSMeshtasticBridge:
                         raise
                 except Exception as e:
                     if "reinitialise" in str(e).lower() or "already running" in str(e).lower():
-                        logger.info("RNS already running, using shared instance")
+                        logger.info("RNS already running in this process, using shared instance")
                         self._reticulum = None
+                        # Don't retry - RNS singleton is already active
+                        self._rns_init_failed_permanently = True
+                        self._connected_rns = True  # Mark as connected since RNS is available
+                        return  # Skip LXMF setup - the existing RNS instance handles it
                     else:
                         raise
 
