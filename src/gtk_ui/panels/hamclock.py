@@ -798,30 +798,40 @@ class HamClockPanel(Gtk.Box):
                     return
 
                 # Step 1: Download GPG key
-                GLib.idle_add(self.main_window.set_status_message, "Adding pa28 repository key...")
+                GLib.idle_add(self.main_window.set_status_message, "Downloading pa28 repository key...")
 
                 # Create keyrings directory if needed
                 keyring_dir = '/usr/share/keyrings'
                 key_path = f'{keyring_dir}/pa28-archive-keyring.gpg'
 
-                # Download key using wget
+                # Download key - try wget first, then curl
                 key_url = 'https://pa28.github.io/pa28-pkg/pa28-pkg.gpg.key'
-                wget_cmd = ['wget', '-qO-', key_url]
+                key_data = None
 
-                wget_result = subprocess.run(wget_cmd, capture_output=True, timeout=30)
-                if wget_result.returncode != 0:
-                    errors.append(f"Failed to download GPG key: {wget_result.stderr.decode()}")
+                # Try wget
+                wget_result = subprocess.run(['wget', '-qO-', key_url], capture_output=True, timeout=30)
+                if wget_result.returncode == 0 and wget_result.stdout:
+                    key_data = wget_result.stdout
+                else:
+                    # Try curl as fallback
+                    curl_result = subprocess.run(['curl', '-sL', key_url], capture_output=True, timeout=30)
+                    if curl_result.returncode == 0 and curl_result.stdout:
+                        key_data = curl_result.stdout
+
+                if not key_data:
+                    errors.append("Failed to download GPG key - check internet connection")
                     GLib.idle_add(self._install_complete, False, "; ".join(errors), button)
                     return
 
                 # Convert key to GPG format and save (requires sudo)
+                GLib.idle_add(self.main_window.set_status_message, "Installing repository key...")
                 gpg_cmd = ['sudo', 'gpg', '--dearmor', '-o', key_path]
-                gpg_result = subprocess.run(gpg_cmd, input=wget_result.stdout, capture_output=True, timeout=30)
+                gpg_result = subprocess.run(gpg_cmd, input=key_data, capture_output=True, timeout=30)
 
                 if gpg_result.returncode != 0:
                     # Try with pkexec for graphical sudo
                     gpg_cmd = ['pkexec', 'gpg', '--dearmor', '-o', key_path]
-                    gpg_result = subprocess.run(gpg_cmd, input=wget_result.stdout, capture_output=True, timeout=60)
+                    gpg_result = subprocess.run(gpg_cmd, input=key_data, capture_output=True, timeout=60)
                     if gpg_result.returncode != 0:
                         errors.append(f"Failed to install GPG key: {gpg_result.stderr.decode()}")
                         GLib.idle_add(self._install_complete, False, "; ".join(errors), button)

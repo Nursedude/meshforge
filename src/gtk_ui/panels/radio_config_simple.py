@@ -1,8 +1,8 @@
 """
-Minimal Radio Configuration Panel
+Radio Configuration Panel
 
-Direct library access - no CLI parsing, no fallbacks, just works.
-~200 lines instead of 1700.
+Comprehensive radio configuration with direct library access.
+Organized into sections: LoRa, Device, Position, Power.
 """
 
 import gi
@@ -28,6 +28,12 @@ PRESETS = {
 }
 PRESET_NAMES = list(PRESETS.values())
 
+# LoRa regions
+REGIONS = [
+    "UNSET", "US", "EU_433", "EU_868", "CN", "JP", "ANZ", "KR", "TW", "RU",
+    "IN", "NZ_865", "TH", "LORA_24", "UA_433", "UA_868", "MY_433", "MY_919", "SG_923"
+]
+
 # Device roles
 ROLES = {
     0: "CLIENT",
@@ -43,6 +49,9 @@ ROLES = {
     10: "LOST_AND_FOUND",
 }
 ROLE_NAMES = list(ROLES.values())
+
+# Rebroadcast modes
+REBROADCAST_MODES = ["ALL", "ALL_SKIP_DECODING", "LOCAL_ONLY", "KNOWN_ONLY"]
 
 
 class RadioConfigSimple(Gtk.Box):
@@ -61,84 +70,182 @@ class RadioConfigSimple(Gtk.Box):
         GLib.timeout_add(500, self._load_config)
 
     def _build_ui(self):
-        """Build the UI."""
-        # Title
+        """Build the UI with organized sections."""
+        # Scrollable container
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_vexpand(True)
+
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=15)
+        main_box.set_margin_start(10)
+        main_box.set_margin_end(10)
+        main_box.set_margin_top(10)
+        main_box.set_margin_bottom(10)
+
+        # Title and status row
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         title = Gtk.Label(label="Radio Configuration")
         title.add_css_class("title-1")
         title.set_xalign(0)
-        self.append(title)
+        title.set_hexpand(True)
+        header.append(title)
+
+        refresh_btn = Gtk.Button(label="Refresh")
+        refresh_btn.connect("clicked", lambda b: self._load_config())
+        header.append(refresh_btn)
+        main_box.append(header)
 
         # Status
         self.status_label = Gtk.Label(label="Loading...")
         self.status_label.set_xalign(0)
         self.status_label.add_css_class("dim-label")
-        self.append(self.status_label)
+        main_box.append(self.status_label)
 
-        # Main content in a frame
-        frame = Gtk.Frame()
-        frame.set_label("Device Settings")
-        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        content.set_margin_start(15)
-        content.set_margin_end(15)
-        content.set_margin_top(10)
-        content.set_margin_bottom(10)
+        # === LORA SETTINGS ===
+        lora_frame = Gtk.Frame()
+        lora_frame.set_label("LoRa Settings")
+        lora_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        lora_box.set_margin_start(12)
+        lora_box.set_margin_end(12)
+        lora_box.set_margin_top(8)
+        lora_box.set_margin_bottom(8)
+
+        # Region (display only - dangerous to change)
+        region_row = self._make_row("Region:", None)
+        self.region_label = Gtk.Label(label="...")
+        self.region_label.set_hexpand(True)
+        self.region_label.set_xalign(0)
+        region_row.append(self.region_label)
+        lora_box.append(region_row)
 
         # Modem Preset
-        preset_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        preset_row.append(Gtk.Label(label="Modem Preset:"))
+        preset_row = self._make_row("Modem Preset:", None)
         self.preset_dropdown = Gtk.DropDown.new_from_strings(PRESET_NAMES)
         self.preset_dropdown.set_hexpand(True)
         preset_row.append(self.preset_dropdown)
-        preset_apply = Gtk.Button(label="Apply")
-        preset_apply.connect("clicked", self._apply_preset)
-        preset_row.append(preset_apply)
-        content.append(preset_row)
-
-        # Device Role
-        role_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        role_row.append(Gtk.Label(label="Device Role:"))
-        self.role_dropdown = Gtk.DropDown.new_from_strings(ROLE_NAMES)
-        self.role_dropdown.set_hexpand(True)
-        role_row.append(self.role_dropdown)
-        role_apply = Gtk.Button(label="Apply")
-        role_apply.connect("clicked", self._apply_role)
-        role_row.append(role_apply)
-        content.append(role_row)
+        preset_row.append(self._make_apply_btn(self._apply_preset))
+        lora_box.append(preset_row)
 
         # Hop Limit
-        hop_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        hop_row.append(Gtk.Label(label="Hop Limit:"))
+        hop_row = self._make_row("Hop Limit:", None)
         self.hop_spin = Gtk.SpinButton.new_with_range(1, 7, 1)
         self.hop_spin.set_value(3)
         hop_row.append(self.hop_spin)
-        hop_apply = Gtk.Button(label="Apply")
-        hop_apply.connect("clicked", self._apply_hop_limit)
-        hop_row.append(hop_apply)
-        content.append(hop_row)
+        hop_row.append(self._make_apply_btn(self._apply_hop_limit))
+        lora_box.append(hop_row)
 
         # TX Power
-        tx_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        tx_row.append(Gtk.Label(label="TX Power (dBm):"))
+        tx_row = self._make_row("TX Power (dBm):", None)
         self.tx_spin = Gtk.SpinButton.new_with_range(1, 30, 1)
         self.tx_spin.set_value(20)
         tx_row.append(self.tx_spin)
-        tx_apply = Gtk.Button(label="Apply")
-        tx_apply.connect("clicked", self._apply_tx_power)
-        tx_row.append(tx_apply)
-        content.append(tx_row)
+        tx_row.append(self._make_apply_btn(self._apply_tx_power))
+        lora_box.append(tx_row)
 
-        frame.set_child(content)
-        self.append(frame)
+        lora_frame.set_child(lora_box)
+        main_box.append(lora_frame)
 
-        # Refresh button
-        refresh_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        refresh_box.set_halign(Gtk.Align.CENTER)
-        refresh_btn = Gtk.Button(label="Refresh")
-        refresh_btn.connect("clicked", lambda b: self._load_config())
-        refresh_box.append(refresh_btn)
-        self.append(refresh_box)
+        # === DEVICE SETTINGS ===
+        device_frame = Gtk.Frame()
+        device_frame.set_label("Device Settings")
+        device_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        device_box.set_margin_start(12)
+        device_box.set_margin_end(12)
+        device_box.set_margin_top(8)
+        device_box.set_margin_bottom(8)
 
-        # Info display
+        # Device Role
+        role_row = self._make_row("Device Role:", None)
+        self.role_dropdown = Gtk.DropDown.new_from_strings(ROLE_NAMES)
+        self.role_dropdown.set_hexpand(True)
+        role_row.append(self.role_dropdown)
+        role_row.append(self._make_apply_btn(self._apply_role))
+        device_box.append(role_row)
+
+        # Rebroadcast Mode
+        rebroadcast_row = self._make_row("Rebroadcast:", None)
+        self.rebroadcast_dropdown = Gtk.DropDown.new_from_strings(REBROADCAST_MODES)
+        self.rebroadcast_dropdown.set_hexpand(True)
+        rebroadcast_row.append(self.rebroadcast_dropdown)
+        rebroadcast_row.append(self._make_apply_btn(self._apply_rebroadcast))
+        device_box.append(rebroadcast_row)
+
+        # Node Info Broadcast Interval
+        nodeinfo_row = self._make_row("Node Info (sec):", None)
+        self.nodeinfo_spin = Gtk.SpinButton.new_with_range(0, 86400, 60)
+        self.nodeinfo_spin.set_value(900)
+        nodeinfo_row.append(self.nodeinfo_spin)
+        nodeinfo_row.append(self._make_apply_btn(self._apply_nodeinfo))
+        device_box.append(nodeinfo_row)
+
+        device_frame.set_child(device_box)
+        main_box.append(device_frame)
+
+        # === POSITION SETTINGS ===
+        pos_frame = Gtk.Frame()
+        pos_frame.set_label("Position Settings")
+        pos_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        pos_box.set_margin_start(12)
+        pos_box.set_margin_end(12)
+        pos_box.set_margin_top(8)
+        pos_box.set_margin_bottom(8)
+
+        # GPS Enabled
+        gps_row = self._make_row("GPS Enabled:", None)
+        self.gps_switch = Gtk.Switch()
+        self.gps_switch.set_halign(Gtk.Align.START)
+        gps_row.append(self.gps_switch)
+        gps_row.append(self._make_apply_btn(self._apply_gps))
+        pos_box.append(gps_row)
+
+        # Position Broadcast Interval
+        posint_row = self._make_row("Broadcast (sec):", None)
+        self.posint_spin = Gtk.SpinButton.new_with_range(0, 86400, 60)
+        self.posint_spin.set_value(900)
+        posint_row.append(self.posint_spin)
+        posint_row.append(self._make_apply_btn(self._apply_pos_interval))
+        pos_box.append(posint_row)
+
+        # Smart Position
+        smart_row = self._make_row("Smart Broadcast:", None)
+        self.smart_switch = Gtk.Switch()
+        self.smart_switch.set_halign(Gtk.Align.START)
+        smart_row.append(self.smart_switch)
+        smart_row.append(self._make_apply_btn(self._apply_smart_pos))
+        pos_box.append(smart_row)
+
+        # Fixed Position
+        fixed_row = self._make_row("Fixed Position:", None)
+        self.fixed_switch = Gtk.Switch()
+        self.fixed_switch.set_halign(Gtk.Align.START)
+        fixed_row.append(self.fixed_switch)
+        fixed_row.append(self._make_apply_btn(self._apply_fixed_pos))
+        pos_box.append(fixed_row)
+
+        pos_frame.set_child(pos_box)
+        main_box.append(pos_frame)
+
+        # === POWER SETTINGS ===
+        power_frame = Gtk.Frame()
+        power_frame.set_label("Power Settings")
+        power_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        power_box.set_margin_start(12)
+        power_box.set_margin_end(12)
+        power_box.set_margin_top(8)
+        power_box.set_margin_bottom(8)
+
+        # Power Saving Mode
+        powersave_row = self._make_row("Power Saving:", None)
+        self.powersave_switch = Gtk.Switch()
+        self.powersave_switch.set_halign(Gtk.Align.START)
+        powersave_row.append(self.powersave_switch)
+        powersave_row.append(self._make_apply_btn(self._apply_powersave))
+        power_box.append(powersave_row)
+
+        power_frame.set_child(power_box)
+        main_box.append(power_frame)
+
+        # === INFO DISPLAY ===
         info_frame = Gtk.Frame()
         info_frame.set_label("Current Config (Read-Only)")
         self.info_label = Gtk.Label(label="Loading...")
@@ -150,7 +257,27 @@ class RadioConfigSimple(Gtk.Box):
         self.info_label.set_margin_top(10)
         self.info_label.set_margin_bottom(10)
         info_frame.set_child(self.info_label)
-        self.append(info_frame)
+        main_box.append(info_frame)
+
+        scroll.set_child(main_box)
+        self.append(scroll)
+
+    def _make_row(self, label_text, widget):
+        """Create a settings row with label."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        label = Gtk.Label(label=label_text)
+        label.set_width_chars(16)
+        label.set_xalign(0)
+        row.append(label)
+        if widget:
+            row.append(widget)
+        return row
+
+    def _make_apply_btn(self, callback):
+        """Create an apply button."""
+        btn = Gtk.Button(label="Apply")
+        btn.connect("clicked", callback)
+        return btn
 
     def _get_interface(self):
         """Get a meshtastic TCP interface."""
@@ -173,24 +300,57 @@ class RadioConfigSimple(Gtk.Box):
                 config = iface.localNode.localConfig
                 lora = config.lora
                 device = config.device
+                position = config.position
+                power = config.power
 
-                # Get values
+                # Get LoRa values
                 preset_val = int(lora.modem_preset) if hasattr(lora, 'modem_preset') else 0
-                role_val = int(device.role) if hasattr(device, 'role') else 0
                 hop_val = int(lora.hop_limit) if hasattr(lora, 'hop_limit') else 3
                 tx_val = int(lora.tx_power) if hasattr(lora, 'tx_power') else 20
+                region_val = str(lora.region) if hasattr(lora, 'region') else 'Unknown'
+
+                # Get device values
+                role_val = int(device.role) if hasattr(device, 'role') else 0
+                rebroadcast_val = int(device.rebroadcast_mode) if hasattr(device, 'rebroadcast_mode') else 0
+                nodeinfo_val = int(device.node_info_broadcast_secs) if hasattr(device, 'node_info_broadcast_secs') else 900
+
+                # Get position values
+                gps_enabled = bool(position.gps_enabled) if hasattr(position, 'gps_enabled') else True
+                pos_broadcast = int(position.position_broadcast_secs) if hasattr(position, 'position_broadcast_secs') else 900
+                smart_pos = bool(position.position_broadcast_smart_enabled) if hasattr(position, 'position_broadcast_smart_enabled') else True
+                fixed_pos = bool(position.fixed_position) if hasattr(position, 'fixed_position') else False
+
+                # Get power values
+                power_saving = bool(power.is_power_saving) if hasattr(power, 'is_power_saving') else False
 
                 # Build info text
-                info = f"Preset: {PRESETS.get(preset_val, preset_val)} ({preset_val})\n"
-                info += f"Role: {ROLES.get(role_val, role_val)} ({role_val})\n"
+                info = f"=== LoRa ===\n"
+                info += f"Region: {region_val}\n"
+                info += f"Preset: {PRESETS.get(preset_val, preset_val)} ({preset_val})\n"
                 info += f"Hop Limit: {hop_val}\n"
-                info += f"TX Power: {tx_val} dBm\n"
-                info += f"Region: {lora.region if hasattr(lora, 'region') else 'Unknown'}"
+                info += f"TX Power: {tx_val} dBm\n\n"
+                info += f"=== Device ===\n"
+                info += f"Role: {ROLES.get(role_val, role_val)} ({role_val})\n"
+                info += f"Rebroadcast: {REBROADCAST_MODES[rebroadcast_val] if rebroadcast_val < len(REBROADCAST_MODES) else rebroadcast_val}\n"
+                info += f"Node Info: {nodeinfo_val}s\n\n"
+                info += f"=== Position ===\n"
+                info += f"GPS: {'Enabled' if gps_enabled else 'Disabled'}\n"
+                info += f"Broadcast: {pos_broadcast}s\n"
+                info += f"Smart: {'Yes' if smart_pos else 'No'}\n"
+                info += f"Fixed: {'Yes' if fixed_pos else 'No'}\n\n"
+                info += f"=== Power ===\n"
+                info += f"Power Saving: {'Yes' if power_saving else 'No'}"
 
                 iface.close()
 
                 # Update UI
-                GLib.idle_add(self._update_ui, preset_val, role_val, hop_val, tx_val, info)
+                config_data = {
+                    'preset': preset_val, 'hop': hop_val, 'tx': tx_val, 'region': region_val,
+                    'role': role_val, 'rebroadcast': rebroadcast_val, 'nodeinfo': nodeinfo_val,
+                    'gps': gps_enabled, 'pos_broadcast': pos_broadcast, 'smart': smart_pos,
+                    'fixed': fixed_pos, 'power_saving': power_saving, 'info': info
+                }
+                GLib.idle_add(self._update_ui, config_data)
                 GLib.idle_add(self._update_status, "Connected")
 
             except Exception as e:
@@ -200,13 +360,30 @@ class RadioConfigSimple(Gtk.Box):
         threading.Thread(target=do_load, daemon=True).start()
         return False  # Don't repeat
 
-    def _update_ui(self, preset, role, hop, tx, info):
+    def _update_ui(self, data):
         """Update UI with loaded values."""
-        self.preset_dropdown.set_selected(preset)
-        self.role_dropdown.set_selected(role)
-        self.hop_spin.set_value(hop)
-        self.tx_spin.set_value(tx)
-        self.info_label.set_label(info)
+        # LoRa
+        self.region_label.set_label(data.get('region', '...'))
+        self.preset_dropdown.set_selected(data.get('preset', 0))
+        self.hop_spin.set_value(data.get('hop', 3))
+        self.tx_spin.set_value(data.get('tx', 20))
+
+        # Device
+        self.role_dropdown.set_selected(data.get('role', 0))
+        self.rebroadcast_dropdown.set_selected(data.get('rebroadcast', 0))
+        self.nodeinfo_spin.set_value(data.get('nodeinfo', 900))
+
+        # Position
+        self.gps_switch.set_active(data.get('gps', True))
+        self.posint_spin.set_value(data.get('pos_broadcast', 900))
+        self.smart_switch.set_active(data.get('smart', True))
+        self.fixed_switch.set_active(data.get('fixed', False))
+
+        # Power
+        self.powersave_switch.set_active(data.get('power_saving', False))
+
+        # Info
+        self.info_label.set_label(data.get('info', ''))
 
     def _update_status(self, msg):
         """Update status label."""
@@ -233,6 +410,42 @@ class RadioConfigSimple(Gtk.Box):
         """Apply TX power."""
         tx = int(self.tx_spin.get_value())
         self._apply_setting("lora.tx_power", str(tx), f"TX Power: {tx}")
+
+    def _apply_rebroadcast(self, button):
+        """Apply rebroadcast mode."""
+        idx = self.rebroadcast_dropdown.get_selected()
+        mode = REBROADCAST_MODES[idx]
+        self._apply_setting("device.rebroadcast_mode", mode, f"Rebroadcast: {mode}")
+
+    def _apply_nodeinfo(self, button):
+        """Apply node info broadcast interval."""
+        secs = int(self.nodeinfo_spin.get_value())
+        self._apply_setting("device.node_info_broadcast_secs", str(secs), f"Node Info: {secs}s")
+
+    def _apply_gps(self, button):
+        """Apply GPS enabled setting."""
+        enabled = self.gps_switch.get_active()
+        self._apply_setting("position.gps_enabled", str(enabled).lower(), f"GPS: {'Enabled' if enabled else 'Disabled'}")
+
+    def _apply_pos_interval(self, button):
+        """Apply position broadcast interval."""
+        secs = int(self.posint_spin.get_value())
+        self._apply_setting("position.position_broadcast_secs", str(secs), f"Position Broadcast: {secs}s")
+
+    def _apply_smart_pos(self, button):
+        """Apply smart position broadcast setting."""
+        enabled = self.smart_switch.get_active()
+        self._apply_setting("position.position_broadcast_smart_enabled", str(enabled).lower(), f"Smart Broadcast: {'On' if enabled else 'Off'}")
+
+    def _apply_fixed_pos(self, button):
+        """Apply fixed position setting."""
+        enabled = self.fixed_switch.get_active()
+        self._apply_setting("position.fixed_position", str(enabled).lower(), f"Fixed Position: {'On' if enabled else 'Off'}")
+
+    def _apply_powersave(self, button):
+        """Apply power saving mode."""
+        enabled = self.powersave_switch.get_active()
+        self._apply_setting("power.is_power_saving", str(enabled).lower(), f"Power Saving: {'On' if enabled else 'Off'}")
 
     def _apply_setting(self, setting, value, desc):
         """Apply a setting using meshtastic CLI."""
