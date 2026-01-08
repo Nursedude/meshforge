@@ -107,16 +107,14 @@ class DependencyStatus:
 
     def print_status(self):
         """Print dependency status"""
-        print("\n╔═══════════════════════════════════════════════════════════════╗")
-        print("║           MeshForge Dependency Status                         ║")
-        print("╠═══════════════════════════════════════════════════════════════╣")
+        print("\n============== MeshForge Dependency Status ==============")
 
         for dep, available in self.available.items():
-            status = "✓" if available else "○"
+            status = "[OK]" if available else "[--]"
             msg = self.messages[dep]
-            print(f"║  {status} {dep:<12} {msg:<43}║")
+            print(f"  {status} {dep:<12} {msg}")
 
-        print("╚═══════════════════════════════════════════════════════════════╝\n")
+        print("=========================================================\n")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -459,13 +457,16 @@ class StandaloneTools:
 def print_banner():
     """Print the MeshForge banner"""
     print("""
-╔═══════════════════════════════════════════════════════════════╗
-║  ███╗   ███╗███████╗███████╗██╗  ██╗███████╗ ██████╗ ██████╗ ██████╗ ███████╗  ║
-║  ██╔████╔██║█████╗  ███████╗███████║█████╗  ██║   ██║██████╔╝██║  ███╗█████╗    ║
-║  ██║ ╚═╝ ██║███████╗███████║██║  ██║██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗  ║
-╠═══════════════════════════════════════════════════════════════╣
-║           Standalone Mode - No External Dependencies          ║
-╚═══════════════════════════════════════════════════════════════╝
+=================================================================
+    __  __           _     _____
+   |  \/  | ___  ___| |__ |  ___|__  _ __ __ _  ___
+   | |\/| |/ _ \/ __| '_ \| |_ / _ \| '__/ _` |/ _ \\
+   | |  | |  __/\__ \ | | |  _| (_) | | | (_| |  __/
+   |_|  |_|\___||___/_| |_|_|  \___/|_|  \__, |\___|
+                                         |___/
+-----------------------------------------------------------------
+         Standalone Mode - No External Dependencies
+=================================================================
 """)
     print(f"  Version: {__version__}")
     print(f"  Python:  {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
@@ -477,41 +478,39 @@ def main_menu(deps: DependencyStatus):
     tools = StandaloneTools()
 
     while True:
-        print("╔═══════════════════════════════════════════════════════════════╗")
-        print("║                    STANDALONE TOOLS                            ║")
-        print("╠═══════════════════════════════════════════════════════════════╣")
-        print("║  1. RF Calculator          (Distance, FSPL, Fresnel, Link)    ║")
-        print("║  2. Frequency Calculator   (Channel slot, region settings)    ║")
-        print("║  3. Network Simulator      (Topology planning, link quality)  ║")
-        print("║  4. Device Scanner         (USB, Serial, SPI, I2C devices)    ║")
-        print("╠═══════════════════════════════════════════════════════════════╣")
-        print("║                    FULL INTERFACES                             ║")
-        print("╠═══════════════════════════════════════════════════════════════╣")
+        print("\n================== STANDALONE TOOLS ====================")
+        print("  1. RF Calculator        - Distance, FSPL, Fresnel, Link")
+        print("  2. Frequency Calculator - Channel slot, region settings")
+        print("  3. Network Simulator    - Topology planning, link quality")
+        print("  4. Device Scanner       - USB, Serial, SPI, I2C devices")
+        print("---------------------------------------------------------")
+        print("                   FULL INTERFACES")
+        print("---------------------------------------------------------")
 
         if deps.available['gtk']:
-            print("║  g. GTK4 Desktop UI        ✓ Available                        ║")
+            print("  g. GTK4 Desktop UI      [Available]")
         else:
-            print("║  g. GTK4 Desktop UI        ○ Not installed                    ║")
+            print("  g. GTK4 Desktop UI      [Not installed]")
 
         if deps.available['textual']:
-            print("║  t. Textual TUI            ✓ Available                        ║")
+            print("  t. Textual TUI          [Available]")
         else:
-            print("║  t. Textual TUI            ○ Not installed                    ║")
+            print("  t. Textual TUI          [Not installed]")
 
         if deps.available['flask']:
-            print("║  w. Web Interface          ✓ Available                        ║")
+            print("  w. Web Interface        [Available]")
         else:
-            print("║  w. Web Interface          ○ Not installed                    ║")
+            print("  w. Web Interface        [Not installed]")
 
         if deps.available['rich']:
-            print("║  r. Rich CLI               ✓ Available                        ║")
+            print("  r. Rich CLI             [Available]")
         else:
-            print("║  r. Rich CLI               ○ Not installed                    ║")
+            print("  r. Rich CLI             [Not installed]")
 
-        print("╠═══════════════════════════════════════════════════════════════╣")
-        print("║  d. Check dependencies                                        ║")
-        print("║  q. Quit                                                      ║")
-        print("╚═══════════════════════════════════════════════════════════════╝")
+        print("---------------------------------------------------------")
+        print("  d. Check dependencies")
+        print("  q. Quit")
+        print("=========================================================")
 
         try:
             choice = input("\nSelect option: ").strip().lower()

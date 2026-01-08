@@ -8,11 +8,11 @@
   <strong>Build. Test. Deploy. Bridge. Monitor.</strong>
 </p>
 
-[![Version](https://img.shields.io/badge/version-0.4.4--beta-blue.svg)](https://github.com/Nursedude/meshforge)
+[![Version](https://img.shields.io/badge/version-0.4.5--beta-blue.svg)](https://github.com/Nursedude/meshforge)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-yellow.svg)](https://python.org)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20Linux-orange.svg)](https://www.raspberrypi.org/)
-[![Tests](https://img.shields.io/badge/tests-127%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-195%20passing-brightgreen.svg)](tests/)
 
 **The first open-source tool to bridge Meshtastic and Reticulum (RNS) mesh networks.**
 
