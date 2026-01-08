@@ -341,6 +341,93 @@ class SetupWizard:
             for s in missing:
                 self._print(f"  - {s.display_name}", "dim")
 
+    def detect_conflicts(self) -> List[str]:
+        """Detect potential service conflicts"""
+        conflicts = []
+
+        # Check for multiple RNS instances
+        rns_processes = []
+        for proc_name in ['rnsd', 'nomadnet', 'lxmd']:
+            try:
+                result = subprocess.run(
+                    ['pgrep', '-fa', proc_name],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    lines = result.stdout.strip().split('\n')
+                    for line in lines:
+                        # Filter out our own process and grep
+                        if 'pgrep' not in line and str(os.getpid()) not in line:
+                            rns_processes.append(proc_name)
+                            break
+            except Exception:
+                pass
+
+        if len(rns_processes) > 1:
+            conflicts.append(
+                f"CONFLICT: Multiple RNS instances detected ({', '.join(rns_processes)})\n"
+                "  Only one should run at a time to avoid 'Address already in use' errors.\n"
+                "  Recommendation: Run rnsd as shared daemon, other apps connect to it."
+            )
+
+        # Check for port conflicts
+        port_checks = [
+            (4403, 'meshtasticd TCP'),
+            (5900, 'AutoInterface UDP multicast'),
+        ]
+
+        for port, service in port_checks:
+            try:
+                result = subprocess.run(
+                    ['ss', '-tulnp'],
+                    capture_output=True, text=True, timeout=5
+                )
+                if f':{port}' in result.stdout:
+                    # Count how many times this port appears
+                    count = result.stdout.count(f':{port}')
+                    if count > 1:
+                        conflicts.append(
+                            f"CONFLICT: Port {port} ({service}) has multiple bindings.\n"
+                            "  This may cause connection issues."
+                        )
+            except Exception:
+                pass
+
+        # Check for RNS shared instance config
+        rns_status = self.service_status.get('rnsd')
+        nomad_status = self.service_status.get('nomadnet')
+
+        if (rns_status and rns_status.state == ServiceState.RUNNING and
+            nomad_status and nomad_status.state == ServiceState.RUNNING):
+            # Both running - check if nomadnet is configured to use shared instance
+            config_path = self._get_real_home() / ".reticulum" / "config"
+            if config_path.exists():
+                try:
+                    config_text = config_path.read_text()
+                    if 'share_instance = Yes' not in config_text and 'share_instance = yes' not in config_text:
+                        conflicts.append(
+                            "WARNING: rnsd and NomadNet both running, but shared instance may not be configured.\n"
+                            "  Edit ~/.reticulum/config and ensure 'share_instance = Yes' under [reticulum]"
+                        )
+                except Exception:
+                    pass
+
+        return conflicts
+
+    def show_conflicts(self, conflicts: List[str]):
+        """Display detected conflicts"""
+        if not conflicts:
+            return
+
+        self._print("\n=== ⚠️  Conflicts Detected ===", "warning")
+        for conflict in conflicts:
+            self._print(f"\n{conflict}", "error")
+            self._log(f"CONFLICT: {conflict}")
+
+        self._print("\n" + "-"*50, "dim")
+        if self.interactive:
+            input("Press Enter to continue...")
+
     def run_interactive_setup(self):
         """Run the interactive setup wizard"""
         self._print("\n" + "="*60, "header")
@@ -353,6 +440,10 @@ class SetupWizard:
         # Detect services
         self.detect_services()
         self.show_summary()
+
+        # Check for conflicts
+        conflicts = self.detect_conflicts()
+        self.show_conflicts(conflicts)
 
         # Interactive configuration
         self._print("\n=== Configuration ===", "header")
