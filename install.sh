@@ -171,9 +171,9 @@ if [[ "$INSTALL_METHOD" == "venv" ]]; then
 else
     # Install system-wide with --break-system-packages
     echo "  Installing packages system-wide..."
-    # Always use --break-system-packages when user chose this option
-    pip3 install --break-system-packages --upgrade pip
-    pip3 install --break-system-packages -r requirements.txt
+    # Use --ignore-installed to avoid conflicts with apt-installed packages
+    pip3 install --break-system-packages --ignore-installed --upgrade pip
+    pip3 install --break-system-packages --ignore-installed -r requirements.txt
     # Mark that we're not using venv for the launcher scripts
     touch "$INSTALL_DIR/.no-venv"
     echo -e "${GREEN}  ✓ Python dependencies installed (system)${NC}"
