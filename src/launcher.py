@@ -67,6 +67,61 @@ def save_preferences(prefs):
         pass
 
 
+def check_first_run() -> bool:
+    """Check if this is a first run (no setup marker exists)"""
+    marker = get_real_user_home() / ".meshforge" / ".setup_complete"
+    return not marker.exists()
+
+
+def run_setup_wizard():
+    """Run the interactive setup wizard"""
+    print(f"\n{Colors.CYAN}{'='*60}")
+    print("  MeshForge First-Run Setup")
+    print(f"{'='*60}{Colors.NC}\n")
+
+    print("This appears to be your first time running MeshForge.")
+    print("The setup wizard will detect installed services and guide")
+    print("you through initial configuration.\n")
+
+    try:
+        response = input(f"Run setup wizard now? [Y/n]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        response = 'n'
+
+    if response != 'n':
+        try:
+            from setup_wizard import SetupWizard
+            wizard = SetupWizard(interactive=True)
+            wizard.run_interactive_setup()
+            wizard.mark_setup_complete()
+        except ImportError:
+            # Fallback: try to import from different location
+            try:
+                import importlib.util
+                spec = importlib.util.spec_from_file_location(
+                    "setup_wizard",
+                    Path(__file__).parent / "setup_wizard.py"
+                )
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                wizard = module.SetupWizard(interactive=True)
+                wizard.run_interactive_setup()
+                wizard.mark_setup_complete()
+            except Exception as e:
+                print(f"{Colors.YELLOW}Setup wizard not available: {e}{Colors.NC}")
+                print("Continuing to main launcher...\n")
+                # Mark as complete to avoid asking again
+                marker = get_real_user_home() / ".meshforge" / ".setup_complete"
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text("skipped")
+    else:
+        print(f"\n{Colors.DIM}Skipping setup. Run 'meshforge --setup' anytime.{Colors.NC}\n")
+        # Mark as complete
+        marker = get_real_user_home() / ".meshforge" / ".setup_complete"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("skipped")
+
+
 def print_banner():
     """Print the welcome banner"""
     print(f"""{Colors.CYAN}
@@ -303,6 +358,10 @@ def main():
         print(f"\n{Colors.RED}Error: This application requires root/sudo privileges{Colors.NC}")
         print(f"Please run with: {Colors.CYAN}sudo python3 src/launcher.py{Colors.NC}")
         sys.exit(1)
+
+    # Check for first run - offer setup wizard
+    if '--setup' in sys.argv or check_first_run():
+        run_setup_wizard()
 
     # Load saved preferences
     prefs = load_preferences()
