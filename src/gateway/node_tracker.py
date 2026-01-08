@@ -267,98 +267,69 @@ class UnifiedNodeTracker:
         logger.info("Node tracker started")
 
     def _init_rns_main_thread(self):
-        """Initialize RNS from main thread, then start background listener"""
+        """Initialize RNS from main thread, then start background listener.
+
+        IMPORTANT: MeshForge operates as a CLIENT ONLY - it connects to existing
+        rnsd/NomadNet instances but never creates its own RNS instance that would
+        bind interfaces and conflict with NomadNet or other RNS services.
+        """
         try:
             import RNS
-            logger.info("Initializing RNS for node discovery...")
+            logger.info("Checking for existing RNS service...")
 
             # Check if rnsd is already running
             from utils.gateway_diagnostic import find_rns_processes
             rns_pids = find_rns_processes()
 
-            if rns_pids:
-                # rnsd is running - connect to existing instance instead of conflicting
-                logger.info(f"rnsd detected (PID: {rns_pids[0]}), connecting to existing instance")
-                try:
-                    # RNS.Reticulum will connect to existing rnsd via shared transport
-                    self._reticulum = RNS.Reticulum()
-                    self._rns_connected = True
-                    logger.info("Connected to existing rnsd instance")
-
-                    # Register announce handler to receive node announcements
-                    class NodeAnnounceHandler:
-                        def __init__(self, tracker):
-                            self.tracker = tracker
-                            self.aspect_filter = None
-
-                        def received_announce(self, destination_hash, announced_identity, app_data):
-                            try:
-                                self.tracker._on_rns_announce(destination_hash, announced_identity, app_data)
-                            except Exception as e:
-                                logger.error(f"Error handling RNS announce: {e}")
-
-                    RNS.Transport.register_announce_handler(NodeAnnounceHandler(self))
-                    logger.info("Registered announce handler with rnsd")
-
-                    # Load known destinations from rnsd
-                    self._load_known_rns_destinations(RNS)
-
-                    # Start background loop
-                    self._rns_thread = threading.Thread(target=self._rns_loop, daemon=True)
-                    self._rns_thread.start()
-
-                except Exception as e:
-                    logger.warning(f"Could not connect to rnsd: {e}")
-                    logger.info("RNS nodes may not appear on map - ensure rnsd is running properly")
-                    self._rns_connected = False
+            if not rns_pids:
+                # No rnsd running - DO NOT initialize our own RNS instance
+                # This would bind AutoInterface port and block NomadNet from starting
+                logger.info("No rnsd detected - skipping RNS node discovery")
+                logger.info("To enable RNS features, start rnsd first: sudo systemctl start rnsd")
+                logger.info("MeshForge will operate without RNS node tracking")
+                self._rns_connected = False
                 return
-            else:
-                # No rnsd running - we need to initialize RNS ourselves
-                try:
-                    self._reticulum = RNS.Reticulum()
-                except OSError as e:
-                    if hasattr(e, 'errno') and e.errno == 98:
-                        # Address in use - maybe rnsd started after our check
-                        logger.warning("RNS port conflict - another RNS instance may be running")
-                        logger.info("MeshForge will work without RNS node discovery")
-                        self._rns_connected = False
-                        return
-                    else:
-                        raise
-                except Exception as e:
-                    if "reinitialise" in str(e).lower() or "already running" in str(e).lower():
-                        logger.info("RNS already initialized elsewhere")
-                        self._reticulum = None
-                    else:
-                        raise
 
-            # Create announce handler
-            class NodeAnnounceHandler:
-                def __init__(self, tracker):
-                    self.tracker = tracker
-                    self.aspect_filter = None
+            # rnsd is running - connect to existing instance as CLIENT ONLY
+            logger.info(f"rnsd detected (PID: {rns_pids[0]}), connecting as client...")
+            try:
+                # RNS.Reticulum will connect to existing rnsd via shared transport
+                # Because share_instance=Yes, this becomes a client connection
+                self._reticulum = RNS.Reticulum()
+                self._rns_connected = True
+                logger.info("Connected to existing rnsd instance")
 
-                def received_announce(self, destination_hash, announced_identity, app_data):
-                    try:
-                        self.tracker._on_rns_announce(destination_hash, announced_identity, app_data)
-                    except Exception as e:
-                        logger.error(f"Error handling RNS announce: {e}")
+                # Register announce handler to receive node announcements
+                class NodeAnnounceHandler:
+                    def __init__(self, tracker):
+                        self.tracker = tracker
+                        self.aspect_filter = None
 
-            RNS.Transport.register_announce_handler(NodeAnnounceHandler(self))
-            self._rns_connected = True
-            logger.info("RNS discovery initialized - listening for announces")
+                    def received_announce(self, destination_hash, announced_identity, app_data):
+                        try:
+                            self.tracker._on_rns_announce(destination_hash, announced_identity, app_data)
+                        except Exception as e:
+                            logger.error(f"Error handling RNS announce: {e}")
 
-            # Load known destinations
-            self._load_known_rns_destinations(RNS)
+                RNS.Transport.register_announce_handler(NodeAnnounceHandler(self))
+                logger.info("Registered announce handler with rnsd")
 
-            # Start background loop to keep RNS alive
-            self._rns_thread = threading.Thread(target=self._rns_loop, daemon=True)
-            self._rns_thread.start()
+                # Load known destinations from rnsd
+                self._load_known_rns_destinations(RNS)
+
+                # Start background loop
+                self._rns_thread = threading.Thread(target=self._rns_loop, daemon=True)
+                self._rns_thread.start()
+
+            except Exception as e:
+                logger.warning(f"Could not connect to rnsd: {e}")
+                logger.info("RNS nodes may not appear on map - ensure rnsd is running properly")
+                self._rns_connected = False
 
         except ImportError:
             logger.info("RNS module not installed. To enable RNS node discovery:")
             logger.info("  1. Install RNS: pip install rns")
-            logger.info("  2. Configure ~/.reticulum/config with TCPClientInterface")
+            logger.info("  2. Start rnsd: sudo systemctl start rnsd")
             logger.info("  3. Restart MeshForge")
         except Exception as e:
             logger.warning(f"Failed to initialize RNS discovery: {e}")
