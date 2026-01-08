@@ -8,7 +8,7 @@
   <strong>Build. Test. Deploy. Bridge. Monitor.</strong>
 </p>
 
-[![Version](https://img.shields.io/badge/version-0.4.3--beta-blue.svg)](https://github.com/Nursedude/meshforge)
+[![Version](https://img.shields.io/badge/version-0.4.4--beta-blue.svg)](https://github.com/Nursedude/meshforge)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-yellow.svg)](https://python.org)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%20%7C%20Linux-orange.svg)](https://www.raspberrypi.org/)

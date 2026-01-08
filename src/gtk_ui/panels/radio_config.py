@@ -265,10 +265,12 @@ class RadioConfigPanel(Gtk.Box):
 
                         if hasattr(ch, 'role'):
                             role_val = ch.role
-                            if isinstance(role_val, int):
-                                role_map = {0: 'DISABLED', 1: 'PRIMARY', 2: 'SECONDARY'}
-                                channel_info['role'] = role_map.get(role_val, str(role_val))
-                            else:
+                            # Handle protobuf enums - convert to int first
+                            role_map = {0: 'DISABLED', 1: 'PRIMARY', 2: 'SECONDARY'}
+                            try:
+                                role_int = int(role_val)
+                                channel_info['role'] = role_map.get(role_int, str(role_int))
+                            except (ValueError, TypeError):
                                 channel_info['role'] = str(role_val)
 
                         if hasattr(ch, 'settings'):
@@ -279,9 +281,8 @@ class RadioConfigPanel(Gtk.Box):
                                 # Just indicate if PSK is set (don't show actual key)
                                 channel_info['psk'] = bool(settings.psk)
 
-                        # Only add non-disabled channels or the first few
-                        if channel_info['role'] != 'DISABLED' or idx < 2:
-                            channels.append(channel_info)
+                        # Add ALL channels - user wants to see full config
+                        channels.append(channel_info)
 
             logger.info(f"Loaded {len(channels)} channels from device")
         except Exception as e:
