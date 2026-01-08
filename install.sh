@@ -9,10 +9,12 @@
 #   curl -sSL https://raw.githubusercontent.com/Nursedude/meshforge/main/install.sh | sudo bash
 #
 # Options:
-#   UPGRADE_SYSTEM=yes  - Automatically upgrade all system packages
-#   SKIP_UPGRADE=yes    - Skip the system upgrade prompt entirely
-#   INSTALL_GTK=yes     - Install GTK4/libadwaita for desktop GUI
-#   INSTALL_DESKTOP=yes - Create desktop entry for MeshForge
+#   UPGRADE_SYSTEM=yes      - Automatically upgrade all system packages
+#   SKIP_UPGRADE=yes        - Skip the system upgrade prompt entirely
+#   INSTALL_GTK=yes         - Install GTK4/libadwaita for desktop GUI
+#   INSTALL_DESKTOP=yes     - Create desktop entry for MeshForge
+#   BREAK_SYSTEM_PACKAGES=yes - Use pip --break-system-packages instead of venv
+#   USE_VENV=no             - Same as BREAK_SYSTEM_PACKAGES=yes
 #
 # Examples:
 #   # Install with system upgrade and desktop GUI
@@ -129,16 +131,53 @@ echo -e "${GREEN}  ✓ Repository ready${NC}"
 
 # Install Python dependencies
 echo -e "${CYAN}[7/8] Installing Python dependencies...${NC}"
-# Create virtual environment if it doesn't exist
-if [[ ! -d "$INSTALL_DIR/venv" ]]; then
-    echo "  Creating virtual environment..."
-    python3 -m venv "$INSTALL_DIR/venv" --system-site-packages
+
+# Check for PEP 668 (externally-managed-environment) - Debian Bookworm, RPi OS
+PEP668_DETECTED=false
+if python3 -c "import sys, pathlib; sys.exit(0 if any('EXTERNALLY-MANAGED' in str(p) for p in pathlib.Path(sys.prefix).glob('**/EXTERNALLY-MANAGED')) else 1)" 2>/dev/null; then
+    PEP668_DETECTED=true
 fi
-# Install dependencies in virtual environment
-echo "  Installing packages in virtual environment..."
-"$INSTALL_DIR/venv/bin/pip" install -q --upgrade pip
-"$INSTALL_DIR/venv/bin/pip" install -q -r requirements.txt
-echo -e "${GREEN}  ✓ Python dependencies installed${NC}"
+
+# Determine install method
+INSTALL_METHOD="venv"
+if [[ "${BREAK_SYSTEM_PACKAGES}" == "yes" ]] || [[ "${USE_VENV}" == "no" ]]; then
+    INSTALL_METHOD="system"
+    echo -e "${YELLOW}  Using --break-system-packages (per environment variable)${NC}"
+elif [[ "$PEP668_DETECTED" == "true" ]] && [[ -c /dev/tty ]]; then
+    echo -e "${YELLOW}  Detected: Externally managed Python (PEP 668 - Debian/RPi OS)${NC}"
+    echo ""
+    echo "  Choose Python package installation method:"
+    echo "    1) Virtual environment at /opt/meshforge/venv (recommended)"
+    echo "    2) System-wide with --break-system-packages (simpler)"
+    echo ""
+    read -p "  Choose [1/2] (default: 1): " -n 1 -r choice < /dev/tty
+    echo ""
+    if [[ "$choice" == "2" ]]; then
+        INSTALL_METHOD="system"
+    fi
+fi
+
+if [[ "$INSTALL_METHOD" == "venv" ]]; then
+    # Create virtual environment if it doesn't exist
+    if [[ ! -d "$INSTALL_DIR/venv" ]]; then
+        echo "  Creating virtual environment..."
+        python3 -m venv "$INSTALL_DIR/venv" --system-site-packages
+    fi
+    # Install dependencies in virtual environment
+    echo "  Installing packages in virtual environment..."
+    "$INSTALL_DIR/venv/bin/pip" install -q --upgrade pip
+    "$INSTALL_DIR/venv/bin/pip" install -q -r requirements.txt
+    echo -e "${GREEN}  ✓ Python dependencies installed (venv)${NC}"
+else
+    # Install system-wide with --break-system-packages
+    echo "  Installing packages system-wide..."
+    # Use --ignore-installed to avoid conflicts with apt-installed packages
+    pip3 install --break-system-packages --ignore-installed --upgrade pip
+    pip3 install --break-system-packages --ignore-installed -r requirements.txt
+    # Mark that we're not using venv for the launcher scripts
+    touch "$INSTALL_DIR/.no-venv"
+    echo -e "${GREEN}  ✓ Python dependencies installed (system)${NC}"
+fi
 
 # Create symlink for easy access
 echo -e "${CYAN}[8/8] Creating system commands...${NC}"
@@ -147,7 +186,11 @@ echo -e "${CYAN}[8/8] Creating system commands...${NC}"
 cat > /usr/local/bin/meshforge << 'EOF'
 #!/bin/bash
 cd /opt/meshforge
-exec sudo /opt/meshforge/venv/bin/python src/launcher.py "$@"
+if [[ -f .no-venv ]]; then
+    exec sudo python3 src/launcher.py "$@"
+else
+    exec sudo /opt/meshforge/venv/bin/python src/launcher.py "$@"
+fi
 EOF
 chmod +x /usr/local/bin/meshforge
 
@@ -155,7 +198,11 @@ chmod +x /usr/local/bin/meshforge
 cat > /usr/local/bin/meshforge-gtk << 'EOF'
 #!/bin/bash
 cd /opt/meshforge
-exec sudo /opt/meshforge/venv/bin/python src/main_gtk.py "$@"
+if [[ -f .no-venv ]]; then
+    exec sudo python3 src/main_gtk.py "$@"
+else
+    exec sudo /opt/meshforge/venv/bin/python src/main_gtk.py "$@"
+fi
 EOF
 chmod +x /usr/local/bin/meshforge-gtk
 
@@ -163,7 +210,11 @@ chmod +x /usr/local/bin/meshforge-gtk
 cat > /usr/local/bin/meshforge-cli << 'EOF'
 #!/bin/bash
 cd /opt/meshforge
-exec sudo /opt/meshforge/venv/bin/python src/main.py "$@"
+if [[ -f .no-venv ]]; then
+    exec sudo python3 src/main.py "$@"
+else
+    exec sudo /opt/meshforge/venv/bin/python src/main.py "$@"
+fi
 EOF
 chmod +x /usr/local/bin/meshforge-cli
 
@@ -171,7 +222,11 @@ chmod +x /usr/local/bin/meshforge-cli
 cat > /usr/local/bin/meshforge-web << 'EOF'
 #!/bin/bash
 cd /opt/meshforge
-exec sudo /opt/meshforge/venv/bin/python src/main_web.py "$@"
+if [[ -f .no-venv ]]; then
+    exec sudo python3 src/main_web.py "$@"
+else
+    exec sudo /opt/meshforge/venv/bin/python src/main_web.py "$@"
+fi
 EOF
 chmod +x /usr/local/bin/meshforge-web
 

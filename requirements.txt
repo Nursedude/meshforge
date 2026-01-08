@@ -1,6 +1,9 @@
 # Core dependencies for the installer UI
-# Note: meshtastic CLI is installed separately via pipx for isolation
 click>=8.0.0
+
+# Meshtastic Python library (required for radio communication)
+# Note: CLI (meshtastic command) can also be installed via pipx for user isolation
+meshtastic>=2.3.0
 rich>=13.0.0
 pyyaml>=6.0
 requests>=2.31.0
