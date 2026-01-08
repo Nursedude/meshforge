@@ -108,6 +108,15 @@ class MapPanel(Gtk.Box):
         """Get or create persistent NodeMonitor"""
         import time
 
+        # Check for web client mode - don't connect if enabled
+        try:
+            from ...utils.common import SettingsManager
+            settings = SettingsManager()
+            if settings.get("web_client_mode", False):
+                return None, "Web Client Mode enabled - connections disabled"
+        except Exception:
+            pass
+
         with cls._monitor_lock:
             # Check if monitor exists and is connected
             if cls._monitor is not None:
