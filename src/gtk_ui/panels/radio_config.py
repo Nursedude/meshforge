@@ -2044,27 +2044,46 @@ class RadioConfigPanel(Gtk.Box):
         self._run_cli(['--info'], on_result)
 
     def _show_config_dialog(self, title, content):
-        """Show configuration in a scrollable dialog"""
-        dialog = Adw.MessageDialog(
+        """Show configuration in a resizable window"""
+        # Use a proper window instead of dialog for resizable content
+        window = Gtk.Window(
+            title=title,
             transient_for=self.main_window,
-            heading=title,
-            body=""
+            modal=False,
+            default_width=700,
+            default_height=500,
+            resizable=True
         )
+
+        # Main box
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        main_box.set_margin_start(10)
+        main_box.set_margin_end(10)
+        main_box.set_margin_top(10)
+        main_box.set_margin_bottom(10)
 
         # Create scrollable text view for content
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        scrolled.set_size_request(600, 400)
+        scrolled.set_vexpand(True)
+        scrolled.set_hexpand(True)
 
         text_view = Gtk.TextView()
         text_view.set_editable(False)
         text_view.set_monospace(True)
+        text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         text_view.get_buffer().set_text(content)
         scrolled.set_child(text_view)
+        main_box.append(scrolled)
 
-        dialog.set_extra_child(scrolled)
-        dialog.add_response("close", "Close")
-        dialog.present()
+        # Close button
+        close_btn = Gtk.Button(label="Close")
+        close_btn.connect("clicked", lambda b: window.close())
+        close_btn.set_halign(Gtk.Align.END)
+        main_box.append(close_btn)
+
+        window.set_child(main_box)
+        window.present()
 
     def _factory_reset(self):
         """Perform factory reset with confirmation"""
