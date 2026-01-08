@@ -450,7 +450,7 @@ class MUDPTools:
 
             try:
                 result = subprocess.run(
-                    ['pip', 'install', '--upgrade', '--break-system-packages', 'mudp'],
+                    ['pip', 'install', '--upgrade', '--break-system-packages', '--ignore-installed', 'mudp'],
                     capture_output=True, text=True, timeout=120
                 )
 

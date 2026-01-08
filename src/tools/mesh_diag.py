@@ -247,7 +247,7 @@ def run_fix_mode() -> None:
     if not deps.get('meshtastic'):
         print_info("Installing meshtastic...")
         success, _, _ = safe_run(
-            [sys.executable, '-m', 'pip', 'install', 'meshtastic'],
+            [sys.executable, '-m', 'pip', 'install', '--break-system-packages', '--ignore-installed', 'meshtastic'],
             timeout=120
         )
         if success:
@@ -258,7 +258,7 @@ def run_fix_mode() -> None:
     if not deps.get('pyserial'):
         print_info("Installing pyserial...")
         success, _, _ = safe_run(
-            [sys.executable, '-m', 'pip', 'install', 'pyserial'],
+            [sys.executable, '-m', 'pip', 'install', '--break-system-packages', '--ignore-installed', 'pyserial'],
             timeout=60
         )
         if success:

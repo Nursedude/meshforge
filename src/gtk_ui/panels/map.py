@@ -57,11 +57,12 @@ except (ValueError, ImportError):
 class MapPanel(Gtk.Box):
     """Map panel showing nodes from both RNS and Meshtastic networks"""
 
-    # Persistent monitor shared across refreshes
+    # Connection settings - short-lived to avoid blocking web client
     _monitor = None
     _monitor_lock = threading.Lock()
     _last_connect_attempt = 0
     _connect_backoff = 5  # Minimum seconds between connection attempts
+    _use_persistent_connection = False  # Set True for persistent (may block web client)
 
     def __init__(self, main_window):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -490,6 +491,17 @@ class MapPanel(Gtk.Box):
                         "via_mqtt": stats.get("via_mqtt", 0)
                     }
                     geojson = {"type": "FeatureCollection", "features": features}
+
+                    # Disconnect after reading to avoid blocking web client
+                    if not MapPanel._use_persistent_connection:
+                        with MapPanel._monitor_lock:
+                            try:
+                                if MapPanel._monitor:
+                                    MapPanel._monitor.disconnect()
+                                    logger.debug("Disconnected monitor (non-persistent mode)")
+                            except Exception:
+                                pass
+                            MapPanel._monitor = None
 
                 except (BrokenPipeError, OSError) as e:
                     # Connection lost - clear monitor for reconnect next time
