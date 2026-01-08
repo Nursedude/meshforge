@@ -739,34 +739,51 @@ class RadioConfigSimple(Gtk.Box):
                 wifi_ssid = str(network.wifi_ssid) if hasattr(network, 'wifi_ssid') else ''
                 ntp_server = str(network.ntp_server) if hasattr(network, 'ntp_server') else ''
 
-                # Get channel info (primary channel)
+                # Get channel info (all 8 slots)
                 channels = iface.localNode.channels
-                ch0_name = ''
-                ch0_psk_status = 'Unknown'
-                ch0_uplink = False
-                ch0_downlink = False
-                ch0_role = ''
-                if channels and len(channels) > 0:
-                    ch0 = channels[0]
-                    if hasattr(ch0, 'settings'):
-                        ch0_name = str(ch0.settings.name) if hasattr(ch0.settings, 'name') else ''
-                        ch0_uplink = bool(ch0.settings.uplink_enabled) if hasattr(ch0.settings, 'uplink_enabled') else False
-                        ch0_downlink = bool(ch0.settings.downlink_enabled) if hasattr(ch0.settings, 'downlink_enabled') else False
-                        # Check PSK status
-                        if hasattr(ch0.settings, 'psk'):
-                            psk = ch0.settings.psk
-                            if psk and len(psk) > 0:
-                                if len(psk) == 1 and psk[0] == 1:
-                                    ch0_psk_status = 'Default (AQ==)'
-                                elif len(psk) == 1 and psk[0] == 0:
-                                    ch0_psk_status = 'None (Open)'
+                channel_info = []  # List of dicts for each active channel
+                if channels:
+                    for idx, ch in enumerate(channels):
+                        if idx >= 8:  # Max 8 channels
+                            break
+                        # Check if channel is active (has PRIMARY or SECONDARY role)
+                        ch_role_int = int(ch.role) if hasattr(ch, 'role') else 0
+                        # Role 0 = DISABLED, 1 = PRIMARY, 2 = SECONDARY
+                        if ch_role_int == 0:
+                            continue  # Skip disabled channels
+
+                        ch_data = {
+                            'index': idx,
+                            'name': '',
+                            'psk_status': 'Unknown',
+                            'uplink': False,
+                            'downlink': False,
+                            'role': CHANNEL_ROLES[ch_role_int] if ch_role_int < len(CHANNEL_ROLES) else str(ch_role_int)
+                        }
+
+                        if hasattr(ch, 'settings'):
+                            ch_data['name'] = str(ch.settings.name) if hasattr(ch.settings, 'name') else ''
+                            ch_data['uplink'] = bool(ch.settings.uplink_enabled) if hasattr(ch.settings, 'uplink_enabled') else False
+                            ch_data['downlink'] = bool(ch.settings.downlink_enabled) if hasattr(ch.settings, 'downlink_enabled') else False
+                            # Check PSK status
+                            if hasattr(ch.settings, 'psk'):
+                                psk = ch.settings.psk
+                                if psk and len(psk) > 0:
+                                    if len(psk) == 1 and psk[0] == 1:
+                                        ch_data['psk_status'] = 'Default (AQ==)'
+                                    elif len(psk) == 1 and psk[0] == 0:
+                                        ch_data['psk_status'] = 'None (Open)'
+                                    else:
+                                        ch_data['psk_status'] = f'Custom ({len(psk)*8}-bit)'
                                 else:
-                                    ch0_psk_status = f'Custom ({len(psk)*8}-bit)'
-                            else:
-                                ch0_psk_status = 'None (Open)'
-                    if hasattr(ch0, 'role'):
-                        ch0_role_int = int(ch0.role)
-                        ch0_role = CHANNEL_ROLES[ch0_role_int] if ch0_role_int < len(CHANNEL_ROLES) else str(ch0_role_int)
+                                    ch_data['psk_status'] = 'None (Open)'
+
+                        channel_info.append(ch_data)
+
+                # For backward compatibility, extract ch0 data
+                ch0_name = channel_info[0]['name'] if channel_info else ''
+                ch0_uplink = channel_info[0]['uplink'] if channel_info else False
+                ch0_downlink = channel_info[0]['downlink'] if channel_info else False
 
                 # Build info text
                 info = f"=== LoRa ===\n"
@@ -805,15 +822,23 @@ class RadioConfigSimple(Gtk.Box):
                     info += f"SSID: {wifi_ssid}\n"
                 if ntp_server:
                     info += f"NTP: {ntp_server}\n"
-                info += f"\n=== Channel 0 ===\n"
-                info += f"Name: {ch0_name or '(default)'}\n"
-                info += f"PSK: {ch0_psk_status}\n"
-                if ch0_role:
-                    info += f"Role: {ch0_role}\n"
-                info += f"Uplink: {'Yes' if ch0_uplink else 'No'}\n"
-                info += f"Downlink: {'Yes' if ch0_downlink else 'No'}\n\n"
 
-                info += f"=== Power ===\n"
+                # Display all active channels
+                if channel_info:
+                    info += f"\n=== Channels ({len(channel_info)} active) ===\n"
+                    for ch_data in channel_info:
+                        ch_idx = ch_data['index']
+                        ch_name = ch_data['name'] or '(default)' if ch_idx == 0 else ch_data['name'] or f'(ch{ch_idx})'
+                        info += f"\n[{ch_idx}] {ch_name}\n"
+                        info += f"    Role: {ch_data['role']}\n"
+                        info += f"    PSK: {ch_data['psk_status']}\n"
+                        if ch_data['uplink'] or ch_data['downlink']:
+                            info += f"    MQTT: {'↑' if ch_data['uplink'] else ''}{'↓' if ch_data['downlink'] else ''}\n"
+                else:
+                    info += f"\n=== Channels ===\n"
+                    info += f"No active channels found\n"
+
+                info += f"\n=== Power ===\n"
                 info += f"Power Saving: {'Yes' if power_saving else 'No'}"
 
                 # Check if config was actually received
