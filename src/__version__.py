@@ -3,9 +3,9 @@ MeshForge - LoRa Mesh Network Development & Operations Suite
 Version information and changelog
 """
 
-__version__ = "0.4.3-beta"
-__version_info__ = (0, 4, 3, 'beta')
-__release_date__ = "2026-01-05"
+__version__ = "0.4.4-beta"
+__version_info__ = (0, 4, 4, 'beta')
+__release_date__ = "2026-01-08"
 __app_name__ = "MeshForge"
 __app_description__ = "LoRa Mesh Network Development & Operations Suite"
 __app_tagline__ = "Build. Test. Deploy. Monitor."
@@ -14,6 +14,23 @@ __status__ = "beta"  # alpha=experimental, beta=testing, stable=production
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "0.4.4-beta",
+        "date": "2026-01-08",
+        "status": "beta",
+        "changes": [
+            "FIX: Radio config now displays ALL channels from device (was filtering)",
+            "FIX: Region/preset/role enum mapping for protobuf values",
+            "FIX: HamClock API port default corrected to 8082",
+            "FIX: HamClock no longer auto-connects on startup (user opt-in)",
+            "FIX: Info window now resizable (was fixed-size dialog)",
+            "FIX: Channel role displays as PRIMARY/SECONDARY not numbers",
+            "REMOVED: MeshForge University (reserved for pro edition)",
+            "NEW: /ralph-wiggum-healthcheck command for AI knowledge hygiene",
+            "IMPROVED: Consolidated HamClock documentation",
+            "IMPROVED: VOACAP propagation display with band predictions",
+        ]
+    },
     {
         "version": "0.4.3-beta",
         "date": "2026-01-05",

@@ -227,7 +227,7 @@ class HamClockPanel(Gtk.Box):
 
         self.api_port_spin = Gtk.SpinButton()
         self.api_port_spin.set_range(1, 65535)
-        self.api_port_spin.set_value(self._settings.get("api_port", 8080))
+        self.api_port_spin.set_value(self._settings.get("api_port", 8082))  # HamClock REST API default
         self.api_port_spin.set_increments(1, 10)
         self.api_port_spin.set_width_chars(6)  # Wide enough for 5-digit port
         port_box.append(self.api_port_spin)
