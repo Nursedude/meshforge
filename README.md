@@ -220,26 +220,6 @@ python3 src/standalone.py             # Zero-dependency mode
 
 MeshForge provides **multiple interfaces for different use cases**:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                       MESHFORGE INTERFACES                          │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐│
-│  │   GTK UI    │  │   Web UI    │  │  Terminal   │  │ Standalone  ││
-│  │  (Desktop)  │  │  (Browser)  │  │    (TUI)    │  │  (No Deps)  ││
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘│
-│         │                │                │                │       │
-│         └────────────────┴────────────────┴────────────────┘       │
-│                                 │                                   │
-│                        ┌────────┴────────┐                          │
-│                        │   Core Engine   │                          │
-│                        │   (Python API)  │                          │
-│                        └─────────────────┘                          │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
 | Interface | Command | Best For | Requires |
 |-----------|---------|----------|----------|
 | **Auto Launcher** | `sudo python3 src/launcher.py` | Auto-selects best UI | - |
@@ -258,14 +238,10 @@ MeshForge provides the **first open-source gateway between Meshtastic and Reticu
 ### Gateway Architecture
 
 ```
-┌─────────────────┐         ┌──────────────────┐         ┌─────────────────┐
-│   Meshtastic    │         │    MeshForge     │         │   Reticulum     │
-│    Network      │◄───────►│     Gateway      │◄───────►│    Network      │
-│  (LoRa 915MHz)  │  TCP    │   (Bridge Node)  │   RNS   │  (Multi-path)   │
-└─────────────────┘  4403   └──────────────────┘  LXMF   └─────────────────┘
-       │                            │                           │
-   Meshtastic                  Unified Node                 NomadNet
-     Nodes                       Tracker                    Sideband
+Meshtastic Network  <--TCP:4403-->  MeshForge Gateway  <--RNS/LXMF-->  Reticulum Network
+   (LoRa 915MHz)                      (Bridge Node)                     (Multi-path)
+        |                                  |                                 |
+  Meshtastic Nodes               Unified Node Tracker              NomadNet, Sideband
 ```
 
 ### Gateway Features
@@ -284,25 +260,10 @@ MeshForge provides the **first open-source gateway between Meshtastic and Reticu
 
 MeshForge provides **comprehensive AREDN integration** for high-bandwidth amateur radio mesh networking:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                       AREDN INTEGRATION                             │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  ┌───────────────┐    ┌───────────────┐    ┌───────────────┐       │
-│  │   Hardware    │    │   MikroTik    │    │   Network     │       │
-│  │   Database    │    │   Config      │    │   Simulator   │       │
-│  │   (10+ devs)  │    │   Wizard      │    │   (RF Model)  │       │
-│  └───────┬───────┘    └───────┬───────┘    └───────┬───────┘       │
-│          └────────────────────┴────────────────────┘               │
-│                              │                                      │
-│                   ┌──────────┴──────────┐                          │
-│                   │  AREDN Advanced     │                          │
-│                   │  Configuration      │                          │
-│                   └─────────────────────┘                          │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
+**Components:**
+- Hardware Database (10+ supported devices)
+- MikroTik Configuration Wizard
+- Network Simulator (RF modeling)
 
 ### Supported AREDN Hardware
 
@@ -316,28 +277,20 @@ MeshForge provides **comprehensive AREDN integration** for high-bandwidth amateu
 
 ## MeshForge University
 
-MeshForge includes an **integrated learning platform**:
+MeshForge includes an **integrated learning platform** (reserved for pro edition):
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                      MESHFORGE UNIVERSITY                           │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  📚 COURSES                                                         │
-│  ├── 1. Introduction to Meshtastic                                  │
-│  ├── 2. Understanding LoRa Technology                               │
-│  ├── 3. Mesh Network Architecture                                   │
-│  ├── 4. RF Propagation Fundamentals                                 │
-│  ├── 5. Advanced Deployment Strategies                              │
-│  ├── 6. Security Best Practices                                     │
-│  ├── 7. Troubleshooting Guide                                       │
-│  ├── 8. Building Custom Hardware                                    │
-│  └── 9. Amateur Radio Compliance & Part 97                          │
-│                                                                     │
-│  🎯 Progress tracking • Interactive quizzes • Hands-on labs         │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
+**9 Courses:**
+1. Introduction to Meshtastic
+2. Understanding LoRa Technology
+3. Mesh Network Architecture
+4. RF Propagation Fundamentals
+5. Advanced Deployment Strategies
+6. Security Best Practices
+7. Troubleshooting Guide
+8. Building Custom Hardware
+9. Amateur Radio Compliance & Part 97
+
+*Progress tracking, interactive quizzes, and hands-on labs.*
 
 ---
 
@@ -388,24 +341,19 @@ frequency = freq_start + (bandwidth / 2000) + (slot * bandwidth / 1000)
 
 ## RF Engineering Tools
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                   RF TOOLS: CORE vs PLUGIN                          │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  ✅ CORE (Integrated)            🔧 PLUGIN (Optional)              │
-│  ┌─────────────────────┐        ┌─────────────────────┐            │
-│  │ • Haversine distance│        │ • Site Planner API  │            │
-│  │ • Fresnel radius    │        │ • External elevation│            │
-│  │ • FSPL calculation  │        │ • Coverage heatmaps │            │
-│  │ • Earth bulge       │        │ • APRS integration  │            │
-│  │ 13 tests, no deps   │        │ External APIs/deps  │            │
-│  └─────────────────────┘        └─────────────────────┘            │
-│                                                                     │
-│  Safety: Core functions work offline with no dependencies           │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
+**Core (Integrated, 13 tests, no dependencies):**
+- Haversine distance
+- Fresnel radius
+- FSPL calculation
+- Earth bulge
+
+**Plugin (Optional, requires external APIs):**
+- Site Planner API
+- External elevation data
+- Coverage heatmaps
+- APRS integration
+
+*Core functions work offline with no dependencies.*
 
 ### Core Calculations
 
@@ -420,26 +368,13 @@ frequency = freq_start + (bandwidth / 2000) + (slot * bandwidth / 1000)
 
 ## Plugin System
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                       PLUGIN ARCHITECTURE                           │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│   PluginManager                                                     │
-│        │                                                            │
-│        ├── register(plugin_class)     # Add plugin to registry     │
-│        ├── activate(name)             # Enable plugin              │
-│        ├── deactivate(name)           # Disable plugin             │
-│        └── list_by_type(type)         # Filter by category         │
-│                                                                     │
-│   Plugin Types:                                                     │
-│   ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐  │
-│   │ PanelPlugin │ │ Integration │ │ ToolPlugin  │ │  Protocol   │  │
-│   │ (UI panels) │ │   Plugin    │ │ (utilities) │ │   Plugin    │  │
-│   └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘  │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
+**PluginManager API:**
+- `register(plugin_class)` - Add plugin to registry
+- `activate(name)` - Enable plugin
+- `deactivate(name)` - Disable plugin
+- `list_by_type(type)` - Filter by category
+
+**Plugin Types:** PanelPlugin (UI), IntegrationPlugin, ToolPlugin (utilities), ProtocolPlugin
 
 ### Example Plugins
 
@@ -571,7 +506,7 @@ meshforge/
 │       └── meshcore.py       # MeshCore (stub)
 │
 ├── plugins/examples/         # Example plugins
-├── tests/                    # 127 tests
+├── tests/                    # 195 tests
 ├── assets/                   # Icons and images
 ├── ARCHITECTURE.md           # AI self-audit report
 └── README.md
@@ -581,19 +516,25 @@ meshforge/
 
 ## Version History
 
-### v0.4.3-beta (2026-01-07) - Current
+### v0.4.5-beta (2026-01-08) - Current
+
+- **FIX**: NomadNet 'Address already in use' - node_tracker is now client-only
+- **FIX**: RNS config dialog validates before save (prevents broken configs)
+- **FIX**: Web Client Mode toggle to prevent meshtasticd interference
+- **FIX**: PEP 668 installer handling for Debian Bookworm
+- **NEW**: Setup Wizard with service/conflict detection
+- **NEW**: Safe config editing with validation, backup, atomic save
+- **NEW**: 11 TDD tests for config reliability
+- **IMPROVED**: Multi-channel display in Radio Config (all 8 channels)
+- **IMPROVED**: Simplified ASCII borders for better terminal compatibility
+
+### v0.4.3-beta (2026-01-07)
 
 - **NEW**: Network Diagnostics panel with UDP/TCP/IPv6 listener display
-- **NEW**: Multicast group viewer and process-to-port mapping
 - **NEW**: Quick-action buttons (Kill Clients, Stop RNS, Watch API)
 - **NEW**: NomadNet launch from GTK with proper terminal wrapper
-- **NEW**: RNS/Meshtastic port conflict detection (ports 29716, 4403)
-- **NEW**: VOACAP HF Propagation tools (VOACAP Online, PSK Reporter, DX Maps, Solar Data)
-- **NEW**: MeshChat web interface integration (start/stop server, browser launch)
+- **NEW**: VOACAP HF Propagation tools
 - **IMPROVED**: Standalone boot mode with zero external dependencies
-- **IMPROVED**: AREDN Integration with hardware database
-- **IMPROVED**: Subprocess timeout parameters for reliability
-- **IMPROVED**: Centralized SettingsManager to reduce code duplication
 
 ### v4.2.x (2026-01-03-04)
 
