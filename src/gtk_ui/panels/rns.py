@@ -184,6 +184,12 @@ class RNSPanel(Gtk.Box):
         self.rns_restart_btn.connect("clicked", lambda b: self._service_action("restart"))
         btn_box.append(self.rns_restart_btn)
 
+        # Install systemd service button
+        self.rns_install_service_btn = Gtk.Button(label="Install Service")
+        self.rns_install_service_btn.set_tooltip_text("Create systemd service for rnsd (persistent across reboots)")
+        self.rns_install_service_btn.connect("clicked", self._install_rnsd_service)
+        btn_box.append(self.rns_install_service_btn)
+
         status_row.append(btn_box)
         box.append(status_row)
 
@@ -2383,6 +2389,63 @@ message_storage_limit = 2000
         else:
             self.main_window.set_status_message(f"Failed to {action} rnsd: {error}")
 
+        self._refresh_all()
+        return False
+
+    def _install_rnsd_service(self, button):
+        """Create and enable systemd service for rnsd"""
+        self.main_window.set_status_message("Installing rnsd systemd service...")
+        button.set_sensitive(False)
+
+        def do_install():
+            try:
+                # Find rnsd path
+                rnsd_path = shutil.which('rnsd')
+                if not rnsd_path:
+                    rnsd_path = '/usr/local/bin/rnsd'
+
+                service_content = f'''[Unit]
+Description=Reticulum Network Stack Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={rnsd_path}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+'''
+                service_path = '/etc/systemd/system/rnsd.service'
+
+                # Write service file
+                with open(service_path, 'w') as f:
+                    f.write(service_content)
+
+                # Reload systemd and enable service
+                subprocess.run(['systemctl', 'daemon-reload'], check=True, timeout=30)
+                subprocess.run(['systemctl', 'enable', 'rnsd'], check=True, timeout=30)
+                subprocess.run(['systemctl', 'start', 'rnsd'], check=True, timeout=30)
+
+                GLib.idle_add(self._install_service_complete, True, "Service installed and started")
+            except PermissionError:
+                GLib.idle_add(self._install_service_complete, False, "Permission denied - run MeshForge as root")
+            except subprocess.CalledProcessError as e:
+                GLib.idle_add(self._install_service_complete, False, f"systemctl failed: {e}")
+            except Exception as e:
+                GLib.idle_add(self._install_service_complete, False, str(e))
+
+        threading.Thread(target=do_install, daemon=True).start()
+
+    def _install_service_complete(self, success, message):
+        """Handle service installation completion"""
+        self.rns_install_service_btn.set_sensitive(True)
+        if success:
+            self.main_window.set_status_message(f"rnsd service: {message}")
+            self.rns_install_service_btn.set_label("Reinstall Service")
+        else:
+            self.main_window.set_status_message(f"Failed: {message}")
         self._refresh_all()
         return False
 
