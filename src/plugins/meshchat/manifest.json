@@ -1,0 +1,33 @@
+{
+    "id": "org.meshforge.plugin.meshchat",
+    "name": "MeshChat Integration",
+    "version": "1.0.0",
+    "description": "HTTP API integration with Reticulum MeshChat for enhanced LXMF messaging",
+    "author": "MeshForge Team",
+    "type": "integration",
+    "entry_point": "plugin.py",
+    "external_service": {
+        "name": "reticulum-meshchat",
+        "port": 8000,
+        "url": "https://github.com/liamcottle/reticulum-meshchat"
+    },
+    "permissions": [],
+    "dependencies": [],
+    "settings_schema": {
+        "host": {
+            "type": "string",
+            "default": "127.0.0.1",
+            "label": "MeshChat Host"
+        },
+        "port": {
+            "type": "number",
+            "default": 8000,
+            "label": "MeshChat Port"
+        },
+        "auto_check": {
+            "type": "boolean",
+            "default": true,
+            "label": "Auto-check service status"
+        }
+    }
+}

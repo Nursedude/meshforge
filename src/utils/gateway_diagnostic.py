@@ -83,6 +83,9 @@ class GatewayDiagnostic:
         self.results.append(self.check_meshtastic_interface())
         self.results.append(self.check_meshtasticd())
 
+        # Optional integrations
+        self.results.append(self.check_meshchat())
+
         # Connection checks
         conn_types = self.detect_connection_types()
         if conn_types['serial']:
@@ -428,6 +431,69 @@ class GatewayDiagnostic:
         except Exception as e:
             return CheckResult(
                 name="meshtasticd Service",
+                status=CheckStatus.SKIP,
+                message=f"Check skipped: {e}"
+            )
+
+    # ========================================
+    # Optional Integrations
+    # ========================================
+
+    def check_meshchat(self) -> CheckResult:
+        """Check if MeshChat service is available (optional)."""
+        try:
+            # Try relative import first, then absolute
+            try:
+                from plugins.meshchat import MeshChatService, ServiceState
+            except ImportError:
+                from src.plugins.meshchat import MeshChatService, ServiceState
+            service = MeshChatService()
+            status = service.check_status(blocking=True)
+
+            if status.available:
+                version_str = f" v{status.version}" if status.version else ""
+                return CheckResult(
+                    name="MeshChat (Optional)",
+                    status=CheckStatus.PASS,
+                    message=f"Running{version_str} on port {service.port}",
+                    details=f"PID: {status.pid}" if status.pid else None
+                )
+            elif status.state == ServiceState.STOPPED:
+                return CheckResult(
+                    name="MeshChat (Optional)",
+                    status=CheckStatus.SKIP,
+                    message="Installed but not running",
+                    fix_hint=status.fix_hint
+                )
+            elif status.state == ServiceState.STARTING:
+                return CheckResult(
+                    name="MeshChat (Optional)",
+                    status=CheckStatus.WARN,
+                    message="Starting (port not ready yet)"
+                )
+            else:
+                return CheckResult(
+                    name="MeshChat (Optional)",
+                    status=CheckStatus.SKIP,
+                    message="Not installed (optional LXMF messaging)",
+                    fix_hint="Install from: https://github.com/liamcottle/reticulum-meshchat"
+                )
+        except ImportError:
+            # MeshChat plugin not available - check port directly
+            if self.check_tcp_port('localhost', 8000):
+                return CheckResult(
+                    name="MeshChat (Optional)",
+                    status=CheckStatus.PASS,
+                    message="Detected on port 8000"
+                )
+            return CheckResult(
+                name="MeshChat (Optional)",
+                status=CheckStatus.SKIP,
+                message="Not installed (optional)"
+            )
+        except Exception as e:
+            return CheckResult(
+                name="MeshChat (Optional)",
                 status=CheckStatus.SKIP,
                 message=f"Check skipped: {e}"
             )
