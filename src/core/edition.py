@@ -82,10 +82,6 @@ EDITION_FEATURES: Dict[Edition, Set[str]] = {
         "fresnel_calculator",
         "link_budget",
         "antenna_planning",
-        # Learning
-        "university_full",
-        "assessments",
-        "certifications",
         # Integration
         "hamclock",
         "plugins",
@@ -116,10 +112,6 @@ EDITION_FEATURES: Dict[Edition, Set[str]] = {
         "fresnel_calculator",
         "link_budget",
         "antenna_planning",
-        # Learning
-        "university_full",
-        "university_ham_track",
-        "assessments",
         # Integration
         "hamclock",
         "plugins",
@@ -143,8 +135,6 @@ EDITION_FEATURES: Dict[Edition, Set[str]] = {
         "node_map_basic",
         # Tools (basic)
         "rf_calculators_basic",
-        # Learning (intro only)
-        "university_intro",
         # Key differentiator
         "plugins",
         "plugin_marketplace",

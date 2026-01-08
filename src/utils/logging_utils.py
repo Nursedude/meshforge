@@ -53,7 +53,6 @@ _global_log_level = logging.DEBUG
 # Component-specific log levels
 _component_levels = {
     'hamclock': logging.DEBUG,
-    'university': logging.DEBUG,
     'rns': logging.DEBUG,
     'meshtastic': logging.INFO,
     'gateway': logging.DEBUG,
@@ -391,7 +390,7 @@ def create_panel_logger(panel_name: str) -> logging.Logger:
     Create a logger specifically for GTK panels with standard naming.
 
     Args:
-        panel_name: Name of the panel (e.g., "hamclock", "university")
+        panel_name: Name of the panel (e.g., "hamclock", "radio_config")
 
     Returns:
         Configured logger
