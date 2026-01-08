@@ -23,6 +23,14 @@ except ImportError:
             return Path(f'/home/{sudo_user}')
         return Path.home()
 
+# Import safe config utilities
+try:
+    from utils.rns_config import safe_save_config, validate_rns_config
+except ImportError:
+    # Fallback if utils not available
+    safe_save_config = None
+    validate_rns_config = None
+
 
 class RNSConfigDialog(Adw.Window):
     """Dialog for editing RNS configuration file"""
@@ -353,7 +361,7 @@ loglevel = 4
             logger.error(f"Failed to load RNS config: {e}")
 
     def _on_save(self, button):
-        """Save configuration to file"""
+        """Save configuration to file with validation and backup"""
         try:
             # Ensure directory exists
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -363,14 +371,40 @@ loglevel = 4
             end = self.text_buffer.get_end_iter()
             content = self.text_buffer.get_text(start, end, True)
 
-            # Write file
-            self.config_path.write_text(content)
+            # Use safe save with validation and backup
+            if safe_save_config is not None:
+                result = safe_save_config(self.config_path, content)
 
-            self.modified = False
-            self._update_title()
-            self.status_label.set_label(f"Saved: {self.config_path}")
+                if result['success']:
+                    self.modified = False
+                    self._update_title()
+                    backup_msg = ""
+                    if result.get('backup_path'):
+                        backup_msg = f" (backup: {Path(result['backup_path']).name})"
+                    self.status_label.set_label(f"Saved: {self.config_path}{backup_msg}")
+                    logger.info(f"Saved RNS config to {self.config_path}")
+                else:
+                    # Validation or save failed
+                    error_msg = result.get('error', 'Unknown error')
+                    self.status_label.set_label(f"Save failed: {error_msg[:50]}")
+                    logger.error(f"Failed to save RNS config: {error_msg}")
 
-            logger.info(f"Saved RNS config to {self.config_path}")
+                    # Show detailed error dialog
+                    dialog = Adw.MessageDialog(
+                        transient_for=self,
+                        heading="Configuration Error",
+                        body=f"Could not save configuration:\n\n{error_msg}\n\n"
+                             "Please fix the errors and try again."
+                    )
+                    dialog.add_response("ok", "OK")
+                    dialog.present()
+            else:
+                # Fallback if utils not available (direct write)
+                logger.warning("safe_save_config not available, using direct write")
+                self.config_path.write_text(content)
+                self.modified = False
+                self._update_title()
+                self.status_label.set_label(f"Saved: {self.config_path} (no validation)")
 
         except Exception as e:
             self.status_label.set_label(f"Error saving: {e}")
@@ -431,7 +465,7 @@ loglevel = 4
             self._load_config()
 
     def _on_validate(self, button):
-        """Validate the configuration"""
+        """Validate the configuration using utility function"""
         start = self.text_buffer.get_start_iter()
         end = self.text_buffer.get_end_iter()
         content = self.text_buffer.get_text(start, end, True)
@@ -439,46 +473,48 @@ loglevel = 4
         errors = []
         warnings = []
 
-        # Basic validation
-        lines = content.split('\n')
-        in_section = None
-        line_num = 0
+        # Use utility validation if available
+        if validate_rns_config is not None:
+            is_valid, validation_errors = validate_rns_config(content)
+            errors.extend(validation_errors)
+        else:
+            # Fallback: Basic validation
+            lines = content.split('\n')
+            in_section = None
+            line_num = 0
 
-        for line in lines:
-            line_num += 1
-            stripped = line.strip()
+            for line in lines:
+                line_num += 1
+                stripped = line.strip()
 
-            # Skip comments and empty lines
-            if not stripped or stripped.startswith('#'):
-                continue
+                # Skip comments and empty lines
+                if not stripped or stripped.startswith('#'):
+                    continue
 
-            # Check for section header
-            if stripped.startswith('[') and stripped.endswith(']'):
-                in_section = stripped[1:-1]
-                continue
+                # Check for section header
+                if stripped.startswith('[') and stripped.endswith(']'):
+                    in_section = stripped[1:-1]
+                    continue
 
-            # Check for key = value format
-            if '=' in stripped:
-                key, value = stripped.split('=', 1)
-                key = key.strip()
-                value = value.strip()
+                # Check for key = value format
+                if '=' in stripped:
+                    key, value = stripped.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
 
-                # Check for common issues
-                if not key:
-                    errors.append(f"Line {line_num}: Empty key")
-                if key.startswith('#'):
-                    # Comment in wrong place
-                    pass
+                    # Check for common issues
+                    if not key:
+                        errors.append(f"Line {line_num}: Empty key")
 
-                # Check for required settings
-                if in_section and in_section.lower() == 'reticulum':
-                    if key == 'enable_transport' and value.lower() not in ['true', 'false', 'yes', 'no']:
-                        warnings.append(f"Line {line_num}: enable_transport should be True/False")
+                    # Check for required settings
+                    if in_section and in_section.lower() == 'reticulum':
+                        if key == 'enable_transport' and value.lower() not in ['true', 'false', 'yes', 'no']:
+                            warnings.append(f"Line {line_num}: enable_transport should be True/False")
 
-            elif not stripped.startswith('['):
-                # Line that's not a comment, section, or key=value
-                if stripped and not stripped.startswith('#'):
-                    errors.append(f"Line {line_num}: Invalid syntax: {stripped[:30]}")
+                elif not stripped.startswith('['):
+                    # Line that's not a comment, section, or key=value
+                    if stripped and not stripped.startswith('#'):
+                        errors.append(f"Line {line_num}: Invalid syntax: {stripped[:30]}")
 
         # Show results
         if errors:
