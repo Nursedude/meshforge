@@ -291,6 +291,25 @@ class SettingsPanel(Gtk.Box):
         refresh_row.append(self.refresh_switch)
         dashboard_box.append(refresh_row)
 
+        # Web Client Mode Toggle
+        webclient_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        webclient_label = Gtk.Label(label="Web Client Mode")
+        webclient_label.set_xalign(0)
+        webclient_label.set_hexpand(True)
+        webclient_label.set_tooltip_text("Disable all meshtasticd connections to allow web client to work")
+        webclient_row.append(webclient_label)
+
+        self.webclient_switch = Gtk.Switch()
+        self.webclient_switch.set_active(self._settings.get("web_client_mode", False))
+        self.webclient_switch.connect("notify::active", self._on_webclient_mode_changed)
+        webclient_row.append(self.webclient_switch)
+        dashboard_box.append(webclient_row)
+
+        webclient_hint = Gtk.Label(label="Enable when using Meshtastic web browser")
+        webclient_hint.set_xalign(0)
+        webclient_hint.add_css_class("dim-label")
+        dashboard_box.append(webclient_hint)
+
         # Refresh Interval
         interval_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         interval_label = Gtk.Label(label="Refresh Interval (seconds)")
@@ -448,6 +467,26 @@ class SettingsPanel(Gtk.Box):
         """Handle auto refresh toggle"""
         self._settings["auto_refresh"] = switch.get_active()
         self._save_settings()
+
+    def _on_webclient_mode_changed(self, switch, _):
+        """Handle web client mode toggle - disables all meshtasticd connections"""
+        enabled = switch.get_active()
+        self._settings["web_client_mode"] = enabled
+        self._save_settings()
+
+        if enabled:
+            self.main_window.set_status_message("Web Client Mode ON - meshtasticd connections disabled")
+            # Disconnect any existing connections
+            try:
+                from ..panels.map import MapPanel
+                with MapPanel._monitor_lock:
+                    if MapPanel._monitor:
+                        MapPanel._monitor.disconnect()
+                        MapPanel._monitor = None
+            except Exception:
+                pass
+        else:
+            self.main_window.set_status_message("Web Client Mode OFF - normal operation")
 
     def _on_interval_changed(self, spin):
         """Handle refresh interval change"""

@@ -913,6 +913,15 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         import time as time_module
         import socket
 
+        # Check for web client mode - don't connect if enabled
+        try:
+            from utils.common import SettingsManager
+            settings = SettingsManager()
+            if settings.get("web_client_mode", False):
+                return "--"  # Return placeholder when web client mode is on
+        except Exception:
+            pass
+
         # Check cache first
         now = time_module.time()
         if now - self._node_count_timestamp < self._node_count_cache_ttl:
