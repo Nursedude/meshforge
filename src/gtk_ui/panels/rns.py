@@ -845,17 +845,13 @@ class RNSPanel(Gtk.Box):
 
         def do_apply():
             try:
-                config_path = get_real_user_home() / ".reticulum" / "config"
+                # Use safe config utilities
+                from ..utils.rns_config import get_rns_config_path, add_interface_to_config
 
-                # Read current config
-                if config_path.exists():
-                    content = config_path.read_text()
-                else:
-                    content = ""
+                config_path = get_rns_config_path()
 
-                # Check if RNode section exists
-                rnode_section = f"""
-[[RNode LoRa Interface]]
+                # Build RNode section
+                rnode_section = f"""[[RNode LoRa Interface]]
   type = RNodeInterface
   interface_enabled = True
   port = {port}
@@ -866,28 +862,60 @@ class RNSPanel(Gtk.Box):
   codingrate = {cr}
 """
 
-                # Update or add RNode section
-                if '[[RNode' in content or '[RNode' in content:
-                    # Replace existing section - find and replace
-                    import re
-                    pattern = r'\[\[?RNode[^\]]*\]\]?[^\[]*'
-                    content = re.sub(pattern, rnode_section.strip() + '\n\n', content, flags=re.IGNORECASE)
+                # Use safe add_interface_to_config with validation and backup
+                result = add_interface_to_config(config_path, rnode_section, "RNode")
+
+                if result['success']:
+                    backup_msg = f" (backup: {result['backup_path']})" if result['backup_path'] else ""
+                    GLib.idle_add(self._set_rnode_status, f"Config saved! Restart rnsd to apply.{backup_msg}")
+                    logger.info(f"RNode config saved: freq={freq_hz}, bw={bw_hz}, sf={sf}, cr={cr}, tx={tx}")
                 else:
-                    # Add new section at end
-                    content = content.rstrip() + '\n\n' + rnode_section
+                    GLib.idle_add(self._set_rnode_status, f"Error: {result['error']}")
+                    logger.error(f"RNode config save failed: {result['error']}")
 
-                # Write back
-                config_path.write_text(content)
-
-                GLib.idle_add(self._set_rnode_status, f"Config saved! Restart rnsd to apply.")
-                logger.info(f"RNode config saved: freq={freq_hz}, bw={bw_hz}, sf={sf}, cr={cr}, tx={tx}")
-
+            except ImportError:
+                # Fallback to old method if utils not available
+                logger.warning("rns_config utils not available, using fallback")
+                self._apply_rnode_config_fallback(port, freq_hz, bw_hz, tx, sf, cr)
             except Exception as e:
                 logger.error(f"Apply RNode config error: {e}")
                 GLib.idle_add(self._set_rnode_status, f"Error: {e}")
 
         self._set_rnode_status("Saving...")
         threading.Thread(target=do_apply, daemon=True).start()
+
+    def _apply_rnode_config_fallback(self, port, freq_hz, bw_hz, tx, sf, cr):
+        """Fallback config save without validation (legacy support)"""
+        try:
+            config_path = get_real_user_home() / ".reticulum" / "config"
+
+            if config_path.exists():
+                content = config_path.read_text()
+            else:
+                content = "[reticulum]\n  share_instance = Yes\n\n[interfaces]\n"
+
+            rnode_section = f"""[[RNode LoRa Interface]]
+  type = RNodeInterface
+  interface_enabled = True
+  port = {port}
+  frequency = {freq_hz}
+  bandwidth = {bw_hz}
+  txpower = {tx}
+  spreadingfactor = {sf}
+  codingrate = {cr}
+"""
+            import re
+            if '[[RNode' in content or '[RNode' in content:
+                pattern = r'\[\[?RNode[^\]]*\]\]?[^\[]*'
+                content = re.sub(pattern, rnode_section.strip() + '\n\n', content, flags=re.IGNORECASE)
+            else:
+                content = content.rstrip() + '\n\n' + rnode_section
+
+            config_path.write_text(content)
+            GLib.idle_add(self._set_rnode_status, f"Config saved (legacy)! Restart rnsd.")
+        except Exception as e:
+            logger.error(f"Fallback config save error: {e}")
+            GLib.idle_add(self._set_rnode_status, f"Error: {e}")
 
     def _build_config_section(self, parent):
         """Build RNS configuration section"""
