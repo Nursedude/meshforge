@@ -3,8 +3,8 @@ MeshForge - LoRa Mesh Network Development & Operations Suite
 Version information and changelog
 """
 
-__version__ = "0.4.4-beta"
-__version_info__ = (0, 4, 4, 'beta')
+__version__ = "0.4.5-beta"
+__version_info__ = (0, 4, 5, 'beta')
 __release_date__ = "2026-01-08"
 __app_name__ = "MeshForge"
 __app_description__ = "LoRa Mesh Network Development & Operations Suite"
@@ -14,6 +14,24 @@ __status__ = "beta"  # alpha=experimental, beta=testing, stable=production
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "0.4.5-beta",
+        "date": "2026-01-08",
+        "status": "beta",
+        "changes": [
+            "FIX: NomadNet 'Address already in use' - node_tracker is now client-only",
+            "FIX: RNS config dialog validates before save (prevents broken configs)",
+            "FIX: Web Client Mode toggle to prevent meshtasticd interference",
+            "FIX: PEP 668 installer handling for Debian Bookworm",
+            "NEW: Setup Wizard with service/conflict detection",
+            "NEW: Safe config editing with validation, backup, atomic save",
+            "NEW: 11 TDD tests for config reliability",
+            "NEW: MeshChat plugin structure (HTTP client approach)",
+            "NEW: Standalone rns_config_utils.py for cross-repo use",
+            "IMPROVED: Multi-channel display in Radio Config (all 8 channels)",
+            "IMPROVED: Clear UI messages when services aren't running",
+        ]
+    },
     {
         "version": "0.4.4-beta",
         "date": "2026-01-08",
