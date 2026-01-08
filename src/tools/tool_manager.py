@@ -241,7 +241,7 @@ class ToolManager:
 
             try:
                 result = subprocess.run(
-                    ['pip', 'install', '--upgrade', '--break-system-packages', 'mudp'],
+                    ['pip', 'install', '--upgrade', '--break-system-packages', '--ignore-installed', 'mudp'],
                     capture_output=True, text=True, timeout=120
                 )
 
@@ -407,7 +407,7 @@ class ToolManager:
         for pkg in missing_pip:
             console.print(f"\n[cyan]Installing {pkg}...[/cyan]")
             subprocess.run(
-                ['pip', 'install', '--break-system-packages', pkg],
+                ['pip', 'install', '--break-system-packages', '--ignore-installed', pkg],
                 check=False, timeout=120
             )
 
