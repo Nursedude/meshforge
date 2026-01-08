@@ -2262,7 +2262,12 @@ message_storage_limit = 2000
         elif rns_running:
             self.rns_status_icon.set_from_icon_name("emblem-default")
             self.rns_status_label.set_label("Running")
-            self.rns_status_detail.set_label("Reticulum daemon is active")
+            # Check if running via systemd
+            service_status = self._get_systemd_service_status()
+            if service_status == 'active':
+                self.rns_status_detail.set_label("rnsd running (systemd service)")
+            else:
+                self.rns_status_detail.set_label("rnsd running (process)")
             self.rns_install_note.set_label("")
             self.rns_start_btn.set_sensitive(False)
             self.rns_stop_btn.set_sensitive(True)
@@ -2270,11 +2275,26 @@ message_storage_limit = 2000
         else:
             self.rns_status_icon.set_from_icon_name("dialog-warning")
             self.rns_status_label.set_label("Stopped")
-            self.rns_status_detail.set_label("Reticulum daemon is not running")
+            service_status = self._get_systemd_service_status()
+            if service_status == 'inactive':
+                self.rns_status_detail.set_label("rnsd stopped (systemd service installed)")
+            elif service_status == 'not-found':
+                self.rns_status_detail.set_label("rnsd not running (no systemd service)")
+            else:
+                self.rns_status_detail.set_label("Reticulum daemon is not running")
             self.rns_install_note.set_label("Start with: rnsd")
             self.rns_start_btn.set_sensitive(True)
             self.rns_stop_btn.set_sensitive(False)
             self.rns_restart_btn.set_sensitive(True)
+
+        # Update Install Service button based on whether service exists
+        service_exists = self._check_systemd_service_exists()
+        if service_exists:
+            self.rns_install_service_btn.set_label("Remove Service")
+            self.rns_install_service_btn.set_tooltip_text("Remove systemd service (rnsd will not start on boot)")
+        else:
+            self.rns_install_service_btn.set_label("Install Service")
+            self.rns_install_service_btn.set_tooltip_text("Create systemd service for rnsd (persistent across reboots)")
 
         # Update component rows
         for comp_name, row in self.component_rows.items():
@@ -2392,19 +2412,62 @@ message_storage_limit = 2000
         self._refresh_all()
         return False
 
+    def _check_systemd_service_exists(self):
+        """Check if rnsd.service file exists"""
+        return os.path.exists('/etc/systemd/system/rnsd.service')
+
+    def _get_systemd_service_status(self):
+        """Get rnsd systemd service status: 'active', 'inactive', 'not-found'"""
+        try:
+            result = subprocess.run(
+                ['systemctl', 'is-active', 'rnsd'],
+                capture_output=True, text=True, timeout=5
+            )
+            status = result.stdout.strip()
+            if status == 'active':
+                return 'active'
+            elif status in ('inactive', 'failed'):
+                return 'inactive'
+            else:
+                return 'not-found'
+        except Exception:
+            return 'not-found'
+
     def _install_rnsd_service(self, button):
-        """Create and enable systemd service for rnsd"""
-        self.main_window.set_status_message("Installing rnsd systemd service...")
-        button.set_sensitive(False)
+        """Create/remove systemd service for rnsd"""
+        service_exists = self._check_systemd_service_exists()
 
-        def do_install():
-            try:
-                # Find rnsd path
-                rnsd_path = shutil.which('rnsd')
-                if not rnsd_path:
-                    rnsd_path = '/usr/local/bin/rnsd'
+        if service_exists:
+            # Remove service
+            self.main_window.set_status_message("Removing rnsd systemd service...")
+            button.set_sensitive(False)
 
-                service_content = f'''[Unit]
+            def do_remove():
+                try:
+                    subprocess.run(['systemctl', 'stop', 'rnsd'], timeout=30)
+                    subprocess.run(['systemctl', 'disable', 'rnsd'], timeout=30)
+                    os.remove('/etc/systemd/system/rnsd.service')
+                    subprocess.run(['systemctl', 'daemon-reload'], check=True, timeout=30)
+                    GLib.idle_add(self._install_service_complete, True, "Service removed")
+                except PermissionError:
+                    GLib.idle_add(self._install_service_complete, False, "Permission denied - run MeshForge as root")
+                except Exception as e:
+                    GLib.idle_add(self._install_service_complete, False, str(e))
+
+            threading.Thread(target=do_remove, daemon=True).start()
+        else:
+            # Install service
+            self.main_window.set_status_message("Installing rnsd systemd service...")
+            button.set_sensitive(False)
+
+            def do_install():
+                try:
+                    # Find rnsd path
+                    rnsd_path = shutil.which('rnsd')
+                    if not rnsd_path:
+                        rnsd_path = '/usr/local/bin/rnsd'
+
+                    service_content = f'''[Unit]
 Description=Reticulum Network Stack Daemon
 After=network.target
 
@@ -2417,35 +2480,35 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 '''
-                service_path = '/etc/systemd/system/rnsd.service'
+                    service_path = '/etc/systemd/system/rnsd.service'
 
-                # Write service file
-                with open(service_path, 'w') as f:
-                    f.write(service_content)
+                    # Write service file
+                    with open(service_path, 'w') as f:
+                        f.write(service_content)
 
-                # Reload systemd and enable service
-                subprocess.run(['systemctl', 'daemon-reload'], check=True, timeout=30)
-                subprocess.run(['systemctl', 'enable', 'rnsd'], check=True, timeout=30)
-                subprocess.run(['systemctl', 'start', 'rnsd'], check=True, timeout=30)
+                    # Reload systemd and enable service
+                    subprocess.run(['systemctl', 'daemon-reload'], check=True, timeout=30)
+                    subprocess.run(['systemctl', 'enable', 'rnsd'], check=True, timeout=30)
+                    subprocess.run(['systemctl', 'start', 'rnsd'], check=True, timeout=30)
 
-                GLib.idle_add(self._install_service_complete, True, "Service installed and started")
-            except PermissionError:
-                GLib.idle_add(self._install_service_complete, False, "Permission denied - run MeshForge as root")
-            except subprocess.CalledProcessError as e:
-                GLib.idle_add(self._install_service_complete, False, f"systemctl failed: {e}")
-            except Exception as e:
-                GLib.idle_add(self._install_service_complete, False, str(e))
+                    GLib.idle_add(self._install_service_complete, True, "Service installed and started")
+                except PermissionError:
+                    GLib.idle_add(self._install_service_complete, False, "Permission denied - run MeshForge as root")
+                except subprocess.CalledProcessError as e:
+                    GLib.idle_add(self._install_service_complete, False, f"systemctl failed: {e}")
+                except Exception as e:
+                    GLib.idle_add(self._install_service_complete, False, str(e))
 
-        threading.Thread(target=do_install, daemon=True).start()
+            threading.Thread(target=do_install, daemon=True).start()
 
     def _install_service_complete(self, success, message):
-        """Handle service installation completion"""
+        """Handle service installation/removal completion"""
         self.rns_install_service_btn.set_sensitive(True)
         if success:
             self.main_window.set_status_message(f"rnsd service: {message}")
-            self.rns_install_service_btn.set_label("Reinstall Service")
         else:
             self.main_window.set_status_message(f"Failed: {message}")
+        # Refresh will update button label based on current state
         self._refresh_all()
         return False
 
