@@ -18,7 +18,6 @@
 - [x] Window sizing constraints (min 800x600, smart defaults based on monitor)
 - [x] Responsive sidebar (auto-hide below 900px, F9 toggle)
 - [x] Keyboard shortcuts (Ctrl+1-9 navigation, F9 sidebar, F11 fullscreen)
-- [x] MeshForge University system (courses, lessons, assessments, progress tracking)
 - [x] Design patterns documentation
 - [x] Codebase structure analysis
 
@@ -55,7 +54,6 @@
 | ClockworkPi Support | uConsole hardware integration | hardware.py | Research |
 | Theme System | User theme customization | settings.py | Pending |
 | Plugin Architecture | Extensible plugin system | plugins/ | Pending |
-| More University Content | Additional courses/assessments | university/ | Ongoing |
 
 ### P4 - Future
 
@@ -86,15 +84,6 @@
 - [ ] Store-and-forward queue
 - [ ] Gateway configuration wizard
 - [ ] Network statistics dashboard
-
-### MeshForge University (Core Complete)
-- [x] Course management system
-- [x] Progress tracking
-- [x] Assessment engine
-- [x] 6 initial courses
-- [ ] Practical lab exercises
-- [ ] Certificate generation
-- [ ] More advanced courses
 
 ### Node Map
 - [x] Basic WebKit map view
@@ -132,7 +121,6 @@ Files exceeding 1000 lines (target: <800):
 - [ ] Consolidate duplicate utility functions
 
 ### Testing
-- [ ] Unit tests for university module
 - [ ] Unit tests for AREDN client
 - [ ] Integration tests for service management
 - [ ] UI snapshot tests (if feasible)
@@ -199,8 +187,9 @@ Files exceeding 1000 lines (target: <800):
 | GTK Panels | `src/gtk_ui/panels/` |
 | Utilities | `src/utils/` |
 | Configuration | `src/config/` |
-| University | `src/university/` |
+| Gateway | `src/gateway/` |
 | Tests | `tests/` |
+| AI Knowledge | `.claude/dude_ai_university.md` |
 | Analysis Docs | `.claude/analysis/` |
 | Research Docs | `.claude/research/` |
 | Session Notes | `.claude/sessions/` |
