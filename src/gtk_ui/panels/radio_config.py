@@ -1357,6 +1357,12 @@ class RadioConfigPanel(Gtk.Box):
 
     def _run_cli(self, args, callback=None):
         """Run meshtastic CLI command in background thread"""
+        # Log if this is a WRITE operation
+        if '--set' in args or '--setlat' in args:
+            import traceback
+            logger.warning(f"[RadioConfig] !!! CLI WRITE OPERATION: {args}")
+            logger.warning(f"[RadioConfig] CLI call stack:\n{''.join(traceback.format_stack()[-5:])}")
+
         def do_run():
             cli = self._find_cli()
             if not cli:
@@ -1420,7 +1426,10 @@ class RadioConfigPanel(Gtk.Box):
     def _apply_setting(self, setting, value):
         """Apply a single setting"""
         self.status_label.set_label(f"Applying {setting}={value}...")
-        logger.info(f"[RadioConfig] Applying setting: {setting}={value}")
+        # CRITICAL: Log stack trace to see WHO called this
+        import traceback
+        logger.warning(f"[RadioConfig] !!! APPLY SETTING CALLED: {setting}={value}")
+        logger.warning(f"[RadioConfig] Call stack:\n{''.join(traceback.format_stack()[-5:])}")
 
         def on_result(success, stdout, stderr):
             if success:
@@ -1672,13 +1681,32 @@ class RadioConfigPanel(Gtk.Box):
                 logger.debug(f"[RadioConfig] {name}: value is None, skipping")
                 return
             original_value = value
-            # Convert enum int to string if needed
-            if isinstance(value, int) and enum_map:
-                value = enum_map.get(value, str(value))
-                logger.info(f"[RadioConfig] {name}: converted enum {original_value} -> '{value}'")
-            elif isinstance(value, int):
-                value = str(value)
-                logger.warning(f"[RadioConfig] {name}: int {original_value} without enum_map, converted to string '{value}'")
+            logger.info(f"[RadioConfig] {name}: received value={value} type={type(value).__name__}")
+
+            # Handle protobuf enums and integers - convert to int for enum_map lookup
+            # Protobuf enums are NOT isinstance(x, int) but support int() conversion
+            int_value = None
+            try:
+                int_value = int(value)
+                logger.info(f"[RadioConfig] {name}: converted to int: {int_value}")
+            except (ValueError, TypeError):
+                pass
+
+            # Convert enum int to string if we have both int_value and enum_map
+            if int_value is not None and enum_map:
+                mapped = enum_map.get(int_value)
+                if mapped:
+                    value = mapped
+                    logger.info(f"[RadioConfig] {name}: mapped enum {int_value} -> '{value}'")
+                else:
+                    # int but not in map - try string representation
+                    value = str(original_value)
+                    logger.warning(f"[RadioConfig] {name}: int {int_value} not in enum_map, using str: '{value}'")
+            elif int_value is not None:
+                value = str(int_value)
+                logger.warning(f"[RadioConfig] {name}: int {int_value} without enum_map")
+
+            # Match against options (case-insensitive, underscore-insensitive)
             value_str = str(value).upper().replace('_', '')
             for i, opt in enumerate(options):
                 if opt.upper().replace('_', '') == value_str:
