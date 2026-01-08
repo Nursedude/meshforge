@@ -58,6 +58,9 @@ REBROADCAST_MODES = ["ALL", "ALL_SKIP_DECODING", "LOCAL_ONLY", "KNOWN_ONLY"]
 # GPS modes
 GPS_MODES = ["DISABLED", "ENABLED", "NOT_PRESENT"]
 
+# Channel roles (different from device roles)
+CHANNEL_ROLES = ["DISABLED", "PRIMARY", "SECONDARY"]
+
 # Display units
 DISPLAY_UNITS = ["METRIC", "IMPERIAL"]
 
@@ -690,7 +693,9 @@ class RadioConfigSimple(Gtk.Box):
                 hop_val = int(lora.hop_limit) if hasattr(lora, 'hop_limit') else 3
                 tx_val = int(lora.tx_power) if hasattr(lora, 'tx_power') else 20
                 tx_enabled = bool(lora.tx_enabled) if hasattr(lora, 'tx_enabled') else True
-                region_val = str(lora.region) if hasattr(lora, 'region') else 'Unknown'
+                # Convert region enum to int index, then look up name
+                region_int = int(lora.region) if hasattr(lora, 'region') else 0
+                region_val = REGIONS[region_int] if region_int < len(REGIONS) else str(region_int)
                 channel_num = int(lora.channel_num) if hasattr(lora, 'channel_num') else 0
 
                 # Advanced LoRa
@@ -760,7 +765,8 @@ class RadioConfigSimple(Gtk.Box):
                             else:
                                 ch0_psk_status = 'None (Open)'
                     if hasattr(ch0, 'role'):
-                        ch0_role = str(ch0.role)
+                        ch0_role_int = int(ch0.role)
+                        ch0_role = CHANNEL_ROLES[ch0_role_int] if ch0_role_int < len(CHANNEL_ROLES) else str(ch0_role_int)
 
                 # Build info text
                 info = f"=== LoRa ===\n"
@@ -812,9 +818,9 @@ class RadioConfigSimple(Gtk.Box):
 
                 # Check if config was actually received
                 config_warning = ""
-                if region_val == '0' or region_val == 'UNSET':
+                if region_val == 'UNSET' or region_int == 0:
                     config_warning = " (config may be stale - try again)"
-                    logger.warning("[RadioConfig] Config may not have been fully received (region=0)")
+                    logger.warning("[RadioConfig] Config may not have been fully received (region=UNSET)")
 
                 # Update UI
                 config_data = {

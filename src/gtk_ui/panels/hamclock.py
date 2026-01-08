@@ -116,11 +116,10 @@ class HamClockPanel(Gtk.Box):
         # Check service status on startup
         GLib.timeout_add(500, self._check_service_status)
 
-        # Auto-connect if URL is configured
-        if self._settings.get("url"):
-            GLib.timeout_add(1000, self._auto_connect)
+        # NOTE: Do NOT auto-connect - let user decide when to connect
+        # HamClock can be resource-intensive, user should opt-in
 
-        # Start auto-refresh if enabled
+        # Start auto-refresh if enabled (only refreshes data, doesn't connect)
         if self._settings.get("auto_refresh_enabled"):
             GLib.timeout_add(2000, self._start_auto_refresh)
 
@@ -1070,14 +1069,11 @@ class HamClockPanel(Gtk.Box):
         self.status_label.set_label(f"Connected to {url}")
         self.main_window.set_status_message("HamClock connected")
 
-        # Load live view - either in WebKit or open browser as fallback
-        live_url = f"{url}:{self._settings['live_port']}/live.html"
+        # Load live view in WebKit if available
+        # NOTE: Do NOT auto-open browser - user can click "Open in Browser" if needed
         if self.webview:
+            live_url = f"{url}:{self._settings['live_port']}/live.html"
             self.webview.load_uri(live_url)
-        else:
-            # WebKit not available (running as root) - open in browser
-            logger.info("[HamClock] WebKit not available, opening in browser")
-            self._open_url_in_browser(live_url)
 
         # Fetch space weather data
         self._fetch_space_weather()
