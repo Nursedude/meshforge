@@ -92,6 +92,20 @@ class MeshForgeApp(Adw.Application):
                 # Set default window icon
                 Gtk.Window.set_default_icon_name("meshforge-icon")
 
+                # Also try to symlink icon to system location for taskbar
+                icon_src = assets_dir / 'meshforge-icon.svg'
+                icon_dest = Path('/usr/share/icons/hicolor/scalable/apps/meshforge-icon.svg')
+                if icon_src.exists() and not icon_dest.exists():
+                    try:
+                        icon_dest.parent.mkdir(parents=True, exist_ok=True)
+                        import shutil
+                        shutil.copy(str(icon_src), str(icon_dest))
+                        # Update icon cache
+                        subprocess.run(['gtk-update-icon-cache', '-f', '/usr/share/icons/hicolor'],
+                                       capture_output=True, timeout=10)
+                    except Exception:
+                        pass  # Not critical if this fails
+
     def on_activate(self, app):
         """Called when application is activated"""
         logger.info("MeshForge GTK application activating...")
