@@ -1295,34 +1295,43 @@ class MeshToolsPanel(Gtk.Box):
         self._node_stats_label.set_label(f"Nodes: 0 | Last update: {datetime.now().strftime('%H:%M:%S')}")
 
     def _on_open_full_map(self, button):
-        """Open full map view - try meshing-around web UI or meshmap"""
-        meshbot_path = self._path_entry.get_text().strip()
+        """Open map view - check which ports are available first"""
+        import socket
 
-        # Check for meshing-around web server
-        map_urls = [
-            "http://localhost:5000",  # Flask default
-            "http://localhost:9443",  # meshtasticd web interface
-            "http://localhost:8000/map",  # meshmap
+        # Map URLs to check with their ports
+        map_options = [
+            ("http://localhost:9443", 9443, "Meshtastic Web"),  # meshtasticd
+            ("http://localhost:8080", 8080, "Meshtastic Alt"),
+            ("http://localhost:5000", 5000, "Flask/MeshBot"),
+            ("http://localhost:8000", 8000, "MeshMap"),
         ]
 
-        self._log_message("Opening map...")
+        self._log_message("Checking available map servers...")
         real_user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
 
-        # Try to open first available
-        for url in map_urls:
+        # Check which ports are actually open
+        for url, port, name in map_options:
             try:
-                subprocess.Popen(
-                    ['sudo', '-u', real_user, 'xdg-open', url],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True
-                )
-                self._log_message(f"Opening {url}")
-                return
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex(('localhost', port))
+                sock.close()
+
+                if result == 0:
+                    self._log_message(f"Found {name} on port {port}")
+                    subprocess.Popen(
+                        ['sudo', '-u', real_user, 'xdg-open', url],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True
+                    )
+                    self._log_message(f"Opening {url}")
+                    return
             except Exception:
                 continue
 
-        self._log_message("Map server not detected. Start meshbot web interface first.")
+        self._log_message("No map server found on common ports (9443, 8080, 5000, 8000)")
+        self._log_message("Make sure meshtasticd or meshbot web is running")
 
     def _on_export_geojson(self, button):
         """Export nodes as GeoJSON"""
@@ -1343,8 +1352,36 @@ class MeshToolsPanel(Gtk.Box):
         self._run_network_test("Traceroute", ['traceroute', '-m', '10', '8.8.8.8'])
 
     def _on_dns_test(self, button):
-        """Run DNS check"""
-        self._run_network_test("DNS Check", ['nslookup', 'google.com'])
+        """Run DNS check - try multiple tools"""
+        self._log_message("Running DNS Check...")
+
+        def do_dns_test():
+            import socket
+            test_hosts = ['google.com', 'cloudflare.com', '1.1.1.1']
+            results = []
+
+            for host in test_hosts:
+                try:
+                    ip = socket.gethostbyname(host)
+                    results.append(f"  {host} -> {ip}")
+                except socket.gaierror as e:
+                    results.append(f"  {host} -> FAILED ({e})")
+
+            output = "=== DNS Resolution Test ===\n" + "\n".join(results)
+
+            # Also try to get nameservers from resolv.conf
+            try:
+                with open('/etc/resolv.conf', 'r') as f:
+                    resolv = f.read()
+                    nameservers = [line for line in resolv.split('\n') if line.startswith('nameserver')]
+                    if nameservers:
+                        output += "\n\n=== Nameservers ===\n" + "\n".join(nameservers)
+            except Exception:
+                pass
+
+            GLib.idle_add(self._log_message, output)
+
+        threading.Thread(target=do_dns_test, daemon=True).start()
 
     def _on_port_scan(self, button):
         """Run port scan on localhost"""
