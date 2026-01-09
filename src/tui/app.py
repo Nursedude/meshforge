@@ -39,6 +39,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from __version__ import __version__
 
+# Import centralized service checker
+try:
+    from utils.service_check import check_service, check_port, ServiceStatus
+except ImportError:
+    check_service = None
+    check_port = None
+    ServiceStatus = None
+
 
 class StatusWidget(Static):
     """Status bar widget showing service state"""
@@ -103,21 +111,34 @@ class DashboardPane(Container):
     @work(exclusive=True)
     async def refresh_data(self):
         """Refresh dashboard data"""
-        # Service status
+        # Service status - use centralized check if available
         try:
-            result = await asyncio.create_subprocess_exec(
-                'systemctl', 'is-active', 'meshtasticd',
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, _ = await result.communicate()
-            status = stdout.decode().strip()
-
             status_widget = self.query_one("#service-status", Static)
-            if status == "active":
-                status_widget.update("[green]Running[/green]")
+
+            if check_service:
+                # Use centralized service checker (run in thread pool)
+                loop = asyncio.get_event_loop()
+                service_status = await loop.run_in_executor(
+                    None, lambda: check_service('meshtasticd')
+                )
+                if service_status.available:
+                    status_widget.update("[green]Running[/green]")
+                else:
+                    status_widget.update(f"[red]{service_status.message}[/red]")
             else:
-                status_widget.update("[red]Stopped[/red]")
+                # Fallback to direct systemctl
+                result = await asyncio.create_subprocess_exec(
+                    'systemctl', 'is-active', 'meshtasticd',
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, _ = await result.communicate()
+                status = stdout.decode().strip()
+
+                if status == "active":
+                    status_widget.update("[green]Running[/green]")
+                else:
+                    status_widget.update("[red]Stopped[/red]")
         except Exception as e:
             self.query_one("#service-status", Static).update(f"[red]Error[/red]")
 

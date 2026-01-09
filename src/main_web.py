@@ -41,6 +41,13 @@ except ImportError:
                    capture_output=True, timeout=120)
     from flask import Flask, render_template_string, jsonify, request, redirect, url_for, session
 
+# Import centralized service checker
+try:
+    from utils.service_check import check_service as _check_service, check_port
+except ImportError:
+    _check_service = None
+    check_port = None
+
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 
@@ -297,7 +304,13 @@ def find_meshtastic_cli():
 
 
 def check_service_status():
-    """Check meshtasticd service status using multiple methods"""
+    """Check meshtasticd service status using centralized checker"""
+    # Use centralized service checker if available
+    if _check_service:
+        status = _check_service('meshtasticd')
+        return status.available, status.message
+
+    # Fallback to manual checks if centralized checker not available
     is_running = False
     status_detail = "Stopped"
 
