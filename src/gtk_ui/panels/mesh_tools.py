@@ -972,11 +972,18 @@ class MeshToolsPanel(Gtk.Box):
 
         def do_start():
             try:
-                launch_script = Path(meshbot_path) / "launch.sh"
-                if launch_script.exists():
-                    cmd = ['bash', str(launch_script)]
+                # Check for virtual environment
+                venv_path = Path(meshbot_path) / "venv"
+                venv_python = venv_path / "bin" / "python3"
+
+                if venv_python.exists():
+                    # Use venv python
+                    cmd = [str(venv_python), str(script_path)]
+                    GLib.idle_add(self._log_message, "Using virtual environment")
                 else:
+                    # Run directly with system python3
                     cmd = ['python3', str(script_path)]
+                    GLib.idle_add(self._log_message, "Using system Python (no venv found)")
 
                 GLib.idle_add(self._log_message, f"Running: {' '.join(cmd)}")
 
@@ -1005,6 +1012,11 @@ class MeshToolsPanel(Gtk.Box):
                         lines = output.strip().split('\n')[:10]
                         for line in lines:
                             GLib.idle_add(self._log_message, f"  {line}")
+                    # Suggest venv setup if missing
+                    if not venv_python.exists():
+                        GLib.idle_add(self._log_message, "Tip: Create venv with:")
+                        GLib.idle_add(self._log_message, f"  cd {meshbot_path} && python3 -m venv venv")
+                        GLib.idle_add(self._log_message, "  venv/bin/pip install -r requirements.txt")
 
             except Exception as e:
                 GLib.idle_add(self._log_message, f"Start error: {e}")
@@ -1035,6 +1047,7 @@ class MeshToolsPanel(Gtk.Box):
         def do_install():
             try:
                 install_dir = Path(install_path)
+                real_user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
 
                 if install_dir.exists():
                     GLib.idle_add(self._log_message, "Updating existing installation...")
@@ -1051,11 +1064,44 @@ class MeshToolsPanel(Gtk.Box):
                         capture_output=True, text=True, timeout=300
                     )
 
-                if result.returncode == 0:
-                    GLib.idle_add(self._log_message, "Installation complete!")
-                    GLib.idle_add(self._check_meshbot_status)
-                else:
+                if result.returncode != 0:
                     GLib.idle_add(self._log_message, f"Install failed: {result.stderr}")
+                    return
+
+                # Set ownership to real user
+                GLib.idle_add(self._log_message, "Setting permissions...")
+                subprocess.run(['sudo', 'chown', '-R', f'{real_user}:{real_user}', str(install_dir)], timeout=60)
+
+                # Set up virtual environment if not exists
+                venv_path = install_dir / "venv"
+                if not venv_path.exists():
+                    GLib.idle_add(self._log_message, "Creating virtual environment...")
+                    venv_result = subprocess.run(
+                        ['python3', '-m', 'venv', str(venv_path)],
+                        capture_output=True, text=True, timeout=120,
+                        cwd=str(install_dir)
+                    )
+                    if venv_result.returncode != 0:
+                        GLib.idle_add(self._log_message, f"Venv creation failed: {venv_result.stderr}")
+                        GLib.idle_add(self._log_message, "You can create it manually later")
+                    else:
+                        # Install requirements
+                        req_file = install_dir / "requirements.txt"
+                        if req_file.exists():
+                            GLib.idle_add(self._log_message, "Installing dependencies (this may take a while)...")
+                            pip_path = venv_path / "bin" / "pip"
+                            pip_result = subprocess.run(
+                                [str(pip_path), 'install', '-r', str(req_file)],
+                                capture_output=True, text=True, timeout=600,
+                                cwd=str(install_dir)
+                            )
+                            if pip_result.returncode == 0:
+                                GLib.idle_add(self._log_message, "Dependencies installed!")
+                            else:
+                                GLib.idle_add(self._log_message, f"Pip install warning: {pip_result.stderr[:200]}")
+
+                GLib.idle_add(self._log_message, "Installation complete!")
+                GLib.idle_add(self._check_meshbot_status)
 
             except Exception as e:
                 GLib.idle_add(self._log_message, f"Install error: {e}")
