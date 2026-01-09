@@ -335,6 +335,26 @@ class MeshToolsPanel(Gtk.Box):
 
         config_box.append(config_btn_row)
 
+        # Log/Debug buttons row
+        log_btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+
+        view_log_btn = Gtk.Button(label="View Log")
+        view_log_btn.connect("clicked", self._on_view_meshbot_log)
+        view_log_btn.set_tooltip_text("View MeshBot log file")
+        log_btn_row.append(view_log_btn)
+
+        tail_log_btn = Gtk.Button(label="Tail Log")
+        tail_log_btn.connect("clicked", self._on_tail_meshbot_log)
+        tail_log_btn.set_tooltip_text("Show last 50 lines of log")
+        log_btn_row.append(tail_log_btn)
+
+        journal_btn = Gtk.Button(label="Journal")
+        journal_btn.connect("clicked", self._on_view_journal)
+        journal_btn.set_tooltip_text("View systemd journal for mesh_bot")
+        log_btn_row.append(journal_btn)
+
+        config_box.append(log_btn_row)
+
         config_frame.set_child(config_box)
         box.append(config_frame)
 
@@ -1152,6 +1172,77 @@ class MeshToolsPanel(Gtk.Box):
         meshbot_path = self._path_entry.get_text().strip()
         self._open_folder(meshbot_path)
 
+    def _on_view_meshbot_log(self, button):
+        """View MeshBot log file"""
+        meshbot_path = self._path_entry.get_text().strip()
+        log_files = [
+            Path(meshbot_path) / "prior_log.txt",
+            Path(meshbot_path) / "prior_debug_log.txt",
+            Path(meshbot_path) / "logs" / "mesh_bot.log",
+        ]
+
+        for log_path in log_files:
+            if log_path.exists():
+                try:
+                    content = log_path.read_text()
+                    self._set_log_text(f"=== {log_path} ===\n\n{content[-10000:]}")  # Last 10k chars
+                    self._log_message(f"Loaded log from {log_path}")
+                    return
+                except Exception as e:
+                    self._log_message(f"Error reading {log_path}: {e}")
+
+        self._log_message("No log files found")
+
+    def _on_tail_meshbot_log(self, button):
+        """Show last 50 lines of log"""
+        meshbot_path = self._path_entry.get_text().strip()
+        log_files = [
+            Path(meshbot_path) / "prior_log.txt",
+            Path(meshbot_path) / "prior_debug_log.txt",
+        ]
+
+        for log_path in log_files:
+            if log_path.exists():
+                try:
+                    lines = log_path.read_text().strip().split('\n')
+                    tail = '\n'.join(lines[-50:])
+                    self._set_log_text(f"=== Last 50 lines of {log_path.name} ===\n\n{tail}")
+                    return
+                except Exception as e:
+                    self._log_message(f"Error reading {log_path}: {e}")
+
+        self._log_message("No log files found")
+
+    def _on_view_journal(self, button):
+        """View systemd journal for mesh_bot process"""
+        self._log_message("Fetching journal entries...")
+
+        def fetch_journal():
+            try:
+                # Get journal entries for mesh_bot.py process
+                result = subprocess.run(
+                    ['journalctl', '--no-pager', '-n', '100', '-g', 'mesh_bot'],
+                    capture_output=True, text=True, timeout=30
+                )
+
+                if result.stdout.strip():
+                    GLib.idle_add(self._set_log_text, f"=== Journal (mesh_bot) ===\n\n{result.stdout}")
+                else:
+                    # Try getting recent python entries
+                    result2 = subprocess.run(
+                        ['journalctl', '--no-pager', '-n', '50', '-u', 'python3'],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    if result2.stdout.strip():
+                        GLib.idle_add(self._set_log_text, f"=== Journal (python3) ===\n\n{result2.stdout}")
+                    else:
+                        GLib.idle_add(self._log_message, "No journal entries found for mesh_bot")
+
+            except Exception as e:
+                GLib.idle_add(self._log_message, f"Journal error: {e}")
+
+        threading.Thread(target=fetch_journal, daemon=True).start()
+
     def _on_refresh_map(self, button):
         """Refresh node list"""
         self._log_message("Refreshing node list...")
@@ -1160,9 +1251,34 @@ class MeshToolsPanel(Gtk.Box):
         self._node_stats_label.set_label(f"Nodes: 0 | Last update: {datetime.now().strftime('%H:%M:%S')}")
 
     def _on_open_full_map(self, button):
-        """Open full map view"""
-        self._log_message("Opening map in browser...")
-        # TODO: Launch map view
+        """Open full map view - try meshing-around web UI or meshmap"""
+        meshbot_path = self._path_entry.get_text().strip()
+
+        # Check for meshing-around web server
+        map_urls = [
+            "http://localhost:5000",  # Flask default
+            "http://localhost:8080",  # Alternative
+            "http://localhost:8000/map",  # meshmap
+        ]
+
+        self._log_message("Opening map...")
+        real_user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
+
+        # Try to open first available
+        for url in map_urls:
+            try:
+                subprocess.Popen(
+                    ['sudo', '-u', real_user, 'xdg-open', url],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+                self._log_message(f"Opening {url}")
+                return
+            except Exception:
+                continue
+
+        self._log_message("Map server not detected. Start meshbot web interface first.")
 
     def _on_export_geojson(self, button):
         """Export nodes as GeoJSON"""
