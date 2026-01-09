@@ -1343,8 +1343,36 @@ class MeshToolsPanel(Gtk.Box):
         self._run_network_test("Traceroute", ['traceroute', '-m', '10', '8.8.8.8'])
 
     def _on_dns_test(self, button):
-        """Run DNS check"""
-        self._run_network_test("DNS Check", ['nslookup', 'google.com'])
+        """Run DNS check - try multiple tools"""
+        self._log_message("Running DNS Check...")
+
+        def do_dns_test():
+            import socket
+            test_hosts = ['google.com', 'cloudflare.com', '1.1.1.1']
+            results = []
+
+            for host in test_hosts:
+                try:
+                    ip = socket.gethostbyname(host)
+                    results.append(f"  {host} -> {ip}")
+                except socket.gaierror as e:
+                    results.append(f"  {host} -> FAILED ({e})")
+
+            output = "=== DNS Resolution Test ===\n" + "\n".join(results)
+
+            # Also try to get nameservers from resolv.conf
+            try:
+                with open('/etc/resolv.conf', 'r') as f:
+                    resolv = f.read()
+                    nameservers = [line for line in resolv.split('\n') if line.startswith('nameserver')]
+                    if nameservers:
+                        output += "\n\n=== Nameservers ===\n" + "\n".join(nameservers)
+            except Exception:
+                pass
+
+            GLib.idle_add(self._log_message, output)
+
+        threading.Thread(target=do_dns_test, daemon=True).start()
 
     def _on_port_scan(self, button):
         """Run port scan on localhost"""
