@@ -9,7 +9,7 @@ import socket
 from unittest.mock import patch, MagicMock
 import subprocess
 
-from utils.service_check import (
+from src.utils.service_check import (
     check_port,
     check_service,
     check_systemd_service,
@@ -118,7 +118,7 @@ class TestCheckService:
 
     def test_meshtasticd_available(self):
         """Test detection of available meshtasticd."""
-        with patch('utils.service_check.check_port') as mock_port:
+        with patch('src.utils.service_check.check_port') as mock_port:
             mock_port.return_value = True
 
             status = check_service('meshtasticd')
@@ -130,8 +130,8 @@ class TestCheckService:
 
     def test_hamclock_not_running(self):
         """Test detection of stopped hamclock."""
-        with patch('utils.service_check.check_port') as mock_port:
-            with patch('utils.service_check.check_systemd_service') as mock_systemd:
+        with patch('src.utils.service_check.check_port') as mock_port:
+            with patch('src.utils.service_check.check_systemd_service') as mock_systemd:
                 mock_port.return_value = False
                 mock_systemd.return_value = (False, True)  # not running, but enabled
 
@@ -144,8 +144,8 @@ class TestCheckService:
 
     def test_unknown_service(self):
         """Test handling of unknown service."""
-        with patch('utils.service_check.check_port') as mock_port:
-            with patch('utils.service_check.check_systemd_service') as mock_systemd:
+        with patch('src.utils.service_check.check_port') as mock_port:
+            with patch('src.utils.service_check.check_systemd_service') as mock_systemd:
                 mock_port.return_value = False
                 mock_systemd.return_value = (False, False)
 
@@ -178,8 +178,8 @@ class TestRequireService:
 
     def test_logs_warning_on_unavailable(self):
         """Test that warning is logged when service unavailable."""
-        with patch('utils.service_check.check_service') as mock_check:
-            with patch('utils.service_check.logger') as mock_logger:
+        with patch('src.utils.service_check.check_service') as mock_check:
+            with patch('src.utils.service_check.logger') as mock_logger:
                 mock_check.return_value = ServiceStatus(
                     name='test',
                     available=False,
