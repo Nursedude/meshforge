@@ -340,6 +340,10 @@ class MeshForgeWindow(Adw.ApplicationWindow):
             ("config", self._add_config_page),
             ("radio_config", self._add_radio_config_page),
             ("rns", self._add_rns_page),
+            # Consolidated tool panels
+            ("mesh_tools", self._add_mesh_tools_page),
+            ("ham_tools", self._add_ham_tools_page),
+            # Legacy panels (still available)
             ("map", self._add_map_page),
             ("hamclock", self._add_hamclock_page),
             ("cli", self._add_cli_page),
@@ -487,25 +491,26 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         listbox.connect("row-selected", self._on_nav_selected)
         scrolled.set_child(listbox)
 
-        # Navigation items
         # Navigation items with feature requirements
         # Format: (page_name, label, icon, required_feature or None)
+        # Reorganized into: Core, Consolidated Tools, Legacy/Advanced, Settings
         all_nav_items = [
+            # Core functionality
             ("dashboard", "Dashboard", "utilities-system-monitor-symbolic", None),
             ("service", "Service Management", "system-run-symbolic", None),
             ("install", "Install / Update", "system-software-install-symbolic", None),
             ("config", "Config File Manager", "document-edit-symbolic", None),
             ("radio_config", "Radio Configuration", "network-wireless-symbolic", None),
             ("rns", "Reticulum (RNS)", "network-transmit-receive-symbolic", "rns_integration"),
-            ("map", "Node Map", "mark-location-symbolic", None),
-            ("hamclock", "HamClock", "weather-clear-symbolic", "hamclock"),
+            # Consolidated tool panels (new)
+            ("mesh_tools", "Mesh Tools", "network-workgroup-symbolic", None),
+            ("ham_tools", "Ham Tools", "audio-speakers-symbolic", None),
+            # Advanced/Legacy panels
             ("cli", "Meshtastic CLI", "utilities-terminal-symbolic", None),
             ("hardware", "Hardware Detection", "drive-harddisk-symbolic", None),
             ("tools", "System Tools", "applications-utilities-symbolic", None),
-            ("diagnostics", "Network Diagnostics", "dialog-information-symbolic", None),
             ("aredn", "AREDN Mesh", "network-server-symbolic", "aredn_integration"),
-            ("amateur", "Amateur Radio", "audio-speakers-symbolic", "amateur_radio"),
-            ("meshbot", "MeshBot", "mail-send-symbolic", None),
+            # Settings
             ("settings", "Settings", "preferences-system-symbolic", None),
         ]
 
@@ -669,6 +674,20 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         panel = MeshBotPanel(self)
         self.content_stack.add_named(panel, "meshbot")
         self.meshbot_panel = panel
+
+    def _add_mesh_tools_page(self):
+        """Add the consolidated Mesh Tools page (MeshBot, Map, Diagnostics)"""
+        from .panels.mesh_tools import MeshToolsPanel
+        panel = MeshToolsPanel(self)
+        self.content_stack.add_named(panel, "mesh_tools")
+        self.mesh_tools_panel = panel
+
+    def _add_ham_tools_page(self):
+        """Add the consolidated Ham Tools page (HamClock, Propagation, Callsign)"""
+        from .panels.ham_tools import HamToolsPanel
+        panel = HamToolsPanel(self)
+        self.content_stack.add_named(panel, "ham_tools")
+        self.ham_tools_panel = panel
 
     def _add_settings_page(self):
         """Add the settings page"""
