@@ -17,6 +17,16 @@ from pathlib import Path
 from .config import GatewayConfig
 from .node_tracker import UnifiedNodeTracker, UnifiedNode
 
+# Import routing classifier with confidence scoring
+try:
+    from utils.classifier import (
+        RoutingClassifier, RoutingCategory,
+        create_routing_system, ClassificationResult
+    )
+    CLASSIFIER_AVAILABLE = True
+except ImportError:
+    CLASSIFIER_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 # Import centralized path utility
@@ -95,8 +105,33 @@ class RNSMeshtasticBridge:
             'messages_mesh_to_rns': 0,
             'messages_rns_to_mesh': 0,
             'errors': 0,
+            'bounced': 0,
             'start_time': None,
         }
+
+        # Routing classifier with confidence scoring
+        self._classifier = None
+        self._last_classification: Optional[ClassificationResult] = None
+        if CLASSIFIER_AVAILABLE:
+            fixes_path = get_real_user_home() / '.config' / 'meshforge' / 'routing_fixes.json'
+            rules = [
+                {
+                    'name': rule.name,
+                    'enabled': rule.enabled,
+                    'direction': rule.direction,
+                    'source_filter': rule.source_filter,
+                    'dest_filter': rule.dest_filter,
+                    'message_filter': rule.message_filter,
+                    'priority': rule.priority
+                }
+                for rule in self.config.routing_rules
+            ]
+            self._classifier = create_routing_system(
+                rules=rules,
+                bounce_threshold=0.3,
+                fixes_path=fixes_path
+            )
+            logger.info("Routing classifier initialized with confidence scoring")
 
     @property
     def is_running(self) -> bool:
@@ -606,26 +641,116 @@ class RNSMeshtasticBridge:
             logger.error(f"Error processing RNS announce: {e}")
 
     def _should_bridge(self, msg: BridgedMessage) -> bool:
-        """Check if message should be bridged based on routing rules"""
+        """
+        Check if message should be bridged based on routing rules.
+
+        Uses confidence-scored classifier when available:
+        - High confidence (>0.7): Route immediately
+        - Low confidence (<0.3): Bounce to queue for review
+        - Medium confidence: Route with logging
+        """
         if not self.config.enabled:
             return False
 
-        # Check routing rules
+        # Use classifier if available
+        if self._classifier:
+            return self._classify_message(msg)
+
+        # Fallback to legacy logic
+        return self._should_bridge_legacy(msg)
+
+    def _classify_message(self, msg: BridgedMessage) -> bool:
+        """Classify message using confidence-scored routing."""
+        msg_id = f"{msg.source_network}:{msg.source_id}:{msg.timestamp.isoformat()}"
+
+        result = self._classifier.classify(msg_id, {
+            'source_network': msg.source_network,
+            'source_id': msg.source_id,
+            'destination_id': msg.destination_id,
+            'content': msg.content,
+            'is_broadcast': msg.is_broadcast,
+            'metadata': msg.metadata
+        })
+
+        self._last_classification = result
+
+        # Handle bounced messages
+        if result.bounced:
+            self.stats['bounced'] += 1
+            logger.info(
+                f"Message bounced (confidence {result.confidence:.2f}): "
+                f"{msg.source_id[:8]}... -> {result.bounce_reason}"
+            )
+            # Bounced messages go to queue category, don't bridge immediately
+            return result.category == RoutingCategory.QUEUE.value
+
+        # Log classification decision
+        if result.confidence < 0.7:
+            logger.debug(
+                f"Routing decision (confidence {result.confidence:.2f}): "
+                f"{result.category} - {result.reason}"
+            )
+
+        # Determine if we should bridge based on category
+        if result.category == RoutingCategory.DROP.value:
+            return False
+        elif result.category in (RoutingCategory.BRIDGE_RNS.value, RoutingCategory.BRIDGE_MESH.value):
+            return True
+        elif result.category == RoutingCategory.QUEUE.value:
+            # Queued items need manual review
+            return False
+
+        return False
+
+    def _should_bridge_legacy(self, msg: BridgedMessage) -> bool:
+        """Legacy routing logic (fallback when classifier unavailable)."""
         for rule in self.config.routing_rules:
             if not rule.enabled:
                 continue
 
-            # Check direction
             if msg.source_network == "meshtastic" and rule.direction == "rns_to_mesh":
                 continue
             if msg.source_network == "rns" and rule.direction == "mesh_to_rns":
                 continue
 
-            # Apply filters (TODO: implement regex matching)
             return True
 
-        # Use default route
         return self.config.default_route in ("bidirectional", f"{msg.source_network}_to_*")
+
+    def get_routing_stats(self) -> Dict[str, Any]:
+        """Get routing classifier statistics."""
+        stats = dict(self.stats)
+        if self._classifier:
+            classifier_stats = self._classifier.get_stats()
+            stats['classifier'] = classifier_stats
+            stats['bouncer_queue'] = len(self._classifier.bouncer.get_queue())
+        return stats
+
+    def get_last_classification(self) -> Optional[Dict]:
+        """Get the last classification result for debugging."""
+        if self._last_classification:
+            return self._last_classification.to_dict()
+        return None
+
+    def fix_routing(self, msg_id: str, correct_category: str) -> bool:
+        """
+        Record a user correction for routing decisions.
+
+        This is the 'fix button' - allows users to correct mistakes
+        and improve the system over time.
+        """
+        if not self._classifier or not self._classifier.fix_registry:
+            return False
+
+        # Create a dummy result for the fix
+        result = ClassificationResult(
+            input_id=msg_id,
+            category="unknown",
+            confidence=0.5
+        )
+        self._classifier.fix_registry.add_fix(result, correct_category)
+        logger.info(f"Routing fix recorded: {msg_id} -> {correct_category}")
+        return True
 
     def _process_mesh_to_rns(self, msg: BridgedMessage):
         """Process message from Meshtastic to RNS"""

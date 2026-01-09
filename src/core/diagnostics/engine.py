@@ -52,6 +52,19 @@ except ImportError:
             return Path(f'/home/{sudo_user}')
         return Path.home()
 
+# Backward compatibility alias
+_get_real_user_home = get_real_user_home
+
+# Import notification classifier for prioritization
+try:
+    from utils.classifier import (
+        NotificationClassifier, NotificationCategory,
+        create_notification_system, ClassificationResult
+    )
+    CLASSIFIER_AVAILABLE = True
+except ImportError:
+    CLASSIFIER_AVAILABLE = False
+
 
 class DiagnosticEngine:
     """
@@ -109,6 +122,17 @@ class DiagnosticEngine:
         # Paths
         self._diag_dir = _get_real_user_home() / '.config' / 'meshforge' / 'diagnostics'
         self._ensure_dirs()
+
+        # Notification classifier for "tap on shoulder" pattern
+        self._notification_classifier = None
+        self._notification_callbacks: List[EventCallback] = []
+        if CLASSIFIER_AVAILABLE:
+            fixes_path = self._diag_dir / 'notification_fixes.json'
+            self._notification_classifier = create_notification_system(
+                bounce_threshold=0.2,
+                fixes_path=fixes_path
+            )
+            logger.debug("Notification classifier initialized")
 
         logger.info("DiagnosticEngine initialized")
 
@@ -1403,7 +1427,7 @@ class DiagnosticEngine:
         # Persist to file
         self._write_event_to_file(event)
 
-        # Notify callbacks
+        # Notify all event callbacks (always)
         with self._callbacks_lock:
             callbacks = list(self._event_callbacks)
         for cb in callbacks:
@@ -1412,7 +1436,85 @@ class DiagnosticEngine:
             except Exception as e:
                 logger.error(f"Event callback error: {e}")
 
+        # Classify for user notification ("tap on shoulder")
+        self._maybe_notify_user(event)
+
         return event
+
+    def _maybe_notify_user(self, event: DiagnosticEvent):
+        """
+        Classify event and notify user if warranted.
+
+        Implements "tap on shoulder" pattern:
+        - Only notify for important/critical events
+        - High confidence threshold prevents alert fatigue
+        - User corrections improve classification over time
+        """
+        if not self._notification_classifier:
+            return
+
+        event_id = f"{event.source}:{event.timestamp.isoformat()}"
+
+        result = self._notification_classifier.classify(event_id, {
+            'severity': event.severity.value.upper(),
+            'source': event.source,
+            'message': event.message,
+            'category': event.category.value if event.category else ''
+        })
+
+        # Only notify user for high-priority, high-confidence events
+        if self._notification_classifier.should_notify_user(result):
+            self._notify_user_callbacks(event, result)
+
+    def _notify_user_callbacks(self, event: DiagnosticEvent, classification):
+        """Notify registered user notification callbacks."""
+        with self._callbacks_lock:
+            callbacks = list(self._notification_callbacks)
+        for cb in callbacks:
+            try:
+                cb(event)
+            except Exception as e:
+                logger.error(f"User notification callback error: {e}")
+
+    def register_notification_callback(self, callback: EventCallback):
+        """
+        Register callback for user-facing notifications.
+
+        Unlike event callbacks (which receive all events), notification
+        callbacks only fire for high-priority events that should
+        interrupt the user - the "tap on shoulder" pattern.
+        """
+        with self._callbacks_lock:
+            self._notification_callbacks.append(callback)
+
+    def get_notification_stats(self) -> Dict:
+        """Get notification classifier statistics."""
+        if self._notification_classifier:
+            return self._notification_classifier.get_stats()
+        return {}
+
+    def fix_notification(self, event_id: str, correct_priority: str) -> bool:
+        """
+        Record a user correction for notification priority.
+
+        This is the 'fix button' - allows users to correct notification
+        decisions and reduce alert fatigue over time.
+
+        Args:
+            event_id: The event identifier
+            correct_priority: One of 'critical', 'important', 'info', 'background'
+        """
+        if not self._notification_classifier or not self._notification_classifier.fix_registry:
+            return False
+
+        result = ClassificationResult(
+            input_id=event_id,
+            category="unknown",
+            confidence=0.5
+        )
+        self._notification_classifier.fix_registry.add_fix(result, correct_priority)
+        logger.info(f"Notification fix recorded: {event_id} -> {correct_priority}")
+        return True
 
     def _write_event_to_file(self, event: DiagnosticEvent):
         """Write event to daily log file."""
