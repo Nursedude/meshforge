@@ -706,9 +706,128 @@ class HamToolsPanel(Gtk.Box):
         self._open_url(live_url)
 
     def _on_install_hamclock(self, button):
-        """Install HamClock"""
-        self._output_message("Installing HamClock...")
-        # TODO: Implement installation
+        """Install hamclock-web package for headless operation.
+
+        Downloads .deb from GitHub releases (hamclock-systemd project).
+        https://github.com/pa28/hamclock-systemd
+        """
+        self._output_message("Starting HamClock installation...")
+        button.set_sensitive(False)
+
+        def do_install():
+            import tempfile
+            errors = []
+
+            try:
+                # Check if already installed
+                result = subprocess.run(
+                    ['dpkg', '-l', 'hamclock-web'],
+                    capture_output=True, text=True, timeout=10
+                )
+                if result.returncode == 0 and 'ii' in result.stdout:
+                    GLib.idle_add(self._install_complete, True, "hamclock-web already installed", button)
+                    return
+
+                # Also check hamclock-systemd
+                result2 = subprocess.run(
+                    ['dpkg', '-l', 'hamclock-systemd'],
+                    capture_output=True, text=True, timeout=10
+                )
+                if result2.returncode == 0 and 'ii' in result2.stdout:
+                    GLib.idle_add(self._install_complete, True, "hamclock-systemd already installed", button)
+                    return
+
+                # Detect architecture
+                arch_result = subprocess.run(['dpkg', '--print-architecture'], capture_output=True, text=True, timeout=5)
+                arch = arch_result.stdout.strip() if arch_result.returncode == 0 else 'armhf'
+                GLib.idle_add(self._output_message, f"Detected architecture: {arch}")
+
+                # Version and package selection
+                version = "2.65.5"
+                if arch in ['armhf', 'arm64', 'aarch64']:
+                    # arm64 Pi can run armhf packages
+                    if arch in ['arm64', 'aarch64']:
+                        GLib.idle_add(self._output_message, "Enabling armhf multiarch for arm64...")
+                        subprocess.run(['sudo', 'dpkg', '--add-architecture', 'armhf'],
+                                       capture_output=True, timeout=30)
+                        subprocess.run(['sudo', 'apt', 'update'], capture_output=True, timeout=120)
+
+                    # Use hamclock-systemd for Pi (includes web service)
+                    deb_url = f"https://github.com/pa28/hamclock-systemd/releases/download/{version}/hamclock-systemd_{version}_armhf.deb"
+                    pkg_name = "hamclock-systemd"
+                elif arch == 'amd64':
+                    deb_url = f"https://github.com/pa28/hamclock-systemd/releases/download/{version}/hamclock_{version}_amd64.deb"
+                    pkg_name = "hamclock"
+                else:
+                    GLib.idle_add(self._install_complete, False, f"Unsupported architecture: {arch}", button)
+                    return
+
+                # Download .deb file
+                GLib.idle_add(self._output_message, f"Downloading {pkg_name}...")
+
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    deb_path = os.path.join(tmpdir, f"{pkg_name}.deb")
+
+                    # Download
+                    wget_result = subprocess.run(
+                        ['wget', '-q', '-O', deb_path, deb_url],
+                        capture_output=True, text=True, timeout=120
+                    )
+
+                    if wget_result.returncode != 0:
+                        # Try curl
+                        curl_result = subprocess.run(
+                            ['curl', '-sL', '-o', deb_path, deb_url],
+                            capture_output=True, text=True, timeout=120
+                        )
+                        if curl_result.returncode != 0:
+                            GLib.idle_add(self._install_complete, False, "Download failed", button)
+                            return
+
+                    # Install with apt
+                    GLib.idle_add(self._output_message, "Installing package...")
+
+                    install_cmd = ['sudo', 'apt', 'install', '-y', '-f', deb_path]
+                    install_result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=300)
+
+                    if install_result.returncode != 0:
+                        # Try dpkg + fix dependencies
+                        dpkg_cmd = ['sudo', 'dpkg', '-i', deb_path]
+                        subprocess.run(dpkg_cmd, capture_output=True, text=True, timeout=120)
+
+                        fix_cmd = ['sudo', 'apt-get', '-f', 'install', '-y']
+                        subprocess.run(fix_cmd, capture_output=True, timeout=120)
+
+                    # Enable and start service
+                    GLib.idle_add(self._output_message, "Enabling service...")
+                    subprocess.run(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, timeout=30)
+                    subprocess.run(['sudo', 'systemctl', 'enable', 'hamclock'], capture_output=True, timeout=30)
+                    subprocess.run(['sudo', 'systemctl', 'start', 'hamclock'], capture_output=True, timeout=30)
+
+                    # Verify
+                    check = subprocess.run(['systemctl', 'is-active', 'hamclock'], capture_output=True, text=True, timeout=10)
+                    if check.stdout.strip() == 'active':
+                        GLib.idle_add(self._install_complete, True, "HamClock installed and running!", button)
+                    else:
+                        GLib.idle_add(self._install_complete, True, "HamClock installed (start service manually)", button)
+
+            except subprocess.TimeoutExpired:
+                GLib.idle_add(self._install_complete, False, "Installation timed out", button)
+            except Exception as e:
+                GLib.idle_add(self._install_complete, False, str(e), button)
+
+        threading.Thread(target=do_install, daemon=True).start()
+
+    def _install_complete(self, success: bool, message: str, button):
+        """Handle installation completion"""
+        button.set_sensitive(True)
+        self._output_message(message)
+
+        if success:
+            # Update URL to localhost
+            self._hc_url_entry.set_text("http://localhost")
+            # Check status
+            GLib.timeout_add(2000, self._check_hamclock_status)
 
     def _on_refresh_bands(self, button):
         """Refresh band conditions"""
