@@ -19,6 +19,17 @@ try:
 except ImportError:
     distro = None  # Handle Windows where distro isn't available
 
+# Import centralized path utility for sudo compatibility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        """Fallback for when utils.paths is not available."""
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
+
 
 def check_root() -> bool:
     """
@@ -631,16 +642,16 @@ def get_config_dir(app_name: str = 'meshforge') -> Path:
         Path to configuration directory
     """
     if platform.system() == 'Windows':
-        base = Path(os.environ.get('APPDATA', Path.home()))
+        base = Path(os.environ.get('APPDATA', get_real_user_home()))
         return base / app_name
     elif platform.system() == 'Darwin':
-        return Path.home() / 'Library' / 'Application Support' / app_name
+        return get_real_user_home() / 'Library' / 'Application Support' / app_name
     else:
-        # Linux / Unix
+        # Linux / Unix - use get_real_user_home for sudo compatibility
         xdg_config = os.environ.get('XDG_CONFIG_HOME')
         if xdg_config:
             return Path(xdg_config) / app_name
-        return Path.home() / '.config' / app_name
+        return get_real_user_home() / '.config' / app_name
 
 
 def get_rns_config_dir() -> Path:
@@ -651,8 +662,8 @@ def get_rns_config_dir() -> Path:
         Path to ~/.reticulum or %APPDATA%/Reticulum
     """
     if platform.system() == 'Windows':
-        return Path(os.environ.get('APPDATA', Path.home())) / 'Reticulum'
-    return Path.home() / '.reticulum'
+        return Path(os.environ.get('APPDATA', get_real_user_home())) / 'Reticulum'
+    return get_real_user_home() / '.reticulum'
 
 
 def get_rns_interfaces_dir() -> Path:
