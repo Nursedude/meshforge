@@ -842,12 +842,12 @@ class MeshToolsPanel(Gtk.Box):
                     GLib.idle_add(self._log_message, "MeshBot is running - may conflict with browser")
                     GLib.idle_add(self._log_message, "Consider using TCP mode or stopping MeshBot")
 
-                # Open web interface anyway
-                GLib.idle_add(self._open_url, "http://localhost:8080")
+                # Open web interface anyway (meshtasticd uses port 9443)
+                GLib.idle_add(self._open_url, "http://localhost:9443")
 
             except Exception as e:
                 GLib.idle_add(self._log_message, f"Error: {e}")
-                GLib.idle_add(self._open_url, "http://localhost:8080")
+                GLib.idle_add(self._open_url, "http://localhost:9443")
 
         threading.Thread(target=check_and_open, daemon=True).start()
 
@@ -1257,7 +1257,7 @@ class MeshToolsPanel(Gtk.Box):
         # Check for meshing-around web server
         map_urls = [
             "http://localhost:5000",  # Flask default
-            "http://localhost:8080",  # Alternative
+            "http://localhost:9443",  # meshtasticd web interface
             "http://localhost:8000/map",  # meshmap
         ]
 
