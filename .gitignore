@@ -47,6 +47,7 @@ htmlcov/
 # Local configuration
 .env
 config.local.yml
+CLAUDE.local.md
 
 # Distribution / packaging
 *.tar.gz
