@@ -348,6 +348,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
             ("diagnostics", self._add_diagnostics_page),
             ("aredn", self._add_aredn_page),
             ("amateur", self._add_amateur_page),
+            ("meshbot", self._add_meshbot_page),
             ("settings", self._add_settings_page),
         ]
 
@@ -504,6 +505,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
             ("diagnostics", "Network Diagnostics", "dialog-information-symbolic", None),
             ("aredn", "AREDN Mesh", "network-server-symbolic", "aredn_integration"),
             ("amateur", "Amateur Radio", "audio-speakers-symbolic", "amateur_radio"),
+            ("meshbot", "MeshBot", "mail-send-symbolic", None),
             ("settings", "Settings", "preferences-system-symbolic", None),
         ]
 
@@ -660,6 +662,13 @@ class MeshForgeWindow(Adw.ApplicationWindow):
             placeholder.append(desc)
             self.content_stack.add_named(placeholder, "amateur")
             self.amateur_panel = None
+
+    def _add_meshbot_page(self):
+        """Add the MeshBot (meshing-around) integration page"""
+        from .panels.meshbot import MeshBotPanel
+        panel = MeshBotPanel(self)
+        self.content_stack.add_named(panel, "meshbot")
+        self.meshbot_panel = panel
 
     def _add_settings_page(self):
         """Add the settings page"""
