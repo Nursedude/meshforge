@@ -64,6 +64,23 @@ try:
 except ImportError:
     HAS_DIAGNOSTICS = False
 
+# Import service availability checker
+try:
+    from utils.service_check import check_port, check_service, require_service
+    HAS_SERVICE_CHECK = True
+except ImportError:
+    HAS_SERVICE_CHECK = False
+    def check_port(port, host='localhost', timeout=2.0):
+        import socket
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            result = sock.connect_ex((host, port))
+            sock.close()
+            return result == 0
+        except Exception:
+            return False
+
 
 class MeshToolsPanel(Gtk.Box):
     """
@@ -1741,10 +1758,50 @@ class MeshToolsPanel(Gtk.Box):
         self._log_message(f"Switched to {source} log source")
 
     def _on_refresh_log(self, button):
-        """Refresh current log"""
+        """Refresh current log based on selected source"""
         source = self._log_source.get_active_id()
         self._log_message(f"Refreshing {source} log...")
-        # TODO: Implement per-source refresh
+
+        def fetch_log():
+            content = ""
+            try:
+                if source == "meshbot":
+                    # Read MeshBot log
+                    meshbot_path = self._path_entry.get_text().strip() or "/opt/meshing-around"
+                    log_file = Path(meshbot_path) / "logs" / "meshbot.log"
+                    if log_file.exists():
+                        content = log_file.read_text()[-10000:]  # Last 10KB
+                    else:
+                        content = f"MeshBot log not found at {log_file}"
+
+                elif source == "diagnostics":
+                    # Get recent diagnostic events
+                    if HAS_DIAGNOSTICS:
+                        diag = get_diagnostics()
+                        events = diag.get_recent_events(50)
+                        lines = []
+                        for e in events:
+                            lines.append(f"[{e.timestamp.strftime('%H:%M:%S')}] {e.category.value}: {e.message}")
+                        content = "\n".join(lines) if lines else "No diagnostic events"
+                    else:
+                        content = "Diagnostics module not available"
+
+                elif source == "system":
+                    # Read system log for meshforge/meshtastic
+                    result = subprocess.run(
+                        ['journalctl', '-u', 'meshtasticd', '-n', '100', '--no-pager'],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    content = result.stdout if result.returncode == 0 else "No system log available"
+
+            except Exception as e:
+                content = f"Error fetching log: {e}"
+
+            GLib.idle_add(self._set_log_text, content)
+
+        threading.Thread(target=fetch_log, daemon=True).start()
 
     def _on_clear_log(self, button):
         """Clear log output"""
