@@ -16,6 +16,7 @@ Design principles:
 """
 
 import json
+import re
 import time
 import logging
 from dataclasses import dataclass, field, asdict
@@ -463,22 +464,53 @@ class RoutingClassifier(Classifier):
         if direction == 'rns_to_mesh' and source_network != 'rns':
             return False
 
-        # Source filter (simple substring for now, TODO: regex)
+        # Source filter (regex pattern)
         source_filter = rule.get('source_filter', '')
-        if source_filter and source_filter not in data.get('source_id', ''):
-            return False
+        if source_filter:
+            if not self._match_pattern(source_filter, data.get('source_id', '')):
+                return False
 
-        # Destination filter
+        # Destination filter (regex pattern)
         dest_filter = rule.get('dest_filter', '')
-        if dest_filter and dest_filter not in (data.get('destination_id') or ''):
-            return False
+        if dest_filter:
+            if not self._match_pattern(dest_filter, data.get('destination_id') or ''):
+                return False
 
-        # Message filter
+        # Message filter (regex pattern, case-insensitive)
         msg_filter = rule.get('message_filter', '')
-        if msg_filter and msg_filter.lower() not in data.get('content', '').lower():
-            return False
+        if msg_filter:
+            if not self._match_pattern(msg_filter, data.get('content', ''), case_insensitive=True):
+                return False
 
         return True
+
+    def _match_pattern(self, pattern: str, text: str, case_insensitive: bool = False) -> bool:
+        """
+        Match pattern against text. Supports both regex and simple substring.
+
+        If pattern looks like regex (contains regex metacharacters), use regex.
+        Otherwise, fall back to simple substring matching for backwards compatibility.
+        """
+        if not pattern or not text:
+            return not pattern  # Empty pattern matches everything
+
+        # Check if pattern contains regex metacharacters
+        regex_chars = r'[\^$.*+?{}()\[\]|\\]'
+        is_regex = bool(re.search(regex_chars, pattern))
+
+        if is_regex:
+            try:
+                flags = re.IGNORECASE if case_insensitive else 0
+                return bool(re.search(pattern, text, flags))
+            except re.error:
+                # Invalid regex, fall back to substring
+                logger.warning(f"Invalid regex pattern: {pattern}")
+                return pattern.lower() in text.lower() if case_insensitive else pattern in text
+        else:
+            # Simple substring match
+            if case_insensitive:
+                return pattern.lower() in text.lower()
+            return pattern in text
 
 
 # =============================================================================
