@@ -2,20 +2,83 @@
 GTK Helper Utilities for MeshForge
 
 Provides common UI patterns to reduce code redundancy across panels.
+Establishes human interface standards for consistent UX across the application.
 """
 
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import Gtk, Adw, GLib
+from gi.repository import Gtk, Adw, GLib, Pango
 
 import logging
+import threading
+import os
 from typing import Optional, Tuple, Callable, List
 import shutil
 import subprocess
 import shlex
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# UI Standards - Human Interface Constants
+# ============================================================================
+
+class UIStandards:
+    """
+    Human interface standards for consistent UX across MeshForge.
+
+    Usage:
+        from utils.gtk_helpers import UI
+        box.set_margin_start(UI.MARGIN_PANEL)
+    """
+
+    # Spacing constants (in pixels)
+    MARGIN_PANEL = 20       # Outer panel margin
+    MARGIN_SECTION = 15     # Section/frame margin
+    MARGIN_INNER = 10       # Inner content margin
+    MARGIN_COMPACT = 5      # Compact spacing
+
+    SPACING_PANEL = 15      # Between major panel sections
+    SPACING_SECTION = 10    # Between items in a section
+    SPACING_COMPACT = 5     # Compact spacing
+
+    # Log viewer defaults
+    LOG_MIN_HEIGHT = 150    # Minimum log viewer height
+    LOG_DEFAULT_HEIGHT = 200  # Default log viewer height
+    LOG_MAX_LINES = 500     # Maximum lines to keep in buffer
+
+    # CSS class names (standardized)
+    CSS_TITLE_MAIN = "title-1"
+    CSS_TITLE_SECTION = "title-2"
+    CSS_TITLE_SUB = "title-3"
+    CSS_HEADING = "heading"
+    CSS_DIM = "dim-label"
+    CSS_MONOSPACE = "monospace"
+    CSS_SUCCESS = "success"
+    CSS_WARNING = "warning"
+    CSS_ERROR = "error"
+    CSS_CARD = "card"
+    CSS_SUGGESTED = "suggested-action"
+    CSS_DESTRUCTIVE = "destructive-action"
+
+    # Icon names (standardized)
+    ICON_SUCCESS = "emblem-default-symbolic"
+    ICON_WARNING = "dialog-warning-symbolic"
+    ICON_ERROR = "dialog-error-symbolic"
+    ICON_INFO = "dialog-information-symbolic"
+    ICON_QUESTION = "emblem-question-symbolic"
+    ICON_REFRESH = "view-refresh-symbolic"
+    ICON_SETTINGS = "preferences-system-symbolic"
+    ICON_TERMINAL = "utilities-terminal-symbolic"
+    ICON_FOLDER = "folder-symbolic"
+    ICON_RUNNING = "media-playback-start-symbolic"
+    ICON_STOPPED = "media-playback-stop-symbolic"
+
+
+# Convenience alias
+UI = UIStandards
 
 
 # ============================================================================
@@ -325,3 +388,389 @@ class MeshForgePanel(Gtk.Box):
         scroll.set_child(content)
 
         return scroll, content
+
+
+# ============================================================================
+# Standard Panel Header
+# ============================================================================
+
+def create_panel_header(title: str,
+                        subtitle: str = "",
+                        icon_name: Optional[str] = None) -> Gtk.Box:
+    """
+    Create a standard panel header with title, subtitle, and optional icon.
+
+    Args:
+        title: Main panel title
+        subtitle: Optional description
+        icon_name: Optional icon name
+
+    Returns:
+        Configured header box
+    """
+    header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=UI.SPACING_COMPACT)
+
+    # Title row
+    title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=UI.SPACING_SECTION)
+
+    if icon_name:
+        icon = Gtk.Image.new_from_icon_name(icon_name)
+        icon.set_pixel_size(32)
+        title_row.append(icon)
+
+    title_label = Gtk.Label(label=title)
+    title_label.add_css_class(UI.CSS_TITLE_MAIN)
+    title_label.set_xalign(0)
+    title_row.append(title_label)
+
+    header.append(title_row)
+
+    if subtitle:
+        sub_label = Gtk.Label(label=subtitle)
+        sub_label.add_css_class(UI.CSS_DIM)
+        sub_label.set_xalign(0)
+        sub_label.set_wrap(True)
+        header.append(sub_label)
+
+    return header
+
+
+def create_section_header(title: str, description: str = "") -> Gtk.Box:
+    """
+    Create a section header within a panel.
+
+    Args:
+        title: Section title
+        description: Optional description
+
+    Returns:
+        Configured section header box
+    """
+    header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+
+    title_label = Gtk.Label(label=title)
+    title_label.add_css_class(UI.CSS_TITLE_SECTION)
+    title_label.set_xalign(0)
+    header.append(title_label)
+
+    if description:
+        desc_label = Gtk.Label(label=description)
+        desc_label.add_css_class(UI.CSS_DIM)
+        desc_label.set_xalign(0)
+        desc_label.set_wrap(True)
+        header.append(desc_label)
+
+    return header
+
+
+# ============================================================================
+# Resizable Log Viewer Component
+# ============================================================================
+
+class ResizableLogViewer(Gtk.Box):
+    """
+    A resizable log viewer component with controls.
+
+    Features:
+    - Resizable via drag handle
+    - Auto-scroll toggle
+    - Refresh and clear buttons
+    - Line count limiting
+    - Monospace text display
+
+    Usage:
+        log_viewer = ResizableLogViewer(title="Output Log")
+        log_viewer.append_text("Log message here")
+        log_viewer.set_text("Replace all content")
+    """
+
+    def __init__(self,
+                 title: str = "Log Output",
+                 min_height: int = UI.LOG_MIN_HEIGHT,
+                 default_height: int = UI.LOG_DEFAULT_HEIGHT,
+                 show_controls: bool = True,
+                 auto_scroll: bool = True):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+
+        self._auto_scroll = auto_scroll
+        self._max_lines = UI.LOG_MAX_LINES
+        self._refresh_callback = None
+
+        # Build UI
+        self._build_ui(title, min_height, default_height, show_controls)
+
+    def _build_ui(self, title: str, min_height: int, default_height: int, show_controls: bool):
+        """Build the log viewer UI"""
+        # Header with title and controls
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=UI.SPACING_SECTION)
+        header.set_margin_start(UI.MARGIN_COMPACT)
+        header.set_margin_end(UI.MARGIN_COMPACT)
+        header.set_margin_top(UI.MARGIN_COMPACT)
+        header.set_margin_bottom(UI.MARGIN_COMPACT)
+
+        # Title
+        title_label = Gtk.Label(label=title)
+        title_label.add_css_class(UI.CSS_HEADING)
+        title_label.set_xalign(0)
+        header.append(title_label)
+
+        # Spacer
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        header.append(spacer)
+
+        if show_controls:
+            # Auto-scroll toggle
+            self._auto_scroll_check = Gtk.CheckButton(label="Auto-scroll")
+            self._auto_scroll_check.set_active(self._auto_scroll)
+            self._auto_scroll_check.connect("toggled", self._on_auto_scroll_toggled)
+            header.append(self._auto_scroll_check)
+
+            # Refresh button
+            refresh_btn = Gtk.Button()
+            refresh_btn.set_icon_name(UI.ICON_REFRESH)
+            refresh_btn.set_tooltip_text("Refresh")
+            refresh_btn.connect("clicked", self._on_refresh)
+            header.append(refresh_btn)
+
+            # Clear button
+            clear_btn = Gtk.Button(label="Clear")
+            clear_btn.connect("clicked", self._on_clear)
+            header.append(clear_btn)
+
+        self.append(header)
+
+        # Separator
+        self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # Text view in scrolled window
+        self._text_view = Gtk.TextView()
+        self._text_view.set_editable(False)
+        self._text_view.set_monospace(True)
+        self._text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self._text_view.set_cursor_visible(False)
+
+        self._scroll = Gtk.ScrolledWindow()
+        self._scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        self._scroll.set_min_content_height(min_height)
+        self._scroll.set_vexpand(True)
+        self._scroll.set_child(self._text_view)
+
+        # Resize handle frame
+        resize_frame = Gtk.Frame()
+        resize_frame.set_child(self._scroll)
+        resize_frame.set_vexpand(True)
+
+        self.append(resize_frame)
+
+    def set_text(self, text: str):
+        """Set the log text, replacing existing content"""
+        buffer = self._text_view.get_buffer()
+        buffer.set_text(text)
+        self._trim_buffer()
+        if self._auto_scroll:
+            self._scroll_to_bottom()
+
+    def append_text(self, text: str):
+        """Append text to the log"""
+        buffer = self._text_view.get_buffer()
+        end_iter = buffer.get_end_iter()
+        buffer.insert(end_iter, text + "\n")
+        self._trim_buffer()
+        if self._auto_scroll:
+            self._scroll_to_bottom()
+
+    def clear(self):
+        """Clear all log content"""
+        buffer = self._text_view.get_buffer()
+        buffer.set_text("")
+
+    def get_text(self) -> str:
+        """Get all log text"""
+        buffer = self._text_view.get_buffer()
+        start, end = buffer.get_bounds()
+        return buffer.get_text(start, end, False)
+
+    def set_refresh_callback(self, callback: Callable):
+        """Set callback for refresh button"""
+        self._refresh_callback = callback
+
+    def _trim_buffer(self):
+        """Trim buffer to max lines"""
+        buffer = self._text_view.get_buffer()
+        line_count = buffer.get_line_count()
+
+        if line_count > self._max_lines:
+            # Remove oldest lines
+            lines_to_remove = line_count - self._max_lines
+            start = buffer.get_start_iter()
+            end = buffer.get_iter_at_line(lines_to_remove)
+            buffer.delete(start, end)
+
+    def _scroll_to_bottom(self):
+        """Scroll to bottom of log"""
+        def scroll():
+            buffer = self._text_view.get_buffer()
+            end_iter = buffer.get_end_iter()
+            self._text_view.scroll_to_iter(end_iter, 0, False, 0, 0)
+            return False
+        GLib.idle_add(scroll)
+
+    def _on_auto_scroll_toggled(self, button):
+        """Handle auto-scroll toggle"""
+        self._auto_scroll = button.get_active()
+
+    def _on_refresh(self, button):
+        """Handle refresh button"""
+        if self._refresh_callback:
+            self._refresh_callback()
+
+    def _on_clear(self, button):
+        """Handle clear button"""
+        self.clear()
+
+
+# ============================================================================
+# Resizable Paned Layout
+# ============================================================================
+
+class ResizablePanedLayout(Gtk.Paned):
+    """
+    A resizable two-pane layout for main content + log/output.
+
+    Usage:
+        layout = ResizablePanedLayout()
+        layout.set_main_content(main_widget)
+        layout.set_bottom_content(log_viewer)
+    """
+
+    def __init__(self,
+                 orientation: Gtk.Orientation = Gtk.Orientation.VERTICAL,
+                 main_min_size: int = 200,
+                 bottom_min_size: int = 100):
+        super().__init__(orientation=orientation)
+
+        self._main_min_size = main_min_size
+        self._bottom_min_size = bottom_min_size
+
+        self.set_wide_handle(True)
+        self.set_shrink_start_child(False)
+        self.set_shrink_end_child(False)
+        self.set_resize_start_child(True)
+        self.set_resize_end_child(True)
+
+    def set_main_content(self, widget: Gtk.Widget):
+        """Set the main (top/left) content"""
+        widget.set_size_request(-1, self._main_min_size)
+        self.set_start_child(widget)
+
+    def set_bottom_content(self, widget: Gtk.Widget):
+        """Set the bottom (or right) content"""
+        widget.set_size_request(-1, self._bottom_min_size)
+        self.set_end_child(widget)
+
+
+# ============================================================================
+# Status Indicator Widget
+# ============================================================================
+
+class StatusIndicator(Gtk.Box):
+    """
+    A standard status indicator with icon and label.
+
+    Usage:
+        status = StatusIndicator()
+        status.set_running()
+        status.set_stopped("Service not running")
+        status.set_warning("Check configuration")
+    """
+
+    def __init__(self, initial_text: str = "Unknown"):
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=UI.SPACING_COMPACT)
+
+        self._icon = Gtk.Image.new_from_icon_name(UI.ICON_QUESTION)
+        self._icon.set_pixel_size(16)
+        self.append(self._icon)
+
+        self._label = Gtk.Label(label=initial_text)
+        self._label.set_xalign(0)
+        self.append(self._label)
+
+    def set_running(self, text: str = "Running"):
+        """Set to running/success state"""
+        self._icon.set_from_icon_name(UI.ICON_SUCCESS)
+        self._label.set_label(text)
+        self._clear_css()
+        self._label.add_css_class(UI.CSS_SUCCESS)
+
+    def set_stopped(self, text: str = "Stopped"):
+        """Set to stopped state"""
+        self._icon.set_from_icon_name(UI.ICON_STOPPED)
+        self._label.set_label(text)
+        self._clear_css()
+
+    def set_warning(self, text: str = "Warning"):
+        """Set to warning state"""
+        self._icon.set_from_icon_name(UI.ICON_WARNING)
+        self._label.set_label(text)
+        self._clear_css()
+        self._label.add_css_class(UI.CSS_WARNING)
+
+    def set_error(self, text: str = "Error"):
+        """Set to error state"""
+        self._icon.set_from_icon_name(UI.ICON_ERROR)
+        self._label.set_label(text)
+        self._clear_css()
+        self._label.add_css_class(UI.CSS_ERROR)
+
+    def set_info(self, text: str):
+        """Set to info state"""
+        self._icon.set_from_icon_name(UI.ICON_INFO)
+        self._label.set_label(text)
+        self._clear_css()
+
+    def set_unknown(self, text: str = "Unknown"):
+        """Set to unknown state"""
+        self._icon.set_from_icon_name(UI.ICON_QUESTION)
+        self._label.set_label(text)
+        self._clear_css()
+        self._label.add_css_class(UI.CSS_DIM)
+
+    def _clear_css(self):
+        """Remove status CSS classes"""
+        for css in [UI.CSS_SUCCESS, UI.CSS_WARNING, UI.CSS_ERROR, UI.CSS_DIM]:
+            self._label.remove_css_class(css)
+
+
+# ============================================================================
+# Standard Frame Builder
+# ============================================================================
+
+def create_standard_frame(title: str,
+                          content: Optional[Gtk.Widget] = None,
+                          spacing: int = UI.SPACING_SECTION) -> Tuple[Gtk.Frame, Gtk.Box]:
+    """
+    Create a standard frame with consistent margins.
+
+    Args:
+        title: Frame title
+        content: Optional widget to add to frame
+        spacing: Internal spacing
+
+    Returns:
+        Tuple of (Frame, content_box)
+    """
+    frame = Gtk.Frame()
+    frame.set_label(title)
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=spacing)
+    box.set_margin_start(UI.MARGIN_SECTION)
+    box.set_margin_end(UI.MARGIN_SECTION)
+    box.set_margin_top(UI.MARGIN_INNER)
+    box.set_margin_bottom(UI.MARGIN_INNER)
+
+    if content:
+        box.append(content)
+
+    frame.set_child(box)
+    return frame, box
