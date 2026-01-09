@@ -680,20 +680,35 @@ class HamToolsPanel(Gtk.Box):
         self._output_message(f"{action.capitalize()}ing HamClock service...")
 
         def do_action():
-            services = ['hamclock', 'hamclock-web', 'hamclock-systemd', 'HamClock']
             found_services = []
 
-            # First, find which services actually exist
-            for name in services:
+            # Search for service files directly in systemd directories
+            search_dirs = ['/lib/systemd/system', '/etc/systemd/system', '/usr/lib/systemd/system']
+            for sdir in search_dirs:
                 try:
-                    unit_check = subprocess.run(
-                        ['systemctl', 'list-unit-files', f'{name}.service'],
+                    find_result = subprocess.run(
+                        ['find', sdir, '-name', '*amclock*.service', '-o', '-name', '*HamClock*.service'],
                         capture_output=True, text=True, timeout=10
                     )
-                    if name in unit_check.stdout:
-                        found_services.append(name)
+                    for line in find_result.stdout.strip().split('\n'):
+                        if line and line.endswith('.service'):
+                            svc_name = os.path.basename(line).replace('.service', '')
+                            if svc_name not in found_services:
+                                found_services.append(svc_name)
                 except Exception:
                     continue
+
+            # Also check common service names
+            common_names = ['hamclock', 'hamclock-web', 'HamClock', 'hamclock-systemd']
+            for name in common_names:
+                if name not in found_services:
+                    # Check if service exists
+                    check = subprocess.run(
+                        ['systemctl', 'cat', name],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if check.returncode == 0:
+                        found_services.append(name)
 
             if not found_services:
                 GLib.idle_add(self._output_message, "No HamClock service found. Try Install HamClock first.")
@@ -822,46 +837,84 @@ class HamToolsPanel(Gtk.Box):
                         fix_cmd = ['sudo', 'apt-get', '-f', 'install', '-y']
                         subprocess.run(fix_cmd, capture_output=True, timeout=120)
 
-                    # Enable and start service - try multiple service names
-                    GLib.idle_add(self._output_message, "Enabling service...")
+                    # Enable and start service - find service files from installed package
+                    GLib.idle_add(self._output_message, "Looking for installed services...")
                     subprocess.run(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, timeout=30)
 
-                    # Try multiple possible service names
-                    service_names = ['hamclock', 'hamclock-web', 'hamclock-systemd', 'HamClock']
+                    # Check what files the package installed
+                    dpkg_files = subprocess.run(
+                        ['dpkg', '-L', pkg_name],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    service_files = [f for f in dpkg_files.stdout.split('\n') if f.endswith('.service')]
+
+                    if service_files:
+                        for sf in service_files:
+                            GLib.idle_add(self._output_message, f"  Found: {sf}")
+
+                    # Also search directly in systemd directories
                     active_service = None
+                    search_dirs = ['/lib/systemd/system', '/etc/systemd/system', '/usr/lib/systemd/system']
+                    found_services = []
 
-                    for svc_name in service_names:
-                        # Check if service unit exists
-                        unit_check = subprocess.run(
-                            ['systemctl', 'list-unit-files', f'{svc_name}.service'],
-                            capture_output=True, text=True, timeout=10
-                        )
-                        if svc_name in unit_check.stdout:
-                            GLib.idle_add(self._output_message, f"Found service: {svc_name}")
-                            subprocess.run(['sudo', 'systemctl', 'enable', svc_name], capture_output=True, timeout=30)
-                            start_result = subprocess.run(['sudo', 'systemctl', 'start', svc_name], capture_output=True, timeout=30)
+                    for sdir in search_dirs:
+                        try:
+                            find_result = subprocess.run(
+                                ['find', sdir, '-name', '*amclock*.service', '-o', '-name', '*HamClock*.service'],
+                                capture_output=True, text=True, timeout=10
+                            )
+                            for line in find_result.stdout.strip().split('\n'):
+                                if line and line.endswith('.service'):
+                                    svc_name = os.path.basename(line).replace('.service', '')
+                                    if svc_name not in found_services:
+                                        found_services.append(svc_name)
+                                        GLib.idle_add(self._output_message, f"  Service file: {line}")
+                        except Exception:
+                            continue
 
-                            if start_result.returncode == 0:
-                                # Verify it's running
-                                check = subprocess.run(['systemctl', 'is-active', svc_name], capture_output=True, text=True, timeout=10)
-                                if check.stdout.strip() == 'active':
-                                    active_service = svc_name
-                                    break
+                    # Try to enable/start any found services
+                    for svc_name in found_services:
+                        GLib.idle_add(self._output_message, f"Trying to start {svc_name}...")
+                        subprocess.run(['sudo', 'systemctl', 'enable', svc_name], capture_output=True, timeout=30)
+                        start_result = subprocess.run(['sudo', 'systemctl', 'start', svc_name], capture_output=True, text=True, timeout=30)
+
+                        if start_result.returncode == 0:
+                            check = subprocess.run(['systemctl', 'is-active', svc_name], capture_output=True, text=True, timeout=10)
+                            if check.stdout.strip() == 'active':
+                                active_service = svc_name
+                                break
+                        else:
+                            if start_result.stderr:
+                                GLib.idle_add(self._output_message, f"    Error: {start_result.stderr.strip()}")
+
+                    # Also try common service names even if not found in files
+                    if not active_service:
+                        common_names = ['hamclock', 'hamclock-web', 'HamClock', 'hamclock-systemd']
+                        for svc_name in common_names:
+                            if svc_name in found_services:
+                                continue
+                            try:
+                                start_result = subprocess.run(
+                                    ['sudo', 'systemctl', 'start', svc_name],
+                                    capture_output=True, text=True, timeout=30
+                                )
+                                if start_result.returncode == 0:
+                                    check = subprocess.run(['systemctl', 'is-active', svc_name], capture_output=True, text=True, timeout=10)
+                                    if check.stdout.strip() == 'active':
+                                        active_service = svc_name
+                                        break
+                            except Exception:
+                                continue
 
                     if active_service:
                         GLib.idle_add(self._install_complete, True, f"HamClock installed and running ({active_service})!", button)
                     else:
-                        # List available hamclock-related services for debugging
-                        GLib.idle_add(self._output_message, "Checking for available HamClock services...")
-                        list_result = subprocess.run(
-                            ['systemctl', 'list-unit-files', '--type=service'],
-                            capture_output=True, text=True, timeout=10
-                        )
-                        hamclock_services = [line for line in list_result.stdout.split('\n') if 'hamclock' in line.lower()]
-                        if hamclock_services:
-                            for svc in hamclock_services:
-                                GLib.idle_add(self._output_message, f"  Available: {svc}")
-                        GLib.idle_add(self._install_complete, True, "HamClock installed (start service manually)", button)
+                        # Check if HamClock binary exists - maybe needs manual setup
+                        hamclock_bin = subprocess.run(['which', 'hamclock'], capture_output=True, text=True, timeout=5)
+                        if hamclock_bin.returncode == 0:
+                            GLib.idle_add(self._output_message, f"HamClock binary at: {hamclock_bin.stdout.strip()}")
+                            GLib.idle_add(self._output_message, "Try: sudo hamclock -o 4 (headless web server mode)")
+                        GLib.idle_add(self._install_complete, True, "HamClock installed (service setup needed)", button)
 
             except subprocess.TimeoutExpired:
                 GLib.idle_add(self._install_complete, False, "Installation timed out", button)

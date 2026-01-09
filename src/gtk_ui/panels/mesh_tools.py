@@ -1046,13 +1046,17 @@ class MeshToolsPanel(Gtk.Box):
         if not config_path.exists():
             template = Path(meshbot_path) / "config.template"
             if template.exists():
-                subprocess.run(['cp', str(template), str(config_path)])
+                subprocess.run(['sudo', 'cp', str(template), str(config_path)], timeout=10)
             else:
                 self._log_message("No config file found")
                 return
 
-        # Open in default editor
+        # Ensure config file is writable by real user
         real_user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
+        subprocess.run(['sudo', 'chown', f'{real_user}:{real_user}', str(config_path)], timeout=10)
+        subprocess.run(['sudo', 'chmod', '644', str(config_path)], timeout=10)
+
+        # Open in default editor
         try:
             subprocess.Popen(
                 ['sudo', '-u', real_user, 'xdg-open', str(config_path)],
