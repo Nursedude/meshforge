@@ -1,0 +1,23 @@
+# CLAUDE.local.md - Machine-Specific Configuration
+# Copy this file to CLAUDE.local.md and customize for your machine.
+# CLAUDE.local.md is gitignored and won't be committed.
+
+## Machine Info
+- **Hostname**: your-machine-name
+- **User**: your-username
+- **Project Location**: /path/to/meshforge
+
+## Local Development Notes
+Add machine-specific notes, paths, or configurations here.
+
+## Connected Hardware
+- Meshtastic device: (none / USB / TCP)
+- RNS interface: (none / serial / TCP)
+
+## Local Services
+- meshtasticd: running on port 4403
+- rnsd: running
+- hamclock: running on port 8080
+
+## Custom Environment
+Any local environment variables or paths specific to this machine.
