@@ -188,7 +188,12 @@ class MeshForgeLinter:
                         ))
 
         # MF005: GLib.idle_add check - UI updates from threads
-        if 'self.' in line and ('set_text' in line or 'set_label' in line or 'append' in line):
+        # Only check for actual GTK widget methods, not generic list operations
+        gtk_ui_methods = ['set_text', 'set_label', 'set_markup', 'set_sensitive', 'set_visible',
+                          'set_fraction', 'set_value', 'show', 'hide', 'present']
+        has_ui_method = any(method in line for method in gtk_ui_methods)
+
+        if 'self.' in line and has_ui_method:
             # Check if we're in a thread context (simplistic check)
             func_start = content.rfind('def ', 0, content.find(line))
             if func_start != -1:

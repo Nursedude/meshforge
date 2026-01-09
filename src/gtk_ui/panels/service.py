@@ -17,6 +17,13 @@ except ImportError:
     run_admin_command_async = None
     systemctl_admin = None
 
+# Import centralized service checker
+try:
+    from utils.service_check import check_service, ServiceState
+except ImportError:
+    check_service = None
+    ServiceState = None
+
 
 class ServicePanel(Gtk.Box):
     """Service management panel"""
@@ -202,12 +209,22 @@ class ServicePanel(Gtk.Box):
     def _fetch_status(self):
         """Fetch service status in background"""
         try:
-            # Get active state
+            is_active = False
+            is_enabled = False
+            props = {}
+
+            # Use centralized service check if available
+            if check_service:
+                status = check_service('meshtasticd')
+                is_active = status.available
+
+            # Always get detailed systemd info for props
             result = subprocess.run(
                 ['systemctl', 'is-active', 'meshtasticd'],
                 capture_output=True, text=True, timeout=10
             )
-            is_active = result.stdout.strip() == 'active'
+            if not check_service:
+                is_active = result.stdout.strip() == 'active'
 
             # Get enabled state
             result = subprocess.run(
@@ -222,7 +239,6 @@ class ServicePanel(Gtk.Box):
                  '--property=ActiveState,SubState,MainPID,ActiveEnterTimestamp'],
                 capture_output=True, text=True, timeout=10
             )
-            props = {}
             for line in result.stdout.strip().split('\n'):
                 if '=' in line:
                     key, value = line.split('=', 1)

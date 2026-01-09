@@ -9,6 +9,13 @@ from gi.repository import Gtk, Adw, GLib
 import subprocess
 import threading
 
+# Import centralized service checker
+try:
+    from utils.service_check import check_service, ServiceState
+except ImportError:
+    check_service = None
+    ServiceState = None
+
 
 class DashboardPanel(Gtk.Box):
     """Dashboard panel showing system status"""
@@ -149,48 +156,46 @@ class DashboardPanel(Gtk.Box):
 
     def _fetch_data(self):
         """Fetch all status data in background thread"""
-        # Service status - check multiple methods
+        # Service status - use centralized service checker if available
         try:
-            is_running = False
-            status_detail = "Stopped"
+            if check_service:
+                # Use centralized service check
+                meshtastic_status = check_service('meshtasticd')
+                if meshtastic_status.available:
+                    status_detail = meshtastic_status.message
+                    css_class = "success"
+                else:
+                    status_detail = meshtastic_status.message
+                    css_class = "error"
+            else:
+                # Fallback to direct check
+                is_running = False
+                status_detail = "Stopped"
 
-            # Method 1: systemctl is-active
-            result = subprocess.run(
-                ['systemctl', 'is-active', 'meshtasticd'],
-                capture_output=True, text=True, timeout=10
-            )
-            if result.stdout.strip() == 'active':
-                is_running = True
-                status_detail = "Running (systemd)"
-
-            # Method 2: Check if process is running (fallback)
-            if not is_running:
                 result = subprocess.run(
-                    ['pgrep', '-f', 'meshtasticd'],
-                    capture_output=True, text=True, timeout=5
+                    ['systemctl', 'is-active', 'meshtasticd'],
+                    capture_output=True, text=True, timeout=10
                 )
-                if result.returncode == 0 and result.stdout.strip():
+                if result.stdout.strip() == 'active':
                     is_running = True
-                    status_detail = "Running (process)"
+                    status_detail = "Running"
 
-            # Method 3: Check if TCP port 4403 is open (another fallback)
-            if not is_running:
-                import socket
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(1.0)
-                    if sock.connect_ex(('localhost', 4403)) == 0:
+                if not is_running:
+                    result = subprocess.run(
+                        ['pgrep', '-f', 'meshtasticd'],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
                         is_running = True
-                        status_detail = "Running (TCP 4403)"
-                    sock.close()
-                except Exception:
-                    pass
+                        status_detail = "Running (process)"
+
+                css_class = "success" if is_running else "error"
 
             GLib.idle_add(
                 self._update_card_value,
                 self.service_card,
-                status_detail if is_running else "Stopped",
-                "success" if is_running else "error"
+                status_detail,
+                css_class
             )
         except Exception as e:
             GLib.idle_add(self._update_card_value, self.service_card, f"Error: {e}", "error")
