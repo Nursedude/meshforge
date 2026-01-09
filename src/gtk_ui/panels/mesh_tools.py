@@ -955,6 +955,19 @@ class MeshToolsPanel(Gtk.Box):
             self._log_message("Error: mesh_bot.py not found")
             return
 
+        # Check for config.ini
+        config_path = Path(meshbot_path) / "config.ini"
+        if not config_path.exists():
+            self._log_message("Warning: config.ini not found - creating from template...")
+            template = Path(meshbot_path) / "config.template"
+            if template.exists():
+                real_user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
+                subprocess.run(['sudo', 'cp', str(template), str(config_path)], timeout=10)
+                subprocess.run(['sudo', 'chown', f'{real_user}:{real_user}', str(config_path)], timeout=10)
+            else:
+                self._log_message("Error: No config.ini or config.template found")
+                return
+
         self._log_message("Starting MeshBot...")
 
         def do_start():
@@ -965,22 +978,33 @@ class MeshToolsPanel(Gtk.Box):
                 else:
                     cmd = ['python3', str(script_path)]
 
+                GLib.idle_add(self._log_message, f"Running: {' '.join(cmd)}")
+
                 process = subprocess.Popen(
                     cmd,
                     cwd=meshbot_path,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
+                    text=True,
                     start_new_session=True
                 )
 
                 import time
-                time.sleep(2)
+                time.sleep(3)  # Give it a bit more time
 
                 if process.poll() is None:
                     GLib.idle_add(self._log_message, "MeshBot started successfully")
                     GLib.idle_add(self._check_meshbot_status)
                 else:
-                    GLib.idle_add(self._log_message, "MeshBot failed to start")
+                    # Process exited - capture output to show why
+                    exit_code = process.returncode
+                    output = process.stdout.read() if process.stdout else ""
+                    GLib.idle_add(self._log_message, f"MeshBot exited with code {exit_code}")
+                    if output:
+                        # Show first few lines of error
+                        lines = output.strip().split('\n')[:10]
+                        for line in lines:
+                            GLib.idle_add(self._log_message, f"  {line}")
 
             except Exception as e:
                 GLib.idle_add(self._log_message, f"Start error: {e}")
@@ -1046,13 +1070,17 @@ class MeshToolsPanel(Gtk.Box):
         if not config_path.exists():
             template = Path(meshbot_path) / "config.template"
             if template.exists():
-                subprocess.run(['cp', str(template), str(config_path)])
+                subprocess.run(['sudo', 'cp', str(template), str(config_path)], timeout=10)
             else:
                 self._log_message("No config file found")
                 return
 
-        # Open in default editor
+        # Ensure config file is writable by real user
         real_user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
+        subprocess.run(['sudo', 'chown', f'{real_user}:{real_user}', str(config_path)], timeout=10)
+        subprocess.run(['sudo', 'chmod', '644', str(config_path)], timeout=10)
+
+        # Open in default editor
         try:
             subprocess.Popen(
                 ['sudo', '-u', real_user, 'xdg-open', str(config_path)],
