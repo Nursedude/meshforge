@@ -174,13 +174,13 @@ class MeshingAroundPlugin(IntegrationPlugin):
                 "git", "clone",
                 "https://github.com/SpudGunMan/meshing-around.git",
                 str(install_dir)
-            ], check=True)
+            ], check=True, timeout=180)
 
             logger.info("Installing dependencies...")
             subprocess.run([
                 "pip3", "install", "-r",
                 str(install_dir / "requirements.txt")
-            ], check=True)
+            ], check=True, timeout=300)
 
             self._bot_dir = install_dir
             logger.info("meshing-around installed successfully")

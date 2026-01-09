@@ -96,11 +96,38 @@ Code assumes services are already running instead of checking and providing feed
 - Features fail with no actionable feedback
 
 ### Proper Fix
-1. **Always verify service status before using**
-2. **Provide actionable error messages** ("is HamClock running?" not just "connection failed")
+1. **Use centralized `check_service()` utility** for pre-flight checks
+2. **Provide actionable error messages** with fix hints
 3. **Offer fix suggestions** (start service button, installation link)
 
-### Implementation Pattern
+### Implementation Pattern (Recommended)
+```python
+# Use the centralized service checker
+from utils.service_check import check_service, ServiceState
+
+# Before starting gateway/feature that requires services
+def _on_start(self, button):
+    status = check_service('meshtasticd')
+    if not status.available:
+        self._show_error(status.message, status.fix_hint)
+        return
+    # Proceed with operation...
+
+# Quick port check
+from utils.service_check import check_port
+if check_port(4403):  # meshtasticd port
+    connect_to_meshtasticd()
+```
+
+### Known Services (in `utils/service_check.py`)
+| Service | Port | systemd name |
+|---------|------|--------------|
+| meshtasticd | 4403 | meshtasticd |
+| rnsd | None | rnsd |
+| hamclock | 8080 | hamclock |
+| mosquitto | 1883 | mosquitto |
+
+### Legacy Pattern (for reference)
 ```python
 def _on_connection_failed(self, error):
     error_str = str(error).lower()
@@ -108,7 +135,6 @@ def _on_connection_failed(self, error):
         self.status_label.set_label("Connection refused - is service running?")
     elif 'name or service not known' in error_str:
         self.status_label.set_label("Host not found - check URL")
-    # etc.
 ```
 
 ---
@@ -174,7 +200,8 @@ Before committing, verify:
 - [ ] No new `Path.home()` calls added (use `get_real_user_home()`)
 - [ ] Error messages are actionable, not generic
 - [ ] Log levels appropriate (INFO for user actions, ERROR for failures)
-- [ ] Services are verified before use
+- [ ] Services are verified before use (use `check_service()`)
+- [ ] subprocess calls have timeout parameters (MF004)
 - [ ] Utilities imported from central location, not duplicated
 
 ---
@@ -191,8 +218,11 @@ from utils.common import SettingsManager, CONFIG_DIR
 
 # Logging
 from utils.logging_utils import get_logger
+
+# Service availability checks - use before service-dependent operations
+from utils.service_check import check_service, check_port, ServiceState
 ```
 
 ---
 
-*Last updated: 2026-01-06 - Added root cause analysis for HamClock and Path.home() issues*
+*Last updated: 2026-01-09 - Added service_check utility documentation and usage patterns*

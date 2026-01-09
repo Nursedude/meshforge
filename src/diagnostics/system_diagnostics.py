@@ -421,7 +421,7 @@ class SystemDiagnostics:
         try:
             result = subprocess.run(
                 ['grep', 'cpu ', '/proc/stat'],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=5
             )
             if result.returncode == 0:
                 values = result.stdout.split()[1:5]
@@ -432,7 +432,7 @@ class SystemDiagnostics:
                 time.sleep(0.1)
                 result2 = subprocess.run(
                     ['grep', 'cpu ', '/proc/stat'],
-                    capture_output=True, text=True
+                    capture_output=True, text=True, timeout=5
                 )
                 values2 = result2.stdout.split()[1:5]
                 values2 = [int(v) for v in values2]
@@ -603,7 +603,7 @@ class SystemDiagnostics:
         """Detect LoRa device type"""
         # Check USB devices
         try:
-            result = subprocess.run(['lsusb'], capture_output=True, text=True)
+            result = subprocess.run(['lsusb'], capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 output = result.stdout.lower()
                 if 'ch340' in output or 'cp210' in output or 'ft232' in output:

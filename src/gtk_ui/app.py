@@ -915,7 +915,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
             # Method 1: systemctl is-active
             result = subprocess.run(
                 ['systemctl', 'is-active', 'meshtasticd'],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=5
             )
             if result.stdout.strip() == 'active':
                 is_active = True
@@ -924,7 +924,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
             if not is_active:
                 result = subprocess.run(
                     ['pgrep', '-f', 'meshtasticd'],
-                    capture_output=True, text=True
+                    capture_output=True, text=True, timeout=5
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     is_active = True
@@ -946,7 +946,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
             if is_active:
                 result = subprocess.run(
                     ['systemctl', 'show', 'meshtasticd', '--property=ActiveEnterTimestamp'],
-                    capture_output=True, text=True
+                    capture_output=True, text=True, timeout=5
                 )
                 if 'ActiveEnterTimestamp=' in result.stdout:
                     timestamp = result.stdout.split('=')[1].strip()
@@ -1255,7 +1255,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
     def _perform_reboot(self):
         """Perform the actual reboot"""
         try:
-            subprocess.run(['systemctl', 'reboot'], check=True)
+            subprocess.run(['systemctl', 'reboot'], check=True, timeout=10)
         except Exception as e:
             self._show_error_dialog("Reboot Failed", str(e))
         return False

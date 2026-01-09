@@ -55,7 +55,7 @@ class ConfigFileManager:
         """Run systemctl daemon-reload"""
         console.print("[cyan]Running systemctl daemon-reload...[/cyan]")
         try:
-            subprocess.run(["systemctl", "daemon-reload"], check=True)
+            subprocess.run(["systemctl", "daemon-reload"], check=True, timeout=30)
             console.print("[green]Daemon reloaded[/green]")
             return True
         except subprocess.CalledProcessError as e:
@@ -66,7 +66,7 @@ class ConfigFileManager:
         """Restart meshtasticd service"""
         console.print("[cyan]Restarting meshtasticd service...[/cyan]")
         try:
-            subprocess.run(["systemctl", "restart", "meshtasticd"], check=True)
+            subprocess.run(["systemctl", "restart", "meshtasticd"], check=True, timeout=30)
             console.print("[green]Service restarted[/green]")
             return True
         except subprocess.CalledProcessError as e:
@@ -78,7 +78,7 @@ class ConfigFileManager:
         console.print(f"\n[cyan]Opening {file_path} in nano...[/cyan]")
         console.print("[dim]Press Ctrl+X to exit, Y to save changes[/dim]\n")
         try:
-            subprocess.run(["nano", str(file_path)])
+            subprocess.run(["nano", str(file_path)])  # Interactive, no timeout
             return True
         except FileNotFoundError:
             console.print("[red]nano not found. Install with: sudo apt install nano[/red]")
@@ -392,7 +392,7 @@ General:
 
             # Show status
             console.print("\n[cyan]Service status:[/cyan]")
-            subprocess.run(["systemctl", "status", "meshtasticd", "--no-pager", "-l"], check=False)
+            subprocess.run(["systemctl", "status", "meshtasticd", "--no-pager", "-l"], check=False, timeout=15)
 
     def _view_current_config(self):
         """View the current main config"""

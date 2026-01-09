@@ -547,7 +547,7 @@ class ConfigPane(Container):
         if path:
             # Suspend TUI and run nano
             self.app.suspend()
-            subprocess.run(['nano', str(path)])
+            subprocess.run(['nano', str(path)])  # Interactive - no timeout
             self.app.resume()
             self.refresh_lists()
 
@@ -581,7 +581,7 @@ Webserver:
 
         # Suspend TUI and run nano
         self.app.suspend()
-        subprocess.run(['nano', str(config_path)])
+        subprocess.run(['nano', str(config_path)])  # Interactive - no timeout
         self.app.resume()
 
     @work

@@ -888,7 +888,7 @@ class ToolsPanel(Gtk.Box):
             # Try vcgencmd (Raspberry Pi)
             if temp is None:
                 result = subprocess.run(['vcgencmd', 'measure_temp'],
-                                       capture_output=True, text=True)
+                                       capture_output=True, text=True, timeout=5)
                 if result.returncode == 0:
                     # Format: temp=45.0'C
                     match = result.stdout.strip()
@@ -1594,7 +1594,7 @@ class ToolsPanel(Gtk.Box):
         # apt packages
         apt_pkgs = ['nmap', 'net-tools', 'socat']
         GLib.idle_add(self._log, f"Installing apt packages: {', '.join(apt_pkgs)}")
-        subprocess.run(['sudo', 'apt', 'install', '-y'] + apt_pkgs, capture_output=True)
+        subprocess.run(['sudo', 'apt', 'install', '-y'] + apt_pkgs, capture_output=True, timeout=300)
 
         GLib.idle_add(self._log, "Installation complete")
         GLib.idle_add(self._refresh_status)
@@ -2015,7 +2015,7 @@ class ToolsPanel(Gtk.Box):
         if shutil.which('openwebrx'):
             try:
                 result = subprocess.run(['systemctl', 'is-active', 'openwebrx'],
-                                       capture_output=True, text=True)
+                                       capture_output=True, text=True, timeout=5)
                 status = result.stdout.strip()
                 if status == 'active':
                     GLib.idle_add(lambda: self.openwebrx_status.set_text("Running"))

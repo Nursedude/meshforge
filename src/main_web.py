@@ -38,7 +38,7 @@ try:
 except ImportError:
     print("Flask not installed. Installing...")
     subprocess.run([sys.executable, '-m', 'pip', 'install', '--break-system-packages', 'flask'],
-                   capture_output=True)
+                   capture_output=True, timeout=120)
     from flask import Flask, render_template_string, jsonify, request, redirect, url_for, session
 
 app = Flask(__name__)

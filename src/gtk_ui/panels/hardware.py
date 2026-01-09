@@ -241,12 +241,12 @@ class HardwarePanel(Gtk.Box):
                 if interface == "spi":
                     subprocess.run(
                         ['sudo', 'raspi-config', 'nonint', 'do_spi', '0'],
-                        check=True, capture_output=True
+                        check=True, capture_output=True, timeout=30
                     )
                 elif interface == "i2c":
                     subprocess.run(
                         ['sudo', 'raspi-config', 'nonint', 'do_i2c', '0'],
-                        check=True, capture_output=True
+                        check=True, capture_output=True, timeout=30
                     )
 
                 GLib.idle_add(
@@ -295,7 +295,7 @@ class HardwarePanel(Gtk.Box):
                 # Check systemctl
                 result = subprocess.run(
                     ['systemctl', 'is-active', 'meshtasticd'],
-                    capture_output=True, text=True
+                    capture_output=True, text=True, timeout=5
                 )
                 if result.stdout.strip() == 'active':
                     is_running = True
@@ -303,7 +303,7 @@ class HardwarePanel(Gtk.Box):
                 # Check process
                 if not is_running:
                     result = subprocess.run(['pgrep', '-f', 'meshtasticd'],
-                                           capture_output=True, text=True)
+                                           capture_output=True, text=True, timeout=5)
                     if result.returncode == 0:
                         is_running = True
 

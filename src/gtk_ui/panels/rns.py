@@ -27,6 +27,13 @@ except ImportError:
             return Path(f'/home/{sudo_user}')
         return Path.home()
 
+# Import service availability checker
+try:
+    from utils.service_check import check_service, ServiceState
+except ImportError:
+    check_service = None
+    ServiceState = None
+
 
 class RNSPanel(Gtk.Box):
     """RNS management panel for Reticulum Network Stack integration"""
@@ -1892,7 +1899,7 @@ loglevel = 4
             is_root = os.geteuid() == 0
             if is_root and real_user != 'root':
                 subprocess.run(['chown', '-R', f'{real_user}:{real_user}', str(config_path.parent)],
-                               capture_output=True)
+                               capture_output=True, timeout=10)
 
             logger.debug(f"[RNS] Created default RNS config: {config_path}")
             self.main_window.set_status_message("Created default RNS config")
@@ -1988,7 +1995,7 @@ message_storage_limit = 2000
             real_user = self._get_real_username()
             if os.geteuid() == 0 and real_user != 'root':
                 subprocess.run(['chown', '-R', f'{real_user}:{real_user}',
-                               str(config_file.parent)], capture_output=True)
+                               str(config_file.parent)], capture_output=True, timeout=10)
 
             logger.debug(f"[RNS] Created default NomadNet config: {config_file}")
             self.main_window.set_status_message("Created default NomadNet config")
@@ -2021,9 +2028,9 @@ message_storage_limit = 2000
                 # Fix ownership if running as root
                 if is_root and real_user != 'root':
                     subprocess.run(['chown', f'{real_user}:{real_user}', str(config_path)],
-                                   capture_output=True)
+                                   capture_output=True, timeout=10)
                     subprocess.run(['chown', f'{real_user}:{real_user}', str(config_path.parent)],
-                                   capture_output=True)
+                                   capture_output=True, timeout=10)
                 logger.debug(f"[RNS] Created config file: {config_path}")
             except Exception as e:
                 logger.debug(f"[RNS] Failed to create config: {e}")
@@ -2759,10 +2766,43 @@ WantedBy=multi-user.target
     def _on_gateway_start(self, button):
         """Start the gateway bridge"""
         logger.debug("[RNS] Starting gateway...")
-        self.main_window.set_status_message("Starting gateway...")
+        self.main_window.set_status_message("Checking service prerequisites...")
 
         def do_start():
             try:
+                # Pre-flight service checks
+                service_issues = []
+
+                if check_service:
+                    # Check meshtasticd service
+                    meshtastic_status = check_service('meshtasticd')
+                    if not meshtastic_status.available:
+                        service_issues.append(f"meshtasticd: {meshtastic_status.message}")
+                        if meshtastic_status.fix_hint:
+                            service_issues.append(f"  Fix: {meshtastic_status.fix_hint}")
+
+                    # Check rnsd service
+                    rnsd_status = check_service('rnsd')
+                    if not rnsd_status.available:
+                        service_issues.append(f"rnsd: {rnsd_status.message}")
+                        if rnsd_status.fix_hint:
+                            service_issues.append(f"  Fix: {rnsd_status.fix_hint}")
+
+                if service_issues:
+                    logger.warning(f"[RNS] Gateway pre-checks failed: {service_issues}")
+                    GLib.idle_add(
+                        self._show_service_warning,
+                        "Service Prerequisites Not Met",
+                        "\n".join(service_issues)
+                    )
+                    GLib.idle_add(self._gateway_start_complete, False, "Required services not running")
+                    return
+
+                # All checks passed, proceed with gateway start
+                GLib.idle_add(
+                    lambda: self.main_window.set_status_message("Starting gateway...")
+                )
+
                 from gateway.rns_bridge import RNSMeshtasticBridge
                 from gateway.config import GatewayConfig
 
@@ -2785,6 +2825,21 @@ WantedBy=multi-user.target
         thread = threading.Thread(target=do_start)
         thread.daemon = True
         thread.start()
+
+    def _show_service_warning(self, title, message):
+        """Show a warning dialog about service issues"""
+        try:
+            dialog = Adw.MessageDialog(
+                transient_for=self.main_window,
+                heading=title,
+                body=message
+            )
+            dialog.add_response("ok", "OK")
+            dialog.set_default_response("ok")
+            dialog.present()
+        except Exception as e:
+            logger.error(f"Failed to show service warning dialog: {e}")
+            self.main_window.set_status_message(f"Warning: {message}")
 
     def _gateway_start_complete(self, success, error=None):
         """Handle gateway start completion"""
@@ -2949,7 +3004,7 @@ WantedBy=multi-user.target
                 is_root = os.geteuid() == 0
                 if is_root and real_user != 'root':
                     subprocess.run(['chown', '-R', f'{real_user}:{real_user}', str(config_file.parent)],
-                                   capture_output=True)
+                                   capture_output=True, timeout=10)
 
                 logger.debug(f"[RNS] Created default gateway config: {config_file}")
             except Exception as e:
@@ -3064,7 +3119,7 @@ WantedBy=multi-user.target
     def _open_config_folder(self, path):
         """Open config folder in file manager"""
         try:
-            subprocess.run(['xdg-open', str(path)])
+            subprocess.run(['xdg-open', str(path)], timeout=10)
         except Exception as e:
             self.main_window.set_status_message(f"Failed to open folder: {e}")
 
@@ -3101,7 +3156,7 @@ WantedBy=multi-user.target
                     return
             # Fallback to xdg-open
             logger.debug("[RNS] Using xdg-open")
-            subprocess.run(['xdg-open', str(config_file)])
+            subprocess.run(['xdg-open', str(config_file)], timeout=10)
         except Exception as e:
             logger.debug(f"[RNS] Failed to open editor: {e}")
             self.main_window.set_status_message(f"Failed to open editor: {e}")

@@ -587,10 +587,10 @@ Webserver:
         def do_apply():
             try:
                 # Daemon reload
-                subprocess.run(['systemctl', 'daemon-reload'], check=True)
+                subprocess.run(['systemctl', 'daemon-reload'], check=True, timeout=15)
 
                 # Restart service
-                subprocess.run(['systemctl', 'restart', 'meshtasticd'], check=True)
+                subprocess.run(['systemctl', 'restart', 'meshtasticd'], check=True, timeout=30)
 
                 GLib.idle_add(
                     self.main_window.set_status_message,

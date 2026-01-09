@@ -61,7 +61,7 @@ def check_textual():
                 print("\nInstalling textual...")
                 result = subprocess.run(
                     ['sudo', 'pip', 'install', '--break-system-packages', '--ignore-installed', 'textual'],
-                    capture_output=False
+                    capture_output=False, timeout=120
                 )
                 if result.returncode == 0:
                     print("\nTextual installed successfully! Restarting...")
@@ -116,10 +116,10 @@ def check_meshtastic_cli():
             response = input("Install CLI now with pipx? [y/n] (y): ").strip().lower()
             if response in ('', 'y', 'yes'):
                 print("\nInstalling pipx...")
-                subprocess.run(['sudo', 'apt', 'install', '-y', 'pipx'], capture_output=False)
+                subprocess.run(['sudo', 'apt', 'install', '-y', 'pipx'], capture_output=False, timeout=120)
                 print("\nInstalling meshtastic CLI...")
-                subprocess.run(['pipx', 'install', 'meshtastic[cli]'], capture_output=False)
-                subprocess.run(['pipx', 'ensurepath'], capture_output=False)
+                subprocess.run(['pipx', 'install', 'meshtastic[cli]'], capture_output=False, timeout=180)
+                subprocess.run(['pipx', 'ensurepath'], capture_output=False, timeout=30)
                 print("\nCLI installed! You may need to restart your shell or run:")
                 print("  source ~/.bashrc")
                 return True
