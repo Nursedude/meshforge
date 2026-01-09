@@ -89,6 +89,9 @@ class MeshForgeApp(Adw.Application):
                 icon_theme.add_search_path(str(assets_dir))
                 self._icons_registered = True
 
+                # Set default window icon
+                Gtk.Window.set_default_icon_name("meshforge-icon")
+
     def on_activate(self, app):
         """Called when application is activated"""
         logger.info("MeshForge GTK application activating...")
