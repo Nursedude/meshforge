@@ -338,6 +338,80 @@ class MeshToolsPanel(Gtk.Box):
         config_frame.set_child(config_box)
         box.append(config_frame)
 
+        # Connection Mode section - IMPORTANT for browser compatibility
+        conn_frame = Gtk.Frame()
+        conn_frame.set_label("Connection Mode")
+        conn_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        conn_box.set_margin_start(15)
+        conn_box.set_margin_end(15)
+        conn_box.set_margin_top(10)
+        conn_box.set_margin_bottom(10)
+
+        # Warning info
+        warn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        warn_icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+        warn_box.append(warn_icon)
+        warn_label = Gtk.Label(
+            label="Serial mode blocks browser access. Use TCP mode for shared access."
+        )
+        warn_label.set_wrap(True)
+        warn_label.set_xalign(0)
+        warn_label.add_css_class("dim-label")
+        warn_box.append(warn_label)
+        conn_box.append(warn_box)
+
+        # meshtasticd status
+        meshtasticd_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        meshtasticd_row.append(Gtk.Label(label="meshtasticd:"))
+        self._meshtasticd_status = Gtk.Label(label="Checking...")
+        self._meshtasticd_status.add_css_class("dim-label")
+        meshtasticd_row.append(self._meshtasticd_status)
+
+        spacer2 = Gtk.Box()
+        spacer2.set_hexpand(True)
+        meshtasticd_row.append(spacer2)
+
+        start_meshtasticd_btn = Gtk.Button(label="Start meshtasticd")
+        start_meshtasticd_btn.connect("clicked", self._on_start_meshtasticd)
+        meshtasticd_row.append(start_meshtasticd_btn)
+
+        conn_box.append(meshtasticd_row)
+
+        # Connection mode selector
+        mode_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        mode_row.append(Gtk.Label(label="MeshBot connects via:"))
+
+        self._conn_mode = Gtk.ComboBoxText()
+        self._conn_mode.append("serial", "Serial (exclusive - blocks browser)")
+        self._conn_mode.append("tcp", "TCP (shared - browser compatible)")
+        self._conn_mode.set_active_id("tcp")
+        self._conn_mode.set_tooltip_text("TCP mode requires meshtasticd running")
+        mode_row.append(self._conn_mode)
+
+        apply_mode_btn = Gtk.Button(label="Apply to Config")
+        apply_mode_btn.add_css_class("suggested-action")
+        apply_mode_btn.connect("clicked", self._on_apply_connection_mode)
+        apply_mode_btn.set_tooltip_text("Update mesh_bot config.ini with selected mode")
+        mode_row.append(apply_mode_btn)
+
+        conn_box.append(mode_row)
+
+        # Quick browser access
+        browser_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        browser_label = Gtk.Label(label="Quick access:")
+        browser_label.add_css_class("dim-label")
+        browser_row.append(browser_label)
+
+        open_browser_btn = Gtk.Button(label="Open Meshtastic Web")
+        open_browser_btn.connect("clicked", self._on_open_meshtastic_web)
+        open_browser_btn.set_tooltip_text("Open Meshtastic web interface (stops MeshBot if running in serial mode)")
+        browser_row.append(open_browser_btn)
+
+        conn_box.append(browser_row)
+
+        conn_frame.set_child(conn_box)
+        box.append(conn_frame)
+
         # Features overview
         features_frame = Gtk.Frame()
         features_frame.set_label("MeshBot Features")
@@ -624,8 +698,138 @@ class MeshToolsPanel(Gtk.Box):
     def _check_all_status(self):
         """Check status of all services"""
         self._check_meshbot_status()
+        self._check_meshtasticd_status()
         self._update_health_cards()
         return False  # Don't repeat
+
+    def _check_meshtasticd_status(self):
+        """Check if meshtasticd is running"""
+        def check():
+            try:
+                result = subprocess.run(
+                    ['pgrep', '-f', 'meshtasticd'],
+                    capture_output=True, text=True, timeout=5
+                )
+                running = result.returncode == 0 and result.stdout.strip()
+                GLib.idle_add(self._update_meshtasticd_status, running)
+            except Exception:
+                GLib.idle_add(self._update_meshtasticd_status, False)
+
+        threading.Thread(target=check, daemon=True).start()
+
+    def _update_meshtasticd_status(self, running: bool):
+        """Update meshtasticd status display"""
+        if running:
+            self._meshtasticd_status.set_label("Running (TCP available)")
+            self._meshtasticd_status.remove_css_class("error")
+            self._meshtasticd_status.add_css_class("success")
+        else:
+            self._meshtasticd_status.set_label("Not Running")
+            self._meshtasticd_status.remove_css_class("success")
+            self._meshtasticd_status.add_css_class("error")
+
+    def _on_start_meshtasticd(self, button):
+        """Start meshtasticd service"""
+        self._log_message("Starting meshtasticd...")
+
+        def do_start():
+            try:
+                # Try systemctl first
+                result = subprocess.run(
+                    ['sudo', 'systemctl', 'start', 'meshtasticd'],
+                    capture_output=True, text=True, timeout=30
+                )
+                if result.returncode == 0:
+                    GLib.idle_add(self._log_message, "meshtasticd started via systemctl")
+                else:
+                    # Try direct start
+                    subprocess.Popen(
+                        ['sudo', 'meshtasticd'],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True
+                    )
+                    GLib.idle_add(self._log_message, "meshtasticd started directly")
+
+                import time
+                time.sleep(2)
+                GLib.idle_add(self._check_meshtasticd_status)
+
+            except Exception as e:
+                GLib.idle_add(self._log_message, f"Failed to start meshtasticd: {e}")
+
+        threading.Thread(target=do_start, daemon=True).start()
+
+    def _on_apply_connection_mode(self, button):
+        """Apply connection mode to mesh_bot config"""
+        mode = self._conn_mode.get_active_id()
+        meshbot_path = self._path_entry.get_text().strip() or "/opt/meshing-around"
+        config_path = Path(meshbot_path) / "config.ini"
+
+        if not config_path.exists():
+            self._log_message(f"Config not found: {config_path}")
+            return
+
+        self._log_message(f"Applying {mode} connection mode...")
+
+        def do_apply():
+            try:
+                import configparser
+                config = configparser.ConfigParser()
+                config.read(str(config_path))
+
+                # Update interface settings
+                if 'interface' not in config:
+                    config['interface'] = {}
+
+                if mode == 'tcp':
+                    config['interface']['type'] = 'tcp'
+                    config['interface']['hostname'] = 'localhost'
+                    config['interface']['port'] = '4403'
+                    # Remove serial settings
+                    if 'port' in config['interface'] and config['interface']['port'].startswith('/dev'):
+                        del config['interface']['port']
+                else:  # serial
+                    config['interface']['type'] = 'serial'
+                    # Default to common serial ports
+                    if 'port' not in config['interface'] or not config['interface']['port'].startswith('/dev'):
+                        config['interface']['port'] = '/dev/ttyUSB0'
+
+                # Write config
+                with open(str(config_path), 'w') as f:
+                    config.write(f)
+
+                GLib.idle_add(self._log_message, f"Config updated to {mode} mode")
+                GLib.idle_add(self._log_message, "Restart MeshBot for changes to take effect")
+
+            except Exception as e:
+                GLib.idle_add(self._log_message, f"Failed to update config: {e}")
+
+        threading.Thread(target=do_apply, daemon=True).start()
+
+    def _on_open_meshtastic_web(self, button):
+        """Open Meshtastic web interface"""
+        # Check if mesh_bot is running in serial mode - offer to stop it
+        def check_and_open():
+            try:
+                result = subprocess.run(
+                    ['pgrep', '-f', 'mesh_bot.py'],
+                    capture_output=True, text=True, timeout=5
+                )
+                meshbot_running = result.returncode == 0 and result.stdout.strip()
+
+                if meshbot_running:
+                    GLib.idle_add(self._log_message, "MeshBot is running - may conflict with browser")
+                    GLib.idle_add(self._log_message, "Consider using TCP mode or stopping MeshBot")
+
+                # Open web interface anyway
+                GLib.idle_add(self._open_url, "http://localhost:8080")
+
+            except Exception as e:
+                GLib.idle_add(self._log_message, f"Error: {e}")
+                GLib.idle_add(self._open_url, "http://localhost:8080")
+
+        threading.Thread(target=check_and_open, daemon=True).start()
 
     def _check_meshbot_status(self):
         """Check MeshBot installation and running status"""
@@ -983,6 +1187,20 @@ class MeshToolsPanel(Gtk.Box):
             )
         except Exception as e:
             self._log_message(f"Error opening folder: {e}")
+
+    def _open_url(self, url: str):
+        """Open URL in browser"""
+        real_user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
+        try:
+            subprocess.Popen(
+                ['sudo', '-u', real_user, 'xdg-open', url],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True
+            )
+            self._log_message(f"Opening {url}")
+        except Exception as e:
+            self._log_message(f"Error opening URL: {e}")
 
     def cleanup(self):
         """Clean up resources"""
