@@ -842,12 +842,12 @@ class MeshToolsPanel(Gtk.Box):
                     GLib.idle_add(self._log_message, "MeshBot is running - may conflict with browser")
                     GLib.idle_add(self._log_message, "Consider using TCP mode or stopping MeshBot")
 
-                # Open web interface anyway (meshtasticd uses port 9443)
-                GLib.idle_add(self._open_url, "http://localhost:9443")
+                # Open web interface anyway (meshtasticd uses port 9443 with HTTPS)
+                GLib.idle_add(self._open_url, "https://localhost:9443")
 
             except Exception as e:
                 GLib.idle_add(self._log_message, f"Error: {e}")
-                GLib.idle_add(self._open_url, "http://localhost:9443")
+                GLib.idle_add(self._open_url, "https://localhost:9443")
 
         threading.Thread(target=check_and_open, daemon=True).start()
 
@@ -1288,19 +1288,94 @@ class MeshToolsPanel(Gtk.Box):
         threading.Thread(target=fetch_journal, daemon=True).start()
 
     def _on_refresh_map(self, button):
-        """Refresh node list"""
+        """Refresh node list from meshtasticd or mesh_bot data"""
         self._log_message("Refreshing node list...")
-        # TODO: Integrate with actual node tracking
+
+        def fetch_nodes():
+            nodes = []
+
+            # Method 1: Try meshtastic Python library via TCP
+            try:
+                import meshtastic.tcp_interface
+                interface = meshtastic.tcp_interface.TCPInterface('localhost', 4403)
+
+                # Get nodes from interface
+                if hasattr(interface, 'nodes') and interface.nodes:
+                    for node_id, node in interface.nodes.items():
+                        user = node.get('user', {})
+                        name = user.get('longName', user.get('shortName', 'Unknown'))
+                        hw_model = user.get('hwModel', 'Unknown')
+
+                        # Get last heard time
+                        last_heard = node.get('lastHeard', 0)
+                        if last_heard:
+                            last_seen = datetime.fromtimestamp(last_heard).strftime('%H:%M:%S')
+                        else:
+                            last_seen = 'Never'
+
+                        nodes.append((node_id, name, hw_model, last_seen))
+
+                interface.close()
+                GLib.idle_add(self._log_message, f"Found {len(nodes)} nodes via meshtastic library")
+
+            except ImportError:
+                GLib.idle_add(self._log_message, "Meshtastic library not available, trying mesh_bot data...")
+            except Exception as e:
+                GLib.idle_add(self._log_message, f"Meshtastic connection failed: {e}")
+
+            # Method 2: Try reading mesh_bot data files
+            if not nodes:
+                meshbot_path = self._path_entry.get_text().strip() or "/opt/meshing-around"
+                data_files = [
+                    Path(meshbot_path) / "prior_node_db.json",
+                    Path(meshbot_path) / "node_db.json",
+                    Path(meshbot_path) / "data" / "nodes.json",
+                ]
+
+                for data_file in data_files:
+                    if data_file.exists():
+                        try:
+                            with open(data_file) as f:
+                                data = json.load(f)
+
+                            # Handle different data formats
+                            if isinstance(data, dict):
+                                for node_id, node in data.items():
+                                    if isinstance(node, dict):
+                                        name = node.get('longName', node.get('shortName', node.get('name', 'Unknown')))
+                                        hw = node.get('hwModel', node.get('type', 'Unknown'))
+                                        last = node.get('lastHeard', node.get('last_seen', ''))
+                                        if isinstance(last, (int, float)) and last > 0:
+                                            last = datetime.fromtimestamp(last).strftime('%H:%M:%S')
+                                        nodes.append((str(node_id), name, hw, str(last) if last else 'Unknown'))
+
+                            GLib.idle_add(self._log_message, f"Loaded {len(nodes)} nodes from {data_file.name}")
+                            break
+                        except Exception as e:
+                            GLib.idle_add(self._log_message, f"Error reading {data_file.name}: {e}")
+
+            # Update UI
+            GLib.idle_add(self._update_node_list, nodes)
+
+        threading.Thread(target=fetch_nodes, daemon=True).start()
+
+    def _update_node_list(self, nodes: list):
+        """Update the node list store with new data"""
         self._node_store.clear()
-        self._node_stats_label.set_label(f"Nodes: 0 | Last update: {datetime.now().strftime('%H:%M:%S')}")
+
+        for node_id, name, hw_model, last_seen in nodes:
+            self._node_store.append([node_id, name, hw_model, last_seen])
+
+        count = len(nodes)
+        self._node_stats_label.set_label(f"Nodes: {count} | Last update: {datetime.now().strftime('%H:%M:%S')}")
 
     def _on_open_full_map(self, button):
         """Open map view - check which ports are available first"""
         import socket
 
-        # Map URLs to check with their ports
+        # Map URLs to check with their ports (9443 uses HTTPS)
         map_options = [
-            ("http://localhost:9443", 9443, "Meshtastic Web"),  # meshtasticd
+            ("https://localhost:9443", 9443, "Meshtastic Web"),  # meshtasticd (HTTPS)
             ("http://localhost:8080", 8080, "Meshtastic Alt"),
             ("http://localhost:5000", 5000, "Flask/MeshBot"),
             ("http://localhost:8000", 8000, "MeshMap"),
@@ -1348,8 +1423,33 @@ class MeshToolsPanel(Gtk.Box):
         self._run_network_test("Ping Test", ['ping', '-c', '4', '8.8.8.8'])
 
     def _on_traceroute_test(self, button):
-        """Run traceroute"""
-        self._run_network_test("Traceroute", ['traceroute', '-m', '10', '8.8.8.8'])
+        """Run traceroute - try multiple tools"""
+        self._log_message("Running route trace...")
+
+        def do_trace():
+            # Try different traceroute tools in order of preference
+            trace_cmds = [
+                (['traceroute', '-m', '10', '8.8.8.8'], 'traceroute'),
+                (['mtr', '-r', '-c', '3', '8.8.8.8'], 'mtr'),
+                (['tracepath', '8.8.8.8'], 'tracepath'),
+            ]
+
+            for cmd, name in trace_cmds:
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                    if result.returncode == 0 or result.stdout:
+                        output = result.stdout if result.stdout else result.stderr
+                        GLib.idle_add(self._log_message, f"\n=== {name} ===\n{output}")
+                        return
+                except FileNotFoundError:
+                    continue
+                except Exception as e:
+                    GLib.idle_add(self._log_message, f"{name} error: {e}")
+                    continue
+
+            GLib.idle_add(self._log_message, "No trace tools found. Install: sudo apt install traceroute")
+
+        threading.Thread(target=do_trace, daemon=True).start()
 
     def _on_dns_test(self, button):
         """Run DNS check - try multiple tools"""
@@ -1406,7 +1506,76 @@ class MeshToolsPanel(Gtk.Box):
     def _on_generate_report(self, button):
         """Generate diagnostic report"""
         self._log_message("Generating diagnostic report...")
-        # TODO: Generate comprehensive report
+
+        def do_report():
+            import socket
+            from datetime import datetime
+
+            report_lines = []
+            report_lines.append("=" * 60)
+            report_lines.append("MeshForge Diagnostic Report")
+            report_lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            report_lines.append("=" * 60)
+
+            # System info
+            report_lines.append("\n[System Info]")
+            try:
+                uname = subprocess.run(['uname', '-a'], capture_output=True, text=True, timeout=5)
+                report_lines.append(f"  {uname.stdout.strip()}")
+            except Exception:
+                pass
+
+            # MeshBot status
+            report_lines.append("\n[MeshBot Status]")
+            meshbot_path = self._path_entry.get_text().strip() or "/opt/meshing-around"
+            if Path(meshbot_path).exists():
+                report_lines.append(f"  Installed: Yes ({meshbot_path})")
+                venv = Path(meshbot_path) / "venv"
+                report_lines.append(f"  Venv: {'Yes' if venv.exists() else 'No'}")
+            else:
+                report_lines.append("  Installed: No")
+
+            # Check if running
+            try:
+                result = subprocess.run(['pgrep', '-f', 'mesh_bot.py'], capture_output=True, timeout=5)
+                report_lines.append(f"  Running: {'Yes' if result.returncode == 0 else 'No'}")
+            except Exception:
+                pass
+
+            # Network
+            report_lines.append("\n[Network]")
+            try:
+                ip = socket.gethostbyname('google.com')
+                report_lines.append(f"  DNS: Working ({ip})")
+            except Exception:
+                report_lines.append("  DNS: Failed")
+
+            # Meshtasticd
+            report_lines.append("\n[Meshtasticd]")
+            try:
+                result = subprocess.run(['systemctl', 'is-active', 'meshtasticd'], capture_output=True, text=True, timeout=5)
+                report_lines.append(f"  Service: {result.stdout.strip()}")
+            except Exception:
+                report_lines.append("  Service: Unknown")
+
+            # Check TCP port
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)
+                result = sock.connect_ex(('localhost', 4403))
+                sock.close()
+                report_lines.append(f"  TCP 4403: {'Open' if result == 0 else 'Closed'}")
+            except Exception:
+                pass
+
+            report_lines.append("\n" + "=" * 60)
+
+            # Display report
+            report_text = "\n".join(report_lines)
+            GLib.idle_add(self._set_log_text, report_text)
+            GLib.idle_add(self._log_message, "Report generated")
+
+        threading.Thread(target=do_report, daemon=True).start()
 
     def _on_open_reports_folder(self, button):
         """Open reports folder"""
