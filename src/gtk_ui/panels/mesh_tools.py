@@ -64,6 +64,23 @@ try:
 except ImportError:
     HAS_DIAGNOSTICS = False
 
+# Import service availability checker
+try:
+    from utils.service_check import check_port, check_service, require_service
+    HAS_SERVICE_CHECK = True
+except ImportError:
+    HAS_SERVICE_CHECK = False
+    def check_port(port, host='localhost', timeout=2.0):
+        import socket
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            result = sock.connect_ex((host, port))
+            sock.close()
+            return result == 0
+        except Exception:
+            return False
+
 
 class MeshToolsPanel(Gtk.Box):
     """
