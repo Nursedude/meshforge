@@ -127,10 +127,14 @@ class SetupWizard:
 
     def _get_real_home(self) -> Path:
         """Get real user home even when running as sudo"""
-        sudo_user = os.environ.get('SUDO_USER')
-        if sudo_user:
-            return Path(f"/home/{sudo_user}")
-        return Path.home()
+        try:
+            from utils.paths import get_real_user_home
+            return get_real_user_home()
+        except ImportError:
+            sudo_user = os.environ.get('SUDO_USER')
+            if sudo_user and sudo_user != 'root':
+                return Path(f"/home/{sudo_user}")
+            return Path.home()
 
     def _setup_logging(self):
         """Setup file logging for the wizard"""

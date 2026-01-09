@@ -13,12 +13,16 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def _get_real_user_home() -> Path:
-    """Get real user's home directory, even when running with sudo."""
-    sudo_user = os.environ.get('SUDO_USER')
-    if sudo_user and sudo_user != 'root':
-        return Path(f'/home/{sudo_user}')
-    return Path.home()
+# Import centralized path utility for sudo compatibility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        """Fallback: Get real user's home directory, even when running with sudo."""
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
 
 
 @dataclass
