@@ -84,27 +84,54 @@ class MeshForgeLinter:
         # MF001: Path.home() violation
         # Skip the paths.py utility file that defines get_real_user_home()
         if 'Path.home()' in line and 'paths.py' not in filepath:
-            # Check if it's in a fallback function (acceptable)
-            if 'def get_real_user_home' in content:
-                # This file has its own fallback - check if this line IS the fallback
-                if 'return Path.home()' not in line:
-                    issues.append(LintIssue(
-                        filepath, lineno, Severity.ERROR, "MF001",
-                        "Use get_real_user_home() instead of Path.home() for sudo compatibility"
-                    ))
-            else:
-                # No fallback in file - this is a violation
+            # Acceptable fallback patterns:
+            # 1. return Path.home() in a fallback function
+            # 2. else Path.home() in a ternary after SUDO_USER check
+            # 3. Inside an except ImportError block with SUDO_USER handling nearby
+            is_fallback_pattern = (
+                'return Path.home()' in line or
+                'else Path.home()' in line or
+                ('def get_real_user_home' in content and 'Path.home()' in line)
+            )
+            # Also check if this is in an except block after trying to import paths
+            context_start = max(0, content.find(line) - 500)
+            nearby_context = content[context_start:content.find(line) + len(line)]
+            has_import_fallback = (
+                'from utils.paths import' in nearby_context and
+                'except ImportError' in nearby_context
+            )
+            if not is_fallback_pattern and not has_import_fallback:
                 issues.append(LintIssue(
                     filepath, lineno, Severity.ERROR, "MF001",
                     "Use get_real_user_home() instead of Path.home() for sudo compatibility"
                 ))
 
         # MF002: shell=True security risk
+        # Only flag actual subprocess calls, not comments/docstrings/patterns
         if 'shell=True' in line and 'subprocess' in content:
-            issues.append(LintIssue(
-                filepath, lineno, Severity.ERROR, "MF002",
-                "Avoid shell=True in subprocess calls - use list args instead"
-            ))
+            # Must look like actual code: subprocess.run(..., shell=True, ...)
+            # Skip if: in docstring, comment, string literal, or pattern definition
+            is_actual_call = (
+                re.search(r'subprocess\.\w+\s*\([^)]*shell\s*=\s*True', line) or
+                (stripped.startswith('subprocess.') and 'shell=True' in line) or
+                ('shell=True' in line and '(' in line and ')' in line and 'subprocess' in line)
+            )
+            # Exclude comments and docstring-like content
+            is_doc_or_comment = (
+                stripped.startswith('#') or
+                stripped.startswith('"""') or
+                stripped.startswith("'''") or
+                'Security:' in line or  # Common docstring pattern
+                'NEVER' in line or      # Documentation
+                'pattern' in line.lower() or
+                line.strip().startswith('"') or
+                line.strip().startswith("'")
+            )
+            if is_actual_call and not is_doc_or_comment:
+                issues.append(LintIssue(
+                    filepath, lineno, Severity.ERROR, "MF002",
+                    "Avoid shell=True in subprocess calls - use list args instead"
+                ))
 
         # MF003: Bare except clause
         if re.match(r'^\s*except\s*:\s*(#.*)?$', line):

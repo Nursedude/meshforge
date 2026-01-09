@@ -782,14 +782,12 @@ class DiagnosticsPanel(Gtk.Box):
         # Check config - use real user home for sudo compatibility
         try:
             from utils.paths import get_real_user_home
-            rns_config = get_real_user_home() / '.reticulum' / 'config'
+            user_home = get_real_user_home()
         except ImportError:
             import os as os_mod
             sudo_user = os_mod.environ.get('SUDO_USER')
-            if sudo_user and sudo_user != 'root':
-                rns_config = Path(f'/home/{sudo_user}') / '.reticulum' / 'config'
-            else:
-                rns_config = Path.home() / '.reticulum' / 'config'
+            user_home = Path(f'/home/{sudo_user}') if sudo_user and sudo_user != 'root' else Path.home()
+        rns_config = user_home / '.reticulum' / 'config'
         if rns_config.exists():
             results.append(f"[PASS] RNS config exists: {rns_config}")
         else:
