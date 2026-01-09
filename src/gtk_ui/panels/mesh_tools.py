@@ -1215,11 +1215,14 @@ class MeshToolsPanel(Gtk.Box):
 
     def _on_view_meshbot_log(self, button):
         """View MeshBot log file"""
-        meshbot_path = self._path_entry.get_text().strip()
+        meshbot_path = self._path_entry.get_text().strip() or "/opt/meshing-around"
         log_files = [
+            # Current meshing-around log locations
+            Path(meshbot_path) / "logs" / "meshbot.log",
+            Path(meshbot_path) / "logs" / "messages.log",
+            # Legacy/alternative locations
             Path(meshbot_path) / "prior_log.txt",
             Path(meshbot_path) / "prior_debug_log.txt",
-            Path(meshbot_path) / "logs" / "mesh_bot.log",
         ]
 
         for log_path in log_files:
@@ -1233,11 +1236,17 @@ class MeshToolsPanel(Gtk.Box):
                     self._log_message(f"Error reading {log_path}: {e}")
 
         self._log_message("No log files found")
+        self._log_message(f"Checked: {meshbot_path}/logs/meshbot.log")
+        self._log_message("Logs are created after MeshBot runs with logging enabled")
 
     def _on_tail_meshbot_log(self, button):
         """Show last 50 lines of log"""
-        meshbot_path = self._path_entry.get_text().strip()
+        meshbot_path = self._path_entry.get_text().strip() or "/opt/meshing-around"
         log_files = [
+            # Current meshing-around log locations
+            Path(meshbot_path) / "logs" / "meshbot.log",
+            Path(meshbot_path) / "logs" / "messages.log",
+            # Legacy/alternative locations
             Path(meshbot_path) / "prior_log.txt",
             Path(meshbot_path) / "prior_debug_log.txt",
         ]
@@ -1253,6 +1262,7 @@ class MeshToolsPanel(Gtk.Box):
                     self._log_message(f"Error reading {log_path}: {e}")
 
         self._log_message("No log files found")
+        self._log_message("Enable logging in config.ini: syslog_to_file = True")
 
     def _on_view_journal(self, button):
         """View systemd journal for mesh_bot service"""
