@@ -322,7 +322,7 @@ def get_data_dir(app_name: str = "meshforge") -> Path:
     Returns:
         Path to data directory
     """
-    real_home = _get_real_user_home()
+    real_home = get_real_user_home()
     xdg_data = os.environ.get('XDG_DATA_HOME', str(real_home / '.local' / 'share'))
     data_dir = Path(xdg_data) / app_name
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -340,7 +340,7 @@ def get_cache_dir(app_name: str = "meshforge") -> Path:
     Returns:
         Path to cache directory
     """
-    real_home = _get_real_user_home()
+    real_home = get_real_user_home()
     xdg_cache = os.environ.get('XDG_CACHE_HOME', str(real_home / '.cache'))
     cache_dir = Path(xdg_cache) / app_name
     cache_dir.mkdir(parents=True, exist_ok=True)

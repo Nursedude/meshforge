@@ -96,7 +96,7 @@ class GatewayConfig:
     @classmethod
     def get_config_path(cls) -> Path:
         """Get the configuration file path"""
-        config_dir = _get_real_user_home() / ".config" / "meshforge"
+        config_dir = get_real_user_home() / ".config" / "meshforge"
         config_dir.mkdir(parents=True, exist_ok=True)
         return config_dir / "gateway.json"
 
