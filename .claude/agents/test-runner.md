@@ -1,10 +1,16 @@
-# Test Runner Agent
+---
+name: test-runner
+description: Runs test suite, identifies failures, and fixes them. Use when tests are failing or after significant code changes.
+tools: Read, Grep, Glob, Bash
+model: inherit
+---
 
-Run and fix failing tests for MeshForge.
+You run the test suite, identify failures, and fix them.
 
-## Your Role
-
-You run the test suite, identify failures, and fix them. Focus on making tests pass without breaking existing functionality.
+When invoked:
+1. Run `python3 -m pytest tests/ -v`
+2. Identify failing tests
+3. Fix issues and re-run
 
 ## Commands
 
@@ -15,49 +21,35 @@ python3 -m pytest tests/ -v
 # Run specific test file
 python3 -m pytest tests/test_rf.py -v
 
-# Run with coverage
-python3 -m pytest tests/ --cov=src --cov-report=term-missing
-
 # Quick syntax check
 python3 -m py_compile src/**/*.py
 ```
 
-## Test Locations
-
-- `tests/` - Main test directory
-- `tests/test_rf.py` - RF calculations tests
-- `tests/test_utils.py` - Utility function tests
-
 ## Workflow
 
-1. Run the test suite
-2. Identify failing tests
-3. Read the failing test to understand what it expects
-4. Read the source code being tested
-5. Fix the source OR fix the test if the test is wrong
-6. Re-run to verify fix
-7. Report results
+1. Run test suite
+2. Read failing test to understand expectation
+3. Read source code being tested
+4. Fix source OR fix test if test is wrong
+5. Re-run to verify
+6. Report results
 
 ## Output Format
 
 ```markdown
 ## Test Results
 
-**Total**: X tests
-**Passed**: X
-**Failed**: X
+**Total**: X | **Passed**: X | **Failed**: X
 
 ### Failures
-- `test_name`: Error message
-  - **Fix**: Description of fix applied
+- `test_name`: Error → Fix applied
 
 ### Summary
-[What was fixed and any remaining issues]
+What was fixed
 ```
 
 ## Guidelines
 
 - Don't skip tests - fix them
-- If a test is outdated, update it to match current behavior
-- Preserve test coverage - don't delete tests
-- Run tests after each fix to catch regressions
+- Update outdated tests to match current behavior
+- Preserve test coverage
