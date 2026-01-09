@@ -1292,36 +1292,57 @@ class MeshToolsPanel(Gtk.Box):
         self._log_message("Refreshing node list...")
 
         def fetch_nodes():
+            import socket
             nodes = []
 
-            # Method 1: Try meshtastic Python library via TCP
+            # Method 1: Check if meshtasticd TCP port is available first
+            tcp_available = False
             try:
-                import meshtastic.tcp_interface
-                interface = meshtastic.tcp_interface.TCPInterface('localhost', 4403)
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)
+                result = sock.connect_ex(('localhost', 4403))
+                sock.close()
+                tcp_available = (result == 0)
+            except Exception:
+                pass
 
-                # Get nodes from interface
-                if hasattr(interface, 'nodes') and interface.nodes:
-                    for node_id, node in interface.nodes.items():
-                        user = node.get('user', {})
-                        name = user.get('longName', user.get('shortName', 'Unknown'))
-                        hw_model = user.get('hwModel', 'Unknown')
+            if tcp_available:
+                try:
+                    import meshtastic.tcp_interface
+                    GLib.idle_add(self._log_message, "Connecting to meshtasticd via TCP...")
 
-                        # Get last heard time
-                        last_heard = node.get('lastHeard', 0)
-                        if last_heard:
-                            last_seen = datetime.fromtimestamp(last_heard).strftime('%H:%M:%S')
-                        else:
-                            last_seen = 'Never'
+                    interface = meshtastic.tcp_interface.TCPInterface('localhost', 4403)
 
-                        nodes.append((node_id, name, hw_model, last_seen))
+                    # Wait briefly for node info to populate
+                    import time
+                    time.sleep(2)
 
-                interface.close()
-                GLib.idle_add(self._log_message, f"Found {len(nodes)} nodes via meshtastic library")
+                    # Get nodes from interface
+                    if hasattr(interface, 'nodes') and interface.nodes:
+                        for node_id, node in interface.nodes.items():
+                            user = node.get('user', {})
+                            name = user.get('longName', user.get('shortName', 'Unknown'))
+                            hw_model = user.get('hwModel', 'Unknown')
 
-            except ImportError:
-                GLib.idle_add(self._log_message, "Meshtastic library not available, trying mesh_bot data...")
-            except Exception as e:
-                GLib.idle_add(self._log_message, f"Meshtastic connection failed: {e}")
+                            last_heard = node.get('lastHeard', 0)
+                            if last_heard:
+                                last_seen = datetime.fromtimestamp(last_heard).strftime('%H:%M:%S')
+                            else:
+                                last_seen = 'Never'
+
+                            nodes.append((str(node_id), name, hw_model, last_seen))
+
+                    interface.close()
+                    if nodes:
+                        GLib.idle_add(self._log_message, f"Found {len(nodes)} nodes via meshtastic TCP")
+
+                except ImportError:
+                    GLib.idle_add(self._log_message, "Meshtastic Python library not installed")
+                    GLib.idle_add(self._log_message, "Install with: pip install meshtastic")
+                except Exception as e:
+                    GLib.idle_add(self._log_message, f"TCP connection error: {e}")
+            else:
+                GLib.idle_add(self._log_message, "meshtasticd TCP port 4403 not available")
 
             # Method 2: Try reading mesh_bot data files
             if not nodes:
@@ -1332,13 +1353,14 @@ class MeshToolsPanel(Gtk.Box):
                     Path(meshbot_path) / "data" / "nodes.json",
                 ]
 
+                found_file = False
                 for data_file in data_files:
                     if data_file.exists():
+                        found_file = True
                         try:
                             with open(data_file) as f:
                                 data = json.load(f)
 
-                            # Handle different data formats
                             if isinstance(data, dict):
                                 for node_id, node in data.items():
                                     if isinstance(node, dict):
@@ -1349,10 +1371,23 @@ class MeshToolsPanel(Gtk.Box):
                                             last = datetime.fromtimestamp(last).strftime('%H:%M:%S')
                                         nodes.append((str(node_id), name, hw, str(last) if last else 'Unknown'))
 
-                            GLib.idle_add(self._log_message, f"Loaded {len(nodes)} nodes from {data_file.name}")
+                            if nodes:
+                                GLib.idle_add(self._log_message, f"Loaded {len(nodes)} nodes from {data_file.name}")
                             break
                         except Exception as e:
                             GLib.idle_add(self._log_message, f"Error reading {data_file.name}: {e}")
+
+                if not found_file:
+                    GLib.idle_add(self._log_message, "No mesh_bot node database files found")
+
+            # Show help if no nodes found
+            if not nodes:
+                GLib.idle_add(self._log_message, "")
+                GLib.idle_add(self._log_message, "=== No nodes found ===")
+                GLib.idle_add(self._log_message, "To get node data:")
+                GLib.idle_add(self._log_message, "  1. Start meshtasticd (systemctl start meshtasticd)")
+                GLib.idle_add(self._log_message, "  2. Install meshtastic: pip install meshtastic")
+                GLib.idle_add(self._log_message, "  3. Or run MeshBot to create node database")
 
             # Update UI
             GLib.idle_add(self._update_node_list, nodes)
@@ -1629,18 +1664,43 @@ class MeshToolsPanel(Gtk.Box):
             self._log_message(f"Error opening folder: {e}")
 
     def _open_url(self, url: str):
-        """Open URL in browser"""
+        """Open URL in browser - runs in thread to avoid blocking GTK"""
         real_user = os.environ.get('SUDO_USER', os.environ.get('USER', 'pi'))
-        try:
-            subprocess.Popen(
+
+        def do_open():
+            # Try multiple methods to open browser
+            browsers = [
                 ['sudo', '-u', real_user, 'xdg-open', url],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True
-            )
-            self._log_message(f"Opening {url}")
-        except Exception as e:
-            self._log_message(f"Error opening URL: {e}")
+                ['sudo', '-u', real_user, 'firefox', url],
+                ['sudo', '-u', real_user, 'chromium-browser', url],
+                ['sudo', '-u', real_user, 'chromium', url],
+                ['sudo', '-u', real_user, 'google-chrome', url],
+            ]
+
+            for cmd in browsers:
+                try:
+                    # Use Popen with full detachment
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        stdin=subprocess.DEVNULL,
+                        start_new_session=True,
+                        env={**os.environ, 'DISPLAY': os.environ.get('DISPLAY', ':0')}
+                    )
+                    GLib.idle_add(self._log_message, f"Opening {url}")
+                    GLib.idle_add(self._log_message, f"(Note: HTTPS uses self-signed cert - accept in browser)")
+                    return
+                except FileNotFoundError:
+                    continue
+                except Exception as e:
+                    GLib.idle_add(self._log_message, f"Browser error: {e}")
+                    continue
+
+            GLib.idle_add(self._log_message, f"Could not open browser for {url}")
+            GLib.idle_add(self._log_message, "Copy URL and open manually in browser")
+
+        threading.Thread(target=do_open, daemon=True).start()
 
     def cleanup(self):
         """Clean up resources"""
