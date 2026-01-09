@@ -842,12 +842,12 @@ class MeshToolsPanel(Gtk.Box):
                     GLib.idle_add(self._log_message, "MeshBot is running - may conflict with browser")
                     GLib.idle_add(self._log_message, "Consider using TCP mode or stopping MeshBot")
 
-                # Open web interface anyway
-                GLib.idle_add(self._open_url, "http://localhost:8080")
+                # Open web interface anyway (meshtasticd uses port 9443)
+                GLib.idle_add(self._open_url, "http://localhost:9443")
 
             except Exception as e:
                 GLib.idle_add(self._log_message, f"Error: {e}")
-                GLib.idle_add(self._open_url, "http://localhost:8080")
+                GLib.idle_add(self._open_url, "http://localhost:9443")
 
         threading.Thread(target=check_and_open, daemon=True).start()
 
@@ -967,7 +967,7 @@ class MeshToolsPanel(Gtk.Box):
                     card._status_label.add_css_class("error")
 
     def _on_start_bot(self, button):
-        """Start MeshBot"""
+        """Start MeshBot - use systemd service if available, otherwise direct execution"""
         meshbot_path = self._path_entry.get_text().strip()
         script_path = Path(meshbot_path) / "mesh_bot.py"
 
@@ -992,6 +992,27 @@ class MeshToolsPanel(Gtk.Box):
 
         def do_start():
             try:
+                # Check if systemd service exists
+                service_check = subprocess.run(
+                    ['systemctl', 'cat', 'mesh_bot.service'],
+                    capture_output=True, text=True, timeout=5
+                )
+
+                if service_check.returncode == 0:
+                    # Use systemd service
+                    GLib.idle_add(self._log_message, "Using systemd service...")
+                    result = subprocess.run(
+                        ['sudo', 'systemctl', 'start', 'mesh_bot.service'],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    if result.returncode == 0:
+                        GLib.idle_add(self._log_message, "MeshBot service started")
+                        GLib.idle_add(self._check_meshbot_status)
+                    else:
+                        GLib.idle_add(self._log_message, f"Service start failed: {result.stderr}")
+                    return
+
+                # Fall back to direct execution
                 # Check for virtual environment
                 venv_path = Path(meshbot_path) / "venv"
                 venv_python = venv_path / "bin" / "python3"
@@ -1044,15 +1065,35 @@ class MeshToolsPanel(Gtk.Box):
         threading.Thread(target=do_start, daemon=True).start()
 
     def _on_stop_bot(self, button):
-        """Stop MeshBot"""
+        """Stop MeshBot - use systemd service if available"""
         self._log_message("Stopping MeshBot...")
 
         def do_stop():
             try:
-                subprocess.run(['pkill', '-f', 'mesh_bot.py'], timeout=10)
+                # Check if systemd service exists and is running
+                service_check = subprocess.run(
+                    ['systemctl', 'is-active', 'mesh_bot.service'],
+                    capture_output=True, text=True, timeout=5
+                )
+
+                if service_check.stdout.strip() == 'active':
+                    # Stop via systemd
+                    GLib.idle_add(self._log_message, "Stopping systemd service...")
+                    result = subprocess.run(
+                        ['sudo', 'systemctl', 'stop', 'mesh_bot.service'],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    if result.returncode == 0:
+                        GLib.idle_add(self._log_message, "MeshBot service stopped")
+                    else:
+                        GLib.idle_add(self._log_message, f"Service stop failed: {result.stderr}")
+                else:
+                    # Kill any running process
+                    subprocess.run(['pkill', '-f', 'mesh_bot.py'], timeout=10)
+                    GLib.idle_add(self._log_message, "MeshBot stopped")
+
                 import time
                 time.sleep(1)
-                GLib.idle_add(self._log_message, "MeshBot stopped")
                 GLib.idle_add(self._check_meshbot_status)
             except Exception as e:
                 GLib.idle_add(self._log_message, f"Stop error: {e}")
@@ -1214,29 +1255,32 @@ class MeshToolsPanel(Gtk.Box):
         self._log_message("No log files found")
 
     def _on_view_journal(self, button):
-        """View systemd journal for mesh_bot process"""
+        """View systemd journal for mesh_bot service"""
         self._log_message("Fetching journal entries...")
 
         def fetch_journal():
             try:
-                # Get journal entries for mesh_bot.py process
+                # First try the mesh_bot.service
                 result = subprocess.run(
+                    ['journalctl', '--no-pager', '-n', '100', '-u', 'mesh_bot.service'],
+                    capture_output=True, text=True, timeout=30
+                )
+
+                if result.stdout.strip() and '-- No entries --' not in result.stdout:
+                    GLib.idle_add(self._set_log_text, f"=== Journal (mesh_bot.service) ===\n\n{result.stdout}")
+                    return
+
+                # Try grep pattern
+                result2 = subprocess.run(
                     ['journalctl', '--no-pager', '-n', '100', '-g', 'mesh_bot'],
                     capture_output=True, text=True, timeout=30
                 )
 
-                if result.stdout.strip():
-                    GLib.idle_add(self._set_log_text, f"=== Journal (mesh_bot) ===\n\n{result.stdout}")
+                if result2.stdout.strip() and '-- No entries --' not in result2.stdout:
+                    GLib.idle_add(self._set_log_text, f"=== Journal (mesh_bot) ===\n\n{result2.stdout}")
                 else:
-                    # Try getting recent python entries
-                    result2 = subprocess.run(
-                        ['journalctl', '--no-pager', '-n', '50', '-u', 'python3'],
-                        capture_output=True, text=True, timeout=30
-                    )
-                    if result2.stdout.strip():
-                        GLib.idle_add(self._set_log_text, f"=== Journal (python3) ===\n\n{result2.stdout}")
-                    else:
-                        GLib.idle_add(self._log_message, "No journal entries found for mesh_bot")
+                    GLib.idle_add(self._log_message, "No journal entries found")
+                    GLib.idle_add(self._log_message, "Use View Log or Tail Log to see file-based logs")
 
             except Exception as e:
                 GLib.idle_add(self._log_message, f"Journal error: {e}")
@@ -1257,7 +1301,7 @@ class MeshToolsPanel(Gtk.Box):
         # Check for meshing-around web server
         map_urls = [
             "http://localhost:5000",  # Flask default
-            "http://localhost:8080",  # Alternative
+            "http://localhost:9443",  # meshtasticd web interface
             "http://localhost:8000/map",  # meshmap
         ]
 
