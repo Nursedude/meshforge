@@ -1,0 +1,38 @@
+#!/bin/bash
+# MeshForge pre-commit hook
+# Runs linter on staged Python files before commit
+#
+# Install with: cp scripts/hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+
+set -e
+
+# Get the root of the git repository
+REPO_ROOT=$(git rev-parse --show-toplevel)
+
+# Check if lint.py exists
+if [ ! -f "$REPO_ROOT/scripts/lint.py" ]; then
+    echo "Warning: lint.py not found, skipping linting"
+    exit 0
+fi
+
+# Get list of staged Python files
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true)
+
+if [ -z "$STAGED_FILES" ]; then
+    # No Python files staged, nothing to lint
+    exit 0
+fi
+
+echo "Running MeshForge linter on staged files..."
+
+# Run linter with error severity only (warnings don't block commit)
+cd "$REPO_ROOT"
+if ! python3 scripts/lint.py --staged --severity error; then
+    echo ""
+    echo "Commit blocked due to linting errors."
+    echo "Fix the issues above or use 'git commit --no-verify' to bypass."
+    exit 1
+fi
+
+echo "Linting passed."
+exit 0

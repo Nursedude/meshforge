@@ -1,0 +1,23 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": {
+          "tool_name": "Write|Edit|MultiEdit"
+        },
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 scripts/lint.py --severity warning \"$CLAUDE_TOOL_ARG_file_path\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "PreCommit": [
+      {
+        "type": "command",
+        "command": "python3 scripts/lint.py --staged --severity error"
+      }
+    ]
+  }
+}
