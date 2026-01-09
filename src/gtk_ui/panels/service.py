@@ -205,14 +205,14 @@ class ServicePanel(Gtk.Box):
             # Get active state
             result = subprocess.run(
                 ['systemctl', 'is-active', 'meshtasticd'],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=10
             )
             is_active = result.stdout.strip() == 'active'
 
             # Get enabled state
             result = subprocess.run(
                 ['systemctl', 'is-enabled', 'meshtasticd'],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=10
             )
             is_enabled = result.stdout.strip() == 'enabled'
 
@@ -220,7 +220,7 @@ class ServicePanel(Gtk.Box):
             result = subprocess.run(
                 ['systemctl', 'show', 'meshtasticd',
                  '--property=ActiveState,SubState,MainPID,ActiveEnterTimestamp'],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=10
             )
             props = {}
             for line in result.stdout.strip().split('\n'):
@@ -284,7 +284,7 @@ class ServicePanel(Gtk.Box):
                 try:
                     result = subprocess.run(
                         ['sudo', 'systemctl', action, 'meshtasticd'],
-                        capture_output=True, text=True
+                        capture_output=True, text=True, timeout=30
                     )
                     success = result.returncode == 0
                     GLib.idle_add(self._action_complete, action, success, result.stderr)
@@ -317,7 +317,7 @@ class ServicePanel(Gtk.Box):
         else:
             def do_reload():
                 try:
-                    subprocess.run(['sudo', 'systemctl', 'daemon-reload'], check=True)
+                    subprocess.run(['sudo', 'systemctl', 'daemon-reload'], check=True, timeout=15)
                     GLib.idle_add(self.main_window.set_status_message, "Daemon reloaded successfully")
                 except Exception as e:
                     GLib.idle_add(self.main_window.set_status_message, f"Failed to reload daemon: {e}")
@@ -341,7 +341,7 @@ class ServicePanel(Gtk.Box):
         else:
             def do_toggle():
                 try:
-                    subprocess.run(['sudo', 'systemctl', action, 'meshtasticd'], check=True)
+                    subprocess.run(['sudo', 'systemctl', action, 'meshtasticd'], check=True, timeout=30)
                     GLib.idle_add(self._refresh_status)
                     GLib.idle_add(self.main_window.set_status_message, f"Service {action}d on boot")
                 except Exception as e:
@@ -368,7 +368,7 @@ class ServicePanel(Gtk.Box):
                 if since:
                     cmd.extend(['--since', since])
 
-                result = subprocess.run(cmd, capture_output=True, text=True)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
                 logs = result.stdout if result.stdout else "No logs available"
                 GLib.idle_add(self._update_logs, logs)
             except Exception as e:

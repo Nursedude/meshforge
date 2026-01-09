@@ -479,7 +479,7 @@ class SPIHatConfigurator:
             time.sleep(2)
 
             # Reboot
-            subprocess.run(['reboot'], check=False)
+            subprocess.run(['reboot'], check=False, timeout=10)
         else:
             console.print("\n[yellow]Please reboot manually when ready:[/yellow]")
             console.print("  [cyan]sudo reboot[/cyan]\n")
@@ -511,8 +511,8 @@ WantedBy=multi-user.target
                 f.write(service_content)
 
             # Enable the service for next boot
-            subprocess.run(['systemctl', 'daemon-reload'], check=False)
-            subprocess.run(['systemctl', 'enable', 'meshtasticd-installer-resume.service'], check=False)
+            subprocess.run(['systemctl', 'daemon-reload'], check=False, timeout=30)
+            subprocess.run(['systemctl', 'enable', 'meshtasticd-installer-resume.service'], check=False, timeout=15)
 
             log("Resume service created for post-reboot installer start")
         except PermissionError:

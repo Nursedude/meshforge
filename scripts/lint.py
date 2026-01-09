@@ -143,28 +143,49 @@ class MeshForgeLinter:
         # MF004: subprocess.run/call/Popen without timeout
         subprocess_pattern = r'subprocess\.(run|call|Popen)\s*\('
         if re.search(subprocess_pattern, line):
-            # Look ahead for timeout in the same statement
-            # Find the end of the call (matching parens)
-            start_idx = content.find(line)
-            if start_idx != -1:
-                # Simple check: look for timeout= in nearby lines
-                context = content[start_idx:start_idx + 500]
-                paren_count = 0
-                call_text = ""
-                for char in context:
-                    call_text += char
-                    if char == '(':
-                        paren_count += 1
-                    elif char == ')':
-                        paren_count -= 1
-                        if paren_count == 0:
-                            break
+            # Skip if marked as interactive or intentionally no timeout
+            if '# Interactive' in line or '# no timeout' in line.lower():
+                pass  # Skip interactive commands
+            # Skip if it's inside a string (changelog, pattern definition)
+            elif (stripped.startswith('"') or stripped.startswith("'") or
+                  'SECURITY:' in line or 'IMPROVED:' in line or 'pattern' in line.lower()):
+                pass  # Skip changelog/documentation/pattern strings
+            else:
+                # Look ahead for timeout in the same statement
+                start_idx = content.find(line)
+                if start_idx != -1:
+                    # Get the call text (matching parens)
+                    context = content[start_idx:start_idx + 500]
+                    paren_count = 0
+                    call_text = ""
+                    for char in context:
+                        call_text += char
+                        if char == '(':
+                            paren_count += 1
+                        elif char == ')':
+                            paren_count -= 1
+                            if paren_count == 0:
+                                break
 
-                if 'timeout' not in call_text and 'Popen' not in line:
-                    issues.append(LintIssue(
-                        filepath, lineno, Severity.WARNING, "MF004",
-                        "subprocess call without timeout parameter"
-                    ))
+                    # Check for timeout in call or kwargs unpacking nearby
+                    has_timeout = 'timeout' in call_text
+                    # Check for **kwargs pattern - look back for kwargs dict with timeout
+                    if '**' in call_text:
+                        kwargs_match = re.search(r'\*\*(\w+)', call_text)
+                        if kwargs_match:
+                            kwargs_name = kwargs_match.group(1)
+                            # Look back in content for this dict definition with timeout
+                            lookback = content[max(0, start_idx - 1000):start_idx]
+                            if f"'{kwargs_name}'" in lookback or f'"{kwargs_name}"' in lookback:
+                                pass  # Skip - complex case
+                            elif f'{kwargs_name}' in lookback and 'timeout' in lookback:
+                                has_timeout = True
+
+                    if not has_timeout and 'Popen' not in line:
+                        issues.append(LintIssue(
+                            filepath, lineno, Severity.WARNING, "MF004",
+                            "subprocess call without timeout parameter"
+                        ))
 
         # MF005: GLib.idle_add check - UI updates from threads
         if 'self.' in line and ('set_text' in line or 'set_label' in line or 'append' in line):

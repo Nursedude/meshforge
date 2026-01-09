@@ -466,7 +466,7 @@ def apply_template(template_name):
 
             if Confirm.ask("\nRestart meshtasticd service?", default=True):
                 result = subprocess.run(['systemctl', 'restart', 'meshtasticd'],
-                                      capture_output=True, text=True)
+                                      capture_output=True, text=True, timeout=30)
                 if result.returncode == 0:
                     console.print("[green]Service restarted![/green]")
                 else:
@@ -816,7 +816,7 @@ def view_logs():
         console.print(f"\n[cyan]Showing last 50 lines of {log_file}:[/cyan]\n")
         try:
             result = subprocess.run(['tail', '-n', '50', log_file],
-                                  capture_output=True, text=True, check=True)
+                                  capture_output=True, text=True, check=True, timeout=10)
             from rich.panel import Panel
             console.print(Panel(result.stdout, title="[cyan]Installation Log[/cyan]", border_style="cyan"))
         except subprocess.CalledProcessError as e:
@@ -887,7 +887,7 @@ def test_service():
     """Test meshtasticd service"""
     console.print("\n[cyan]Testing meshtasticd service...[/cyan]\n")
     result = subprocess.run(['systemctl', 'status', 'meshtasticd'],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, timeout=15)
     console.print(result.stdout)
     if result.stderr:
         console.print(result.stderr)

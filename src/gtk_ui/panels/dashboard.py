@@ -157,7 +157,7 @@ class DashboardPanel(Gtk.Box):
             # Method 1: systemctl is-active
             result = subprocess.run(
                 ['systemctl', 'is-active', 'meshtasticd'],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=10
             )
             if result.stdout.strip() == 'active':
                 is_running = True
@@ -167,7 +167,7 @@ class DashboardPanel(Gtk.Box):
             if not is_running:
                 result = subprocess.run(
                     ['pgrep', '-f', 'meshtasticd'],
-                    capture_output=True, text=True
+                    capture_output=True, text=True, timeout=5
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     is_running = True
@@ -199,7 +199,7 @@ class DashboardPanel(Gtk.Box):
         try:
             result = subprocess.run(
                 ['meshtasticd', '--version'],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=10
             )
             if result.returncode == 0:
                 version = result.stdout.strip()
@@ -294,7 +294,7 @@ class DashboardPanel(Gtk.Box):
         try:
             result = subprocess.run(
                 ['journalctl', '-u', 'meshtasticd', '-n', '20', '--no-pager'],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=10
             )
             logs = result.stdout if result.stdout else "No logs available"
             GLib.idle_add(self._update_logs, logs)

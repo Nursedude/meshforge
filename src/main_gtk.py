@@ -215,10 +215,10 @@ def check_meshtastic_cli():
             response = input("Install CLI now with pipx? [y/n] (y): ").strip().lower()
             if response in ('', 'y', 'yes'):
                 print("\nInstalling pipx...")
-                subprocess.run(['sudo', 'apt', 'install', '-y', 'pipx'], capture_output=False)
+                subprocess.run(['sudo', 'apt', 'install', '-y', 'pipx'], capture_output=False, timeout=120)
                 print("\nInstalling meshtastic CLI...")
-                subprocess.run(['pipx', 'install', 'meshtastic[cli]'], capture_output=False)
-                subprocess.run(['pipx', 'ensurepath'], capture_output=False)
+                subprocess.run(['pipx', 'install', 'meshtastic[cli]'], capture_output=False, timeout=180)
+                subprocess.run(['pipx', 'ensurepath'], capture_output=False, timeout=30)
                 print("\nCLI installed!")
                 return True
             else:

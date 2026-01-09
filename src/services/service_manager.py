@@ -23,7 +23,8 @@ class ServiceManager:
             result = subprocess.run(
                 ['systemctl', action, self.SERVICE_NAME],
                 capture_output=capture,
-                text=True
+                text=True,
+                timeout=30
             )
             return result
         except Exception as e:
@@ -162,7 +163,7 @@ class ServiceManager:
                 console.print("\n" + "─" * 60)
                 console.print("[green]Log following stopped[/green]")
             else:
-                result = subprocess.run(cmd, capture_output=True, text=True)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
                 if result.stdout:
                     console.print(Panel(result.stdout, title="[cyan]Service Logs[/cyan]",
                                        border_style="cyan"))
@@ -177,7 +178,7 @@ class ServiceManager:
         """View logs since a specific time"""
         try:
             cmd = ['journalctl', '-u', self.SERVICE_NAME, '--since', since]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if result.stdout:
                 console.print(Panel(result.stdout, title=f"[cyan]Logs since {since}[/cyan]",
                                    border_style="cyan"))

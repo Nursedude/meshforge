@@ -183,7 +183,7 @@ class InstallPanel(Gtk.Box):
             try:
                 result = subprocess.run(
                     ['meshtasticd', '--version'],
-                    capture_output=True, text=True
+                    capture_output=True, text=True, timeout=10
                 )
                 if result.returncode == 0:
                     version = result.stdout.strip()
@@ -383,7 +383,7 @@ class InstallPanel(Gtk.Box):
                 process.wait()
 
                 # Ensure path
-                subprocess.run(['pipx', 'ensurepath'], capture_output=True)
+                subprocess.run(['pipx', 'ensurepath'], capture_output=True, timeout=30)
 
                 GLib.idle_add(self._append_output, "\nCLI installation complete!\n")
                 GLib.idle_add(self._check_installed)
@@ -402,12 +402,12 @@ class InstallPanel(Gtk.Box):
         def check():
             try:
                 # Update apt cache
-                subprocess.run(['apt-get', 'update'], capture_output=True)
+                subprocess.run(['apt-get', 'update'], capture_output=True, timeout=300)
 
                 # Check if update available
                 result = subprocess.run(
                     ['apt-cache', 'policy', 'meshtasticd'],
-                    capture_output=True, text=True
+                    capture_output=True, text=True, timeout=10
                 )
 
                 GLib.idle_add(self._append_output, result.stdout + "\n")
@@ -465,12 +465,12 @@ class InstallPanel(Gtk.Box):
                 # Enable SPI
                 if not Path('/dev/spidev0.0').exists():
                     GLib.idle_add(self._append_output, "Enabling SPI...\n")
-                    subprocess.run(['raspi-config', 'nonint', 'do_spi', '0'], capture_output=True)
+                    subprocess.run(['raspi-config', 'nonint', 'do_spi', '0'], capture_output=True, timeout=30)
 
                 # Enable I2C
                 if not Path('/dev/i2c-1').exists():
                     GLib.idle_add(self._append_output, "Enabling I2C...\n")
-                    subprocess.run(['raspi-config', 'nonint', 'do_i2c', '0'], capture_output=True)
+                    subprocess.run(['raspi-config', 'nonint', 'do_i2c', '0'], capture_output=True, timeout=30)
 
                 GLib.idle_add(
                     self._append_output,

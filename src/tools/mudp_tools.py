@@ -128,7 +128,7 @@ class MUDPTools:
 
         try:
             # Run mudp CLI
-            subprocess.run(['mudp'], check=False)
+            subprocess.run(['mudp'], check=False)  # Interactive monitor, no timeout
         except KeyboardInterrupt:
             console.print("\n[yellow]Monitor stopped[/yellow]")
         except FileNotFoundError:

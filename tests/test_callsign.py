@@ -92,17 +92,18 @@ class TestCallsignManager:
 
     def test_validate_us_callsign(self, manager):
         """Test US callsign validation"""
-        # Valid US callsigns
-        assert manager.validate_callsign('W1AW') is True
-        assert manager.validate_callsign('K6LPT') is True
-        assert manager.validate_callsign('N0CALL') is True
-        assert manager.validate_callsign('AA1AAA') is True
-        assert manager.validate_callsign('WH6GXZ') is True
+        # Valid US callsigns (US formats: 1x2, 1x3, 2x1, 2x2, 2x3)
+        assert manager.validate_callsign('W1AW') is True       # 1x2 format
+        assert manager.validate_callsign('K6LPT') is True      # 1x3 format
+        assert manager.validate_callsign('N0CAL') is True      # 1x3 format
+        assert manager.validate_callsign('AA1AAA') is True     # 2x3 format
+        assert manager.validate_callsign('WH6GXZ') is True     # 2x3 format
 
         # Invalid callsigns
         assert manager.validate_callsign('') is False
         assert manager.validate_callsign('INVALID') is False
         assert manager.validate_callsign('123ABC') is False
+        assert manager.validate_callsign('N0CALL') is False    # 1x4 not valid US format
 
     def test_validate_international_callsigns(self, manager):
         """Test international callsign patterns"""

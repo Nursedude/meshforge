@@ -472,7 +472,7 @@ def main():
                     if confirm in ['', 'y', 'yes']:
                         subprocess.run([
                             'sudo', 'pip', 'install', '--break-system-packages', '--ignore-installed', 'textual'
-                        ], check=True)
+                        ], check=True, timeout=120)
                         print(f"{Colors.GREEN}Textual installed!{Colors.NC}")
                 except (KeyboardInterrupt, EOFError):
                     continue
