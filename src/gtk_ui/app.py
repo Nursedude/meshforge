@@ -89,22 +89,31 @@ class MeshForgeApp(Adw.Application):
                 icon_theme.add_search_path(str(assets_dir))
                 self._icons_registered = True
 
-                # Set default window icon
-                Gtk.Window.set_default_icon_name("meshforge-icon")
+                # Set default window icon (use application_id for GTK4/libadwaita)
+                Gtk.Window.set_default_icon_name("org.meshforge.app")
 
-                # Also try to symlink icon to system location for taskbar
+                # Install icon to system location with app_id name for GTK4 title bar
                 icon_src = assets_dir / 'meshforge-icon.svg'
-                icon_dest = Path('/usr/share/icons/hicolor/scalable/apps/meshforge-icon.svg')
-                if icon_src.exists() and not icon_dest.exists():
-                    try:
-                        icon_dest.parent.mkdir(parents=True, exist_ok=True)
-                        import shutil
-                        shutil.copy(str(icon_src), str(icon_dest))
-                        # Update icon cache
-                        subprocess.run(['gtk-update-icon-cache', '-f', '/usr/share/icons/hicolor'],
-                                       capture_output=True, timeout=10)
-                    except Exception:
-                        pass  # Not critical if this fails
+                icons_dir = Path('/usr/share/icons/hicolor/scalable/apps')
+                try:
+                    icons_dir.mkdir(parents=True, exist_ok=True)
+                    import shutil
+
+                    # Install with application_id name (required for GTK4/libadwaita)
+                    app_icon_dest = icons_dir / 'org.meshforge.app.svg'
+                    if icon_src.exists() and not app_icon_dest.exists():
+                        shutil.copy(str(icon_src), str(app_icon_dest))
+
+                    # Also keep legacy name for compatibility
+                    legacy_icon_dest = icons_dir / 'meshforge-icon.svg'
+                    if icon_src.exists() and not legacy_icon_dest.exists():
+                        shutil.copy(str(icon_src), str(legacy_icon_dest))
+
+                    # Update icon cache
+                    subprocess.run(['gtk-update-icon-cache', '-f', '-q', '/usr/share/icons/hicolor'],
+                                   capture_output=True, timeout=10)
+                except Exception:
+                    pass  # Not critical if this fails
 
     def on_activate(self, app):
         """Called when application is activated"""
