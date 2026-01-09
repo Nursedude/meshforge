@@ -1456,7 +1456,114 @@ class MeshToolsPanel(Gtk.Box):
     def _on_export_geojson(self, button):
         """Export nodes as GeoJSON"""
         self._log_message("Exporting GeoJSON...")
-        # TODO: Export functionality
+
+        def do_export():
+            try:
+                # Collect nodes from store
+                nodes = []
+                model = self._node_store
+                iter = model.get_iter_first()
+                while iter:
+                    node_id = model.get_value(iter, 0)
+                    name = model.get_value(iter, 1)
+                    hw_model = model.get_value(iter, 2)
+                    last_seen = model.get_value(iter, 3)
+                    nodes.append({
+                        'id': node_id,
+                        'name': name,
+                        'hw_model': hw_model,
+                        'last_seen': last_seen
+                    })
+                    iter = model.iter_next(iter)
+
+                if not nodes:
+                    GLib.idle_add(self._log_message, "No nodes to export. Refresh node list first.")
+                    return
+
+                # Try to get coordinates from meshtasticd or mesh_bot data
+                meshbot_path = self._path_entry.get_text().strip() or "/opt/meshing-around"
+                node_coords = {}
+
+                # Try reading coordinate data from mesh_bot files
+                data_files = [
+                    Path(meshbot_path) / "prior_node_db.json",
+                    Path(meshbot_path) / "node_db.json",
+                ]
+                for data_file in data_files:
+                    if data_file.exists():
+                        try:
+                            with open(data_file) as f:
+                                data = json.load(f)
+                            for nid, node in data.items():
+                                if isinstance(node, dict):
+                                    pos = node.get('position', {})
+                                    lat = pos.get('latitude') or pos.get('lat')
+                                    lon = pos.get('longitude') or pos.get('lon')
+                                    if lat and lon:
+                                        node_coords[str(nid)] = (lon, lat)
+                            break
+                        except Exception:
+                            pass
+
+                # Build GeoJSON
+                features = []
+                for node in nodes:
+                    coords = node_coords.get(node['id'])
+                    if coords:
+                        feature = {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "Point",
+                                "coordinates": list(coords)
+                            },
+                            "properties": {
+                                "id": node['id'],
+                                "name": node['name'],
+                                "hw_model": node['hw_model'],
+                                "last_seen": node['last_seen']
+                            }
+                        }
+                    else:
+                        # No coords - create feature with null geometry
+                        feature = {
+                            "type": "Feature",
+                            "geometry": None,
+                            "properties": {
+                                "id": node['id'],
+                                "name": node['name'],
+                                "hw_model": node['hw_model'],
+                                "last_seen": node['last_seen'],
+                                "note": "No coordinates available"
+                            }
+                        }
+                    features.append(feature)
+
+                geojson = {
+                    "type": "FeatureCollection",
+                    "features": features,
+                    "properties": {
+                        "exported": datetime.now().isoformat(),
+                        "source": "MeshForge"
+                    }
+                }
+
+                # Save to file
+                export_dir = get_real_user_home() / ".local" / "share" / "meshforge" / "exports"
+                export_dir.mkdir(parents=True, exist_ok=True)
+                filename = f"nodes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.geojson"
+                export_path = export_dir / filename
+
+                with open(export_path, 'w') as f:
+                    json.dump(geojson, f, indent=2)
+
+                nodes_with_coords = sum(1 for f in features if f['geometry'])
+                GLib.idle_add(self._log_message, f"Exported {len(nodes)} nodes ({nodes_with_coords} with coordinates)")
+                GLib.idle_add(self._log_message, f"Saved to: {export_path}")
+
+            except Exception as e:
+                GLib.idle_add(self._log_message, f"Export error: {e}")
+
+        threading.Thread(target=do_export, daemon=True).start()
 
     def _on_run_health_check(self, button):
         """Run full health check"""

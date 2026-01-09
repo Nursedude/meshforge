@@ -935,23 +935,66 @@ class HamToolsPanel(Gtk.Box):
             GLib.timeout_add(2000, self._check_hamclock_status)
 
     def _on_refresh_bands(self, button):
-        """Refresh band conditions"""
+        """Refresh band conditions from N0NBH solar data"""
         self._output_message("Fetching band conditions...")
 
         def fetch():
             try:
-                # Try N0NBH widget data
+                import xml.etree.ElementTree as ET
+
+                # Fetch N0NBH solar/band data
                 url = "https://www.hamqsl.com/solarxml.php"
                 req = urllib.request.Request(url)
                 req.add_header('User-Agent', 'MeshForge/1.0')
 
                 with urllib.request.urlopen(req, timeout=10) as response:
                     data = response.read().decode('utf-8')
-                    GLib.idle_add(self._output_message, f"Band data fetched")
-                    # TODO: Parse XML
+
+                # Parse XML
+                root = ET.fromstring(data)
+                solar_data = root.find('.//solardata')
+
+                if solar_data is not None:
+                    # Extract solar indices
+                    sfi = solar_data.findtext('solarflux', 'N/A')
+                    a_index = solar_data.findtext('aindex', 'N/A')
+                    k_index = solar_data.findtext('kindex', 'N/A')
+                    sunspots = solar_data.findtext('sunspots', 'N/A')
+                    xray = solar_data.findtext('xray', 'N/A')
+                    updated = solar_data.findtext('updated', 'N/A')
+
+                    lines = [
+                        "=== Solar Conditions ===",
+                        f"Updated: {updated}",
+                        f"Solar Flux Index: {sfi}",
+                        f"A-Index: {a_index}  K-Index: {k_index}",
+                        f"Sunspots: {sunspots}  X-Ray: {xray}",
+                        "",
+                        "=== HF Band Conditions ==="
+                    ]
+
+                    # Parse band conditions (day/night)
+                    for band_elem in solar_data.findall('.//band'):
+                        name = band_elem.get('name', 'Unknown')
+                        time = band_elem.get('time', '')
+                        condition = band_elem.text or 'Unknown'
+                        lines.append(f"  {name:10} ({time:5}): {condition}")
+
+                    # Add VHF conditions if available
+                    vhf_cond = solar_data.findtext('vhf', '')
+                    if vhf_cond:
+                        lines.append(f"\nVHF Conditions: {vhf_cond}")
+
+                    sig_noise = solar_data.findtext('signalnoise', '')
+                    if sig_noise:
+                        lines.append(f"Signal Noise: {sig_noise}")
+
+                    GLib.idle_add(self._set_output, '\n'.join(lines))
+                else:
+                    GLib.idle_add(self._output_message, "Could not parse solar data")
 
             except Exception as e:
-                GLib.idle_add(self._output_message, f"Error: {e}")
+                GLib.idle_add(self._output_message, f"Error fetching band data: {e}")
 
         threading.Thread(target=fetch, daemon=True).start()
 
