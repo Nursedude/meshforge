@@ -31,8 +31,9 @@ from textual.binding import Binding
 from textual import work
 
 
-class DashboardPane(ScrollableContainer):
-    """Minimal dashboard for testing"""
+class DashboardPane(Container):
+    """Minimal dashboard for testing - use Container not ScrollableContainer
+    to avoid height: 1fr CSS conflicts"""
 
     def compose(self) -> ComposeResult:
         yield Static("# Minimal TUI Test Dashboard", classes="title")
@@ -210,17 +211,13 @@ class MinimalTUI(App):
         height: 100%;
     }
 
-    TabPane > Container, TabPane > ScrollableContainer {
+    TabPane > Container {
         height: 100%;
         overflow-y: auto;
     }
 
     TabbedContent {
         padding: 0;
-    }
-
-    DashboardPane {
-        height: 100%;
     }
     """
 
