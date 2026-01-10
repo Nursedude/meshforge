@@ -1,8 +1,10 @@
-"""Quick Status Dashboard for Meshtasticd - Simplified Working Version"""
+"""Quick Status Dashboard for Meshtasticd - Simplified Working Version
+
+Uses the unified commands layer for service status checks.
+"""
 
 import os
 import sys
-import subprocess
 from datetime import datetime
 from pathlib import Path
 from rich.console import Console
@@ -16,6 +18,13 @@ import logging
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import emoji as em
 
+# Import unified commands layer
+try:
+    from commands import service, hardware
+    COMMANDS_AVAILABLE = True
+except ImportError:
+    COMMANDS_AVAILABLE = False
+
 console = Console()
 logger = logging.getLogger(__name__)
 
@@ -28,34 +37,59 @@ class StatusDashboard:
         self.log_path = Path('/var/log/meshtasticd.log')
 
     def get_service_status(self):
-        """Get meshtasticd service status"""
-        try:
-            result = subprocess.run(
-                ['systemctl', 'is-active', 'meshtasticd'],
-                capture_output=True, text=True, timeout=5
-            )
-            status = result.stdout.strip()
-            return {
-                'status': status,
-                'running': status == 'active',
-                'color': 'green' if status == 'active' else 'red'
-            }
-        except Exception as e:
-            logger.error(f"Failed to get service status: {e}")
-            return {'status': 'unknown', 'running': False, 'color': 'yellow'}
+        """Get meshtasticd service status using commands layer"""
+        if COMMANDS_AVAILABLE:
+            try:
+                result = service.check_status('meshtasticd')
+                return {
+                    'status': result.data.get('status', 'unknown'),
+                    'running': result.data.get('running', False),
+                    'color': 'green' if result.data.get('running') else 'red'
+                }
+            except Exception as e:
+                logger.error(f"Failed to get service status: {e}")
+                return {'status': 'unknown', 'running': False, 'color': 'yellow'}
+        else:
+            # Fallback to direct subprocess call
+            import subprocess
+            try:
+                result = subprocess.run(
+                    ['systemctl', 'is-active', 'meshtasticd'],
+                    capture_output=True, text=True, timeout=5
+                )
+                status = result.stdout.strip()
+                return {
+                    'status': status,
+                    'running': status == 'active',
+                    'color': 'green' if status == 'active' else 'red'
+                }
+            except Exception as e:
+                logger.error(f"Failed to get service status: {e}")
+                return {'status': 'unknown', 'running': False, 'color': 'yellow'}
 
     def get_installed_version(self):
-        """Get installed meshtasticd version"""
-        try:
-            result = subprocess.run(
-                ['meshtasticd', '--version'],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-        except Exception as e:
-            logger.error(f"Failed to get version: {e}")
-        return 'Unknown'
+        """Get installed meshtasticd version using commands layer"""
+        if COMMANDS_AVAILABLE:
+            try:
+                result = service.get_version('meshtasticd')
+                if result.success:
+                    return result.data.get('version', 'Unknown')
+            except Exception as e:
+                logger.error(f"Failed to get version: {e}")
+            return 'Unknown'
+        else:
+            # Fallback to direct subprocess call
+            import subprocess
+            try:
+                result = subprocess.run(
+                    ['meshtasticd', '--version'],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    return result.stdout.strip()
+            except Exception as e:
+                logger.error(f"Failed to get version: {e}")
+            return 'Unknown'
 
     def get_system_info(self):
         """Get system information - CPU temp, memory, disk"""
