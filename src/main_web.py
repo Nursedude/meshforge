@@ -2324,24 +2324,29 @@ MAIN_TEMPLATE = '''
                 const data = await resp.json();
 
                 const activeEl = document.getElementById('active-configs');
+                const availEl = document.getElementById('available-configs');
                 let activeHtml = '';
+
+                // Ensure arrays exist
+                const activeConfigs = Array.isArray(data.active) ? data.active : [];
+                const availableConfigs = Array.isArray(data.available) ? data.available : [];
 
                 // Show main config if exists
                 if (data.main_config) {
-                    activeHtml += `<li class="config-item"><span class="name" style="color: var(--accent);">📄 ${data.main_config}</span></li>`;
+                    activeHtml += `<li class="config-item"><span class="name" style="color: var(--accent);">📄 ${escapeHtml(data.main_config)}</span></li>`;
                 }
 
                 // Show error if any
                 if (data.error) {
-                    activeHtml += `<li class="config-item" style="color: var(--warning);">${data.error}</li>`;
+                    activeHtml += `<li class="config-item" style="color: var(--warning);">${escapeHtml(data.error)}</li>`;
                 }
 
                 // Show active configs from config.d
-                if (data.active.length > 0) {
-                    activeHtml += data.active.map(c => `
+                if (activeConfigs.length > 0) {
+                    activeHtml += activeConfigs.map(c => `
                         <li class="config-item">
-                            <span class="name">${c}</span>
-                            <button class="btn btn-danger" onclick="deactivateConfig('${c}')">Deactivate</button>
+                            <span class="name">${escapeHtml(c)}</span>
+                            <button class="btn btn-danger" onclick="deactivateConfig('${escapeHtml(c).replace(/'/g, "\\'")}')">Deactivate</button>
                         </li>
                     `).join('');
                 } else if (!data.main_config && !data.error) {
@@ -2350,11 +2355,10 @@ MAIN_TEMPLATE = '''
 
                 activeEl.innerHTML = activeHtml || '<li class="config-item">No configurations found</li>';
 
-                const availEl = document.getElementById('available-configs');
-                if (data.available.length === 0) {
+                if (availableConfigs.length === 0) {
                     availEl.innerHTML = '<li class="config-item">No configurations in available.d/</li>';
                 } else {
-                    availEl.innerHTML = data.available.map(c => `
+                    availEl.innerHTML = availableConfigs.map(c => `
                         <li class="config-item">
                             <span class="name">${escapeHtml(c)}</span>
                             <button class="btn btn-success" onclick="activateConfig('${escapeHtml(c).replace(/'/g, "\\'")}')">Activate</button>
@@ -2363,6 +2367,8 @@ MAIN_TEMPLATE = '''
                 }
             } catch (e) {
                 console.error('Error fetching configs:', e);
+                document.getElementById('active-configs').innerHTML = '<li class="config-item" style="color: var(--warning);">Error loading configs</li>';
+                document.getElementById('available-configs').innerHTML = '<li class="config-item" style="color: var(--warning);">Error loading configs</li>';
             }
         }
 
@@ -2372,10 +2378,17 @@ MAIN_TEMPLATE = '''
                 const data = await resp.json();
 
                 const el = document.getElementById('hardware-list');
-                el.innerHTML = data.devices.map(d => `
+                const devices = Array.isArray(data.devices) ? data.devices : [];
+
+                if (devices.length === 0) {
+                    el.innerHTML = '<div class="hardware-item"><span class="badge info">INFO</span><span>No hardware devices detected</span></div>';
+                    return;
+                }
+
+                el.innerHTML = devices.map(d => `
                     <div class="hardware-item">
-                        <span class="badge ${escapeHtml(d.type).toLowerCase()}">${escapeHtml(d.type)}</span>
-                        <span><strong>${escapeHtml(d.device)}</strong> - ${escapeHtml(d.description)}</span>
+                        <span class="badge ${escapeHtml(d.type || 'info').toLowerCase()}">${escapeHtml(d.type || 'DEVICE')}</span>
+                        <span><strong>${escapeHtml(d.device || 'Unknown')}</strong> - ${escapeHtml(d.description || '')}</span>
                     </div>
                 `).join('');
             } catch (e) {
@@ -2696,6 +2709,13 @@ MAIN_TEMPLATE = '''
                 if (data.error) {
                     countEl.textContent = data.error;
                     listEl.innerHTML = `<div style="color: var(--warning);">${data.error}</div>`;
+                    return;
+                }
+
+                // Ensure nodes is an array
+                if (!data.nodes || !Array.isArray(data.nodes)) {
+                    countEl.textContent = 'No nodes available';
+                    listEl.innerHTML = '<div style="color: var(--text-muted);">No node data available. Connect to meshtasticd first.</div>';
                     return;
                 }
 
