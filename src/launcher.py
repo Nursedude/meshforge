@@ -125,12 +125,10 @@ def run_setup_wizard():
 def print_banner():
     """Print the welcome banner"""
     print(f"""{Colors.CYAN}
-+---------------------------------------------------------------+
-|     Meshtasticd Interactive Manager - v{__version__:<21}|
-|     For Raspberry Pi OS & Linux                               |
-+---------------------------------------------------------------+
-|     Choose your interface to get started                      |
-+---------------------------------------------------------------+
+    MeshForge - Meshtasticd Manager v{__version__}
+    For Raspberry Pi OS & Linux
+
+    Choose your interface to get started
 {Colors.NC}""")
 
 

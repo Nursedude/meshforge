@@ -223,6 +223,8 @@ class EmojiHelper:
         '🗺️': '[MAP]',      # Map
         '🤙': '[SHAKA]',    # Shaka/Hang loose
         '📁': '[FOLDER]',   # Folder
+        '📶': '[SIG]',      # Signal/Bars
+        '🛠️': '[TOOL]',     # Tools/Wrench
     }
 
     def get(self, emoji, fallback=None):
