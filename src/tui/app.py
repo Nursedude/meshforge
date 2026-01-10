@@ -136,16 +136,10 @@ class DashboardPane(Container):
             yield Button("Auto-Refresh: OFF", id="toggle-auto-refresh")
             yield Button("Clear", id="dash-clear")
 
-    async def on_mount(self):
+    def on_mount(self):
         """Called when widget is mounted"""
-        # Show startup message in log
-        try:
-            log = self.query_one("#dashboard-log", Log)
-            log.write("[cyan]Dashboard loading...[/cyan]")
-        except Exception:
-            pass
-        # Start data refresh
-        self.refresh_data()
+        # Start data refresh (using set_timer to ensure widgets are ready)
+        self.set_timer(0.1, self.refresh_data)
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle dashboard button presses"""
