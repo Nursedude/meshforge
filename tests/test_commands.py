@@ -296,3 +296,134 @@ class TestSecurityValidation:
         result = service.get_version('arbitrary_command')
         assert result.success is False
         assert 'not in allowed list' in result.error
+
+
+class TestHamClockCommands:
+    """Test HamClock command module."""
+
+    def test_configure_valid(self):
+        """Test valid HamClock configuration."""
+        from commands import hamclock
+        result = hamclock.configure("localhost", api_port=8082, live_port=8081)
+        assert result.success is True
+        assert result.data['host'] == 'localhost'
+        assert result.data['api_port'] == 8082
+
+    def test_configure_invalid_host(self):
+        """Test empty host is rejected."""
+        from commands import hamclock
+        result = hamclock.configure("", api_port=8082)
+        assert result.success is False
+        assert 'empty' in result.message.lower()
+
+    def test_configure_invalid_port(self):
+        """Test invalid port is rejected."""
+        from commands import hamclock
+        result = hamclock.configure("localhost", api_port=99999)
+        assert result.success is False
+        assert 'port' in result.message.lower()
+
+    def test_get_config(self):
+        """Test getting HamClock configuration."""
+        from commands import hamclock
+        hamclock.configure("testhost", api_port=8082)
+        config = hamclock.get_config()
+        assert config.host == 'testhost'
+        assert config.api_port == 8082
+        assert config.live_port == 8081
+
+    def test_is_available(self):
+        """Test checking if HamClock is available."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        # Will fail if HamClock not running, but should return bool
+        result = hamclock.is_available()
+        assert isinstance(result, bool)
+
+    def test_test_connection(self):
+        """Test connection test."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        result = hamclock.test_connection()
+        assert isinstance(result, CommandResult)
+        # May fail if not running, but should return proper result
+
+    def test_get_space_weather(self):
+        """Test space weather retrieval."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        result = hamclock.get_space_weather()
+        assert isinstance(result, CommandResult)
+        # If successful, should have expected keys
+        if result.success:
+            assert 'sfi' in result.data or 'kp' in result.data
+
+    def test_get_band_conditions(self):
+        """Test band conditions retrieval."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        result = hamclock.get_band_conditions()
+        assert isinstance(result, CommandResult)
+
+    def test_get_voacap(self):
+        """Test VOACAP retrieval."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        result = hamclock.get_voacap()
+        assert isinstance(result, CommandResult)
+        if result.success:
+            assert 'bands' in result.data
+            assert 'path' in result.data
+
+    def test_get_noaa_solar_data(self):
+        """Test NOAA fallback data retrieval."""
+        from commands import hamclock
+        result = hamclock.get_noaa_solar_data()
+        assert isinstance(result, CommandResult)
+        # NOAA should usually be available
+        if result.success:
+            assert 'sfi' in result.data
+            assert 'source' in result.data
+            assert result.data['source'] == 'NOAA SWPC'
+
+    def test_get_all_data(self):
+        """Test comprehensive data retrieval."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        result = hamclock.get_all_data()
+        assert isinstance(result, CommandResult)
+        assert 'space_weather' in result.data
+        assert 'band_conditions' in result.data
+        assert 'voacap' in result.data
+        assert 'errors' in result.data
+
+    def test_get_system_info(self):
+        """Test system info retrieval."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        result = hamclock.get_system_info()
+        assert isinstance(result, CommandResult)
+
+    def test_get_dx_spots(self):
+        """Test DX spots retrieval."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        result = hamclock.get_dx_spots()
+        assert isinstance(result, CommandResult)
+
+    def test_get_satellite_list(self):
+        """Test satellite list retrieval."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        result = hamclock.get_satellite_list()
+        assert isinstance(result, CommandResult)
+
+    def test_reliability_status_mapping(self):
+        """Test reliability to status mapping."""
+        from commands import hamclock
+        # Test internal function
+        assert hamclock._reliability_to_status(90) == 'excellent'
+        assert hamclock._reliability_to_status(70) == 'good'
+        assert hamclock._reliability_to_status(50) == 'fair'
+        assert hamclock._reliability_to_status(20) == 'poor'
+        assert hamclock._reliability_to_status(0) == 'closed'
