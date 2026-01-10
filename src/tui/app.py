@@ -343,6 +343,7 @@ class DashboardPane(Container):
 
         # Show immediate feedback
         log.write("[cyan]Checking services...[/cyan]")
+        log.scroll_end()
         status_widget.update("[yellow]Checking...[/yellow]")
         try:
             if check_service:
@@ -395,6 +396,7 @@ class DashboardPane(Container):
                         nodes_widget.update(f"[green]{count} nodes[/green]")
                         nodes_detail.update("Live")
                         log.write(f"[green]Found {count} mesh nodes[/green]")
+                        log.scroll_end()
                     else:
                         nodes_widget.update("[yellow]0 nodes[/yellow]")
                         nodes_detail.update("No nodes found")
@@ -495,10 +497,11 @@ class DashboardPane(Container):
         # Show refresh timestamp in log (only on first load or manual refresh)
         from datetime import datetime
         log.write(f"[dim]Last refresh: {datetime.now().strftime('%H:%M:%S')}[/dim]")
+        log.scroll_end()
         logger.debug("refresh_data() completed")
 
         # Force UI refresh
-        self.refresh()
+        self.app.refresh()
 
 
 class ServicePane(Container):
