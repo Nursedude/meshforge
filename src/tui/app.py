@@ -138,9 +138,13 @@ class DashboardPane(ScrollableContainer):
 
     def on_mount(self):
         """Called when widget is mounted"""
-        # Start data refresh - call the worker method directly
-        # The @work decorator handles async scheduling
-        logger.info("DashboardPane.on_mount() called - starting refresh_data()")
+        logger.info("DashboardPane.on_mount() called")
+        # Use call_later to schedule refresh after mount completes
+        self.call_later(self._do_refresh)
+
+    def _do_refresh(self):
+        """Wrapper to trigger refresh"""
+        logger.info("_do_refresh() called, triggering refresh_data()")
         self.refresh_data()
 
     def _trigger_refresh(self):
@@ -343,13 +347,17 @@ class DashboardPane(ScrollableContainer):
             logger.error(f"Failed to query widgets: {e}")
             return
 
-        # Show immediate feedback
+        # Immediate sync update to verify widgets work
         try:
-            log.write_line("Checking services...")
-            logger.info("Wrote initial message to log widget")
+            status_widget.update("Loading...")
+            detail_widget.update("Please wait")
+            log.write_line("Starting refresh...")
+            logger.info("Initial widget updates done")
         except Exception as e:
-            logger.error(f"Failed to write to log: {e}")
+            logger.error(f"Failed initial widget update: {e}")
+            return
 
+        # Show checking status
         status_widget.update("[yellow]Checking...[/yellow]")
         try:
             if check_service:
