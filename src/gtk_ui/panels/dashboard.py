@@ -1,5 +1,7 @@
 """
 Dashboard Panel - Quick status overview
+
+Uses the unified commands layer for status checks, shared with CLI.
 """
 
 import gi
@@ -9,7 +11,14 @@ from gi.repository import Gtk, Adw, GLib
 import subprocess
 import threading
 
-# Import centralized service checker
+# Import unified commands layer (shared with CLI)
+try:
+    from commands import service, hardware
+    COMMANDS_AVAILABLE = True
+except ImportError:
+    COMMANDS_AVAILABLE = False
+
+# Fallback to old service checker
 try:
     from utils.service_check import check_service, ServiceState
 except ImportError:
@@ -155,11 +164,20 @@ class DashboardPanel(Gtk.Box):
         thread.start()
 
     def _fetch_data(self):
-        """Fetch all status data in background thread"""
-        # Service status - use centralized service checker if available
+        """Fetch all status data in background thread using commands layer"""
+        # Service status - use unified commands layer
         try:
-            if check_service:
-                # Use centralized service check
+            if COMMANDS_AVAILABLE:
+                # Use unified commands layer (shared with CLI)
+                result = service.check_status('meshtasticd')
+                if result.data.get('running', False):
+                    status_detail = result.data.get('status', 'Running')
+                    css_class = "success"
+                else:
+                    status_detail = result.data.get('status', 'Stopped')
+                    css_class = "error"
+            elif check_service:
+                # Fallback to old service checker
                 meshtastic_status = check_service('meshtasticd')
                 if meshtastic_status.available:
                     status_detail = meshtastic_status.message
@@ -168,7 +186,7 @@ class DashboardPanel(Gtk.Box):
                     status_detail = meshtastic_status.message
                     css_class = "error"
             else:
-                # Fallback to direct check
+                # Last resort fallback to direct check
                 is_running = False
                 status_detail = "Stopped"
 
@@ -179,15 +197,6 @@ class DashboardPanel(Gtk.Box):
                 if result.stdout.strip() == 'active':
                     is_running = True
                     status_detail = "Running"
-
-                if not is_running:
-                    result = subprocess.run(
-                        ['pgrep', '-f', 'meshtasticd'],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if result.returncode == 0 and result.stdout.strip():
-                        is_running = True
-                        status_detail = "Running (process)"
 
                 css_class = "success" if is_running else "error"
 
@@ -200,16 +209,24 @@ class DashboardPanel(Gtk.Box):
         except Exception as e:
             GLib.idle_add(self._update_card_value, self.service_card, f"Error: {e}", "error")
 
-        # Version
+        # Version - use unified commands layer
         try:
-            result = subprocess.run(
-                ['meshtasticd', '--version'],
-                capture_output=True, text=True, timeout=10
-            )
-            if result.returncode == 0:
-                version = result.stdout.strip()
+            if COMMANDS_AVAILABLE:
+                result = service.get_version('meshtasticd')
+                if result.success:
+                    version = result.data.get('version', 'Unknown')
+                else:
+                    version = "Not installed"
             else:
-                version = "Not installed"
+                # Fallback to direct subprocess
+                result = subprocess.run(
+                    ['meshtasticd', '--version'],
+                    capture_output=True, text=True, timeout=10
+                )
+                if result.returncode == 0:
+                    version = result.stdout.strip()
+                else:
+                    version = "Not installed"
             GLib.idle_add(self._update_card_value, self.version_card, version, None)
         except FileNotFoundError:
             GLib.idle_add(self._update_card_value, self.version_card, "Not installed", "warning")
@@ -272,17 +289,29 @@ class DashboardPanel(Gtk.Box):
         except Exception as e:
             GLib.idle_add(self._update_card_value, self.config_card, f"Error: {e}", "error")
 
-        # Hardware
+        # Hardware - use unified commands layer
         try:
-            # Check for SPI
-            spi_enabled = Path('/dev/spidev0.0').exists()
-            i2c_enabled = Path('/dev/i2c-1').exists()
+            if COMMANDS_AVAILABLE:
+                # Use unified commands layer (shared with CLI)
+                spi_result = hardware.check_spi()
+                i2c_result = hardware.check_i2c()
 
-            hw_status = []
-            if spi_enabled:
-                hw_status.append("SPI")
-            if i2c_enabled:
-                hw_status.append("I2C")
+                hw_status = []
+                if spi_result.data.get('enabled', False):
+                    hw_status.append("SPI")
+                if i2c_result.data.get('enabled', False):
+                    hw_status.append("I2C")
+            else:
+                # Fallback to direct check
+                from pathlib import Path
+                spi_enabled = Path('/dev/spidev0.0').exists()
+                i2c_enabled = Path('/dev/i2c-1').exists()
+
+                hw_status = []
+                if spi_enabled:
+                    hw_status.append("SPI")
+                if i2c_enabled:
+                    hw_status.append("I2C")
 
             if hw_status:
                 status = ", ".join(hw_status) + " enabled"
@@ -295,13 +324,17 @@ class DashboardPanel(Gtk.Box):
         except Exception as e:
             GLib.idle_add(self._update_card_value, self.hardware_card, f"Error: {e}", "error")
 
-        # Logs
+        # Logs - use unified commands layer
         try:
-            result = subprocess.run(
-                ['journalctl', '-u', 'meshtasticd', '-n', '20', '--no-pager'],
-                capture_output=True, text=True, timeout=10
-            )
-            logs = result.stdout if result.stdout else "No logs available"
+            if COMMANDS_AVAILABLE:
+                result = service.get_logs('meshtasticd', lines=20)
+                logs = result.raw_output if result.raw_output else "No logs available"
+            else:
+                result = subprocess.run(
+                    ['journalctl', '-u', 'meshtasticd', '-n', '20', '--no-pager'],
+                    capture_output=True, text=True, timeout=10
+                )
+                logs = result.stdout if result.stdout else "No logs available"
             GLib.idle_add(self._update_logs, logs)
         except Exception as e:
             GLib.idle_add(self._update_logs, f"Failed to fetch logs: {e}")
