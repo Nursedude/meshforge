@@ -140,6 +140,7 @@ class DashboardPane(Container):
         """Called when widget is mounted"""
         # Start data refresh - call the worker method directly
         # The @work decorator handles async scheduling
+        logger.info("DashboardPane.on_mount() called - starting refresh_data()")
         self.refresh_data()
 
     def _trigger_refresh(self):
@@ -330,20 +331,26 @@ class DashboardPane(Container):
     @work(exclusive=True)
     async def refresh_data(self):
         """Refresh dashboard data"""
-        logger.debug("refresh_data() started")
+        logger.info("refresh_data() worker started")
 
         # Get widgets first
         try:
             log = self.query_one("#dashboard-log", Log)
             status_widget = self.query_one("#service-status", Static)
             detail_widget = self.query_one("#service-detail", Static)
+            logger.info("Successfully queried dashboard widgets")
         except Exception as e:
             logger.error(f"Failed to query widgets: {e}")
             return
 
         # Show immediate feedback
-        log.write("[cyan]Checking services...[/cyan]")
-        log.scroll_end()
+        try:
+            log.write("[cyan]Checking services...[/cyan]")
+            log.scroll_end()
+            logger.info("Wrote initial message to log widget")
+        except Exception as e:
+            logger.error(f"Failed to write to log: {e}")
+
         status_widget.update("[yellow]Checking...[/yellow]")
         try:
             if check_service:
@@ -496,12 +503,14 @@ class DashboardPane(Container):
 
         # Show refresh timestamp in log (only on first load or manual refresh)
         from datetime import datetime
-        log.write(f"[dim]Last refresh: {datetime.now().strftime('%H:%M:%S')}[/dim]")
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        log.write(f"[dim]Last refresh: {timestamp}[/dim]")
         log.scroll_end()
-        logger.debug("refresh_data() completed")
+        logger.info(f"refresh_data() completed at {timestamp}")
 
         # Force UI refresh
         self.app.refresh()
+        logger.info("Called app.refresh()")
 
 
 class ServicePane(Container):
