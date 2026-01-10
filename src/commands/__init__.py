@@ -5,7 +5,7 @@ Unified command interface for GTK and CLI.
 All UI-independent operations go here.
 
 Usage:
-    from commands import meshtastic, service, hardware, gateway
+    from commands import meshtastic, service, hardware, gateway, diagnostics
 
     # Meshtastic operations
     result = meshtastic.get_node_info()
@@ -23,12 +23,17 @@ Usage:
     # Gateway operations
     result = gateway.get_status()
     result = gateway.start()
+
+    # Diagnostics
+    result = diagnostics.get_system_health()
+    result = diagnostics.run_gateway_diagnostics()
 """
 
 from . import meshtastic
 from . import service
 from . import hardware
 from . import gateway
+from . import diagnostics
 from .base import CommandResult, CommandError
 
 __all__ = [
@@ -36,6 +41,7 @@ __all__ = [
     'service',
     'hardware',
     'gateway',
+    'diagnostics',
     'CommandResult',
     'CommandError',
 ]

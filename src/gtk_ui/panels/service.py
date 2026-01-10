@@ -1,5 +1,7 @@
 """
 Service Management Panel - Start/Stop/Restart meshtasticd service
+
+Uses the unified commands layer for service operations, shared with CLI.
 """
 
 import gi
@@ -9,6 +11,13 @@ from gi.repository import Gtk, Adw, GLib
 import subprocess
 import threading
 
+# Import unified commands layer (shared with CLI)
+try:
+    from commands import service as service_commands
+    COMMANDS_AVAILABLE = True
+except ImportError:
+    COMMANDS_AVAILABLE = False
+
 # Import admin command helper for privilege escalation
 try:
     from utils.system import run_admin_command_async, systemctl_admin
@@ -17,7 +26,7 @@ except ImportError:
     run_admin_command_async = None
     systemctl_admin = None
 
-# Import centralized service checker
+# Fallback to old service checker
 try:
     from utils.service_check import check_service, ServiceState
 except ImportError:
@@ -207,33 +216,39 @@ class ServicePanel(Gtk.Box):
         thread.start()
 
     def _fetch_status(self):
-        """Fetch service status in background"""
+        """Fetch service status in background using commands layer"""
         try:
             is_active = False
             is_enabled = False
             props = {}
 
-            # Use centralized service check if available
-            if check_service:
+            # Use unified commands layer (shared with CLI)
+            if COMMANDS_AVAILABLE:
+                status = service_commands.check_status('meshtasticd')
+                is_active = status.data.get('running', False)
+                is_enabled = status.data.get('enabled', False)
+                props['SubState'] = status.data.get('status', 'unknown')
+            elif check_service:
+                # Fallback to old service checker
                 status = check_service('meshtasticd')
                 is_active = status.available
-
-            # Always get detailed systemd info for props
-            result = subprocess.run(
-                ['systemctl', 'is-active', 'meshtasticd'],
-                capture_output=True, text=True, timeout=10
-            )
-            if not check_service:
+            else:
+                # Last resort: direct subprocess
+                result = subprocess.run(
+                    ['systemctl', 'is-active', 'meshtasticd'],
+                    capture_output=True, text=True, timeout=10
+                )
                 is_active = result.stdout.strip() == 'active'
 
-            # Get enabled state
-            result = subprocess.run(
-                ['systemctl', 'is-enabled', 'meshtasticd'],
-                capture_output=True, text=True, timeout=10
-            )
-            is_enabled = result.stdout.strip() == 'enabled'
+            # Get enabled state if not already retrieved
+            if not COMMANDS_AVAILABLE:
+                result = subprocess.run(
+                    ['systemctl', 'is-enabled', 'meshtasticd'],
+                    capture_output=True, text=True, timeout=10
+                )
+                is_enabled = result.stdout.strip() == 'enabled'
 
-            # Get detailed status
+            # Get detailed status for props (always useful for UI)
             result = subprocess.run(
                 ['systemctl', 'show', 'meshtasticd',
                  '--property=ActiveState,SubState,MainPID,ActiveEnterTimestamp'],
@@ -367,7 +382,7 @@ class ServicePanel(Gtk.Box):
             thread.start()
 
     def _fetch_logs(self):
-        """Fetch service logs"""
+        """Fetch service logs using commands layer"""
         lines = int(self.log_lines_spin.get_value())
         since_options = {
             0: None,  # All
@@ -380,12 +395,19 @@ class ServicePanel(Gtk.Box):
 
         def do_fetch():
             try:
-                cmd = ['journalctl', '-u', 'meshtasticd', '-n', str(lines), '--no-pager']
-                if since:
-                    cmd.extend(['--since', since])
+                # Use commands layer if available
+                if COMMANDS_AVAILABLE and not since:
+                    # commands.service.get_logs doesn't support 'since' yet
+                    result = service_commands.get_logs('meshtasticd', lines=lines)
+                    logs = result.raw_output if result.raw_output else "No logs available"
+                else:
+                    # Fallback to direct journalctl (for since filter)
+                    cmd = ['journalctl', '-u', 'meshtasticd', '-n', str(lines), '--no-pager']
+                    if since:
+                        cmd.extend(['--since', since])
 
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-                logs = result.stdout if result.stdout else "No logs available"
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                    logs = result.stdout if result.stdout else "No logs available"
                 GLib.idle_add(self._update_logs, logs)
             except Exception as e:
                 GLib.idle_add(self._update_logs, f"Failed to fetch logs: {e}")

@@ -221,3 +221,78 @@ class TestIntegration:
             assert hasattr(result, 'message')
             assert hasattr(result, 'data')
             assert isinstance(result.data, dict)
+
+
+class TestDiagnosticsCommands:
+    """Test diagnostics command module."""
+
+    def test_get_system_health(self):
+        """Test system health check."""
+        from commands import diagnostics
+        result = diagnostics.get_system_health()
+        assert isinstance(result, CommandResult)
+        assert result.success is True
+        assert 'overall_status' in result.data
+        assert result.data['overall_status'] in ('healthy', 'warning', 'critical', 'degraded')
+
+    def test_check_port_open(self):
+        """Test port check."""
+        from commands import diagnostics
+        # Check a port that should be closed (valid port range 0-65535)
+        result = diagnostics.check_port_open(59999)
+        assert isinstance(result, CommandResult)
+        assert 'open' in result.data
+
+    def test_check_dependencies(self):
+        """Test dependency check."""
+        from commands import diagnostics
+        result = diagnostics.check_dependencies()
+        assert isinstance(result, CommandResult)
+        assert 'dependencies' in result.data
+        assert 'installed_count' in result.data
+        assert 'total_count' in result.data
+
+    def test_run_gateway_diagnostics(self):
+        """Test gateway diagnostics."""
+        from commands import diagnostics
+        result = diagnostics.run_gateway_diagnostics()
+        assert isinstance(result, CommandResult)
+        assert 'checks' in result.data
+        assert 'issues' in result.data
+        assert 'issue_count' in result.data
+
+
+class TestSecurityValidation:
+    """Test security validations in commands layer."""
+
+    def test_service_name_validation_valid(self):
+        """Test valid service names pass validation."""
+        # Valid service names should work
+        result = service.check_status('meshtasticd')
+        assert isinstance(result, CommandResult)
+        # Should not return "Invalid service name" error
+
+    def test_service_name_validation_invalid(self):
+        """Test invalid service names are rejected."""
+        # Invalid service name with shell characters
+        result = service.check_status('test; rm -rf /')
+        assert result.success is False
+        assert 'Invalid service name' in result.message
+
+    def test_service_name_validation_empty(self):
+        """Test empty service name is rejected."""
+        result = service.check_status('')
+        assert result.success is False
+        assert 'Invalid service name' in result.message
+
+    def test_get_version_whitelist_valid(self):
+        """Test whitelisted binary in get_version."""
+        result = service.get_version('meshtasticd')
+        # Should not fail with "not in allowed list"
+        assert 'not in allowed list' not in str(result.error or '')
+
+    def test_get_version_whitelist_invalid(self):
+        """Test non-whitelisted binary is rejected."""
+        result = service.get_version('arbitrary_command')
+        assert result.success is False
+        assert 'not in allowed list' in result.error

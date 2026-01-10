@@ -3,16 +3,38 @@ Service Commands
 
 Provides unified interface for system service operations.
 Used by both GTK and CLI interfaces.
+
+Security: Service names are validated against a whitelist to prevent
+arbitrary systemctl commands. Binary names for version checks are also
+restricted to known safe binaries.
 """
 
 import subprocess
 import logging
+import re
 from typing import Optional, List
 from pathlib import Path
 
 from .base import CommandResult
 
 logger = logging.getLogger(__name__)
+
+
+# Security: Regex for validating service names (alphanumeric, underscore, hyphen, @, .)
+_VALID_SERVICE_NAME = re.compile(r'^[a-zA-Z0-9_\-@.]+$')
+
+# Security: Whitelist of allowed binaries for get_version()
+ALLOWED_BINARIES = {'meshtasticd', 'rnsd', 'hamclock', 'mosquitto', 'meshtastic'}
+
+
+def _validate_service_name(name: str) -> bool:
+    """Validate service name contains only safe characters.
+
+    Security: Prevents command injection via malformed service names.
+    """
+    if not name or len(name) > 256:
+        return False
+    return bool(_VALID_SERVICE_NAME.match(name))
 
 
 # Known services configuration
@@ -55,6 +77,10 @@ def check_status(name: str, port: Optional[int] = None) -> CommandResult:
     Returns:
         CommandResult with status information
     """
+    # Security: Validate service name
+    if not _validate_service_name(name):
+        return CommandResult.fail(f"Invalid service name: {name}")
+
     config = KNOWN_SERVICES.get(name, {})
     check_port = port or config.get('port')
     description = config.get('description', name)
@@ -352,11 +378,20 @@ def is_installed(name: str) -> bool:
 
 def get_version(binary: str) -> CommandResult:
     """
-    Get version of a binary.
+    Get version of a known binary.
 
     Args:
-        binary: Binary name (e.g., 'meshtasticd', 'rnsd')
+        binary: Binary name (must be in ALLOWED_BINARIES whitelist)
+
+    Security: Only binaries in ALLOWED_BINARIES can be executed.
     """
+    # Security: Whitelist check to prevent arbitrary binary execution
+    if binary not in ALLOWED_BINARIES:
+        return CommandResult.fail(
+            f"Unknown binary: {binary}",
+            error="Binary not in allowed list"
+        )
+
     version_flags = ['--version', '-v', '-V', 'version']
 
     for flag in version_flags:
