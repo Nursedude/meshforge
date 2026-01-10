@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Meshtasticd Manager - Textual TUI Entry Point
+MeshForge - Textual TUI Entry Point
 
 This is the terminal-based interface for SSH and headless systems.
 Works over Raspberry Pi Connect, VNC terminal, or any SSH session.
