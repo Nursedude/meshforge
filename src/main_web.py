@@ -2101,6 +2101,7 @@ MAIN_TEMPLATE = '''
     <div class="container">
         <div class="tabs">
             <div class="tab active" data-tab="dashboard">Dashboard</div>
+            <div class="tab" data-tab="gateway">Gateway</div>
             <div class="tab" data-tab="map">Map</div>
             <div class="tab" data-tab="nodes">Nodes</div>
             <div class="tab" data-tab="messages">Messages</div>
@@ -2148,6 +2149,76 @@ MAIN_TEMPLATE = '''
             <div class="card">
                 <h2>Recent Logs</h2>
                 <div class="log-box" id="logs">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Gateway Tab -->
+        <div id="gateway" class="tab-content">
+            <div class="grid">
+                <div class="card" style="grid-column: span 2;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <h2 style="margin: 0;">Meshtastic ↔ RNS Gateway Bridge</h2>
+                        <div>
+                            <button class="btn btn-success" onclick="startGateway()" id="gateway-start-btn">Start</button>
+                            <button class="btn btn-danger" onclick="stopGateway()" id="gateway-stop-btn">Stop</button>
+                            <button class="btn" onclick="refreshGateway()">Refresh</button>
+                        </div>
+                    </div>
+                    <div class="grid" style="grid-template-columns: repeat(4, 1fr); gap: 15px;">
+                        <div style="text-align: center; padding: 15px; background: var(--card-bg); border-radius: 8px;">
+                            <div style="font-size: 0.9em; color: var(--text-muted);">Gateway Status</div>
+                            <div id="gateway-status" style="font-size: 1.5em; font-weight: bold; margin-top: 5px;">--</div>
+                        </div>
+                        <div style="text-align: center; padding: 15px; background: var(--card-bg); border-radius: 8px;">
+                            <div style="font-size: 0.9em; color: var(--text-muted);">meshtasticd</div>
+                            <div id="gateway-mesh-status" style="font-size: 1.5em; font-weight: bold; margin-top: 5px;">--</div>
+                        </div>
+                        <div style="text-align: center; padding: 15px; background: var(--card-bg); border-radius: 8px;">
+                            <div style="font-size: 0.9em; color: var(--text-muted);">rnsd</div>
+                            <div id="gateway-rns-status" style="font-size: 1.5em; font-weight: bold; margin-top: 5px;">--</div>
+                        </div>
+                        <div style="text-align: center; padding: 15px; background: var(--card-bg); border-radius: 8px;">
+                            <div style="font-size: 0.9em; color: var(--text-muted);">Tracked Nodes</div>
+                            <div id="gateway-nodes" style="font-size: 1.5em; font-weight: bold; margin-top: 5px;">--</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid" style="margin-top: 20px;">
+                <div class="card">
+                    <h2>Bridge Statistics</h2>
+                    <div id="gateway-stats" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                        <div class="item"><div class="label">Mesh → RNS</div><div id="stat-mesh-to-rns">0</div></div>
+                        <div class="item"><div class="label">RNS → Mesh</div><div id="stat-rns-to-mesh">0</div></div>
+                        <div class="item"><div class="label">Meshtastic Nodes</div><div id="stat-mesh-nodes">0</div></div>
+                        <div class="item"><div class="label">RNS Nodes</div><div id="stat-rns-nodes">0</div></div>
+                        <div class="item"><div class="label">Errors</div><div id="stat-errors">0</div></div>
+                        <div class="item"><div class="label">Last Activity</div><div id="stat-last-activity">--</div></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h2>Diagnostics</h2>
+                    <button class="btn btn-success" onclick="runGatewayDiagnostic()" style="margin-bottom: 15px;">Run Diagnostic</button>
+                    <button class="btn" onclick="testGatewayConnections()" style="margin-bottom: 15px;">Test Connections</button>
+                    <div id="gateway-diagnostic" class="log-box" style="max-height: 200px; overflow-y: auto;">Click "Run Diagnostic" to check gateway prerequisites</div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top: 20px;">
+                <h2>Tracked Nodes</h2>
+                <button class="btn btn-success" onclick="refreshGatewayNodes()" style="margin-bottom: 15px;">Refresh</button>
+                <div id="gateway-node-list">
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <tr style="border-bottom: 1px solid #444;">
+                            <th style="padding: 8px; text-align: left;">Network</th>
+                            <th style="padding: 8px; text-align: left;">ID</th>
+                            <th style="padding: 8px; text-align: left;">Name</th>
+                            <th style="padding: 8px; text-align: left;">Last Seen</th>
+                        </tr>
+                    </table>
+                    <div style="color: var(--text-muted); padding: 10px;">No nodes tracked yet</div>
+                </div>
             </div>
         </div>
 
@@ -2520,6 +2591,190 @@ MAIN_TEMPLATE = '''
             }
         }
 
+        // ========================================
+        // Gateway functions
+        // ========================================
+        async function refreshGateway() {
+            try {
+                const resp = await fetch('/api/gateway/status');
+                const data = await resp.json();
+
+                // Update status displays
+                const statusEl = document.getElementById('gateway-status');
+                const meshEl = document.getElementById('gateway-mesh-status');
+                const rnsEl = document.getElementById('gateway-rns-status');
+                const nodesEl = document.getElementById('gateway-nodes');
+
+                // Gateway status
+                if (data.running) {
+                    statusEl.innerHTML = '<span style="color: var(--accent);">Running</span>';
+                } else if (data.enabled) {
+                    statusEl.innerHTML = '<span style="color: var(--warning);">Stopped</span>';
+                } else {
+                    statusEl.innerHTML = '<span style="color: var(--text-muted);">Disabled</span>';
+                }
+
+                // Service status
+                meshEl.innerHTML = data.services?.meshtasticd
+                    ? '<span style="color: var(--accent);">Online</span>'
+                    : '<span style="color: var(--danger);">Offline</span>';
+
+                rnsEl.innerHTML = data.services?.rnsd
+                    ? '<span style="color: var(--accent);">Online</span>'
+                    : '<span style="color: var(--danger);">Offline</span>';
+
+                // Node count
+                nodesEl.textContent = data.stats?.total_nodes || 0;
+
+                // Update statistics
+                document.getElementById('stat-mesh-to-rns').textContent = data.stats?.mesh_to_rns || 0;
+                document.getElementById('stat-rns-to-mesh').textContent = data.stats?.rns_to_mesh || 0;
+                document.getElementById('stat-mesh-nodes').textContent = data.stats?.meshtastic_nodes || 0;
+                document.getElementById('stat-rns-nodes').textContent = data.stats?.rns_nodes || 0;
+                document.getElementById('stat-errors').textContent = data.stats?.errors || 0;
+                document.getElementById('stat-last-activity').textContent = data.stats?.last_activity || '--';
+
+                // Update button states
+                document.getElementById('gateway-start-btn').disabled = data.running;
+                document.getElementById('gateway-stop-btn').disabled = !data.running;
+
+            } catch (e) {
+                console.error('Error fetching gateway status:', e);
+            }
+        }
+
+        async function startGateway() {
+            try {
+                document.getElementById('gateway-start-btn').disabled = true;
+                const resp = await fetch('/api/gateway/start', { method: 'POST' });
+                const data = await resp.json();
+                if (data.success) {
+                    alert(data.message || 'Gateway started');
+                } else {
+                    alert('Error: ' + (data.error || 'Failed to start gateway'));
+                }
+                refreshGateway();
+            } catch (e) {
+                alert('Error starting gateway: ' + e);
+                document.getElementById('gateway-start-btn').disabled = false;
+            }
+        }
+
+        async function stopGateway() {
+            try {
+                document.getElementById('gateway-stop-btn').disabled = true;
+                const resp = await fetch('/api/gateway/stop', { method: 'POST' });
+                const data = await resp.json();
+                if (data.success) {
+                    alert(data.message || 'Gateway stopped');
+                } else {
+                    alert('Error: ' + (data.error || 'Failed to stop gateway'));
+                }
+                refreshGateway();
+            } catch (e) {
+                alert('Error stopping gateway: ' + e);
+                document.getElementById('gateway-stop-btn').disabled = false;
+            }
+        }
+
+        async function runGatewayDiagnostic() {
+            const diagEl = document.getElementById('gateway-diagnostic');
+            diagEl.innerHTML = '<em>Running diagnostic checks...</em>';
+
+            try {
+                const resp = await fetch('/api/gateway/diagnostic', { method: 'POST' });
+                const data = await resp.json();
+
+                let html = '';
+                for (const result of data.results || []) {
+                    const color = result.status === 'PASS' ? 'var(--accent)' :
+                                  result.status === 'FAIL' ? 'var(--danger)' : 'var(--warning)';
+                    html += `<div style="margin: 5px 0;"><span style="color: ${color}; font-weight: bold;">[${result.status}]</span> ${escapeHtml(result.check)}: ${escapeHtml(result.message)}</div>`;
+                }
+
+                if (data.summary) {
+                    html += `<hr style="border-color: #444; margin: 10px 0;">`;
+                    html += `<div><strong>Summary:</strong> ${data.summary.passed} passed, ${data.summary.failed} failed, ${data.summary.warnings} warnings</div>`;
+                    if (data.summary.ready) {
+                        html += `<div style="color: var(--accent); margin-top: 5px;">✓ Gateway ready to start</div>`;
+                    } else {
+                        html += `<div style="color: var(--danger); margin-top: 5px;">✗ Fix issues before starting gateway</div>`;
+                    }
+                }
+
+                diagEl.innerHTML = html;
+            } catch (e) {
+                diagEl.innerHTML = `<span style="color: var(--danger);">Error running diagnostic: ${e}</span>`;
+            }
+        }
+
+        async function testGatewayConnections() {
+            const diagEl = document.getElementById('gateway-diagnostic');
+            diagEl.innerHTML = '<em>Testing connections...</em>';
+
+            try {
+                const resp = await fetch('/api/gateway/test', { method: 'POST' });
+                const data = await resp.json();
+
+                let html = '<div style="font-weight: bold; margin-bottom: 10px;">Connection Test Results:</div>';
+
+                // Meshtastic
+                const meshColor = data.meshtastic?.success ? 'var(--accent)' : 'var(--danger)';
+                html += `<div style="margin: 5px 0;"><span style="color: ${meshColor};">[${data.meshtastic?.success ? 'OK' : 'FAIL'}]</span> Meshtastic: ${escapeHtml(data.meshtastic?.message || 'Unknown')}</div>`;
+
+                // RNS
+                const rnsColor = data.rns?.success ? 'var(--accent)' : 'var(--danger)';
+                html += `<div style="margin: 5px 0;"><span style="color: ${rnsColor};">[${data.rns?.success ? 'OK' : 'FAIL'}]</span> RNS: ${escapeHtml(data.rns?.message || 'Unknown')}</div>`;
+
+                diagEl.innerHTML = html;
+            } catch (e) {
+                diagEl.innerHTML = `<span style="color: var(--danger);">Error testing connections: ${e}</span>`;
+            }
+        }
+
+        async function refreshGatewayNodes() {
+            const listEl = document.getElementById('gateway-node-list');
+            listEl.innerHTML = '<em>Loading nodes...</em>';
+
+            try {
+                const resp = await fetch('/api/gateway/nodes');
+                const data = await resp.json();
+
+                if (!data.nodes || data.nodes.length === 0) {
+                    listEl.innerHTML = '<div style="color: var(--text-muted); padding: 10px;">No nodes tracked yet. Start the gateway to begin tracking.</div>';
+                    return;
+                }
+
+                let html = `<table style="width: 100%; border-collapse: collapse;">
+                    <tr style="border-bottom: 1px solid #444;">
+                        <th style="padding: 8px; text-align: left;">Network</th>
+                        <th style="padding: 8px; text-align: left;">ID</th>
+                        <th style="padding: 8px; text-align: left;">Name</th>
+                        <th style="padding: 8px; text-align: left;">Last Seen</th>
+                    </tr>`;
+
+                for (const node of data.nodes) {
+                    const networkBadge = node.network === 'meshtastic'
+                        ? '<span style="background: #2196F3; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">MESH</span>'
+                        : '<span style="background: #9C27B0; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.8em;">RNS</span>';
+
+                    html += `<tr style="border-bottom: 1px solid #333;">
+                        <td style="padding: 8px;">${networkBadge}</td>
+                        <td style="padding: 8px; font-family: monospace;">${escapeHtml(node.id || '')}</td>
+                        <td style="padding: 8px;">${escapeHtml(node.name || '--')}</td>
+                        <td style="padding: 8px;">${escapeHtml(node.last_seen || '--')}</td>
+                    </tr>`;
+                }
+
+                html += '</table>';
+                html += `<div style="color: var(--text-muted); padding: 10px;">Total: ${data.total} nodes (${data.meshtastic_count} Meshtastic, ${data.rns_count} RNS)</div>`;
+
+                listEl.innerHTML = html;
+            } catch (e) {
+                listEl.innerHTML = `<span style="color: var(--danger);">Error loading nodes: ${e}</span>`;
+            }
+        }
+
         async function refreshVersions() {
             const listEl = document.getElementById('version-list');
             const statusEl = document.getElementById('version-status');
@@ -2725,9 +2980,11 @@ MAIN_TEMPLATE = '''
         refreshRadio();
         refreshNodes();
         refreshProcesses();
+        refreshGateway();
 
         // Auto-refresh status every 5 seconds
         setInterval(fetchStatus, 5000);
+        setInterval(refreshGateway, 10000);  // Refresh gateway status every 10s
 
         // ========================================
         // Map functionality
