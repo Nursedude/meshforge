@@ -20,10 +20,20 @@ except ImportError:
     import logging
     logger = logging.getLogger(__name__)
 
-# Import safe close for meshtastic interfaces
+# Import meshtastic connection utilities
 try:
-    from utils.meshtastic_connection import safe_close_interface
+    from utils.meshtastic_connection import (
+        MESHTASTIC_CONNECTION_LOCK,
+        wait_for_cooldown,
+        safe_close_interface
+    )
+    HAS_MESHTASTIC_LOCK = True
 except ImportError:
+    HAS_MESHTASTIC_LOCK = False
+    MESHTASTIC_CONNECTION_LOCK = None
+    def wait_for_cooldown():
+        import time
+        time.sleep(1.0)
     def safe_close_interface(iface):
         if iface:
             try:
@@ -250,15 +260,34 @@ class RadioConfigPanel(Gtk.Box):
             return
 
         def load_via_library():
+            # Acquire global lock - meshtasticd only supports one TCP connection
+            lock_acquired = False
+            if HAS_MESHTASTIC_LOCK and MESHTASTIC_CONNECTION_LOCK:
+                lock_acquired = MESHTASTIC_CONNECTION_LOCK.acquire(timeout=10.0)
+                if not lock_acquired:
+                    logger.warning("Could not acquire connection lock")
+                    return None
+                wait_for_cooldown()
+            else:
+                lock_acquired = True
+
+            iface = None
             try:
                 import meshtastic.tcp_interface
                 iface = meshtastic.tcp_interface.TCPInterface(hostname='localhost')
                 channels = self._get_channels_from_interface(iface)
-                safe_close_interface(iface)
                 return channels
             except Exception as e:
                 logger.warning(f"Channel load failed: {e}")
                 return None
+            finally:
+                if iface:
+                    safe_close_interface(iface)
+                if HAS_MESHTASTIC_LOCK and MESHTASTIC_CONNECTION_LOCK and lock_acquired:
+                    try:
+                        MESHTASTIC_CONNECTION_LOCK.release()
+                    except RuntimeError:
+                        pass
 
         def on_complete(channels):
             # Remove loading indicator
@@ -1872,6 +1901,18 @@ class RadioConfigPanel(Gtk.Box):
 
         # Try direct library access first (more reliable than CLI parsing)
         def load_via_library():
+            # Acquire global lock - meshtasticd only supports one TCP connection
+            lock_acquired = False
+            if HAS_MESHTASTIC_LOCK and MESHTASTIC_CONNECTION_LOCK:
+                lock_acquired = MESHTASTIC_CONNECTION_LOCK.acquire(timeout=10.0)
+                if not lock_acquired:
+                    logger.warning("[RadioConfig] Could not acquire connection lock")
+                    return None
+                wait_for_cooldown()
+            else:
+                lock_acquired = True
+
+            iface = None
             try:
                 import meshtastic.tcp_interface
                 logger.info("[RadioConfig] Creating TCPInterface to localhost...")
@@ -1879,11 +1920,18 @@ class RadioConfigPanel(Gtk.Box):
                 logger.info("[RadioConfig] TCPInterface connected, extracting config...")
                 config = self._extract_config_from_interface(iface)
                 logger.info(f"[RadioConfig] Closing interface, extracted: {config}")
-                safe_close_interface(iface)
                 return config
             except Exception as e:
                 logger.warning(f"[RadioConfig] Library load failed: {e}, falling back to CLI")
                 return None
+            finally:
+                if iface:
+                    safe_close_interface(iface)
+                if HAS_MESHTASTIC_LOCK and MESHTASTIC_CONNECTION_LOCK and lock_acquired:
+                    try:
+                        MESHTASTIC_CONNECTION_LOCK.release()
+                    except RuntimeError:
+                        pass
 
         def do_load():
             # Try library first
