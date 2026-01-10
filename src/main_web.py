@@ -48,6 +48,15 @@ except ImportError:
     _check_service = None
     check_port = None
 
+# Import meshtastic connection manager for resilient TCP handling
+try:
+    from utils.meshtastic_connection import get_connection_manager, MeshtasticConnectionManager
+    _meshtastic_mgr = None
+except ImportError:
+    get_connection_manager = None
+    MeshtasticConnectionManager = None
+    _meshtastic_mgr = None
+
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 
@@ -641,10 +650,31 @@ def detect_hardware():
 
 
 def get_nodes():
-    """Get mesh nodes from meshtastic CLI"""
+    """Get mesh nodes - tries connection manager first, falls back to CLI"""
+    global _meshtastic_mgr
+
+    # Try using the connection manager first (more resilient)
+    if get_connection_manager is not None:
+        try:
+            if _meshtastic_mgr is None:
+                _meshtastic_mgr = get_connection_manager()
+
+            # Check availability first
+            if not _meshtastic_mgr.is_available():
+                return {'error': 'meshtasticd not running (port 4403)', 'nodes': []}
+
+            nodes = _meshtastic_mgr.get_nodes()
+            if nodes:
+                return {'nodes': nodes}
+            # Fall through to CLI if connection manager returns empty
+        except Exception as e:
+            # Log and fall through to CLI method
+            pass
+
+    # Fallback to CLI method
     cli = find_meshtastic_cli()
     if not cli:
-        return {'error': 'Meshtastic CLI not found'}
+        return {'error': 'Meshtastic CLI not found', 'nodes': []}
 
     # Check if port is reachable
     try:
@@ -652,10 +682,10 @@ def get_nodes():
         sock.settimeout(3.0)
         if sock.connect_ex(('localhost', 4403)) != 0:
             sock.close()
-            return {'error': 'meshtasticd not running (port 4403)'}
+            return {'error': 'meshtasticd not running (port 4403)', 'nodes': []}
         sock.close()
     except Exception:
-        return {'error': 'Cannot connect to meshtasticd'}
+        return {'error': 'Cannot connect to meshtasticd', 'nodes': []}
 
     try:
         result = run_subprocess(
@@ -663,7 +693,7 @@ def get_nodes():
             timeout=30
         )
         if result is None:
-            return {'error': 'Server shutting down'}
+            return {'error': 'Server shutting down', 'nodes': []}
         if result.returncode == 0:
             output = result.stdout
             nodes = []
@@ -710,12 +740,12 @@ def get_nodes():
 
             return {'nodes': nodes, 'raw': output}
 
-        return {'error': result.stderr or 'Failed to get nodes', 'raw': result.stdout}
+        return {'error': result.stderr or 'Failed to get nodes', 'nodes': [], 'raw': result.stdout}
 
     except subprocess.TimeoutExpired:
-        return {'error': 'Timeout getting nodes (30s)'}
+        return {'error': 'Timeout getting nodes (30s)', 'nodes': []}
     except Exception as e:
-        return {'error': str(e)}
+        return {'error': str(e), 'nodes': []}
 
 
 # Node monitor for full node data with positions
