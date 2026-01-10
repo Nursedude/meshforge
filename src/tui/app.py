@@ -389,10 +389,12 @@ class DashboardPane(Container):
                     # Fetch fresh nodes (also updates cache)
                     nodes_detail.update("Fetching...")
                     nodes = await asyncio.get_running_loop().run_in_executor(None, get_nodes)
+                    logger.debug(f"get_nodes returned: {len(nodes) if nodes else 0} nodes")
                     if nodes:
                         count = len(nodes) if isinstance(nodes, list) else 0
                         nodes_widget.update(f"[green]{count} nodes[/green]")
                         nodes_detail.update("Live")
+                        log.write(f"[green]Found {count} mesh nodes[/green]")
                     else:
                         nodes_widget.update("[yellow]0 nodes[/yellow]")
                         nodes_detail.update("No nodes found")
@@ -494,6 +496,9 @@ class DashboardPane(Container):
         from datetime import datetime
         log.write(f"[dim]Last refresh: {datetime.now().strftime('%H:%M:%S')}[/dim]")
         logger.debug("refresh_data() completed")
+
+        # Force UI refresh
+        self.refresh()
 
 
 class ServicePane(Container):
