@@ -1562,11 +1562,27 @@ class MeshtasticdTUI(App):
 
     .log-panel {
         height: 1fr;
+        min-height: 10;
+        max-height: 100%;
         margin: 1;
         border: solid $surface-lighten-2;
+        overflow-y: auto;
+    }
+
+    Log {
+        scrollbar-gutter: stable;
     }
 
     TabPane {
+        height: 100%;
+    }
+
+    TabPane > Container {
+        height: 100%;
+        overflow-y: auto;
+    }
+
+    TabbedContent {
         padding: 0;
     }
     """

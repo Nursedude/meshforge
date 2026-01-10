@@ -225,4 +225,63 @@ from utils.service_check import check_service, check_port, ServiceState
 
 ---
 
-*Last updated: 2026-01-09 - Added service_check utility documentation and usage patterns*
+---
+
+## Issue #6: Large Files Exceeding Guidelines
+
+### Symptom
+Files exceed the 1,500 line guideline from CLAUDE.md, making them difficult to navigate, test, and maintain.
+
+### Current Status (2026-01-10)
+
+**Python files over 1,500 lines:**
+
+| File | Lines | Priority | Suggested Split |
+|------|-------|----------|-----------------|
+| `src/main_web.py` | 3,524 | HIGH | Flask blueprints |
+| `src/gtk_ui/panels/rns.py` | 3,162 | HIGH | Extract config editor |
+| `src/gtk_ui/panels/tools.py` | 2,869 | MEDIUM | Split by tool category |
+| `src/gtk_ui/panels/radio_config.py` | 2,496 | MEDIUM | Extract channel config |
+| `src/gtk_ui/panels/mesh_tools.py` | 1,921 | LOW | Extract RF calculations |
+| `src/gtk_ui/panels/hamclock.py` | 1,894 | LOW | Extract API client |
+| `src/core/diagnostics/engine.py` | 1,685 | LOW | Extract rules |
+| `src/tui/app.py` | 1,650 | LOW | Extract panes to modules |
+| `src/gtk_ui/panels/ham_tools.py` | 1,611 | LOW | Extract tool groups |
+
+**Markdown files over 1,000 lines:**
+
+| File | Lines | Action |
+|------|-------|--------|
+| `.claude/dude_ai_university.md` | 1,206 | Consider splitting by topic |
+| `.claude/foundations/ai_development_practices.md` | 1,069 | Review for outdated content |
+
+### Proper Fix
+
+**Priority 1: main_web.py (3,524 lines)**
+```python
+# Split into Flask blueprints:
+src/web/
+├── __init__.py           # Flask app factory
+├── routes/
+│   ├── api.py            # /api/* routes
+│   ├── monitor.py        # /monitor/* routes
+│   └── config.py         # /config/* routes
+└── templates/            # Jinja templates
+```
+
+**Priority 2: rns.py (3,162 lines)**
+```python
+# Extract config editor:
+src/gtk_ui/panels/
+├── rns.py                # Main RNS panel
+└── rns_config_editor.py  # Config editing dialog
+```
+
+### Prevention
+- Check file length before adding new features
+- Split files proactively at 1,000 lines
+- Use `wc -l src/**/*.py | sort -rn | head -10` to monitor
+
+---
+
+*Last updated: 2026-01-10 - Added large file health check*
