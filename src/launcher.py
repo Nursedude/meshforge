@@ -182,22 +182,22 @@ def print_environment_info(env):
     print(f"\n{Colors.DIM}Environment Detection:{Colors.NC}")
 
     if env['has_display']:
-        print(f"  {Colors.GREEN}✓{Colors.NC} Display detected ({env['display_type']})")
+        print(f"  {Colors.GREEN}+{Colors.NC} Display detected ({env['display_type']})")
     else:
         print(f"  {Colors.YELLOW}○{Colors.NC} No display detected")
 
     if env['is_ssh']:
         print(f"  {Colors.YELLOW}○{Colors.NC} Running via SSH")
     else:
-        print(f"  {Colors.GREEN}✓{Colors.NC} Local session")
+        print(f"  {Colors.GREEN}+{Colors.NC} Local session")
 
     if env['has_gtk']:
-        print(f"  {Colors.GREEN}✓{Colors.NC} GTK4/libadwaita available")
+        print(f"  {Colors.GREEN}+{Colors.NC} GTK4/libadwaita available")
     else:
         print(f"  {Colors.YELLOW}○{Colors.NC} GTK4 not available")
 
     if env['has_textual']:
-        print(f"  {Colors.GREEN}✓{Colors.NC} Textual TUI available")
+        print(f"  {Colors.GREEN}+{Colors.NC} Textual TUI available")
     else:
         print(f"  {Colors.YELLOW}○{Colors.NC} Textual not installed")
 
@@ -436,7 +436,7 @@ def launch_gateway_bridge(src_dir):
         print(f"{Colors.GREEN}Bridge starting...{Colors.NC}")
 
         if bridge.start():
-            print(f"{Colors.GREEN}✓ Gateway bridge running{Colors.NC}")
+            print(f"{Colors.GREEN}+ Gateway bridge running{Colors.NC}")
             print(f"{Colors.DIM}Stats: {bridge.get_routing_stats()}{Colors.NC}\n")
 
             # Keep running until interrupted
