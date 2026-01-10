@@ -77,8 +77,9 @@ class DiagnosticsPanel(Gtk.Box):
 
         self._build_ui()
 
-        # Start periodic updates
-        GLib.timeout_add_seconds(5, self._update_health_display)
+        # Start periodic updates (store timer ID for cleanup)
+        self._update_timer_id = GLib.timeout_add_seconds(5, self._update_health_display)
+        self._is_destroyed = False
 
     def _build_ui(self):
         """Build the diagnostics panel UI."""
@@ -555,6 +556,9 @@ class DiagnosticsPanel(Gtk.Box):
 
     def _update_health_display(self) -> bool:
         """Update health status display."""
+        if self._is_destroyed:
+            return False  # Stop timer
+
         if not self.diag:
             return True
 
@@ -897,3 +901,17 @@ class DiagnosticsPanel(Gtk.Box):
             label.set_margin_bottom(5)
             label.report_path = report_file
             self.reports_list.append(label)
+
+    def cleanup(self):
+        """Clean up resources when panel is destroyed."""
+        self._is_destroyed = True
+
+        # Stop the periodic timer
+        if hasattr(self, '_update_timer_id') and self._update_timer_id:
+            GLib.source_remove(self._update_timer_id)
+            self._update_timer_id = None
+
+        # Unregister callbacks from the diagnostics singleton
+        if self.diag:
+            self.diag.unregister_event_callback(self._on_new_event)
+            self.diag.unregister_health_callback(self._on_health_change)
