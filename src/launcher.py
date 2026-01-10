@@ -210,17 +210,19 @@ def get_recommendation(env):
         return '1'  # GTK4 GUI
     elif env['has_textual']:
         return '2'  # Textual TUI
+    elif env['is_ssh']:
+        return '3'  # Web Interface (good for SSH)
     else:
-        return '3'  # Rich CLI
+        return '4'  # Rich CLI
 
 
 def print_menu(env, recommended, saved_pref=None):
     """Print the interface selection menu"""
-    print(f"{Colors.BOLD}Select Interface:{Colors.NC}\n")
+    print(f"{Colors.BOLD}═══ INTERFACES ════════════════════════════════════════════{Colors.NC}\n")
 
     # Show saved preference if any
     if saved_pref:
-        pref_names = {'1': 'GTK4 GUI', '2': 'Textual TUI', '3': 'Rich CLI'}
+        pref_names = {'1': 'GTK4 GUI', '2': 'Textual TUI', '3': 'Web Interface', '4': 'Rich CLI'}
         print(f"  {Colors.DIM}Saved preference: {pref_names.get(saved_pref, saved_pref)}{Colors.NC}\n")
 
     # Option 1: GTK4 GUI
@@ -236,7 +238,6 @@ def print_menu(env, recommended, saved_pref=None):
     saved1 = f" {Colors.CYAN}[saved]{Colors.NC}" if saved_pref == '1' else ""
     print(f"  {Colors.BOLD}1{Colors.NC}. {Colors.CYAN}GTK4 Graphical Interface{Colors.NC}{gtk_status}{rec1}{saved1}")
     print(f"     {Colors.DIM}Modern desktop UI with libadwaita design{Colors.NC}")
-    print(f"     {Colors.DIM}Best for: Pi with monitor, VNC, Raspberry Pi Connect desktop{Colors.NC}")
     print()
 
     # Option 2: Textual TUI
@@ -248,29 +249,55 @@ def print_menu(env, recommended, saved_pref=None):
     saved2 = f" {Colors.CYAN}[saved]{Colors.NC}" if saved_pref == '2' else ""
     print(f"  {Colors.BOLD}2{Colors.NC}. {Colors.CYAN}Textual TUI (Terminal Interface){Colors.NC}{tui_status}{rec2}{saved2}")
     print(f"     {Colors.DIM}Full-featured terminal UI with mouse support{Colors.NC}")
-    print(f"     {Colors.DIM}Best for: SSH, headless, Raspberry Pi Connect terminal{Colors.NC}")
     print()
 
-    # Option 3: Rich CLI
+    # Option 3: Web Interface (NEW)
     rec3 = f" {Colors.GREEN}← Recommended{Colors.NC}" if recommended == '3' else ""
     saved3 = f" {Colors.CYAN}[saved]{Colors.NC}" if saved_pref == '3' else ""
-    print(f"  {Colors.BOLD}3{Colors.NC}. {Colors.CYAN}Rich CLI (Original Interface){Colors.NC}{rec3}{saved3}")
-    print(f"     {Colors.DIM}Text-based menu interface{Colors.NC}")
-    print(f"     {Colors.DIM}Best for: Basic terminals, fallback, minimal environments{Colors.NC}")
+    print(f"  {Colors.BOLD}3{Colors.NC}. {Colors.CYAN}Web Interface{Colors.NC}{rec3}{saved3}")
+    print(f"     {Colors.DIM}Browser-based dashboard at http://localhost:5000{Colors.NC}")
     print()
 
-    # Install options
-    print(f"  {Colors.BOLD}i{Colors.NC}. {Colors.YELLOW}Install missing dependencies{Colors.NC}")
-    print(f"     {Colors.DIM}Install GTK4 or Textual if needed{Colors.NC}")
+    # Option 4: Rich CLI
+    rec4 = f" {Colors.GREEN}← Recommended{Colors.NC}" if recommended == '4' else ""
+    saved4 = f" {Colors.CYAN}[saved]{Colors.NC}" if saved_pref == '4' else ""
+    print(f"  {Colors.BOLD}4{Colors.NC}. {Colors.CYAN}Rich CLI (Menu Interface){Colors.NC}{rec4}{saved4}")
+    print(f"     {Colors.DIM}Text-based menu for basic terminals{Colors.NC}")
     print()
+
+    # Tools section
+    print(f"{Colors.BOLD}═══ QUICK TOOLS ═══════════════════════════════════════════{Colors.NC}\n")
+
+    # Option 5: Diagnostics
+    print(f"  {Colors.BOLD}5{Colors.NC}. {Colors.YELLOW}Run Diagnostics{Colors.NC}")
+    print(f"     {Colors.DIM}Check system health, services, and connectivity{Colors.NC}")
+    print()
+
+    # Option 6: Gateway Bridge
+    print(f"  {Colors.BOLD}6{Colors.NC}. {Colors.YELLOW}Start Gateway Bridge{Colors.NC}")
+    print(f"     {Colors.DIM}RNS ↔ Meshtastic bridge (headless mode){Colors.NC}")
+    print()
+
+    # Option 7: Monitor Mode
+    print(f"  {Colors.BOLD}7{Colors.NC}. {Colors.YELLOW}Monitor Mode{Colors.NC}")
+    print(f"     {Colors.DIM}Real-time node and message monitoring{Colors.NC}")
+    print()
+
+    # Options section
+    print(f"{Colors.BOLD}═══ OPTIONS ═══════════════════════════════════════════════{Colors.NC}\n")
+
+    # Install options
+    print(f"  {Colors.BOLD}i{Colors.NC}. Install missing dependencies")
+
+    # Setup wizard
+    print(f"  {Colors.BOLD}w{Colors.NC}. Run setup wizard")
 
     # Preference options
     if saved_pref:
-        print(f"  {Colors.BOLD}c{Colors.NC}. {Colors.DIM}Clear saved preference{Colors.NC}")
-    print(f"  {Colors.BOLD}s{Colors.NC}. {Colors.DIM}Save preference after selecting{Colors.NC}")
-    print()
+        print(f"  {Colors.BOLD}c{Colors.NC}. Clear saved preference")
+    print(f"  {Colors.BOLD}s{Colors.NC}. Save preference after selecting")
 
-    print(f"  {Colors.BOLD}q{Colors.NC}. {Colors.DIM}Quit{Colors.NC}")
+    print(f"  {Colors.BOLD}q{Colors.NC}. Quit")
     print()
 
 
@@ -346,9 +373,83 @@ def launch_interface(choice):
         os.execv(sys.executable, [sys.executable, str(src_dir / 'main_tui.py')])
 
     elif choice == "3":
+        # Web Interface
+        print(f"\n{Colors.GREEN}Launching Web Interface...{Colors.NC}")
+        print(f"{Colors.CYAN}Dashboard will be available at: http://localhost:5000{Colors.NC}\n")
+        os.execv(sys.executable, [sys.executable, str(src_dir / 'main_web.py')])
+
+    elif choice == "4":
         # Rich CLI
         print(f"\n{Colors.GREEN}Launching Rich CLI...{Colors.NC}\n")
         os.execv(sys.executable, [sys.executable, str(src_dir / 'main.py')])
+
+    elif choice == "5":
+        # Diagnostics
+        print(f"\n{Colors.GREEN}Running Diagnostics...{Colors.NC}\n")
+        os.execv(sys.executable, [sys.executable, str(src_dir / 'cli' / 'diagnose.py')])
+
+    elif choice == "6":
+        # Gateway Bridge
+        print(f"\n{Colors.GREEN}Starting Gateway Bridge...{Colors.NC}")
+        print(f"{Colors.CYAN}RNS ↔ Meshtastic bridge running in headless mode{Colors.NC}")
+        print(f"{Colors.DIM}Press Ctrl+C to stop{Colors.NC}\n")
+        launch_gateway_bridge(src_dir)
+
+    elif choice == "7":
+        # Monitor Mode
+        print(f"\n{Colors.GREEN}Starting Monitor Mode...{Colors.NC}\n")
+        os.execv(sys.executable, [sys.executable, str(src_dir / 'monitor.py')])
+
+
+def launch_gateway_bridge(src_dir):
+    """Launch the gateway bridge in headless mode"""
+    try:
+        # Import and run the bridge
+        sys.path.insert(0, str(src_dir))
+        from gateway.rns_bridge import RNSMeshtasticBridge
+        from gateway.config import GatewayConfig
+
+        config = GatewayConfig.load()
+        if not config.enabled:
+            print(f"{Colors.YELLOW}Gateway bridge is disabled in config.{Colors.NC}")
+            print(f"Enable it in ~/.config/meshforge/gateway.json or via the UI.\n")
+            try:
+                enable = input(f"Enable and start now? [y/N]: ").strip().lower()
+                if enable in ['y', 'yes']:
+                    config.enabled = True
+                    config.save()
+                else:
+                    return
+            except (KeyboardInterrupt, EOFError):
+                return
+
+        bridge = RNSMeshtasticBridge(config)
+        print(f"{Colors.GREEN}Bridge starting...{Colors.NC}")
+
+        if bridge.start():
+            print(f"{Colors.GREEN}✓ Gateway bridge running{Colors.NC}")
+            print(f"{Colors.DIM}Stats: {bridge.get_routing_stats()}{Colors.NC}\n")
+
+            # Keep running until interrupted
+            import time
+            try:
+                while bridge.is_running:
+                    time.sleep(5)
+                    stats = bridge.get_routing_stats()
+                    print(f"\r{Colors.DIM}Messages: M→R:{stats.get('messages_mesh_to_rns', 0)} "
+                          f"R→M:{stats.get('messages_rns_to_mesh', 0)} "
+                          f"Bounced:{stats.get('bounced', 0)}{Colors.NC}", end='', flush=True)
+            except KeyboardInterrupt:
+                print(f"\n\n{Colors.YELLOW}Stopping bridge...{Colors.NC}")
+                bridge.stop()
+                print(f"{Colors.GREEN}Bridge stopped.{Colors.NC}")
+        else:
+            print(f"{Colors.RED}Failed to start bridge. Check logs for details.{Colors.NC}")
+
+    except ImportError as e:
+        print(f"{Colors.RED}Gateway module not available: {e}{Colors.NC}")
+    except Exception as e:
+        print(f"{Colors.RED}Error starting bridge: {e}{Colors.NC}")
 
 
 def main():
@@ -370,7 +471,7 @@ def main():
     save_next = False
 
     # Auto-launch saved preference if set
-    if auto_launch and saved_interface in ['1', '2', '3']:
+    if auto_launch and saved_interface in ['1', '2', '3', '4']:
         env = detect_environment()
         # Verify dependencies are still available
         can_launch = True
@@ -441,11 +542,16 @@ def main():
             print(f"\n{Colors.CYAN}Select an interface to save as your default...{Colors.NC}")
             input(f"{Colors.DIM}Press Enter to continue...{Colors.NC}")
 
-        elif choice == 'i':
+        elif choice.lower() == 'i':
             install_dependencies()
 
-        elif choice in ['1', '2', '3']:
-            # Validate choice
+        elif choice.lower() == 'w':
+            # Run setup wizard
+            run_setup_wizard()
+            continue
+
+        elif choice in ['1', '2', '3', '4']:
+            # Main interfaces - validate and launch
             if choice == '1' and not env['has_display']:
                 print(f"\n{Colors.YELLOW}Warning: No display detected. GTK4 requires a display.{Colors.NC}")
                 try:
@@ -491,7 +597,7 @@ def main():
                     prefs['auto_launch'] = False
 
                 save_preferences(prefs)
-                pref_names = {'1': 'GTK4 GUI', '2': 'Textual TUI', '3': 'Rich CLI'}
+                pref_names = {'1': 'GTK4 GUI', '2': 'Textual TUI', '3': 'Web Interface', '4': 'Rich CLI'}
                 print(f"{Colors.GREEN}Saved {pref_names.get(choice)} as default!{Colors.NC}")
                 if prefs['auto_launch']:
                     print(f"{Colors.DIM}Use --wizard flag to change preference{Colors.NC}")
@@ -499,6 +605,12 @@ def main():
 
             # Launch the interface
             launch_interface(choice)
+
+        elif choice in ['5', '6', '7']:
+            # Quick tools - launch directly without save option
+            launch_interface(choice)
+            # Return to menu after tool completes (except for execv calls)
+            input(f"\n{Colors.DIM}Press Enter to return to menu...{Colors.NC}")
 
         else:
             print(f"\n{Colors.RED}Invalid option. Please try again.{Colors.NC}")
