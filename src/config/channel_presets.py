@@ -18,6 +18,16 @@ except ImportError:
             return Path(f'/home/{sudo_user}')
         return Path.home()
 
+# Import emoji helper for fallback support
+try:
+    from utils import emoji as em
+except ImportError:
+    # Fallback if emoji module not available
+    class em:
+        @staticmethod
+        def get(emoji, fallback=''):
+            return fallback if fallback else emoji
+
 console = Console()
 
 
@@ -221,11 +231,12 @@ class ChannelPresetManager:
         table.add_column("Use Case", style="yellow", width=30)
 
         for idx, (key, preset) in enumerate(self.CHANNEL_PRESETS.items(), 1):
-            icon = self.PRESET_ICONS.get(key, '📻')
+            icon_raw = self.PRESET_ICONS.get(key, '📻')
+            icon = em.get(icon_raw, '[*]')
             # Add star for recommended presets
             name = preset['name']
             if key == 'mtnmesh':
-                name = f"[yellow]{name}[/yellow] ⭐"
+                name = f"[yellow]{name}[/yellow] {em.get('⭐', '*')}"
             table.add_row(
                 str(idx),
                 icon,
@@ -235,7 +246,7 @@ class ChannelPresetManager:
             )
 
         console.print(table)
-        console.print("\n[dim]⭐ = Recommended for community networks[/dim]")
+        console.print(f"\n[dim]{em.get('⭐', '*')} = Recommended for community networks[/dim]")
 
         # Show user presets if any
         user_presets = self.load_user_presets()
@@ -252,19 +263,24 @@ class ChannelPresetManager:
 
         console.print("\n[cyan]Select a preset:[/cyan]")
         for idx, key in enumerate(preset_keys, 1):
-            icon = self.PRESET_ICONS.get(key, '📻')
+            icon_raw = self.PRESET_ICONS.get(key, '📻')
+            icon = em.get(icon_raw, '[*]')
             name = self.CHANNEL_PRESETS[key]['name']
-            extra = " [yellow]⭐ Recommended[/yellow]" if key == 'mtnmesh' else ""
+            extra = f" [yellow]{em.get('⭐', '*')} Recommended[/yellow]" if key == 'mtnmesh' else ""
             console.print(f"  [bold]{idx}[/bold]. {icon} {name}{extra}")
 
-        console.print(f"\n  [bold]{len(preset_keys) + 1}[/bold]. ✏️  Custom Configuration")
-        console.print(f"  [bold]{len(preset_keys) + 2}[/bold]. 📂 Load Saved Preset")
+        console.print(f"\n  [bold]{len(preset_keys) + 1}[/bold]. {em.get('✏️', '[E]')} Custom Configuration")
+        console.print(f"  [bold]{len(preset_keys) + 2}[/bold]. {em.get('📂', '[F]')} Load Saved Preset")
+        console.print(f"\n  [bold]0[/bold]. {em.get('⬅️', '<-')} Back to Main Menu")
 
         choice = Prompt.ask(
             "\n[cyan]Enter selection[/cyan]",
-            choices=[str(i) for i in range(1, len(preset_keys) + 3)],
+            choices=["0"] + [str(i) for i in range(1, len(preset_keys) + 3)],
             default="2"  # Default to MtnMesh (option 2)
         )
+
+        if choice == "0":
+            return None  # Back to main menu
 
         choice_idx = int(choice) - 1
 

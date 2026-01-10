@@ -384,21 +384,30 @@ def launch_interface(choice):
         os.execv(sys.executable, [sys.executable, str(src_dir / 'main_tui.py')])
 
     elif choice == "5":
-        # Diagnostics
+        # Diagnostics - run as subprocess so we return to menu
         print(f"\n{Colors.GREEN}Running Diagnostics...{Colors.NC}\n")
-        os.execv(sys.executable, [sys.executable, str(src_dir / 'cli' / 'diagnose.py')])
+        subprocess.run([sys.executable, str(src_dir / 'cli' / 'diagnose.py')])
+        return  # Return to menu loop
 
     elif choice == "6":
-        # Gateway Bridge
+        # Gateway Bridge - run as subprocess
         print(f"\n{Colors.GREEN}Starting Gateway Bridge...{Colors.NC}")
         print(f"{Colors.CYAN}RNS ↔ Meshtastic bridge running in headless mode{Colors.NC}")
         print(f"{Colors.DIM}Press Ctrl+C to stop{Colors.NC}\n")
-        launch_gateway_bridge(src_dir)
+        try:
+            launch_gateway_bridge(src_dir)
+        except KeyboardInterrupt:
+            print(f"\n{Colors.YELLOW}Gateway stopped.{Colors.NC}")
+        return  # Return to menu loop
 
     elif choice == "7":
-        # Monitor Mode
+        # Monitor Mode - run as subprocess
         print(f"\n{Colors.GREEN}Starting Monitor Mode...{Colors.NC}\n")
-        os.execv(sys.executable, [sys.executable, str(src_dir / 'monitor.py')])
+        try:
+            subprocess.run([sys.executable, str(src_dir / 'monitor.py')])
+        except KeyboardInterrupt:
+            print(f"\n{Colors.YELLOW}Monitor stopped.{Colors.NC}")
+        return  # Return to menu loop
 
 
 def launch_gateway_bridge(src_dir):
@@ -607,10 +616,9 @@ def main():
             launch_interface(choice)
 
         elif choice in ['5', '6', '7']:
-            # Quick tools - launch directly without save option
+            # Quick tools - run as subprocess, return to menu
             launch_interface(choice)
-            # Return to menu after tool completes (except for execv calls)
-            input(f"\n{Colors.DIM}Press Enter to return to menu...{Colors.NC}")
+            # No extra prompt needed - tools handle their own "press enter"
 
         else:
             print(f"\n{Colors.RED}Invalid option. Please try again.{Colors.NC}")
