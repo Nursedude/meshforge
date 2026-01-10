@@ -25,6 +25,25 @@ logger = logging.getLogger(__name__)
 if not logger.handlers:
     logger.setLevel(logging.WARNING)
 
+# Import global connection lock - meshtasticd only supports one TCP connection
+try:
+    from utils.meshtastic_connection import (
+        MESHTASTIC_CONNECTION_LOCK,
+        wait_for_cooldown,
+        safe_close_interface
+    )
+except ImportError:
+    # Fallback if utils not available
+    MESHTASTIC_CONNECTION_LOCK = threading.Lock()
+    def wait_for_cooldown():
+        time.sleep(1.0)
+    def safe_close_interface(iface):
+        if iface:
+            try:
+                iface.close()
+            except Exception:
+                pass
+
 
 class ConnectionState(Enum):
     """Monitor connection states"""
@@ -117,6 +136,7 @@ class NodeMonitor:
         self._state = ConnectionState.DISCONNECTED
         self._running = False
         self._reconnect_thread = None
+        self._holds_global_lock = False  # Track if we hold the global connection lock
 
         # Callbacks
         self.on_node_update: Optional[Callable[[NodeInfo], None]] = None
@@ -175,10 +195,19 @@ class NodeMonitor:
             logger.warning("Already connected")
             return True
 
+        # Acquire global lock - meshtasticd only supports one TCP connection
+        if not MESHTASTIC_CONNECTION_LOCK.acquire(timeout=timeout):
+            logger.error("Could not acquire connection lock (another connection in progress)")
+            return False
+
+        self._holds_global_lock = True
         self.state = ConnectionState.CONNECTING
         self._running = True
 
         try:
+            # Wait for cooldown from previous connection
+            wait_for_cooldown()
+
             from meshtastic.tcp_interface import TCPInterface
             from pubsub import pub
 
@@ -223,6 +252,7 @@ class NodeMonitor:
         except ImportError as e:
             logger.error(f"meshtastic package not installed: {e}")
             self.state = ConnectionState.ERROR
+            self._release_global_lock()
             if self.on_error:
                 self.on_error(e)
             return False
@@ -230,9 +260,19 @@ class NodeMonitor:
         except Exception as e:
             logger.error(f"Connection failed: {e}")
             self.state = ConnectionState.ERROR
+            self._release_global_lock()
             if self.on_error:
                 self.on_error(e)
             return False
+
+    def _release_global_lock(self):
+        """Release the global connection lock if we hold it"""
+        if getattr(self, '_holds_global_lock', False):
+            try:
+                MESHTASTIC_CONNECTION_LOCK.release()
+            except RuntimeError:
+                pass  # Already released
+            self._holds_global_lock = False
 
     def disconnect(self, timeout: float = 5.0):
         """Disconnect from meshtasticd and wait for threads to finish
@@ -268,15 +308,12 @@ class NodeMonitor:
             except Exception:
                 pass
 
-            # Close the interface
-            try:
-                self.interface.close()
-            except (BrokenPipeError, OSError, Exception) as e:
-                # Ignore broken pipe on disconnect - expected if connection already lost
-                if not isinstance(e, BrokenPipeError):
-                    logger.debug(f"Error closing interface: {e}")
-
+            # Close the interface safely (handles BrokenPipeError)
+            safe_close_interface(self.interface)
             self.interface = None
+
+        # Release global lock
+        self._release_global_lock()
 
         logger.info("Disconnected")
 
