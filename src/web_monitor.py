@@ -259,7 +259,11 @@ def get_gateway_stats() -> dict:
 
 @cached(ttl=30)
 def get_node_counts() -> dict:
-    """Get node counts from both networks"""
+    """Get node counts from cached data (non-intrusive - no direct connection)
+
+    Web monitor should NOT connect to meshtasticd directly to avoid
+    connection conflicts. Read from cached files only.
+    """
     counts = {
         'meshtastic': 0,
         'rns': 0,
@@ -267,22 +271,29 @@ def get_node_counts() -> dict:
         'error': None
     }
 
-    # Try Meshtastic nodes via meshtastic CLI
+    # Try to read from MeshForge's cached node data
     try:
-        result = subprocess.run(
-            ['meshtastic', '--host', '127.0.0.1', '--info'],
-            capture_output=True, text=True, timeout=15
-        )
-        if result.returncode == 0:
-            # Count "Node" lines in output
-            nodes = result.stdout.count('Node ')
-            counts['meshtastic'] = max(1, nodes)  # At least 1 (self)
-    except Exception as e:
-        counts['error'] = str(e)
+        from utils.paths import get_real_user_home
+        cache_dir = get_real_user_home() / '.local' / 'share' / 'meshforge'
 
-    # RNS nodes would require RNS API - skip for now
+        # Check for node cache file
+        node_cache = cache_dir / 'nodes_cache.json'
+        if node_cache.exists():
+            data = json.loads(node_cache.read_text())
+            counts['meshtastic'] = data.get('meshtastic_count', 0)
+            counts['rns'] = data.get('rns_count', 0)
+
+        # Also check gateway state for node counts
+        gateway_state = cache_dir / 'gateway_state.json'
+        if gateway_state.exists():
+            data = json.loads(gateway_state.read_text())
+            if 'nodes' in data:
+                counts['meshtastic'] = len(data['nodes'].get('meshtastic', []))
+                counts['rns'] = len(data['nodes'].get('rns', []))
+    except Exception:
+        pass  # No cached data available - that's OK
+
     counts['total'] = counts['meshtastic'] + counts['rns']
-
     return counts
 
 
