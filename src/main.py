@@ -40,12 +40,12 @@ def get_banner():
     mesh = em.get('🌐', '[MESH]')
     ant = em.get('📡', '[ANT]')
     return f"""
-╔═══════════════════════════════════════════════════════════╗
-║   {mesh} Meshtasticd Interactive Installer & Manager          ║
-║   For Raspberry Pi OS                          v{__version__}   ║
-╠═══════════════════════════════════════════════════════════╣
-║   {ant} Install • Configure • Monitor • Update               ║
-╚═══════════════════════════════════════════════════════════╝
++-----------------------------------------------------------+
+|   {mesh} Meshtasticd Interactive Installer & Manager          |
+|   For Raspberry Pi OS                          v{__version__}   |
++-----------------------------------------------------------+
+|   {ant} Install - Configure - Monitor - Update               |
++-----------------------------------------------------------+
 """
 
 BANNER = get_banner()
@@ -119,20 +119,20 @@ def interactive_menu():
         # Show quick status
         show_quick_status()
 
-        console.print("\n[bold cyan]═══════════════════ Main Menu ═══════════════════[/bold cyan]")
+        console.print("\n[bold cyan]=================== Main Menu ===================[/bold cyan]")
 
         # Status & Monitoring Section
-        console.print("\n[dim cyan]── Status & Monitoring ──[/dim cyan]")
+        console.print("\n[dim cyan]-- Status & Monitoring --[/dim cyan]")
         console.print(f"  [bold]1[/bold]. {em.get('📊')} [green]Quick Status Dashboard[/green]")
         console.print(f"  [bold]2[/bold]. {em.get('🔧')} [green]Service Management[/green] [dim](Start/Stop/Logs)[/dim]")
 
         # Installation Section
-        console.print("\n[dim cyan]── Installation ──[/dim cyan]")
+        console.print("\n[dim cyan]-- Installation --[/dim cyan]")
         console.print(f"  [bold]3[/bold]. {em.get('📦')} Install meshtasticd")
         console.print(f"  [bold]4[/bold]. {em.get('⬆️')}  Update meshtasticd")
 
         # Configuration Section
-        console.print("\n[dim cyan]── Configuration ──[/dim cyan]")
+        console.print("\n[dim cyan]-- Configuration --[/dim cyan]")
         console.print(f"  [bold]5[/bold]. {em.get('⚙️')}  Configure device")
         console.print(f"  [bold]6[/bold]. {em.get('📻')} [yellow]Channel Presets[/yellow] [dim](Quick Setup)[/dim]")
         console.print(f"  [bold]7[/bold]. {em.get('📋')} Configuration Templates")
@@ -140,11 +140,11 @@ def interactive_menu():
         console.print(f"  [bold]f[/bold]. {em.get('📶')} [yellow]Full Radio Config[/yellow] [dim](Mesh, MQTT, Position)[/dim]")
 
         # Meshtastic CLI Section
-        console.print("\n[dim cyan]── Meshtastic CLI ──[/dim cyan]")
+        console.print("\n[dim cyan]-- Meshtastic CLI --[/dim cyan]")
         console.print(f"  [bold]c[/bold]. {em.get('💻')} [yellow]Meshtastic CLI Commands[/yellow]")
 
         # Tools Section
-        console.print("\n[dim cyan]── Tools ──[/dim cyan]")
+        console.print("\n[dim cyan]-- Tools --[/dim cyan]")
         console.print(f"  [bold]t[/bold]. {em.get('🔧')} [cyan]System Diagnostics[/cyan] [dim](Network, Hardware, Health)[/dim]")
         console.print(f"  [bold]p[/bold]. {em.get('📡')} [cyan]Site Planner[/cyan] [dim](Coverage, Link Budget)[/dim]")
         console.print(f"  [bold]n[/bold]. {em.get('🌐')} [cyan]Network Tools[/cyan] [dim](TCP/IP, Ping, Scanning)[/dim]")
@@ -153,7 +153,7 @@ def interactive_menu():
         console.print(f"  [bold]g[/bold]. {em.get('📦')} [cyan]Tool Manager[/cyan] [dim](Install, Update, Version)[/dim]")
 
         # System Section
-        console.print("\n[dim cyan]── System ──[/dim cyan]")
+        console.print("\n[dim cyan]-- System --[/dim cyan]")
         console.print(f"  [bold]9[/bold]. {em.get('🔍')} Check dependencies")
         console.print(f"  [bold]h[/bold]. {em.get('🔌')} Hardware detection")
         console.print(f"  [bold]w[/bold]. {em.get('🛠️')} [yellow]Hardware Configuration[/yellow] [dim](SPI, Serial, GPIO)[/dim]")
@@ -216,7 +216,7 @@ def interactive_menu():
 
 def uninstall_menu():
     """Show uninstall menu"""
-    console.print("\n[bold red]═══════════════ Uninstall ═══════════════[/bold red]\n")
+    console.print("\n[bold red]=============== Uninstall ===============[/bold red]\n")
 
     console.print("[yellow]Warning: This will remove meshtasticd and related components.[/yellow]")
     console.print("[dim]You can choose which components to remove.[/dim]\n")
@@ -394,15 +394,15 @@ def configure_channel_presets():
 
 def manage_templates():
     """Manage configuration templates"""
-    console.print("\n[bold cyan]═══════════════ Configuration Templates ═══════════════[/bold cyan]\n")
+    console.print("\n[bold cyan]=============== Configuration Templates ===============[/bold cyan]\n")
 
-    console.print("[dim cyan]── Hardware Templates ──[/dim cyan]")
+    console.print("[dim cyan]-- Hardware Templates --[/dim cyan]")
     console.print(f"  [bold]1[/bold]. {em.get('🔧')} MeshAdv-Mini (SX1262/SX1268 HAT)")
     console.print(f"  [bold]2[/bold]. {em.get('🔧')} MeshAdv-Mini 400MHz variant")
     console.print(f"  [bold]3[/bold]. {em.get('🔧')} Waveshare SX1262")
     console.print(f"  [bold]4[/bold]. {em.get('🔧')} Adafruit RFM9x")
 
-    console.print("\n[dim cyan]── Network Presets ──[/dim cyan]")
+    console.print("\n[dim cyan]-- Network Presets --[/dim cyan]")
     console.print(f"  [bold]5[/bold]. {em.get('🏔️')}  [yellow]MtnMesh Community[/yellow] [dim](Slot 20, MediumFast)[/dim]")
     console.print(f"  [bold]6[/bold]. {em.get('🚨')} [yellow]Emergency/SAR[/yellow] [dim](Maximum Range)[/dim]")
     console.print(f"  [bold]7[/bold]. {em.get('🏙️')}  [yellow]Urban High-Speed[/yellow] [dim](Fast, Short Range)[/dim]")
@@ -569,20 +569,20 @@ def update_meshtasticd():
 
 def configure_device():
     """Configure meshtastic device"""
-    console.print("\n[bold cyan]═══════════════ Device Configuration ═══════════════[/bold cyan]\n")
+    console.print("\n[bold cyan]=============== Device Configuration ===============[/bold cyan]\n")
 
     while True:
-        console.print("\n[dim cyan]── Radio Settings ──[/dim cyan]")
+        console.print("\n[dim cyan]-- Radio Settings --[/dim cyan]")
         console.print(f"  [bold]1[/bold]. {em.get('📻')} Complete Radio Setup [dim](Recommended)[/dim]")
         console.print(f"  [bold]2[/bold]. {em.get('🌐')} LoRa Settings [dim](Region, Preset)[/dim]")
         console.print(f"  [bold]3[/bold]. {em.get('📢')} Channel Configuration")
         console.print(f"  [bold]4[/bold]. {em.get('⚡')} [yellow]Channel Presets[/yellow] [dim](Quick Setup)[/dim]")
 
-        console.print("\n[dim cyan]── Device & Modules ──[/dim cyan]")
+        console.print("\n[dim cyan]-- Device & Modules --[/dim cyan]")
         console.print(f"  [bold]5[/bold]. {em.get('🔌')} Module Configuration [dim](MQTT, Serial, etc.)[/dim]")
         console.print(f"  [bold]6[/bold]. {em.get('📝')} Device Settings [dim](Name, WiFi, etc.)[/dim]")
 
-        console.print("\n[dim cyan]── Hardware ──[/dim cyan]")
+        console.print("\n[dim cyan]-- Hardware --[/dim cyan]")
         console.print(f"  [bold]7[/bold]. {em.get('🔍')} Hardware Detection")
         console.print(f"  [bold]8[/bold]. {em.get('🎛️')}  SPI HAT Configuration [dim](MeshAdv-Mini, etc.)[/dim]")
 
@@ -738,20 +738,20 @@ def detect_hardware():
 
 def debug_menu():
     """Debug and troubleshooting menu"""
-    console.print("\n[bold cyan]═══════════════ Debug & Troubleshooting ═══════════════[/bold cyan]\n")
+    console.print("\n[bold cyan]=============== Debug & Troubleshooting ===============[/bold cyan]\n")
 
-    console.print("[dim cyan]── Diagnostics ──[/dim cyan]")
+    console.print("[dim cyan]-- Diagnostics --[/dim cyan]")
     console.print(f"  [bold]1[/bold]. {em.get('📜')} View installation logs")
     console.print(f"  [bold]2[/bold]. {em.get('⚠️')} View error logs")
     console.print(f"  [bold]3[/bold]. {em.get('🔄')} Test meshtasticd service")
     console.print(f"  [bold]4[/bold]. {em.get('🔐')} Check permissions")
 
-    console.print("\n[dim cyan]── Updates & Version ──[/dim cyan]")
+    console.print("\n[dim cyan]-- Updates & Version --[/dim cyan]")
     console.print(f"  [bold]5[/bold]. {em.get('⬆️')}  [yellow]Check for updates[/yellow]")
     console.print(f"  [bold]6[/bold]. {em.get('📋')} [yellow]Version history[/yellow]")
     console.print(f"  [bold]7[/bold]. {em.get('ℹ️')}  [yellow]Show version info[/yellow]")
 
-    console.print("\n[dim cyan]── Configuration ──[/dim cyan]")
+    console.print("\n[dim cyan]-- Configuration --[/dim cyan]")
     console.print(f"  [bold]8[/bold]. {em.get('⚙️')}  [yellow]Show environment config[/yellow]")
     console.print(f"  [bold]9[/bold]. {em.get('🎨', '[EMJ]')}  [yellow]Emoji support status[/yellow]")
 
