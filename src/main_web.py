@@ -2437,15 +2437,25 @@ MAIN_TEMPLATE = '''
         }
 
         async function refreshHardware() {
+            const el = document.getElementById('hardware-list');
             try {
                 const resp = await fetch('/api/hardware');
+                if (!resp.ok) {
+                    el.innerHTML = '<div class="hardware-item"><span class="badge warning">ERROR</span><span>Failed to fetch hardware status</span></div>';
+                    return;
+                }
                 const data = await resp.json();
 
-                const el = document.getElementById('hardware-list');
+                // Handle error response
+                if (data.error) {
+                    el.innerHTML = `<div class="hardware-item"><span class="badge warning">ERROR</span><span>${escapeHtml(data.error)}</span></div>`;
+                    return;
+                }
+
                 const devices = Array.isArray(data.devices) ? data.devices : [];
 
                 if (devices.length === 0) {
-                    el.innerHTML = '<div class="hardware-item"><span class="badge info">INFO</span><span>No hardware devices detected</span></div>';
+                    el.innerHTML = '<div class="hardware-item"><span class="badge info">INFO</span><span>No hardware devices detected (check if meshtasticd is running)</span></div>';
                     return;
                 }
 
@@ -2457,6 +2467,7 @@ MAIN_TEMPLATE = '''
                 `).join('');
             } catch (e) {
                 console.error('Error fetching hardware:', e);
+                el.innerHTML = '<div class="hardware-item"><span class="badge danger">ERROR</span><span>Network error fetching hardware</span></div>';
             }
         }
 
@@ -2495,9 +2506,16 @@ MAIN_TEMPLATE = '''
             try {
                 const resp = await fetch('/api/processes');
                 const data = await resp.json();
-                document.getElementById('processes').textContent = data.processes.join('\\n');
+                if (data.error) {
+                    document.getElementById('processes').textContent = 'Error: ' + data.error;
+                } else if (data.processes && Array.isArray(data.processes)) {
+                    document.getElementById('processes').textContent = data.processes.join('\\n');
+                } else {
+                    document.getElementById('processes').textContent = 'No process data available';
+                }
             } catch (e) {
                 console.error('Error fetching processes:', e);
+                document.getElementById('processes').textContent = 'Error fetching processes';
             }
         }
 
@@ -2723,6 +2741,13 @@ MAIN_TEMPLATE = '''
             const mapContainer = document.getElementById('mesh-map');
             if (!mapContainer) return;
 
+            // Check if Leaflet is loaded
+            if (typeof L === 'undefined') {
+                console.error('Leaflet not loaded yet');
+                mapContainer.innerHTML = '<div style="color: var(--warning); padding: 20px;">Map library loading... Refresh the page if this persists.</div>';
+                return;
+            }
+
             // Initialize map centered on a default location
             meshMap = L.map('mesh-map').setView([20, 0], 2);
 
@@ -2772,6 +2797,13 @@ MAIN_TEMPLATE = '''
         async function refreshMap() {
             const countEl = document.getElementById('map-node-count');
             const listEl = document.getElementById('map-node-list');
+
+            // Check if map is initialized
+            if (!meshMap || typeof L === 'undefined') {
+                countEl.textContent = 'Map not initialized';
+                listEl.innerHTML = '<div style="color: var(--warning);">Click the Map tab to initialize the map first.</div>';
+                return;
+            }
 
             countEl.textContent = 'Loading...';
 
