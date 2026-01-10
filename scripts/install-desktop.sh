@@ -71,22 +71,36 @@ for size in "${ICON_SIZES[@]}"; do
     ICON_DIR="/usr/share/icons/hicolor/${size}x${size}/apps"
     mkdir -p "$ICON_DIR"
 
-    # For now, just use the SVG at all sizes (works on modern systems)
+    # Install SVG at all sizes (works on modern systems)
     if [ -f "$PROJECT_DIR/assets/meshforge-icon.svg" ]; then
         cp "$PROJECT_DIR/assets/meshforge-icon.svg" "$ICON_DIR/meshforge.svg"
+        # Also install with app_id name for GTK4/libadwaita taskbar
+        cp "$PROJECT_DIR/assets/meshforge-icon.svg" "$ICON_DIR/org.meshforge.app.svg"
     fi
 done
+
+# Install scalable SVG (required for GTK4 taskbar icon)
+echo "Installing scalable icon for GTK4 taskbar..."
+SCALABLE_DIR="/usr/share/icons/hicolor/scalable/apps"
+mkdir -p "$SCALABLE_DIR"
+if [ -f "$PROJECT_DIR/assets/meshforge-icon.svg" ]; then
+    cp "$PROJECT_DIR/assets/meshforge-icon.svg" "$SCALABLE_DIR/meshforge.svg"
+    cp "$PROJECT_DIR/assets/meshforge-icon.svg" "$SCALABLE_DIR/org.meshforge.app.svg"
+fi
 
 # Also install to pixmaps
 echo "Installing to pixmaps..."
 mkdir -p /usr/share/pixmaps
 if [ -f "$PROJECT_DIR/assets/meshforge-icon.svg" ]; then
     cp "$PROJECT_DIR/assets/meshforge-icon.svg" /usr/share/pixmaps/meshforge.svg
+    cp "$PROJECT_DIR/assets/meshforge-icon.svg" /usr/share/pixmaps/org.meshforge.app.svg
     # Create a PNG version for compatibility
     if command -v rsvg-convert &> /dev/null; then
         rsvg-convert -w 128 -h 128 "$PROJECT_DIR/assets/meshforge-icon.svg" > /usr/share/pixmaps/meshforge.png
+        rsvg-convert -w 128 -h 128 "$PROJECT_DIR/assets/meshforge-icon.svg" > /usr/share/pixmaps/org.meshforge.app.png
     elif command -v convert &> /dev/null; then
         convert -background none "$PROJECT_DIR/assets/meshforge-icon.svg" -resize 128x128 /usr/share/pixmaps/meshforge.png
+        convert -background none "$PROJECT_DIR/assets/meshforge-icon.svg" -resize 128x128 /usr/share/pixmaps/org.meshforge.app.png
     fi
 fi
 

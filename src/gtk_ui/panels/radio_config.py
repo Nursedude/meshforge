@@ -158,15 +158,21 @@ class RadioConfigPanel(Gtk.Box):
         parent.append(frame)
 
     def _add_channel_list_section(self, parent):
-        """Add channel list section showing all configured channels"""
+        """Add channel list section showing all configured channels with edit options"""
         frame = Gtk.Frame()
-        frame.set_label("Channels")
+        frame.set_label("Channel Configuration")
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.set_margin_start(15)
         box.set_margin_end(15)
         box.set_margin_top(10)
         box.set_margin_bottom(10)
+
+        # Description
+        desc = Gtk.Label(label="View and configure all 8 channels on the connected radio")
+        desc.set_xalign(0)
+        desc.add_css_class("dim-label")
+        box.append(desc)
 
         # Channel list container (will be populated dynamically)
         self.channel_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
@@ -178,18 +184,33 @@ class RadioConfigPanel(Gtk.Box):
 
         box.append(self.channel_list_box)
 
-        # Refresh button
-        refresh_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        refresh_box.set_margin_top(10)
+        # Button row
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        btn_box.set_margin_top(10)
 
         refresh_btn = Gtk.Button(label="Refresh Channels")
         refresh_btn.set_tooltip_text("Load channel configuration from device")
         refresh_btn.connect("clicked", lambda b: self._load_channels())
-        refresh_box.append(refresh_btn)
+        btn_box.append(refresh_btn)
 
-        box.append(refresh_box)
+        # Add channel button
+        add_btn = Gtk.Button(label="Add Channel")
+        add_btn.set_tooltip_text("Add a new secondary channel")
+        add_btn.connect("clicked", self._on_add_channel)
+        btn_box.append(add_btn)
+
+        # Quick preset buttons
+        preset_btn = Gtk.Button(label="Apply Preset")
+        preset_btn.set_tooltip_text("Apply a channel preset configuration")
+        preset_btn.connect("clicked", self._on_channel_preset)
+        btn_box.append(preset_btn)
+
+        box.append(btn_box)
         frame.set_child(box)
         parent.append(frame)
+
+        # Store current channels for editing
+        self._current_channels = []
 
     def _load_channels(self):
         """Load channel list from device"""
@@ -290,7 +311,10 @@ class RadioConfigPanel(Gtk.Box):
         return channels
 
     def _display_channels(self, channels):
-        """Display channel list in UI"""
+        """Display channel list in UI with edit options"""
+        # Store for editing
+        self._current_channels = channels
+
         if not channels:
             no_ch = Gtk.Label(label="No channels configured")
             no_ch.add_css_class("dim-label")
@@ -300,10 +324,10 @@ class RadioConfigPanel(Gtk.Box):
         # Create a grid for channel display
         grid = Gtk.Grid()
         grid.set_column_spacing(15)
-        grid.set_row_spacing(5)
+        grid.set_row_spacing(8)
 
         # Headers
-        headers = ["#", "Role", "Name", "PSK"]
+        headers = ["#", "Role", "Name", "PSK", "Actions"]
         for col, header in enumerate(headers):
             label = Gtk.Label(label=header)
             label.add_css_class("heading")
@@ -332,10 +356,11 @@ class RadioConfigPanel(Gtk.Box):
             name = ch.get('name') or f"Channel {ch['index']}"
             name_label = Gtk.Label(label=name)
             name_label.set_xalign(0)
+            name_label.set_hexpand(True)
             grid.attach(name_label, 2, row, 1, 1)
 
             # PSK indicator
-            psk_text = "✓ Set" if ch.get('psk') else "Default"
+            psk_text = "✓ Custom" if ch.get('psk') else "Default"
             psk_label = Gtk.Label(label=psk_text)
             psk_label.set_xalign(0)
             if ch.get('psk'):
@@ -343,6 +368,29 @@ class RadioConfigPanel(Gtk.Box):
             else:
                 psk_label.add_css_class("dim-label")
             grid.attach(psk_label, 3, row, 1, 1)
+
+            # Action buttons
+            action_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+
+            # Edit button (for all channels)
+            edit_btn = Gtk.Button()
+            edit_btn.set_icon_name("document-edit-symbolic")
+            edit_btn.set_tooltip_text(f"Edit channel {ch['index']}")
+            edit_btn.add_css_class("flat")
+            edit_btn.connect("clicked", lambda b, idx=ch['index']: self._on_edit_channel(idx))
+            action_box.append(edit_btn)
+
+            # Disable button (for non-primary channels)
+            if ch['role'] != 'PRIMARY' and ch['role'] != 'DISABLED':
+                disable_btn = Gtk.Button()
+                disable_btn.set_icon_name("user-trash-symbolic")
+                disable_btn.set_tooltip_text(f"Disable channel {ch['index']}")
+                disable_btn.add_css_class("flat")
+                disable_btn.add_css_class("destructive-action")
+                disable_btn.connect("clicked", lambda b, idx=ch['index']: self._on_disable_channel(idx))
+                action_box.append(disable_btn)
+
+            grid.attach(action_box, 4, row, 1, 1)
 
         self.channel_list_box.append(grid)
 
@@ -361,6 +409,258 @@ class RadioConfigPanel(Gtk.Box):
         error_label = Gtk.Label(label=error_msg)
         error_label.add_css_class("error")
         self.channel_list_box.append(error_label)
+
+    def _on_edit_channel(self, channel_index):
+        """Open dialog to edit channel settings"""
+        # Find channel data
+        channel = None
+        for ch in self._current_channels:
+            if ch['index'] == channel_index:
+                channel = ch
+                break
+
+        if not channel:
+            self.status_label.set_label(f"Channel {channel_index} not found")
+            return
+
+        # Create edit dialog
+        dialog = Adw.MessageDialog(
+            transient_for=self.main_window,
+            heading=f"Edit Channel {channel_index}",
+            body="Configure channel settings"
+        )
+
+        # Create content box
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=15)
+        content.set_margin_start(20)
+        content.set_margin_end(20)
+        content.set_margin_top(10)
+        content.set_margin_bottom(10)
+
+        # Channel name entry
+        name_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        name_label = Gtk.Label(label="Name:")
+        name_label.set_xalign(1)
+        name_label.set_size_request(80, -1)
+        name_box.append(name_label)
+        name_entry = Gtk.Entry()
+        name_entry.set_text(channel.get('name') or '')
+        name_entry.set_placeholder_text("Channel name (max 11 chars)")
+        name_entry.set_max_length(11)
+        name_entry.set_hexpand(True)
+        name_box.append(name_entry)
+        content.append(name_box)
+
+        # Role dropdown (only for non-primary)
+        role_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        role_label = Gtk.Label(label="Role:")
+        role_label.set_xalign(1)
+        role_label.set_size_request(80, -1)
+        role_box.append(role_label)
+        role_dropdown = Gtk.DropDown.new_from_strings(["DISABLED", "PRIMARY", "SECONDARY"])
+        role_map = {"DISABLED": 0, "PRIMARY": 1, "SECONDARY": 2}
+        role_dropdown.set_selected(role_map.get(channel['role'], 0))
+        if channel_index == 0:
+            role_dropdown.set_sensitive(False)  # Can't change primary channel role
+        role_box.append(role_dropdown)
+        content.append(role_box)
+
+        # PSK section
+        psk_frame = Gtk.Frame()
+        psk_frame.set_label("Pre-Shared Key (PSK)")
+        psk_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        psk_box.set_margin_start(10)
+        psk_box.set_margin_end(10)
+        psk_box.set_margin_top(8)
+        psk_box.set_margin_bottom(8)
+
+        # PSK options
+        psk_default = Gtk.CheckButton(label="Use default PSK (AQ==)")
+        psk_random = Gtk.CheckButton(label="Generate random PSK")
+        psk_custom = Gtk.CheckButton(label="Custom PSK (base64):")
+        psk_default.set_group(psk_random)
+        psk_custom.set_group(psk_random)
+        psk_default.set_active(not channel.get('psk'))
+
+        psk_entry = Gtk.Entry()
+        psk_entry.set_placeholder_text("base64 encoded key")
+        psk_entry.set_sensitive(False)
+
+        def on_psk_toggle(btn):
+            psk_entry.set_sensitive(psk_custom.get_active())
+        psk_custom.connect("toggled", on_psk_toggle)
+
+        psk_box.append(psk_default)
+        psk_box.append(psk_random)
+        psk_custom_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        psk_custom_box.append(psk_custom)
+        psk_custom_box.append(psk_entry)
+        psk_box.append(psk_custom_box)
+        psk_frame.set_child(psk_box)
+        content.append(psk_frame)
+
+        dialog.set_extra_child(content)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("apply", "Apply")
+        dialog.set_response_appearance("apply", Adw.ResponseAppearance.SUGGESTED)
+
+        def on_response(dlg, response):
+            if response == "apply":
+                self._apply_channel_changes(
+                    channel_index,
+                    name_entry.get_text(),
+                    ["DISABLED", "PRIMARY", "SECONDARY"][role_dropdown.get_selected()],
+                    "default" if psk_default.get_active() else
+                    "random" if psk_random.get_active() else
+                    psk_entry.get_text()
+                )
+            dlg.close()
+
+        dialog.connect("response", on_response)
+        dialog.present()
+
+    def _apply_channel_changes(self, channel_index, name, role, psk):
+        """Apply channel configuration changes via CLI"""
+        self.status_label.set_label(f"Updating channel {channel_index}...")
+
+        args = ['--ch-index', str(channel_index)]
+
+        # Set name if provided
+        if name:
+            args.extend(['--ch-set', 'name', name])
+
+        # Set role
+        role_map = {"DISABLED": "0", "PRIMARY": "1", "SECONDARY": "2"}
+        args.extend(['--ch-set', 'role', role_map.get(role, "0")])
+
+        # Set PSK
+        if psk == "default":
+            args.extend(['--ch-set', 'psk', 'default'])
+        elif psk == "random":
+            args.extend(['--ch-set', 'psk', 'random'])
+        elif psk:
+            args.extend(['--ch-set', 'psk', f'base64:{psk}'])
+
+        def on_result(success, stdout, stderr):
+            if success:
+                self.status_label.set_label(f"Channel {channel_index} updated successfully")
+                # Refresh channel list
+                GLib.timeout_add(500, self._load_channels)
+            else:
+                error = stderr.strip() if stderr else "Unknown error"
+                self.status_label.set_label(f"Failed to update channel: {error[:50]}")
+
+        self._run_cli(args, on_result)
+
+    def _on_disable_channel(self, channel_index):
+        """Disable a channel"""
+        dialog = Adw.MessageDialog(
+            transient_for=self.main_window,
+            heading=f"Disable Channel {channel_index}?",
+            body="This will disable the channel. You can re-enable it later."
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("disable", "Disable")
+        dialog.set_response_appearance("disable", Adw.ResponseAppearance.DESTRUCTIVE)
+
+        def on_response(dlg, response):
+            if response == "disable":
+                self._apply_channel_changes(channel_index, "", "DISABLED", "default")
+            dlg.close()
+
+        dialog.connect("response", on_response)
+        dialog.present()
+
+    def _on_add_channel(self, button):
+        """Add a new secondary channel"""
+        # Find first disabled channel slot
+        disabled_slot = None
+        for ch in self._current_channels:
+            if ch['role'] == 'DISABLED' and ch['index'] > 0:
+                disabled_slot = ch['index']
+                break
+
+        if disabled_slot is None:
+            self.status_label.set_label("No available channel slots (all 8 channels in use)")
+            return
+
+        # Open edit dialog for the slot
+        self._on_edit_channel(disabled_slot)
+
+    def _on_channel_preset(self, button):
+        """Show channel preset selection dialog"""
+        dialog = Adw.MessageDialog(
+            transient_for=self.main_window,
+            heading="Apply Channel Preset",
+            body="Select a preset configuration for your channels"
+        )
+
+        # Create preset list
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        content.set_margin_start(20)
+        content.set_margin_end(20)
+
+        presets = [
+            ("Default", "Reset to default Meshtastic configuration"),
+            ("Long Range", "Optimized for maximum range (slower)"),
+            ("Medium Range", "Balanced range and speed"),
+            ("Short Range Fast", "Fast data rate, shorter range"),
+            ("TAK Default", "Team Awareness Kit compatible"),
+        ]
+
+        preset_group = None
+        preset_buttons = []
+        for name, desc in presets:
+            btn = Gtk.CheckButton(label=f"{name}")
+            btn.set_tooltip_text(desc)
+            if preset_group is None:
+                preset_group = btn
+                btn.set_active(True)
+            else:
+                btn.set_group(preset_group)
+            preset_buttons.append((name, btn))
+            content.append(btn)
+
+        dialog.set_extra_child(content)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("apply", "Apply Preset")
+        dialog.set_response_appearance("apply", Adw.ResponseAppearance.SUGGESTED)
+
+        def on_response(dlg, response):
+            if response == "apply":
+                for name, btn in preset_buttons:
+                    if btn.get_active():
+                        self._apply_channel_preset(name)
+                        break
+            dlg.close()
+
+        dialog.connect("response", on_response)
+        dialog.present()
+
+    def _apply_channel_preset(self, preset_name):
+        """Apply a channel preset configuration"""
+        self.status_label.set_label(f"Applying preset: {preset_name}...")
+
+        preset_args = {
+            "Default": ['--ch-set', 'psk', 'default', '--ch-index', '0'],
+            "Long Range": ['--set', 'lora.modem_preset', 'LONG_SLOW'],
+            "Medium Range": ['--set', 'lora.modem_preset', 'MEDIUM_SLOW'],
+            "Short Range Fast": ['--set', 'lora.modem_preset', 'SHORT_FAST'],
+            "TAK Default": ['--set', 'lora.modem_preset', 'MEDIUM_SLOW', '--ch-set', 'name', 'TAK', '--ch-index', '0'],
+        }
+
+        args = preset_args.get(preset_name, ['--ch-set', 'psk', 'default', '--ch-index', '0'])
+
+        def on_result(success, stdout, stderr):
+            if success:
+                self.status_label.set_label(f"Preset '{preset_name}' applied successfully")
+                GLib.timeout_add(500, self._load_channels)
+                GLib.timeout_add(600, self._load_radio_info)
+            else:
+                error = stderr.strip() if stderr else "Unknown error"
+                self.status_label.set_label(f"Failed to apply preset: {error[:50]}")
+
+        self._run_cli(args, on_result)
 
     def _load_radio_info(self):
         """Load radio info from device using --info command"""
