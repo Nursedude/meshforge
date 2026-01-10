@@ -731,16 +731,16 @@ class ConfigPane(Container):
         yield Log(id="cfg-preview", classes="log-panel")
 
     async def on_mount(self):
-        self.refresh_lists()
+        await self.refresh_lists()
 
-    def refresh_lists(self):
+    async def refresh_lists(self):
         """Refresh config lists"""
         available_list = self.query_one("#available-list", ListView)
         active_list = self.query_one("#active-list", ListView)
 
-        # Clear lists
-        available_list.clear()
-        active_list.clear()
+        # Clear lists - must await since clear() returns AwaitRemove
+        await available_list.clear()
+        await active_list.clear()
 
         # Load available configs
         if self.AVAILABLE_D.exists():
@@ -789,7 +789,7 @@ class ConfigPane(Container):
         preview = self.query_one("#cfg-preview", Log)
 
         if button_id == "cfg-refresh":
-            self.refresh_lists()
+            await self.refresh_lists()
 
         elif button_id == "cfg-activate":
             available_list = self.query_one("#available-list", ListView)
@@ -831,7 +831,7 @@ class ConfigPane(Container):
             shutil.copy2(src, dst)
 
             preview.write(f"[green]Activated: {name}[/green]")
-            self.refresh_lists()
+            await self.refresh_lists()
 
         except Exception as e:
             preview.write(f"[red]Error: {e}[/red]")
@@ -845,7 +845,7 @@ class ConfigPane(Container):
             path.unlink()
 
             preview.write(f"[yellow]Deactivated: {name}[/yellow]")
-            self.refresh_lists()
+            await self.refresh_lists()
 
         except Exception as e:
             preview.write(f"[red]Error: {e}[/red]")
@@ -874,7 +874,7 @@ class ConfigPane(Container):
             self.app.suspend()
             subprocess.run(['nano', str(path)])  # Interactive - no timeout
             self.app.resume()
-            self.refresh_lists()
+            await self.refresh_lists()
 
     async def edit_main_config(self):
         """Edit main config.yaml"""
@@ -1653,7 +1653,7 @@ class MeshtasticdTUI(App):
         tabbed = self.query_one(TabbedContent)
         tabbed.active = tab_id
 
-    def action_refresh(self):
+    async def action_refresh(self):
         """Refresh current view"""
         tabbed = self.query_one(TabbedContent)
         active = tabbed.active
@@ -1663,7 +1663,7 @@ class MeshtasticdTUI(App):
         elif active == "service":
             self.query_one(ServicePane).refresh_status()
         elif active == "config":
-            self.query_one(ConfigPane).refresh_lists()
+            await self.query_one(ConfigPane).refresh_lists()
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         """Global button handler"""
