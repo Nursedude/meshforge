@@ -6,19 +6,12 @@ Handles meshtasticd configuration file operations.
 
 from flask import Blueprint, jsonify, request
 import os
-import re
 from pathlib import Path
 
+# Import from web.utils for testability
+from web.utils import validate_config_name
+
 config_bp = Blueprint('config', __name__)
-
-
-def validate_config_name(config_name: str) -> bool:
-    """Validate config name to prevent path traversal."""
-    if not config_name:
-        return False
-    # Only allow alphanumeric, hyphens, underscores, and .yaml/.yml extension
-    pattern = r'^[a-zA-Z0-9_-]+\.ya?ml$'
-    return bool(re.match(pattern, config_name))
 
 
 @config_bp.route('/configs')
