@@ -1077,6 +1077,11 @@ Grant Date: {grant_date}
         timestamp = datetime.now().strftime("%H:%M:%S")
         buffer.insert(end_iter, f"[{timestamp}] {message}\n")
 
+    def _set_output(self, text: str):
+        """Replace entire output with text"""
+        buffer = self._output_text.get_buffer()
+        buffer.set_text(text)
+
     def _clear_output(self):
         """Clear output"""
         buffer = self._output_text.get_buffer()

@@ -109,8 +109,8 @@ echo "Installing desktop file..."
 DESKTOP_FILE="$PROJECT_DIR/meshforge.desktop"
 INSTALLED_DESKTOP="/usr/share/applications/meshforge.desktop"
 
-# Copy and modify desktop file
-sed 's|Icon=.*|Icon=meshforge|' "$DESKTOP_FILE" > "$INSTALLED_DESKTOP"
+# Copy desktop file (Icon=org.meshforge.app already set to match GTK4 app_id)
+cp "$DESKTOP_FILE" "$INSTALLED_DESKTOP"
 chmod 644 "$INSTALLED_DESKTOP"
 
 # Also install to user's local applications (for menu)

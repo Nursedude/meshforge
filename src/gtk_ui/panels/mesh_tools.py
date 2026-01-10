@@ -1778,7 +1778,7 @@ class MeshToolsPanel(Gtk.Box):
                     # Get recent diagnostic events
                     if HAS_DIAGNOSTICS:
                         diag = get_diagnostics()
-                        events = diag.get_recent_events(50)
+                        events = diag.get_events(limit=50)
                         lines = []
                         for e in events:
                             lines.append(f"[{e.timestamp.strftime('%H:%M:%S')}] {e.category.value}: {e.message}")

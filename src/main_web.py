@@ -103,10 +103,27 @@ WEB_PID_FILE = Path('/tmp/meshtasticd-web.pid')
 
 
 def cleanup_processes():
-    """Kill any lingering subprocesses"""
-    global _shutdown_flag
+    """Kill any lingering subprocesses and close connections gracefully"""
+    global _shutdown_flag, _meshtastic_mgr, _node_monitor
     _shutdown_flag = True
 
+    # Close meshtastic connection manager gracefully
+    try:
+        if _meshtastic_mgr is not None:
+            _meshtastic_mgr.close()
+            _meshtastic_mgr = None
+    except Exception:
+        pass
+
+    # Close node monitor gracefully
+    try:
+        if _node_monitor is not None:
+            _node_monitor.disconnect()
+            _node_monitor = None
+    except Exception:
+        pass
+
+    # Terminate subprocesses
     for proc in _running_processes[:]:
         try:
             if proc.poll() is None:  # Still running
@@ -125,6 +142,8 @@ def cleanup_processes():
             WEB_PID_FILE.unlink()
     except Exception:
         pass
+
+    print("MeshForge Web UI shutdown complete.")
 
 
 def signal_handler(signum, frame):
@@ -604,28 +623,43 @@ def detect_hardware():
     """Detect hardware and service status"""
     detected = []
 
-    is_running, status = check_service_status()
-    if is_running:
-        info = get_radio_info()
-        if 'error' not in info:
-            hw = info.get('hardware', 'Connected')
-            fw = info.get('firmware', '')
-            detected.append({
-                'type': 'Active',
-                'device': 'meshtasticd',
-                'description': f"Running - {hw}" + (f" (v{fw})" if fw else "")
-            })
+    # Check meshtasticd service status with error handling
+    try:
+        is_running, status = check_service_status()
+        if is_running:
+            try:
+                info = get_radio_info()
+                if 'error' not in info:
+                    hw = info.get('hardware', 'Connected')
+                    fw = info.get('firmware', '')
+                    detected.append({
+                        'type': 'Active',
+                        'device': 'meshtasticd',
+                        'description': f"Running - {hw}" + (f" (v{fw})" if fw else "")
+                    })
+                else:
+                    detected.append({
+                        'type': 'Active',
+                        'device': 'meshtasticd',
+                        'description': f"Running - {status}"
+                    })
+            except Exception as e:
+                detected.append({
+                    'type': 'Active',
+                    'device': 'meshtasticd',
+                    'description': f"Running - {status}"
+                })
         else:
             detected.append({
-                'type': 'Active',
+                'type': 'Info',
                 'device': 'meshtasticd',
-                'description': f"Running - {status}"
+                'description': 'Service not running'
             })
-    else:
+    except Exception as e:
         detected.append({
-            'type': 'Info',
+            'type': 'Warning',
             'device': 'meshtasticd',
-            'description': 'Service not running'
+            'description': f'Status check failed: {str(e)}'
         })
 
     # Check SPI devices
@@ -1657,7 +1691,7 @@ LOGIN_TEMPLATE = '''
 </head>
 <body>
     <div class="login-box">
-        <h1>🤙 MeshForge</h1>
+        <h1><svg viewBox="0 0 128 128" width="40" height="40" style="vertical-align: middle; margin-right: 10px;"><defs><linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#1a1a2e"/><stop offset="100%" style="stop-color:#16213e"/></linearGradient><linearGradient id="handGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#4CAF50"/><stop offset="100%" style="stop-color:#2E7D32"/></linearGradient></defs><circle cx="64" cy="64" r="60" fill="url(#bgGrad)"/><circle cx="64" cy="64" r="56" fill="none" stroke="#4CAF50" stroke-width="2" opacity="0.6"/><g fill="url(#handGrad)" stroke="#2E7D32" stroke-width="1.5"><path d="M64 92 C52 92 42 82 42 66 L42 56 C42 50 46 46 54 46 L74 46 C82 46 86 50 86 56 L86 66 C86 82 76 92 64 92 Z"/><path d="M42 60 C34 56 26 52 22 56 C18 60 18 68 22 72 C26 76 34 76 42 72"/><path d="M78 46 L82 28 C82 24 86 20 90 20 C94 20 98 24 98 28 L94 46"/></g></svg> MeshForge</h1>
         {% if error %}<div class="error">{{ error }}</div>{% endif %}
         <form method="POST">
             <input type="password" name="password" placeholder="Password" autofocus>
@@ -2053,7 +2087,7 @@ MAIN_TEMPLATE = '''
 <body>
     <div class="header">
         <div>
-            <h1><span class="logo">🤙</span> MeshForge</h1>
+            <h1><span class="logo"><svg viewBox="0 0 128 128" width="32" height="32" style="vertical-align: middle; margin-right: 8px;"><defs><linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#1a1a2e"/><stop offset="100%" style="stop-color:#16213e"/></linearGradient><linearGradient id="handGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#4CAF50"/><stop offset="100%" style="stop-color:#2E7D32"/></linearGradient></defs><circle cx="64" cy="64" r="60" fill="url(#bgGrad)"/><circle cx="64" cy="64" r="56" fill="none" stroke="#4CAF50" stroke-width="2" opacity="0.6"/><circle cx="24" cy="32" r="4" fill="#2196F3" opacity="0.5"/><circle cx="104" cy="32" r="4" fill="#2196F3" opacity="0.5"/><circle cx="24" cy="96" r="4" fill="#2196F3" opacity="0.5"/><circle cx="104" cy="96" r="4" fill="#2196F3" opacity="0.5"/><line x1="24" y1="32" x2="64" y2="64" stroke="#2196F3" stroke-width="1" opacity="0.3"/><line x1="104" y1="32" x2="64" y2="64" stroke="#2196F3" stroke-width="1" opacity="0.3"/><line x1="24" y1="96" x2="64" y2="64" stroke="#2196F3" stroke-width="1" opacity="0.3"/><line x1="104" y1="96" x2="64" y2="64" stroke="#2196F3" stroke-width="1" opacity="0.3"/><g fill="url(#handGrad)" stroke="#2E7D32" stroke-width="1.5"><path d="M64 92 C52 92 42 82 42 66 L42 56 C42 50 46 46 54 46 L74 46 C82 46 86 50 86 56 L86 66 C86 82 76 92 64 92 Z"/><path d="M42 60 C34 56 26 52 22 56 C18 60 18 68 22 72 C26 76 34 76 42 72"/><path d="M78 46 L82 28 C82 24 86 20 90 20 C94 20 98 24 98 28 L94 46"/><path d="M54 46 L54 40 C54 36 58 34 62 36 L62 46" opacity="0.8"/><path d="M62 46 L62 36 C62 32 66 30 70 32 L70 46" opacity="0.8"/><path d="M70 46 L70 38 C70 34 74 32 78 34 L78 46" opacity="0.8"/><path d="M52 92 L52 104 L76 104 L76 92"/></g></svg></span> MeshForge</h1>
             <span class="version">v{{ version }} | Mesh Network Operations Center</span>
         </div>
         <div class="nav">
@@ -2585,34 +2619,43 @@ MAIN_TEMPLATE = '''
             el.innerHTML = '<em>Loading nodes... (may take up to 30s)</em>';
 
             try {
-                const resp = await fetch('/api/nodes');
+                // Use full nodes endpoint for detailed information
+                const resp = await fetch('/api/nodes/full');
                 const data = await resp.json();
 
                 if (data.error) {
                     el.innerHTML = `<div style="color: var(--warning);">${data.error}</div>`;
-                } else if (data.nodes && data.nodes.length > 0) {
+                } else if (data.nodes && Array.isArray(data.nodes) && data.nodes.length > 0) {
                     el.innerHTML = `
                         <table style="width: 100%; border-collapse: collapse;">
                             <tr style="border-bottom: 1px solid #444;">
-                                <th style="padding: 10px; text-align: left;">Node ID</th>
-                                <th style="padding: 10px; text-align: left;">Name</th>
-                                <th style="padding: 10px; text-align: left;">Short</th>
+                                <th style="padding: 8px; text-align: left;">Node ID</th>
+                                <th style="padding: 8px; text-align: left;">Name</th>
+                                <th style="padding: 8px; text-align: left;">Hardware</th>
+                                <th style="padding: 8px; text-align: left;">Battery</th>
+                                <th style="padding: 8px; text-align: left;">SNR</th>
+                                <th style="padding: 8px; text-align: left;">Hops</th>
+                                <th style="padding: 8px; text-align: left;">Last Heard</th>
                             </tr>
                             ${data.nodes.map(n => `
                                 <tr style="border-bottom: 1px solid #333;">
-                                    <td style="padding: 10px; font-family: monospace;">${n.id}</td>
-                                    <td style="padding: 10px;">${n.name}</td>
-                                    <td style="padding: 10px;">${n.short}</td>
+                                    <td style="padding: 8px; font-family: monospace;">${escapeHtml(n.id || '')}</td>
+                                    <td style="padding: 8px;">${escapeHtml(n.name || n.short || '--')}</td>
+                                    <td style="padding: 8px;">${escapeHtml(n.hardware || '--')}</td>
+                                    <td style="padding: 8px;">${n.battery ? n.battery + '%' : '--'}</td>
+                                    <td style="padding: 8px;">${n.snr != null ? n.snr + ' dB' : '--'}</td>
+                                    <td style="padding: 8px;">${n.hops != null ? n.hops : '--'}</td>
+                                    <td style="padding: 8px;">${escapeHtml(n.last_heard_ago || '--')}</td>
                                 </tr>
                             `).join('')}
                         </table>
-                        <p style="margin-top: 10px; color: var(--text-muted);">${data.nodes.length} node(s) found</p>
+                        <p style="margin-top: 10px; color: var(--text-muted);">${data.total_nodes || data.nodes.length} node(s) found${data.nodes_with_position ? `, ${data.nodes_with_position} with GPS` : ''}</p>
                     `;
                 } else {
-                    el.innerHTML = '<div style="color: var(--text-muted);">No nodes found</div>';
+                    el.innerHTML = '<div style="color: var(--text-muted);">No nodes found. Make sure meshtasticd is running and connected to a radio.</div>';
                 }
 
-                // Show raw output
+                // Show raw output if available
                 if (data.raw) {
                     rawEl.style.display = 'block';
                     rawContent.textContent = data.raw;
@@ -2733,7 +2776,12 @@ MAIN_TEMPLATE = '''
             countEl.textContent = 'Loading...';
 
             try {
-                const resp = await fetch('/api/nodes/full');
+                // Add timeout to prevent infinite loading
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+                const resp = await fetch('/api/nodes/full', { signal: controller.signal });
+                clearTimeout(timeoutId);
                 const data = await resp.json();
 
                 if (data.error) {
@@ -2835,8 +2883,13 @@ MAIN_TEMPLATE = '''
 
             } catch (e) {
                 console.error('Error refreshing map:', e);
-                countEl.textContent = 'Error loading map data';
-                listEl.innerHTML = `<div style="color: var(--danger);">Error: ${e.message}</div>`;
+                if (e.name === 'AbortError') {
+                    countEl.textContent = 'Timeout - try again';
+                    listEl.innerHTML = '<div style="color: var(--warning);">Connection timed out. Click Refresh Map to try again.</div>';
+                } else {
+                    countEl.textContent = 'Error loading map data';
+                    listEl.innerHTML = `<div style="color: var(--danger);">Error: ${e.message}</div>`;
+                }
             }
         }
 
