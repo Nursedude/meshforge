@@ -2,6 +2,9 @@
 Web Utilities - Pure Python utilities for web blueprints
 
 These functions don't depend on Flask and can be tested independently.
+
+Note: Network parsing functions are now in utils.network_diag.
+This module re-exports them for backwards compatibility.
 """
 
 import struct
@@ -9,20 +12,25 @@ import socket
 import re
 import os
 
-# TCP state mapping (hex to name)
-TCP_STATES = {
-    '01': 'ESTABLISHED',
-    '02': 'SYN_SENT',
-    '03': 'SYN_RECV',
-    '04': 'FIN_WAIT1',
-    '05': 'FIN_WAIT2',
-    '06': 'TIME_WAIT',
-    '07': 'CLOSE',
-    '08': 'CLOSE_WAIT',
-    '09': 'LAST_ACK',
-    '0A': 'LISTEN',
-    '0B': 'CLOSING',
-}
+# Import shared network diagnostics
+try:
+    from utils.network_diag import (
+        TCP_STATES,
+        hex_to_ip as _hex_to_ip,
+        parse_proc_net as _parse_proc_net,
+        get_socket_to_process,
+        check_port_open,
+    )
+    _HAS_NETWORK_DIAG = True
+except ImportError:
+    _HAS_NETWORK_DIAG = False
+    # Fallback TCP states
+    TCP_STATES = {
+        '01': 'ESTABLISHED', '02': 'SYN_SENT', '03': 'SYN_RECV',
+        '04': 'FIN_WAIT1', '05': 'FIN_WAIT2', '06': 'TIME_WAIT',
+        '07': 'CLOSE', '08': 'CLOSE_WAIT', '09': 'LAST_ACK',
+        '0A': 'LISTEN', '0B': 'CLOSING',
+    }
 
 # Valid service actions
 VALID_ACTIONS = {'start', 'stop', 'restart', 'status'}
@@ -40,9 +48,10 @@ def hex_to_ip(hex_addr: str) -> str:
     Returns:
         Dotted IP string like '127.0.0.1'
     """
+    if _HAS_NETWORK_DIAG:
+        return _hex_to_ip(hex_addr)
     try:
         addr_int = int(hex_addr, 16)
-        # Convert from network byte order (big endian) as stored
         return socket.inet_ntoa(struct.pack('<I', addr_int))
     except Exception:
         return '0.0.0.0'
@@ -101,6 +110,22 @@ def parse_proc_net(protocol: str) -> list:
     Returns:
         List of connection dicts
     """
+    if _HAS_NETWORK_DIAG:
+        # Use shared module - it returns dicts with 'ip'/'port' keys
+        # Transform to match legacy format with 'local_ip'/'local_port'
+        results = []
+        for conn in _parse_proc_net(protocol):
+            results.append({
+                'local_ip': conn.get('ip', '0.0.0.0'),
+                'local_port': conn.get('port', 0),
+                'remote_ip': '0.0.0.0',  # Not in shared module output
+                'remote_port': 0,
+                'state': conn.get('state', ''),
+                'state_hex': '',
+            })
+        return results
+
+    # Fallback implementation
     connections = []
     proc_file = f'/proc/net/{protocol}'
 

@@ -138,6 +138,13 @@ class DashboardPane(Container):
 
     async def on_mount(self):
         """Called when widget is mounted"""
+        # Show startup message in log
+        try:
+            log = self.query_one("#dashboard-log", Log)
+            log.write("[cyan]Dashboard loading...[/cyan]")
+        except Exception:
+            pass
+        # Start data refresh
         self.refresh_data()
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -204,8 +211,7 @@ class DashboardPane(Container):
             # Try to use connection_manager
             try:
                 from utils.connection_manager import get_nodes
-                loop = asyncio.get_event_loop()
-                nodes = await loop.run_in_executor(None, get_nodes)
+                nodes = await asyncio.get_running_loop().run_in_executor(None, get_nodes)
                 if nodes:
                     log.write(f"\n[cyan]Found {len(nodes)} node(s):[/cyan]")
                     for node in nodes:
@@ -326,6 +332,8 @@ class DashboardPane(Container):
     async def refresh_data(self):
         """Refresh dashboard data"""
         log = self.query_one("#dashboard-log", Log)
+        logger.debug("refresh_data() started")
+        log.write("[dim]Refreshing...[/dim]")
 
         # Service status - use centralized check if available
         status_widget = self.query_one("#service-status", Static)
@@ -438,41 +446,48 @@ class DashboardPane(Container):
             version_widget.update("[yellow]Unknown[/yellow]")
 
         # Config status
-        config_path = Path('/etc/meshtasticd/config.yaml')
-        config_d = Path('/etc/meshtasticd/config.d')
+        try:
+            config_path = Path('/etc/meshtasticd/config.yaml')
+            config_d = Path('/etc/meshtasticd/config.d')
 
-        if config_path.exists():
-            active = len(list(config_d.glob('*.yaml'))) if config_d.exists() else 0
-            self.query_one("#config-status", Static).update(f"[green]{active} active[/green]")
-        else:
-            self.query_one("#config-status", Static).update("[yellow]Not configured[/yellow]")
+            if config_path.exists():
+                active = len(list(config_d.glob('*.yaml'))) if config_d.exists() else 0
+                self.query_one("#config-status", Static).update(f"[green]{active} active[/green]")
+            else:
+                self.query_one("#config-status", Static).update("[yellow]Not configured[/yellow]")
+        except Exception:
+            self.query_one("#config-status", Static).update("[yellow]Unknown[/yellow]")
 
         # Hardware
         hw_widget = self.query_one("#hw-status", Static)
         hw_detail = self.query_one("#hw-detail", Static)
+        try:
+            spi = Path('/dev/spidev0.0').exists() or Path('/dev/spidev0.1').exists()
+            i2c = Path('/dev/i2c-1').exists()
+            gpio = Path('/sys/class/gpio').exists()
 
-        spi = Path('/dev/spidev0.0').exists() or Path('/dev/spidev0.1').exists()
-        i2c = Path('/dev/i2c-1').exists()
-        gpio = Path('/sys/class/gpio').exists()
+            hw_parts = []
+            if spi:
+                hw_parts.append("SPI")
+            if i2c:
+                hw_parts.append("I2C")
+            if gpio:
+                hw_parts.append("GPIO")
 
-        hw_parts = []
-        if spi:
-            hw_parts.append("SPI")
-        if i2c:
-            hw_parts.append("I2C")
-        if gpio:
-            hw_parts.append("GPIO")
-
-        if hw_parts:
-            hw_widget.update(f"[green]{', '.join(hw_parts)}[/green]")
-            hw_detail.update("Ready")
-        else:
-            hw_widget.update("[yellow]Check config[/yellow]")
-            hw_detail.update("Enable in raspi-config")
+            if hw_parts:
+                hw_widget.update(f"[green]{', '.join(hw_parts)}[/green]")
+                hw_detail.update("Ready")
+            else:
+                hw_widget.update("[yellow]Check config[/yellow]")
+                hw_detail.update("Enable in raspi-config")
+        except Exception:
+            hw_widget.update("[yellow]Unknown[/yellow]")
+            hw_detail.update("Check failed")
 
         # Show refresh timestamp in log (only on first load or manual refresh)
         from datetime import datetime
         log.write(f"[dim]Last refresh: {datetime.now().strftime('%H:%M:%S')}[/dim]")
+        logger.debug("refresh_data() completed")
 
 
 class ServicePane(Container):

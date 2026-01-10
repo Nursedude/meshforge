@@ -32,6 +32,16 @@ except ImportError:
             return Path(f'/home/{sudo_user}')
         return Path.home()
 
+# Import shared network diagnostics
+try:
+    from utils.network_diag import (
+        parse_proc_net, get_socket_to_process, get_listening_ports,
+        check_port_open, find_process_on_port
+    )
+    _HAS_NETWORK_DIAG = True
+except ImportError:
+    _HAS_NETWORK_DIAG = False
+
 
 class ToolsPanel(Gtk.Box):
     """Tools panel for network, RF, and MUDP utilities"""
@@ -2166,176 +2176,25 @@ class ToolsPanel(Gtk.Box):
     # =====================
     # Network Diagnostics Methods
     # =====================
+    # These delegate to utils.network_diag for the actual implementation
 
     def _parse_proc_net(self, protocol: str) -> list:
-        """Parse /proc/net/udp or /proc/net/tcp and return list of (local_addr, port, state, inode)"""
-        results = []
-        proc_file = f"/proc/net/{protocol}"
-
-        try:
-            with open(proc_file, 'r') as f:
-                lines = f.readlines()[1:]  # Skip header
-
-            for line in lines:
-                parts = line.split()
-                if len(parts) >= 10:
-                    # local_address is in hex format: IP:PORT
-                    local_addr = parts[1]
-                    state = parts[3]
-                    inode = parts[9]
-
-                    # Parse hex address
-                    addr_parts = local_addr.split(':')
-                    hex_ip = addr_parts[0]
-                    hex_port = addr_parts[1]
-
-                    # Convert hex IP (little-endian for IPv4)
-                    try:
-                        ip_int = int(hex_ip, 16)
-                        ip_bytes = [
-                            (ip_int >> 0) & 0xFF,
-                            (ip_int >> 8) & 0xFF,
-                            (ip_int >> 16) & 0xFF,
-                            (ip_int >> 24) & 0xFF,
-                        ]
-                        ip_str = '.'.join(str(b) for b in ip_bytes)
-                        port = int(hex_port, 16)
-
-                        # State names (TCP only, UDP is stateless)
-                        state_names = {
-                            '01': 'ESTABLISHED',
-                            '02': 'SYN_SENT',
-                            '03': 'SYN_RECV',
-                            '04': 'FIN_WAIT1',
-                            '05': 'FIN_WAIT2',
-                            '06': 'TIME_WAIT',
-                            '07': 'CLOSE',
-                            '08': 'CLOSE_WAIT',
-                            '09': 'LAST_ACK',
-                            '0A': 'LISTEN',
-                            '0B': 'CLOSING',
-                        }
-                        state_str = state_names.get(state.upper(), state)
-
-                        results.append({
-                            'ip': ip_str,
-                            'port': port,
-                            'state': state_str,
-                            'inode': inode
-                        })
-                    except (ValueError, IndexError):
-                        continue
-
-        except FileNotFoundError:
-            pass
-        except PermissionError:
-            pass
-
-        return results
+        """Parse /proc/net/{protocol} for connection info. Delegates to shared module."""
+        if _HAS_NETWORK_DIAG:
+            return parse_proc_net(protocol)
+        return []
 
     def _get_inode_to_process(self) -> dict:
-        """Map socket inodes to process names"""
-        inode_map = {}
-
-        try:
-            # Iterate through /proc/*/fd/* to find socket inodes
-            for pid_dir in Path('/proc').iterdir():
-                if not pid_dir.name.isdigit():
-                    continue
-
-                pid = pid_dir.name
-                try:
-                    # Get process name
-                    comm_file = pid_dir / 'comm'
-                    if comm_file.exists():
-                        proc_name = comm_file.read_text().strip()
-                    else:
-                        proc_name = "unknown"
-
-                    # Check fd directory for sockets
-                    fd_dir = pid_dir / 'fd'
-                    if fd_dir.exists():
-                        for fd_link in fd_dir.iterdir():
-                            try:
-                                target = fd_link.resolve()
-                                target_str = str(fd_link.readlink())
-                                if target_str.startswith('socket:['):
-                                    inode = target_str[8:-1]  # Extract inode from socket:[12345]
-                                    inode_map[inode] = f"{proc_name} (PID {pid})"
-                            except (OSError, PermissionError):
-                                continue
-                except (OSError, PermissionError):
-                    continue
-        except Exception:
-            pass
-
-        return inode_map
+        """Map socket inodes to process names. Delegates to shared module."""
+        if _HAS_NETWORK_DIAG:
+            return get_socket_to_process()
+        return {}
 
     def _parse_proc_net_v6(self, protocol: str) -> list:
-        """Parse /proc/net/udp6 or /proc/net/tcp6 for IPv6 sockets"""
-        results = []
-        proc_file = f"/proc/net/{protocol}"
-
-        try:
-            with open(proc_file, 'r') as f:
-                lines = f.readlines()[1:]  # Skip header
-
-            for line in lines:
-                parts = line.split()
-                if len(parts) >= 10:
-                    local_addr = parts[1]
-                    state = parts[3]
-                    inode = parts[9]
-
-                    # Parse hex address (IPv6:PORT)
-                    addr_parts = local_addr.split(':')
-                    hex_ip = addr_parts[0]
-                    hex_port = addr_parts[1]
-
-                    try:
-                        port = int(hex_port, 16)
-
-                        # Convert hex IPv6 to readable format
-                        # IPv6 is stored as 32 hex chars
-                        if len(hex_ip) == 32:
-                            # Split into 8 groups of 4 hex chars
-                            groups = []
-                            for i in range(0, 32, 8):
-                                # Each 8-char segment is little-endian 32-bit
-                                segment = hex_ip[i:i+8]
-                                # Reverse byte order within each 32-bit word
-                                reversed_seg = segment[6:8] + segment[4:6] + segment[2:4] + segment[0:2]
-                                groups.append(reversed_seg[0:4])
-                                groups.append(reversed_seg[4:8])
-                            ip_str = ':'.join(groups)
-                            # Simplify :: notation
-                            ip_str = ip_str.lower()
-                        else:
-                            ip_str = hex_ip
-
-                        state_names = {
-                            '01': 'ESTABLISHED', '02': 'SYN_SENT', '03': 'SYN_RECV',
-                            '04': 'FIN_WAIT1', '05': 'FIN_WAIT2', '06': 'TIME_WAIT',
-                            '07': 'CLOSE', '08': 'CLOSE_WAIT', '09': 'LAST_ACK',
-                            '0A': 'LISTEN', '0B': 'CLOSING',
-                        }
-                        state_str = state_names.get(state.upper(), state)
-
-                        results.append({
-                            'ip': ip_str,
-                            'port': port,
-                            'state': state_str,
-                            'inode': inode
-                        })
-                    except (ValueError, IndexError):
-                        continue
-
-        except FileNotFoundError:
-            pass
-        except PermissionError:
-            pass
-
-        return results
+        """Parse /proc/net/{protocol} for IPv6 connections. Delegates to shared module."""
+        if _HAS_NETWORK_DIAG:
+            return parse_proc_net(protocol)  # The shared module handles both IPv4 and IPv6
+        return []
 
     def _on_show_udp_listeners(self, button):
         """Show UDP port listeners"""
