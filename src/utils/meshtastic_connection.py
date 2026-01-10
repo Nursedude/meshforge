@@ -5,8 +5,9 @@ Provides resilient connection handling for meshtasticd which only supports
 one TCP client connection at a time. Features:
 - Connection locking to prevent concurrent access
 - Retry logic for transient failures (Connection reset by peer)
+- Safe connection cleanup that handles already-closed connections
+- Cooldown period between connections to prevent rapid reconnect issues
 - Timeout handling
-- Graceful cleanup
 """
 
 import socket
@@ -21,6 +22,9 @@ logger = logging.getLogger(__name__)
 # Singleton instance
 _connection_manager: Optional['MeshtasticConnectionManager'] = None
 _manager_lock = threading.Lock()
+
+# Cooldown between connections (meshtasticd needs time to cleanup)
+CONNECTION_COOLDOWN = 0.5  # seconds
 
 
 class ConnectionError(Exception):
@@ -44,6 +48,27 @@ def reset_connection_manager():
         _connection_manager = None
 
 
+def safe_close_interface(interface) -> None:
+    """
+    Safely close a meshtastic interface, handling already-closed connections.
+
+    The meshtastic library can raise BrokenPipeError or ConnectionResetError
+    when trying to send the disconnect message if the connection is already gone.
+    """
+    if interface is None:
+        return
+
+    try:
+        # Try to close normally
+        interface.close()
+    except (BrokenPipeError, ConnectionResetError, OSError) as e:
+        # Connection already closed by server - this is fine
+        logger.debug(f"Connection already closed during cleanup: {e}")
+    except Exception as e:
+        # Log other errors but don't raise
+        logger.warning(f"Unexpected error during interface cleanup: {e}")
+
+
 class MeshtasticConnectionManager:
     """
     Manages TCP connections to meshtasticd.
@@ -51,6 +76,7 @@ class MeshtasticConnectionManager:
     meshtasticd only supports one TCP client at a time, so this manager:
     - Uses a lock to prevent concurrent connection attempts
     - Retries on transient failures like "Connection reset by peer"
+    - Adds cooldown between connections to let meshtasticd cleanup
     - Provides convenience methods for common operations
     """
 
@@ -66,6 +92,7 @@ class MeshtasticConnectionManager:
         self.port = port
         self._lock = threading.Lock()
         self._interface = None
+        self._last_close_time = 0.0
 
     def is_available(self, timeout: float = 2.0) -> bool:
         """
@@ -122,6 +149,14 @@ class MeshtasticConnectionManager:
         except Exception as e:
             raise ConnectionError(f"Failed to connect: {e}")
 
+    def _wait_for_cooldown(self):
+        """Wait for cooldown period since last connection close"""
+        elapsed = time.time() - self._last_close_time
+        if elapsed < CONNECTION_COOLDOWN:
+            wait_time = CONNECTION_COOLDOWN - elapsed
+            logger.debug(f"Waiting {wait_time:.2f}s for connection cooldown")
+            time.sleep(wait_time)
+
     @contextmanager
     def with_connection(self, max_retries: int = 3, retry_delay: float = 1.0, lock_timeout: float = 30.0):
         """
@@ -129,6 +164,7 @@ class MeshtasticConnectionManager:
 
         Acquires lock, creates connection, and ensures cleanup.
         Retries on transient connection failures.
+        Includes cooldown to prevent rapid reconnection issues.
 
         Args:
             max_retries: Maximum number of connection attempts
@@ -148,6 +184,9 @@ class MeshtasticConnectionManager:
         last_error = None
 
         try:
+            # Wait for cooldown before connecting
+            self._wait_for_cooldown()
+
             for attempt in range(max_retries):
                 try:
                     interface = self._create_interface()
@@ -164,10 +203,9 @@ class MeshtasticConnectionManager:
                     raise
                 finally:
                     if interface is not None:
-                        try:
-                            interface.close()
-                        except Exception:
-                            pass
+                        # Use safe close to handle already-closed connections
+                        safe_close_interface(interface)
+                        self._last_close_time = time.time()
                         interface = None
 
             raise ConnectionError(f"Connection failed after max retries: {last_error}")

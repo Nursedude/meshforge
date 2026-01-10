@@ -17,6 +17,48 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 
+class TestSafeCloseInterface:
+    """Tests for safe_close_interface function"""
+
+    def test_safe_close_handles_none(self):
+        """safe_close_interface handles None gracefully"""
+        from utils.meshtastic_connection import safe_close_interface
+        # Should not raise
+        safe_close_interface(None)
+
+    def test_safe_close_handles_broken_pipe(self):
+        """safe_close_interface handles BrokenPipeError"""
+        from utils.meshtastic_connection import safe_close_interface
+
+        mock_interface = MagicMock()
+        mock_interface.close.side_effect = BrokenPipeError("Broken pipe")
+
+        # Should not raise
+        safe_close_interface(mock_interface)
+        mock_interface.close.assert_called_once()
+
+    def test_safe_close_handles_connection_reset(self):
+        """safe_close_interface handles ConnectionResetError"""
+        from utils.meshtastic_connection import safe_close_interface
+
+        mock_interface = MagicMock()
+        mock_interface.close.side_effect = ConnectionResetError("Connection reset")
+
+        # Should not raise
+        safe_close_interface(mock_interface)
+        mock_interface.close.assert_called_once()
+
+    def test_safe_close_handles_os_error(self):
+        """safe_close_interface handles OSError"""
+        from utils.meshtastic_connection import safe_close_interface
+
+        mock_interface = MagicMock()
+        mock_interface.close.side_effect = OSError("Connection refused")
+
+        # Should not raise
+        safe_close_interface(mock_interface)
+
+
 class TestMeshtasticConnectionManager:
     """Tests for the connection manager"""
 
