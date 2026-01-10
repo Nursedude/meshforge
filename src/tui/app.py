@@ -363,33 +363,35 @@ class DashboardPane(Container):
         except Exception as e:
             self.query_one("#service-status", Static).update("[red]Error[/red]")
 
-        # Mesh Nodes - try connection_manager first
+        # Mesh Nodes - fetch from meshtasticd (not just cache)
         try:
             nodes_widget = self.query_one("#nodes-status", Static)
             nodes_detail = self.query_one("#nodes-detail", Static)
             try:
-                from utils.connection_manager import get_cached_nodes, is_available
+                from utils.connection_manager import get_nodes, is_available
                 loop = asyncio.get_event_loop()
 
-                # Check if port is available
+                # Check if port is available first
                 available = await loop.run_in_executor(None, is_available)
                 if available:
-                    nodes = await loop.run_in_executor(None, get_cached_nodes)
+                    # Fetch fresh nodes (also updates cache)
+                    nodes_detail.update("Fetching...")
+                    nodes = await loop.run_in_executor(None, get_nodes)
                     if nodes:
                         count = len(nodes) if isinstance(nodes, list) else 0
                         nodes_widget.update(f"[green]{count} nodes[/green]")
-                        nodes_detail.update("Connected")
+                        nodes_detail.update("Live")
                     else:
                         nodes_widget.update("[yellow]0 nodes[/yellow]")
-                        nodes_detail.update("No cache")
+                        nodes_detail.update("No nodes found")
                 else:
                     nodes_widget.update("[yellow]N/A[/yellow]")
-                    nodes_detail.update("Port closed")
+                    nodes_detail.update("Port 4403 closed")
             except ImportError:
                 nodes_widget.update("[yellow]N/A[/yellow]")
                 nodes_detail.update("No manager")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Node fetch error: {e}")
 
         # RNS Status
         try:
