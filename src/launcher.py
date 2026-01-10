@@ -240,29 +240,27 @@ def print_menu(env, recommended, saved_pref=None):
     print(f"     {Colors.DIM}Modern desktop UI with libadwaita design{Colors.NC}")
     print()
 
-    # Option 2: Textual TUI
-    tui_status = ""
-    if not env['has_textual']:
-        tui_status = f" {Colors.YELLOW}(requires installation){Colors.NC}"
-
-    rec2 = f" {Colors.GREEN}← Recommended{Colors.NC}" if recommended == '2' else ""
-    saved2 = f" {Colors.CYAN}[saved]{Colors.NC}" if saved_pref == '2' else ""
-    print(f"  {Colors.BOLD}2{Colors.NC}. {Colors.CYAN}Textual TUI (Terminal Interface){Colors.NC}{tui_status}{rec2}{saved2}")
-    print(f"     {Colors.DIM}Full-featured terminal UI with mouse support{Colors.NC}")
+    # Option 2: Rich CLI (MOST COMPLETE - moved up)
+    rec2 = f" {Colors.GREEN}<- RECOMMENDED{Colors.NC}" if recommended == '2' or recommended == '4' else ""
+    saved2 = f" {Colors.CYAN}[saved]{Colors.NC}" if saved_pref == '2' or saved_pref == '4' else ""
+    print(f"  {Colors.BOLD}2{Colors.NC}. {Colors.GREEN}Rich CLI (Full Menu){Colors.NC}{rec2}{saved2}")
+    print(f"     {Colors.DIM}Complete feature set - Install, Configure, RF Tools, Diagnostics{Colors.NC}")
     print()
 
     # Option 3: Web Monitor (Lightweight NOC Dashboard)
-    rec3 = f" {Colors.GREEN}← Recommended{Colors.NC}" if recommended == '3' else ""
+    rec3 = ""
     saved3 = f" {Colors.CYAN}[saved]{Colors.NC}" if saved_pref == '3' else ""
     print(f"  {Colors.BOLD}3{Colors.NC}. {Colors.CYAN}Web Monitor{Colors.NC}{rec3}{saved3}")
-    print(f"     {Colors.DIM}Lightweight NOC dashboard at http://localhost:5000{Colors.NC}")
+    print(f"     {Colors.DIM}NOC dashboard at http://localhost:5000 (status only){Colors.NC}")
     print()
 
-    # Option 4: Rich CLI
-    rec4 = f" {Colors.GREEN}← Recommended{Colors.NC}" if recommended == '4' else ""
+    # Option 4: Textual TUI (experimental)
+    tui_status = f" {Colors.YELLOW}[beta]{Colors.NC}"
+    if not env['has_textual']:
+        tui_status = f" {Colors.YELLOW}(not installed){Colors.NC}"
     saved4 = f" {Colors.CYAN}[saved]{Colors.NC}" if saved_pref == '4' else ""
-    print(f"  {Colors.BOLD}4{Colors.NC}. {Colors.CYAN}Rich CLI (Menu Interface){Colors.NC}{rec4}{saved4}")
-    print(f"     {Colors.DIM}Text-based menu for basic terminals{Colors.NC}")
+    print(f"  {Colors.BOLD}4{Colors.NC}. {Colors.DIM}Textual TUI{Colors.NC}{tui_status}{saved4}")
+    print(f"     {Colors.DIM}Terminal UI - experimental, use Rich CLI for full features{Colors.NC}")
     print()
 
     # Tools section
@@ -368,9 +366,9 @@ def launch_interface(choice):
         os.execv(sys.executable, [sys.executable, str(src_dir / 'main_gtk.py')])
 
     elif choice == "2":
-        # Textual TUI
-        print(f"\n{Colors.GREEN}Launching Textual TUI...{Colors.NC}\n")
-        os.execv(sys.executable, [sys.executable, str(src_dir / 'main_tui.py')])
+        # Rich CLI (Full Menu) - most complete interface
+        print(f"\n{Colors.GREEN}Launching Rich CLI (Full Menu)...{Colors.NC}\n")
+        os.execv(sys.executable, [sys.executable, str(src_dir / 'main.py')])
 
     elif choice == "3":
         # Web Monitor (Lightweight NOC Dashboard)
@@ -380,9 +378,10 @@ def launch_interface(choice):
         os.execv(sys.executable, [sys.executable, str(src_dir / 'web_monitor.py')])
 
     elif choice == "4":
-        # Rich CLI
-        print(f"\n{Colors.GREEN}Launching Rich CLI...{Colors.NC}\n")
-        os.execv(sys.executable, [sys.executable, str(src_dir / 'main.py')])
+        # Textual TUI (experimental)
+        print(f"\n{Colors.YELLOW}Note: Textual TUI is experimental. For full features use option 2.{Colors.NC}")
+        print(f"{Colors.GREEN}Launching Textual TUI...{Colors.NC}\n")
+        os.execv(sys.executable, [sys.executable, str(src_dir / 'main_tui.py')])
 
     elif choice == "5":
         # Diagnostics
