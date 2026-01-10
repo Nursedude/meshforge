@@ -101,28 +101,18 @@ def api_versions():
 
 @system_bp.route('/processes')
 def api_processes():
-    """Get relevant running processes."""
-    processes = []
-
+    """Get top processes."""
     try:
-        # Get mesh-related processes
         result = subprocess.run(
-            ['pgrep', '-a', '-f', 'meshtastic|meshforge|rnsd'],
-            capture_output=True, text=True, timeout=5
+            ['ps', 'aux', '--sort=-%cpu'],
+            capture_output=True, text=True, timeout=10
         )
-
-        for line in result.stdout.strip().split('\n'):
-            if line:
-                parts = line.split(None, 1)
-                if len(parts) >= 2:
-                    processes.append({
-                        'pid': int(parts[0]),
-                        'command': parts[1][:100]  # Truncate long commands
-                    })
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')[:11]
+            return jsonify({'processes': lines})
+        return jsonify({'error': result.stderr or 'Failed to get processes'})
     except Exception as e:
-        pass
-
-    return jsonify({'processes': processes})
+        return jsonify({'error': str(e)})
 
 
 @system_bp.route('/hardware')
@@ -130,5 +120,5 @@ def api_hardware():
     """Get hardware detection information."""
     from main_web import detect_hardware
 
-    hardware = detect_hardware()
-    return jsonify(hardware)
+    devices = detect_hardware()
+    return jsonify({'devices': devices})
