@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Meshtasticd Manager - GTK4 GUI Entry Point
+MeshForge - GTK4 GUI Entry Point
 
 This is the graphical interface for systems with a display.
 For headless/SSH access, use main_tui.py instead.
@@ -258,7 +258,7 @@ def daemon_status():
     """Check daemon status"""
     pid = get_daemon_pid()
     if pid:
-        print(f"Meshtasticd Manager is running (PID: {pid})")
+        print(f"MeshForge is running (PID: {pid})")
         print()
         print("The GTK window should be visible on your desktop.")
         print("If you can't find it:")
@@ -271,7 +271,7 @@ def daemon_status():
         print(f"  sudo python3 {os.path.abspath(__file__)} --daemon")
         return True
     else:
-        print("Meshtasticd Manager is not running")
+        print("MeshForge is not running")
         print()
         print("To start:")
         print(f"  sudo python3 {os.path.abspath(__file__)} --daemon")
@@ -284,7 +284,7 @@ def stop_daemon():
     if pid:
         try:
             os.kill(pid, signal.SIGTERM)
-            print(f"Sent SIGTERM to Meshtasticd Manager (PID: {pid})")
+            print(f"Sent SIGTERM to MeshForge (PID: {pid})")
             # Wait a moment and check if stopped
             import time
             time.sleep(1)
@@ -325,7 +325,7 @@ def daemonize():
     # Check if already running
     existing_pid = get_daemon_pid()
     if existing_pid:
-        print(f"Meshtasticd Manager already running (PID: {existing_pid})")
+        print(f"MeshForge already running (PID: {existing_pid})")
         print("Use --stop to stop it first, or --status to check")
         sys.exit(1)
 
@@ -347,7 +347,7 @@ def daemonize():
         env=env
     )
 
-    print(f"Meshtasticd Manager started in background (PID: {proc.pid})")
+    print(f"MeshForge started in background (PID: {proc.pid})")
     print(f"Log: /tmp/meshtasticd-manager.log")
     print(f"To stop: sudo python3 {script_path} --stop")
     print(f"To check status: python3 {script_path} --status")
@@ -358,7 +358,7 @@ def main():
     """Main entry point"""
     # Parse arguments first
     parser = argparse.ArgumentParser(
-        description='Meshtasticd Manager - GTK4 GUI',
+        description='MeshForge - GTK4 GUI',
         epilog='Daemon control: --status to check, --stop to stop'
     )
     parser.add_argument('--daemon', '-d', action='store_true',

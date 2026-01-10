@@ -15,8 +15,8 @@ def api_nodes():
     """Get basic node list."""
     from main_web import get_nodes
 
-    nodes = get_nodes()
-    return jsonify({'nodes': nodes})
+    # get_nodes() already returns {'nodes': [...], 'raw': '...'} or {'error': '...'}
+    return jsonify(get_nodes())
 
 
 @nodes_bp.route('/nodes/full')
@@ -24,8 +24,8 @@ def api_nodes_full():
     """Get detailed node information."""
     from main_web import get_nodes_full
 
-    nodes = get_nodes_full()
-    return jsonify({'nodes': nodes})
+    # get_nodes_full() already returns proper dict format
+    return jsonify(get_nodes_full())
 
 
 @nodes_bp.route('/nodes/geojson')
@@ -33,13 +33,24 @@ def api_nodes_geojson():
     """Get nodes in GeoJSON format for mapping."""
     from main_web import get_nodes_full
 
-    nodes = get_nodes_full()
+    data = get_nodes_full()
+
+    # Handle error response
+    if 'error' in data:
+        return jsonify({'type': 'FeatureCollection', 'features': [], 'error': data['error']})
+
+    # Extract nodes list from response
+    nodes = data.get('nodes', [])
+    if not isinstance(nodes, list):
+        nodes = []
 
     # Convert to GeoJSON
     features = []
     for node in nodes:
-        if node.get('position') and node['position'].get('latitude'):
-            pos = node['position']
+        if not isinstance(node, dict):
+            continue
+        pos = node.get('position')
+        if pos and pos.get('latitude') and pos.get('longitude'):
             feature = {
                 'type': 'Feature',
                 'geometry': {
@@ -51,13 +62,13 @@ def api_nodes_geojson():
                 },
                 'properties': {
                     'id': node.get('id', ''),
-                    'name': node.get('user', {}).get('longName', 'Unknown'),
-                    'short_name': node.get('user', {}).get('shortName', ''),
-                    'hardware': node.get('user', {}).get('hwModel', ''),
-                    'battery': node.get('deviceMetrics', {}).get('batteryLevel'),
+                    'name': node.get('name', 'Unknown'),
+                    'short_name': node.get('short', ''),
+                    'hardware': node.get('hardware', ''),
+                    'battery': node.get('battery'),
                     'snr': node.get('snr'),
-                    'last_heard': node.get('lastHeard'),
-                    'hops_away': node.get('hopsAway', 0),
+                    'last_heard': node.get('last_heard_ago'),
+                    'hops_away': node.get('hops', 0),
                     'altitude': pos.get('altitude'),
                 }
             }
