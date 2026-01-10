@@ -139,8 +139,18 @@ class DashboardPane(Container):
 
     def on_mount(self):
         """Called when widget is mounted"""
-        logger.info("DashboardPane.on_mount() called")
-        # Use call_later to schedule refresh after mount completes
+        # Immediate sync update - no workers, no async
+        try:
+            status = self.query_one("#service-status", Static)
+            status.update("[green]MOUNTED[/green]")
+
+            log = self.query_one("#dashboard-log", Log)
+            log.write_line("Dashboard mounted successfully!")
+            log.write_line("If you see this, widgets work.")
+        except Exception as e:
+            pass  # Silently fail if widgets not ready
+
+        # Then schedule full refresh
         self.call_later(self._do_refresh)
 
     def _do_refresh(self):
