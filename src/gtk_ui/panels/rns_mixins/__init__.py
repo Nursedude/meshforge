@@ -1,11 +1,11 @@
 """
-RNS Panel Sub-modules
+RNS Panel Sub-modules (Mixins)
 
 Extracted from the main RNS panel for maintainability.
 Each module provides a mixin class that adds functionality to RNSPanel.
 
 Usage:
-    from gtk_ui.panels.rns import MeshChatMixin, NomadNetMixin, ...
+    from gtk_ui.panels.rns_mixins import MeshChatMixin, NomadNetMixin, ...
 
     class RNSPanel(MeshChatMixin, NomadNetMixin, ..., Gtk.Box):
         pass
