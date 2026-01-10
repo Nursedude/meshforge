@@ -73,7 +73,7 @@ class StatusWidget(Static):
         self.update_status()
 
 
-class DashboardPane(Container):
+class DashboardPane(ScrollableContainer):
     """Dashboard showing system status"""
 
     def __init__(self, *args, **kwargs):
@@ -345,8 +345,7 @@ class DashboardPane(Container):
 
         # Show immediate feedback
         try:
-            log.write("[cyan]Checking services...[/cyan]")
-            log.scroll_end()
+            log.write_line("Checking services...")
             logger.info("Wrote initial message to log widget")
         except Exception as e:
             logger.error(f"Failed to write to log: {e}")
@@ -402,8 +401,7 @@ class DashboardPane(Container):
                         count = len(nodes) if isinstance(nodes, list) else 0
                         nodes_widget.update(f"[green]{count} nodes[/green]")
                         nodes_detail.update("Live")
-                        log.write(f"[green]Found {count} mesh nodes[/green]")
-                        log.scroll_end()
+                        log.write_line(f"Found {count} mesh nodes")
                     else:
                         nodes_widget.update("[yellow]0 nodes[/yellow]")
                         nodes_detail.update("No nodes found")
@@ -504,8 +502,7 @@ class DashboardPane(Container):
         # Show refresh timestamp in log (only on first load or manual refresh)
         from datetime import datetime
         timestamp = datetime.now().strftime('%H:%M:%S')
-        log.write(f"[dim]Last refresh: {timestamp}[/dim]")
-        log.scroll_end()
+        log.write_line(f"Last refresh: {timestamp}")
         logger.info(f"refresh_data() completed at {timestamp}")
 
         # Force UI refresh
