@@ -1,37 +1,59 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <!-- Background circle -->
-  <circle cx="64" cy="64" r="60" fill="#1a1a2e"/>
-  <circle cx="64" cy="64" r="56" fill="#16213e" stroke="#4CAF50" stroke-width="2"/>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- MeshForge Icon - Shaka (Hang Loose) with mesh network elements -->
+  <!-- Hawaiian aloha spirit meets mesh networking -->
 
-  <!-- Mesh network nodes -->
-  <!-- Center node -->
-  <circle cx="64" cy="64" r="12" fill="#4CAF50"/>
+  <!-- Background circle with gradient -->
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e"/>
+      <stop offset="100%" style="stop-color:#16213e"/>
+    </linearGradient>
+    <linearGradient id="handGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4CAF50"/>
+      <stop offset="100%" style="stop-color:#2E7D32"/>
+    </linearGradient>
+  </defs>
 
-  <!-- Outer nodes -->
-  <circle cx="30" cy="40" r="8" fill="#2196F3"/>
-  <circle cx="98" cy="40" r="8" fill="#2196F3"/>
-  <circle cx="30" cy="88" r="8" fill="#2196F3"/>
-  <circle cx="98" cy="88" r="8" fill="#2196F3"/>
-  <circle cx="64" cy="24" r="8" fill="#2196F3"/>
-  <circle cx="64" cy="104" r="8" fill="#2196F3"/>
+  <!-- Background -->
+  <circle cx="64" cy="64" r="60" fill="url(#bgGrad)"/>
+  <circle cx="64" cy="64" r="56" fill="none" stroke="#4CAF50" stroke-width="2" opacity="0.6"/>
 
-  <!-- Connection lines -->
-  <line x1="64" y1="64" x2="30" y2="40" stroke="#4CAF50" stroke-width="2" opacity="0.7"/>
-  <line x1="64" y1="64" x2="98" y2="40" stroke="#4CAF50" stroke-width="2" opacity="0.7"/>
-  <line x1="64" y1="64" x2="30" y2="88" stroke="#4CAF50" stroke-width="2" opacity="0.7"/>
-  <line x1="64" y1="64" x2="98" y2="88" stroke="#4CAF50" stroke-width="2" opacity="0.7"/>
-  <line x1="64" y1="64" x2="64" y2="24" stroke="#4CAF50" stroke-width="2" opacity="0.7"/>
-  <line x1="64" y1="64" x2="64" y2="104" stroke="#4CAF50" stroke-width="2" opacity="0.7"/>
+  <!-- Mesh network nodes (background) -->
+  <circle cx="24" cy="32" r="4" fill="#2196F3" opacity="0.5"/>
+  <circle cx="104" cy="32" r="4" fill="#2196F3" opacity="0.5"/>
+  <circle cx="24" cy="96" r="4" fill="#2196F3" opacity="0.5"/>
+  <circle cx="104" cy="96" r="4" fill="#2196F3" opacity="0.5"/>
 
-  <!-- Cross connections for mesh effect -->
-  <line x1="30" y1="40" x2="64" y2="24" stroke="#2196F3" stroke-width="1.5" opacity="0.5"/>
-  <line x1="98" y1="40" x2="64" y2="24" stroke="#2196F3" stroke-width="1.5" opacity="0.5"/>
-  <line x1="30" y1="88" x2="64" y2="104" stroke="#2196F3" stroke-width="1.5" opacity="0.5"/>
-  <line x1="98" y1="88" x2="64" y2="104" stroke="#2196F3" stroke-width="1.5" opacity="0.5"/>
-  <line x1="30" y1="40" x2="30" y2="88" stroke="#2196F3" stroke-width="1.5" opacity="0.5"/>
-  <line x1="98" y1="40" x2="98" y2="88" stroke="#2196F3" stroke-width="1.5" opacity="0.5"/>
+  <!-- Mesh connection lines (background) -->
+  <line x1="24" y1="32" x2="64" y2="64" stroke="#2196F3" stroke-width="1" opacity="0.3"/>
+  <line x1="104" y1="32" x2="64" y2="64" stroke="#2196F3" stroke-width="1" opacity="0.3"/>
+  <line x1="24" y1="96" x2="64" y2="64" stroke="#2196F3" stroke-width="1" opacity="0.3"/>
+  <line x1="104" y1="96" x2="64" y2="64" stroke="#2196F3" stroke-width="1" opacity="0.3"/>
 
-  <!-- Radio wave arcs from center -->
-  <path d="M 52 52 A 17 17 0 0 1 76 52" fill="none" stroke="#4CAF50" stroke-width="2" opacity="0.6"/>
-  <path d="M 48 48 A 23 23 0 0 1 80 48" fill="none" stroke="#4CAF50" stroke-width="1.5" opacity="0.4"/>
+  <!-- Shaka hand - centered and prominent -->
+  <g fill="url(#handGrad)" stroke="#2E7D32" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Palm -->
+    <path d="M64 92 C52 92 42 82 42 66 L42 56 C42 50 46 46 54 46 L74 46 C82 46 86 50 86 56 L86 66 C86 82 76 92 64 92 Z"/>
+
+    <!-- Thumb (extended out to left) -->
+    <path d="M42 60 C34 56 26 52 22 56 C18 60 18 68 22 72 C26 76 34 76 42 72" fill="url(#handGrad)"/>
+
+    <!-- Pinky (extended up) -->
+    <path d="M78 46 L82 28 C82 24 86 20 90 20 C94 20 98 24 98 28 L94 46" fill="url(#handGrad)"/>
+
+    <!-- Folded fingers (middle 3) - shown as subtle curves on palm -->
+    <path d="M54 46 L54 40 C54 36 58 34 62 36 L62 46" fill="url(#handGrad)" opacity="0.8"/>
+    <path d="M62 46 L62 36 C62 32 66 30 70 32 L70 46" fill="url(#handGrad)" opacity="0.8"/>
+    <path d="M70 46 L70 38 C70 34 74 32 78 34 L78 46" fill="url(#handGrad)" opacity="0.8"/>
+
+    <!-- Wrist -->
+    <path d="M52 92 L52 104 L76 104 L76 92" fill="url(#handGrad)"/>
+  </g>
+
+  <!-- Radio wave arcs emanating from shaka -->
+  <path d="M 30 40 A 40 40 0 0 1 30 88" fill="none" stroke="#4CAF50" stroke-width="2" opacity="0.4"/>
+  <path d="M 24 36 A 48 48 0 0 1 24 92" fill="none" stroke="#4CAF50" stroke-width="1.5" opacity="0.3"/>
+  <path d="M 98 40 A 40 40 0 0 0 98 88" fill="none" stroke="#4CAF50" stroke-width="2" opacity="0.4"/>
+  <path d="M 104 36 A 48 48 0 0 0 104 92" fill="none" stroke="#4CAF50" stroke-width="1.5" opacity="0.3"/>
 </svg>
