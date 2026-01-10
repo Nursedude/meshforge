@@ -251,7 +251,7 @@ class ChannelPresetManager:
         # Show user presets if any
         user_presets = self.load_user_presets()
         if user_presets:
-            console.print("\n[cyan]📁 User-saved presets:[/cyan]")
+            console.print(f"\n[cyan]{em.get('📁', '[F]')} User-saved presets:[/cyan]")
             for name in user_presets.keys():
                 console.print(f"  • {name}")
 
