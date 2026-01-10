@@ -251,11 +251,11 @@ def print_menu(env, recommended, saved_pref=None):
     print(f"     {Colors.DIM}Full-featured terminal UI with mouse support{Colors.NC}")
     print()
 
-    # Option 3: Web Interface (NEW)
+    # Option 3: Web Monitor (Lightweight NOC Dashboard)
     rec3 = f" {Colors.GREEN}← Recommended{Colors.NC}" if recommended == '3' else ""
     saved3 = f" {Colors.CYAN}[saved]{Colors.NC}" if saved_pref == '3' else ""
-    print(f"  {Colors.BOLD}3{Colors.NC}. {Colors.CYAN}Web Interface{Colors.NC}{rec3}{saved3}")
-    print(f"     {Colors.DIM}Browser-based dashboard at http://localhost:5000{Colors.NC}")
+    print(f"  {Colors.BOLD}3{Colors.NC}. {Colors.CYAN}Web Monitor{Colors.NC}{rec3}{saved3}")
+    print(f"     {Colors.DIM}Lightweight NOC dashboard at http://localhost:5000{Colors.NC}")
     print()
 
     # Option 4: Rich CLI
@@ -373,10 +373,11 @@ def launch_interface(choice):
         os.execv(sys.executable, [sys.executable, str(src_dir / 'main_tui.py')])
 
     elif choice == "3":
-        # Web Interface
-        print(f"\n{Colors.GREEN}Launching Web Interface...{Colors.NC}")
-        print(f"{Colors.CYAN}Dashboard will be available at: http://localhost:5000{Colors.NC}\n")
-        os.execv(sys.executable, [sys.executable, str(src_dir / 'main_web.py')])
+        # Web Monitor (Lightweight NOC Dashboard)
+        print(f"\n{Colors.GREEN}Launching Web Monitor...{Colors.NC}")
+        print(f"{Colors.CYAN}NOC Dashboard: http://localhost:5000{Colors.NC}")
+        print(f"{Colors.DIM}Build. Test. Deploy. Bridge. Monitor.{Colors.NC}\n")
+        os.execv(sys.executable, [sys.executable, str(src_dir / 'web_monitor.py')])
 
     elif choice == "4":
         # Rich CLI
