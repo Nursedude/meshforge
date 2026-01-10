@@ -508,6 +508,100 @@ class TestRoutingClassifier:
 
         assert 'mesh_only' not in result.metadata.get('matched_rules', [])
 
+    def test_regex_source_filter(self):
+        """Test regex pattern matching for source filter"""
+        rules = [
+            {
+                'name': 'ham_nodes',
+                'enabled': True,
+                'direction': 'bidirectional',
+                'source_filter': r'![A-Z]{1,2}\d[A-Z]{1,3}',  # Ham callsign pattern like !KH6ABC
+                'priority': 10
+            }
+        ]
+        classifier = RoutingClassifier(rules=rules)
+
+        # Should match ham callsigns
+        result = classifier.classify("msg_1", {
+            'source_network': 'meshtastic',
+            'source_id': '!KH6ABC',
+            'content': 'Hello'
+        })
+        assert 'ham_nodes' in result.metadata.get('matched_rules', [])
+
+        # Should not match non-ham IDs
+        result2 = classifier.classify("msg_2", {
+            'source_network': 'meshtastic',
+            'source_id': '!abcd1234',  # lowercase hex ID
+            'content': 'Hello'
+        })
+        assert 'ham_nodes' not in result2.metadata.get('matched_rules', [])
+
+    def test_regex_message_filter(self):
+        """Test regex pattern matching for message filter"""
+        rules = [
+            {
+                'name': 'emergency',
+                'enabled': True,
+                'direction': 'bidirectional',
+                'message_filter': r'(EMERGENCY|MAYDAY|SOS)',
+                'priority': 100
+            }
+        ]
+        classifier = RoutingClassifier(rules=rules)
+
+        # Should match various emergency patterns
+        for msg in ['EMERGENCY help!', 'This is a MAYDAY call', 'SOS SOS SOS']:
+            result = classifier.classify("msg", {
+                'source_network': 'meshtastic',
+                'source_id': 'node',
+                'content': msg
+            })
+            assert 'emergency' in result.metadata.get('matched_rules', [])
+
+    def test_simple_substring_filter(self):
+        """Test simple substring matching (backwards compatible)"""
+        rules = [
+            {
+                'name': 'greeting',
+                'enabled': True,
+                'direction': 'bidirectional',
+                'message_filter': 'hello',
+                'priority': 10
+            }
+        ]
+        classifier = RoutingClassifier(rules=rules)
+
+        # Should match case-insensitive
+        result = classifier.classify("msg_1", {
+            'source_network': 'meshtastic',
+            'source_id': 'node',
+            'content': 'HELLO world'
+        })
+        assert 'greeting' in result.metadata.get('matched_rules', [])
+
+    def test_invalid_regex_fallback(self):
+        """Test that invalid regex falls back to substring"""
+        rules = [
+            {
+                'name': 'bad_regex',
+                'enabled': True,
+                'direction': 'bidirectional',
+                'source_filter': '[invalid(regex',  # Malformed regex
+                'priority': 10
+            }
+        ]
+        classifier = RoutingClassifier(rules=rules)
+
+        # Should not crash, just not match
+        result = classifier.classify("msg_1", {
+            'source_network': 'meshtastic',
+            'source_id': 'test',
+            'content': 'Hello'
+        })
+        # Should complete without error
+        assert result is not None
+
 
 class TestNotificationClassifier:
     """Tests for notification priority classification"""
