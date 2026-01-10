@@ -23,8 +23,15 @@ logger = logging.getLogger(__name__)
 _connection_manager: Optional['MeshtasticConnectionManager'] = None
 _manager_lock = threading.Lock()
 
+# GLOBAL connection lock - meshtasticd only supports ONE TCP connection
+# All code that connects to meshtasticd MUST acquire this lock first
+MESHTASTIC_CONNECTION_LOCK = threading.Lock()
+
 # Cooldown between connections (meshtasticd needs time to cleanup)
-CONNECTION_COOLDOWN = 0.5  # seconds
+CONNECTION_COOLDOWN = 1.0  # seconds (increased from 0.5)
+
+# Track last connection close time globally
+_last_global_close_time = 0.0
 
 
 class ConnectionError(Exception):
@@ -48,6 +55,16 @@ def reset_connection_manager():
         _connection_manager = None
 
 
+def wait_for_cooldown():
+    """Wait for the global connection cooldown period"""
+    global _last_global_close_time
+    elapsed = time.time() - _last_global_close_time
+    if elapsed < CONNECTION_COOLDOWN:
+        wait_time = CONNECTION_COOLDOWN - elapsed
+        logger.debug(f"Waiting {wait_time:.2f}s for meshtasticd cooldown")
+        time.sleep(wait_time)
+
+
 def safe_close_interface(interface) -> None:
     """
     Safely close a meshtastic interface, handling already-closed connections.
@@ -55,6 +72,8 @@ def safe_close_interface(interface) -> None:
     The meshtastic library can raise BrokenPipeError or ConnectionResetError
     when trying to send the disconnect message if the connection is already gone.
     """
+    global _last_global_close_time
+
     if interface is None:
         return
 
@@ -67,6 +86,9 @@ def safe_close_interface(interface) -> None:
     except Exception as e:
         # Log other errors but don't raise
         logger.warning(f"Unexpected error during interface cleanup: {e}")
+    finally:
+        # Always update global close time
+        _last_global_close_time = time.time()
 
 
 class MeshtasticConnectionManager:
