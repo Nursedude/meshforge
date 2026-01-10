@@ -284,7 +284,7 @@ src/gtk_ui/panels/
 
 ---
 
-## Issue #6: Textual TUI ScrollableContainer + height: 1fr CSS Conflict
+## Issue #6: Textual TUI height: 1fr CSS Conflicts
 
 ### Symptom
 TUI dashboard shows no visual output despite code executing correctly:
@@ -293,48 +293,84 @@ TUI dashboard shows no visual output despite code executing correctly:
 - Widget update calls complete
 - BUT: Status cards stuck on "Checking...", Log panel empty, no text visible
 
-### Root Cause
-`DashboardPane` extended `ScrollableContainer`, but the Log widget CSS used `height: 1fr`:
+### Root Causes (TWO related issues)
+
+#### Cause 1: ScrollableContainer breaks height: 1fr
+`DashboardPane` extended `ScrollableContainer`, but the Log widget CSS used `height: 1fr`.
+
+#### Cause 2: CSS `overflow-y: auto` creates same problem
+Even with `Container`, CSS `overflow-y: auto` on parent creates a scroll context:
 
 ```css
+/* BREAKS height: 1fr in children */
+TabPane > Container {
+    height: 100%;
+    overflow-y: auto;  /* Creates scroll context - breaks 1fr! */
+}
+
 .log-panel {
-    height: 1fr;  /* BREAKS inside ScrollableContainer */
-    min-height: 10;
+    height: 1fr;  /* Calculates to 0 in scroll context */
 }
 ```
 
 **Why this fails:**
 - `height: 1fr` means "take one fraction of remaining space"
-- `ScrollableContainer` expands to fit content (no fixed height constraint)
-- "Remaining space" becomes undefined/zero
-- Log widget calculates to height: 0 → invisible
+- Scroll contexts (ScrollableContainer OR `overflow-y: auto`) can expand infinitely
+- "Remaining space" in infinite container = undefined/zero
+- Widget calculates to height: 0 → invisible
 
 ### Proper Fix
-**NEVER use `ScrollableContainer` for panes that contain `height: 1fr` children.**
 
-Use `Container` instead:
-
+**1. Use Container, not ScrollableContainer:**
 ```python
-# WRONG - causes invisible content
+# WRONG
 class DashboardPane(ScrollableContainer):
     pass
 
-# CORRECT - works properly
+# CORRECT
 class DashboardPane(Container):
     pass
 ```
 
-All working panes in the TUI use `Container`:
-- `ServicePane(Container)` ✓
-- `ConfigPane(Container)` ✓
-- `CLIPane(Container)` ✓
-- `ToolsPane(Container)` ✓
+**2. Never use `overflow-y: auto` on parents of `height: 1fr` children:**
+```css
+/* WRONG */
+TabPane > Container {
+    height: 100%;
+    overflow-y: auto;
+}
+
+/* CORRECT */
+TabPane > Container {
+    height: 100%;
+    /* NO overflow-y: auto */
+}
+```
+
+**3. Make on_mount async and log errors:**
+```python
+# WRONG - silent failures
+def on_mount(self):
+    try:
+        ...
+    except Exception as e:
+        pass  # Silent!
+
+# CORRECT
+async def on_mount(self):
+    try:
+        ...
+    except Exception as e:
+        logger.error(f"on_mount failed: {e}")
+```
 
 ### Prevention
-- Use `Container` as base class for TUI panes
-- If scrolling is needed, use explicit pixel heights instead of `1fr`
+- Use `Container` as base class for TUI panes (not ScrollableContainer)
+- Never add `overflow-y: auto` to parents of `height: 1fr` widgets
+- All `on_mount` methods should be `async def on_mount(self):`
+- Never use `except: pass` - always log errors
 - Test TUI changes visually, not just via logs
 
 ---
 
-*Last updated: 2026-01-10 - Added TUI ScrollableContainer CSS conflict issue*
+*Last updated: 2026-01-10 - Complete fix for TUI height:1fr CSS conflicts*

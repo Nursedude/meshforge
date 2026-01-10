@@ -137,29 +137,22 @@ class DashboardPane(Container):
             yield Button("Auto-Refresh: OFF", id="toggle-auto-refresh")
             yield Button("Clear", id="dash-clear")
 
-    def on_mount(self):
-        """Called when widget is mounted"""
-        # Immediate sync update - no workers, no async
+    async def on_mount(self):
+        """Called when widget is mounted - async like other panes"""
+        logger.info("DashboardPane.on_mount() called")
+
+        # Immediate widget update to verify rendering works
         try:
             status = self.query_one("#service-status", Static)
-            status.update("[green]MOUNTED[/green]")
+            status.update("[yellow]Loading...[/yellow]")
 
             log = self.query_one("#dashboard-log", Log)
-            log.write_line("Dashboard mounted successfully!")
-            log.write_line("If you see this, widgets work.")
+            log.write_line("Dashboard mounted - starting refresh...")
+            logger.info("Initial widget updates succeeded")
         except Exception as e:
-            pass  # Silently fail if widgets not ready
+            logger.error(f"on_mount widget update failed: {e}")
 
-        # Then schedule full refresh
-        self.call_later(self._do_refresh)
-
-    def _do_refresh(self):
-        """Wrapper to trigger refresh"""
-        logger.info("_do_refresh() called, triggering refresh_data()")
-        self.refresh_data()
-
-    def _trigger_refresh(self):
-        """Trigger a data refresh - called by timer"""
+        # Start background data refresh - @work decorator handles async scheduling
         self.refresh_data()
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -1636,7 +1629,7 @@ class MeshtasticdTUI(App):
 
     TabPane > Container {
         height: 100%;
-        overflow-y: auto;
+        /* NOTE: Do NOT add overflow-y: auto here - it breaks height: 1fr children */
     }
 
     TabbedContent {
