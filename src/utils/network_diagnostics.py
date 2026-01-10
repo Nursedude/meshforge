@@ -576,9 +576,23 @@ class NetworkDiagnostics:
         """Register callback for real-time event notifications."""
         self._event_callbacks.append(callback)
 
+    def unregister_event_callback(self, callback: Callable[[DiagnosticEvent], None]):
+        """Unregister event callback."""
+        try:
+            self._event_callbacks.remove(callback)
+        except ValueError:
+            pass  # Already removed
+
     def register_health_callback(self, callback: Callable[[str, HealthCheck], None]):
         """Register callback for health status changes."""
         self._health_callbacks.append(callback)
+
+    def unregister_health_callback(self, callback: Callable[[str, HealthCheck], None]):
+        """Unregister health callback."""
+        try:
+            self._health_callbacks.remove(callback)
+        except ValueError:
+            pass  # Already removed
 
     # ==================== Report Generation ====================
 
