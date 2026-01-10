@@ -213,7 +213,7 @@ class MinimalTUI(App):
 
     TabPane > Container {
         height: 100%;
-        overflow-y: auto;
+        /* NOTE: No overflow-y: auto - it breaks height: 1fr in children */
     }
 
     TabbedContent {
