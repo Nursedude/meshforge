@@ -40,12 +40,8 @@ def get_banner():
     mesh = em.get('🌐', '[MESH]')
     ant = em.get('📡', '[ANT]')
     return f"""
-+-----------------------------------------------------------+
-|   {mesh} Meshtasticd Interactive Installer & Manager          |
-|   For Raspberry Pi OS                          v{__version__}   |
-+-----------------------------------------------------------+
-|   {ant} Install - Configure - Monitor - Update               |
-+-----------------------------------------------------------+
+    {mesh} MeshForge - Meshtasticd Manager v{__version__}
+    {ant} Install - Configure - Monitor - Update
 """
 
 BANNER = get_banner()
