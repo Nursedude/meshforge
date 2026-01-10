@@ -103,10 +103,27 @@ WEB_PID_FILE = Path('/tmp/meshtasticd-web.pid')
 
 
 def cleanup_processes():
-    """Kill any lingering subprocesses"""
-    global _shutdown_flag
+    """Kill any lingering subprocesses and close connections gracefully"""
+    global _shutdown_flag, _meshtastic_mgr, _node_monitor
     _shutdown_flag = True
 
+    # Close meshtastic connection manager gracefully
+    try:
+        if _meshtastic_mgr is not None:
+            _meshtastic_mgr.close()
+            _meshtastic_mgr = None
+    except Exception:
+        pass
+
+    # Close node monitor gracefully
+    try:
+        if _node_monitor is not None:
+            _node_monitor.disconnect()
+            _node_monitor = None
+    except Exception:
+        pass
+
+    # Terminate subprocesses
     for proc in _running_processes[:]:
         try:
             if proc.poll() is None:  # Still running
@@ -125,6 +142,8 @@ def cleanup_processes():
             WEB_PID_FILE.unlink()
     except Exception:
         pass
+
+    print("MeshForge Web UI shutdown complete.")
 
 
 def signal_handler(signum, frame):

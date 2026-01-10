@@ -20,6 +20,17 @@ except ImportError:
     import logging
     logger = logging.getLogger(__name__)
 
+# Import safe close for meshtastic interfaces
+try:
+    from utils.meshtastic_connection import safe_close_interface
+except ImportError:
+    def safe_close_interface(iface):
+        if iface:
+            try:
+                iface.close()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+
 
 class RadioConfigPanel(Gtk.Box):
     """Radio configuration panel with all Meshtastic radio settings"""
@@ -243,7 +254,7 @@ class RadioConfigPanel(Gtk.Box):
                 import meshtastic.tcp_interface
                 iface = meshtastic.tcp_interface.TCPInterface(hostname='localhost')
                 channels = self._get_channels_from_interface(iface)
-                iface.close()
+                safe_close_interface(iface)
                 return channels
             except Exception as e:
                 logger.warning(f"Channel load failed: {e}")
@@ -1868,7 +1879,7 @@ class RadioConfigPanel(Gtk.Box):
                 logger.info("[RadioConfig] TCPInterface connected, extracting config...")
                 config = self._extract_config_from_interface(iface)
                 logger.info(f"[RadioConfig] Closing interface, extracted: {config}")
-                iface.close()
+                safe_close_interface(iface)
                 return config
             except Exception as e:
                 logger.warning(f"[RadioConfig] Library load failed: {e}, falling back to CLI")

@@ -213,6 +213,20 @@ class MeshtasticConnectionManager:
         finally:
             self.release_lock()
 
+    def close(self):
+        """
+        Close any active connection and cleanup resources.
+
+        Safe to call multiple times.
+        """
+        try:
+            if self._interface is not None:
+                safe_close_interface(self._interface)
+                self._interface = None
+                self._last_close_time = time.time()
+        except Exception as e:
+            logger.debug(f"Error during connection manager close: {e}")
+
     def get_nodes(self, max_retries: int = 2) -> List[Dict[str, Any]]:
         """
         Get list of nodes from meshtasticd.
