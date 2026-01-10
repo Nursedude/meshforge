@@ -614,6 +614,12 @@ Examples:
     print("=" * 60)
     print()
 
+    # Wait for user input before exiting (prevents window from closing)
+    try:
+        input("\nPress Enter to continue...")
+    except (KeyboardInterrupt, EOFError):
+        pass
+
 
 if __name__ == '__main__':
     main()
