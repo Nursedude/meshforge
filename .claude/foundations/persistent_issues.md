@@ -284,4 +284,57 @@ src/gtk_ui/panels/
 
 ---
 
-*Last updated: 2026-01-10 - Added large file health check*
+## Issue #6: Textual TUI ScrollableContainer + height: 1fr CSS Conflict
+
+### Symptom
+TUI dashboard shows no visual output despite code executing correctly:
+- Logs confirm widgets are queried successfully
+- Data is fetched (247 nodes)
+- Widget update calls complete
+- BUT: Status cards stuck on "Checking...", Log panel empty, no text visible
+
+### Root Cause
+`DashboardPane` extended `ScrollableContainer`, but the Log widget CSS used `height: 1fr`:
+
+```css
+.log-panel {
+    height: 1fr;  /* BREAKS inside ScrollableContainer */
+    min-height: 10;
+}
+```
+
+**Why this fails:**
+- `height: 1fr` means "take one fraction of remaining space"
+- `ScrollableContainer` expands to fit content (no fixed height constraint)
+- "Remaining space" becomes undefined/zero
+- Log widget calculates to height: 0 → invisible
+
+### Proper Fix
+**NEVER use `ScrollableContainer` for panes that contain `height: 1fr` children.**
+
+Use `Container` instead:
+
+```python
+# WRONG - causes invisible content
+class DashboardPane(ScrollableContainer):
+    pass
+
+# CORRECT - works properly
+class DashboardPane(Container):
+    pass
+```
+
+All working panes in the TUI use `Container`:
+- `ServicePane(Container)` ✓
+- `ConfigPane(Container)` ✓
+- `CLIPane(Container)` ✓
+- `ToolsPane(Container)` ✓
+
+### Prevention
+- Use `Container` as base class for TUI panes
+- If scrolling is needed, use explicit pixel heights instead of `1fr`
+- Test TUI changes visually, not just via logs
+
+---
+
+*Last updated: 2026-01-10 - Added TUI ScrollableContainer CSS conflict issue*

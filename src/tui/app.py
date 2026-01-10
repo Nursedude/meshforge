@@ -73,8 +73,9 @@ class StatusWidget(Static):
         self.update_status()
 
 
-class DashboardPane(ScrollableContainer):
-    """Dashboard showing system status"""
+class DashboardPane(Container):
+    """Dashboard showing system status - uses Container not ScrollableContainer
+    because height: 1fr CSS fails inside ScrollableContainer (no defined parent height)"""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1623,17 +1624,13 @@ class MeshtasticdTUI(App):
         height: 100%;
     }
 
-    TabPane > Container, TabPane > ScrollableContainer {
+    TabPane > Container {
         height: 100%;
         overflow-y: auto;
     }
 
     TabbedContent {
         padding: 0;
-    }
-
-    DashboardPane {
-        height: 100%;
     }
     """
 
