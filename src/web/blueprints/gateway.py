@@ -17,6 +17,27 @@ from pathlib import Path
 from datetime import datetime
 from flask import Blueprint, jsonify, request
 
+# Import meshtastic connection utilities
+try:
+    from utils.meshtastic_connection import (
+        MESHTASTIC_CONNECTION_LOCK,
+        wait_for_cooldown,
+        safe_close_interface
+    )
+    HAS_MESHTASTIC_LOCK = True
+except ImportError:
+    HAS_MESHTASTIC_LOCK = False
+    MESHTASTIC_CONNECTION_LOCK = None
+    def wait_for_cooldown():
+        import time
+        time.sleep(1.0)
+    def safe_close_interface(iface):
+        if iface:
+            try:
+                iface.close()
+            except Exception:
+                pass
+
 gateway_bp = Blueprint('gateway', __name__)
 
 # Gateway state (in-memory, bridge runs in separate process/thread)
@@ -443,26 +464,44 @@ def gateway_test():
 
     # Test meshtasticd connection
     if check_meshtasticd():
-        try:
-            import meshtastic.tcp_interface
-            iface = meshtastic.tcp_interface.TCPInterface(hostname='localhost')
-            node_count = len(iface.nodes) if hasattr(iface, 'nodes') and iface.nodes else 0
+        # Acquire global lock - meshtasticd only supports one TCP connection
+        lock_acquired = False
+        if HAS_MESHTASTIC_LOCK and MESHTASTIC_CONNECTION_LOCK:
+            lock_acquired = MESHTASTIC_CONNECTION_LOCK.acquire(timeout=5.0)
+            if lock_acquired:
+                wait_for_cooldown()
+        else:
+            lock_acquired = True
 
-            # Safe close
-            try:
-                iface.close()
-            except Exception:
-                pass
-
-            results['meshtastic'] = {
-                'success': True,
-                'message': f'Connected - {node_count} nodes'
-            }
-        except Exception as e:
+        if not lock_acquired:
             results['meshtastic'] = {
                 'success': False,
-                'message': str(e)
+                'message': 'Connection lock busy (another operation in progress)'
             }
+        else:
+            iface = None
+            try:
+                import meshtastic.tcp_interface
+                iface = meshtastic.tcp_interface.TCPInterface(hostname='localhost')
+                node_count = len(iface.nodes) if hasattr(iface, 'nodes') and iface.nodes else 0
+
+                results['meshtastic'] = {
+                    'success': True,
+                    'message': f'Connected - {node_count} nodes'
+                }
+            except Exception as e:
+                results['meshtastic'] = {
+                    'success': False,
+                    'message': str(e)
+                }
+            finally:
+                if iface:
+                    safe_close_interface(iface)
+                if HAS_MESHTASTIC_LOCK and MESHTASTIC_CONNECTION_LOCK:
+                    try:
+                        MESHTASTIC_CONNECTION_LOCK.release()
+                    except RuntimeError:
+                        pass
     else:
         results['meshtastic'] = {
             'success': False,

@@ -442,6 +442,9 @@ class NodeMonitor:
         logger.warning("Connection lost")
         self.state = ConnectionState.DISCONNECTED
 
+        # Release global lock so reconnect can re-acquire it
+        self._release_global_lock()
+
         # Auto-reconnect if still running
         if self._running:
             self._start_reconnect()

@@ -48,6 +48,18 @@ except ImportError:
             return Path(f'/home/{sudo_user}')
         return Path.home()
 
+# Import meshtastic connection utilities
+try:
+    from utils.meshtastic_connection import (
+        MESHTASTIC_CONNECTION_LOCK,
+        wait_for_cooldown,
+        safe_close_interface
+    )
+    HAS_MESHTASTIC_LOCK = True
+except ImportError:
+    HAS_MESHTASTIC_LOCK = False
+    MESHTASTIC_CONNECTION_LOCK = None
+
 # Import settings manager
 try:
     from utils.common import SettingsManager
@@ -1334,40 +1346,67 @@ class MeshToolsPanel(Gtk.Box):
                 pass
 
             if tcp_available:
-                try:
-                    import meshtastic.tcp_interface
-                    GLib.idle_add(self._log_message, "Connecting to meshtasticd via TCP...")
+                # Acquire global lock - meshtasticd only supports one TCP connection
+                lock_acquired = False
+                if HAS_MESHTASTIC_LOCK and MESHTASTIC_CONNECTION_LOCK:
+                    lock_acquired = MESHTASTIC_CONNECTION_LOCK.acquire(timeout=5.0)
+                    if not lock_acquired:
+                        GLib.idle_add(self._log_message, "Could not acquire connection lock (another operation in progress)")
+                    else:
+                        wait_for_cooldown()
+                else:
+                    lock_acquired = True  # No lock available, proceed anyway
 
-                    interface = meshtastic.tcp_interface.TCPInterface('localhost', 4403)
+                if lock_acquired:
+                    interface = None
+                    try:
+                        import meshtastic.tcp_interface
+                        import time
+                        GLib.idle_add(self._log_message, "Connecting to meshtasticd via TCP...")
 
-                    # Wait briefly for node info to populate
-                    import time
-                    time.sleep(2)
+                        interface = meshtastic.tcp_interface.TCPInterface('localhost', 4403)
 
-                    # Get nodes from interface
-                    if hasattr(interface, 'nodes') and interface.nodes:
-                        for node_id, node in interface.nodes.items():
-                            user = node.get('user', {})
-                            name = user.get('longName', user.get('shortName', 'Unknown'))
-                            hw_model = user.get('hwModel', 'Unknown')
+                        # Wait briefly for node info to populate
+                        time.sleep(2)
 
-                            last_heard = node.get('lastHeard', 0)
-                            if last_heard:
-                                last_seen = datetime.fromtimestamp(last_heard).strftime('%H:%M:%S')
+                        # Get nodes from interface
+                        if hasattr(interface, 'nodes') and interface.nodes:
+                            for node_id, node in interface.nodes.items():
+                                user = node.get('user', {})
+                                name = user.get('longName', user.get('shortName', 'Unknown'))
+                                hw_model = user.get('hwModel', 'Unknown')
+
+                                last_heard = node.get('lastHeard', 0)
+                                if last_heard:
+                                    last_seen = datetime.fromtimestamp(last_heard).strftime('%H:%M:%S')
+                                else:
+                                    last_seen = 'Never'
+
+                                nodes.append((str(node_id), name, hw_model, last_seen))
+
+                        if nodes:
+                            GLib.idle_add(self._log_message, f"Found {len(nodes)} nodes via meshtastic TCP")
+
+                    except ImportError:
+                        GLib.idle_add(self._log_message, "Meshtastic Python library not installed")
+                        GLib.idle_add(self._log_message, "Install with: pip install meshtastic")
+                    except Exception as e:
+                        GLib.idle_add(self._log_message, f"TCP connection error: {e}")
+                    finally:
+                        # Always close interface and release lock
+                        if interface:
+                            if HAS_MESHTASTIC_LOCK:
+                                safe_close_interface(interface)
                             else:
-                                last_seen = 'Never'
-
-                            nodes.append((str(node_id), name, hw_model, last_seen))
-
-                    interface.close()
-                    if nodes:
-                        GLib.idle_add(self._log_message, f"Found {len(nodes)} nodes via meshtastic TCP")
-
-                except ImportError:
-                    GLib.idle_add(self._log_message, "Meshtastic Python library not installed")
-                    GLib.idle_add(self._log_message, "Install with: pip install meshtastic")
-                except Exception as e:
-                    GLib.idle_add(self._log_message, f"TCP connection error: {e}")
+                                try:
+                                    interface.close()
+                                except Exception:
+                                    pass
+                        if HAS_MESHTASTIC_LOCK and MESHTASTIC_CONNECTION_LOCK:
+                            try:
+                                MESHTASTIC_CONNECTION_LOCK.release()
+                            except RuntimeError:
+                                pass
             else:
                 GLib.idle_add(self._log_message, "meshtasticd TCP port 4403 not available")
 
