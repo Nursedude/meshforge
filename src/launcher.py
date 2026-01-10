@@ -252,13 +252,10 @@ def print_menu(env, recommended, saved_pref=None):
     print(f"     {Colors.DIM}NOC dashboard at http://localhost:5000 (status only){Colors.NC}")
     print()
 
-    # Option 4: Textual TUI (experimental)
-    tui_status = f" {Colors.YELLOW}[beta]{Colors.NC}"
-    if not env['has_textual']:
-        tui_status = f" {Colors.YELLOW}(not installed){Colors.NC}"
+    # Option 4: Textual TUI (DEPRECATED - use Rich CLI instead)
     saved4 = f" {Colors.CYAN}[saved]{Colors.NC}" if saved_pref == '4' else ""
-    print(f"  {Colors.BOLD}4{Colors.NC}. {Colors.DIM}Textual TUI{Colors.NC}{tui_status}{saved4}")
-    print(f"     {Colors.DIM}Terminal UI - experimental, use Rich CLI for full features{Colors.NC}")
+    print(f"  {Colors.BOLD}4{Colors.NC}. {Colors.DIM}Textual TUI{Colors.NC} {Colors.RED}[DEPRECATED]{Colors.NC}{saved4}")
+    print(f"     {Colors.DIM}Use option 2 (Rich CLI) instead - TUI has rendering issues{Colors.NC}")
     print()
 
     # Tools section
@@ -376,10 +373,21 @@ def launch_interface(choice):
         os.execv(sys.executable, [sys.executable, str(src_dir / 'web_monitor.py')])
 
     elif choice == "4":
-        # Textual TUI (experimental)
-        print(f"\n{Colors.YELLOW}Note: Textual TUI is experimental. For full features use option 2.{Colors.NC}")
-        print(f"{Colors.GREEN}Launching Textual TUI...{Colors.NC}\n")
-        os.execv(sys.executable, [sys.executable, str(src_dir / 'main_tui.py')])
+        # Textual TUI (DEPRECATED)
+        print(f"\n{Colors.RED}╔════════════════════════════════════════════════════════════╗")
+        print(f"║  TUI IS DEPRECATED - Known rendering issues                 ║")
+        print(f"║  Use option 2 (Rich CLI) for full terminal experience       ║")
+        print(f"╚════════════════════════════════════════════════════════════╝{Colors.NC}\n")
+        try:
+            confirm = input(f"Launch anyway? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            confirm = 'n'
+        if confirm == 'y':
+            print(f"{Colors.YELLOW}Launching deprecated TUI...{Colors.NC}\n")
+            os.execv(sys.executable, [sys.executable, str(src_dir / 'main_tui.py')])
+        else:
+            print(f"{Colors.GREEN}Redirecting to Rich CLI...{Colors.NC}\n")
+            os.execv(sys.executable, [sys.executable, str(src_dir / 'main.py')])
 
     elif choice == "5":
         # Diagnostics - run as subprocess so we return to menu
