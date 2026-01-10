@@ -276,12 +276,17 @@ def get_node_counts() -> dict:
         from utils.paths import get_real_user_home
         cache_dir = get_real_user_home() / '.local' / 'share' / 'meshforge'
 
-        # Check for node cache file
+        # Check for node cache file (connection_manager format: list of nodes)
         node_cache = cache_dir / 'nodes_cache.json'
         if node_cache.exists():
             data = json.loads(node_cache.read_text())
-            counts['meshtastic'] = data.get('meshtastic_count', 0)
-            counts['rns'] = data.get('rns_count', 0)
+            # Handle list format (from connection_manager.get_nodes())
+            if isinstance(data, list):
+                counts['meshtastic'] = len(data)
+            # Handle dict format with count keys
+            elif isinstance(data, dict):
+                counts['meshtastic'] = data.get('meshtastic_count', 0)
+                counts['rns'] = data.get('rns_count', 0)
 
         # Also check gateway state for node counts
         gateway_state = cache_dir / 'gateway_state.json'

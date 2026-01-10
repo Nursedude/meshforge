@@ -125,12 +125,12 @@ def run_setup_wizard():
 def print_banner():
     """Print the welcome banner"""
     print(f"""{Colors.CYAN}
-╔═══════════════════════════════════════════════════════════════╗
-║     Meshtasticd Interactive Manager - v{__version__:<21}║
-║     For Raspberry Pi OS & Linux                               ║
-╠═══════════════════════════════════════════════════════════════╣
-║     Choose your interface to get started                      ║
-╚═══════════════════════════════════════════════════════════════╝
++---------------------------------------------------------------+
+|     Meshtasticd Interactive Manager - v{__version__:<21}|
+|     For Raspberry Pi OS & Linux                               |
++---------------------------------------------------------------+
+|     Choose your interface to get started                      |
++---------------------------------------------------------------+
 {Colors.NC}""")
 
 
@@ -218,7 +218,7 @@ def get_recommendation(env):
 
 def print_menu(env, recommended, saved_pref=None):
     """Print the interface selection menu"""
-    print(f"{Colors.BOLD}═══ INTERFACES ════════════════════════════════════════════{Colors.NC}\n")
+    print(f"{Colors.BOLD}=== INTERFACES ============================================{Colors.NC}\n")
 
     # Show saved preference if any
     if saved_pref:
@@ -264,7 +264,7 @@ def print_menu(env, recommended, saved_pref=None):
     print()
 
     # Tools section
-    print(f"{Colors.BOLD}═══ QUICK TOOLS ═══════════════════════════════════════════{Colors.NC}\n")
+    print(f"{Colors.BOLD}=== QUICK TOOLS ==========================================={Colors.NC}\n")
 
     # Option 5: Diagnostics
     print(f"  {Colors.BOLD}5{Colors.NC}. {Colors.YELLOW}Run Diagnostics{Colors.NC}")
@@ -282,7 +282,7 @@ def print_menu(env, recommended, saved_pref=None):
     print()
 
     # Options section
-    print(f"{Colors.BOLD}═══ OPTIONS ═══════════════════════════════════════════════{Colors.NC}\n")
+    print(f"{Colors.BOLD}=== OPTIONS ==============================================={Colors.NC}\n")
 
     # Install options
     print(f"  {Colors.BOLD}i{Colors.NC}. Install missing dependencies")
