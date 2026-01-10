@@ -2595,15 +2595,26 @@ MAIN_TEMPLATE = '''
         // Gateway functions
         // ========================================
         async function refreshGateway() {
+            const statusEl = document.getElementById('gateway-status');
+            const meshEl = document.getElementById('gateway-mesh-status');
+            const rnsEl = document.getElementById('gateway-rns-status');
+            const nodesEl = document.getElementById('gateway-nodes');
+
             try {
                 const resp = await fetch('/api/gateway/status');
+                if (!resp.ok) {
+                    throw new Error(`HTTP ${resp.status}`);
+                }
                 const data = await resp.json();
 
-                // Update status displays
-                const statusEl = document.getElementById('gateway-status');
-                const meshEl = document.getElementById('gateway-mesh-status');
-                const rnsEl = document.getElementById('gateway-rns-status');
-                const nodesEl = document.getElementById('gateway-nodes');
+                // Check for API error
+                if (data.error) {
+                    statusEl.innerHTML = `<span style="color: var(--danger);">Error</span>`;
+                    meshEl.innerHTML = '<span style="color: var(--text-muted);">--</span>';
+                    rnsEl.innerHTML = '<span style="color: var(--text-muted);">--</span>';
+                    console.error('Gateway API error:', data.error);
+                    return;
+                }
 
                 // Gateway status
                 if (data.running) {
@@ -2614,14 +2625,19 @@ MAIN_TEMPLATE = '''
                     statusEl.innerHTML = '<span style="color: var(--text-muted);">Disabled</span>';
                 }
 
-                // Service status
-                meshEl.innerHTML = data.services?.meshtasticd
-                    ? '<span style="color: var(--accent);">Online</span>'
-                    : '<span style="color: var(--danger);">Offline</span>';
+                // Service status - check if services object exists
+                if (data.services) {
+                    meshEl.innerHTML = data.services.meshtasticd
+                        ? '<span style="color: var(--accent);">Online</span>'
+                        : '<span style="color: var(--danger);">Offline</span>';
 
-                rnsEl.innerHTML = data.services?.rnsd
-                    ? '<span style="color: var(--accent);">Online</span>'
-                    : '<span style="color: var(--danger);">Offline</span>';
+                    rnsEl.innerHTML = data.services.rnsd
+                        ? '<span style="color: var(--accent);">Online</span>'
+                        : '<span style="color: var(--danger);">Offline</span>';
+                } else {
+                    meshEl.innerHTML = '<span style="color: var(--text-muted);">Unknown</span>';
+                    rnsEl.innerHTML = '<span style="color: var(--text-muted);">Unknown</span>';
+                }
 
                 // Node count
                 nodesEl.textContent = data.stats?.total_nodes || 0;
@@ -2640,6 +2656,10 @@ MAIN_TEMPLATE = '''
 
             } catch (e) {
                 console.error('Error fetching gateway status:', e);
+                // Show error state in UI instead of leaving stale data
+                statusEl.innerHTML = '<span style="color: var(--danger);">Error</span>';
+                meshEl.innerHTML = '<span style="color: var(--text-muted);">--</span>';
+                rnsEl.innerHTML = '<span style="color: var(--text-muted);">--</span>';
             }
         }
 
@@ -2788,6 +2808,12 @@ MAIN_TEMPLATE = '''
 
                 if (data.error) {
                     listEl.innerHTML = `<div style="color: var(--warning);">${escapeHtml(data.error)}</div>`;
+                    return;
+                }
+
+                // Defensive check for components array
+                if (!data.components || !Array.isArray(data.components)) {
+                    listEl.innerHTML = '<div style="color: var(--warning);">No version data available</div>';
                     return;
                 }
 
