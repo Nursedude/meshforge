@@ -6,114 +6,17 @@ Handles network port and connection diagnostics.
 
 from flask import Blueprint, jsonify, request
 import subprocess
-import os
-import re
-import struct
 import socket
 
+# Import utilities from web.utils (allows testing without Flask)
+from web.utils import (
+    TCP_STATES,
+    hex_to_ip,
+    parse_proc_net_line,
+    parse_proc_net,
+)
+
 network_bp = Blueprint('network', __name__)
-
-# TCP state mapping (hex to name)
-TCP_STATES = {
-    '01': 'ESTABLISHED',
-    '02': 'SYN_SENT',
-    '03': 'SYN_RECV',
-    '04': 'FIN_WAIT1',
-    '05': 'FIN_WAIT2',
-    '06': 'TIME_WAIT',
-    '07': 'CLOSE',
-    '08': 'CLOSE_WAIT',
-    '09': 'LAST_ACK',
-    '0A': 'LISTEN',
-    '0B': 'CLOSING',
-}
-
-
-def hex_to_ip(hex_addr: str) -> str:
-    """Convert hex address from /proc/net to dotted IP format (little endian)."""
-    try:
-        addr_int = int(hex_addr, 16)
-        # Convert from network byte order (big endian) as stored
-        return socket.inet_ntoa(struct.pack('<I', addr_int))
-    except Exception:
-        return '0.0.0.0'
-
-
-def parse_proc_net_line(line: str) -> dict:
-    """Parse a single line from /proc/net/{tcp,udp}.
-
-    Returns dict with connection info or None if invalid/header line.
-    """
-    line = line.strip()
-    if not line or line.startswith('sl') or 'local_address' in line:
-        return None
-
-    parts = line.split()
-    if len(parts) < 10:
-        return None
-
-    try:
-        local_addr = parts[1]
-        remote_addr = parts[2]
-        state_hex = parts[3]
-
-        local_ip_hex, local_port_hex = local_addr.split(':')
-        local_ip = hex_to_ip(local_ip_hex)
-        local_port = int(local_port_hex, 16)
-
-        remote_ip_hex, remote_port_hex = remote_addr.split(':')
-        remote_ip = hex_to_ip(remote_ip_hex)
-        remote_port = int(remote_port_hex, 16)
-
-        state = TCP_STATES.get(state_hex, state_hex)
-
-        return {
-            'local_ip': local_ip,
-            'local_port': local_port,
-            'remote_ip': remote_ip,
-            'remote_port': remote_port,
-            'state': state,
-            'state_hex': state_hex,
-        }
-    except Exception:
-        return None
-
-
-def parse_proc_net(protocol: str) -> list:
-    """Parse /proc/net/{tcp,udp} for connection info."""
-    connections = []
-    proc_file = f'/proc/net/{protocol}'
-
-    if not os.path.exists(proc_file):
-        return connections
-
-    try:
-        with open(proc_file, 'r') as f:
-            lines = f.readlines()[1:]  # Skip header
-
-        for line in lines:
-            parts = line.split()
-            if len(parts) < 10:
-                continue
-
-            local_addr = parts[1]
-            remote_addr = parts[2]
-            state = parts[3]
-
-            # Parse hex addresses
-            local_ip, local_port = local_addr.split(':')
-            local_port = int(local_port, 16)
-
-            connections.append({
-                'local_port': local_port,
-                'state': state,
-                'raw': line.strip()[:80]
-            })
-
-    except Exception:
-        pass
-
-    return connections
 
 
 @network_bp.route('/network/udp')

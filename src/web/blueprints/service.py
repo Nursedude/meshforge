@@ -7,13 +7,10 @@ Handles systemctl operations for meshtasticd and related services.
 from flask import Blueprint, jsonify, request
 import subprocess
 
+# Import from web.utils for testability
+from web.utils import VALID_ACTIONS, ALLOWED_SERVICES
+
 service_bp = Blueprint('service', __name__)
-
-# Valid service actions
-VALID_ACTIONS = {'start', 'stop', 'restart', 'status'}
-
-# Services that can be controlled
-ALLOWED_SERVICES = {'meshtasticd', 'rnsd'}
 
 
 @service_bp.route('/service/<action>', methods=['POST'])

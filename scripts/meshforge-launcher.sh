@@ -87,6 +87,26 @@ launch_terminal() {
     exec sudo python3 "$script"
 }
 
+# Show usage help
+show_help() {
+    echo "MeshForge - Mesh Network Operations Center"
+    echo ""
+    echo "Usage: meshforge [command]"
+    echo ""
+    echo "Commands:"
+    echo "  (none)    Show interactive menu (default)"
+    echo "  gtk       Launch GTK graphical interface directly"
+    echo "  tui       Launch terminal UI directly"
+    echo "  web       Launch web interface directly"
+    echo "  cli       Launch Rich CLI menu"
+    echo "  help      Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  meshforge          # Show menu with all options"
+    echo "  meshforge gtk      # Launch GTK directly"
+    echo "  meshforge tui      # Launch TUI directly"
+}
+
 # Determine which interface to launch
 case "$1" in
     gtk)
@@ -106,8 +126,11 @@ case "$1" in
     cli)
         launch_terminal "$MESHFORGE_DIR/src/main.py"
         ;;
+    help|--help|-h)
+        show_help
+        ;;
     *)
-        # Default: launch GTK interface directly (most common from desktop)
-        launch_gui "$MESHFORGE_DIR/src/main_gtk.py"
+        # Default: show interactive launcher menu
+        launch_terminal "$MESHFORGE_DIR/src/launcher.py"
         ;;
 esac
