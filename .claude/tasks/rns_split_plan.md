@@ -61,12 +61,25 @@ src/gtk_ui/panels/
 - Error handling patterns
 
 ## Status
-- [ ] Create rns/ directory structure
-- [ ] Extract meshchat.py
-- [ ] Extract nomadnet.py
-- [ ] Extract rnode.py
-- [ ] Extract gateway.py
-- [ ] Extract components.py
-- [ ] Extract config.py
-- [ ] Update imports
-- [ ] Test full panel functionality
+- [x] Create rns/ directory structure
+- [x] Extract meshchat.py (MeshChatMixin)
+- [x] Extract nomadnet.py (NomadNetMixin)
+- [x] Extract rnode.py (RNodeMixin)
+- [x] Extract gateway.py (GatewayMixin)
+- [x] Extract components.py (ComponentsMixin)
+- [x] Extract config.py (ConfigMixin)
+- [x] Create __init__.py with lazy imports
+- [ ] Update main rns.py to use mixins (optional - backwards compatible)
+- [x] Test full panel functionality (578 tests passing)
+
+## Completed: 2026-01-10
+Created mixin modules in `src/gtk_ui/panels/rns/`:
+- `meshchat.py` - MeshChat web interface management
+- `nomadnet.py` - NomadNet terminal client management
+- `rnode.py` - RNode LoRa interface configuration
+- `gateway.py` - RNS-Meshtastic gateway bridge
+- `components.py` - RNS ecosystem component installation
+- `config.py` - Configuration file management
+
+The main `rns.py` still contains the full implementation for backwards
+compatibility. The mixins can be used to gradually refactor the panel.
