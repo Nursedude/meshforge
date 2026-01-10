@@ -328,22 +328,20 @@ class DashboardPane(Container):
         log = self.query_one("#dashboard-log", Log)
 
         # Service status - use centralized check if available
+        status_widget = self.query_one("#service-status", Static)
+        detail_widget = self.query_one("#service-detail", Static)
         try:
-            status_widget = self.query_one("#service-status", Static)
-            detail_widget = self.query_one("#service-detail", Static)
-
             if check_service:
                 # Use centralized service checker (run in thread pool)
-                loop = asyncio.get_event_loop()
-                service_status = await loop.run_in_executor(
+                service_status = await asyncio.get_running_loop().run_in_executor(
                     None, lambda: check_service('meshtasticd')
                 )
                 if service_status.available:
                     status_widget.update("[green]● Running[/green]")
                     detail_widget.update("TCP 4403 open")
                 else:
-                    status_widget.update(f"[red]○ Stopped[/red]")
-                    detail_widget.update(service_status.message)
+                    status_widget.update("[red]○ Stopped[/red]")
+                    detail_widget.update(service_status.message or "Not running")
             else:
                 # Fallback to direct systemctl
                 result = await asyncio.create_subprocess_exec(
@@ -359,24 +357,24 @@ class DashboardPane(Container):
                     detail_widget.update("Active")
                 else:
                     status_widget.update("[red]○ Stopped[/red]")
-                    detail_widget.update(status)
+                    detail_widget.update(status or "inactive")
         except Exception as e:
-            self.query_one("#service-status", Static).update("[red]Error[/red]")
+            status_widget.update("[red]Error[/red]")
+            detail_widget.update(str(e)[:20])
 
         # Mesh Nodes - fetch from meshtasticd (not just cache)
+        nodes_widget = self.query_one("#nodes-status", Static)
+        nodes_detail = self.query_one("#nodes-detail", Static)
         try:
-            nodes_widget = self.query_one("#nodes-status", Static)
-            nodes_detail = self.query_one("#nodes-detail", Static)
             try:
                 from utils.connection_manager import get_nodes, is_available
-                loop = asyncio.get_event_loop()
 
                 # Check if port is available first
-                available = await loop.run_in_executor(None, is_available)
+                available = await asyncio.get_running_loop().run_in_executor(None, is_available)
                 if available:
                     # Fetch fresh nodes (also updates cache)
                     nodes_detail.update("Fetching...")
-                    nodes = await loop.run_in_executor(None, get_nodes)
+                    nodes = await asyncio.get_running_loop().run_in_executor(None, get_nodes)
                     if nodes:
                         count = len(nodes) if isinstance(nodes, list) else 0
                         nodes_widget.update(f"[green]{count} nodes[/green]")
@@ -392,12 +390,13 @@ class DashboardPane(Container):
                 nodes_detail.update("No manager")
         except Exception as e:
             logger.debug(f"Node fetch error: {e}")
+            nodes_widget.update("[red]Error[/red]")
+            nodes_detail.update(str(e)[:20])
 
         # RNS Status
+        rns_widget = self.query_one("#rns-status", Static)
+        rns_detail = self.query_one("#rns-detail", Static)
         try:
-            rns_widget = self.query_one("#rns-status", Static)
-            rns_detail = self.query_one("#rns-detail", Static)
-
             result = await asyncio.create_subprocess_exec(
                 'systemctl', 'is-active', 'rnsd',
                 stdout=asyncio.subprocess.PIPE,
@@ -413,9 +412,11 @@ class DashboardPane(Container):
                 rns_widget.update("[yellow]○ Inactive[/yellow]")
                 rns_detail.update("Optional")
         except Exception:
-            self.query_one("#rns-status", Static).update("[yellow]N/A[/yellow]")
+            rns_widget.update("[yellow]N/A[/yellow]")
+            rns_detail.update("Check failed")
 
         # Version
+        version_widget = self.query_one("#version-status", Static)
         try:
             result = await asyncio.create_subprocess_exec(
                 'meshtasticd', '--version',
@@ -428,13 +429,13 @@ class DashboardPane(Container):
                 # Clean up version string
                 if 'version' in version.lower():
                     version = version.split()[-1]
-                self.query_one("#version-status", Static).update(f"[green]{version}[/green]")
+                version_widget.update(f"[green]{version}[/green]")
             else:
-                self.query_one("#version-status", Static).update("[yellow]Not installed[/yellow]")
+                version_widget.update("[yellow]Not installed[/yellow]")
         except FileNotFoundError:
-            self.query_one("#version-status", Static).update("[yellow]Not installed[/yellow]")
+            version_widget.update("[yellow]Not installed[/yellow]")
         except Exception:
-            pass
+            version_widget.update("[yellow]Unknown[/yellow]")
 
         # Config status
         config_path = Path('/etc/meshtasticd/config.yaml')

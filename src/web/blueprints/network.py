@@ -129,3 +129,91 @@ def api_network_full_diagnostics():
         pass
 
     return jsonify(diagnostics)
+
+
+@network_bp.route('/network/multicast')
+def api_network_multicast():
+    """Get multicast group memberships."""
+    groups = []
+    try:
+        with open('/proc/net/igmp', 'r') as f:
+            lines = f.readlines()
+        current_device = None
+        for line in lines[1:]:
+            if line[0].isdigit():
+                parts = line.split()
+                if len(parts) >= 2:
+                    current_device = parts[1].rstrip(':')
+            elif line.strip() and current_device:
+                parts = line.split()
+                if parts:
+                    try:
+                        group_int = int(parts[0], 16)
+                        group_bytes = [(group_int >> i) & 0xFF for i in (0, 8, 16, 24)]
+                        group_ip = '.'.join(str(b) for b in group_bytes)
+                        groups.append({'device': current_device, 'group': group_ip})
+                    except ValueError:
+                        pass
+    except (FileNotFoundError, PermissionError):
+        pass
+    return jsonify({'groups': groups})
+
+
+@network_bp.route('/network/process-ports')
+def api_network_process_ports():
+    """Get process-to-port mapping using ss."""
+    try:
+        result = subprocess.run(
+            ['ss', '-tulnp'],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            return jsonify({'output': result.stdout, 'tool': 'ss'})
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+    # Fallback to netstat
+    try:
+        result = subprocess.run(
+            ['netstat', '-tulnp'],
+            capture_output=True, text=True, timeout=10
+        )
+        return jsonify({'output': result.stdout, 'tool': 'netstat'})
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+
+@network_bp.route('/network/kill-clients', methods=['POST'])
+def api_network_kill_clients():
+    """Kill competing RNS/Meshtastic clients."""
+    killed = []
+    for pattern in ['nomadnet', 'python.*meshtastic', 'lxmf']:
+        try:
+            result = subprocess.run(
+                ['pkill', '-9', '-f', pattern],
+                capture_output=True, timeout=5
+            )
+            if result.returncode == 0:
+                killed.append(pattern)
+        except Exception:
+            pass
+    return jsonify({'killed': killed, 'success': True})
+
+
+@network_bp.route('/network/stop-rns', methods=['POST'])
+def api_network_stop_rns():
+    """Stop all RNS processes."""
+    killed = []
+    for proc in ['rnsd', 'nomadnet', 'lxmf', 'RNS']:
+        try:
+            result = subprocess.run(
+                ['pkill', '-9', '-f', proc],
+                capture_output=True, timeout=5
+            )
+            if result.returncode == 0:
+                killed.append(proc)
+        except Exception:
+            pass
+    return jsonify({'killed': killed, 'success': True})
