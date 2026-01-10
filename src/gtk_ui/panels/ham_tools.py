@@ -366,6 +366,10 @@ class HamToolsPanel(Gtk.Box):
         install_btn.connect("clicked", self._on_install_hamclock)
         svc_box.append(install_btn)
 
+        diagnose_btn = Gtk.Button(label="Diagnose")
+        diagnose_btn.connect("clicked", self._on_diagnose_hamclock)
+        svc_box.append(diagnose_btn)
+
         svc_frame.set_child(svc_box)
         box.append(svc_frame)
 
@@ -828,6 +832,123 @@ class HamToolsPanel(Gtk.Box):
             GLib.idle_add(self._output_message, f"Could not {action} any HamClock service")
 
         threading.Thread(target=do_action, daemon=True).start()
+
+    def _on_diagnose_hamclock(self, button):
+        """Diagnose HamClock installation and provide fixes"""
+        self._output_message("=== HamClock Diagnostic ===")
+        button.set_sensitive(False)
+
+        def do_diagnose():
+            import shutil
+            issues = []
+            fixes = []
+
+            # Check 1: Is hamclock binary installed?
+            hamclock_bin = shutil.which('hamclock')
+            if hamclock_bin:
+                GLib.idle_add(self._output_message, f"[OK] HamClock binary: {hamclock_bin}")
+            else:
+                # Check common locations
+                for path in ['/usr/bin/hamclock', '/usr/local/bin/hamclock', '/opt/hamclock/hamclock']:
+                    if os.path.exists(path):
+                        hamclock_bin = path
+                        break
+                if hamclock_bin:
+                    GLib.idle_add(self._output_message, f"[OK] HamClock binary: {hamclock_bin}")
+                else:
+                    GLib.idle_add(self._output_message, "[!!] HamClock binary not found")
+                    issues.append("HamClock not installed")
+                    fixes.append("Click 'Install HamClock' button")
+
+            # Check 2: Check for service files
+            found_services = []
+            search_dirs = ['/lib/systemd/system', '/etc/systemd/system', '/usr/lib/systemd/system']
+            for sdir in search_dirs:
+                try:
+                    find_result = subprocess.run(
+                        ['find', sdir, '-name', '*amclock*.service', '-o', '-name', '*HamClock*.service'],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    for line in find_result.stdout.strip().split('\n'):
+                        if line and line.endswith('.service'):
+                            svc_name = os.path.basename(line).replace('.service', '')
+                            if svc_name not in found_services:
+                                found_services.append(svc_name)
+                                GLib.idle_add(self._output_message, f"[OK] Service file found: {svc_name}")
+                except Exception:
+                    continue
+
+            if not found_services:
+                # Check common names
+                for name in ['hamclock', 'hamclock-web', 'hamclock-systemd', 'HamClock']:
+                    check = subprocess.run(['systemctl', 'cat', name], capture_output=True, text=True, timeout=5)
+                    if check.returncode == 0:
+                        found_services.append(name)
+                        GLib.idle_add(self._output_message, f"[OK] Service found: {name}")
+
+            if not found_services:
+                GLib.idle_add(self._output_message, "[!!] No HamClock service files found")
+                issues.append("No systemd service")
+                if hamclock_bin:
+                    fixes.append(f"Create service: sudo {hamclock_bin} -o 4 &")
+
+            # Check 3: Is any service running?
+            running_service = None
+            for svc in found_services:
+                check = subprocess.run(['systemctl', 'is-active', svc], capture_output=True, text=True, timeout=5)
+                if check.stdout.strip() == 'active':
+                    running_service = svc
+                    GLib.idle_add(self._output_message, f"[OK] Service running: {svc}")
+                    break
+
+            if found_services and not running_service:
+                GLib.idle_add(self._output_message, "[!!] Service not running")
+                issues.append("Service stopped")
+                fixes.append(f"Run: sudo systemctl start {found_services[0]}")
+
+            # Check 4: Is port 8081 open?
+            import socket
+            for port in [8081, 8080, 8082]:
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(2)
+                    result = sock.connect_ex(('127.0.0.1', port))
+                    sock.close()
+                    if result == 0:
+                        GLib.idle_add(self._output_message, f"[OK] Port {port} is listening")
+                    else:
+                        GLib.idle_add(self._output_message, f"[--] Port {port} not listening")
+                except Exception:
+                    pass
+
+            # Check 5: Try to fetch from HamClock
+            url = self._settings.get("hamclock_url", "http://localhost")
+            api_port = self._settings.get("hamclock_api_port", 8082)
+            try:
+                test_url = f"{url}:{api_port}/get_sys.txt"
+                req = urllib.request.Request(test_url, headers={'User-Agent': 'MeshForge'})
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    GLib.idle_add(self._output_message, f"[OK] HamClock API responding on {api_port}")
+            except Exception as e:
+                GLib.idle_add(self._output_message, f"[!!] API not responding: {e}")
+                if not issues:
+                    issues.append("API not responding")
+                    fixes.append("Check URL and port settings")
+
+            # Summary
+            GLib.idle_add(self._output_message, "\n=== Summary ===")
+            if not issues:
+                GLib.idle_add(self._output_message, "HamClock appears healthy!")
+            else:
+                for issue in issues:
+                    GLib.idle_add(self._output_message, f"Issue: {issue}")
+                GLib.idle_add(self._output_message, "\nSuggested fixes:")
+                for fix in fixes:
+                    GLib.idle_add(self._output_message, f"  -> {fix}")
+
+            GLib.idle_add(button.set_sensitive, True)
+
+        threading.Thread(target=do_diagnose, daemon=True).start()
 
     def _on_open_hamclock_browser(self, button):
         """Open HamClock in browser"""
