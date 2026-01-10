@@ -138,8 +138,13 @@ class DashboardPane(Container):
 
     def on_mount(self):
         """Called when widget is mounted"""
-        # Start data refresh (using set_timer to ensure widgets are ready)
-        self.set_timer(0.1, self.refresh_data)
+        # Start data refresh - call the worker method directly
+        # The @work decorator handles async scheduling
+        self.refresh_data()
+
+    def _trigger_refresh(self):
+        """Trigger a data refresh - called by timer"""
+        self.refresh_data()
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle dashboard button presses"""
@@ -325,13 +330,20 @@ class DashboardPane(Container):
     @work(exclusive=True)
     async def refresh_data(self):
         """Refresh dashboard data"""
-        log = self.query_one("#dashboard-log", Log)
         logger.debug("refresh_data() started")
-        log.write("[dim]Refreshing...[/dim]")
 
-        # Service status - use centralized check if available
-        status_widget = self.query_one("#service-status", Static)
-        detail_widget = self.query_one("#service-detail", Static)
+        # Get widgets first
+        try:
+            log = self.query_one("#dashboard-log", Log)
+            status_widget = self.query_one("#service-status", Static)
+            detail_widget = self.query_one("#service-detail", Static)
+        except Exception as e:
+            logger.error(f"Failed to query widgets: {e}")
+            return
+
+        # Show immediate feedback
+        log.write("[cyan]Checking services...[/cyan]")
+        status_widget.update("[yellow]Checking...[/yellow]")
         try:
             if check_service:
                 # Use centralized service checker (run in thread pool)
