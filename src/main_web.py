@@ -51,6 +51,13 @@ except ImportError:
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 
+# Register modular blueprints (new architecture)
+try:
+    from web.blueprints import register_blueprints
+    register_blueprints(app)
+except ImportError:
+    pass  # Blueprints not yet installed, use legacy routes
+
 # Configuration - SECURITY: Default to localhost only
 # Use --host 0.0.0.0 explicitly to expose to network (requires --password)
 CONFIG = {
