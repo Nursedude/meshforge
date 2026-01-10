@@ -202,8 +202,37 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         # Set up keyboard shortcuts
         self._setup_keyboard_shortcuts()
 
+        # Set up close handler to cleanup panels
+        self.connect("close-request", self._on_close_request)
+
         # Check if we're resuming after reboot
         self._check_resume_state()
+
+    def _on_close_request(self, window):
+        """Handle window close - cleanup all panels with cleanup methods."""
+        # List of panel attribute names that might have cleanup methods
+        panel_attrs = [
+            'diagnostics_panel',
+            'mesh_tools_panel',
+            'rns_panel',
+            'tools_panel',
+            'map_panel',
+            'radio_config_panel',
+            'ham_tools_panel',
+            'hamclock_panel',
+            'meshbot_panel',
+        ]
+
+        for attr_name in panel_attrs:
+            panel = getattr(self, attr_name, None)
+            if panel and hasattr(panel, 'cleanup'):
+                try:
+                    panel.cleanup()
+                except Exception as e:
+                    logger.warning(f"Error cleaning up {attr_name}: {e}")
+
+        # Return False to allow the window to close
+        return False
 
     def _get_smart_default_size(self):
         """Calculate smart default window size based on monitor dimensions"""
