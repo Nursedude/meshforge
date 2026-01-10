@@ -99,21 +99,28 @@ class MeshForgeApp(Adw.Application):
                     icons_dir.mkdir(parents=True, exist_ok=True)
                     import shutil
 
-                    # Install with application_id name (required for GTK4/libadwaita)
+                    def should_update_icon(src: Path, dest: Path) -> bool:
+                        """Check if icon should be updated (source newer or dest missing)"""
+                        if not dest.exists():
+                            return True
+                        return src.stat().st_mtime > dest.stat().st_mtime
+
+                    # Install with application_id name (required for GTK4/libadwaita taskbar)
                     app_icon_dest = icons_dir / 'org.meshforge.app.svg'
-                    if icon_src.exists() and not app_icon_dest.exists():
+                    if icon_src.exists() and should_update_icon(icon_src, app_icon_dest):
                         shutil.copy(str(icon_src), str(app_icon_dest))
+                        logger.debug(f"Updated taskbar icon: {app_icon_dest}")
 
                     # Also keep legacy name for compatibility
                     legacy_icon_dest = icons_dir / 'meshforge-icon.svg'
-                    if icon_src.exists() and not legacy_icon_dest.exists():
+                    if icon_src.exists() and should_update_icon(icon_src, legacy_icon_dest):
                         shutil.copy(str(icon_src), str(legacy_icon_dest))
 
-                    # Update icon cache
+                    # Update icon cache to reflect changes
                     subprocess.run(['gtk-update-icon-cache', '-f', '-q', '/usr/share/icons/hicolor'],
                                    capture_output=True, timeout=10)
-                except Exception:
-                    pass  # Not critical if this fails
+                except Exception as e:
+                    logger.debug(f"Icon installation skipped: {e}")
 
     def on_activate(self, app):
         """Called when application is activated"""
