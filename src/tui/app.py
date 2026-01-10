@@ -1623,13 +1623,17 @@ class MeshtasticdTUI(App):
         height: 100%;
     }
 
-    TabPane > Container {
+    TabPane > Container, TabPane > ScrollableContainer {
         height: 100%;
         overflow-y: auto;
     }
 
     TabbedContent {
         padding: 0;
+    }
+
+    DashboardPane {
+        height: 100%;
     }
     """
 
