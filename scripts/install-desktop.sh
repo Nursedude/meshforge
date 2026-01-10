@@ -13,6 +13,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
+# Resolve actual path (follow symlinks)
+PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd -P)"
+
 echo "==========================================="
 echo "MeshForge Desktop Integration Installer"
 echo "==========================================="
@@ -37,16 +40,29 @@ echo "Installing for user: $REAL_USER"
 echo "Project directory: $PROJECT_DIR"
 echo
 
-# Create /opt/meshforge symlink
-echo "Creating /opt/meshforge symlink..."
-if [ -L /opt/meshforge ]; then
-    rm /opt/meshforge
+# Create /opt/meshforge symlink (only if not already there)
+echo "Setting up /opt/meshforge..."
+if [ "$PROJECT_DIR" = "/opt/meshforge" ]; then
+    echo "  Already installed at /opt/meshforge"
+elif [ -L /opt/meshforge ]; then
+    # Check if symlink points to correct location
+    CURRENT_TARGET="$(readlink -f /opt/meshforge 2>/dev/null || echo '')"
+    if [ "$CURRENT_TARGET" = "$PROJECT_DIR" ]; then
+        echo "  Symlink already correct: /opt/meshforge -> $PROJECT_DIR"
+    else
+        rm /opt/meshforge
+        ln -sf "$PROJECT_DIR" /opt/meshforge
+        echo "  Updated symlink: /opt/meshforge -> $PROJECT_DIR"
+    fi
 elif [ -d /opt/meshforge ]; then
     echo "Warning: /opt/meshforge exists as directory, backing up..."
-    mv /opt/meshforge /opt/meshforge.backup.$(date +%Y%m%d)
+    mv /opt/meshforge /opt/meshforge.backup.$(date +%Y%m%d%H%M%S)
+    ln -sf "$PROJECT_DIR" /opt/meshforge
+    echo "  /opt/meshforge -> $PROJECT_DIR"
+else
+    ln -sf "$PROJECT_DIR" /opt/meshforge
+    echo "  /opt/meshforge -> $PROJECT_DIR"
 fi
-ln -sf "$PROJECT_DIR" /opt/meshforge
-echo "  /opt/meshforge -> $PROJECT_DIR"
 
 # Install icon
 echo "Installing icon..."
