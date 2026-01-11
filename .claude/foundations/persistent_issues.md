@@ -373,4 +373,95 @@ async def on_mount(self):
 
 ---
 
-*Last updated: 2026-01-10 - Complete fix for TUI height:1fr CSS conflicts*
+---
+
+## Issue #7: Missing File References in Launchers
+
+### Symptom
+TUI or launcher crashes when selecting a menu option because the referenced file doesn't exist.
+
+### Example
+`launcher_tui.py` line 349 referenced `gateway/bridge_cli.py` which didn't exist:
+```python
+subprocess.run([sys.executable, str(self.src_dir / 'gateway' / 'bridge_cli.py')])
+```
+
+### Root Cause
+Adding menu options that reference new scripts without creating the scripts first.
+
+### Proper Fix
+1. **Create the script before referencing it**
+2. **Add verification step**: Check all file references exist before committing
+3. **Use commands layer when possible**: Instead of running scripts, use commands module
+
+### Prevention
+Run this verification before committing launcher changes:
+```bash
+# Check all referenced files exist
+for f in src/main_gtk.py src/main.py src/web_monitor.py src/cli/diagnose.py \
+         src/gateway/bridge_cli.py src/monitor.py src/launcher.py; do
+  [ -f "$f" ] && echo "OK: $f" || echo "MISSING: $f"
+done
+```
+
+---
+
+## Issue #8: Outdated Fallback Version Strings
+
+### Symptom
+Application shows old version number even after version bump.
+
+### Root Cause
+Fallback version strings in try/except blocks don't get updated:
+```python
+try:
+    from __version__ import __version__
+except ImportError:
+    __version__ = "0.4.3"  # Outdated!
+```
+
+### Proper Fix
+1. Search for hardcoded version strings when bumping version
+2. Use `grep -r "0\.4\." src/` to find all occurrences
+
+### Prevention
+```bash
+# Before releasing, search for version strings
+grep -rn "0\.[0-9]\.[0-9]" src/*.py | grep -v __version__.py
+```
+
+---
+
+## Issue #9: Broad Exception Swallowing
+
+### Symptom
+Real errors are hidden because `except Exception: pass` catches everything.
+
+### Example
+```python
+# BAD - hides all errors
+try:
+    proc.communicate(input=str(percent), timeout=1)
+except Exception:
+    pass
+
+# GOOD - specific exceptions with explanation
+try:
+    proc.communicate(input=str(percent), timeout=1)
+except (subprocess.TimeoutExpired, OSError):
+    # Gauge display timeout - non-critical, UI continues
+    pass
+```
+
+### Proper Fix
+1. **Use specific exception types**
+2. **Add comment explaining why silence is acceptable**
+3. **Log at DEBUG level if truly non-critical**
+
+### Prevention
+- Grep for `except.*:.*pass` before committing
+- Code review should flag broad exception handlers
+
+---
+
+*Last updated: 2026-01-11 - Added issues #7-9 from gateway bridge CLI session*

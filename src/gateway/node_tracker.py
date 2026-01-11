@@ -238,8 +238,12 @@ class UnifiedNodeTracker:
     Provides unified view for map display and monitoring.
     """
 
-    CACHE_FILE = get_real_user_home() / ".config" / "meshforge" / "node_cache.json"
     OFFLINE_THRESHOLD = 3600  # 1 hour
+
+    @classmethod
+    def get_cache_file(cls) -> Path:
+        """Get the cache file path (evaluated at runtime, not import time)"""
+        return get_real_user_home() / ".config" / "meshforge" / "node_cache.json"
 
     def __init__(self):
         self._nodes: Dict[str, UnifiedNode] = {}
@@ -408,6 +412,22 @@ class UnifiedNodeTracker:
             return [n for n in self._nodes.values()
                     if n.network in ("rns", "both")]
 
+    def get_node_by_mesh_id(self, meshtastic_id: str) -> Optional[UnifiedNode]:
+        """Get a node by its Meshtastic ID (e.g., !abcd1234)"""
+        with self._lock:
+            for node in self._nodes.values():
+                if node.meshtastic_id == meshtastic_id:
+                    return node
+            return None
+
+    def get_node_by_rns_hash(self, rns_hash: bytes) -> Optional[UnifiedNode]:
+        """Get a node by its RNS destination hash"""
+        with self._lock:
+            for node in self._nodes.values():
+                if node.rns_hash == rns_hash:
+                    return node
+            return None
+
     def get_nodes_with_position(self) -> List[UnifiedNode]:
         """Get nodes that have valid positions"""
         with self._lock:
@@ -434,12 +454,14 @@ class UnifiedNodeTracker:
 
     def register_callback(self, callback: Callable):
         """Register a callback for node updates"""
-        self._callbacks.append(callback)
+        with self._lock:
+            self._callbacks.append(callback)
 
     def unregister_callback(self, callback: Callable):
         """Unregister a callback"""
-        if callback in self._callbacks:
-            self._callbacks.remove(callback)
+        with self._lock:
+            if callback in self._callbacks:
+                self._callbacks.remove(callback)
 
     def _merge_node(self, existing: UnifiedNode, new: UnifiedNode):
         """Merge new node data into existing node"""
@@ -513,11 +535,12 @@ class UnifiedNodeTracker:
 
     def _load_cache(self):
         """Load node cache from file"""
-        if not self.CACHE_FILE.exists():
+        cache_file = self.get_cache_file()
+        if not cache_file.exists():
             return
 
         try:
-            with open(self.CACHE_FILE, 'r') as f:
+            with open(cache_file, 'r') as f:
                 data = json.load(f)
 
             for node_data in data.get('nodes', []):
@@ -543,7 +566,8 @@ class UnifiedNodeTracker:
     def _save_cache(self):
         """Save node cache to file"""
         try:
-            self.CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            cache_file = self.get_cache_file()
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
 
             with self._lock:
                 nodes_data = [n.to_dict() for n in self._nodes.values()]
@@ -554,7 +578,7 @@ class UnifiedNodeTracker:
                 'nodes': nodes_data
             }
 
-            with open(self.CACHE_FILE, 'w') as f:
+            with open(cache_file, 'w') as f:
                 json.dump(cache_data, f, indent=2)
 
             # Also save to /tmp for web API access (cross-process sharing)

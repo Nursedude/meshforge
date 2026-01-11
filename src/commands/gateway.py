@@ -309,10 +309,18 @@ def get_statistics() -> CommandResult:
         status = bridge.get_status()
         stats = status.get('statistics', {})
 
+        # Calculate total bridged messages
+        mesh_to_rns = stats.get('messages_mesh_to_rns', 0)
+        rns_to_mesh = stats.get('messages_rns_to_mesh', 0)
+        total_bridged = mesh_to_rns + rns_to_mesh
+
         return CommandResult.ok(
-            f"Messages bridged: {stats.get('messages_bridged', 0)}",
+            f"Messages bridged: {total_bridged} (M→R: {mesh_to_rns}, R→M: {rns_to_mesh})",
             data={
                 'statistics': stats,
+                'total_bridged': total_bridged,
+                'mesh_to_rns': mesh_to_rns,
+                'rns_to_mesh': rns_to_mesh,
                 'node_stats': status.get('node_stats', {}),
                 'uptime_seconds': status.get('uptime_seconds')
             }
@@ -336,11 +344,15 @@ def get_config() -> CommandResult:
             "Configuration loaded",
             data={
                 'enabled': config.enabled,
-                'meshtastic_host': config.meshtastic_host,
-                'meshtastic_port': config.meshtastic_port,
-                'rns_identity_path': str(config.rns_identity_path),
-                'bridge_mode': config.bridge_mode,
-                'config_path': str(config.config_path),
+                'auto_start': config.auto_start,
+                'meshtastic_host': config.meshtastic.host,
+                'meshtastic_port': config.meshtastic.port,
+                'meshtastic_channel': config.meshtastic.channel,
+                'rns_config_dir': config.rns.config_dir,
+                'rns_identity_name': config.rns.identity_name,
+                'default_route': config.default_route,
+                'routing_rules_count': len(config.routing_rules),
+                'config_path': str(GatewayConfig.get_config_path()),
             }
         )
     except Exception as e:
