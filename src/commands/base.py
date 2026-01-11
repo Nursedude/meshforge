@@ -40,6 +40,11 @@ class CommandResult:
     def __bool__(self) -> bool:
         return self.success
 
+    @property
+    def raw(self) -> Optional[str]:
+        """Alias for raw_output for convenience."""
+        return self.raw_output
+
     @classmethod
     def ok(cls, message: str = "Success", data: Dict[str, Any] = None, raw: str = None) -> 'CommandResult':
         """Create a successful result."""

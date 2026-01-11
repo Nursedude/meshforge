@@ -1542,6 +1542,7 @@ Storage: messages.db"""
     def _rf_tools_menu(self):
         """RF tools menu."""
         choices = [
+            ("freq", "Frequency Slot Calculator"),
             ("fspl", "Free Space Path Loss"),
             ("link", "Link Budget Calculator"),
             ("fresnel", "Fresnel Zone"),
@@ -1559,7 +1560,9 @@ Storage: messages.db"""
             if choice is None or choice == "back":
                 break
 
-            if choice == "fspl":
+            if choice == "freq":
+                self._calc_frequency_slot()
+            elif choice == "fspl":
                 self._calc_fspl()
             elif choice == "link":
                 self._calc_link_budget()
@@ -1567,6 +1570,166 @@ Storage: messages.db"""
                 self._calc_fresnel()
             elif choice == "power":
                 self._calc_eirp()
+
+    def _calc_frequency_slot(self):
+        """
+        Meshtastic Frequency Slot Calculator.
+
+        Uses djb2 hash algorithm to calculate frequency slot from channel name.
+        Based on Meshtastic firmware RadioInterface.cpp
+        """
+        # Region definitions: (name, freq_start_mhz, freq_end_mhz, spacing_mhz, num_slots)
+        regions = [
+            ("US", 902.0, 928.0, 0.0, 104),
+            ("EU_868", 869.4, 869.65, 0.0, 1),
+            ("EU_433", 433.175, 434.665, 0.0, 8),
+            ("CN", 470.0, 510.0, 0.0, 80),
+            ("JP", 920.0, 923.0, 0.0, 10),
+            ("ANZ", 915.0, 928.0, 0.0, 52),
+            ("KR", 920.0, 923.0, 0.0, 12),
+            ("TW", 920.0, 925.0, 0.0, 20),
+            ("RU", 868.7, 869.2, 0.0, 2),
+            ("IN", 865.0, 867.0, 0.0, 8),
+            ("NZ_865", 864.0, 868.0, 0.0, 16),
+            ("TH", 920.0, 925.0, 0.0, 20),
+            ("UA_868", 868.0, 868.6, 0.0, 2),
+            ("UA_433", 433.0, 434.79, 0.0, 8),
+        ]
+
+        # Select region
+        region_choices = [(r[0], f"{r[0]} ({r[1]}-{r[2]} MHz, {r[4]} slots)") for r in regions]
+        region_choices.append(("back", "Back"))
+
+        region_choice = self.dialog.menu(
+            "Frequency Slot",
+            "Select region:",
+            region_choices
+        )
+
+        if not region_choice or region_choice == "back":
+            return
+
+        # Find region
+        region = None
+        for r in regions:
+            if r[0] == region_choice:
+                region = r
+                break
+
+        if not region:
+            return
+
+        # Get channel name or slot number
+        mode_choices = [
+            ("name", "Calculate from Channel Name"),
+            ("slot", "Enter Slot Number Directly"),
+            ("back", "Back"),
+        ]
+
+        mode = self.dialog.menu(
+            "Input Mode",
+            "Calculate frequency from:",
+            mode_choices
+        )
+
+        if not mode or mode == "back":
+            return
+
+        # Get bandwidth for modem preset
+        bw_choices = [
+            ("500", "500 kHz (SHORT_TURBO)"),
+            ("250", "250 kHz (FAST presets)"),
+            ("125", "125 kHz (SLOW presets)"),
+            ("62.5", "62.5 kHz (VERY_LONG_SLOW)"),
+        ]
+
+        bw_choice = self.dialog.menu(
+            "Bandwidth",
+            "Select modem bandwidth:",
+            bw_choices
+        )
+
+        if not bw_choice:
+            return
+
+        try:
+            bw_khz = float(bw_choice)
+
+            freq_start = region[1]
+            freq_end = region[2]
+            spacing = region[3]
+            max_slots = region[4]
+
+            # Calculate num_channels based on bandwidth
+            import math
+            num_channels = int(math.floor((freq_end - freq_start) / (spacing + bw_khz / 1000)))
+            if num_channels > max_slots:
+                num_channels = max_slots
+
+            if mode == "name":
+                # Get channel name
+                channel_name = self.dialog.inputbox(
+                    "Channel Name",
+                    "Enter channel name:",
+                    "LongFast"
+                )
+
+                if not channel_name:
+                    return
+
+                # djb2 hash algorithm
+                def djb2_hash(s):
+                    h = 5381
+                    for c in s:
+                        h = ((h << 5) + h) + ord(c)
+                        h &= 0xFFFFFFFF  # Keep as 32-bit
+                    return h
+
+                hash_val = djb2_hash(channel_name)
+                slot = hash_val % num_channels
+
+            else:  # slot mode
+                slot_str = self.dialog.inputbox(
+                    "Slot Number",
+                    f"Enter slot number (0-{num_channels-1}):",
+                    "20"
+                )
+
+                if not slot_str:
+                    return
+
+                slot = int(slot_str)
+                if slot < 0 or slot >= num_channels:
+                    self.dialog.msgbox("Error", f"Slot must be 0-{num_channels-1}")
+                    return
+
+            # Calculate frequency
+            # freq = freqStart + (bw/2000) + (slot * (bw/1000))
+            freq_mhz = freq_start + (bw_khz / 2000) + (slot * (bw_khz / 1000))
+
+            text = f"""Frequency Slot Calculation:
+
+Region: {region[0]}
+Band: {freq_start} - {freq_end} MHz
+Bandwidth: {bw_khz} kHz
+Available Slots: {num_channels}
+
+Slot Number: {slot}
+Center Frequency: {freq_mhz:.3f} MHz
+
+Channel spans:
+  {freq_mhz - bw_khz/2000:.3f} - {freq_mhz + bw_khz/2000:.3f} MHz"""
+
+            if mode == "name":
+                text += f"\n\nChannel Name: {channel_name}"
+                text += f"\nHash Value: {hash_val}"
+
+            self.dialog.msgbox("Frequency Result", text)
+
+        except ValueError:
+            self.dialog.msgbox("Error", "Invalid number entered")
+        except Exception as e:
+            self.dialog.msgbox("Error", str(e))
 
     def _calc_fspl(self):
         """Calculate Free Space Path Loss."""
