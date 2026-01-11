@@ -22,16 +22,17 @@ from pathlib import Path
 # Setup gi before any imports
 import gi
 
-# Try GTK4 first, fall back to GTK3
+# VTE 2.91 is the GIR binding version - works with both GTK3 and GTK4
+# The library (libvte-2.91-gtk4-0) provides GTK4 support
 try:
     gi.require_version('Gtk', '4.0')
     gi.require_version('Adw', '1')
-    gi.require_version('Vte', '3.91')  # VTE for GTK4
+    gi.require_version('Vte', '2.91')  # VTE GIR version (same for GTK3/GTK4)
     GTK_VERSION = 4
 except ValueError:
     try:
         gi.require_version('Gtk', '3.0')
-        gi.require_version('Vte', '2.91')  # VTE for GTK3
+        gi.require_version('Vte', '2.91')
         GTK_VERSION = 3
     except ValueError:
         print("Error: GTK and VTE libraries not found.")
