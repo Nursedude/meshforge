@@ -14,22 +14,21 @@ from pathlib import Path
 
 from .base import CommandResult
 
+# Import centralized path utility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
+
 logger = logging.getLogger(__name__)
 
 # Connection settings (module-level state)
 _connection_type = "localhost"  # localhost, serial, ble
 _connection_value = "localhost"
-
-
-def _get_real_user_home() -> Path:
-    """Get real user's home directory, even when running as sudo.
-
-    IMPORTANT: Do not use Path.home() as it returns /root when running with sudo.
-    """
-    sudo_user = os.environ.get('SUDO_USER')
-    if sudo_user and sudo_user != 'root':
-        return Path(f'/home/{sudo_user}')
-    return Path.home()
 
 
 @dataclass
@@ -53,11 +52,11 @@ def _find_cli() -> Optional[str]:
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
 
-    # Check common locations - use _get_real_user_home() not Path.home()
+    # Check common locations - use get_real_user_home() not Path.home()
     common_paths = [
         '/usr/local/bin/meshtastic',
         '/usr/bin/meshtastic',
-        str(_get_real_user_home() / '.local' / 'bin' / 'meshtastic'),
+        str(get_real_user_home() / '.local' / 'bin' / 'meshtastic'),
     ]
     for path in common_paths:
         if Path(path).exists():

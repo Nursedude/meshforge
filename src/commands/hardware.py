@@ -108,6 +108,7 @@ def scan_serial_ports() -> CommandResult:
                 if any(kw in line.lower() for kw in ['cp210', 'ch340', 'ftdi', 'silabs']):
                     usb_devices.append(line)
     except Exception:
+        # USB enumeration may fail - non-critical for overall detection
         pass
 
     return CommandResult.ok(
@@ -150,6 +151,7 @@ def detect_lora_hardware() -> CommandResult:
                 if 'lora' in content.lower() or 'sx12' in content.lower():
                     lora_configs.append(str(config_file))
             except Exception:
+                # Config file read may fail (permissions, encoding) - skip file
                 pass
 
     # Check device tree overlays for LoRa
@@ -162,6 +164,7 @@ def detect_lora_hardware() -> CommandResult:
                 if 'dtoverlay=' in line and 'spi' in line.lower():
                     overlays.append(line.strip())
         except Exception:
+            # Boot config may be unreadable - non-critical
             pass
 
     has_lora = len(lora_configs) > 0 or len(overlays) > 0
@@ -246,6 +249,7 @@ def get_platform_info() -> CommandResult:
             model = model_path.read_text().strip('\x00')
             is_raspberry_pi = 'raspberry' in model.lower()
     except Exception:
+        # Device tree may not exist on non-Pi systems - use defaults
         pass
 
     info['model'] = model
@@ -260,6 +264,7 @@ def get_platform_info() -> CommandResult:
                     info['memory_mb'] = mem_kb // 1024
                     break
     except Exception:
+        # meminfo may not be available on some systems
         info['memory_mb'] = 0
 
     return CommandResult.ok(
