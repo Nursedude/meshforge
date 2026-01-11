@@ -152,6 +152,14 @@ else
     echo "  Warning: Polkit not found, desktop launcher may not work"
 fi
 
+# Install SSH login message
+echo "Installing SSH login message..."
+if [ -d /etc/profile.d ]; then
+    cp "$PROJECT_DIR/scripts/meshforge-profile.sh" /etc/profile.d/meshforge.sh
+    chmod 644 /etc/profile.d/meshforge.sh
+    echo "  SSH users will see MeshForge prompt on login"
+fi
+
 echo
 echo "==========================================="
 echo "Installation complete!"
@@ -165,6 +173,7 @@ echo
 echo "Or search for 'MeshForge' in your application launcher."
 echo
 echo "To run from command line:"
-echo "  meshforge          # Uses pkexec for GUI"
-echo "  sudo meshforge tui # For terminal UI"
+echo "  meshforge        # TUI launcher (works over SSH)"
+echo "  meshforge gtk    # GTK desktop interface"
+echo "  meshforge cli    # Rich CLI menu"
 echo
