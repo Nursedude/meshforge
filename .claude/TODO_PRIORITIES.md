@@ -1,6 +1,6 @@
 # MeshForge Development Priorities
 
-> **Last Updated:** 2026-01-07
+> **Last Updated:** 2026-01-11
 > **Maintainer:** WH6GXZ / Dude AI
 
 ---
@@ -8,10 +8,11 @@
 ## 🔴 Priority 1: Critical / Core Functionality
 
 ### Gateway Bridge (rns_over_meshtastic_gateway)
-- [ ] **RNS-Meshtastic bidirectional messaging** - Core bridge functionality
+- [x] **RNS-Meshtastic bidirectional messaging** - Core bridge functionality
+- [x] **RNS Over Meshtastic transport layer** - Packet transport via LoRa
 - [ ] **Message routing visualization** - See message flow between networks
 - [ ] **Gateway setup wizard** - Guided configuration for new users
-- [ ] **Bridge status monitoring** - Real-time health checks
+- [x] **Bridge status monitoring** - Real-time health checks (API endpoints)
 - [ ] `rns_bridge.py:624` - Implement regex matching for filters
 
 ### Code Quality
@@ -22,8 +23,8 @@
   - `tools.py` (2695 lines) → Split into rf_tools.py, network_diag.py
 
 ### Testing
-- [ ] **Install pytest** - Currently missing from environment
-- [ ] **Add tests for gateway bridge** - Critical path needs coverage
+- [x] **Install pytest** - Available in environment
+- [x] **Add tests for gateway transport** - 39 tests for transport layer
 - [ ] **Add tests for network diagnostics** - New feature needs tests
 
 ---
@@ -92,6 +93,10 @@
 - [x] GTK4 Desktop UI
 - [x] Unified Node Map
 - [x] RNS-Meshtastic Gateway (basic)
+- [x] **RNS Over Meshtastic transport layer** (2026-01-11)
+- [x] **Gateway transport API endpoints** (2026-01-11)
+- [x] **Gateway transport CLI commands** (2026-01-11)
+- [x] **Gateway transport tests (39 tests)** (2026-01-11)
 - [x] AREDN Integration
 - [x] Amateur Radio Compliance course
 - [x] Standalone boot mode
@@ -100,12 +105,14 @@
 - [x] NomadNet launch from GTK
 - [x] VOACAP HF propagation links
 - [x] Map panel memory leak fix
+- [x] **VTE launcher fallback improvements** (2026-01-11)
+- [x] **Frequency slot calculator with tests** (2026-01-11)
 
 ---
 
 ## Quick Wins (< 1 hour each)
 
-1. [ ] Add pytest to requirements.txt
+1. [x] Add pytest to requirements.txt
 2. [ ] Create test for network diagnostics API
 3. [ ] Add dark mode CSS variable foundation
 4. [ ] Document gateway setup steps
