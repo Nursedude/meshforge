@@ -3,9 +3,9 @@ MeshForge - LoRa Mesh Network Development & Operations Suite
 Version information and changelog
 """
 
-__version__ = "0.4.5-beta"
-__version_info__ = (0, 4, 5, 'beta')
-__release_date__ = "2026-01-08"
+__version__ = "0.4.6-beta"
+__version_info__ = (0, 4, 6, 'beta')
+__release_date__ = "2026-01-11"
 __app_name__ = "MeshForge"
 __app_description__ = "LoRa Mesh Network Development & Operations Suite"
 __app_tagline__ = "Build. Test. Deploy. Monitor."
@@ -14,6 +14,25 @@ __status__ = "beta"  # alpha=experimental, beta=testing, stable=production
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "0.4.6-beta",
+        "date": "2026-01-11",
+        "status": "beta",
+        "changes": [
+            "NEW: GTK4 VTE wrapper (launcher_vte.py) for proper taskbar icon",
+            "NEW: Frequency Slot Calculator with djb2 hash algorithm (TUI)",
+            "NEW: Full meshtasticd config in TUI (presets, hardware, channels, templates)",
+            "NEW: System Diagnostics menu in TUI (services, network, hardware, logs)",
+            "NEW: Network Tools menu in TUI (ping, port scan, discovery, interfaces)",
+            "NEW: Site Planner menu in TUI (range estimator, presets, antenna guidelines)",
+            "NEW: Full 8-channel configuration with individual editing",
+            "FIX: CommandResult.raw attribute error (added .raw property alias)",
+            "FIX: get_nodes() function added to commands/meshtastic.py",
+            "FIX: GTK auto-loads channels and shows all 8 slots in radio config",
+            "IMPROVED: VTE launcher uses proper app_id for taskbar icon",
+            "IMPROVED: Terminal launcher tries VTE first when display available",
+        ]
+    },
     {
         "version": "0.4.5-beta",
         "date": "2026-01-08",
