@@ -352,6 +352,16 @@ class RadioConfigPanel(Gtk.Box):
 
     def _display_channels(self, channels):
         """Display channel list in UI with edit options"""
+        # Ensure we always have 8 channel slots for complete configuration
+        if len(channels) < 8:
+            for idx in range(len(channels), 8):
+                channels.append({
+                    'index': idx,
+                    'role': 'DISABLED',
+                    'name': f'Channel {idx}',
+                    'psk': None
+                })
+
         # Store for editing
         self._current_channels = channels
 
@@ -2098,6 +2108,7 @@ class RadioConfigPanel(Gtk.Box):
             # Use GLib.idle_add to avoid race conditions
             GLib.idle_add(self._load_radio_info)  # Load radio info first
             GLib.timeout_add(1000, self._delayed_load_config)  # Then load config after 1s
+            GLib.timeout_add(1500, self._load_channels)  # Load channels after 1.5s
         return False  # Don't repeat
 
     def _delayed_load_config(self):
