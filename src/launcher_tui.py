@@ -362,40 +362,55 @@ class MeshForgeLauncher:
         input("\nPress Enter to continue...")
 
     def _show_space_weather(self):
-        """Show space weather from HamClock."""
+        """Show space weather (uses HamClock if available, else NOAA)."""
         self.dialog.infobox("Space Weather", "Fetching space weather data...")
 
         try:
-            # Use the commands layer
+            # Use the commands layer with auto-fallback
             sys.path.insert(0, str(self.src_dir))
             from commands import hamclock
 
-            # Try HamClock first
-            hamclock.configure("localhost", api_port=8082)
-            result = hamclock.get_space_weather()
+            # Auto-fallback: tries HamClock first, then NOAA
+            result = hamclock.get_propagation_summary()
 
             if result.success:
                 data = result.data
-                text = f"""Solar Flux Index (SFI): {data.get('sfi', 'N/A')}
-Kp Index: {data.get('kp', 'N/A')}
-A Index: {data.get('a', 'N/A')}
-X-Ray Flux: {data.get('xray', 'N/A')}
-Sunspot Number: {data.get('ssn', 'N/A')}
-Band Conditions: {data.get('conditions', 'N/A')}
+                source = data.get('source', 'Unknown')
 
-Source: HamClock"""
+                # Build display text
+                lines = [
+                    f"Solar Flux Index (SFI): {data.get('sfi', 'N/A')}",
+                    f"Kp Index: {data.get('kp', 'N/A')}",
+                    f"X-Ray Flux: {data.get('xray', 'N/A')}",
+                    f"Sunspot Number: {data.get('ssn', 'N/A')}",
+                    f"Geomagnetic: {data.get('geomagnetic', 'N/A')}",
+                    "",
+                    f"Overall Conditions: {data.get('overall', 'Unknown')}",
+                ]
+
+                # Add band conditions if available
+                bands = data.get('hf_conditions', {})
+                if bands:
+                    lines.append("")
+                    lines.append("HF Band Conditions:")
+                    for band, cond in bands.items():
+                        lines.append(f"  {band}: {cond}")
+
+                # Add alerts if any
+                alerts = data.get('alerts', [])
+                if alerts:
+                    lines.append("")
+                    lines.append("Active Alerts:")
+                    for alert in alerts[:2]:
+                        msg = alert.get('message', '')[:60]
+                        lines.append(f"  - {msg}...")
+
+                lines.append("")
+                lines.append(f"Source: {source}")
+
+                text = "\n".join(lines)
             else:
-                # Fallback to NOAA
-                result = hamclock.get_noaa_solar_data()
-                if result.success:
-                    data = result.data
-                    text = f"""Solar Flux Index (SFI): {data.get('sfi', 'N/A')}
-Sunspot Number: {data.get('ssn', 'N/A')}
-Band Conditions: {data.get('conditions', 'N/A')}
-
-Source: NOAA Space Weather Prediction Center"""
-                else:
-                    text = f"Could not retrieve space weather data.\n\nError: {result.message}"
+                text = f"Could not retrieve space weather data.\n\nError: {result.message}"
 
             self.dialog.msgbox("Space Weather", text)
 
