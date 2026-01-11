@@ -5,7 +5,7 @@ Unified command interface for GTK and CLI.
 All UI-independent operations go here.
 
 Usage:
-    from commands import meshtastic, service, hardware, gateway, diagnostics, hamclock
+    from commands import meshtastic, service, hardware, gateway, diagnostics, hamclock, rns
 
     # Meshtastic operations
     result = meshtastic.get_node_info()
@@ -33,6 +33,12 @@ Usage:
     result = hamclock.get_space_weather()
     result = hamclock.get_voacap()
     result = hamclock.get_noaa_solar_data()  # NOAA fallback
+
+    # RNS - Reticulum Network Stack
+    result = rns.get_status()
+    result = rns.read_config()
+    result = rns.add_interface("My Server", "TCPServerInterface", {"listen_port": "4242"})
+    result = rns.check_connectivity()
 """
 
 from . import meshtastic
@@ -41,6 +47,7 @@ from . import hardware
 from . import gateway
 from . import diagnostics
 from . import hamclock
+from . import rns
 from .base import CommandResult, CommandError
 
 __all__ = [
@@ -50,6 +57,7 @@ __all__ = [
     'gateway',
     'diagnostics',
     'hamclock',
+    'rns',
     'CommandResult',
     'CommandError',
 ]

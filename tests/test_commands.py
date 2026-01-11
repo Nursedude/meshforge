@@ -427,3 +427,165 @@ class TestHamClockCommands:
         assert hamclock._reliability_to_status(50) == 'fair'
         assert hamclock._reliability_to_status(20) == 'poor'
         assert hamclock._reliability_to_status(0) == 'closed'
+
+
+class TestRNSCommands:
+    """Test RNS command module."""
+
+    def test_get_config_path(self):
+        """Test config path retrieval."""
+        from commands import rns
+        path = rns.get_config_path()
+        assert path.name == 'config'
+        assert '.reticulum' in str(path)
+
+    def test_get_status(self):
+        """Test RNS status check."""
+        from commands import rns
+        result = rns.get_status()
+        assert isinstance(result, CommandResult)
+        assert 'rnsd_running' in result.data
+        assert 'config_exists' in result.data
+
+    def test_validate_config_valid(self):
+        """Test config validation with valid config."""
+        from commands import rns
+        valid_config = """[reticulum]
+enable_transport = yes
+
+[interfaces]
+  [[Default Interface]]
+    type = AutoInterface
+    enabled = yes
+"""
+        is_valid, errors = rns.validate_config(valid_config)
+        assert is_valid is True
+        assert len(errors) == 0
+
+    def test_validate_config_missing_section(self):
+        """Test config validation catches missing section."""
+        from commands import rns
+        invalid_config = """[interfaces]
+  [[Default]]
+    type = AutoInterface
+"""
+        is_valid, errors = rns.validate_config(invalid_config)
+        assert is_valid is False
+        assert any('reticulum' in e.lower() for e in errors)
+
+    def test_validate_config_mismatched_brackets(self):
+        """Test config validation catches bracket mismatch."""
+        from commands import rns
+        invalid_config = """[reticulum]
+enable_transport = yes
+
+[interfaces
+  [[Default Interface]]
+    type = AutoInterface
+"""
+        is_valid, errors = rns.validate_config(invalid_config)
+        assert is_valid is False
+        assert any('bracket' in e.lower() for e in errors)
+
+    def test_validate_config_invalid_type(self):
+        """Test config validation catches invalid interface type."""
+        from commands import rns
+        invalid_config = """[reticulum]
+enable_transport = yes
+
+[interfaces]
+  [[Bad Interface]]
+    type = FakeInterface
+    enabled = yes
+"""
+        is_valid, errors = rns.validate_config(invalid_config)
+        assert is_valid is False
+        assert any('FakeInterface' in e for e in errors)
+
+    def test_parse_interfaces(self):
+        """Test interface parsing from config."""
+        from commands import rns
+        config = """[reticulum]
+enable_transport = yes
+
+[interfaces]
+  [[Server]]
+    type = TCPServerInterface
+    enabled = yes
+    listen_port = 4242
+
+  [[Client]]
+    type = TCPClientInterface
+    enabled = no
+    target_host = 192.168.1.1
+"""
+        interfaces = rns._parse_interfaces(config)
+        assert len(interfaces) == 2
+        assert interfaces[0]['name'] == 'Server'
+        assert interfaces[0]['settings']['type'] == 'TCPServerInterface'
+        assert interfaces[1]['name'] == 'Client'
+        assert interfaces[1]['settings']['enabled'] == 'no'
+
+    def test_interface_config_to_block(self):
+        """Test interface config serialization."""
+        from commands import rns
+        iface = rns.InterfaceConfig(
+            name='Test Server',
+            type='TCPServerInterface',
+            enabled=True,
+            settings={'listen_port': '4242'}
+        )
+        block = iface.to_config_block()
+        assert '[[Test Server]]' in block
+        assert 'type = TCPServerInterface' in block
+        assert 'enabled = yes' in block
+        assert 'listen_port = 4242' in block
+
+    def test_get_interface_templates(self):
+        """Test interface templates retrieval."""
+        from commands import rns
+        result = rns.get_interface_templates()
+        assert result.success is True
+        templates = result.data.get('templates', {})
+        assert 'auto' in templates
+        assert 'tcp_server' in templates
+        assert 'meshtastic' in templates
+        assert 'rnode' in templates
+
+    def test_check_connectivity(self):
+        """Test connectivity check."""
+        from commands import rns
+        result = rns.check_connectivity()
+        assert isinstance(result, CommandResult)
+        assert 'rnsd_running' in result.data
+        assert 'can_import_rns' in result.data
+        assert 'issues' in result.data
+
+    def test_list_interfaces(self):
+        """Test interface listing."""
+        from commands import rns
+        result = rns.list_interfaces()
+        assert isinstance(result, CommandResult)
+        # May fail if no config, but should return proper result
+
+    def test_get_backups(self):
+        """Test backup listing."""
+        from commands import rns
+        result = rns.get_backups()
+        assert isinstance(result, CommandResult)
+        assert 'backups' in result.data
+        assert 'count' in result.data
+
+    def test_module_exports(self):
+        """Test that rns is properly exported from commands."""
+        from commands import rns
+        # Verify key functions exist
+        assert hasattr(rns, 'get_status')
+        assert hasattr(rns, 'read_config')
+        assert hasattr(rns, 'write_config')
+        assert hasattr(rns, 'add_interface')
+        assert hasattr(rns, 'remove_interface')
+        assert hasattr(rns, 'start_rnsd')
+        assert hasattr(rns, 'stop_rnsd')
+        assert hasattr(rns, 'check_connectivity')
+        assert hasattr(rns, 'test_path')
