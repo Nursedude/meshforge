@@ -288,6 +288,7 @@ class MeshForgeLauncher:
 
             # Config section
             choices.append(("---", "──────────── Config ───────────"))
+            choices.append(("meshtasticd", "Meshtasticd Config"))
             choices.append(("services", "Service Management"))
             choices.append(("hardware", "Hardware Detection"))
             choices.append(("settings", "Settings"))
@@ -333,6 +334,8 @@ class MeshForgeLauncher:
             self._messaging_menu()
         elif choice == "rf":
             self._rf_tools_menu()
+        elif choice == "meshtasticd":
+            self._meshtasticd_menu()
         elif choice == "services":
             self._service_menu()
         elif choice == "hardware":
@@ -1096,6 +1099,681 @@ Note: Check local regulations."""
             self.dialog.msgbox("Error", "Invalid number entered")
         except Exception as e:
             self.dialog.msgbox("Error", str(e))
+
+    # =========================================================================
+    # Meshtasticd Configuration
+    # =========================================================================
+
+    def _meshtasticd_menu(self):
+        """Meshtasticd configuration menu."""
+        while True:
+            choices = [
+                ("status", "Service Status"),
+                ("presets", "Radio Presets (LoRa)"),
+                ("hardware", "Hardware Config"),
+                ("channels", "Channel Config"),
+                ("gateway", "Gateway Template"),
+                ("edit", "Edit Config Files"),
+                ("restart", "Restart Service"),
+                ("back", "Back"),
+            ]
+
+            choice = self.dialog.menu(
+                "Meshtasticd Config",
+                "Configure meshtasticd radio daemon:",
+                choices
+            )
+
+            if choice is None or choice == "back":
+                break
+
+            if choice == "status":
+                self._meshtasticd_status()
+            elif choice == "presets":
+                self._radio_presets_menu()
+            elif choice == "hardware":
+                self._hardware_config_menu()
+            elif choice == "channels":
+                self._channel_config_menu()
+            elif choice == "gateway":
+                self._gateway_template_menu()
+            elif choice == "edit":
+                self._edit_config_menu()
+            elif choice == "restart":
+                self._restart_meshtasticd()
+
+    def _meshtasticd_status(self):
+        """Show meshtasticd service status."""
+        self.dialog.infobox("Status", "Checking meshtasticd status...")
+
+        try:
+            result = subprocess.run(
+                ['systemctl', 'status', 'meshtasticd'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            # Parse status
+            output = result.stdout
+            is_running = "active (running)" in output
+            is_enabled = subprocess.run(
+                ['systemctl', 'is-enabled', 'meshtasticd'],
+                capture_output=True, text=True, timeout=5
+            ).returncode == 0
+
+            # Get config file info
+            config_path = Path('/etc/meshtasticd/config.yaml')
+            config_exists = config_path.exists()
+
+            # Check active configs
+            config_d = Path('/etc/meshtasticd/config.d')
+            active_configs = list(config_d.glob('*.yaml')) if config_d.exists() else []
+
+            text = f"""Meshtasticd Service Status:
+
+Service: {'RUNNING' if is_running else 'STOPPED'}
+Enabled: {'Yes' if is_enabled else 'No'}
+
+Config File: {config_path}
+Config Exists: {'Yes' if config_exists else 'No'}
+
+Active Hardware Configs: {len(active_configs)}"""
+
+            for cfg in active_configs[:5]:
+                text += f"\n  - {cfg.name}"
+
+            if len(active_configs) > 5:
+                text += f"\n  ... and {len(active_configs) - 5} more"
+
+            self.dialog.msgbox("Meshtasticd Status", text)
+
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed to get status:\n{e}")
+
+    def _radio_presets_menu(self):
+        """Radio/LoRa preset selection."""
+        # Define modem presets with descriptions
+        presets = [
+            ("SHORT_TURBO", "500kHz SF7  - Max speed, <1km"),
+            ("SHORT_FAST", "250kHz SF7  - Urban, 1-5km"),
+            ("SHORT_SLOW", "125kHz SF7  - Reliable short"),
+            ("MEDIUM_FAST", "250kHz SF10 - MtnMesh std, 5-20km"),
+            ("MEDIUM_SLOW", "125kHz SF10 - Alt medium"),
+            ("LONG_FAST", "250kHz SF11 - Default, 10-30km"),
+            ("LONG_MODERATE", "125kHz SF11 - Extended, 15-40km"),
+            ("LONG_SLOW", "125kHz SF12 - Max range, 20-50km"),
+            ("back", "Back"),
+        ]
+
+        choice = self.dialog.menu(
+            "Radio Presets",
+            "Select LoRa modem preset:\n\n"
+            "Higher speed = shorter range\n"
+            "Lower speed = longer range",
+            presets
+        )
+
+        if choice and choice != "back":
+            self._apply_radio_preset(choice)
+
+    def _apply_radio_preset(self, preset: str):
+        """Apply a radio preset."""
+        # Preset parameters
+        preset_params = {
+            "SHORT_TURBO": {"bw": 500, "sf": 7, "cr": 5},
+            "SHORT_FAST": {"bw": 250, "sf": 7, "cr": 5},
+            "SHORT_SLOW": {"bw": 125, "sf": 7, "cr": 8},
+            "MEDIUM_FAST": {"bw": 250, "sf": 10, "cr": 5},
+            "MEDIUM_SLOW": {"bw": 125, "sf": 10, "cr": 5},
+            "LONG_FAST": {"bw": 250, "sf": 11, "cr": 5},
+            "LONG_MODERATE": {"bw": 125, "sf": 11, "cr": 8},
+            "LONG_SLOW": {"bw": 125, "sf": 12, "cr": 8},
+        }
+
+        params = preset_params.get(preset, {})
+        if not params:
+            return
+
+        confirm = self.dialog.yesno(
+            "Apply Preset",
+            f"Apply {preset} preset?\n\n"
+            f"Bandwidth: {params['bw']} kHz\n"
+            f"Spreading Factor: SF{params['sf']}\n"
+            f"Coding Rate: 4/{params['cr']}\n\n"
+            "This will modify /etc/meshtasticd/config.yaml\n"
+            "and restart the service.",
+            default_no=True
+        )
+
+        if not confirm:
+            return
+
+        self.dialog.infobox("Applying", f"Applying {preset} preset...")
+
+        try:
+            config_path = Path('/etc/meshtasticd/config.yaml')
+
+            if not config_path.exists():
+                self.dialog.msgbox("Error", "Config file not found.\nRun installer first.")
+                return
+
+            # Read and modify config
+            import yaml
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f) or {}
+
+            if 'Lora' not in config:
+                config['Lora'] = {}
+
+            config['Lora']['Bandwidth'] = params['bw']
+            config['Lora']['SpreadFactor'] = params['sf']
+            config['Lora']['CodingRate'] = params['cr']
+
+            # Backup and write
+            backup_path = config_path.with_suffix('.yaml.bak')
+            if config_path.exists():
+                import shutil
+                shutil.copy(config_path, backup_path)
+
+            with open(config_path, 'w') as f:
+                yaml.dump(config, f, default_flow_style=False)
+
+            # Restart service
+            subprocess.run(['systemctl', 'restart', 'meshtasticd'],
+                           capture_output=True, timeout=30)
+
+            self.dialog.msgbox("Success",
+                f"{preset} preset applied!\n\n"
+                f"Config: {config_path}\n"
+                f"Backup: {backup_path}\n\n"
+                "Service restarted.")
+
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed to apply preset:\n{e}")
+
+    def _hardware_config_menu(self):
+        """Hardware configuration selection."""
+        available_dir = Path('/etc/meshtasticd/available.d')
+        config_d = Path('/etc/meshtasticd/config.d')
+
+        if not available_dir.exists():
+            self.dialog.msgbox("Error",
+                "Hardware templates not found.\n\n"
+                f"Expected: {available_dir}\n\n"
+                "Run the installer to set up templates.")
+            return
+
+        # List available hardware configs
+        available = list(available_dir.glob('*.yaml'))
+        if not available:
+            self.dialog.msgbox("Error", "No hardware templates found.")
+            return
+
+        # Get currently active configs
+        active = set()
+        if config_d.exists():
+            active = {f.name for f in config_d.glob('*.yaml')}
+
+        choices = []
+        for cfg in sorted(available):
+            status = "[ACTIVE]" if cfg.name in active else ""
+            # Truncate name for display
+            name = cfg.stem[:25]
+            choices.append((cfg.name, f"{name} {status}"))
+
+        choices.append(("view", "View Config Details"))
+        choices.append(("back", "Back"))
+
+        choice = self.dialog.menu(
+            "Hardware Config",
+            "Select hardware configuration to activate:\n\n"
+            f"Templates: {available_dir}\n"
+            f"Active: {config_d}",
+            choices
+        )
+
+        if choice is None or choice == "back":
+            return
+        elif choice == "view":
+            self._view_hardware_config(available)
+        else:
+            self._activate_hardware_config(choice, available_dir, config_d)
+
+    def _activate_hardware_config(self, config_name: str, available_dir: Path, config_d: Path):
+        """Activate a hardware configuration."""
+        src = available_dir / config_name
+
+        if not src.exists():
+            self.dialog.msgbox("Error", f"Config not found: {src}")
+            return
+
+        confirm = self.dialog.yesno(
+            "Activate Config",
+            f"Activate hardware config?\n\n"
+            f"Template: {config_name}\n\n"
+            "This will:\n"
+            f"1. Copy to {config_d}/\n"
+            "2. Restart meshtasticd service",
+            default_no=True
+        )
+
+        if not confirm:
+            return
+
+        try:
+            self.dialog.infobox("Activating", f"Activating {config_name}...")
+
+            # Create config.d if needed
+            config_d.mkdir(parents=True, exist_ok=True)
+
+            # Copy config
+            import shutil
+            dst = config_d / config_name
+            shutil.copy(src, dst)
+
+            # Restart service
+            subprocess.run(['systemctl', 'daemon-reload'],
+                           capture_output=True, timeout=10)
+            subprocess.run(['systemctl', 'restart', 'meshtasticd'],
+                           capture_output=True, timeout=30)
+
+            self.dialog.msgbox("Success",
+                f"Hardware config activated!\n\n"
+                f"Config: {dst}\n\n"
+                "Service restarted.")
+
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Activation failed:\n{e}")
+
+    def _view_hardware_config(self, configs: list):
+        """View details of a hardware config."""
+        choices = [(cfg.name, cfg.stem[:30]) for cfg in sorted(configs)]
+        choices.append(("back", "Back"))
+
+        choice = self.dialog.menu(
+            "View Config",
+            "Select config to view:",
+            choices
+        )
+
+        if choice and choice != "back":
+            config_path = Path('/etc/meshtasticd/available.d') / choice
+            if config_path.exists():
+                try:
+                    content = config_path.read_text()[:1500]
+                    self.dialog.msgbox(f"Config: {choice}", content)
+                except Exception as e:
+                    self.dialog.msgbox("Error", str(e))
+
+    def _channel_config_menu(self):
+        """Channel configuration menu."""
+        choices = [
+            ("view", "View Current Channels"),
+            ("primary", "Set Primary Channel"),
+            ("gateway", "Set Gateway Channel (Slot 8)"),
+            ("psk", "Generate New PSK"),
+            ("back", "Back"),
+        ]
+
+        while True:
+            choice = self.dialog.menu(
+                "Channel Config",
+                "Configure mesh channels:",
+                choices
+            )
+
+            if choice is None or choice == "back":
+                break
+
+            if choice == "view":
+                self._view_channels()
+            elif choice == "primary":
+                self._set_primary_channel()
+            elif choice == "gateway":
+                self._set_gateway_channel()
+            elif choice == "psk":
+                self._generate_psk()
+
+    def _view_channels(self):
+        """View current channel configuration."""
+        try:
+            sys.path.insert(0, str(self.src_dir))
+            from commands import meshtastic as mesh_cmd
+
+            result = mesh_cmd.get_channel_info(0)
+            if result.success:
+                self.dialog.msgbox("Channel Info", result.raw or "No channel info")
+            else:
+                self.dialog.msgbox("Error", result.message)
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed to get channels:\n{e}")
+
+    def _set_primary_channel(self):
+        """Set primary channel name."""
+        name = self.dialog.inputbox(
+            "Primary Channel",
+            "Enter channel name (max 12 chars):",
+            "MeshForge"
+        )
+
+        if not name:
+            return
+
+        try:
+            sys.path.insert(0, str(self.src_dir))
+            from commands import meshtastic as mesh_cmd
+
+            self.dialog.infobox("Setting", f"Setting channel name to {name}...")
+            result = mesh_cmd.set_channel_name(0, name[:12])
+            self.dialog.msgbox("Result", result.message)
+
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed:\n{e}")
+
+    def _set_gateway_channel(self):
+        """Set up gateway channel on slot 8."""
+        confirm = self.dialog.yesno(
+            "Gateway Channel",
+            "Set up gateway channel on slot 8?\n\n"
+            "This is the recommended channel for\n"
+            "MeshForge ↔ RNS gateway bridging.\n\n"
+            "Channel 8 will be configured as:\n"
+            "  Name: Gateway\n"
+            "  Role: SECONDARY\n"
+            "  PSK: [Generated or custom]",
+            default_no=True
+        )
+
+        if not confirm:
+            return
+
+        # Get PSK choice
+        psk_choices = [
+            ("random", "Generate Random PSK"),
+            ("default", "Use Default PSK (AQ==)"),
+            ("custom", "Enter Custom PSK"),
+        ]
+
+        psk_choice = self.dialog.menu(
+            "Gateway PSK",
+            "Select PSK for gateway channel:",
+            psk_choices
+        )
+
+        if not psk_choice:
+            return
+
+        psk = "AQ=="  # Default
+        if psk_choice == "random":
+            psk = "random"
+        elif psk_choice == "custom":
+            psk = self.dialog.inputbox("Custom PSK", "Enter PSK (hex or base64):", "")
+            if not psk:
+                return
+
+        try:
+            sys.path.insert(0, str(self.src_dir))
+            from commands import meshtastic as mesh_cmd
+
+            self.dialog.infobox("Setting", "Configuring gateway channel...")
+
+            # Set channel name
+            mesh_cmd.set_channel_name(7, "Gateway")  # Index 7 = slot 8
+
+            # Set PSK
+            mesh_cmd.set_channel_psk(7, psk)
+
+            self.dialog.msgbox("Success",
+                "Gateway channel configured on slot 8!\n\n"
+                "Use this channel for gateway bridging.")
+
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed:\n{e}")
+
+    def _generate_psk(self):
+        """Generate a new PSK."""
+        import secrets
+        import base64
+
+        psk_bytes = secrets.token_bytes(32)
+        psk_b64 = base64.b64encode(psk_bytes).decode()
+        psk_hex = psk_bytes.hex()
+
+        self.dialog.msgbox("Generated PSK",
+            f"New 256-bit PSK:\n\n"
+            f"Base64:\n{psk_b64}\n\n"
+            f"Hex:\n{psk_hex[:32]}...\n\n"
+            "Copy this PSK and share securely\n"
+            "with your mesh network members.")
+
+    def _gateway_template_menu(self):
+        """Gateway template configuration."""
+        templates = [
+            ("standard", "Standard Gateway (Long Fast)"),
+            ("turbo", "Turbo Gateway (Short Turbo + Ch8)"),
+            ("mtnmesh", "MtnMesh Gateway (Medium Fast)"),
+            ("custom", "Custom Gateway Setup"),
+            ("back", "Back"),
+        ]
+
+        choice = self.dialog.menu(
+            "Gateway Templates",
+            "Pre-configured gateway setups:\n\n"
+            "Templates configure radio preset,\n"
+            "channel 8 for gateway, and optimize\n"
+            "for RNS bridging.",
+            templates
+        )
+
+        if choice and choice != "back":
+            self._apply_gateway_template(choice)
+
+    def _apply_gateway_template(self, template: str):
+        """Apply a gateway template."""
+        templates = {
+            "standard": {
+                "name": "Standard Gateway",
+                "preset": "LONG_FAST",
+                "bw": 250, "sf": 11, "cr": 5,
+                "channel": "Gateway",
+                "description": "Default Meshtastic settings with gateway channel"
+            },
+            "turbo": {
+                "name": "Turbo Gateway",
+                "preset": "SHORT_TURBO",
+                "bw": 500, "sf": 7, "cr": 5,
+                "channel": "GW-Turbo",
+                "description": "Maximum speed for local gateway bridging"
+            },
+            "mtnmesh": {
+                "name": "MtnMesh Gateway",
+                "preset": "MEDIUM_FAST",
+                "bw": 250, "sf": 10, "cr": 5,
+                "channel": "MtnMesh-GW",
+                "description": "MtnMesh community standard with gateway"
+            },
+        }
+
+        if template == "custom":
+            self.dialog.msgbox("Custom Gateway",
+                "For custom gateway setup:\n\n"
+                "1. Use Radio Presets to set LoRa params\n"
+                "2. Use Channel Config > Gateway Channel\n"
+                "3. Edit config files for advanced options")
+            return
+
+        tmpl = templates.get(template)
+        if not tmpl:
+            return
+
+        confirm = self.dialog.yesno(
+            tmpl["name"],
+            f"Apply {tmpl['name']} template?\n\n"
+            f"Preset: {tmpl['preset']}\n"
+            f"Bandwidth: {tmpl['bw']} kHz\n"
+            f"Spreading Factor: SF{tmpl['sf']}\n"
+            f"Gateway Channel: {tmpl['channel']} (Slot 8)\n\n"
+            f"{tmpl['description']}\n\n"
+            "This will update config and restart service.",
+            default_no=True
+        )
+
+        if not confirm:
+            return
+
+        try:
+            self.dialog.infobox("Applying", f"Applying {tmpl['name']}...")
+
+            # Apply radio preset
+            self._apply_radio_preset(tmpl['preset'])
+
+            # Set gateway channel (index 7 = slot 8)
+            sys.path.insert(0, str(self.src_dir))
+            from commands import meshtastic as mesh_cmd
+            mesh_cmd.set_channel_name(7, tmpl['channel'])
+
+            self.dialog.msgbox("Success",
+                f"{tmpl['name']} applied!\n\n"
+                f"Radio: {tmpl['preset']}\n"
+                f"Gateway Channel: {tmpl['channel']} (Slot 8)\n\n"
+                "Ready for RNS bridging.")
+
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Template failed:\n{e}")
+
+    def _edit_config_menu(self):
+        """Edit config files directly."""
+        choices = [
+            ("main", "Main Config (/etc/meshtasticd/config.yaml)"),
+            ("active", "Active Hardware Configs"),
+            ("templates", "Hardware Templates"),
+            ("back", "Back"),
+        ]
+
+        choice = self.dialog.menu(
+            "Edit Config Files",
+            "Edit meshtasticd configuration files:\n\n"
+            "Opens in nano editor.\n"
+            "Save: Ctrl+O, Exit: Ctrl+X",
+            choices
+        )
+
+        if choice is None or choice == "back":
+            return
+
+        if choice == "main":
+            self._edit_file('/etc/meshtasticd/config.yaml')
+        elif choice == "active":
+            self._edit_config_d()
+        elif choice == "templates":
+            self._edit_available_d()
+
+    def _edit_file(self, path: str):
+        """Edit a file with nano."""
+        if not Path(path).exists():
+            self.dialog.msgbox("Error", f"File not found:\n{path}")
+            return
+
+        # Clear screen and run nano
+        subprocess.run(['clear'], check=False)
+        subprocess.run(['nano', path])
+
+        # Ask to restart service
+        if self.dialog.yesno(
+            "Restart Service?",
+            "Config file modified.\n\n"
+            "Restart meshtasticd to apply changes?",
+            default_no=False
+        ):
+            self._restart_meshtasticd()
+
+    def _edit_config_d(self):
+        """Edit files in config.d."""
+        config_d = Path('/etc/meshtasticd/config.d')
+        if not config_d.exists():
+            self.dialog.msgbox("Error", f"Directory not found:\n{config_d}")
+            return
+
+        configs = list(config_d.glob('*.yaml'))
+        if not configs:
+            self.dialog.msgbox("Info", "No active configs in config.d/")
+            return
+
+        choices = [(str(cfg), cfg.name) for cfg in sorted(configs)]
+        choices.append(("back", "Back"))
+
+        choice = self.dialog.menu(
+            "Active Configs",
+            "Select config to edit:",
+            choices
+        )
+
+        if choice and choice != "back":
+            self._edit_file(choice)
+
+    def _edit_available_d(self):
+        """Edit files in available.d."""
+        available_d = Path('/etc/meshtasticd/available.d')
+        if not available_d.exists():
+            self.dialog.msgbox("Error", f"Directory not found:\n{available_d}")
+            return
+
+        configs = list(available_d.glob('*.yaml'))
+        if not configs:
+            self.dialog.msgbox("Info", "No templates in available.d/")
+            return
+
+        choices = [(str(cfg), cfg.name) for cfg in sorted(configs)]
+        choices.append(("back", "Back"))
+
+        choice = self.dialog.menu(
+            "Hardware Templates",
+            "Select template to edit:",
+            choices
+        )
+
+        if choice and choice != "back":
+            self._edit_file(choice)
+
+    def _restart_meshtasticd(self):
+        """Restart meshtasticd service."""
+        confirm = self.dialog.yesno(
+            "Restart Service",
+            "Restart meshtasticd?\n\n"
+            "This will:\n"
+            "1. Reload systemd daemon\n"
+            "2. Restart meshtasticd service\n"
+            "3. Apply any config changes",
+            default_no=True
+        )
+
+        if not confirm:
+            return
+
+        try:
+            self.dialog.infobox("Restarting", "Restarting meshtasticd...")
+
+            subprocess.run(['systemctl', 'daemon-reload'],
+                           capture_output=True, timeout=10)
+
+            result = subprocess.run(
+                ['systemctl', 'restart', 'meshtasticd'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode == 0:
+                self.dialog.msgbox("Success", "meshtasticd restarted successfully!")
+            else:
+                self.dialog.msgbox("Error",
+                    f"Restart failed:\n{result.stderr or result.stdout}")
+
+        except subprocess.TimeoutExpired:
+            self.dialog.msgbox("Error", "Restart timed out")
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Restart failed:\n{e}")
 
     def _run_basic_launcher(self):
         """Fallback basic terminal launcher."""
