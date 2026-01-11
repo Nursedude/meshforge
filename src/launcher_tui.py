@@ -58,20 +58,45 @@ class DialogBackend:
         return self.backend is not None
 
     def _run(self, args: List[str]) -> Tuple[int, str]:
-        """Run dialog command and return (returncode, output)."""
+        """
+        Run dialog/whiptail command and return (returncode, output).
+
+        whiptail uses stderr for returning selection.
+        newt library opens /dev/tty directly for ncurses display.
+        We use os.system for proper terminal inheritance and redirect
+        stderr to a temp file to capture the selection.
+        """
+        import tempfile
+        import shlex
+
+        # Create temp file to capture selection output
+        fd, tmp_path = tempfile.mkstemp(suffix='.txt', prefix='meshforge_')
+        os.close(fd)
+
         try:
-            result = subprocess.run(
-                [self.backend] + args,
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-            # whiptail/dialog output goes to stderr
-            return result.returncode, result.stderr.strip()
-        except subprocess.TimeoutExpired:
-            return 1, ""
+            # Build command with proper shell quoting
+            cmd_parts = [self.backend] + [str(a) for a in args]
+            escaped_cmd = ' '.join(shlex.quote(p) for p in cmd_parts)
+
+            # Use os.system for proper terminal inheritance
+            # stderr redirected to file captures selection
+            # newt library opens /dev/tty directly for display
+            exit_code = os.system(f'{escaped_cmd} 2>{shlex.quote(tmp_path)}')
+
+            # Read the captured selection
+            with open(tmp_path, 'r') as f:
+                output = f.read().strip()
+
+            # os.system returns wait status, extract exit code
+            return os.waitstatus_to_exitcode(exit_code) if hasattr(os, 'waitstatus_to_exitcode') else (exit_code >> 8), output
+
         except Exception as e:
             return 1, str(e)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
     def msgbox(self, title: str, text: str) -> None:
         """Display a message box."""
