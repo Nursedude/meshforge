@@ -3,6 +3,7 @@ RNS-Meshtastic Bridge Service
 Bridges Reticulum Network Stack and Meshtastic networks
 """
 
+import re
 import threading
 import time
 import logging
@@ -708,11 +709,35 @@ class RNSMeshtasticBridge:
             if not rule.enabled:
                 continue
 
+            # Check direction
             if msg.source_network == "meshtastic" and rule.direction == "rns_to_mesh":
                 continue
             if msg.source_network == "rns" and rule.direction == "mesh_to_rns":
                 continue
 
+            # Apply regex filters
+            try:
+                # Source filter
+                if rule.source_filter:
+                    if not msg.source_id or not re.search(rule.source_filter, msg.source_id):
+                        continue
+
+                # Destination filter
+                if rule.dest_filter:
+                    dest = msg.destination_id or ""
+                    if not re.search(rule.dest_filter, dest):
+                        continue
+
+                # Message content filter
+                if rule.message_filter:
+                    if not msg.content or not re.search(rule.message_filter, msg.content):
+                        continue
+
+            except re.error as e:
+                logger.warning(f"Invalid regex in rule '{rule.name}': {e}")
+                continue
+
+            # All filters passed - this rule matches
             return True
 
         return self.config.default_route in ("bidirectional", f"{msg.source_network}_to_*")
