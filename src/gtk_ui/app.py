@@ -415,6 +415,7 @@ class MeshForgeWindow(Adw.ApplicationWindow):
             ("aredn", self._add_aredn_page),
             ("amateur", self._add_amateur_page),
             ("meshbot", self._add_meshbot_page),
+            ("messaging", self._add_messaging_page),
             ("settings", self._add_settings_page),
         ]
 
@@ -567,6 +568,8 @@ class MeshForgeWindow(Adw.ApplicationWindow):
             # Consolidated tool panels (new)
             ("mesh_tools", "Mesh Tools", "network-workgroup-symbolic", None),
             ("ham_tools", "Ham Tools", "audio-speakers-symbolic", None),
+            # Messaging
+            ("messaging", "Messaging", "mail-unread-symbolic", None),
             # Advanced/Legacy panels
             ("cli", "Meshtastic CLI", "utilities-terminal-symbolic", None),
             ("hardware", "Hardware Detection", "drive-harddisk-symbolic", None),
@@ -736,6 +739,13 @@ class MeshForgeWindow(Adw.ApplicationWindow):
         panel = MeshBotPanel(self)
         self.content_stack.add_named(panel, "meshbot")
         self.meshbot_panel = panel
+
+    def _add_messaging_page(self):
+        """Add the native messaging page"""
+        from .panels.messaging import MessagingPanel
+        panel = MessagingPanel(self)
+        self.content_stack.add_named(panel, "messaging")
+        self.messaging_panel = panel
 
     def _add_mesh_tools_page(self):
         """Add the consolidated Mesh Tools page (MeshBot, Map, Diagnostics)"""

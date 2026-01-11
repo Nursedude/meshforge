@@ -94,17 +94,20 @@ show_help() {
     echo "Usage: meshforge [command]"
     echo ""
     echo "Commands:"
-    echo "  (none)    Show interactive menu (default)"
-    echo "  gtk       Launch GTK graphical interface directly"
-    echo "  tui       Launch terminal UI directly"
-    echo "  web       Launch web interface directly"
+    echo "  (none)    raspi-config style menu (default)"
+    echo "  tui       raspi-config style TUI launcher"
+    echo "  gtk       Launch GTK graphical interface"
     echo "  cli       Launch Rich CLI menu"
+    echo "  web       Launch web interface"
     echo "  help      Show this help message"
     echo ""
+    echo "The default launcher uses whiptail/dialog for a"
+    echo "raspi-config style interface that works over SSH."
+    echo ""
     echo "Examples:"
-    echo "  meshforge          # Show menu with all options"
+    echo "  meshforge          # raspi-config style menu"
     echo "  meshforge gtk      # Launch GTK directly"
-    echo "  meshforge tui      # Launch TUI directly"
+    echo "  meshforge cli      # Launch Rich CLI"
 }
 
 # Determine which interface to launch
@@ -121,6 +124,11 @@ case "$1" in
         fi
         ;;
     tui)
+        # raspi-config style whiptail/dialog TUI
+        launch_terminal "$MESHFORGE_DIR/src/launcher_tui.py"
+        ;;
+    tui-textual)
+        # Textual TUI (deprecated)
         launch_terminal "$MESHFORGE_DIR/src/main_tui.py"
         ;;
     cli)
@@ -130,7 +138,7 @@ case "$1" in
         show_help
         ;;
     *)
-        # Default: show interactive launcher menu
-        launch_terminal "$MESHFORGE_DIR/src/launcher.py"
+        # Default: raspi-config style TUI (works over SSH and with display)
+        launch_terminal "$MESHFORGE_DIR/src/launcher_tui.py"
         ;;
 esac
