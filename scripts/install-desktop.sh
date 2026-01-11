@@ -106,18 +106,22 @@ fi
 
 # Update desktop file to use installed icon
 echo "Installing desktop file..."
-DESKTOP_FILE="$PROJECT_DIR/meshforge.desktop"
-INSTALLED_DESKTOP="/usr/share/applications/meshforge.desktop"
+DESKTOP_FILE="$PROJECT_DIR/org.meshforge.app.desktop"
+INSTALLED_DESKTOP="/usr/share/applications/org.meshforge.app.desktop"
 
-# Copy desktop file (Icon=org.meshforge.app already set to match GTK4 app_id)
+# Remove old meshforge.desktop if it exists
+rm -f /usr/share/applications/meshforge.desktop 2>/dev/null || true
+
+# Copy desktop file (Icon=org.meshforge.app matches GTK4 app_id)
 cp "$DESKTOP_FILE" "$INSTALLED_DESKTOP"
 chmod 644 "$INSTALLED_DESKTOP"
 
 # Also install to user's local applications (for menu)
 USER_APPS_DIR="$REAL_HOME/.local/share/applications"
 mkdir -p "$USER_APPS_DIR"
+rm -f "$USER_APPS_DIR/meshforge.desktop" 2>/dev/null || true
 cp "$INSTALLED_DESKTOP" "$USER_APPS_DIR/"
-chown "$REAL_USER:$REAL_USER" "$USER_APPS_DIR/meshforge.desktop"
+chown "$REAL_USER:$REAL_USER" "$USER_APPS_DIR/org.meshforge.app.desktop"
 
 # Update desktop database
 echo "Updating desktop database..."
