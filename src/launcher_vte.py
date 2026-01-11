@@ -417,10 +417,11 @@ def main():
             if term_path:
                 print(f"Launching with {term}...")
                 try:
-                    result = subprocess.run([term_path] + args)
+                    # No timeout: interactive terminal runs until user closes it
+                    result = subprocess.run([term_path] + args, check=False)
                     launched = True
                     sys.exit(result.returncode)
-                except Exception as e:
+                except subprocess.SubprocessError as e:
                     print(f"Failed to launch {term}: {e}")
                     continue
 
@@ -429,7 +430,8 @@ def main():
             xterm = shutil.which('x-terminal-emulator')
             if xterm:
                 print("Launching with x-terminal-emulator...")
-                subprocess.run([xterm, '-e', f'sudo python3 {tui_path}'])
+                # No timeout: interactive terminal runs until user closes it
+                subprocess.run([xterm, '-e', f'sudo python3 {tui_path}'], check=False)
             else:
                 print("\nNo terminal emulator found!")
                 print("Please run directly: sudo python3 " + str(tui_path))
