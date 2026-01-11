@@ -22,7 +22,7 @@ from typing import Tuple, Optional, List
 try:
     from __version__ import __version__
 except ImportError:
-    __version__ = "0.4.3"
+    __version__ = "0.4.5"
 
 # Import centralized path utility
 try:
@@ -151,7 +151,8 @@ class DialogBackend:
                 text=True
             )
             proc.communicate(input=str(percent), timeout=1)
-        except Exception:
+        except (subprocess.TimeoutExpired, OSError):
+            # Gauge timeout or display issue - non-critical
             pass
 
     def checklist(self, title: str, text: str,

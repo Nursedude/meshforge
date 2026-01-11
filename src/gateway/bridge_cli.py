@@ -54,7 +54,9 @@ def on_message(msg):
     """Callback for bridged messages."""
     source = msg.source_network
     dest = msg.destination_id or "broadcast"
-    logger.info(f"Message bridged: {source} -> {dest}: {msg.content[:50]}...")
+    content = msg.content or ""
+    preview = content[:50] + "..." if len(content) > 50 else content
+    logger.info(f"Message bridged: {source} -> {dest}: {preview}")
 
 
 def main():
@@ -91,6 +93,7 @@ def main():
 
     # Start bridge
     print("\nStarting gateway bridge...")
+    bridge_started = False
     try:
         success = bridge.start()
         if not success:
@@ -98,6 +101,7 @@ def main():
             print("Check that meshtasticd and rnsd are running")
             sys.exit(1)
 
+        bridge_started = True
         print("Gateway started successfully!")
         print("Press Ctrl+C to stop\n")
 
@@ -120,10 +124,13 @@ def main():
         traceback.print_exc()
 
     finally:
-        # Stop bridge
-        print("Stopping gateway...")
-        bridge.stop()
-        print("Gateway stopped.")
+        # Only stop if we successfully started
+        if bridge_started:
+            print("Stopping gateway...")
+            bridge.stop()
+            print("Gateway stopped.")
+        else:
+            print("Gateway was not started.")
 
 
 if __name__ == '__main__':
