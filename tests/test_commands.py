@@ -296,3 +296,296 @@ class TestSecurityValidation:
         result = service.get_version('arbitrary_command')
         assert result.success is False
         assert 'not in allowed list' in result.error
+
+
+class TestHamClockCommands:
+    """Test HamClock command module."""
+
+    def test_configure_valid(self):
+        """Test valid HamClock configuration."""
+        from commands import hamclock
+        result = hamclock.configure("localhost", api_port=8082, live_port=8081)
+        assert result.success is True
+        assert result.data['host'] == 'localhost'
+        assert result.data['api_port'] == 8082
+
+    def test_configure_invalid_host(self):
+        """Test empty host is rejected."""
+        from commands import hamclock
+        result = hamclock.configure("", api_port=8082)
+        assert result.success is False
+        assert 'empty' in result.message.lower()
+
+    def test_configure_invalid_port(self):
+        """Test invalid port is rejected."""
+        from commands import hamclock
+        result = hamclock.configure("localhost", api_port=99999)
+        assert result.success is False
+        assert 'port' in result.message.lower()
+
+    def test_get_config(self):
+        """Test getting HamClock configuration."""
+        from commands import hamclock
+        hamclock.configure("testhost", api_port=8082)
+        config = hamclock.get_config()
+        assert config.host == 'testhost'
+        assert config.api_port == 8082
+        assert config.live_port == 8081
+
+    def test_is_available(self):
+        """Test checking if HamClock is available."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        # Will fail if HamClock not running, but should return bool
+        result = hamclock.is_available()
+        assert isinstance(result, bool)
+
+    def test_test_connection(self):
+        """Test connection test."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        result = hamclock.test_connection()
+        assert isinstance(result, CommandResult)
+        # May fail if not running, but should return proper result
+
+    def test_get_space_weather(self):
+        """Test space weather retrieval."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        result = hamclock.get_space_weather()
+        assert isinstance(result, CommandResult)
+        # If successful, should have expected keys
+        if result.success:
+            assert 'sfi' in result.data or 'kp' in result.data
+
+    def test_get_band_conditions(self):
+        """Test band conditions retrieval."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        result = hamclock.get_band_conditions()
+        assert isinstance(result, CommandResult)
+
+    def test_get_voacap(self):
+        """Test VOACAP retrieval."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        result = hamclock.get_voacap()
+        assert isinstance(result, CommandResult)
+        if result.success:
+            assert 'bands' in result.data
+            assert 'path' in result.data
+
+    def test_get_noaa_solar_data(self):
+        """Test NOAA fallback data retrieval."""
+        from commands import hamclock
+        result = hamclock.get_noaa_solar_data()
+        assert isinstance(result, CommandResult)
+        # NOAA should usually be available
+        if result.success:
+            assert 'sfi' in result.data
+            assert 'source' in result.data
+            assert result.data['source'] == 'NOAA SWPC'
+
+    def test_get_all_data(self):
+        """Test comprehensive data retrieval."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        result = hamclock.get_all_data()
+        assert isinstance(result, CommandResult)
+        assert 'space_weather' in result.data
+        assert 'band_conditions' in result.data
+        assert 'voacap' in result.data
+        assert 'errors' in result.data
+
+    def test_get_system_info(self):
+        """Test system info retrieval."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        result = hamclock.get_system_info()
+        assert isinstance(result, CommandResult)
+
+    def test_get_dx_spots(self):
+        """Test DX spots retrieval."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        result = hamclock.get_dx_spots()
+        assert isinstance(result, CommandResult)
+
+    def test_get_satellite_list(self):
+        """Test satellite list retrieval."""
+        from commands import hamclock
+        hamclock.configure("localhost")
+        result = hamclock.get_satellite_list()
+        assert isinstance(result, CommandResult)
+
+    def test_reliability_status_mapping(self):
+        """Test reliability to status mapping."""
+        from commands import hamclock
+        # Test internal function
+        assert hamclock._reliability_to_status(90) == 'excellent'
+        assert hamclock._reliability_to_status(70) == 'good'
+        assert hamclock._reliability_to_status(50) == 'fair'
+        assert hamclock._reliability_to_status(20) == 'poor'
+        assert hamclock._reliability_to_status(0) == 'closed'
+
+
+class TestRNSCommands:
+    """Test RNS command module."""
+
+    def test_get_config_path(self):
+        """Test config path retrieval."""
+        from commands import rns
+        path = rns.get_config_path()
+        assert path.name == 'config'
+        assert '.reticulum' in str(path)
+
+    def test_get_status(self):
+        """Test RNS status check."""
+        from commands import rns
+        result = rns.get_status()
+        assert isinstance(result, CommandResult)
+        assert 'rnsd_running' in result.data
+        assert 'config_exists' in result.data
+
+    def test_validate_config_valid(self):
+        """Test config validation with valid config."""
+        from commands import rns
+        valid_config = """[reticulum]
+enable_transport = yes
+
+[interfaces]
+  [[Default Interface]]
+    type = AutoInterface
+    enabled = yes
+"""
+        is_valid, errors = rns.validate_config(valid_config)
+        assert is_valid is True
+        assert len(errors) == 0
+
+    def test_validate_config_missing_section(self):
+        """Test config validation catches missing section."""
+        from commands import rns
+        invalid_config = """[interfaces]
+  [[Default]]
+    type = AutoInterface
+"""
+        is_valid, errors = rns.validate_config(invalid_config)
+        assert is_valid is False
+        assert any('reticulum' in e.lower() for e in errors)
+
+    def test_validate_config_mismatched_brackets(self):
+        """Test config validation catches bracket mismatch."""
+        from commands import rns
+        invalid_config = """[reticulum]
+enable_transport = yes
+
+[interfaces
+  [[Default Interface]]
+    type = AutoInterface
+"""
+        is_valid, errors = rns.validate_config(invalid_config)
+        assert is_valid is False
+        assert any('bracket' in e.lower() for e in errors)
+
+    def test_validate_config_invalid_type(self):
+        """Test config validation catches invalid interface type."""
+        from commands import rns
+        invalid_config = """[reticulum]
+enable_transport = yes
+
+[interfaces]
+  [[Bad Interface]]
+    type = FakeInterface
+    enabled = yes
+"""
+        is_valid, errors = rns.validate_config(invalid_config)
+        assert is_valid is False
+        assert any('FakeInterface' in e for e in errors)
+
+    def test_parse_interfaces(self):
+        """Test interface parsing from config."""
+        from commands import rns
+        config = """[reticulum]
+enable_transport = yes
+
+[interfaces]
+  [[Server]]
+    type = TCPServerInterface
+    enabled = yes
+    listen_port = 4242
+
+  [[Client]]
+    type = TCPClientInterface
+    enabled = no
+    target_host = 192.168.1.1
+"""
+        interfaces = rns._parse_interfaces(config)
+        assert len(interfaces) == 2
+        assert interfaces[0]['name'] == 'Server'
+        assert interfaces[0]['settings']['type'] == 'TCPServerInterface'
+        assert interfaces[1]['name'] == 'Client'
+        assert interfaces[1]['settings']['enabled'] == 'no'
+
+    def test_interface_config_to_block(self):
+        """Test interface config serialization."""
+        from commands import rns
+        iface = rns.InterfaceConfig(
+            name='Test Server',
+            type='TCPServerInterface',
+            enabled=True,
+            settings={'listen_port': '4242'}
+        )
+        block = iface.to_config_block()
+        assert '[[Test Server]]' in block
+        assert 'type = TCPServerInterface' in block
+        assert 'enabled = yes' in block
+        assert 'listen_port = 4242' in block
+
+    def test_get_interface_templates(self):
+        """Test interface templates retrieval."""
+        from commands import rns
+        result = rns.get_interface_templates()
+        assert result.success is True
+        templates = result.data.get('templates', {})
+        assert 'auto' in templates
+        assert 'tcp_server' in templates
+        assert 'meshtastic' in templates
+        assert 'rnode' in templates
+
+    def test_check_connectivity(self):
+        """Test connectivity check."""
+        from commands import rns
+        result = rns.check_connectivity()
+        assert isinstance(result, CommandResult)
+        assert 'rnsd_running' in result.data
+        assert 'can_import_rns' in result.data
+        assert 'issues' in result.data
+
+    def test_list_interfaces(self):
+        """Test interface listing."""
+        from commands import rns
+        result = rns.list_interfaces()
+        assert isinstance(result, CommandResult)
+        # May fail if no config, but should return proper result
+
+    def test_get_backups(self):
+        """Test backup listing."""
+        from commands import rns
+        result = rns.get_backups()
+        assert isinstance(result, CommandResult)
+        assert 'backups' in result.data
+        assert 'count' in result.data
+
+    def test_module_exports(self):
+        """Test that rns is properly exported from commands."""
+        from commands import rns
+        # Verify key functions exist
+        assert hasattr(rns, 'get_status')
+        assert hasattr(rns, 'read_config')
+        assert hasattr(rns, 'write_config')
+        assert hasattr(rns, 'add_interface')
+        assert hasattr(rns, 'remove_interface')
+        assert hasattr(rns, 'start_rnsd')
+        assert hasattr(rns, 'stop_rnsd')
+        assert hasattr(rns, 'check_connectivity')
+        assert hasattr(rns, 'test_path')
