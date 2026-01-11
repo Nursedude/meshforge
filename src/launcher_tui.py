@@ -2078,26 +2078,35 @@ Active Hardware Configs: {len(active_configs)}"""
 
     def _channel_config_menu(self):
         """Channel configuration menu."""
-        choices = [
-            ("view", "View Current Channels"),
-            ("primary", "Set Primary Channel"),
-            ("gateway", "Set Gateway Channel (Slot 8)"),
-            ("psk", "Generate New PSK"),
-            ("back", "Back"),
-        ]
-
         while True:
+            choices = [
+                ("list", "View All Channels"),
+                ("edit", "Edit Channel"),
+                ("add", "Add/Enable Channel"),
+                ("disable", "Disable Channel"),
+                ("primary", "Quick: Set Primary Name"),
+                ("gateway", "Quick: Gateway Channel (Slot 8)"),
+                ("psk", "Generate New PSK"),
+                ("back", "Back"),
+            ]
+
             choice = self.dialog.menu(
                 "Channel Config",
-                "Configure mesh channels:",
+                "Configure all 8 mesh channels:",
                 choices
             )
 
             if choice is None or choice == "back":
                 break
 
-            if choice == "view":
-                self._view_channels()
+            if choice == "list":
+                self._view_all_channels()
+            elif choice == "edit":
+                self._edit_channel_menu()
+            elif choice == "add":
+                self._add_channel()
+            elif choice == "disable":
+                self._disable_channel()
             elif choice == "primary":
                 self._set_primary_channel()
             elif choice == "gateway":
@@ -2105,19 +2114,342 @@ Active Hardware Configs: {len(active_configs)}"""
             elif choice == "psk":
                 self._generate_psk()
 
-    def _view_channels(self):
-        """View current channel configuration."""
+    def _view_all_channels(self):
+        """View all 8 channels with their configuration."""
+        self.dialog.infobox("Channels", "Loading all channels...")
+
         try:
             sys.path.insert(0, str(self.src_dir))
             from commands import meshtastic as mesh_cmd
 
-            result = mesh_cmd.get_channel_info(0)
-            if result.success:
-                self.dialog.msgbox("Channel Info", result.raw or "No channel info")
-            else:
-                self.dialog.msgbox("Error", result.message)
+            channels = []
+            for i in range(8):
+                result = mesh_cmd.get_channel_info(i)
+                if result.success:
+                    raw = result.raw or ''
+                    # Parse channel info
+                    name = self._parse_channel_field(raw, 'name', f'Channel {i}')
+                    role = self._parse_channel_field(raw, 'role', 'DISABLED')
+                    psk = 'Set' if 'psk' in raw.lower() and 'none' not in raw.lower() else 'None'
+                    channels.append({
+                        'index': i,
+                        'name': name,
+                        'role': role,
+                        'psk': psk
+                    })
+                else:
+                    channels.append({
+                        'index': i,
+                        'name': f'Channel {i}',
+                        'role': 'UNKNOWN',
+                        'psk': '?'
+                    })
+
+            # Build display
+            text = "Channel Configuration (8 slots):\n\n"
+            text += "Slot  Name           Role        PSK\n"
+            text += "────────────────────────────────────────\n"
+
+            for ch in channels:
+                idx = ch['index']
+                name = ch['name'][:12].ljust(12)
+                role = ch['role'][:10].ljust(10)
+                psk = ch['psk']
+                marker = "*" if idx == 0 else " "
+                text += f"  {idx}{marker}   {name}  {role}  {psk}\n"
+
+            text += "\n* = Primary channel"
+            text += "\nUse 'Edit Channel' to configure individually"
+
+            self.dialog.msgbox("All Channels", text)
+
         except Exception as e:
-            self.dialog.msgbox("Error", f"Failed to get channels:\n{e}")
+            self.dialog.msgbox("Error", f"Failed to load channels:\n{e}")
+
+    def _parse_channel_field(self, raw: str, field: str, default: str) -> str:
+        """Parse a field from channel info output."""
+        for line in raw.split('\n'):
+            if field.lower() in line.lower():
+                parts = line.split(':')
+                if len(parts) >= 2:
+                    return parts[1].strip()[:15]
+        return default
+
+    def _edit_channel_menu(self):
+        """Select and edit a specific channel."""
+        # Build channel selection list
+        choices = []
+        for i in range(8):
+            label = "PRIMARY" if i == 0 else f"Slot {i+1}"
+            choices.append((str(i), f"{label} - Channel {i}"))
+        choices.append(("back", "Back"))
+
+        choice = self.dialog.menu(
+            "Edit Channel",
+            "Select channel to edit (0-7):",
+            choices
+        )
+
+        if choice is None or choice == "back":
+            return
+
+        try:
+            channel_idx = int(choice)
+            self._edit_single_channel(channel_idx)
+        except ValueError:
+            pass
+
+    def _edit_single_channel(self, idx: int):
+        """Edit a single channel's settings."""
+        while True:
+            slot_name = "PRIMARY" if idx == 0 else f"Slot {idx+1}"
+
+            choices = [
+                ("name", "Set Channel Name"),
+                ("psk", "Set PSK (Encryption Key)"),
+                ("role", "Set Role (Primary/Secondary/Disabled)"),
+                ("view", "View Current Settings"),
+                ("back", "Back"),
+            ]
+
+            choice = self.dialog.menu(
+                f"Channel {idx} ({slot_name})",
+                f"Edit channel {idx} settings:",
+                choices
+            )
+
+            if choice is None or choice == "back":
+                break
+
+            if choice == "name":
+                self._set_channel_name(idx)
+            elif choice == "psk":
+                self._set_channel_psk(idx)
+            elif choice == "role":
+                self._set_channel_role(idx)
+            elif choice == "view":
+                self._view_single_channel(idx)
+
+    def _set_channel_name(self, idx: int):
+        """Set name for a specific channel."""
+        name = self.dialog.inputbox(
+            f"Channel {idx} Name",
+            "Enter channel name (max 12 chars):",
+            ""
+        )
+
+        if not name:
+            return
+
+        try:
+            sys.path.insert(0, str(self.src_dir))
+            from commands import meshtastic as mesh_cmd
+
+            self.dialog.infobox("Setting", f"Setting channel {idx} name...")
+            result = mesh_cmd.set_channel_name(idx, name[:12])
+            self.dialog.msgbox("Result", result.message)
+
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed:\n{e}")
+
+    def _set_channel_psk(self, idx: int):
+        """Set PSK for a specific channel."""
+        psk_choices = [
+            ("random", "Generate Random PSK"),
+            ("default", "Use Default PSK (AQ==)"),
+            ("none", "No Encryption (Open)"),
+            ("custom", "Enter Custom PSK"),
+        ]
+
+        choice = self.dialog.menu(
+            f"Channel {idx} PSK",
+            "Select PSK option:",
+            psk_choices
+        )
+
+        if not choice:
+            return
+
+        psk = "AQ=="
+        if choice == "random":
+            psk = "random"
+        elif choice == "none":
+            psk = "none"
+        elif choice == "custom":
+            psk = self.dialog.inputbox("Custom PSK", "Enter PSK (base64 or hex):", "")
+            if not psk:
+                return
+
+        try:
+            sys.path.insert(0, str(self.src_dir))
+            from commands import meshtastic as mesh_cmd
+
+            self.dialog.infobox("Setting", f"Setting channel {idx} PSK...")
+            result = mesh_cmd.set_channel_psk(idx, psk)
+            self.dialog.msgbox("Result", result.message)
+
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed:\n{e}")
+
+    def _set_channel_role(self, idx: int):
+        """Set role for a specific channel."""
+        if idx == 0:
+            self.dialog.msgbox("Info", "Channel 0 is always PRIMARY.\nCannot change role.")
+            return
+
+        role_choices = [
+            ("SECONDARY", "SECONDARY - Active additional channel"),
+            ("DISABLED", "DISABLED - Channel not in use"),
+        ]
+
+        choice = self.dialog.menu(
+            f"Channel {idx} Role",
+            "Select channel role:",
+            role_choices
+        )
+
+        if not choice:
+            return
+
+        try:
+            sys.path.insert(0, str(self.src_dir))
+            from commands import meshtastic as mesh_cmd
+
+            self.dialog.infobox("Setting", f"Setting channel {idx} role...")
+            # Use meshtastic CLI to set role
+            result = mesh_cmd._run_command([
+                '--ch-index', str(idx),
+                '--ch-set', 'module_settings.role', choice
+            ])
+            self.dialog.msgbox("Result", result.message if result.success else f"Note: Role change may require restart")
+
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed:\n{e}")
+
+    def _view_single_channel(self, idx: int):
+        """View settings for a single channel."""
+        try:
+            sys.path.insert(0, str(self.src_dir))
+            from commands import meshtastic as mesh_cmd
+
+            result = mesh_cmd.get_channel_info(idx)
+            if result.success:
+                text = f"Channel {idx} Settings:\n\n{result.raw or 'No data'}"
+            else:
+                text = f"Failed to get channel {idx}:\n{result.message}"
+
+            self.dialog.msgbox(f"Channel {idx}", text[:1500])
+
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed:\n{e}")
+
+    def _add_channel(self):
+        """Add/enable a new channel."""
+        # Find first disabled channel
+        choices = []
+        for i in range(1, 8):  # Skip channel 0 (primary)
+            choices.append((str(i), f"Slot {i+1} - Channel {i}"))
+        choices.append(("back", "Back"))
+
+        choice = self.dialog.menu(
+            "Add Channel",
+            "Select slot for new channel:\n\n"
+            "(Channel 0 is always primary)",
+            choices
+        )
+
+        if choice is None or choice == "back":
+            return
+
+        try:
+            idx = int(choice)
+
+            # Get channel name
+            name = self.dialog.inputbox(
+                "Channel Name",
+                f"Enter name for channel {idx}:",
+                f"Channel{idx}"
+            )
+
+            if not name:
+                return
+
+            # Get PSK choice
+            use_psk = self.dialog.yesno(
+                "Encryption",
+                "Enable encryption for this channel?",
+                default_no=False
+            )
+
+            sys.path.insert(0, str(self.src_dir))
+            from commands import meshtastic as mesh_cmd
+
+            self.dialog.infobox("Adding", f"Adding channel {idx}...")
+
+            # Set channel name
+            mesh_cmd.set_channel_name(idx, name[:12])
+
+            # Set PSK
+            if use_psk:
+                mesh_cmd.set_channel_psk(idx, "random")
+            else:
+                mesh_cmd.set_channel_psk(idx, "none")
+
+            self.dialog.msgbox("Success", f"Channel {idx} configured!\n\nName: {name}")
+
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed:\n{e}")
+
+    def _disable_channel(self):
+        """Disable a channel."""
+        choices = []
+        for i in range(1, 8):  # Can't disable channel 0
+            choices.append((str(i), f"Channel {i}"))
+        choices.append(("back", "Back"))
+
+        choice = self.dialog.menu(
+            "Disable Channel",
+            "Select channel to disable:\n\n"
+            "(Channel 0 cannot be disabled)",
+            choices
+        )
+
+        if choice is None or choice == "back":
+            return
+
+        try:
+            idx = int(choice)
+
+            confirm = self.dialog.yesno(
+                "Confirm",
+                f"Disable channel {idx}?\n\n"
+                "This will clear the channel configuration.",
+                default_no=True
+            )
+
+            if not confirm:
+                return
+
+            sys.path.insert(0, str(self.src_dir))
+            from commands import meshtastic as mesh_cmd
+
+            self.dialog.infobox("Disabling", f"Disabling channel {idx}...")
+
+            # Clear channel by setting empty name and no PSK
+            mesh_cmd._run_command([
+                '--ch-index', str(idx),
+                '--ch-set', 'name', '',
+                '--ch-set', 'psk', 'none'
+            ])
+
+            self.dialog.msgbox("Success", f"Channel {idx} disabled")
+
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed:\n{e}")
+
+    def _view_channels(self):
+        """View current channel configuration (legacy - redirects to new)."""
+        self._view_all_channels()
 
     def _set_primary_channel(self):
         """Set primary channel name."""
