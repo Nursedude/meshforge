@@ -136,10 +136,14 @@ if command -v gtk-update-icon-cache &> /dev/null; then
     gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true
 fi
 
-# Install launcher script
-echo "Installing launcher script..."
+# Install launcher scripts
+echo "Installing launcher scripts..."
 cp "$PROJECT_DIR/scripts/meshforge-launcher.sh" /usr/local/bin/meshforge
 chmod 755 /usr/local/bin/meshforge
+
+# Install terminal launcher (sets proper window class for icons)
+cp "$PROJECT_DIR/scripts/meshforge-terminal.sh" /usr/local/bin/meshforge-terminal
+chmod 755 /usr/local/bin/meshforge-terminal
 
 # Install polkit policy (for pkexec authentication)
 echo "Installing polkit policy..."

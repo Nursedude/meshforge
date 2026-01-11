@@ -362,10 +362,6 @@ class HamToolsPanel(Gtk.Box):
         open_btn.connect("clicked", self._on_open_hamclock_browser)
         svc_box.append(open_btn)
 
-        install_btn = Gtk.Button(label="Install HamClock")
-        install_btn.connect("clicked", self._on_install_hamclock)
-        svc_box.append(install_btn)
-
         diagnose_btn = Gtk.Button(label="Diagnose")
         diagnose_btn.connect("clicked", self._on_diagnose_hamclock)
         svc_box.append(diagnose_btn)
@@ -746,6 +742,22 @@ class HamToolsPanel(Gtk.Box):
         overall = data.get('overall', 'Unknown')
         geomag = data.get('geomagnetic', '')
         self._output_message(f"Conditions: {overall} | Geomagnetic: {geomag}")
+
+        # Update band conditions from bands_estimate
+        bands_estimate = data.get('bands_estimate', data.get('hf_conditions', {}))
+        if bands_estimate:
+            self._output_message("HF Band Conditions:")
+            for band, cond in bands_estimate.items():
+                self._output_message(f"  {band}: {cond}")
+                # Parse day/night if format is "Good/Fair"
+                if band in self._band_labels:
+                    if '/' in str(cond):
+                        day, night = str(cond).split('/', 1)
+                        self._band_labels[band]['day'].set_label(day.strip())
+                        self._band_labels[band]['night'].set_label(night.strip())
+                    else:
+                        self._band_labels[band]['day'].set_label(str(cond))
+                        self._band_labels[band]['night'].set_label(str(cond))
 
     def _parse_hamclock_wx(self, data: str):
         """Parse HamClock space weather response"""
@@ -1176,63 +1188,58 @@ class HamToolsPanel(Gtk.Box):
             GLib.timeout_add(2000, self._check_hamclock_status)
 
     def _on_refresh_bands(self, button):
-        """Refresh band conditions from N0NBH solar data"""
+        """Refresh band conditions (uses auto-fallback API)"""
         self._output_message("Fetching band conditions...")
 
         def fetch():
             try:
-                import xml.etree.ElementTree as ET
+                # Use the commands layer with auto-fallback
+                import sys
+                from pathlib import Path
+                src_dir = Path(__file__).parent.parent.parent
+                sys.path.insert(0, str(src_dir))
+                from commands import hamclock
 
-                # Fetch N0NBH solar/band data
-                url = "https://www.hamqsl.com/solarxml.php"
-                req = urllib.request.Request(url)
-                req.add_header('User-Agent', 'MeshForge/1.0')
+                # Get propagation summary (auto-fallback to NOAA)
+                result = hamclock.get_propagation_summary()
 
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    data = response.read().decode('utf-8')
-
-                # Parse XML
-                root = ET.fromstring(data)
-                solar_data = root.find('.//solardata')
-
-                if solar_data is not None:
-                    # Extract solar indices
-                    sfi = solar_data.findtext('solarflux', 'N/A')
-                    a_index = solar_data.findtext('aindex', 'N/A')
-                    k_index = solar_data.findtext('kindex', 'N/A')
-                    sunspots = solar_data.findtext('sunspots', 'N/A')
-                    xray = solar_data.findtext('xray', 'N/A')
-                    updated = solar_data.findtext('updated', 'N/A')
+                if result.success:
+                    data = result.data
+                    source = data.get('source', 'Unknown')
 
                     lines = [
                         "=== Solar Conditions ===",
-                        f"Updated: {updated}",
-                        f"Solar Flux Index: {sfi}",
-                        f"A-Index: {a_index}  K-Index: {k_index}",
-                        f"Sunspots: {sunspots}  X-Ray: {xray}",
+                        f"Source: {source}",
+                        f"Solar Flux Index: {data.get('sfi', 'N/A')}",
+                        f"Kp Index: {data.get('kp', 'N/A')}",
+                        f"Sunspots: {data.get('ssn', 'N/A')}",
+                        f"X-Ray: {data.get('xray', 'N/A')}",
+                        f"Geomagnetic: {data.get('geomagnetic', 'N/A')}",
+                        f"Overall: {data.get('overall', 'N/A')}",
                         "",
                         "=== HF Band Conditions ==="
                     ]
 
-                    # Parse band conditions (day/night)
-                    for band_elem in solar_data.findall('.//band'):
-                        name = band_elem.get('name', 'Unknown')
-                        time = band_elem.get('time', '')
-                        condition = band_elem.text or 'Unknown'
-                        lines.append(f"  {name:10} ({time:5}): {condition}")
-
-                    # Add VHF conditions if available
-                    vhf_cond = solar_data.findtext('vhf', '')
-                    if vhf_cond:
-                        lines.append(f"\nVHF Conditions: {vhf_cond}")
-
-                    sig_noise = solar_data.findtext('signalnoise', '')
-                    if sig_noise:
-                        lines.append(f"Signal Noise: {sig_noise}")
+                    # Get band conditions
+                    bands = data.get('bands_estimate', data.get('hf_conditions', {}))
+                    if bands:
+                        for band, cond in bands.items():
+                            lines.append(f"  {band}: {cond}")
+                            # Update grid labels
+                            if band in self._band_labels:
+                                if '/' in str(cond):
+                                    day, night = str(cond).split('/', 1)
+                                    GLib.idle_add(self._band_labels[band]['day'].set_label, day.strip())
+                                    GLib.idle_add(self._band_labels[band]['night'].set_label, night.strip())
+                                else:
+                                    GLib.idle_add(self._band_labels[band]['day'].set_label, str(cond))
+                                    GLib.idle_add(self._band_labels[band]['night'].set_label, str(cond))
+                    else:
+                        lines.append("  (Estimated from SFI - HamClock provides detailed conditions)")
 
                     GLib.idle_add(self._set_output, '\n'.join(lines))
                 else:
-                    GLib.idle_add(self._output_message, "Could not parse solar data")
+                    GLib.idle_add(self._output_message, f"Error: {result.message}")
 
             except Exception as e:
                 GLib.idle_add(self._output_message, f"Error fetching band data: {e}")
