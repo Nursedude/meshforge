@@ -5,7 +5,7 @@ Unified command interface for GTK and CLI.
 All UI-independent operations go here.
 
 Usage:
-    from commands import meshtastic, service, hardware, gateway, diagnostics, hamclock, rns
+    from commands import meshtastic, service, hardware, gateway, diagnostics, hamclock, rns, messaging
 
     # Meshtastic operations
     result = meshtastic.get_node_info()
@@ -39,6 +39,11 @@ Usage:
     result = rns.read_config()
     result = rns.add_interface("My Server", "TCPServerInterface", {"listen_port": "4242"})
     result = rns.check_connectivity()
+
+    # Messaging - Native mesh messaging
+    result = messaging.send_message("Hello mesh!", destination="!abcd1234")
+    result = messaging.get_messages(limit=20)
+    result = messaging.get_conversations()
 """
 
 from . import meshtastic
@@ -48,6 +53,7 @@ from . import gateway
 from . import diagnostics
 from . import hamclock
 from . import rns
+from . import messaging
 from .base import CommandResult, CommandError
 
 __all__ = [
@@ -58,6 +64,7 @@ __all__ = [
     'diagnostics',
     'hamclock',
     'rns',
+    'messaging',
     'CommandResult',
     'CommandError',
 ]
