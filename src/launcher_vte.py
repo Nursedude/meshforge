@@ -381,13 +381,59 @@ def main():
         src_dir = Path(__file__).parent
         tui_path = src_dir / 'launcher_tui.py'
 
-        for term in ['gnome-terminal', 'xfce4-terminal', 'konsole', 'xterm']:
-            if shutil.which(term):
-                if term == 'gnome-terminal':
-                    subprocess.run([term, '--', 'sudo', 'python3', str(tui_path)])
-                else:
-                    subprocess.run([term, '-e', f'sudo python3 {tui_path}'])
-                return
+        if not tui_path.exists():
+            # Try alternative paths
+            for alt_path in [
+                Path('/opt/meshforge/src/launcher_tui.py'),
+                Path(__file__).parent.parent / 'src' / 'launcher_tui.py',
+            ]:
+                if alt_path.exists():
+                    tui_path = alt_path
+                    break
+
+        if not tui_path.exists():
+            print(f"Error: TUI launcher not found at {tui_path}")
+            sys.exit(1)
+
+        # Terminal launch configurations (terminal, args_format)
+        terminals = [
+            ('gnome-terminal', ['--', 'sudo', 'python3', str(tui_path)]),
+            ('xfce4-terminal', ['-e', f'sudo python3 {tui_path}']),
+            ('konsole', ['-e', 'sudo', 'python3', str(tui_path)]),
+            ('xterm', ['-fa', 'Monospace', '-fs', '11', '-geometry', '100x35',
+                      '-bg', '#1e1e2e', '-fg', '#cdd6f4',
+                      '-e', f'sudo python3 {tui_path}']),
+            ('lxterminal', ['-e', f'sudo python3 {tui_path}']),
+            ('mate-terminal', ['-e', f'sudo python3 {tui_path}']),
+            ('terminator', ['-e', f'sudo python3 {tui_path}']),
+            ('tilix', ['-e', f'sudo python3 {tui_path}']),
+            ('kitty', ['sudo', 'python3', str(tui_path)]),
+            ('alacritty', ['-e', 'sudo', 'python3', str(tui_path)]),
+        ]
+
+        launched = False
+        for term, args in terminals:
+            term_path = shutil.which(term)
+            if term_path:
+                print(f"Launching with {term}...")
+                try:
+                    result = subprocess.run([term_path] + args)
+                    launched = True
+                    sys.exit(result.returncode)
+                except Exception as e:
+                    print(f"Failed to launch {term}: {e}")
+                    continue
+
+        if not launched:
+            # Last resort: try x-terminal-emulator
+            xterm = shutil.which('x-terminal-emulator')
+            if xterm:
+                print("Launching with x-terminal-emulator...")
+                subprocess.run([xterm, '-e', f'sudo python3 {tui_path}'])
+            else:
+                print("\nNo terminal emulator found!")
+                print("Please run directly: sudo python3 " + str(tui_path))
+                sys.exit(1)
         return
 
     app = MeshForgeVTEApp()

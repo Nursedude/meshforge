@@ -11,16 +11,18 @@ Categories=Network;System;
 Keywords=meshtastic;lora;mesh;radio;network;
 StartupNotify=true
 StartupWMClass=org.meshforge.app
-Actions=gtk;cli;web;
+Actions=tui;gtk;web;
+
+[Desktop Action tui]
+Name=TUI Menu (Direct)
+Exec=/opt/meshforge/scripts/meshforge-launcher.sh tui
+Terminal=true
 
 [Desktop Action gtk]
 Name=GTK Desktop Interface
 Exec=/opt/meshforge/scripts/meshforge-launcher.sh gtk
 
-[Desktop Action cli]
-Name=Rich CLI Menu
-Exec=x-terminal-emulator -e "/opt/meshforge/scripts/meshforge-launcher.sh cli"
-
 [Desktop Action web]
 Name=Web Monitor
-Exec=x-terminal-emulator -e "/opt/meshforge/scripts/meshforge-launcher.sh web"
+Exec=/opt/meshforge/scripts/meshforge-launcher.sh web
+Terminal=true
