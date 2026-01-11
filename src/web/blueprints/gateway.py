@@ -529,3 +529,296 @@ def gateway_test():
         }
 
     return jsonify(results)
+
+
+# ============================================================================
+# RNS Over Meshtastic Transport Endpoints
+# ============================================================================
+
+# Transport instance (separate from message bridge)
+_transport_instance = None
+_transport_lock = threading.Lock()
+
+
+@gateway_bp.route('/gateway/transport/status')
+def transport_status():
+    """
+    Get RNS over Meshtastic transport status.
+
+    Returns transport layer statistics and configuration.
+    """
+    global _transport_instance
+
+    with _transport_lock:
+        if _transport_instance and _transport_instance.is_running:
+            status = _transport_instance.get_status()
+        else:
+            # Return default status when not running
+            status = {
+                'running': False,
+                'connected': False,
+                'connection_type': None,
+                'device_path': None,
+                'speed_preset': None,
+                'estimated_bps': 0,
+                'range_estimate': None,
+                'hop_limit': 0,
+                'pending_fragments': 0,
+                'outbound_queue_size': 0,
+                'statistics': {
+                    'packets_sent': 0,
+                    'packets_received': 0,
+                    'fragments_sent': 0,
+                    'fragments_received': 0,
+                    'bytes_sent': 0,
+                    'bytes_received': 0,
+                    'reassembly_timeouts': 0,
+                    'reassembly_successes': 0,
+                    'crc_errors': 0,
+                    'packet_loss_rate': 0,
+                    'avg_latency_ms': 0,
+                    'uptime_seconds': 0,
+                    'last_activity': None,
+                }
+            }
+
+    # Get config for display
+    config = load_gateway_config()
+    transport_config = config.get('rns_transport', {})
+
+    return jsonify({
+        'mode': 'rns_transport',
+        'config': {
+            'enabled': transport_config.get('enabled', False),
+            'connection_type': transport_config.get('connection_type', 'tcp'),
+            'device_path': transport_config.get('device_path', 'localhost:4403'),
+            'data_speed': transport_config.get('data_speed', 8),
+            'hop_limit': transport_config.get('hop_limit', 3),
+        },
+        'status': status
+    })
+
+
+@gateway_bp.route('/gateway/transport/start', methods=['POST'])
+def transport_start():
+    """
+    Start the RNS over Meshtastic transport layer.
+
+    This enables RNS packets to be sent over the Meshtastic LoRa network.
+    """
+    global _transport_instance
+
+    # Check prerequisites
+    if not check_meshtasticd():
+        return jsonify({
+            'success': False,
+            'error': 'meshtasticd not running on port 4403'
+        }), 400
+
+    try:
+        from gateway.config import RNSOverMeshtasticConfig
+        from gateway.rns_transport import create_rns_transport
+
+        config = load_gateway_config()
+        transport_config = config.get('rns_transport', {})
+
+        with _transport_lock:
+            if _transport_instance and _transport_instance.is_running:
+                return jsonify({
+                    'success': True,
+                    'message': 'Transport already running'
+                })
+
+            # Create config object
+            rns_config = RNSOverMeshtasticConfig(
+                enabled=True,
+                connection_type=transport_config.get('connection_type', 'tcp'),
+                device_path=transport_config.get('device_path', 'localhost:4403'),
+                data_speed=transport_config.get('data_speed', 8),
+                hop_limit=transport_config.get('hop_limit', 3),
+                fragment_timeout_sec=transport_config.get('fragment_timeout_sec', 30),
+                max_pending_fragments=transport_config.get('max_pending_fragments', 100),
+                enable_stats=transport_config.get('enable_stats', True),
+            )
+
+            # Create and start transport
+            _transport_instance = create_rns_transport(rns_config)
+
+            if _transport_instance.start():
+                return jsonify({
+                    'success': True,
+                    'message': 'Transport started',
+                    'status': _transport_instance.get_status()
+                })
+            else:
+                _transport_instance = None
+                return jsonify({
+                    'success': False,
+                    'error': 'Failed to start transport'
+                }), 500
+
+    except ImportError as e:
+        return jsonify({
+            'success': False,
+            'error': f'Transport module not available: {e}'
+        }), 500
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@gateway_bp.route('/gateway/transport/stop', methods=['POST'])
+def transport_stop():
+    """Stop the RNS over Meshtastic transport layer."""
+    global _transport_instance
+
+    with _transport_lock:
+        if not _transport_instance or not _transport_instance.is_running:
+            return jsonify({
+                'success': True,
+                'message': 'Transport not running'
+            })
+
+        try:
+            _transport_instance.stop()
+            _transport_instance = None
+            return jsonify({
+                'success': True,
+                'message': 'Transport stopped'
+            })
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'error': str(e)
+            }), 500
+
+
+@gateway_bp.route('/gateway/transport/stats')
+def transport_stats():
+    """
+    Get detailed transport statistics.
+
+    Returns packet counts, fragment stats, latency, and error rates.
+    """
+    global _transport_instance
+
+    with _transport_lock:
+        if not _transport_instance or not _transport_instance.is_running:
+            return jsonify({
+                'running': False,
+                'message': 'Transport not running'
+            })
+
+        stats = _transport_instance.stats.to_dict()
+        throughput = _transport_instance.config.get_throughput_estimate()
+
+        # Calculate derived metrics
+        total_packets = stats['packets_sent'] + stats['packets_received']
+        total_fragments = stats['fragments_sent'] + stats['fragments_received']
+        total_bytes = stats['bytes_sent'] + stats['bytes_received']
+
+        return jsonify({
+            'running': True,
+            'statistics': stats,
+            'derived': {
+                'total_packets': total_packets,
+                'total_fragments': total_fragments,
+                'total_bytes': total_bytes,
+                'avg_fragments_per_packet': round(
+                    total_fragments / total_packets, 2
+                ) if total_packets > 0 else 0,
+                'bytes_per_second': round(
+                    total_bytes / stats['uptime_seconds'], 2
+                ) if stats['uptime_seconds'] > 0 else 0,
+            },
+            'throughput_estimate': throughput,
+            'alerts': {
+                'high_packet_loss': stats['packet_loss_rate'] > 0.1,
+                'high_latency': stats['avg_latency_ms'] > 5000,
+            }
+        })
+
+
+@gateway_bp.route('/gateway/transport/config', methods=['GET', 'POST'])
+def transport_config():
+    """
+    Get or update transport configuration.
+
+    GET: Returns current transport configuration
+    POST: Updates transport configuration (requires restart)
+    """
+    config = load_gateway_config()
+
+    if request.method == 'GET':
+        return jsonify({
+            'rns_transport': config.get('rns_transport', {
+                'enabled': False,
+                'connection_type': 'tcp',
+                'device_path': 'localhost:4403',
+                'data_speed': 8,
+                'hop_limit': 3,
+                'fragment_timeout_sec': 30,
+                'max_pending_fragments': 100,
+                'enable_stats': True,
+            })
+        })
+
+    # POST - update config
+    try:
+        new_config = request.get_json()
+        if not new_config:
+            return jsonify({'error': 'No config provided'}), 400
+
+        # Initialize rns_transport section if missing
+        if 'rns_transport' not in config:
+            config['rns_transport'] = {}
+
+        # Update allowed fields
+        allowed_fields = [
+            'enabled', 'connection_type', 'device_path', 'data_speed',
+            'hop_limit', 'fragment_timeout_sec', 'max_pending_fragments',
+            'enable_stats', 'packet_loss_threshold', 'latency_threshold_ms'
+        ]
+
+        for field in allowed_fields:
+            if field in new_config:
+                config['rns_transport'][field] = new_config[field]
+
+        save_gateway_config(config)
+
+        return jsonify({
+            'success': True,
+            'config': config['rns_transport'],
+            'message': 'Configuration updated. Restart transport to apply changes.'
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@gateway_bp.route('/gateway/transport/presets')
+def transport_presets():
+    """
+    Get available speed presets for transport configuration.
+
+    Returns preset names with throughput and range estimates.
+    """
+    presets = {
+        8: {'name': 'SHORT_TURBO', 'delay': 0.4, 'bps': 500, 'range': 'short', 'description': 'Fastest, shortest range'},
+        7: {'name': 'SHORT_FAST+', 'delay': 0.5, 'bps': 400, 'range': 'short', 'description': 'Very fast'},
+        6: {'name': 'SHORT_FAST', 'delay': 1.0, 'bps': 300, 'range': 'medium', 'description': 'Fast, medium range'},
+        5: {'name': 'SHORT_SLOW', 'delay': 3.0, 'bps': 150, 'range': 'medium-long', 'description': 'Balanced'},
+        4: {'name': 'MEDIUM_FAST', 'delay': 4.0, 'bps': 100, 'range': 'long', 'description': 'Long range, moderate speed'},
+        3: {'name': 'MEDIUM_SLOW', 'delay': 5.0, 'bps': 80, 'range': 'long', 'description': 'Long range'},
+        2: {'name': 'LONG_MODERATE', 'delay': 6.0, 'bps': 60, 'range': 'very long', 'description': 'Very long range'},
+        1: {'name': 'LONG_SLOW', 'delay': 7.0, 'bps': 55, 'range': 'very long', 'description': 'Maximum range, slow'},
+        0: {'name': 'LONG_FAST', 'delay': 8.0, 'bps': 50, 'range': 'maximum', 'description': 'Maximum range, slowest'},
+    }
+
+    return jsonify({
+        'presets': presets,
+        'recommended': 8,
+        'note': 'Higher numbers = faster but shorter range'
+    })

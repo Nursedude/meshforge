@@ -10,10 +10,20 @@ Supports two bridge modes:
 from .rns_bridge import RNSMeshtasticBridge
 from .node_tracker import UnifiedNodeTracker
 from .config import GatewayConfig, RNSOverMeshtasticConfig
+from .rns_transport import (
+    RNSMeshtasticTransport,
+    RNSMeshtasticInterface,
+    TransportStats,
+    create_rns_transport,
+)
 
 __all__ = [
     'RNSMeshtasticBridge',
     'UnifiedNodeTracker',
     'GatewayConfig',
     'RNSOverMeshtasticConfig',
+    'RNSMeshtasticTransport',
+    'RNSMeshtasticInterface',
+    'TransportStats',
+    'create_rns_transport',
 ]

@@ -435,3 +435,309 @@ def is_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+# ============================================================================
+# RNS Over Meshtastic Transport Commands
+# ============================================================================
+
+# Module-level transport instance (singleton pattern)
+_transport_instance = None
+
+
+def _get_transport():
+    """Get or create the transport instance."""
+    global _transport_instance
+    return _transport_instance
+
+
+def get_transport_status() -> CommandResult:
+    """
+    Get RNS over Meshtastic transport status.
+
+    Returns:
+        CommandResult with transport status information
+    """
+    transport = _get_transport()
+
+    if transport and transport.is_running:
+        status = transport.get_status()
+        throughput = status.get('speed_preset', 'N/A')
+        connected = "connected" if status.get('connected') else "disconnected"
+        message = f"Transport running - {throughput} ({connected})"
+
+        return CommandResult.ok(message, data=status)
+    else:
+        return CommandResult(
+            success=False,
+            message="Transport not running",
+            data={'running': False}
+        )
+
+
+def start_transport(
+    connection_type: str = "tcp",
+    device_path: str = "localhost:4403",
+    data_speed: int = 8,
+    hop_limit: int = 3
+) -> CommandResult:
+    """
+    Start the RNS over Meshtastic transport layer.
+
+    Args:
+        connection_type: Connection type ("tcp", "serial", "ble")
+        device_path: Device path or host:port
+        data_speed: Speed preset (0-8, higher = faster)
+        hop_limit: Mesh hop limit (1-7)
+
+    Returns:
+        CommandResult indicating success/failure
+    """
+    global _transport_instance
+
+    # Check if already running
+    if _transport_instance and _transport_instance.is_running:
+        return CommandResult.warn(
+            "Transport already running",
+            data=_transport_instance.get_status()
+        )
+
+    try:
+        from gateway.config import RNSOverMeshtasticConfig
+        from gateway.rns_transport import create_rns_transport
+
+        # Create configuration
+        config = RNSOverMeshtasticConfig(
+            enabled=True,
+            connection_type=connection_type,
+            device_path=device_path,
+            data_speed=data_speed,
+            hop_limit=hop_limit,
+        )
+
+        # Create and start transport
+        _transport_instance = create_rns_transport(config)
+
+        if _transport_instance.start():
+            status = _transport_instance.get_status()
+            throughput = config.get_throughput_estimate()
+            return CommandResult.ok(
+                f"Transport started ({throughput['name']}, ~{throughput['bps']} B/s)",
+                data=status
+            )
+        else:
+            _transport_instance = None
+            return CommandResult.fail("Failed to start transport")
+
+    except ImportError as e:
+        return CommandResult.not_available(
+            f"Transport module not available: {e}",
+            fix_hint="Ensure gateway module is installed"
+        )
+    except Exception as e:
+        return CommandResult.fail(f"Error starting transport: {e}")
+
+
+def stop_transport() -> CommandResult:
+    """
+    Stop the RNS over Meshtastic transport layer.
+
+    Returns:
+        CommandResult indicating success/failure
+    """
+    global _transport_instance
+
+    if not _transport_instance or not _transport_instance.is_running:
+        return CommandResult.warn("Transport not running")
+
+    try:
+        _transport_instance.stop()
+        _transport_instance = None
+        return CommandResult.ok("Transport stopped")
+    except Exception as e:
+        return CommandResult.fail(f"Error stopping transport: {e}")
+
+
+def get_transport_stats() -> CommandResult:
+    """
+    Get detailed transport statistics.
+
+    Returns:
+        CommandResult with packet counts, latency, and error rates
+    """
+    transport = _get_transport()
+
+    if not transport or not transport.is_running:
+        return CommandResult.fail("Transport not running")
+
+    try:
+        stats = transport.stats.to_dict()
+        throughput = transport.config.get_throughput_estimate()
+
+        # Calculate derived metrics
+        total_packets = stats['packets_sent'] + stats['packets_received']
+        total_fragments = stats['fragments_sent'] + stats['fragments_received']
+        total_bytes = stats['bytes_sent'] + stats['bytes_received']
+
+        # Build summary message
+        loss_pct = stats['packet_loss_rate'] * 100
+        message = (
+            f"Packets: {total_packets} | "
+            f"Fragments: {total_fragments} | "
+            f"Loss: {loss_pct:.1f}%"
+        )
+
+        return CommandResult.ok(
+            message,
+            data={
+                'statistics': stats,
+                'derived': {
+                    'total_packets': total_packets,
+                    'total_fragments': total_fragments,
+                    'total_bytes': total_bytes,
+                    'avg_fragments_per_packet': round(
+                        total_fragments / total_packets, 2
+                    ) if total_packets > 0 else 0,
+                },
+                'throughput_estimate': throughput,
+                'alerts': {
+                    'high_packet_loss': stats['packet_loss_rate'] > 0.1,
+                    'high_latency': stats['avg_latency_ms'] > 5000,
+                }
+            }
+        )
+    except Exception as e:
+        return CommandResult.fail(f"Error getting statistics: {e}")
+
+
+def get_transport_config() -> CommandResult:
+    """
+    Get transport configuration.
+
+    Returns:
+        CommandResult with current transport config
+    """
+    try:
+        from gateway.config import GatewayConfig
+        config = GatewayConfig.load()
+        transport_cfg = config.rns_transport
+
+        throughput = transport_cfg.get_throughput_estimate()
+
+        return CommandResult.ok(
+            f"Transport config: {throughput['name']} ({transport_cfg.connection_type})",
+            data={
+                'enabled': transport_cfg.enabled,
+                'connection_type': transport_cfg.connection_type,
+                'device_path': transport_cfg.device_path,
+                'data_speed': transport_cfg.data_speed,
+                'speed_preset': throughput['name'],
+                'estimated_bps': throughput['bps'],
+                'range_estimate': throughput['range'],
+                'hop_limit': transport_cfg.hop_limit,
+                'fragment_timeout_sec': transport_cfg.fragment_timeout_sec,
+                'max_pending_fragments': transport_cfg.max_pending_fragments,
+                'enable_stats': transport_cfg.enable_stats,
+            }
+        )
+    except Exception as e:
+        return CommandResult.fail(f"Error loading config: {e}")
+
+
+def set_transport_config(
+    enabled: Optional[bool] = None,
+    connection_type: Optional[str] = None,
+    device_path: Optional[str] = None,
+    data_speed: Optional[int] = None,
+    hop_limit: Optional[int] = None
+) -> CommandResult:
+    """
+    Update transport configuration.
+
+    Args:
+        enabled: Enable/disable transport
+        connection_type: Connection type ("tcp", "serial", "ble")
+        device_path: Device path or host:port
+        data_speed: Speed preset (0-8)
+        hop_limit: Mesh hop limit (1-7)
+
+    Returns:
+        CommandResult with updated config
+    """
+    try:
+        from gateway.config import GatewayConfig
+        config = GatewayConfig.load()
+
+        # Update only provided fields
+        if enabled is not None:
+            config.rns_transport.enabled = enabled
+        if connection_type is not None:
+            config.rns_transport.connection_type = connection_type
+        if device_path is not None:
+            config.rns_transport.device_path = device_path
+        if data_speed is not None:
+            if not 0 <= data_speed <= 8:
+                return CommandResult.fail("data_speed must be 0-8")
+            config.rns_transport.data_speed = data_speed
+        if hop_limit is not None:
+            if not 1 <= hop_limit <= 7:
+                return CommandResult.fail("hop_limit must be 1-7")
+            config.rns_transport.hop_limit = hop_limit
+
+        # Save config
+        if config.save():
+            throughput = config.rns_transport.get_throughput_estimate()
+            return CommandResult.ok(
+                f"Config updated ({throughput['name']}). Restart transport to apply.",
+                data={
+                    'enabled': config.rns_transport.enabled,
+                    'connection_type': config.rns_transport.connection_type,
+                    'device_path': config.rns_transport.device_path,
+                    'data_speed': config.rns_transport.data_speed,
+                    'speed_preset': throughput['name'],
+                    'hop_limit': config.rns_transport.hop_limit,
+                }
+            )
+        else:
+            return CommandResult.fail("Failed to save configuration")
+
+    except Exception as e:
+        return CommandResult.fail(f"Error updating config: {e}")
+
+
+def get_transport_presets() -> CommandResult:
+    """
+    Get available speed presets.
+
+    Returns:
+        CommandResult with preset information
+    """
+    presets = {
+        8: {'name': 'SHORT_TURBO', 'bps': 500, 'range': 'short', 'desc': 'Fastest, shortest range'},
+        7: {'name': 'SHORT_FAST+', 'bps': 400, 'range': 'short', 'desc': 'Very fast'},
+        6: {'name': 'SHORT_FAST', 'bps': 300, 'range': 'medium', 'desc': 'Fast, medium range'},
+        5: {'name': 'SHORT_SLOW', 'bps': 150, 'range': 'medium-long', 'desc': 'Balanced'},
+        4: {'name': 'MEDIUM_FAST', 'bps': 100, 'range': 'long', 'desc': 'Long range, moderate'},
+        3: {'name': 'MEDIUM_SLOW', 'bps': 80, 'range': 'long', 'desc': 'Long range'},
+        2: {'name': 'LONG_MODERATE', 'bps': 60, 'range': 'very long', 'desc': 'Very long range'},
+        1: {'name': 'LONG_SLOW', 'bps': 55, 'range': 'very long', 'desc': 'Max range, slow'},
+        0: {'name': 'LONG_FAST', 'bps': 50, 'range': 'maximum', 'desc': 'Max range, slowest'},
+    }
+
+    return CommandResult.ok(
+        "Speed presets (higher = faster, shorter range)",
+        data={
+            'presets': presets,
+            'recommended': 8,
+            'note': 'Use lower values for longer range, higher for faster throughput'
+        }
+    )
+
+
+def is_transport_available() -> bool:
+    """Check if transport functionality is available."""
+    try:
+        from gateway.rns_transport import RNSMeshtasticTransport
+        return True
+    except ImportError:
+        return False
