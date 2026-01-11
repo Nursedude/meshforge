@@ -96,6 +96,7 @@ show_help() {
     echo "Commands:"
     echo "  (none)    raspi-config style menu (default)"
     echo "  tui       raspi-config style TUI launcher"
+    echo "  vte       VTE terminal wrapper (best taskbar icon)"
     echo "  gtk       Launch GTK graphical interface"
     echo "  cli       Launch Rich CLI menu"
     echo "  web       Launch web interface"
@@ -104,8 +105,11 @@ show_help() {
     echo "The default launcher uses whiptail/dialog for a"
     echo "raspi-config style interface that works over SSH."
     echo ""
+    echo "For best taskbar icon support on desktop, use 'vte' mode."
+    echo ""
     echo "Examples:"
     echo "  meshforge          # raspi-config style menu"
+    echo "  meshforge vte      # TUI with proper taskbar icon"
     echo "  meshforge gtk      # Launch GTK directly"
     echo "  meshforge cli      # Launch Rich CLI"
 }
@@ -114,6 +118,11 @@ show_help() {
 case "$1" in
     gtk)
         launch_gui "$MESHFORGE_DIR/src/main_gtk.py"
+        ;;
+    vte)
+        # VTE terminal wrapper (best taskbar icon support)
+        # Runs TUI inside GTK4 VTE widget with proper app_id
+        exec python3 "$MESHFORGE_DIR/src/launcher_vte.py"
         ;;
     web)
         # Web UI can run without GUI, just needs network

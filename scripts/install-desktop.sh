@@ -145,6 +145,14 @@ chmod 755 /usr/local/bin/meshforge
 cp "$PROJECT_DIR/scripts/meshforge-terminal.sh" /usr/local/bin/meshforge-terminal
 chmod 755 /usr/local/bin/meshforge-terminal
 
+# Install VTE dependencies for better taskbar integration
+echo "Checking VTE dependencies for taskbar icon support..."
+if command -v apt-get &> /dev/null; then
+    apt-get install -y gir1.2-vte-2.91 libvte-2.91-gtk4-0 2>/dev/null && \
+        echo "  VTE installed - taskbar icon will work correctly" || \
+        echo "  VTE installation skipped (may need manual install for taskbar icon)"
+fi
+
 # Install polkit policy (for pkexec authentication)
 echo "Installing polkit policy..."
 POLKIT_DIR="/usr/share/polkit-1/actions"
@@ -179,5 +187,6 @@ echo
 echo "To run from command line:"
 echo "  meshforge        # TUI launcher (works over SSH)"
 echo "  meshforge gtk    # GTK desktop interface"
+echo "  meshforge vte    # VTE terminal wrapper (best taskbar icon)"
 echo "  meshforge cli    # Rich CLI menu"
 echo
