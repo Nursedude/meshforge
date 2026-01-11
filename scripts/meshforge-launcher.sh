@@ -138,7 +138,7 @@ case "$1" in
         show_help
         ;;
     *)
-        # Default: raspi-config style TUI (works over SSH and with display)
-        launch_terminal "$MESHFORGE_DIR/src/launcher_tui.py"
+        # Default: launcher menu
+        launch_terminal "$MESHFORGE_DIR/src/launcher.py"
         ;;
 esac
