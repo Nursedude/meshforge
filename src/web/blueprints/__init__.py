@@ -10,6 +10,7 @@ from .nodes import nodes_bp
 from .network import network_bp
 from .service import service_bp
 from .gateway import gateway_bp
+from .tools import tools_bp
 
 __all__ = [
     'system_bp',
@@ -18,6 +19,7 @@ __all__ = [
     'network_bp',
     'service_bp',
     'gateway_bp',
+    'tools_bp',
 ]
 
 
@@ -29,3 +31,4 @@ def register_blueprints(app):
     app.register_blueprint(network_bp, url_prefix='/api')
     app.register_blueprint(service_bp, url_prefix='/api')
     app.register_blueprint(gateway_bp, url_prefix='/api')
+    app.register_blueprint(tools_bp, url_prefix='/api')
