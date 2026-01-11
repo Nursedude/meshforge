@@ -191,6 +191,69 @@ def list_nodes() -> CommandResult:
     return _run_command(["--nodes"])
 
 
+def get_nodes() -> CommandResult:
+    """
+    Get all known nodes in the mesh with structured data.
+
+    Returns:
+        CommandResult with data={'nodes': [{'id': ..., 'name': ..., ...}]}
+    """
+    result = list_nodes()
+    if not result.success:
+        return result
+
+    # Parse the raw output into structured node data
+    nodes = []
+    raw = result.raw or ''
+
+    try:
+        # Parse meshtastic --nodes output
+        # Format varies but typically includes table with node info
+        lines = raw.strip().split('\n')
+
+        for line in lines:
+            # Skip header lines and empty lines
+            if not line.strip() or line.startswith('─') or line.startswith('|'):
+                continue
+            if 'User' in line and 'ID' in line:
+                continue  # Header row
+
+            # Try to parse node entries
+            # Typical format: !ba4bf9d0  NodeName  ...
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].startswith('!'):
+                node = {
+                    'id': parts[0],
+                    'name': parts[1] if len(parts) > 1 else 'Unknown',
+                    'snr': 'N/A',
+                    'last_heard': 'N/A'
+                }
+
+                # Try to extract SNR if present
+                for i, part in enumerate(parts):
+                    if 'snr' in part.lower() or (i > 1 and part.replace('-', '').replace('.', '').isdigit()):
+                        try:
+                            node['snr'] = f"{float(part):.1f} dB"
+                        except ValueError:
+                            pass
+
+                nodes.append(node)
+
+        return CommandResult.ok(
+            f"Found {len(nodes)} nodes",
+            data={'nodes': nodes},
+            raw=raw
+        )
+    except Exception as e:
+        logger.warning(f"Failed to parse nodes: {e}")
+        # Return raw data on parse failure
+        return CommandResult.ok(
+            "Nodes retrieved (unparsed)",
+            data={'nodes': [], 'raw': raw},
+            raw=raw
+        )
+
+
 def get_settings(setting: str = "all") -> CommandResult:
     """
     Get node settings.
