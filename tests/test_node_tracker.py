@@ -317,6 +317,56 @@ class TestUnifiedNodeTracker:
 
             assert len(rns_nodes) == 2  # rns + both
 
+    def test_get_node_by_mesh_id(self):
+        """Test finding node by Meshtastic ID."""
+        with patch.object(UnifiedNodeTracker, '_load_cache'):
+            tracker = UnifiedNodeTracker()
+            node = UnifiedNode(id="test_1", network="meshtastic", meshtastic_id="!abcd1234")
+            tracker.add_node(node)
+            tracker.add_node(UnifiedNode(id="test_2", network="meshtastic", meshtastic_id="!efgh5678"))
+
+            result = tracker.get_node_by_mesh_id("!abcd1234")
+
+            assert result is not None
+            assert result.id == "test_1"
+            assert result.meshtastic_id == "!abcd1234"
+
+    def test_get_node_by_mesh_id_not_found(self):
+        """Test get_node_by_mesh_id returns None when not found."""
+        with patch.object(UnifiedNodeTracker, '_load_cache'):
+            tracker = UnifiedNodeTracker()
+            tracker.add_node(UnifiedNode(id="test_1", network="meshtastic", meshtastic_id="!abcd1234"))
+
+            result = tracker.get_node_by_mesh_id("!nonexistent")
+
+            assert result is None
+
+    def test_get_node_by_rns_hash(self):
+        """Test finding node by RNS hash."""
+        with patch.object(UnifiedNodeTracker, '_load_cache'):
+            tracker = UnifiedNodeTracker()
+            rns_hash = bytes.fromhex('abcd1234567890abcdef0123456789ab')
+            node = UnifiedNode(id="rns_1", network="rns", rns_hash=rns_hash)
+            tracker.add_node(node)
+
+            result = tracker.get_node_by_rns_hash(rns_hash)
+
+            assert result is not None
+            assert result.id == "rns_1"
+            assert result.rns_hash == rns_hash
+
+    def test_get_node_by_rns_hash_not_found(self):
+        """Test get_node_by_rns_hash returns None when not found."""
+        with patch.object(UnifiedNodeTracker, '_load_cache'):
+            tracker = UnifiedNodeTracker()
+            rns_hash = bytes.fromhex('abcd1234567890abcdef0123456789ab')
+            tracker.add_node(UnifiedNode(id="rns_1", network="rns", rns_hash=rns_hash))
+
+            other_hash = bytes.fromhex('ffff1234567890abcdef0123456789ff')
+            result = tracker.get_node_by_rns_hash(other_hash)
+
+            assert result is None
+
     def test_get_nodes_with_position(self):
         """Test filtering nodes with valid positions."""
         with patch.object(UnifiedNodeTracker, '_load_cache'):
