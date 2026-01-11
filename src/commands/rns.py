@@ -26,32 +26,35 @@ logger = logging.getLogger(__name__)
 # PATH UTILITIES
 # ============================================================================
 
-def _get_real_user_home() -> Path:
-    """Get real user's home directory (handles sudo)."""
-    sudo_user = os.environ.get('SUDO_USER')
-    if sudo_user and sudo_user != 'root':
-        return Path(f'/home/{sudo_user}')
-    return Path.home()
+# Import centralized path utility
+try:
+    from utils.paths import get_real_user_home
+except ImportError:
+    def get_real_user_home() -> Path:
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            return Path(f'/home/{sudo_user}')
+        return Path.home()
 
 
 def get_config_path() -> Path:
     """Get path to RNS config file."""
-    return _get_real_user_home() / ".reticulum" / "config"
+    return get_real_user_home() / ".reticulum" / "config"
 
 
 def get_config_dir() -> Path:
     """Get path to RNS config directory."""
-    return _get_real_user_home() / ".reticulum"
+    return get_real_user_home() / ".reticulum"
 
 
 def get_identity_path() -> Path:
     """Get path to MeshForge gateway identity."""
-    return _get_real_user_home() / ".config" / "meshforge" / "gateway_identity"
+    return get_real_user_home() / ".config" / "meshforge" / "gateway_identity"
 
 
 def get_lxmf_storage_path() -> Path:
     """Get path to LXMF message storage."""
-    return _get_real_user_home() / ".config" / "meshforge" / "lxmf_storage"
+    return get_real_user_home() / ".config" / "meshforge" / "lxmf_storage"
 
 
 # ============================================================================
@@ -528,6 +531,7 @@ def get_status() -> CommandResult:
             status['rnsd_running'] = True
             status['rnsd_pid'] = int(pids[0])
     except Exception:
+        # pgrep may not be available - fall back to systemd check
         pass
 
     # Check systemd service
@@ -540,6 +544,7 @@ def get_status() -> CommandResult:
         )
         status['systemd_status'] = result.stdout.strip()
     except Exception:
+        # systemctl may not be available on non-systemd systems
         status['systemd_status'] = 'unknown'
 
     # Get interface count

@@ -92,8 +92,59 @@ done
 3. Gateway reliability testing suite (ping, latency, message confirmation)
 4. Templates for common deployments
 
-## Session Statistics
-- Tests: 779 passed, 10 skipped
-- Files reviewed: 8
-- Bugs fixed: 4
-- Documentation updated: README.md, this session log
+---
+
+## Second Review Pass (Reliability & De-bloat)
+
+After initial work, performed comprehensive architectural review:
+
+### Persistent Issues Addressed
+
+1. **Issue #5 (Duplicate Utilities)**: Fixed `_get_real_user_home` duplication
+   - `commands/meshtastic.py`: Changed to import from utils.paths
+   - `commands/rns.py`: Changed to import from utils.paths
+
+2. **Issue #9 (Broad Exceptions)**: Added explanatory comments to all `except Exception:` handlers
+   - `commands/hardware.py`: 5 handlers documented
+   - `commands/rns.py`: 2 handlers documented
+   - `commands/diagnostics.py`: 1 handler documented
+
+### Architecture Verification
+
+```
+Commands Layer: 7 modules, 152+ functions
+├── gateway.py (16 funcs) - Bridge operations
+├── rns.py (35 funcs) - RNS config management
+├── hamclock.py (21 funcs) - Space weather API
+├── service.py (15 funcs) - systemd management
+├── hardware.py (17 funcs) - Device detection
+├── meshtastic.py (33 funcs) - Device operations
+└── diagnostics.py (15 funcs) - System checks
+
+Gateway Layer: 3 core classes
+├── RNSMeshtasticBridge - Core bridge logic
+├── UnifiedNodeTracker - Node discovery/tracking
+└── GatewayConfig - Configuration management
+
+Utils Layer: Centralized utilities
+└── paths.py - get_real_user_home, MeshForgePaths, etc.
+```
+
+- No circular dependencies
+- All 770 tests pass
+- Commands use centralized path utilities
+
+### Files Still Needing Attention (Documented, Not Blocking)
+
+| File | Lines | Action Needed |
+|------|-------|---------------|
+| `main_web.py` | 3,524 | Split into Flask blueprints |
+| `tui/app.py` | 1,716 | Could extract panes |
+
+## Final Session Statistics
+- Tests: 770 passed, 10 skipped
+- Files reviewed: 15+
+- Bugs fixed: 8
+- Exception handlers documented: 8
+- Duplicate utilities consolidated: 2 files
+- Documentation updated: README.md, persistent_issues.md, session log
