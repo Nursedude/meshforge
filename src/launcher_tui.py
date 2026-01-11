@@ -59,15 +59,38 @@ class DialogBackend:
 
     def _run(self, args: List[str]) -> Tuple[int, str]:
         """Run dialog command and return (returncode, output)."""
+        import tempfile
         try:
+            # whiptail uses stderr for BOTH display AND returning selection
+            # Solution: use --output-fd with a temp file to capture selection
+            # while letting stderr go to terminal for display
+            with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.txt') as tf:
+                tmp_path = tf.name
+
+            # Use shell redirection: run whiptail with stderr to tty,
+            # but redirect selection output to temp file via fd 3
+            cmd_args = [self.backend] + args
+
+            # For whiptail, use 3>&1 1>&2 2>&3 trick to swap stdout/stderr
+            # Then capture what was originally stderr (now stdout)
+            shell_cmd = ' '.join(
+                [f'"{a}"' if ' ' in a else a for a in cmd_args]
+            ) + f' 3>&1 1>&2 2>&3 3>&- > "{tmp_path}"'
+
             result = subprocess.run(
-                [self.backend] + args,
-                capture_output=True,
-                text=True,
+                ['bash', '-c', shell_cmd],
                 timeout=300
             )
-            # whiptail/dialog output goes to stderr
-            return result.returncode, result.stderr.strip()
+
+            # Read the captured output
+            try:
+                with open(tmp_path, 'r') as f:
+                    output = f.read().strip()
+            finally:
+                import os
+                os.unlink(tmp_path)
+
+            return result.returncode, output
         except subprocess.TimeoutExpired:
             return 1, ""
         except Exception as e:
