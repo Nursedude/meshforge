@@ -698,26 +698,54 @@ class HamToolsPanel(Gtk.Box):
         self._check_hamclock_status()
 
     def _on_fetch_hamclock_wx(self, button):
-        """Fetch space weather from HamClock"""
-        url = self._settings.get("hamclock_url", "http://localhost")
-        port = self._settings.get("hamclock_api_port", 8082)
-
-        self._output_message("Fetching space weather from HamClock...")
+        """Fetch space weather (auto-fallback to NOAA if HamClock unavailable)"""
+        self._output_message("Fetching space weather...")
 
         def fetch():
             try:
-                api_url = f"{url}:{port}/get_spacewx.txt"
-                req = urllib.request.Request(api_url)
-                req.add_header('User-Agent', 'MeshForge/1.0')
+                # Use the commands layer with auto-fallback
+                import sys
+                from pathlib import Path
+                src_dir = Path(__file__).parent.parent.parent
+                sys.path.insert(0, str(src_dir))
+                from commands import hamclock
 
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    data = response.read().decode('utf-8')
-                    GLib.idle_add(self._parse_hamclock_wx, data)
+                # Configure HamClock connection
+                url = self._settings.get("hamclock_url", "http://localhost").replace("http://", "").replace("https://", "")
+                port = self._settings.get("hamclock_api_port", 8082)
+                hamclock.configure(url, api_port=port)
+
+                # Auto-fallback: tries HamClock first, then NOAA
+                result = hamclock.get_propagation_summary()
+
+                if result.success:
+                    GLib.idle_add(self._apply_space_weather, result.data)
+                else:
+                    GLib.idle_add(self._output_message, f"Error: {result.message}")
 
             except Exception as e:
                 GLib.idle_add(self._output_message, f"Error: {e}")
 
         threading.Thread(target=fetch, daemon=True).start()
+
+    def _apply_space_weather(self, data: dict):
+        """Apply space weather data from any source"""
+        source = data.get('source', 'Unknown')
+        self._output_message(f"Source: {source}")
+
+        if 'sfi' in data and data['sfi']:
+            self._wx_labels['sfi'].set_label(str(data['sfi']))
+        if 'kp' in data and data['kp']:
+            self._wx_labels['kp'].set_label(str(data['kp']))
+        if 'xray' in data and data['xray']:
+            self._wx_labels['xray'].set_label(str(data['xray']))
+        if 'ssn' in data and data['ssn']:
+            self._wx_labels['sunspots'].set_label(str(data['ssn']))
+
+        # Show overall conditions
+        overall = data.get('overall', 'Unknown')
+        geomag = data.get('geomagnetic', '')
+        self._output_message(f"Conditions: {overall} | Geomagnetic: {geomag}")
 
     def _parse_hamclock_wx(self, data: str):
         """Parse HamClock space weather response"""
