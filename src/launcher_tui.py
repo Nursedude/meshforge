@@ -278,12 +278,14 @@ class MeshForgeLauncher:
 
             # Tools section
             choices.append(("---", "──────────── Tools ────────────"))
-            choices.append(("diag", "Run Diagnostics"))
+            choices.append(("diag", "System Diagnostics"))
+            choices.append(("network", "Network Tools"))
+            choices.append(("rf", "RF Tools"))
+            choices.append(("site", "Site Planner"))
             choices.append(("bridge", "Start Gateway Bridge"))
             choices.append(("monitor", "Node Monitor"))
             choices.append(("nodes", "View Nodes"))
             choices.append(("messaging", "Messaging"))
-            choices.append(("rf", "RF Tools"))
             choices.append(("space", "Space Weather"))
 
             # Config section
@@ -321,7 +323,11 @@ class MeshForgeLauncher:
         elif choice == "web":
             self._launch_web()
         elif choice == "diag":
-            self._run_diagnostics()
+            self._diagnostics_menu()
+        elif choice == "network":
+            self._network_tools_menu()
+        elif choice == "site":
+            self._site_planner_menu()
         elif choice == "bridge":
             self._run_bridge()
         elif choice == "monitor":
@@ -365,12 +371,676 @@ class MeshForgeLauncher:
         )
         os.execv(sys.executable, [sys.executable, str(self.src_dir / 'web_monitor.py')])
 
-    def _run_diagnostics(self):
-        """Run diagnostics."""
-        # Clear screen and run diagnostics
+    # =========================================================================
+    # System Diagnostics
+    # =========================================================================
+
+    def _diagnostics_menu(self):
+        """System diagnostics menu."""
+        while True:
+            choices = [
+                ("full", "Full System Diagnostic"),
+                ("services", "Service Status Check"),
+                ("network", "Network Connectivity"),
+                ("hardware", "Hardware Interfaces"),
+                ("logs", "Log Analysis"),
+                ("system", "System Resources"),
+                ("back", "Back"),
+            ]
+
+            choice = self.dialog.menu(
+                "System Diagnostics",
+                "Comprehensive system health checks:",
+                choices
+            )
+
+            if choice is None or choice == "back":
+                break
+
+            if choice == "full":
+                self._run_full_diagnostics()
+            elif choice == "services":
+                self._check_services()
+            elif choice == "network":
+                self._check_network()
+            elif choice == "hardware":
+                self._check_hardware_interfaces()
+            elif choice == "logs":
+                self._analyze_logs()
+            elif choice == "system":
+                self._check_system_resources()
+
+    def _run_full_diagnostics(self):
+        """Run full diagnostics script."""
         subprocess.run(['clear'], check=False)
         subprocess.run([sys.executable, str(self.src_dir / 'cli' / 'diagnose.py')])
         input("\nPress Enter to continue...")
+
+    def _check_services(self):
+        """Check service status."""
+        self.dialog.infobox("Services", "Checking services...")
+
+        services = ['meshtasticd', 'rnsd', 'lxmf.delivery']
+        results = []
+
+        for svc in services:
+            try:
+                result = subprocess.run(
+                    ['systemctl', 'is-active', svc],
+                    capture_output=True, text=True, timeout=5
+                )
+                status = result.stdout.strip()
+                results.append(f"{svc}: {status.upper()}")
+            except Exception:
+                results.append(f"{svc}: UNKNOWN")
+
+        self.dialog.msgbox("Service Status", "\n".join(results))
+
+    def _check_network(self):
+        """Check network connectivity."""
+        self.dialog.infobox("Network", "Testing connectivity...")
+
+        tests = []
+
+        # Test meshtasticd TCP
+        try:
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            result = sock.connect_ex(('localhost', 4403))
+            sock.close()
+            tests.append(f"meshtasticd (4403): {'OK' if result == 0 else 'FAIL'}")
+        except Exception:
+            tests.append("meshtasticd (4403): ERROR")
+
+        # Test RNS
+        try:
+            result = subprocess.run(
+                ['rnstatus', '-j'],
+                capture_output=True, text=True, timeout=5
+            )
+            tests.append(f"RNS Status: {'OK' if result.returncode == 0 else 'FAIL'}")
+        except Exception:
+            tests.append("RNS Status: NOT AVAILABLE")
+
+        # Test internet
+        try:
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(3)
+            result = sock.connect_ex(('8.8.8.8', 53))
+            sock.close()
+            tests.append(f"Internet (DNS): {'OK' if result == 0 else 'FAIL'}")
+        except Exception:
+            tests.append("Internet: ERROR")
+
+        self.dialog.msgbox("Network Connectivity", "\n".join(tests))
+
+    def _check_hardware_interfaces(self):
+        """Check hardware interfaces."""
+        self.dialog.infobox("Hardware", "Checking interfaces...")
+
+        checks = []
+
+        # SPI
+        spi_enabled = Path('/dev/spidev0.0').exists()
+        checks.append(f"SPI: {'ENABLED' if spi_enabled else 'DISABLED'}")
+
+        # I2C
+        i2c_enabled = Path('/dev/i2c-1').exists()
+        checks.append(f"I2C: {'ENABLED' if i2c_enabled else 'DISABLED'}")
+
+        # Serial
+        serial_ports = list(Path('/dev').glob('ttyUSB*')) + list(Path('/dev').glob('ttyACM*'))
+        checks.append(f"Serial Ports: {len(serial_ports)} found")
+        for port in serial_ports[:3]:
+            checks.append(f"  - {port.name}")
+
+        # GPIO
+        gpio_available = Path('/sys/class/gpio').exists()
+        checks.append(f"GPIO: {'AVAILABLE' if gpio_available else 'NOT AVAILABLE'}")
+
+        self.dialog.msgbox("Hardware Interfaces", "\n".join(checks))
+
+    def _analyze_logs(self):
+        """Analyze system logs for errors."""
+        self.dialog.infobox("Logs", "Analyzing logs...")
+
+        logs = []
+
+        # Check meshtasticd logs
+        try:
+            result = subprocess.run(
+                ['journalctl', '-u', 'meshtasticd', '-n', '20', '--no-pager'],
+                capture_output=True, text=True, timeout=10
+            )
+            errors = [l for l in result.stdout.split('\n') if 'error' in l.lower()]
+            logs.append(f"meshtasticd: {len(errors)} errors in last 20 lines")
+        except Exception:
+            logs.append("meshtasticd: Unable to read logs")
+
+        # Check rnsd logs
+        try:
+            result = subprocess.run(
+                ['journalctl', '-u', 'rnsd', '-n', '20', '--no-pager'],
+                capture_output=True, text=True, timeout=10
+            )
+            errors = [l for l in result.stdout.split('\n') if 'error' in l.lower()]
+            logs.append(f"rnsd: {len(errors)} errors in last 20 lines")
+        except Exception:
+            logs.append("rnsd: Unable to read logs")
+
+        logs.append("")
+        logs.append("For detailed logs, use:")
+        logs.append("  journalctl -u meshtasticd -f")
+
+        self.dialog.msgbox("Log Analysis", "\n".join(logs))
+
+    def _check_system_resources(self):
+        """Check system resources."""
+        self.dialog.infobox("System", "Checking resources...")
+
+        resources = []
+
+        # CPU temperature
+        try:
+            with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
+                temp = int(f.read()) / 1000
+                resources.append(f"CPU Temperature: {temp:.1f}°C")
+        except Exception:
+            resources.append("CPU Temperature: N/A")
+
+        # Memory
+        try:
+            with open('/proc/meminfo', 'r') as f:
+                lines = f.readlines()
+                total = int([l for l in lines if 'MemTotal' in l][0].split()[1]) / 1024
+                avail = int([l for l in lines if 'MemAvailable' in l][0].split()[1]) / 1024
+                used_pct = (1 - avail/total) * 100
+                resources.append(f"Memory: {used_pct:.0f}% used ({avail:.0f}/{total:.0f} MB)")
+        except Exception:
+            resources.append("Memory: N/A")
+
+        # Disk
+        try:
+            result = subprocess.run(
+                ['df', '-h', '/'],
+                capture_output=True, text=True, timeout=5
+            )
+            lines = result.stdout.strip().split('\n')
+            if len(lines) > 1:
+                parts = lines[1].split()
+                resources.append(f"Disk: {parts[4]} used ({parts[2]}/{parts[1]})")
+        except Exception:
+            resources.append("Disk: N/A")
+
+        # Uptime
+        try:
+            with open('/proc/uptime', 'r') as f:
+                uptime_secs = float(f.read().split()[0])
+                days = int(uptime_secs // 86400)
+                hours = int((uptime_secs % 86400) // 3600)
+                resources.append(f"Uptime: {days}d {hours}h")
+        except Exception:
+            resources.append("Uptime: N/A")
+
+        self.dialog.msgbox("System Resources", "\n".join(resources))
+
+    # =========================================================================
+    # Network Tools
+    # =========================================================================
+
+    def _network_tools_menu(self):
+        """Network tools menu."""
+        while True:
+            choices = [
+                ("ping", "Ping Test"),
+                ("ports", "Port Scanner"),
+                ("mesh", "Meshtastic Discovery"),
+                ("ifaces", "Network Interfaces"),
+                ("routes", "Routing Table"),
+                ("conns", "Active Connections"),
+                ("dns", "DNS Lookup"),
+                ("back", "Back"),
+            ]
+
+            choice = self.dialog.menu(
+                "Network Tools",
+                "Network diagnostics and testing:",
+                choices
+            )
+
+            if choice is None or choice == "back":
+                break
+
+            if choice == "ping":
+                self._ping_test()
+            elif choice == "ports":
+                self._port_scan()
+            elif choice == "mesh":
+                self._meshtastic_discovery()
+            elif choice == "ifaces":
+                self._show_interfaces()
+            elif choice == "routes":
+                self._show_routes()
+            elif choice == "conns":
+                self._show_connections()
+            elif choice == "dns":
+                self._dns_lookup()
+
+    def _ping_test(self):
+        """Run ping test."""
+        host = self.dialog.inputbox(
+            "Ping Test",
+            "Enter host to ping:",
+            "8.8.8.8"
+        )
+
+        if not host:
+            return
+
+        self.dialog.infobox("Pinging", f"Pinging {host}...")
+
+        try:
+            result = subprocess.run(
+                ['ping', '-c', '4', host],
+                capture_output=True, text=True, timeout=15
+            )
+
+            # Parse results
+            output = result.stdout
+            if 'transmitted' in output:
+                stats_line = [l for l in output.split('\n') if 'transmitted' in l]
+                time_line = [l for l in output.split('\n') if 'rtt' in l or 'round-trip' in l]
+
+                text = f"Ping {host}:\n\n"
+                if stats_line:
+                    text += stats_line[0] + "\n"
+                if time_line:
+                    text += time_line[0]
+
+                self.dialog.msgbox("Ping Results", text)
+            else:
+                self.dialog.msgbox("Ping Failed", output[:500])
+
+        except subprocess.TimeoutExpired:
+            self.dialog.msgbox("Error", "Ping timed out")
+        except Exception as e:
+            self.dialog.msgbox("Error", str(e))
+
+    def _port_scan(self):
+        """Scan common ports."""
+        host = self.dialog.inputbox(
+            "Port Scanner",
+            "Enter host to scan:",
+            "localhost"
+        )
+
+        if not host:
+            return
+
+        self.dialog.infobox("Scanning", f"Scanning ports on {host}...")
+
+        import socket
+        common_ports = [
+            (22, "SSH"),
+            (80, "HTTP"),
+            (443, "HTTPS"),
+            (4403, "Meshtasticd"),
+            (5000, "Flask/Web"),
+            (8080, "HamClock"),
+            (8082, "HamClock API"),
+            (9443, "Meshtastic Web"),
+        ]
+
+        results = []
+        for port, name in common_ports:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex((host, port))
+                sock.close()
+                status = "OPEN" if result == 0 else "closed"
+                results.append(f"{port:5d} {name:15s} {status}")
+            except Exception:
+                results.append(f"{port:5d} {name:15s} error")
+
+        self.dialog.msgbox(f"Port Scan: {host}", "\n".join(results))
+
+    def _meshtastic_discovery(self):
+        """Discover Meshtastic devices."""
+        self.dialog.infobox("Discovery", "Scanning for Meshtastic devices...")
+
+        devices = []
+
+        # Check TCP localhost
+        import socket
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            if sock.connect_ex(('localhost', 4403)) == 0:
+                devices.append("TCP: localhost:4403 (meshtasticd)")
+            sock.close()
+        except Exception:
+            pass
+
+        # Check serial ports
+        serial_ports = list(Path('/dev').glob('ttyUSB*')) + list(Path('/dev').glob('ttyACM*'))
+        for port in serial_ports:
+            devices.append(f"Serial: {port}")
+
+        # BLE hint
+        devices.append("")
+        devices.append("BLE devices require scanning:")
+        devices.append("  meshtastic --ble-scan")
+
+        if not devices:
+            text = "No Meshtastic devices found.\n\nMake sure meshtasticd is running."
+        else:
+            text = "Found devices:\n\n" + "\n".join(devices)
+
+        self.dialog.msgbox("Meshtastic Discovery", text)
+
+    def _show_interfaces(self):
+        """Show network interfaces."""
+        try:
+            result = subprocess.run(
+                ['ip', '-br', 'addr'],
+                capture_output=True, text=True, timeout=5
+            )
+            self.dialog.msgbox("Network Interfaces", result.stdout or "No interfaces found")
+        except Exception as e:
+            self.dialog.msgbox("Error", str(e))
+
+    def _show_routes(self):
+        """Show routing table."""
+        try:
+            result = subprocess.run(
+                ['ip', 'route'],
+                capture_output=True, text=True, timeout=5
+            )
+            self.dialog.msgbox("Routing Table", result.stdout or "No routes found")
+        except Exception as e:
+            self.dialog.msgbox("Error", str(e))
+
+    def _show_connections(self):
+        """Show active connections."""
+        try:
+            result = subprocess.run(
+                ['ss', '-tuln'],
+                capture_output=True, text=True, timeout=5
+            )
+            # Truncate for display
+            output = result.stdout[:1500] if result.stdout else "No connections"
+            self.dialog.msgbox("Active Connections", output)
+        except Exception as e:
+            self.dialog.msgbox("Error", str(e))
+
+    def _dns_lookup(self):
+        """Perform DNS lookup."""
+        host = self.dialog.inputbox(
+            "DNS Lookup",
+            "Enter hostname to lookup:",
+            "meshtastic.org"
+        )
+
+        if not host:
+            return
+
+        try:
+            import socket
+            results = []
+            for info in socket.getaddrinfo(host, None):
+                addr = info[4][0]
+                if addr not in [r.split(': ')[1] for r in results if ': ' in r]:
+                    family = "IPv4" if info[0] == socket.AF_INET else "IPv6"
+                    results.append(f"{family}: {addr}")
+
+            self.dialog.msgbox(f"DNS: {host}", "\n".join(results) or "No results")
+        except socket.gaierror as e:
+            self.dialog.msgbox("Error", f"DNS lookup failed:\n{e}")
+        except Exception as e:
+            self.dialog.msgbox("Error", str(e))
+
+    # =========================================================================
+    # Site Planner
+    # =========================================================================
+
+    def _site_planner_menu(self):
+        """Site planner menu for RF coverage planning."""
+        while True:
+            choices = [
+                ("link", "Link Budget Calculator"),
+                ("range", "Range Estimator"),
+                ("presets", "LoRa Preset Comparison"),
+                ("fresnel", "Fresnel Zone Calculator"),
+                ("antenna", "Antenna Guidelines"),
+                ("freq", "Frequency Reference"),
+                ("tools", "External Planning Tools"),
+                ("back", "Back"),
+            ]
+
+            choice = self.dialog.menu(
+                "Site Planner",
+                "RF coverage and link planning:",
+                choices
+            )
+
+            if choice is None or choice == "back":
+                break
+
+            if choice == "link":
+                self._calc_link_budget()  # Reuse existing
+            elif choice == "range":
+                self._estimate_range()
+            elif choice == "presets":
+                self._compare_presets()
+            elif choice == "fresnel":
+                self._calc_fresnel()  # Reuse existing
+            elif choice == "antenna":
+                self._antenna_guidelines()
+            elif choice == "freq":
+                self._frequency_reference()
+            elif choice == "tools":
+                self._external_tools()
+
+    def _estimate_range(self):
+        """Estimate communication range based on parameters."""
+        # Get TX power
+        tx_pwr = self.dialog.inputbox("Range Estimator", "TX Power (dBm):", "20")
+        if not tx_pwr:
+            return
+
+        # Get antenna gains
+        ant_gain = self.dialog.inputbox("Range Estimator", "Total Antenna Gain (dBi):", "4")
+        if not ant_gain:
+            return
+
+        # Get preset
+        presets = [
+            ("SHORT_TURBO", "-105 dBm sensitivity"),
+            ("SHORT_FAST", "-110 dBm sensitivity"),
+            ("MEDIUM_FAST", "-120 dBm sensitivity"),
+            ("LONG_FAST", "-125 dBm sensitivity"),
+            ("LONG_SLOW", "-132 dBm sensitivity"),
+        ]
+
+        preset = self.dialog.menu(
+            "Select Preset",
+            "Choose LoRa modem preset:",
+            presets
+        )
+
+        if not preset:
+            return
+
+        # Sensitivity values
+        sens_map = {
+            "SHORT_TURBO": -105,
+            "SHORT_FAST": -110,
+            "MEDIUM_FAST": -120,
+            "LONG_FAST": -125,
+            "LONG_SLOW": -132,
+        }
+
+        try:
+            import math
+            tx_p = float(tx_pwr)
+            ant_g = float(ant_gain)
+            sens = sens_map.get(preset, -125)
+
+            # Link budget
+            link_budget = tx_p + ant_g - sens
+
+            # Estimate range using FSPL formula (915 MHz)
+            # FSPL = 20*log10(d) + 20*log10(f) + 32.45
+            # d = 10^((FSPL - 20*log10(f) - 32.45) / 20)
+            freq_mhz = 915
+            max_fspl = link_budget
+            range_km = 10 ** ((max_fspl - 20 * math.log10(freq_mhz) - 32.45) / 20)
+
+            # Apply terrain factor (0.3-0.7 of theoretical)
+            los_range = range_km
+            urban_range = range_km * 0.3
+            rural_range = range_km * 0.5
+
+            text = f"""Range Estimation:
+
+Preset: {preset}
+TX Power: {tx_p} dBm
+Antenna Gain: {ant_g} dBi
+RX Sensitivity: {sens} dBm
+
+Link Budget: {link_budget:.1f} dB
+
+Estimated Range (915 MHz):
+  Line of Sight: {los_range:.1f} km
+  Rural/Suburban: {rural_range:.1f} km
+  Urban/Dense: {urban_range:.1f} km
+
+Note: Actual range depends on terrain,
+vegetation, and antenna height."""
+
+            self.dialog.msgbox("Range Estimation", text)
+
+        except ValueError:
+            self.dialog.msgbox("Error", "Invalid number entered")
+
+    def _compare_presets(self):
+        """Compare LoRa modem presets."""
+        text = """LoRa Modem Preset Comparison:
+
+Preset          BW    SF  Range     Speed
+──────────────────────────────────────────
+SHORT_TURBO    500   7   <1 km     Fastest
+SHORT_FAST     250   7   1-5 km    Fast
+SHORT_SLOW     125   7   1-5 km    Medium
+MEDIUM_FAST    250   10  5-20 km   Medium
+MEDIUM_SLOW    125   10  5-20 km   Slower
+LONG_FAST      250   11  10-30 km  Default
+LONG_MODERATE  125   11  15-40 km  Slower
+LONG_SLOW      125   12  20-50 km  Slowest
+
+Higher SF = Longer range, slower speed
+Lower BW = Better sensitivity, slower speed
+
+Recommended:
+  Gateway: SHORT_TURBO or MEDIUM_FAST
+  Rural: LONG_FAST or LONG_MODERATE
+  Urban: SHORT_FAST or MEDIUM_FAST"""
+
+        self.dialog.msgbox("Preset Comparison", text)
+
+    def _antenna_guidelines(self):
+        """Show antenna guidelines."""
+        text = """Antenna Guidelines for 915 MHz:
+
+Height:
+  - Higher is better for range
+  - 10m height doubles range vs 2m
+  - Avoid below tree canopy
+
+Antenna Types:
+  - Dipole: 2.15 dBi, omnidirectional
+  - 1/4 wave GP: 2-3 dBi, omnidirectional
+  - Yagi: 6-12 dBi, directional
+  - Colinear: 5-9 dBi, omnidirectional
+
+Cable Loss (per 10m @ 915MHz):
+  - RG58: ~2.5 dB (avoid)
+  - RG8X: ~1.8 dB
+  - LMR-240: ~1.3 dB
+  - LMR-400: ~0.7 dB (recommended)
+
+Best Practices:
+  - Mount antenna clear of obstructions
+  - Use quality coax, keep runs short
+  - Ground antenna mast for lightning
+  - Weatherproof all connections"""
+
+        self.dialog.msgbox("Antenna Guidelines", text)
+
+    def _frequency_reference(self):
+        """Show frequency reference."""
+        text = """LoRa Frequency Reference:
+
+Region      Frequencies       TX Power
+───────────────────────────────────────
+US/FCC      902-928 MHz       30 dBm
+EU 868      863-870 MHz       14-27 dBm
+EU 433      433.05-434.79     10 dBm
+UK          868 MHz           25 dBm
+AU/NZ       915-928 MHz       30 dBm
+AS          920-923 MHz       varies
+CN          470-510 MHz       17 dBm
+JP          920-923 MHz       13 dBm
+
+Default Meshtastic Frequencies:
+  US: 906.875 MHz (Ch 0)
+  EU 868: 869.525 MHz
+  EU 433: 433.175 MHz
+
+ISM Band Limits (US):
+  EIRP: 36 dBm (4W) max
+  Duty Cycle: No limit (FHSS)"""
+
+        self.dialog.msgbox("Frequency Reference", text)
+
+    def _external_tools(self):
+        """Show external planning tools."""
+        text = """External RF Planning Tools:
+
+Web-Based:
+  meshtastic.org/docs/software/coverage/
+    - Meshtastic Site Planner
+    - Coverage prediction
+
+  heywhatsthat.com
+    - Line of sight analysis
+    - Terrain profiles
+
+  splat.ecso.org
+    - Detailed RF coverage
+    - Terrain analysis
+
+Software:
+  Radio Mobile (Windows/Wine)
+    - Professional RF planning
+    - Free for amateur use
+
+  SPLAT! (Linux)
+    - RF Signal Propagation
+    - Terrain analysis
+
+  CloudRF
+    - Cloud-based planning
+    - API available
+
+Tip: Use these tools to plan
+repeater locations and verify
+line-of-sight paths."""
+
+        self.dialog.msgbox("External Planning Tools", text)
 
     def _run_bridge(self):
         """Start gateway bridge."""
