@@ -58,43 +58,45 @@ class DialogBackend:
         return self.backend is not None
 
     def _run(self, args: List[str]) -> Tuple[int, str]:
-        """Run dialog command and return (returncode, output)."""
+        """
+        Run dialog/whiptail command and return (returncode, output).
+
+        whiptail uses stderr for returning selection.
+        newt library opens /dev/tty directly for ncurses display.
+        We use os.system for proper terminal inheritance and redirect
+        stderr to a temp file to capture the selection.
+        """
         import tempfile
+        import shlex
+
+        # Create temp file to capture selection output
+        fd, tmp_path = tempfile.mkstemp(suffix='.txt', prefix='meshforge_')
+        os.close(fd)
+
         try:
-            # whiptail uses stderr for BOTH display AND returning selection
-            # Solution: use --output-fd with a temp file to capture selection
-            # while letting stderr go to terminal for display
-            with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.txt') as tf:
-                tmp_path = tf.name
+            # Build command with proper shell quoting
+            cmd_parts = [self.backend] + [str(a) for a in args]
+            escaped_cmd = ' '.join(shlex.quote(p) for p in cmd_parts)
 
-            # Use shell redirection: run whiptail with stderr to tty,
-            # but redirect selection output to temp file via fd 3
-            cmd_args = [self.backend] + args
+            # Use os.system for proper terminal inheritance
+            # stderr redirected to file captures selection
+            # newt library opens /dev/tty directly for display
+            exit_code = os.system(f'{escaped_cmd} 2>{shlex.quote(tmp_path)}')
 
-            # For whiptail, use 3>&1 1>&2 2>&3 trick to swap stdout/stderr
-            # Then capture what was originally stderr (now stdout)
-            shell_cmd = ' '.join(
-                [f'"{a}"' if ' ' in a else a for a in cmd_args]
-            ) + f' 3>&1 1>&2 2>&3 3>&- > "{tmp_path}"'
+            # Read the captured selection
+            with open(tmp_path, 'r') as f:
+                output = f.read().strip()
 
-            result = subprocess.run(
-                ['bash', '-c', shell_cmd],
-                timeout=300
-            )
+            # os.system returns wait status, extract exit code
+            return os.waitstatus_to_exitcode(exit_code) if hasattr(os, 'waitstatus_to_exitcode') else (exit_code >> 8), output
 
-            # Read the captured output
-            try:
-                with open(tmp_path, 'r') as f:
-                    output = f.read().strip()
-            finally:
-                import os
-                os.unlink(tmp_path)
-
-            return result.returncode, output
-        except subprocess.TimeoutExpired:
-            return 1, ""
         except Exception as e:
             return 1, str(e)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
     def msgbox(self, title: str, text: str) -> None:
         """Display a message box."""
