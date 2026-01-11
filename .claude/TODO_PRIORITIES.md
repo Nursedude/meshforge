@@ -13,10 +13,10 @@
 - [ ] **Message routing visualization** - See message flow between networks
 - [ ] **Gateway setup wizard** - Guided configuration for new users
 - [x] **Bridge status monitoring** - Real-time health checks (API endpoints)
-- [ ] `rns_bridge.py:624` - Implement regex matching for filters
+- [x] `rns_bridge.py:624` - Implement regex matching for filters (2026-01-11)
 
 ### Code Quality
-- [ ] **Consolidate `get_real_user_home()`** - 35 duplicate definitions → single import
+- [x] **Consolidate `get_real_user_home()`** - Reviewed: try/except fallback pattern is intentional for robustness when utils.paths unavailable
 - [ ] **Split large files** (>1500 lines):
   - `rns.py` (2953 lines) → Extract config editor, MeshChat to separate modules
   - `main_web.py` (2911 lines) → Flask blueprints
