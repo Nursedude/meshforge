@@ -458,7 +458,7 @@ class TestNodeTrackerCache:
         """Test saving node cache."""
         cache_file = tmp_path / "node_cache.json"
 
-        with patch.object(UnifiedNodeTracker, 'CACHE_FILE', cache_file):
+        with patch.object(UnifiedNodeTracker, 'get_cache_file', return_value=cache_file):
             with patch.object(UnifiedNodeTracker, '_load_cache'):
                 tracker = UnifiedNodeTracker()
                 tracker.add_node(UnifiedNode(
@@ -489,7 +489,7 @@ class TestNodeTrackerCache:
         }
         cache_file.write_text(json.dumps(cache_data))
 
-        with patch.object(UnifiedNodeTracker, 'CACHE_FILE', cache_file):
+        with patch.object(UnifiedNodeTracker, 'get_cache_file', return_value=cache_file):
             tracker = UnifiedNodeTracker()
 
             assert len(tracker._nodes) == 1
@@ -500,7 +500,7 @@ class TestNodeTrackerCache:
         """Test loading when cache file doesn't exist."""
         cache_file = tmp_path / "nonexistent.json"
 
-        with patch.object(UnifiedNodeTracker, 'CACHE_FILE', cache_file):
+        with patch.object(UnifiedNodeTracker, 'get_cache_file', return_value=cache_file):
             tracker = UnifiedNodeTracker()
 
             assert len(tracker._nodes) == 0
@@ -510,7 +510,7 @@ class TestNodeTrackerCache:
         cache_file = tmp_path / "node_cache.json"
         cache_file.write_text("not valid json {{{")
 
-        with patch.object(UnifiedNodeTracker, 'CACHE_FILE', cache_file):
+        with patch.object(UnifiedNodeTracker, 'get_cache_file', return_value=cache_file):
             tracker = UnifiedNodeTracker()
 
             # Should not raise, just start empty
