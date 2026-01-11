@@ -281,7 +281,10 @@ class MeshForgeLauncher:
             choices.append(("diag", "Run Diagnostics"))
             choices.append(("bridge", "Start Gateway Bridge"))
             choices.append(("monitor", "Node Monitor"))
-            choices.append(("space", "Space Weather (HamClock)"))
+            choices.append(("nodes", "View Nodes"))
+            choices.append(("messaging", "Messaging"))
+            choices.append(("rf", "RF Tools"))
+            choices.append(("space", "Space Weather"))
 
             # Config section
             choices.append(("---", "──────────── Config ───────────"))
@@ -324,6 +327,12 @@ class MeshForgeLauncher:
             self._run_monitor()
         elif choice == "space":
             self._show_space_weather()
+        elif choice == "nodes":
+            self._show_nodes()
+        elif choice == "messaging":
+            self._messaging_menu()
+        elif choice == "rf":
+            self._rf_tools_menu()
         elif choice == "services":
             self._service_menu()
         elif choice == "hardware":
@@ -706,6 +715,387 @@ Made with aloha for the mesh community
 73 de WH6GXZ"""
 
         self.dialog.msgbox("About MeshForge", text)
+
+    def _show_nodes(self):
+        """Show connected nodes."""
+        self.dialog.infobox("Nodes", "Fetching node list...")
+
+        try:
+            sys.path.insert(0, str(self.src_dir))
+            from commands import meshtastic as mesh_cmd
+
+            result = mesh_cmd.get_nodes()
+            if result.success:
+                nodes = result.data.get('nodes', [])
+                if not nodes:
+                    self.dialog.msgbox("Nodes", "No nodes found.\n\nMake sure meshtasticd is running.")
+                    return
+
+                text = f"Found {len(nodes)} nodes:\n\n"
+                for node in nodes[:15]:  # Limit display
+                    node_id = node.get('id', '?')
+                    name = node.get('name', 'Unknown')
+                    snr = node.get('snr', 'N/A')
+                    last_heard = node.get('last_heard', 'N/A')
+                    text += f"  {name} ({node_id})\n"
+                    text += f"    SNR: {snr} | Last: {last_heard}\n"
+
+                if len(nodes) > 15:
+                    text += f"\n... and {len(nodes) - 15} more"
+
+                self.dialog.msgbox("Mesh Nodes", text)
+            else:
+                self.dialog.msgbox("Error", f"Failed to get nodes:\n{result.message}")
+
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Node fetch failed:\n{e}")
+
+    def _messaging_menu(self):
+        """Messaging menu."""
+        choices = [
+            ("view", "View Recent Messages"),
+            ("send", "Send Message"),
+            ("stats", "Message Statistics"),
+            ("back", "Back"),
+        ]
+
+        while True:
+            choice = self.dialog.menu(
+                "Messaging",
+                "Mesh messaging:",
+                choices
+            )
+
+            if choice is None or choice == "back":
+                break
+
+            if choice == "view":
+                self._view_messages()
+            elif choice == "send":
+                self._send_message()
+            elif choice == "stats":
+                self._message_stats()
+
+    def _view_messages(self):
+        """View recent messages."""
+        try:
+            sys.path.insert(0, str(self.src_dir))
+            from commands import messaging
+
+            result = messaging.get_messages(limit=20)
+            if result.success:
+                messages = result.data.get('messages', [])
+                if not messages:
+                    self.dialog.msgbox("Messages", "No messages yet.")
+                    return
+
+                text = ""
+                for msg in messages[:10]:
+                    ts = msg.get('timestamp', '')[:16]
+                    from_id = msg.get('from_id', '?')
+                    content = msg.get('content', '')[:40]
+                    text += f"[{ts}] {from_id}\n  {content}\n\n"
+
+                self.dialog.msgbox("Recent Messages", text)
+            else:
+                self.dialog.msgbox("Error", result.message)
+
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed to load messages:\n{e}")
+
+    def _send_message(self):
+        """Send a message."""
+        try:
+            # Get destination
+            dest = self.dialog.inputbox(
+                "Send Message",
+                "Destination (node ID or leave empty for broadcast):",
+                ""
+            )
+
+            if dest is None:
+                return
+
+            # Get message content
+            content = self.dialog.inputbox(
+                "Send Message",
+                "Message (max 160 chars):",
+                ""
+            )
+
+            if not content:
+                return
+
+            sys.path.insert(0, str(self.src_dir))
+            from commands import messaging
+
+            self.dialog.infobox("Sending", "Sending message...")
+            result = messaging.send_message(
+                content=content,
+                destination=dest if dest else None,
+                network="auto"
+            )
+
+            self.dialog.msgbox("Result", result.message)
+
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Send failed:\n{e}")
+
+    def _message_stats(self):
+        """Show message statistics."""
+        try:
+            sys.path.insert(0, str(self.src_dir))
+            from commands import messaging
+
+            result = messaging.get_stats()
+            if result.success:
+                data = result.data
+                text = f"""Message Statistics:
+
+Total Messages: {data.get('total', 0)}
+Sent: {data.get('sent', 0)}
+Received: {data.get('received', 0)}
+Last 24h: {data.get('last_24h', 0)}
+
+Storage: messages.db"""
+
+                self.dialog.msgbox("Statistics", text)
+            else:
+                self.dialog.msgbox("Error", result.message)
+
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Stats failed:\n{e}")
+
+    def _rf_tools_menu(self):
+        """RF tools menu."""
+        choices = [
+            ("fspl", "Free Space Path Loss"),
+            ("link", "Link Budget Calculator"),
+            ("fresnel", "Fresnel Zone"),
+            ("power", "EIRP Calculator"),
+            ("back", "Back"),
+        ]
+
+        while True:
+            choice = self.dialog.menu(
+                "RF Tools",
+                "Radio frequency calculations:",
+                choices
+            )
+
+            if choice is None or choice == "back":
+                break
+
+            if choice == "fspl":
+                self._calc_fspl()
+            elif choice == "link":
+                self._calc_link_budget()
+            elif choice == "fresnel":
+                self._calc_fresnel()
+            elif choice == "power":
+                self._calc_eirp()
+
+    def _calc_fspl(self):
+        """Calculate Free Space Path Loss."""
+        try:
+            # Get distance
+            dist_str = self.dialog.inputbox(
+                "FSPL Calculator",
+                "Distance (km):",
+                "1"
+            )
+            if not dist_str:
+                return
+
+            # Get frequency
+            freq_str = self.dialog.inputbox(
+                "FSPL Calculator",
+                "Frequency (MHz):",
+                "915"
+            )
+            if not freq_str:
+                return
+
+            distance = float(dist_str)
+            freq = float(freq_str)
+
+            # FSPL formula: 20*log10(d) + 20*log10(f) + 20*log10(4*pi/c)
+            # Simplified: FSPL(dB) = 20*log10(d_km) + 20*log10(f_MHz) + 32.45
+            import math
+            fspl = 20 * math.log10(distance) + 20 * math.log10(freq) + 32.45
+
+            text = f"""Free Space Path Loss:
+
+Distance: {distance} km
+Frequency: {freq} MHz
+
+FSPL: {fspl:.1f} dB
+
+Note: This is theoretical minimum loss.
+Actual loss will be higher due to
+terrain, vegetation, and atmospheric
+conditions."""
+
+            self.dialog.msgbox("FSPL Result", text)
+
+        except ValueError:
+            self.dialog.msgbox("Error", "Invalid number entered")
+        except Exception as e:
+            self.dialog.msgbox("Error", str(e))
+
+    def _calc_link_budget(self):
+        """Calculate link budget."""
+        try:
+            # Get TX power
+            tx_pwr = self.dialog.inputbox("Link Budget", "TX Power (dBm):", "20")
+            if not tx_pwr:
+                return
+
+            # Get TX antenna gain
+            tx_gain = self.dialog.inputbox("Link Budget", "TX Antenna Gain (dBi):", "2")
+            if not tx_gain:
+                return
+
+            # Get RX antenna gain
+            rx_gain = self.dialog.inputbox("Link Budget", "RX Antenna Gain (dBi):", "2")
+            if not rx_gain:
+                return
+
+            # Get path loss
+            path_loss = self.dialog.inputbox("Link Budget", "Path Loss (dB):", "100")
+            if not path_loss:
+                return
+
+            # Get RX sensitivity
+            rx_sens = self.dialog.inputbox("Link Budget", "RX Sensitivity (dBm):", "-130")
+            if not rx_sens:
+                return
+
+            tx_p = float(tx_pwr)
+            tx_g = float(tx_gain)
+            rx_g = float(rx_gain)
+            pl = float(path_loss)
+            rx_s = float(rx_sens)
+
+            # Link budget: RX Power = TX Power + TX Gain + RX Gain - Path Loss
+            rx_power = tx_p + tx_g + rx_g - pl
+            link_margin = rx_power - rx_s
+
+            status = "GOOD" if link_margin > 10 else "MARGINAL" if link_margin > 0 else "NO LINK"
+
+            text = f"""Link Budget Analysis:
+
+TX Power: {tx_p} dBm
+TX Antenna: +{tx_g} dBi
+RX Antenna: +{rx_g} dBi
+Path Loss: -{pl} dB
+RX Sensitivity: {rx_s} dBm
+
+Received Power: {rx_power:.1f} dBm
+Link Margin: {link_margin:.1f} dB
+
+Status: {status}"""
+
+            self.dialog.msgbox("Link Budget", text)
+
+        except ValueError:
+            self.dialog.msgbox("Error", "Invalid number entered")
+        except Exception as e:
+            self.dialog.msgbox("Error", str(e))
+
+    def _calc_fresnel(self):
+        """Calculate Fresnel zone."""
+        try:
+            dist_str = self.dialog.inputbox("Fresnel Zone", "Distance (km):", "5")
+            if not dist_str:
+                return
+
+            freq_str = self.dialog.inputbox("Fresnel Zone", "Frequency (MHz):", "915")
+            if not freq_str:
+                return
+
+            distance = float(dist_str) * 1000  # Convert to meters
+            freq = float(freq_str) * 1e6  # Convert to Hz
+
+            # Fresnel zone radius at midpoint
+            # r = sqrt(n * wavelength * d1 * d2 / (d1 + d2))
+            # At midpoint: r = sqrt(n * lambda * d / 4)
+            c = 3e8
+            wavelength = c / freq
+            d1 = d2 = distance / 2
+
+            import math
+            r1 = math.sqrt(wavelength * d1 * d2 / (d1 + d2))
+
+            # 60% clearance recommendation
+            clearance = r1 * 0.6
+
+            text = f"""Fresnel Zone Calculator:
+
+Distance: {distance/1000:.1f} km
+Frequency: {freq/1e6:.0f} MHz
+Wavelength: {wavelength:.3f} m
+
+1st Fresnel Zone Radius: {r1:.1f} m
+60% Clearance Needed: {clearance:.1f} m
+
+For best signal, ensure no obstacles
+within {clearance:.1f}m of the line
+of sight at the midpoint."""
+
+            self.dialog.msgbox("Fresnel Zone", text)
+
+        except ValueError:
+            self.dialog.msgbox("Error", "Invalid number entered")
+        except Exception as e:
+            self.dialog.msgbox("Error", str(e))
+
+    def _calc_eirp(self):
+        """Calculate EIRP."""
+        try:
+            tx_pwr = self.dialog.inputbox("EIRP", "TX Power (dBm):", "20")
+            if not tx_pwr:
+                return
+
+            cable_loss = self.dialog.inputbox("EIRP", "Cable Loss (dB):", "1")
+            if not cable_loss:
+                return
+
+            ant_gain = self.dialog.inputbox("EIRP", "Antenna Gain (dBi):", "6")
+            if not ant_gain:
+                return
+
+            tx = float(tx_pwr)
+            loss = float(cable_loss)
+            gain = float(ant_gain)
+
+            eirp = tx - loss + gain
+
+            # Convert to watts
+            import math
+            eirp_watts = 10 ** ((eirp - 30) / 10)
+
+            # FCC limit for 915MHz ISM is 36dBm EIRP (4W) for frequency hopping
+            legal = "LEGAL (under 36 dBm)" if eirp <= 36 else "EXCEEDS FCC LIMIT"
+
+            text = f"""EIRP Calculator:
+
+TX Power: {tx} dBm
+Cable Loss: -{loss} dB
+Antenna Gain: +{gain} dBi
+
+EIRP: {eirp:.1f} dBm ({eirp_watts*1000:.0f} mW)
+
+US 915MHz ISM: {legal}
+
+Note: Check local regulations."""
+
+            self.dialog.msgbox("EIRP Result", text)
+
+        except ValueError:
+            self.dialog.msgbox("Error", "Invalid number entered")
+        except Exception as e:
+            self.dialog.msgbox("Error", str(e))
 
     def _run_basic_launcher(self):
         """Fallback basic terminal launcher."""
