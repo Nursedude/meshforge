@@ -1577,27 +1577,45 @@ Storage: messages.db"""
 
         Uses djb2 hash algorithm to calculate frequency slot from channel name.
         Based on Meshtastic firmware RadioInterface.cpp
+
+        All 22 Meshtastic regions supported with correct band definitions.
         """
-        # Region definitions: (name, freq_start_mhz, freq_end_mhz, spacing_mhz, num_slots)
+        # Region definitions: (name, freq_start_mhz, freq_end_mhz, default_slots, description)
+        # Slots are calculated dynamically based on bandwidth, default_slots is for display
         regions = [
-            ("US", 902.0, 928.0, 0.0, 104),
-            ("EU_868", 869.4, 869.65, 0.0, 1),
-            ("EU_433", 433.175, 434.665, 0.0, 8),
-            ("CN", 470.0, 510.0, 0.0, 80),
-            ("JP", 920.0, 923.0, 0.0, 10),
-            ("ANZ", 915.0, 928.0, 0.0, 52),
-            ("KR", 920.0, 923.0, 0.0, 12),
-            ("TW", 920.0, 925.0, 0.0, 20),
-            ("RU", 868.7, 869.2, 0.0, 2),
-            ("IN", 865.0, 867.0, 0.0, 8),
-            ("NZ_865", 864.0, 868.0, 0.0, 16),
-            ("TH", 920.0, 925.0, 0.0, 20),
-            ("UA_868", 868.0, 868.6, 0.0, 2),
-            ("UA_433", 433.0, 434.79, 0.0, 8),
+            # Americas
+            ("US", 902.0, 928.0, 104, "United States ISM"),
+            ("ANZ", 915.0, 928.0, 52, "Australia/NZ"),
+
+            # Europe
+            ("EU_868", 869.4, 869.65, 1, "EU 869 MHz (SRD)"),
+            ("EU_433", 433.0, 434.0, 8, "EU 433 MHz"),
+            ("UK_868", 869.4, 869.65, 1, "UK 869 MHz"),
+            ("UA_868", 868.0, 868.6, 2, "Ukraine 868 MHz"),
+            ("UA_433", 433.0, 434.79, 8, "Ukraine 433 MHz"),
+            ("RU", 868.7, 869.2, 2, "Russia"),
+
+            # Asia-Pacific
+            ("JP", 920.8, 923.8, 10, "Japan"),
+            ("KR", 920.0, 923.0, 12, "Korea"),
+            ("TW", 920.0, 925.0, 20, "Taiwan"),
+            ("CN", 470.0, 510.0, 80, "China"),
+            ("IN", 865.0, 867.0, 8, "India"),
+            ("TH", 920.0, 925.0, 20, "Thailand"),
+            ("PH", 920.0, 925.0, 20, "Philippines"),
+            ("SG_923", 920.0, 925.0, 20, "Singapore 923"),
+            ("MY_433", 433.0, 435.0, 8, "Malaysia 433 MHz"),
+            ("MY_919", 919.0, 924.0, 20, "Malaysia 919 MHz"),
+
+            # Oceania
+            ("NZ_865", 864.0, 868.0, 16, "New Zealand 865 MHz"),
+
+            # 2.4 GHz ISM (worldwide)
+            ("LORA_24", 2400.0, 2483.5, 39, "2.4 GHz ISM (worldwide)"),
         ]
 
         # Select region
-        region_choices = [(r[0], f"{r[0]} ({r[1]}-{r[2]} MHz, {r[4]} slots)") for r in regions]
+        region_choices = [(r[0], f"{r[0]}: {r[1]:.1f}-{r[2]:.1f} MHz") for r in regions]
         region_choices.append(("back", "Back"))
 
         region_choice = self.dialog.menu(
@@ -1655,16 +1673,17 @@ Storage: messages.db"""
         try:
             bw_khz = float(bw_choice)
 
+            region_name = region[0]
             freq_start = region[1]
             freq_end = region[2]
-            spacing = region[3]
-            max_slots = region[4]
+            max_slots = region[3]
+            region_desc = region[4]
 
             # Calculate num_channels based on bandwidth
+            # Formula: slots = floor((freq_end - freq_start) / (bw_khz / 1000))
             import math
-            num_channels = int(math.floor((freq_end - freq_start) / (spacing + bw_khz / 1000)))
-            if num_channels > max_slots:
-                num_channels = max_slots
+            calculated_slots = int(math.floor((freq_end - freq_start) / (bw_khz / 1000)))
+            num_channels = min(calculated_slots, max_slots) if calculated_slots > 0 else max_slots
 
             if mode == "name":
                 # Get channel name
@@ -1709,8 +1728,8 @@ Storage: messages.db"""
 
             text = f"""Frequency Slot Calculation:
 
-Region: {region[0]}
-Band: {freq_start} - {freq_end} MHz
+Region: {region_name} ({region_desc})
+Band: {freq_start:.1f} - {freq_end:.1f} MHz
 Bandwidth: {bw_khz} kHz
 Available Slots: {num_channels}
 

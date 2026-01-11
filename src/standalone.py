@@ -245,31 +245,46 @@ class StandaloneTools:
                 h = ((h << 5) + h) + ord(c)
             return h & 0xFFFFFFFF
 
-        # Region definitions
+        # Region definitions - all 22 Meshtastic regions
         REGIONS = {
+            # Americas
             'US': {'start': 902.0, 'end': 928.0, 'duty': 100, 'power': 30},
+            'ANZ': {'start': 915.0, 'end': 928.0, 'duty': 100, 'power': 30},
+            # Europe
             'EU_868': {'start': 869.4, 'end': 869.65, 'duty': 10, 'power': 27},
             'EU_433': {'start': 433.0, 'end': 434.0, 'duty': 10, 'power': 12},
-            'CN': {'start': 470.0, 'end': 510.0, 'duty': 100, 'power': 19},
-            'JP': {'start': 920.0, 'end': 923.0, 'duty': 100, 'power': 16},
-            'ANZ': {'start': 915.0, 'end': 928.0, 'duty': 100, 'power': 30},
+            'UK_868': {'start': 869.4, 'end': 869.65, 'duty': 10, 'power': 27},
+            'UA_868': {'start': 868.0, 'end': 868.6, 'duty': 100, 'power': 20},
+            'UA_433': {'start': 433.0, 'end': 434.79, 'duty': 100, 'power': 12},
+            'RU': {'start': 868.7, 'end': 869.2, 'duty': 100, 'power': 20},
+            # Asia-Pacific
+            'JP': {'start': 920.8, 'end': 923.8, 'duty': 100, 'power': 16},
             'KR': {'start': 920.0, 'end': 923.0, 'duty': 100, 'power': 10},
             'TW': {'start': 920.0, 'end': 925.0, 'duty': 100, 'power': 27},
-            'RU': {'start': 868.7, 'end': 869.2, 'duty': 100, 'power': 20},
+            'CN': {'start': 470.0, 'end': 510.0, 'duty': 100, 'power': 19},
             'IN': {'start': 865.0, 'end': 867.0, 'duty': 100, 'power': 30},
-            'NZ_865': {'start': 864.0, 'end': 868.0, 'duty': 100, 'power': 36},
             'TH': {'start': 920.0, 'end': 925.0, 'duty': 100, 'power': 16},
+            'PH': {'start': 920.0, 'end': 925.0, 'duty': 100, 'power': 16},
+            'SG_923': {'start': 920.0, 'end': 925.0, 'duty': 100, 'power': 20},
+            'MY_433': {'start': 433.0, 'end': 435.0, 'duty': 100, 'power': 12},
+            'MY_919': {'start': 919.0, 'end': 924.0, 'duty': 100, 'power': 20},
+            # Oceania
+            'NZ_865': {'start': 864.0, 'end': 868.0, 'duty': 100, 'power': 36},
+            # 2.4 GHz ISM
+            'LORA_24': {'start': 2400.0, 'end': 2483.5, 'duty': 100, 'power': 10},
         }
 
+        # Preset bandwidths (kHz) - FIXED: LONG_SLOW/MODERATE use 125 kHz
         PRESETS = {
             'LONG_FAST': 250,
-            'LONG_SLOW': 250,
-            'LONG_MODERATE': 250,
+            'LONG_SLOW': 125,       # FIXED: was incorrectly 250
+            'LONG_MODERATE': 125,   # FIXED: was incorrectly 250
             'MEDIUM_FAST': 250,
             'MEDIUM_SLOW': 250,
             'SHORT_FAST': 250,
             'SHORT_SLOW': 250,
             'SHORT_TURBO': 500,
+            'VERY_LONG_SLOW': 62.5,
         }
 
         print("Regions:", ", ".join(REGIONS.keys()))
