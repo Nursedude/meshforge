@@ -508,24 +508,52 @@ class GatewayMixin:
                 'rns': {'connected': False, 'error': None},
             }
 
-            # Test Meshtastic
-            import socket
-            sock = None
+            # Test Meshtastic - check persistent connection first to avoid conflicts
             try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(5)
-                result = sock.connect_ex(('localhost', 4403))
-                results['meshtastic']['connected'] = (result == 0)
-                if result != 0:
-                    results['meshtastic']['error'] = "Cannot connect to port 4403"
-            except Exception as e:
-                results['meshtastic']['error'] = str(e)
-            finally:
-                if sock:
+                from utils.meshtastic_connection import get_connection_manager
+                mgr = get_connection_manager()
+                if mgr.has_persistent():
+                    # Bridge has a persistent connection - don't create a new one!
+                    results['meshtastic']['connected'] = True
+                    logger.debug("[RNS] Meshtastic test: using existing persistent connection")
+                else:
+                    # No persistent connection, safe to do socket check
+                    import socket
+                    sock = None
                     try:
-                        sock.close()
-                    except Exception:
-                        pass
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(5)
+                        result = sock.connect_ex(('localhost', 4403))
+                        results['meshtastic']['connected'] = (result == 0)
+                        if result != 0:
+                            results['meshtastic']['error'] = "Cannot connect to port 4403"
+                    except Exception as e:
+                        results['meshtastic']['error'] = str(e)
+                    finally:
+                        if sock:
+                            try:
+                                sock.close()
+                            except Exception:
+                                pass
+            except ImportError:
+                # Fallback to socket check if connection manager not available
+                import socket
+                sock = None
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(5)
+                    result = sock.connect_ex(('localhost', 4403))
+                    results['meshtastic']['connected'] = (result == 0)
+                    if result != 0:
+                        results['meshtastic']['error'] = "Cannot connect to port 4403"
+                except Exception as e:
+                    results['meshtastic']['error'] = str(e)
+                finally:
+                    if sock:
+                        try:
+                            sock.close()
+                        except Exception:
+                            pass
 
             # Test RNS
             try:
