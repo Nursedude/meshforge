@@ -434,9 +434,7 @@ class MessagingPanel(Gtk.Box):
             lines.append("")
 
         buffer.set_text("\n".join(lines))
-
-        # Scroll to end for new messages
-        self.msg_text.scroll_to_iter(buffer.get_end_iter(), 0, False, 0, 0)
+        # Don't auto-scroll - let user control scroll position
         return False
 
     def _send_message(self):

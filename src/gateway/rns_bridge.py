@@ -224,12 +224,32 @@ class RNSMeshtasticBridge:
             return False
 
         # Use CLI for TX - more reliable than persistent interface
+        # Note: CLI will kick out our persistent connection, so we reconnect after
         dest = destination if destination else None
         logger.info(f"TX: Sending via CLI to {dest or 'broadcast'} ch={channel}: {message[:50]}")
         success = self._send_via_cli(message, dest, channel)
         if success:
             self.stats['messages_mesh_to_rns'] += 1
+            # Reconnect persistent connection for RX (CLI kicked it out)
+            self._reconnect_meshtastic()
         return success
+
+    def _reconnect_meshtastic(self):
+        """Reconnect Meshtastic after CLI use"""
+        try:
+            if self._conn_manager:
+                self._conn_manager.release_persistent()
+                import time
+                time.sleep(0.5)  # Brief pause before reconnecting
+                if self._conn_manager.acquire_persistent(owner="gateway_bridge"):
+                    self._mesh_interface = self._conn_manager.get_interface()
+                    # Re-subscribe to pub/sub
+                    from pubsub import pub
+                    pub.subscribe(self._on_receive_callback, "meshtastic.receive")
+                    pub.subscribe(self._on_text_callback, "meshtastic.receive.text")
+                    logger.info("TX: Reconnected persistent connection for RX")
+        except Exception as e:
+            logger.warning(f"TX: Failed to reconnect: {e}")
 
     def send_to_rns(self, message: str, destination_hash: bytes = None) -> bool:
         """Send a message to RNS network via LXMF"""
