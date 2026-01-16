@@ -421,22 +421,27 @@ class RNSMeshtasticBridge:
                 return
 
             # Subscribe to messages - store references to prevent garbage collection
+            # Use meshtastic.receive.text for text messages to avoid duplicates
             def on_receive(packet, interface):
-                logger.debug(f"Received Meshtastic packet from {packet.get('fromId', 'unknown')}")
-                self._on_meshtastic_receive(packet)
+                # Only log non-text packets here (text handled by .text topic)
+                decoded = packet.get('decoded', {})
+                portnum = decoded.get('portnum')
+                if portnum != 'TEXT_MESSAGE_APP':
+                    logger.debug(f"Received Meshtastic packet: portnum={portnum}")
+                    self._on_meshtastic_receive(packet)
 
             def on_text(packet, interface):
-                logger.info(f"Received TEXT via meshtastic.receive.text from {packet.get('fromId', 'unknown')}")
+                logger.debug(f"Received TEXT from {packet.get('fromId', 'unknown')}")
                 self._on_meshtastic_receive(packet)
 
             # Keep references to prevent garbage collection of callbacks
             self._on_receive_callback = on_receive
             self._on_text_callback = on_text
 
-            # Subscribe to multiple topics to catch text messages
+            # Subscribe to both topics - text handled by .text, others by .receive
             pub.subscribe(self._on_receive_callback, "meshtastic.receive")
             pub.subscribe(self._on_text_callback, "meshtastic.receive.text")
-            logger.info("Subscribed to meshtastic.receive and meshtastic.receive.text pub/sub")
+            logger.info("Subscribed to meshtastic.receive.text for text messages")
 
             # Get initial node list
             self._update_meshtastic_nodes()
