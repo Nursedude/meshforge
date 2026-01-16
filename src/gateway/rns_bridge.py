@@ -578,9 +578,18 @@ class RNSMeshtasticBridge:
         try:
             decoded = packet.get('decoded', {})
             portnum = decoded.get('portnum')
+            from_id = packet.get('fromId')
+
+            # Detailed debug logging for RX troubleshooting
+            logger.debug(f"RX packet: from={from_id}, portnum={portnum}, decoded_keys={list(decoded.keys())}")
+
+            # Log if we're skipping non-text packets
+            if portnum != 'TEXT_MESSAGE_APP':
+                logger.debug(f"RX: Skipping non-text packet (portnum={portnum})")
+            else:
+                logger.info(f"RX TEXT: from={from_id}, payload_type={type(decoded.get('payload'))}")
 
             # Update node info
-            from_id = packet.get('fromId')
             if from_id:
                 node = UnifiedNode.from_meshtastic({
                     'num': int(from_id[1:], 16) if from_id.startswith('!') else 0,
@@ -616,6 +625,7 @@ class RNSMeshtasticBridge:
                     # Convert broadcast marker to None
                     if to_id == '!ffffffff' or to_id == '^all':
                         to_id = None
+                    logger.info(f"RX: Storing message from {from_id}: '{text[:50]}...' to messaging store")
                     messaging.store_incoming(
                         from_id=from_id,
                         content=text,
@@ -625,8 +635,9 @@ class RNSMeshtasticBridge:
                         snr=packet.get('rxSnr'),
                         rssi=packet.get('rxRssi'),
                     )
+                    logger.info(f"RX: Message stored successfully")
                 except Exception as e:
-                    logger.debug(f"Could not store incoming message: {e}")
+                    logger.error(f"RX: Failed to store incoming message: {e}")
 
                 # Queue for bridging if enabled
                 if self._should_bridge(msg):
