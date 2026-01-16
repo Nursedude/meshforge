@@ -95,6 +95,7 @@ class RNSMeshtasticBridge:
         self._mesh_interface = None
         self._conn_manager = None
         self._on_receive_callback = None  # Store reference to prevent GC
+        self._on_text_callback = None  # Store reference to prevent GC
 
         # Statistics
         self.stats = {
@@ -419,15 +420,23 @@ class RNSMeshtasticBridge:
                 self._connected_mesh = False
                 return
 
-            # Subscribe to messages - store reference to prevent garbage collection
+            # Subscribe to messages - store references to prevent garbage collection
             def on_receive(packet, interface):
                 logger.debug(f"Received Meshtastic packet from {packet.get('fromId', 'unknown')}")
                 self._on_meshtastic_receive(packet)
 
-            # Keep reference to prevent garbage collection of callback
+            def on_text(packet, interface):
+                logger.info(f"Received TEXT via meshtastic.receive.text from {packet.get('fromId', 'unknown')}")
+                self._on_meshtastic_receive(packet)
+
+            # Keep references to prevent garbage collection of callbacks
             self._on_receive_callback = on_receive
+            self._on_text_callback = on_text
+
+            # Subscribe to multiple topics to catch text messages
             pub.subscribe(self._on_receive_callback, "meshtastic.receive")
-            logger.info("Subscribed to meshtastic.receive pub/sub")
+            pub.subscribe(self._on_text_callback, "meshtastic.receive.text")
+            logger.info("Subscribed to meshtastic.receive and meshtastic.receive.text pub/sub")
 
             # Get initial node list
             self._update_meshtastic_nodes()
