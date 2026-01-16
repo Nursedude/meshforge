@@ -116,9 +116,9 @@ class MessagingPanel(Gtk.Box):
         msg_frame.set_label("Messages")
         msg_frame.set_vexpand(True)
 
-        msg_scrolled = Gtk.ScrolledWindow()
-        msg_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        msg_scrolled.set_vexpand(True)
+        self.msg_scrolled = Gtk.ScrolledWindow()
+        self.msg_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        self.msg_scrolled.set_vexpand(True)
 
         self.msg_text = Gtk.TextView()
         self.msg_text.set_editable(False)
@@ -128,9 +128,9 @@ class MessagingPanel(Gtk.Box):
         self.msg_text.set_margin_end(10)
         self.msg_text.set_margin_top(10)
         self.msg_text.set_margin_bottom(10)
-        msg_scrolled.set_child(self.msg_text)
+        self.msg_scrolled.set_child(self.msg_text)
 
-        msg_frame.set_child(msg_scrolled)
+        msg_frame.set_child(self.msg_scrolled)
         msg_box.append(msg_frame)
 
         # Compose area
@@ -433,8 +433,17 @@ class MessagingPanel(Gtk.Box):
             lines.append(f"  {content}")
             lines.append("")
 
+        # Save scroll position before updating
+        vadj = self.msg_scrolled.get_vadjustment()
+        scroll_pos = vadj.get_value()
+
         buffer.set_text("\n".join(lines))
-        # Don't auto-scroll - let user control scroll position
+
+        # Restore scroll position after update
+        def restore_scroll():
+            vadj.set_value(scroll_pos)
+            return False
+        GLib.idle_add(restore_scroll)
         return False
 
     def _send_message(self):
