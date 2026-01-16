@@ -476,10 +476,9 @@ class MessagingPanel(Gtk.Box):
         if result.success:
             self.msg_entry.set_text("")
             self.main_window.set_status_message(result.message)
-            # Reload messages and stats
-            self._load_messages()
+            # Only reload messages for current conversation - don't touch conversations list
+            self._load_messages(self._current_conversation)
             self._load_stats()
-            self._load_conversations()
         else:
             self.main_window.set_status_message(f"Send failed: {result.message}")
         return False

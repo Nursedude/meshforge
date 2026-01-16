@@ -223,35 +223,13 @@ class RNSMeshtasticBridge:
             logger.warning("TX: Not connected to Meshtastic")
             return False
 
-        try:
-            if self._mesh_interface:
-                # Verify interface is still valid
-                try:
-                    # Quick check - this will fail if disconnected
-                    _ = self._mesh_interface.myInfo
-                except Exception as e:
-                    logger.warning(f"TX: Interface invalid, reconnecting: {e}")
-                    self._connected_mesh = False
-                    return False
-
-                # For broadcasts, use ^all instead of None
-                dest = destination if destination else "^all"
-                logger.info(f"TX: Sending to {dest} ch={channel}: {message[:50]}")
-                self._mesh_interface.sendText(
-                    message,
-                    destinationId=dest,
-                    channelIndex=channel
-                )
-                logger.debug(f"TX: sendText completed for {dest}")
-                self.stats['messages_mesh_to_rns'] += 1
-                return True
-            else:
-                logger.warning("TX: No mesh interface, using CLI fallback")
-                return self._send_via_cli(message, destination, channel)
-        except Exception as e:
-            logger.error(f"TX: Failed to send to Meshtastic: {e}")
-            self.stats['errors'] += 1
-            return False
+        # Use CLI for TX - more reliable than persistent interface
+        dest = destination if destination else None
+        logger.info(f"TX: Sending via CLI to {dest or 'broadcast'} ch={channel}: {message[:50]}")
+        success = self._send_via_cli(message, dest, channel)
+        if success:
+            self.stats['messages_mesh_to_rns'] += 1
+        return success
 
     def send_to_rns(self, message: str, destination_hash: bytes = None) -> bool:
         """Send a message to RNS network via LXMF"""
