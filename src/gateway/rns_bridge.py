@@ -448,7 +448,9 @@ class RNSMeshtasticBridge:
 
                 decoded = packet.get('decoded', {})
                 portnum = decoded.get('portnum')
-                logger.debug(f"RX: portnum={portnum}, from={packet.get('fromId')}")
+                # Only log text messages at debug level (reduce noise)
+                if portnum == 'TEXT_MESSAGE_APP':
+                    logger.debug(f"RX: TEXT from {packet.get('fromId')}")
                 self._on_meshtastic_receive(packet)
 
             def on_text(packet, interface):
@@ -621,15 +623,6 @@ class RNSMeshtasticBridge:
             portnum = decoded.get('portnum')
             from_id = packet.get('fromId')
 
-            # Detailed debug logging for RX troubleshooting
-            logger.debug(f"RX packet: from={from_id}, portnum={portnum}, decoded_keys={list(decoded.keys())}")
-
-            # Log if we're skipping non-text packets
-            if portnum != 'TEXT_MESSAGE_APP':
-                logger.debug(f"RX: Skipping non-text packet (portnum={portnum})")
-            else:
-                logger.info(f"RX TEXT: from={from_id}, payload_type={type(decoded.get('payload'))}")
-
             # Update node info
             if from_id:
                 node = UnifiedNode.from_meshtastic({
@@ -666,7 +659,6 @@ class RNSMeshtasticBridge:
                     # Convert broadcast marker to None
                     if to_id == '!ffffffff' or to_id == '^all':
                         to_id = None
-                    logger.info(f"RX: Storing message from {from_id}: '{text[:50]}...' to messaging store")
                     messaging.store_incoming(
                         from_id=from_id,
                         content=text,
@@ -676,9 +668,9 @@ class RNSMeshtasticBridge:
                         snr=packet.get('rxSnr'),
                         rssi=packet.get('rxRssi'),
                     )
-                    logger.info(f"RX: Message stored successfully")
+                    logger.info(f"RX: {from_id}: {text[:40]}...")
                 except Exception as e:
-                    logger.error(f"RX: Failed to store incoming message: {e}")
+                    logger.error(f"RX: Failed to store message: {e}")
 
                 # Queue for bridging if enabled
                 if self._should_bridge(msg):
