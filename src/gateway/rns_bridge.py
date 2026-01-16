@@ -231,9 +231,10 @@ class RNSMeshtasticBridge:
                 self._mesh_interface.sendText(
                     message,
                     destinationId=dest,
-                    channelIndex=channel
+                    channelIndex=channel,
+                    wantAck=False  # Don't wait for ack - prevents blocking
                 )
-                logger.debug(f"TX: sendText completed")
+                logger.info(f"TX: Message sent")
                 self.stats['messages_mesh_to_rns'] += 1
                 return True
             else:
