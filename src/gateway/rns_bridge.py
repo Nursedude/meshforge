@@ -225,6 +225,16 @@ class RNSMeshtasticBridge:
 
         try:
             if self._mesh_interface:
+                # Verify interface is still alive
+                try:
+                    _ = self._mesh_interface.myInfo
+                except Exception:
+                    logger.warning("TX: Interface stale, reconnecting...")
+                    self._reconnect_meshtastic()
+                    if not self._mesh_interface:
+                        logger.error("TX: Reconnect failed")
+                        return False
+
                 # Use ^all for broadcast (None causes warning)
                 dest = destination if destination else "^all"
                 logger.info(f"TX: Sending to {dest} ch={channel}: {message[:50]}")
