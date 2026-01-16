@@ -22,6 +22,7 @@ class MessagingPanel(Gtk.Box):
         self._refresh_timer_id = None
         self._current_conversation = None
         self._last_message_count = 0  # Track for smart refresh
+        self._last_message_id = None  # Track last message for scroll control
 
         self.set_margin_start(20)
         self.set_margin_end(20)
@@ -397,7 +398,13 @@ class MessagingPanel(Gtk.Box):
 
         if not messages:
             buffer.set_text("No messages yet.\n\nSend a message using the compose area below.")
+            self._last_message_id = None
             return False
+
+        # Check if there's a new message (for scroll control)
+        newest_id = messages[0].get('id') if messages else None
+        has_new_message = newest_id != self._last_message_id
+        self._last_message_id = newest_id
 
         lines = []
         for msg in reversed(messages):  # Show oldest first
@@ -426,8 +433,9 @@ class MessagingPanel(Gtk.Box):
 
         buffer.set_text("\n".join(lines))
 
-        # Scroll to end
-        self.msg_text.scroll_to_iter(buffer.get_end_iter(), 0, False, 0, 0)
+        # Only scroll to end if there's a new message
+        if has_new_message:
+            self.msg_text.scroll_to_iter(buffer.get_end_iter(), 0, False, 0, 0)
         return False
 
     def _send_message(self):
