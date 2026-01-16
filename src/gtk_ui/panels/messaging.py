@@ -19,6 +19,8 @@ class MessagingPanel(Gtk.Box):
     def __init__(self, main_window):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         self.main_window = main_window
+        self._refresh_timer_id = None
+        self._current_conversation = None
 
         self.set_margin_start(20)
         self.set_margin_end(20)
@@ -26,8 +28,12 @@ class MessagingPanel(Gtk.Box):
         self.set_margin_bottom(20)
 
         self._build_ui()
+        GLib.idle_add(self._load_conversations)
         GLib.idle_add(self._load_messages)
         GLib.idle_add(self._load_stats)
+
+        # Auto-refresh every 5 seconds for incoming messages
+        self._start_auto_refresh()
 
     def _build_ui(self):
         """Build the messaging panel UI"""
@@ -355,7 +361,8 @@ class MessagingPanel(Gtk.Box):
         """Handle conversation selection"""
         if row:
             partner = row.get_name()
-            self._load_messages(conversation_with=partner if partner else None)
+            self._current_conversation = partner if partner else None
+            self._load_messages(conversation_with=self._current_conversation)
             if partner:
                 self.dest_entry.set_text(partner)
 
@@ -501,7 +508,22 @@ class MessagingPanel(Gtk.Box):
         thread = threading.Thread(target=clear, daemon=True)
         thread.start()
 
+    def _start_auto_refresh(self):
+        """Start auto-refresh timer for incoming messages."""
+        if self._refresh_timer_id is not None:
+            GLib.source_remove(self._refresh_timer_id)
+        # Refresh every 5 seconds
+        self._refresh_timer_id = GLib.timeout_add_seconds(5, self._auto_refresh)
+
+    def _auto_refresh(self):
+        """Auto-refresh callback - reloads messages and conversations."""
+        self._load_conversations()
+        self._load_messages(conversation_with=self._current_conversation)
+        self._load_stats()
+        return True  # Continue timer
+
     def cleanup(self):
         """Clean up panel resources."""
-        # No timers or persistent resources to clean up
-        pass
+        if self._refresh_timer_id is not None:
+            GLib.source_remove(self._refresh_timer_id)
+            self._refresh_timer_id = None
