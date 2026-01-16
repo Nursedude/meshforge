@@ -431,25 +431,41 @@ class RNSMeshtasticBridge:
                 self._connected_mesh = False
                 return
 
+            # Track processed packets to avoid duplicates
+            self._processed_packets = set()
+
             # Subscribe to messages - store references to prevent garbage collection
-            # Use meshtastic.receive.text for text messages to avoid duplicates
             def on_receive(packet, interface):
-                # Only log non-text packets here (text handled by .text topic)
+                # Deduplicate by packet id if available
+                pkt_id = packet.get('id')
+                if pkt_id and pkt_id in self._processed_packets:
+                    return
+                if pkt_id:
+                    self._processed_packets.add(pkt_id)
+                    # Keep set bounded
+                    if len(self._processed_packets) > 100:
+                        self._processed_packets = set(list(self._processed_packets)[-50:])
+
                 decoded = packet.get('decoded', {})
                 portnum = decoded.get('portnum')
-                if portnum != 'TEXT_MESSAGE_APP':
-                    logger.debug(f"Received Meshtastic packet: portnum={portnum}")
-                    self._on_meshtastic_receive(packet)
+                logger.debug(f"RX: portnum={portnum}, from={packet.get('fromId')}")
+                self._on_meshtastic_receive(packet)
 
             def on_text(packet, interface):
-                logger.debug(f"Received TEXT from {packet.get('fromId', 'unknown')}")
+                # Also subscribe to .text topic as backup
+                pkt_id = packet.get('id')
+                if pkt_id and pkt_id in self._processed_packets:
+                    return  # Already handled by on_receive
+                if pkt_id:
+                    self._processed_packets.add(pkt_id)
+                logger.debug(f"RX TEXT (via .text topic): from={packet.get('fromId')}")
                 self._on_meshtastic_receive(packet)
 
             # Keep references to prevent garbage collection of callbacks
             self._on_receive_callback = on_receive
             self._on_text_callback = on_text
 
-            # Subscribe to both topics - text handled by .text, others by .receive
+            # Subscribe to both topics with deduplication
             pub.subscribe(self._on_receive_callback, "meshtastic.receive")
             pub.subscribe(self._on_text_callback, "meshtastic.receive.text")
             logger.info("Subscribed to meshtastic.receive.text for text messages")
