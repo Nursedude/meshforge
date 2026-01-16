@@ -401,9 +401,11 @@ class MessagingPanel(Gtk.Box):
             self._last_message_id = None
             return False
 
-        # Check if there's a new message (for scroll control)
+        # Check if there's a new message
         newest_id = messages[0].get('id') if messages else None
-        has_new_message = newest_id != self._last_message_id
+        if newest_id == self._last_message_id:
+            # No new messages - skip update to preserve scroll position
+            return False
         self._last_message_id = newest_id
 
         lines = []
@@ -433,9 +435,8 @@ class MessagingPanel(Gtk.Box):
 
         buffer.set_text("\n".join(lines))
 
-        # Only scroll to end if there's a new message
-        if has_new_message:
-            self.msg_text.scroll_to_iter(buffer.get_end_iter(), 0, False, 0, 0)
+        # Scroll to end for new messages
+        self.msg_text.scroll_to_iter(buffer.get_end_iter(), 0, False, 0, 0)
         return False
 
     def _send_message(self):
