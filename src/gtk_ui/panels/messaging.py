@@ -21,6 +21,7 @@ class MessagingPanel(Gtk.Box):
         self.main_window = main_window
         self._refresh_timer_id = None
         self._current_conversation = None
+        self._last_message_count = 0  # Track for smart refresh
 
         self.set_margin_start(20)
         self.set_margin_end(20)
@@ -516,10 +517,24 @@ class MessagingPanel(Gtk.Box):
         self._refresh_timer_id = GLib.timeout_add_seconds(5, self._auto_refresh)
 
     def _auto_refresh(self):
-        """Auto-refresh callback - reloads messages and conversations."""
-        self._load_conversations()
-        self._load_messages(conversation_with=self._current_conversation)
-        self._load_stats()
+        """Auto-refresh callback - only refresh if new messages exist."""
+        def check_and_refresh():
+            try:
+                from commands import messaging
+                result = messaging.get_stats()
+                if result.success:
+                    new_count = result.data.get('total', 0)
+                    if new_count != self._last_message_count:
+                        self._last_message_count = new_count
+                        # New messages - refresh UI
+                        GLib.idle_add(self._load_conversations)
+                        GLib.idle_add(self._load_messages, self._current_conversation)
+                        GLib.idle_add(self._load_stats)
+            except Exception:
+                pass  # Silent fail on refresh check
+
+        thread = threading.Thread(target=check_and_refresh, daemon=True)
+        thread.start()
         return True  # Continue timer
 
     def cleanup(self):

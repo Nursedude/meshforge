@@ -220,25 +220,36 @@ class RNSMeshtasticBridge:
     def send_to_meshtastic(self, message: str, destination: str = None, channel: int = 0) -> bool:
         """Send a message to Meshtastic network"""
         if not self._connected_mesh:
-            logger.warning("Not connected to Meshtastic")
+            logger.warning("TX: Not connected to Meshtastic")
             return False
 
         try:
             if self._mesh_interface:
+                # Verify interface is still valid
+                try:
+                    # Quick check - this will fail if disconnected
+                    _ = self._mesh_interface.myInfo
+                except Exception as e:
+                    logger.warning(f"TX: Interface invalid, reconnecting: {e}")
+                    self._connected_mesh = False
+                    return False
+
                 # For broadcasts, use ^all instead of None
                 dest = destination if destination else "^all"
-                logger.info(f"Sending to Meshtastic: dest={dest}, ch={channel}, msg={message[:50]}")
+                logger.info(f"TX: Sending to {dest} ch={channel}: {message[:50]}")
                 self._mesh_interface.sendText(
                     message,
                     destinationId=dest,
                     channelIndex=channel
                 )
+                logger.debug(f"TX: sendText completed for {dest}")
+                self.stats['messages_mesh_to_rns'] += 1
                 return True
             else:
-                # Fallback to CLI
+                logger.warning("TX: No mesh interface, using CLI fallback")
                 return self._send_via_cli(message, destination, channel)
         except Exception as e:
-            logger.error(f"Failed to send to Meshtastic: {e}")
+            logger.error(f"TX: Failed to send to Meshtastic: {e}")
             self.stats['errors'] += 1
             return False
 
