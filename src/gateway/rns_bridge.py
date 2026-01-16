@@ -240,14 +240,23 @@ class RNSMeshtasticBridge:
             if self._conn_manager:
                 self._conn_manager.release_persistent()
                 import time
-                time.sleep(0.5)  # Brief pause before reconnecting
+                time.sleep(1.0)  # Longer pause for meshtasticd to stabilize
                 if self._conn_manager.acquire_persistent(owner="gateway_bridge"):
                     self._mesh_interface = self._conn_manager.get_interface()
-                    # Re-subscribe to pub/sub
+                    # Reset processed packets set for new connection
+                    self._processed_packets = set()
+                    # Unsubscribe and resubscribe to pub/sub
                     from pubsub import pub
+                    try:
+                        pub.unsubscribe(self._on_receive_callback, "meshtastic.receive")
+                        pub.unsubscribe(self._on_text_callback, "meshtastic.receive.text")
+                    except Exception:
+                        pass  # May not be subscribed
                     pub.subscribe(self._on_receive_callback, "meshtastic.receive")
                     pub.subscribe(self._on_text_callback, "meshtastic.receive.text")
-                    logger.info("TX: Reconnected persistent connection for RX")
+                    logger.info("TX: Reconnected and resubscribed for RX")
+                else:
+                    logger.warning("TX: Failed to reacquire persistent connection")
         except Exception as e:
             logger.warning(f"TX: Failed to reconnect: {e}")
 
