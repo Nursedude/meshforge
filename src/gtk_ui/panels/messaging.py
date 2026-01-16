@@ -535,8 +535,7 @@ class MessagingPanel(Gtk.Box):
                     new_count = result.data.get('total', 0)
                     if new_count != self._last_message_count:
                         self._last_message_count = new_count
-                        # New messages - refresh UI
-                        GLib.idle_add(self._load_conversations)
+                        # New messages - only refresh messages (not conversations to avoid scroll reset)
                         GLib.idle_add(self._load_messages, self._current_conversation)
                         GLib.idle_add(self._load_stats)
             except Exception:
