@@ -146,6 +146,11 @@ def interactive_menu():
         console.print(f"  [bold]s[/bold]. {em.get('🌐')} [green]RNS Tools[/green] [dim](rnsd, NomadNet, LXMF)[/dim]")
         console.print(f"  [bold]b[/bold]. {em.get('🔗')} [green]Gateway Bridge[/green] [dim](Meshtastic ↔ RNS)[/dim]")
 
+        # Ham Radio Section
+        console.print("\n[dim cyan]-- Ham Radio --[/dim cyan]")
+        console.print(f"  [bold]k[/bold]. {em.get('🌍')} [yellow]HamClock & Propagation[/yellow] [dim](Space Weather, Solar)[/dim]")
+        console.print(f"  [bold]a[/bold]. {em.get('📡')} [yellow]AREDN Tools[/yellow] [dim](Node Discovery, Topology)[/dim]")
+
         # Tools Section
         console.print("\n[dim cyan]-- Tools --[/dim cyan]")
         console.print(f"  [bold]t[/bold]. {em.get('🔧')} [cyan]System Diagnostics[/cyan] [dim](Network, Hardware, Health)[/dim]")
@@ -167,7 +172,7 @@ def interactive_menu():
         console.print(f"\n  [bold]q[/bold]. {em.get('🚪')} Exit")
         console.print(f"  [bold]?[/bold]. {em.get('❓')} Help")
 
-        choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["q", "1", "2", "3", "4", "5", "6", "7", "8", "9", "c", "f", "s", "b", "t", "p", "n", "r", "m", "g", "h", "x", "w", "d", "u", "?"], default="1")
+        choice = Prompt.ask("\n[cyan]Select an option[/cyan]", choices=["q", "1", "2", "3", "4", "5", "6", "7", "8", "9", "c", "f", "s", "b", "k", "a", "t", "p", "n", "r", "m", "g", "h", "x", "w", "d", "u", "?"], default="1")
 
         if choice == "1":
             show_dashboard()
@@ -193,6 +198,10 @@ def interactive_menu():
             rns_tools_menu()
         elif choice == "b":
             gateway_bridge_menu()
+        elif choice == "k":
+            ham_radio_menu()
+        elif choice == "a":
+            aredn_menu()
         elif choice == "t":
             system_diagnostics_menu()
         elif choice == "p":
@@ -302,11 +311,12 @@ def rns_tools_menu():
 
         console.print("\n[dim cyan]-- Applications --[/dim cyan]")
         console.print(f"  [bold]n[/bold]. {em.get('🌐')} Launch NomadNet")
+        console.print(f"  [bold]m[/bold]. {em.get('💬')} Launch MeshChat Web UI")
 
         console.print(f"\n  [bold]0[/bold]. {em.get('⬅️')}  Back to Main Menu")
 
         choice = Prompt.ask("\n[cyan]Select option[/cyan]",
-                          choices=["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "c", "i", "n"],
+                          choices=["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "c", "i", "n", "m"],
                           default="0")
 
         if choice == "0":
@@ -359,6 +369,54 @@ def rns_tools_menu():
             except FileNotFoundError:
                 console.print("[red]NomadNet not installed. Use option 6 to install.[/red]")
                 input("\nPress Enter to continue...")
+        elif choice == "m":
+            _launch_meshchat()
+
+
+def _launch_meshchat():
+    """Launch MeshChat web interface"""
+    console.print("\n[bold cyan]═══ MeshChat Web Interface ═══[/bold cyan]\n")
+
+    # Check if meshchat service is running
+    meshchat_status = "unknown"
+    try:
+        result = subprocess.run(['systemctl', 'is-active', 'reticulum-meshchat'],
+                               capture_output=True, text=True, timeout=5)
+        meshchat_status = result.stdout.strip()
+    except Exception:
+        pass
+
+    console.print(f"[dim]MeshChat service: {meshchat_status}[/dim]\n")
+
+    if meshchat_status != "active":
+        console.print("[yellow]MeshChat service is not running[/yellow]")
+        if Confirm.ask("[cyan]Start the MeshChat service?[/cyan]", default=True):
+            _run_service_command('reticulum-meshchat', 'start')
+
+    # Get local IP for URL
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        local_ip = "localhost"
+
+    meshchat_port = 8000  # Default MeshChat port
+    url = f"http://{local_ip}:{meshchat_port}"
+
+    console.print(f"\n[cyan]MeshChat URL: {url}[/cyan]")
+    console.print("[dim]Opening in browser (if available)...[/dim]")
+
+    try:
+        import webbrowser
+        webbrowser.open(url)
+        console.print("[green]Browser launched[/green]")
+    except Exception:
+        console.print(f"[yellow]Open manually: {url}[/yellow]")
+
+    input("\nPress Enter to continue...")
 
 
 def gateway_bridge_menu():
@@ -498,6 +556,542 @@ def gateway_bridge_menu():
             except Exception as e:
                 console.print(f"[red]✗ Error: {e}[/red]")
             input("\nPress Enter to continue...")
+
+
+def ham_radio_menu():
+    """Ham Radio tools menu - HamClock, propagation, callsign lookup"""
+    console.print("\n[bold cyan]═══════════ Ham Radio Tools ═══════════[/bold cyan]\n")
+
+    while True:
+        # Check HamClock service status
+        hamclock_status = "unknown"
+        hamclock_port = 8080
+        try:
+            result = subprocess.run(['systemctl', 'is-active', 'hamclock'],
+                                   capture_output=True, text=True, timeout=5)
+            hamclock_status = result.stdout.strip()
+        except Exception:
+            pass
+
+        console.print(f"[dim]HamClock: {hamclock_status}[/dim]\n")
+
+        console.print("[dim cyan]-- HamClock Service --[/dim cyan]")
+        console.print(f"  [bold]1[/bold]. {em.get('▶️')}  Start HamClock")
+        console.print(f"  [bold]2[/bold]. {em.get('⏹️')}  Stop HamClock")
+        console.print(f"  [bold]3[/bold]. {em.get('🔄')} Restart HamClock")
+        console.print(f"  [bold]4[/bold]. {em.get('🌐')} Open HamClock Web UI")
+
+        console.print("\n[dim cyan]-- Space Weather --[/dim cyan]")
+        console.print(f"  [bold]5[/bold]. {em.get('☀️')}  Current Space Weather")
+        console.print(f"  [bold]6[/bold]. {em.get('📡')} Solar/HF Propagation")
+
+        console.print("\n[dim cyan]-- Callsign Tools --[/dim cyan]")
+        console.print(f"  [bold]7[/bold]. {em.get('🔍')} Callsign Lookup (QRZ)")
+
+        console.print("\n[dim cyan]-- Installation --[/dim cyan]")
+        console.print(f"  [bold]8[/bold]. {em.get('📦')} Install HamClock")
+
+        console.print(f"\n  [bold]0[/bold]. {em.get('⬅️')}  Back to Main Menu")
+
+        choice = Prompt.ask("\n[cyan]Select option[/cyan]",
+                          choices=["0", "1", "2", "3", "4", "5", "6", "7", "8"],
+                          default="0")
+
+        if choice == "0":
+            break
+        elif choice == "1":
+            _run_service_command('hamclock', 'start')
+        elif choice == "2":
+            _run_service_command('hamclock', 'stop')
+        elif choice == "3":
+            _run_service_command('hamclock', 'restart')
+        elif choice == "4":
+            # Open HamClock web UI
+            import socket
+            hostname = socket.gethostname()
+            try:
+                # Get local IP
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                local_ip = s.getsockname()[0]
+                s.close()
+            except Exception:
+                local_ip = "localhost"
+            url = f"http://{local_ip}:{hamclock_port}"
+            console.print(f"\n[cyan]HamClock URL: {url}[/cyan]")
+            console.print("[dim]Opening in browser (if available)...[/dim]")
+            try:
+                import webbrowser
+                webbrowser.open(url)
+            except Exception:
+                console.print(f"[yellow]Open manually: {url}[/yellow]")
+            input("\nPress Enter to continue...")
+        elif choice == "5":
+            _show_space_weather()
+        elif choice == "6":
+            _show_propagation()
+        elif choice == "7":
+            _callsign_lookup()
+        elif choice == "8":
+            _install_hamclock()
+
+
+def _show_space_weather():
+    """Display current space weather conditions"""
+    console.print("\n[bold cyan]═══ Current Space Weather ═══[/bold cyan]\n")
+    try:
+        from utils.space_weather import SpaceWeatherAPI
+        api = SpaceWeatherAPI()
+        data = api.get_current()
+        if data:
+            table = Table(title="Space Weather Conditions")
+            table.add_column("Metric", style="cyan")
+            table.add_column("Value", style="green")
+            table.add_column("Status", style="yellow")
+
+            table.add_row("Solar Flux Index (SFI)", str(data.sfi), _sfi_status(data.sfi))
+            table.add_row("A-Index", str(data.a_index), _a_index_status(data.a_index))
+            table.add_row("K-Index", str(data.k_index), _k_index_status(data.k_index))
+            table.add_row("Sunspot Number", str(data.sunspots), "")
+            table.add_row("X-Ray Flux", data.xray_class or "N/A", "")
+
+            console.print(table)
+        else:
+            console.print("[yellow]Could not fetch space weather data[/yellow]")
+    except ImportError:
+        console.print("[yellow]Space weather module not available[/yellow]")
+        console.print("[dim]Fetching from NOAA directly...[/dim]")
+        _fetch_noaa_direct()
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+    input("\nPress Enter to continue...")
+
+
+def _sfi_status(sfi: int) -> str:
+    """Return status for Solar Flux Index"""
+    if sfi >= 150:
+        return "[green]Excellent[/green]"
+    elif sfi >= 100:
+        return "[green]Good[/green]"
+    elif sfi >= 70:
+        return "[yellow]Fair[/yellow]"
+    else:
+        return "[red]Poor[/red]"
+
+
+def _a_index_status(a: int) -> str:
+    """Return status for A-Index"""
+    if a <= 7:
+        return "[green]Quiet[/green]"
+    elif a <= 15:
+        return "[yellow]Unsettled[/yellow]"
+    elif a <= 30:
+        return "[yellow]Active[/yellow]"
+    else:
+        return "[red]Storm[/red]"
+
+
+def _k_index_status(k: int) -> str:
+    """Return status for K-Index"""
+    if k <= 2:
+        return "[green]Quiet[/green]"
+    elif k <= 4:
+        return "[yellow]Unsettled[/yellow]"
+    elif k <= 5:
+        return "[yellow]Minor Storm[/yellow]"
+    else:
+        return "[red]Major Storm[/red]"
+
+
+def _fetch_noaa_direct():
+    """Fetch space weather directly from NOAA"""
+    import urllib.request
+    try:
+        # NOAA Space Weather Prediction Center
+        url = "https://services.swpc.noaa.gov/products/summary/solar-wind-mag-field.json"
+        with urllib.request.urlopen(url, timeout=10) as response:
+            import json
+            data = json.loads(response.read().decode())
+            console.print(f"[cyan]Solar Wind Speed:[/cyan] {data.get('WindSpeed', 'N/A')} km/s")
+            console.print(f"[cyan]Bt (IMF):[/cyan] {data.get('Bt', 'N/A')} nT")
+            console.print(f"[cyan]Bz:[/cyan] {data.get('Bz', 'N/A')} nT")
+    except Exception as e:
+        console.print(f"[red]Could not fetch NOAA data: {e}[/red]")
+
+
+def _show_propagation():
+    """Show HF propagation predictions"""
+    console.print("\n[bold cyan]═══ HF Propagation ═══[/bold cyan]\n")
+    console.print("[dim]Fetching propagation data...[/dim]")
+
+    try:
+        import urllib.request
+        # NOAA propagation data
+        url = "https://services.swpc.noaa.gov/text/wwv.txt"
+        with urllib.request.urlopen(url, timeout=10) as response:
+            data = response.read().decode()
+            console.print(f"\n[cyan]WWV Propagation Report:[/cyan]\n")
+            console.print(data[:2000])  # First 2000 chars
+    except Exception as e:
+        console.print(f"[red]Could not fetch propagation data: {e}[/red]")
+
+    console.print("\n[dim]For detailed predictions, visit:[/dim]")
+    console.print("  https://www.swpc.noaa.gov/products/hf-radio-blackout")
+    console.print("  https://prop.kc2g.com/")
+    input("\nPress Enter to continue...")
+
+
+def _callsign_lookup():
+    """Look up amateur radio callsign"""
+    console.print("\n[bold cyan]═══ Callsign Lookup ═══[/bold cyan]\n")
+    callsign = Prompt.ask("[cyan]Enter callsign[/cyan]").upper().strip()
+    if not callsign:
+        return
+
+    console.print(f"\n[dim]Looking up {callsign}...[/dim]")
+
+    try:
+        import urllib.request
+        # Use HamQTH or similar free API
+        url = f"https://www.hamqth.com/dxcc_json.php?callsign={callsign}"
+        with urllib.request.urlopen(url, timeout=10) as response:
+            import json
+            data = json.loads(response.read().decode())
+            if 'dxcc' in data:
+                d = data['dxcc']
+                console.print(f"\n[green]Results for {callsign}:[/green]")
+                console.print(f"  [cyan]Country:[/cyan] {d.get('name', 'Unknown')}")
+                console.print(f"  [cyan]Continent:[/cyan] {d.get('continent', 'Unknown')}")
+                console.print(f"  [cyan]CQ Zone:[/cyan] {d.get('cq', 'Unknown')}")
+                console.print(f"  [cyan]ITU Zone:[/cyan] {d.get('itu', 'Unknown')}")
+                console.print(f"  [cyan]DXCC:[/cyan] {d.get('adif', 'Unknown')}")
+            else:
+                console.print(f"[yellow]No DXCC info found for {callsign}[/yellow]")
+    except Exception as e:
+        console.print(f"[red]Lookup failed: {e}[/red]")
+
+    console.print(f"\n[dim]For more info, visit: https://www.qrz.com/db/{callsign}[/dim]")
+    input("\nPress Enter to continue...")
+
+
+def _install_hamclock():
+    """Install HamClock service"""
+    console.print("\n[bold cyan]═══ Install HamClock ═══[/bold cyan]\n")
+    console.print("[dim]HamClock by Clear Sky Institute[/dim]")
+    console.print("[dim]https://www.clearskyinstitute.com/ham/HamClock/[/dim]\n")
+
+    console.print("Installation options:")
+    console.print("  1. Install via apt (Debian/Ubuntu)")
+    console.print("  2. Install from source")
+    console.print("  3. Use Docker container")
+    console.print("  0. Cancel")
+
+    choice = Prompt.ask("\n[cyan]Select option[/cyan]", choices=["0", "1", "2", "3"], default="0")
+
+    if choice == "0":
+        return
+    elif choice == "1":
+        console.print("\n[cyan]Installing HamClock...[/cyan]")
+        # Check if hamclock-systemd repo exists
+        console.print("[dim]Adding repository and installing...[/dim]")
+        subprocess.run(['apt', 'update'], timeout=60)
+        result = subprocess.run(['apt', 'install', '-y', 'hamclock'], timeout=300)
+        if result.returncode == 0:
+            console.print("[green]HamClock installed successfully[/green]")
+        else:
+            console.print("[yellow]Package not found. Try source install.[/yellow]")
+    elif choice == "2":
+        console.print("\n[cyan]For source installation, visit:[/cyan]")
+        console.print("  https://github.com/pa28/hamclock-systemd")
+        console.print("\n[dim]Clone and run: make && sudo make install[/dim]")
+    elif choice == "3":
+        console.print("\n[cyan]Docker installation:[/cyan]")
+        console.print("  docker pull ghcr.io/pa28/hamclock:latest")
+        console.print("  docker run -d -p 8080:8080 ghcr.io/pa28/hamclock")
+
+    input("\nPress Enter to continue...")
+
+
+def aredn_menu():
+    """AREDN network tools menu"""
+    console.print("\n[bold cyan]═══════════ AREDN Tools ═══════════[/bold cyan]\n")
+    console.print("[dim]Amateur Radio Emergency Data Network[/dim]\n")
+
+    while True:
+        console.print("[dim cyan]-- Node Discovery --[/dim cyan]")
+        console.print(f"  [bold]1[/bold]. {em.get('🔍')} Scan for AREDN Nodes")
+        console.print(f"  [bold]2[/bold]. {em.get('📋')} List Known Nodes")
+        console.print(f"  [bold]3[/bold]. {em.get('📊')} View Node Details")
+
+        console.print("\n[dim cyan]-- Network --[/dim cyan]")
+        console.print(f"  [bold]4[/bold]. {em.get('🌐')} Open AREDN Web UI")
+        console.print(f"  [bold]5[/bold]. {em.get('📡')} Show Network Topology")
+
+        console.print("\n[dim cyan]-- Configuration --[/dim cyan]")
+        console.print(f"  [bold]6[/bold]. {em.get('⚙️')}  Configure Scan Settings")
+
+        console.print(f"\n  [bold]0[/bold]. {em.get('⬅️')}  Back to Main Menu")
+
+        choice = Prompt.ask("\n[cyan]Select option[/cyan]",
+                          choices=["0", "1", "2", "3", "4", "5", "6"],
+                          default="0")
+
+        if choice == "0":
+            break
+        elif choice == "1":
+            _scan_aredn_nodes()
+        elif choice == "2":
+            _list_aredn_nodes()
+        elif choice == "3":
+            _view_aredn_node_details()
+        elif choice == "4":
+            _open_aredn_webui()
+        elif choice == "5":
+            _show_aredn_topology()
+        elif choice == "6":
+            _configure_aredn_settings()
+
+
+def _scan_aredn_nodes():
+    """Scan for AREDN nodes on the network"""
+    console.print("\n[bold cyan]═══ Scanning for AREDN Nodes ═══[/bold cyan]\n")
+
+    # Load settings
+    settings = _load_aredn_settings()
+    subnet = settings.get('scan_subnet', '10.0.0.0/24')
+
+    console.print(f"[dim]Scanning subnet: {subnet}[/dim]")
+    console.print("[dim]This may take a moment...[/dim]\n")
+
+    try:
+        from utils.aredn import AREDNScanner
+        scanner = AREDNScanner()
+        nodes = scanner.scan(subnet, timeout=settings.get('timeout', 3))
+
+        if nodes:
+            table = Table(title=f"AREDN Nodes Found ({len(nodes)})")
+            table.add_column("Node Name", style="cyan")
+            table.add_column("IP Address", style="green")
+            table.add_column("Model", style="yellow")
+            table.add_column("Links", style="magenta")
+
+            for node in nodes:
+                table.add_row(
+                    node.name,
+                    node.ip,
+                    node.model or "Unknown",
+                    str(len(node.links)) if hasattr(node, 'links') else "?"
+                )
+            console.print(table)
+
+            # Save to known nodes
+            _save_aredn_nodes(nodes)
+        else:
+            console.print("[yellow]No AREDN nodes found on {subnet}[/yellow]")
+            console.print("[dim]Check that you're on the AREDN network (10.x.x.x)[/dim]")
+    except ImportError:
+        console.print("[yellow]AREDN utilities not available[/yellow]")
+        console.print("[dim]Install with: pip3 install aiohttp[/dim]")
+        _scan_aredn_basic(subnet)
+    except Exception as e:
+        console.print(f"[red]Scan failed: {e}[/red]")
+
+    input("\nPress Enter to continue...")
+
+
+def _scan_aredn_basic(subnet: str):
+    """Basic AREDN scan using ping"""
+    console.print("\n[dim]Falling back to basic ping scan...[/dim]")
+    import ipaddress
+    try:
+        network = ipaddress.ip_network(subnet, strict=False)
+        found = []
+        # Only scan first 254 hosts
+        hosts = list(network.hosts())[:254]
+        for i, ip in enumerate(hosts):
+            if i % 50 == 0:
+                console.print(f"[dim]Progress: {i}/{len(hosts)}...[/dim]")
+            try:
+                result = subprocess.run(
+                    ['ping', '-c', '1', '-W', '1', str(ip)],
+                    capture_output=True, timeout=2
+                )
+                if result.returncode == 0:
+                    found.append(str(ip))
+                    console.print(f"[green]Found: {ip}[/green]")
+            except Exception:
+                pass
+        if found:
+            console.print(f"\n[green]Found {len(found)} responsive hosts[/green]")
+        else:
+            console.print("[yellow]No hosts responded[/yellow]")
+    except Exception as e:
+        console.print(f"[red]Scan error: {e}[/red]")
+
+
+def _list_aredn_nodes():
+    """List previously discovered AREDN nodes"""
+    console.print("\n[bold cyan]═══ Known AREDN Nodes ═══[/bold cyan]\n")
+    settings = _load_aredn_settings()
+    nodes = settings.get('known_nodes', [])
+
+    if not nodes:
+        console.print("[yellow]No known nodes. Run a scan first.[/yellow]")
+    else:
+        table = Table(title=f"Known Nodes ({len(nodes)})")
+        table.add_column("Name", style="cyan")
+        table.add_column("IP", style="green")
+        table.add_column("Last Seen", style="yellow")
+
+        for node in nodes:
+            table.add_row(
+                node.get('name', 'Unknown'),
+                node.get('ip', 'Unknown'),
+                node.get('last_seen', 'Unknown')
+            )
+        console.print(table)
+
+    input("\nPress Enter to continue...")
+
+
+def _view_aredn_node_details():
+    """View details of a specific AREDN node"""
+    ip = Prompt.ask("[cyan]Enter node IP address[/cyan]")
+    if not ip:
+        return
+
+    console.print(f"\n[dim]Fetching details for {ip}...[/dim]")
+
+    try:
+        import urllib.request
+        # AREDN nodes have a standard API endpoint
+        url = f"http://{ip}:8080/cgi-bin/sysinfo.json"
+        with urllib.request.urlopen(url, timeout=5) as response:
+            import json
+            data = json.loads(response.read().decode())
+
+            console.print(f"\n[bold green]Node: {data.get('node', 'Unknown')}[/bold green]")
+            console.print(f"  [cyan]Model:[/cyan] {data.get('model', 'Unknown')}")
+            console.print(f"  [cyan]Firmware:[/cyan] {data.get('firmware_version', 'Unknown')}")
+            console.print(f"  [cyan]Channel:[/cyan] {data.get('channel', 'Unknown')}")
+            console.print(f"  [cyan]Bandwidth:[/cyan] {data.get('chanbw', 'Unknown')} MHz")
+
+            if 'meshrf' in data:
+                rf = data['meshrf']
+                console.print(f"  [cyan]SSID:[/cyan] {rf.get('ssid', 'Unknown')}")
+                console.print(f"  [cyan]Frequency:[/cyan] {rf.get('freq', 'Unknown')} MHz")
+    except Exception as e:
+        console.print(f"[red]Could not fetch node details: {e}[/red]")
+        console.print("[dim]The node may not have the API enabled[/dim]")
+
+    input("\nPress Enter to continue...")
+
+
+def _open_aredn_webui():
+    """Open AREDN node web UI"""
+    ip = Prompt.ask("[cyan]Enter node IP (default: localnode.local.mesh)[/cyan]",
+                   default="localnode.local.mesh")
+    url = f"http://{ip}:8080"
+    console.print(f"\n[cyan]Opening: {url}[/cyan]")
+    try:
+        import webbrowser
+        webbrowser.open(url)
+    except Exception:
+        console.print(f"[yellow]Open manually: {url}[/yellow]")
+    input("\nPress Enter to continue...")
+
+
+def _show_aredn_topology():
+    """Show AREDN network topology"""
+    console.print("\n[bold cyan]═══ AREDN Network Topology ═══[/bold cyan]\n")
+    console.print("[dim]Fetching topology data...[/dim]")
+
+    settings = _load_aredn_settings()
+    nodes = settings.get('known_nodes', [])
+
+    if not nodes:
+        console.print("[yellow]No known nodes. Run a scan first.[/yellow]")
+        input("\nPress Enter to continue...")
+        return
+
+    # Build simple text-based topology
+    console.print("\n[cyan]Network Topology:[/cyan]\n")
+    for node in nodes:
+        console.print(f"  {em.get('📡')} {node.get('name', 'Unknown')} ({node.get('ip', '?')})")
+        links = node.get('links', [])
+        for link in links:
+            console.print(f"      └── {link.get('name', 'Unknown')} (SNR: {link.get('snr', '?')})")
+
+    console.print("\n[dim]For graphical topology, visit your local AREDN node's mesh status page[/dim]")
+    input("\nPress Enter to continue...")
+
+
+def _configure_aredn_settings():
+    """Configure AREDN scan settings"""
+    console.print("\n[bold cyan]═══ AREDN Settings ═══[/bold cyan]\n")
+
+    settings = _load_aredn_settings()
+
+    current_subnet = settings.get('scan_subnet', '10.0.0.0/24')
+    current_timeout = settings.get('timeout', 3)
+
+    console.print(f"[dim]Current subnet: {current_subnet}[/dim]")
+    console.print(f"[dim]Current timeout: {current_timeout}s[/dim]\n")
+
+    new_subnet = Prompt.ask("[cyan]Scan subnet[/cyan]", default=current_subnet)
+    new_timeout = Prompt.ask("[cyan]Timeout (seconds)[/cyan]", default=str(current_timeout))
+
+    settings['scan_subnet'] = new_subnet
+    settings['timeout'] = int(new_timeout)
+
+    _save_aredn_settings(settings)
+    console.print("\n[green]Settings saved[/green]")
+    input("\nPress Enter to continue...")
+
+
+def _load_aredn_settings() -> dict:
+    """Load AREDN settings from config file"""
+    import json
+    config_path = get_real_user_home() / '.config' / 'meshforge' / 'aredn.json'
+    defaults = {
+        'scan_subnet': '10.0.0.0/24',
+        'timeout': 3,
+        'known_nodes': []
+    }
+    try:
+        if config_path.exists():
+            with open(config_path) as f:
+                saved = json.load(f)
+                defaults.update(saved)
+    except Exception:
+        pass
+    return defaults
+
+
+def _save_aredn_settings(settings: dict):
+    """Save AREDN settings to config file"""
+    import json
+    config_path = get_real_user_home() / '.config' / 'meshforge' / 'aredn.json'
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(config_path, 'w') as f:
+        json.dump(settings, f, indent=2)
+
+
+def _save_aredn_nodes(nodes):
+    """Save discovered AREDN nodes"""
+    import json
+    from datetime import datetime
+    settings = _load_aredn_settings()
+    known = []
+    for node in nodes:
+        known.append({
+            'name': node.name,
+            'ip': node.ip,
+            'model': getattr(node, 'model', None),
+            'last_seen': datetime.now().isoformat()
+        })
+    settings['known_nodes'] = known
+    _save_aredn_settings(settings)
 
 
 def _run_service_command(service: str, action: str):

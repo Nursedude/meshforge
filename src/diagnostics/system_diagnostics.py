@@ -459,7 +459,7 @@ class SystemDiagnostics:
             # Try vcgencmd (Raspberry Pi)
             result = subprocess.run(
                 ['vcgencmd', 'measure_temp'],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=5
             )
             if result.returncode == 0:
                 # Parse "temp=XX.X'C"
@@ -532,7 +532,7 @@ class SystemDiagnostics:
         try:
             result = subprocess.run(
                 ['vcgencmd', 'get_throttled'],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=5
             )
             if result.returncode == 0:
                 throttle = result.stdout.strip()
@@ -759,7 +759,7 @@ class SystemDiagnostics:
         try:
             result = subprocess.run(
                 ['dpkg', '-l', 'meshtasticd'],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=10
             )
             return 'ii' in result.stdout
         except Exception:
@@ -770,7 +770,7 @@ class SystemDiagnostics:
         try:
             result = subprocess.run(
                 ['systemctl', 'is-active', 'meshtasticd'],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=5
             )
             return result.stdout.strip() == 'active'
         except Exception:
@@ -781,7 +781,7 @@ class SystemDiagnostics:
         try:
             result = subprocess.run(
                 ['systemctl', 'is-enabled', 'meshtasticd'],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=5
             )
             return result.stdout.strip() == 'enabled'
         except Exception:
