@@ -666,56 +666,13 @@ class MeshForgeLauncher(
         self._ai_tools_menu()
 
     def _export_data_menu(self):
-        """Export data in various formats."""
-        while True:
-            choices = [
-                ("geojson", "GeoJSON             For mapping tools"),
-                ("csv", "CSV                 Spreadsheet format"),
-                ("graphml", "GraphML             For graph analysis"),
-                ("d3", "D3.js JSON          For web visualization"),
-                ("back", "Back"),
-            ]
+        """Export data in various formats.
 
-            choice = self.dialog.menu(
-                "Export Data",
-                "Export network data:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            # Delegate to topology export functions
-            if choice in ["geojson", "csv", "graphml", "d3"]:
-                self._export_topology_data(choice)
-
-    def _export_topology_data(self, format_type: str):
-        """Export topology data in specified format."""
-        try:
-            from utils.topology_visualizer import TopologyVisualizer
-
-            viz = TopologyVisualizer()
-            # TODO: Populate with actual data
-            output_dir = get_real_user_home() / ".config" / "meshforge" / "exports"
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-            if format_type == "geojson":
-                path = output_dir / "topology.geojson"
-                viz.export_geojson(str(path))
-            elif format_type == "csv":
-                path = output_dir / "topology.csv"
-                viz.export_csv(str(path))
-            elif format_type == "graphml":
-                path = output_dir / "topology.graphml"
-                viz.export_graphml(str(path))
-            elif format_type == "d3":
-                path = output_dir / "topology.json"
-                viz.export_d3_json(str(path))
-
-            self.dialog.msgbox("Export Complete", f"Exported to:\n{path}")
-
-        except Exception as e:
-            self.dialog.msgbox("Export Failed", f"Error: {e}")
+        Delegates to TopologyMixin._export_topology() which properly populates
+        the visualizer from NetworkTopology data.
+        """
+        # Use the properly implemented export from TopologyMixin
+        self._export_topology()
 
     # =========================================================================
     # NEW Submenu: Configuration (5)

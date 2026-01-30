@@ -42,6 +42,8 @@ src/
 ├── gtk_ui/            # GTK4 Desktop — FROZEN (not actively developed)
 ├── gateway/           # RNS-Meshtastic bridge
 │   ├── rns_bridge.py  # Main gateway bridge
+│   ├── node_tracker.py # Unified node tracking (RNS + Meshtastic)
+│   ├── network_topology.py # Network graph and path tracking
 │   └── message_queue.py # Persistent message queue (SQLite)
 ├── monitoring/        # Network monitoring
 │   └── mqtt_subscriber.py # Nodeless MQTT monitoring
@@ -53,10 +55,15 @@ src/
 │   ├── diagnostic_engine.py # Intelligent diagnostics
 │   ├── knowledge_base.py    # Mesh networking knowledge
 │   ├── claude_assistant.py  # AI assistant (Standalone + PRO)
-│   └── coverage_map.py      # Folium map generator
+│   ├── map_data_service.py  # Node map server (MapServer class)
+│   ├── topology_visualizer.py # D3.js topology visualization
+│   └── coverage_map.py      # Folium coverage map generator
 ├── launcher.py        # Auto-detect (falls through to TUI)
 ├── standalone.py      # Zero-dependency RF tools
 └── __version__.py     # Version and changelog
+
+web/
+└── node_map.html      # Live node map (Leaflet.js) — PRIMARY MAP UI
 ```
 
 ## Code Standards
@@ -197,6 +204,42 @@ from utils.coverage_map import CoverageMapGenerator
 gen = CoverageMapGenerator()
 gen.add_nodes_from_geojson(geojson_data)
 gen.generate("coverage_map.html")
+```
+
+### Node Map Server (Primary Visualization)
+The live node map (`web/node_map.html`) is the primary visualization for mesh nodes:
+```python
+from utils.map_data_service import MapServer, MapDataCollector
+
+# Start HTTP server (accessible from other devices)
+server = MapServer(port=5000)
+server.start_background()  # Serves at http://localhost:5000
+
+# Or just collect node data without server
+collector = MapDataCollector()
+geojson = collector.collect()  # Unified GeoJSON from all sources
+```
+
+Data sources merged by MapDataCollector:
+- meshtasticd TCP (localhost:4403) — local mesh nodes
+- MQTT subscriber — global/regional nodes
+- Node tracker cache — RNS + Meshtastic nodes
+
+### Topology Visualization
+Export network topology in various formats:
+```python
+from utils.topology_visualizer import TopologyVisualizer
+from gateway.network_topology import get_network_topology
+
+# Create from live topology data
+topology = get_network_topology()
+viz = TopologyVisualizer.from_topology(topology)
+
+# Export options
+viz.generate("topology.html")           # Interactive D3.js graph
+viz.export_geojson("nodes.geojson")     # For mapping tools
+viz.export_graphml("topology.graphml")  # For Gephi
+viz.export_csv(".")                     # nodes.csv + edges.csv
 ```
 
 ## Contact
