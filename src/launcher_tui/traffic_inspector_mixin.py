@@ -407,23 +407,37 @@ class TrafficInspectorMixin:
         # Generate HTML
         output_path = visualizer.generate()
 
-        self.dialog.msgbox(
-            "Path Visualization Generated",
-            f"HTML visualization saved to:\n{output_path}\n\n"
-            "Opening in browser...",
-            height=9, width=60
-        )
+        # Detect SSH/headless environment
+        is_ssh = bool(os.environ.get('SSH_CLIENT') or os.environ.get('SSH_TTY'))
+        has_display = bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
 
-        # Try to open in browser
-        try:
-            webbrowser.open(f"file://{output_path}")
-        except Exception as e:
+        if is_ssh or not has_display:
+            # SSH/headless - show path only, don't try browser
             self.dialog.msgbox(
-                "Browser Error",
-                f"Could not open browser:\n{e}\n\n"
-                f"Manually open: {output_path}",
-                height=10, width=55
+                "Path Visualization Generated",
+                f"HTML visualization saved to:\n{output_path}\n\n"
+                "No graphical display detected.\n"
+                "Copy this file to view in a browser.",
+                height=12, width=60
             )
+        else:
+            self.dialog.msgbox(
+                "Path Visualization Generated",
+                f"HTML visualization saved to:\n{output_path}\n\n"
+                "Opening in browser...",
+                height=9, width=60
+            )
+
+            # Try to open in browser (only when display available)
+            try:
+                webbrowser.open(f"file://{output_path}")
+            except Exception as e:
+                self.dialog.msgbox(
+                    "Browser Error",
+                    f"Could not open browser:\n{e}\n\n"
+                    f"Manually open: {output_path}",
+                    height=10, width=55
+                )
 
     def _path_trace_message(self) -> None:
         """Trace a specific message's path."""
