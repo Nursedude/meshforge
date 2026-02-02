@@ -12,6 +12,11 @@ Usage:
     health.record_connection_event("meshtastic", "connected")
     print(health.get_summary())
 
+    # Cross-network health check
+    status = health.get_bridge_status()
+    if status == BridgeStatus.DEGRADED:
+        print("Warning: Bridge operating in degraded mode")
+
     tracker = DeliveryTracker()
     tracker.track_message("msg-123", b'\\xab\\xcd', "Hello")
     tracker.confirm_delivery("msg-123")
@@ -23,9 +28,35 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+class BridgeStatus(Enum):
+    """Bridge operational status.
+
+    HEALTHY: Both networks connected, error rate acceptable
+    DEGRADED: One network down or high error rate
+    OFFLINE: Both networks disconnected
+    """
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    OFFLINE = "offline"
+
+
+class MessageOrigin(Enum):
+    """Message origin classification.
+
+    Tracks where a message originated to enable filtering
+    of internet-originated messages from pure radio mesh.
+    """
+    RADIO = "radio"      # Direct radio reception
+    MQTT = "mqtt"        # Via MQTT/internet gateway
+    API = "api"          # Via local API call
+    BRIDGE = "bridge"    # Bridged from another network
+    UNKNOWN = "unknown"  # Origin not determined
 
 
 @dataclass
@@ -323,12 +354,102 @@ class BridgeHealthMonitor:
 
         Returns True if at least one connection is active and
         error rate is not excessive.
+
+        Note: For stricter checks, use get_bridge_status() which
+        distinguishes between HEALTHY (both networks) and DEGRADED
+        (single network).
         """
         with self._lock:
             any_connected = any(self._connected.values())
         errors = self.get_error_rate(window_seconds=60)
         error_count = sum(errors.values())
         return any_connected and error_count < 10
+
+    def get_bridge_status(self) -> BridgeStatus:
+        """
+        Get detailed bridge operational status.
+
+        Cross-network health check that distinguishes between:
+        - HEALTHY: Both Meshtastic and RNS connected, error rate < 10/min
+        - DEGRADED: Only one network connected, or error rate >= 10/min
+        - OFFLINE: No networks connected
+
+        Returns:
+            BridgeStatus enum value
+        """
+        with self._lock:
+            mesh_connected = self._connected.get("meshtastic", False)
+            rns_connected = self._connected.get("rns", False)
+
+        errors = self.get_error_rate(window_seconds=60)
+        error_count = sum(errors.values())
+        high_error_rate = error_count >= 10
+
+        if not mesh_connected and not rns_connected:
+            return BridgeStatus.OFFLINE
+
+        if mesh_connected and rns_connected and not high_error_rate:
+            return BridgeStatus.HEALTHY
+
+        # One network down or high error rate
+        return BridgeStatus.DEGRADED
+
+    def is_bridge_fully_healthy(self) -> bool:
+        """
+        Check if bridge is fully operational (both networks up).
+
+        Stricter than is_healthy() - requires BOTH networks connected.
+        Use this when you need reliable bidirectional bridging.
+
+        Returns:
+            True only if both Meshtastic and RNS are connected
+            and error rate is acceptable.
+        """
+        return self.get_bridge_status() == BridgeStatus.HEALTHY
+
+    def get_degraded_reason(self) -> Optional[str]:
+        """
+        Get reason if bridge is in degraded mode.
+
+        Returns:
+            Human-readable reason string, or None if healthy.
+        """
+        with self._lock:
+            mesh_connected = self._connected.get("meshtastic", False)
+            rns_connected = self._connected.get("rns", False)
+
+        errors = self.get_error_rate(window_seconds=60)
+        error_count = sum(errors.values())
+
+        reasons = []
+
+        if not mesh_connected:
+            reasons.append("Meshtastic disconnected")
+        if not rns_connected:
+            reasons.append("RNS disconnected")
+        if error_count >= 10:
+            reasons.append(f"High error rate ({error_count}/min)")
+
+        return "; ".join(reasons) if reasons else None
+
+    def should_pause_bridging(self) -> bool:
+        """
+        Check if bridging should be paused due to health issues.
+
+        Returns True if:
+        - Both networks are disconnected (nothing to bridge)
+        - Error rate is critically high (> 20/min)
+
+        This is more permissive than is_bridge_fully_healthy() -
+        allows degraded operation but stops on critical failures.
+        """
+        status = self.get_bridge_status()
+        if status == BridgeStatus.OFFLINE:
+            return True
+
+        errors = self.get_error_rate(window_seconds=60)
+        error_count = sum(errors.values())
+        return error_count > 20  # Critical threshold
 
 
 @dataclass

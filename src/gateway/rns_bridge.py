@@ -17,7 +17,18 @@ from pathlib import Path
 from .config import GatewayConfig
 from .node_tracker import UnifiedNodeTracker, UnifiedNode
 from .reconnect import ReconnectStrategy
-from .bridge_health import BridgeHealthMonitor, DeliveryTracker, classify_error
+from .bridge_health import (
+    BridgeHealthMonitor, DeliveryTracker, classify_error,
+    BridgeStatus, MessageOrigin
+)
+
+# Import circuit breaker for destination-level failure handling
+try:
+    from .circuit_breaker import CircuitBreakerRegistry
+    HAS_CIRCUIT_BREAKER = True
+except ImportError:
+    HAS_CIRCUIT_BREAKER = False
+    CircuitBreakerRegistry = None
 
 # Import persistent message queue for reliable delivery
 try:
@@ -101,12 +112,31 @@ class BridgedMessage:
     timestamp: datetime = None
     is_broadcast: bool = False
     metadata: dict = None
+    origin: MessageOrigin = MessageOrigin.UNKNOWN
+    via_internet: bool = False  # True if message came through MQTT/internet
 
     def __post_init__(self):
         if self.timestamp is None:
             self.timestamp = datetime.now()
         if self.metadata is None:
             self.metadata = {}
+
+    def should_bridge(self, filter_mqtt: bool = False) -> bool:
+        """
+        Check if this message should be bridged.
+
+        Args:
+            filter_mqtt: If True, drop MQTT-originated messages.
+                        Useful for pure radio mesh networks.
+
+        Returns:
+            True if message should be bridged to other network.
+        """
+        if filter_mqtt and self.via_internet:
+            return False
+        if filter_mqtt and self.origin == MessageOrigin.MQTT:
+            return False
+        return True
 
 
 class RNSMeshtasticBridge:
@@ -222,6 +252,18 @@ class RNSMeshtasticBridge:
             )
             logger.info("Routing classifier initialized with confidence scoring")
 
+        # Circuit breaker for destination-level failure handling
+        self._circuit_breaker = None
+        if HAS_CIRCUIT_BREAKER:
+            self._circuit_breaker = CircuitBreakerRegistry(
+                failure_threshold=5,
+                recovery_timeout=60.0,
+            )
+            logger.info("Circuit breaker initialized for destination tracking")
+
+        # MQTT filtering configuration
+        self._filter_mqtt_messages = False  # Set True to drop MQTT-originated messages
+
     @property
     def is_running(self) -> bool:
         return self._running
@@ -229,6 +271,59 @@ class RNSMeshtasticBridge:
     @property
     def is_connected(self) -> bool:
         return self._connected_mesh or self._connected_rns
+
+    @property
+    def bridge_status(self) -> BridgeStatus:
+        """Get current bridge operational status."""
+        return self.health.get_bridge_status()
+
+    @property
+    def is_fully_healthy(self) -> bool:
+        """Check if bridge is fully operational (both networks up)."""
+        return self.health.is_bridge_fully_healthy()
+
+    def can_send_to(self, destination: str) -> bool:
+        """
+        Check if we can send to a destination (circuit breaker check).
+
+        Args:
+            destination: Target node/identity ID
+
+        Returns:
+            True if sending is allowed, False if circuit is open
+        """
+        if self._circuit_breaker is None:
+            return True
+        return self._circuit_breaker.can_send(destination)
+
+    def record_send_success(self, destination: str) -> None:
+        """Record successful send to destination (for circuit breaker)."""
+        if self._circuit_breaker is not None:
+            self._circuit_breaker.record_success(destination)
+
+    def record_send_failure(self, destination: str, error: str = "") -> None:
+        """Record failed send to destination (for circuit breaker)."""
+        if self._circuit_breaker is not None:
+            self._circuit_breaker.record_failure(destination, error)
+
+    def get_open_circuits(self) -> Dict[str, Any]:
+        """Get destinations with open circuits (currently blocked)."""
+        if self._circuit_breaker is None:
+            return {}
+        return self._circuit_breaker.get_open_circuits()
+
+    def set_filter_mqtt(self, enabled: bool) -> None:
+        """
+        Enable/disable MQTT message filtering.
+
+        When enabled, messages that originated from MQTT/internet
+        will not be bridged to the other network.
+
+        Args:
+            enabled: True to filter MQTT messages
+        """
+        self._filter_mqtt_messages = enabled
+        logger.info(f"MQTT message filtering {'enabled' if enabled else 'disabled'}")
 
     def start(self) -> bool:
         """Start the gateway bridge"""
