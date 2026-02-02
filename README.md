@@ -202,7 +202,7 @@ python3 -c "from src.__version__ import show_version_history; show_version_histo
 | Category | Capabilities | Status |
 |----------|-------------|--------|
 | **Radio Management** | Install/configure meshtasticd, LoRa presets, channels, SPI/USB auto-detect | Stable |
-| **TUI Interface** | Installer, service control, config management, diagnostics | Stable |
+| **TUI Interface** | Installer, service control, device config wizard (name, region, TX power, MQTT), gateway config, diagnostics | Stable |
 | **Multi-Mesh Gateway** | Meshtastic ↔ RNS bridge, persistent message queue (SQLite), routing | Stable |
 | **Traffic Inspector** | Wireshark-grade packet visibility, protocol dissection, multi-hop path tracing | Stable |
 | **NomadNet/RNS** | Config editor, interface templates, rnstatus/rnpath, identity management | Stable |
