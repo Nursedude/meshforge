@@ -1,6 +1,6 @@
 # MeshForge Development Priorities
 
-> **Last Updated:** 2026-01-20
+> **Last Updated:** 2026-02-02
 > **Maintainer:** WH6GXZ / Dude AI
 
 ---
