@@ -26,6 +26,10 @@ try:
         MeshPacket,
         PacketProtocol,
         DisplayFilter,
+        get_traffic_inspector,
+        start_packet_capture,
+        stop_packet_capture,
+        is_capture_running,
     )
     from monitoring.path_visualizer import PathVisualizer, TracedPath
     HAS_INSPECTOR = True
@@ -33,6 +37,10 @@ except ImportError:
     HAS_INSPECTOR = False
     TrafficInspector = None
     MeshPacket = None
+    get_traffic_inspector = None
+    start_packet_capture = None
+    stop_packet_capture = None
+    is_capture_running = None
 
 
 class TrafficInspectorMixin:
@@ -49,21 +57,18 @@ class TrafficInspectorMixin:
 
     def _get_inspector(self) -> Optional['TrafficInspector']:
         """Get or create the traffic inspector instance."""
-        if not HAS_INSPECTOR:
+        if not HAS_INSPECTOR or get_traffic_inspector is None:
             return None
 
-        if not hasattr(self, '_traffic_inspector'):
-            try:
-                self._traffic_inspector = TrafficInspector()
-            except Exception as e:
-                self.dialog.msgbox(
-                    "Traffic Inspector Error",
-                    f"Failed to initialize Traffic Inspector:\n{e}",
-                    height=8, width=55
-                )
-                return None
-
-        return self._traffic_inspector
+        try:
+            return get_traffic_inspector()
+        except Exception as e:
+            self.dialog.msgbox(
+                "Traffic Inspector Error",
+                f"Failed to initialize Traffic Inspector:\n{e}",
+                height=8, width=55
+            )
+            return None
 
     def menu_traffic_inspector(self) -> None:
         """Traffic Inspector - Wireshark-grade mesh traffic visibility."""
@@ -77,10 +82,17 @@ class TrafficInspectorMixin:
             return
 
         while True:
+            # Check capture status
+            capturing = is_capture_running() if is_capture_running else False
+            capture_status = "CAPTURING" if capturing else "STOPPED"
+            capture_action = "Stop Capture" if capturing else "Start Capture"
+
             choice = self.dialog.menu(
                 "Traffic Inspector",
-                "Wireshark-grade mesh traffic visibility",
+                f"Wireshark-grade mesh traffic visibility\n"
+                f"Capture: {capture_status}",
                 choices=[
+                    ("capture", f"{capture_action}        - {'Stop' if capturing else 'Start'} packet capture"),
                     ("1", "View Live Traffic      - Real-time packet stream"),
                     ("2", "Packet List            - Browse captured packets"),
                     ("3", "Apply Filter           - Wireshark-style filtering"),
@@ -92,13 +104,15 @@ class TrafficInspectorMixin:
                     ("9", "Export Data            - Export captures/paths"),
                     ("0", "Clear Capture          - Clear captured data"),
                 ],
-                height=19, width=65
+                height=20, width=68
             )
 
             if not choice:
                 return
 
-            if choice == "1":
+            if choice == "capture":
+                self._toggle_capture()
+            elif choice == "1":
                 self._traffic_live_view()
             elif choice == "2":
                 self._traffic_packet_list()
@@ -119,6 +133,52 @@ class TrafficInspectorMixin:
             elif choice == "0":
                 self._traffic_clear()
 
+    def _toggle_capture(self) -> None:
+        """Start or stop packet capture."""
+        if not start_packet_capture or not stop_packet_capture or not is_capture_running:
+            self.dialog.msgbox(
+                "Capture Not Available",
+                "Packet capture functions not available.",
+                height=6, width=45
+            )
+            return
+
+        if is_capture_running():
+            # Stop capture
+            if stop_packet_capture():
+                self.dialog.msgbox(
+                    "Capture Stopped",
+                    "Packet capture has been stopped.\n\n"
+                    "Captured packets are preserved.",
+                    height=8, width=45
+                )
+            else:
+                self.dialog.msgbox(
+                    "Error",
+                    "Failed to stop capture.",
+                    height=6, width=35
+                )
+        else:
+            # Start capture
+            if start_packet_capture():
+                self.dialog.msgbox(
+                    "Capture Started",
+                    "Packet capture is now active.\n\n"
+                    "Listening for meshtastic.receive events.\n"
+                    "Packets will appear in Live Traffic view.",
+                    height=10, width=50
+                )
+            else:
+                self.dialog.msgbox(
+                    "Capture Failed",
+                    "Could not start packet capture.\n\n"
+                    "Possible causes:\n"
+                    "- meshtasticd not connected\n"
+                    "- pubsub module not available\n"
+                    "- Capture already running",
+                    height=12, width=45
+                )
+
     def _traffic_live_view(self) -> None:
         """View live traffic stream."""
         try:
@@ -128,6 +188,10 @@ class TrafficInspectorMixin:
 
             stats = inspector.get_capture_stats()
 
+            # Check capture status
+            capturing = is_capture_running() if is_capture_running else False
+            capture_status = "ACTIVE" if capturing else "STOPPED"
+
             # Show log file path
             log_path = inspector.get_log_path()
             log_info = f"Log file: {log_path}" if log_path else "Logging: disabled"
@@ -136,17 +200,13 @@ class TrafficInspectorMixin:
                 "Live Traffic View",
                 "=" * 60,
                 "",
+                f"Capture Status: {capture_status}",
                 f"Packets Captured: {stats.get('packets_captured', 0)}",
                 f"Meshtastic: {stats.get('packets_meshtastic', 0)}",
                 f"RNS: {stats.get('packets_rns', 0)}",
                 f"Bytes: {stats.get('bytes_captured', 0):,}",
                 "",
                 log_info,
-                "",
-                "=" * 60,
-                "",
-                "Note: For real-time traffic monitoring, the inspector",
-                "needs to be connected to meshtasticd or RNS services.",
                 "",
                 "Recent packets:",
                 "-" * 60,
@@ -162,6 +222,9 @@ class TrafficInspectorMixin:
                     info.append(summary)
             else:
                 info.append("No packets captured yet.")
+                if not capturing:
+                    info.append("")
+                    info.append("Use 'Start Capture' from the menu to begin")
                 info.append("")
                 info.append("Traffic will appear here once the bridge is active")
                 info.append("or packets are captured from the mesh network.")

@@ -1879,3 +1879,111 @@ class TrafficInspector:
 
         lines.append("=" * 70)
         return "\n".join(lines)
+
+
+# =============================================================================
+# Global Inspector Instance & Auto-Connect
+# =============================================================================
+
+_global_inspector: Optional[TrafficInspector] = None
+_capture_subscribed: bool = False
+
+
+def get_traffic_inspector() -> TrafficInspector:
+    """Get or create the global traffic inspector instance."""
+    global _global_inspector
+    if _global_inspector is None:
+        _global_inspector = TrafficInspector()
+    return _global_inspector
+
+
+def start_packet_capture() -> bool:
+    """
+    Start capturing packets from meshtasticd via pubsub.
+
+    Subscribes to meshtastic.receive to capture all incoming packets.
+    Returns True if capture started, False if already running or failed.
+    """
+    global _capture_subscribed
+
+    if _capture_subscribed:
+        return False
+
+    try:
+        from pubsub import pub
+
+        inspector = get_traffic_inspector()
+
+        def on_meshtastic_packet(packet, interface=None):
+            """Callback for meshtastic packets."""
+            try:
+                # Extract packet data
+                raw_data = packet.get('raw', b'') if isinstance(packet, dict) else b''
+                if isinstance(raw_data, str):
+                    raw_data = raw_data.encode('utf-8', errors='replace')
+
+                metadata = {
+                    'protocol': 'meshtastic',
+                    'timestamp': datetime.now().isoformat(),
+                    'direction': 'incoming',
+                }
+
+                # Extract fields from packet
+                if isinstance(packet, dict):
+                    if 'from' in packet:
+                        metadata['source'] = f"!{packet['from']:08x}"
+                    if 'to' in packet:
+                        metadata['destination'] = f"!{packet['to']:08x}"
+                    if 'hopLimit' in packet:
+                        metadata['hop_limit'] = packet['hopLimit']
+                    if 'hopStart' in packet:
+                        metadata['hop_start'] = packet['hopStart']
+                    if 'rxSnr' in packet:
+                        metadata['snr'] = packet['rxSnr']
+                    if 'rxRssi' in packet:
+                        metadata['rssi'] = packet['rxRssi']
+                    if 'decoded' in packet:
+                        decoded = packet['decoded']
+                        if isinstance(decoded, dict):
+                            metadata['portnum'] = decoded.get('portnum', 'UNKNOWN')
+
+                inspector.capture(raw_data, metadata)
+
+            except Exception as e:
+                logger.debug(f"Error capturing meshtastic packet: {e}")
+
+        pub.subscribe(on_meshtastic_packet, "meshtastic.receive")
+        _capture_subscribed = True
+        logger.info("Traffic capture started - subscribed to meshtastic.receive")
+        return True
+
+    except ImportError:
+        logger.warning("pubsub not available - cannot start packet capture")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to start packet capture: {e}")
+        return False
+
+
+def stop_packet_capture() -> bool:
+    """Stop capturing packets."""
+    global _capture_subscribed
+
+    if not _capture_subscribed:
+        return False
+
+    try:
+        from pubsub import pub
+        pub.unsubscribe(on_meshtastic_packet, "meshtastic.receive")
+        _capture_subscribed = False
+        logger.info("Traffic capture stopped")
+        return True
+    except Exception as e:
+        logger.debug(f"Error stopping capture: {e}")
+        _capture_subscribed = False
+        return False
+
+
+def is_capture_running() -> bool:
+    """Check if packet capture is running."""
+    return _capture_subscribed
