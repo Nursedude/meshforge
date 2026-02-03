@@ -92,24 +92,30 @@ class DialogBackend:
             except OSError:
                 pass
 
-    def msgbox(self, title: str, text: str) -> None:
+    def msgbox(self, title: str, text: str, height: int = None, width: int = None) -> None:
         """Display a message box."""
+        h = height if height is not None else self.height
+        w = width if width is not None else self.width
         self._run([
             '--title', title,
             '--msgbox', text,
-            str(self.height), str(self.width)
+            str(h), str(w)
         ])
 
-    def yesno(self, title: str, text: str, default_no: bool = False) -> bool:
+    def yesno(self, title: str, text: str, default_no: bool = False,
+              height: int = None, width: int = None) -> bool:
         """Display yes/no dialog. Returns True for yes."""
+        h = height if height is not None else self.height
+        w = width if width is not None else self.width
         args = ['--title', title]
         if default_no:
             args.append('--defaultno')
-        args += ['--yesno', text, str(self.height), str(self.width)]
+        args += ['--yesno', text, str(h), str(w)]
         code, _ = self._run(args)
         return code == 0
 
-    def menu(self, title: str, text: str, choices: List[Tuple[str, str]]) -> Optional[str]:
+    def menu(self, title: str, text: str, choices: List[Tuple[str, str]],
+             height: int = None, width: int = None, list_height: int = None) -> Optional[str]:
         """
         Display a menu and return selected tag.
 
@@ -117,14 +123,21 @@ class DialogBackend:
             title: Window title
             text: Description text
             choices: List of (tag, description) tuples
+            height: Optional dialog height (uses default if not specified)
+            width: Optional dialog width (uses default if not specified)
+            list_height: Optional list height (uses default if not specified)
 
         Returns:
             Selected tag or None if cancelled
         """
+        h = height if height is not None else self.height
+        w = width if width is not None else self.width
+        lh = list_height if list_height is not None else self.list_height
+
         args = [
             '--title', title,
             '--menu', text,
-            str(self.height), str(self.width), str(self.list_height)
+            str(h), str(w), str(lh)
         ]
         for tag, desc in choices:
             args.extend([tag, desc])
@@ -134,12 +147,15 @@ class DialogBackend:
             return output
         return None
 
-    def inputbox(self, title: str, text: str, init: str = "") -> Optional[str]:
+    def inputbox(self, title: str, text: str, init: str = "",
+                 height: int = None, width: int = None) -> Optional[str]:
         """Display input box and return text."""
+        h = height if height is not None else self.height
+        w = width if width is not None else self.width
         args = [
             '--title', title,
             '--inputbox', text,
-            str(self.height), str(self.width),
+            str(h), str(w),
             init
         ]
         code, output = self._run(args)
@@ -175,20 +191,28 @@ class DialogBackend:
             pass
 
     def checklist(self, title: str, text: str,
-                  choices: List[Tuple[str, str, bool]]) -> Optional[List[str]]:
+                  choices: List[Tuple[str, str, bool]],
+                  height: int = None, width: int = None, list_height: int = None) -> Optional[List[str]]:
         """
         Display checklist dialog.
 
         Args:
             choices: List of (tag, description, selected) tuples
+            height: Optional dialog height (uses default if not specified)
+            width: Optional dialog width (uses default if not specified)
+            list_height: Optional list height (uses default if not specified)
 
         Returns:
             List of selected tags or None if cancelled
         """
+        h = height if height is not None else self.height
+        w = width if width is not None else self.width
+        lh = list_height if list_height is not None else self.list_height
+
         args = [
             '--title', title,
             '--checklist', text,
-            str(self.height), str(self.width), str(self.list_height)
+            str(h), str(w), str(lh)
         ]
         for tag, desc, selected in choices:
             status = 'ON' if selected else 'OFF'
@@ -200,3 +224,7 @@ class DialogBackend:
             selected = output.replace('"', '').split()
             return selected
         return None
+
+
+# Alias for convenience
+Dialog = DialogBackend
