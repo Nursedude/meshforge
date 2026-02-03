@@ -2,7 +2,13 @@
 
 **Date**: 2026-02-03
 **Branch**: `claude/fix-mesh-message-display-StJRJ`
-**Status**: Implementation complete - Ready for commit and Pi testing
+**Status**: Code pushed - Ready for Pi testing
+
+## Pickup Items Status
+
+From previous session:
+1. **Test Gateway Bridge WebSocket on Pi** - NOT DONE (requires Pi hardware)
+2. **Local MQTT integration code** - DONE (this session)
 
 ## Context
 
@@ -131,10 +137,12 @@ print(get_listener_status())
 "
 ```
 
-## Next Steps
+## Next Steps (Pi Required)
 
-1. **Commit and push** this branch
-2. **Test on Pi** with mosquitto + meshtasticd
+1. **Test Gateway Bridge WebSocket** - From previous PR (merged)
+   - Stop rnsd, start Gateway Bridge, verify WebSocket messages at ws://localhost:5001
+2. **Test local MQTT integration** - This session's code
+   - Install mosquitto, configure meshtasticd MQTT, verify messages flow
 3. **Integration with TUI** - Add MQTT mode option to Monitoring menu
 4. **WebSocket bridge** - Optional: MQTT subscriber can also broadcast to WebSocket
 
