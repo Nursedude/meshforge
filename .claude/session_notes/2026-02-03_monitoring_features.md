@@ -179,3 +179,109 @@ tests/test_metrics_export.py: 34 passed (5 skipped - pre-existing)
 ## Session Entropy
 
 Low - Clean deliverables with comprehensive tests.
+
+---
+
+# Session 2: Fix Monitoring Map Bugs
+
+**Date**: 2026-02-03
+**Branch**: `claude/fix-monitoring-map-bugs-Wt4Je`
+
+## Reported Issues
+
+1. **Zoom controls buggy**: +/- buttons on map at :5000 not working correctly
+   - "+" only works from full view with little zoom
+   - Zoom out also has issues
+
+2. **Missing nodes**: Nodes like "Farley-server Direct" (CC:8D:A2:ED:8E:A0) not appearing on map
+
+## Investigation Findings
+
+### Zoom Bug Root Cause
+
+**Mobile CSS Overlap**: On screens < 768px width, the legend was repositioned to `top: 10px; left: 10px` which directly overlaps Leaflet's zoom controls (also positioned at top-left).
+
+```css
+/* BEFORE - Bug: Legend covers zoom controls on mobile */
+@media (max-width: 768px) {
+    .legend {
+        bottom: auto;
+        top: 10px;  /* Overlaps zoom controls! */
+        left: 10px;
+    }
+}
+```
+
+### Missing Nodes Root Cause
+
+**No GPS Display**: Nodes without GPS coordinates (like "Farley-server Direct") are tracked in `nodes_without_position` but were only shown as a count ("No GPS: 5") with no way to see which nodes were affected.
+
+The backend correctly tracks these nodes with:
+- Node ID
+- Name
+- Last seen timestamp
+- Online status
+- Hardware model
+- SNR/battery data
+
+But the UI had no way to display this list to users.
+
+## Fixes Applied
+
+### 1. Mobile Legend Position (web/node_map.html)
+
+```css
+/* AFTER - Legend below zoom controls */
+@media (max-width: 768px) {
+    .legend {
+        bottom: auto;
+        top: 80px;  /* Moved down, below Leaflet zoom controls */
+        left: 10px;
+    }
+}
+```
+
+### 2. Expandable "No GPS" Node List (web/node_map.html)
+
+Added interactive functionality:
+
+- **Clickable stat row**: "No GPS: 5 ▸" now toggles to show/hide list
+- **Expandable list**: Shows node name, online status (green/gray dot), and last seen time
+- **Sorted by recency**: Most recently seen nodes first
+- **State tracking**: Added `state.nodesWithoutPosition` to store data from API
+
+New functions:
+- `toggleNoGpsList()` - Toggle visibility of the list
+- `updateNoGpsList()` - Populate list from state data
+
+Example output when expanded:
+```
+No GPS: 3 ▾
+┌─────────────────────────────────────┐
+│ ● Farley-server Direct    13m ago  │
+│ ○ Node-ABC123             2h ago   │
+│ ○ Unknown-DEF456          5h ago   │
+└─────────────────────────────────────┘
+```
+
+## Files Modified
+
+| File | Changes |
+|------|---------|
+| `web/node_map.html` | Fixed mobile legend CSS, added No GPS list UI and JS functions |
+
+## Verification
+
+- Python imports verified OK
+- HTML structure validated
+- All new functions present in output
+
+## Remaining Considerations
+
+1. **maxZoom: 13 on fitBounds**: The "Fit All" button and initial load limit zoom to level 13. This is intentional to prevent over-zooming on sparse data, but users can still manually zoom past this.
+
+2. **Tile layer maxZoom: 19**: CartoDB tiles support zoom up to 19, which is sufficient.
+
+## Session Entropy
+
+Low - Focused on two specific bugs with clear fixes.

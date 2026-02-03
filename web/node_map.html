@@ -433,7 +433,7 @@
             }
             .legend {
                 bottom: auto;
-                top: 10px;
+                top: 80px;  /* Below Leaflet zoom controls */
                 left: 10px;
             }
         }
@@ -1233,10 +1233,11 @@
                 <span class="label">Mapped:</span>
                 <span class="value" id="stat-total" title="Nodes with GPS coordinates">0</span>
             </div>
-            <div class="stat-row">
+            <div class="stat-row no-gps-toggle" onclick="toggleNoGpsList()" style="cursor: pointer;" title="Click to show/hide nodes without GPS">
                 <span class="label">No GPS:</span>
-                <span class="value" id="stat-no-gps" title="Nodes without GPS (can't be mapped)" style="color: #888;">0</span>
+                <span class="value" id="stat-no-gps" style="color: #888;">0 ▸</span>
             </div>
+            <div id="no-gps-list" class="no-gps-list" style="display: none; max-height: 150px; overflow-y: auto; margin: 4px 0; padding: 6px; background: #0a1622; border-radius: 6px; font-size: 10px;"></div>
             <div class="stat-row">
                 <span class="label">Online:</span>
                 <span class="value online" id="stat-online">0</span>
@@ -1539,6 +1540,7 @@
         currentGeoJSON: null,
         userHasPanned: false,
         linkAnimationsEnabled: true,
+        nodesWithoutPosition: [],  // Nodes without GPS that can't be mapped
         // Phase 4 additions
         currentView: 'map',      // 'map' or 'topology'
         topology: null,          // D3 force simulation
@@ -2449,9 +2451,18 @@
         const totalSeen = props.total_nodes || geojson.features.length;
         const noGpsCount = props.nodes_without_position_count || 0;
 
+        // Store nodes without position for display
+        state.nodesWithoutPosition = props.nodes_without_position || [];
+
         // Update total seen and no-GPS stats
         document.getElementById('stat-total-seen').textContent = totalSeen;
-        document.getElementById('stat-no-gps').textContent = noGpsCount;
+        const noGpsExpanded = document.getElementById('no-gps-list').style.display !== 'none';
+        document.getElementById('stat-no-gps').textContent = noGpsCount + (noGpsExpanded ? ' ▾' : ' ▸');
+
+        // Update the no-GPS list if expanded
+        if (noGpsExpanded) {
+            updateNoGpsList();
+        }
 
         // Show update indicator
         const indicator = document.getElementById('update-indicator');
@@ -3100,6 +3111,56 @@
         const toggle = document.getElementById('panel-toggle');
         panel.classList.toggle('collapsed');
         toggle.textContent = panel.classList.contains('collapsed') ? '\u25B2' : '\u25BC';
+    }
+
+    function toggleNoGpsList() {
+        const list = document.getElementById('no-gps-list');
+        const stat = document.getElementById('stat-no-gps');
+        const count = state.nodesWithoutPosition.length;
+
+        if (list.style.display === 'none') {
+            list.style.display = 'block';
+            stat.textContent = count + ' ▾';
+            updateNoGpsList();
+        } else {
+            list.style.display = 'none';
+            stat.textContent = count + ' ▸';
+        }
+    }
+
+    function updateNoGpsList() {
+        const list = document.getElementById('no-gps-list');
+        const nodes = state.nodesWithoutPosition || [];
+
+        if (nodes.length === 0) {
+            list.innerHTML = '<div style="color: #666; font-style: italic;">No nodes without GPS</div>';
+            return;
+        }
+
+        // Sort by last_seen (most recent first)
+        const sorted = [...nodes].sort((a, b) => {
+            const aTime = a.last_seen || 0;
+            const bTime = b.last_seen || 0;
+            return bTime - aTime;
+        });
+
+        let html = '';
+        for (const node of sorted) {
+            const name = node.name || node.id || 'Unknown';
+            const id = node.id || '';
+            const online = node.is_online;
+            const lastSeen = node.last_seen || '';
+            const dotColor = online ? '#66bb6a' : '#555';
+
+            html += `<div style="padding: 3px 0; border-bottom: 1px solid #1a2a3a; display: flex; justify-content: space-between; align-items: center;">
+                <span style="display: flex; align-items: center; gap: 6px;">
+                    <span style="width: 6px; height: 6px; border-radius: 50%; background: ${dotColor};"></span>
+                    <span style="color: #ccc;">${name}</span>
+                </span>
+                <span style="color: #666; font-size: 9px;">${lastSeen}</span>
+            </div>`;
+        }
+        list.innerHTML = html;
     }
 
     // ============================================
