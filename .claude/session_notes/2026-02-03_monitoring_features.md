@@ -285,3 +285,134 @@ No GPS: 3 ▾
 ## Session Entropy
 
 Low - Focused on two specific bugs with clear fixes.
+
+---
+
+# Session 3: Fix Network Topology D3.js Graph Display
+
+**Date**: 2026-02-03
+**Branch**: `claude/fix-network-topology-0rwRp`
+
+## Reported Issues
+
+1. **D3.js topology graph showing only one node**: Network Topology view shows just the "local" node
+2. **Wireshark data sources**: What other devices (AREDN routers, TCP/IP devices) should appear?
+
+## Investigation Findings
+
+### Root Cause: Meshtastic Nodes Missing from Topology Graph
+
+The D3.js network topology at `~/.cache/meshforge/topology.html` only showed the "local" node because:
+
+1. **Nodes only exist if they have edges**: `NetworkTopology.to_dict()` (line 548-555 in `network_topology.py`) returns only nodes that have edges in `_nodes` dict
+2. **Edges created only for RNS nodes**: When RNS nodes are discovered, `node_tracker.py:1516-1523` adds edges to topology
+3. **Meshtastic nodes NOT added as edges**: When Meshtastic nodes are added via `add_node()` (line 1053), no topology edge was created
+4. **Result**: Meshtastic nodes in `node_tracker._nodes` were invisible in the D3.js graph
+
+### Data Flow Analysis
+
+```
+Meshtastic packet received
+    ↓
+_on_meshtastic_receive() in rns_bridge.py
+    ↓
+UnifiedNode.from_meshtastic() creates node
+    ↓
+node_tracker.add_node(node)  ← Adds to _nodes dict only
+    ↓
+NetworkTopology has NO edge  ← BUG: Node not in topology graph
+```
+
+vs
+
+```
+RNS announce received
+    ↓
+_process_rns_announce() in node_tracker.py
+    ↓
+node_tracker.add_node(node)
+    ↓
+node_tracker._network_topology.add_edge()  ← Edge created!
+    ↓
+NetworkTopology has edge  ← Node appears in D3.js graph
+```
+
+## Fix Applied
+
+Modified `add_node()` in `src/gateway/node_tracker.py` to also create topology edges for Meshtastic nodes:
+
+```python
+def add_node(self, node: UnifiedNode):
+    """Add or update a node"""
+    is_new = False
+    with self._lock:
+        # ... existing merge logic ...
+
+    # Add topology edge for Meshtastic nodes (outside lock to avoid deadlock)
+    # This ensures Meshtastic nodes appear in the D3.js topology graph
+    if self._network_topology and node.network in ("meshtastic", "both"):
+        try:
+            self._network_topology.add_edge(
+                source_id="local",
+                dest_id=node.id,
+                hops=node.hops or 0,
+                snr=node.snr,
+                rssi=node.rssi,
+            )
+        except Exception as e:
+            logger.debug(f"Could not add topology edge for {node.id}: {e}")
+```
+
+## Network Devices That Should Appear in Topology
+
+| Device Type | Currently Shown? | Data Source |
+|-------------|------------------|-------------|
+| **Meshtastic nodes** | YES (after fix) | Radio packets via meshtasticd |
+| **RNS nodes** | YES | RNS path table & announces |
+| **AREDN nodes** | NO (separate system) | `aredn.py` API client (not integrated) |
+| **TCP/IP routers** | NO | Not tracked by MeshForge |
+
+### AREDN Integration Notes
+
+AREDN (Amateur Radio Emergency Data Network) has a comprehensive API:
+- **Sysinfo API**: `http://<node>.local.mesh/a/sysinfo?hosts=1&lqm=1`
+- **Topology endpoint**: Added in Oct 2024 release (#1637)
+- **Link Quality Manager (LQM)**: Shows RF, DTD, TUN links with signal quality
+
+MeshForge has AREDN support in `src/utils/aredn.py`:
+- `AREDNClient` - API communication
+- `AREDNNode`, `AREDNLink`, `AREDNService` - Data structures
+- Used by `launcher_tui/aredn_mixin.py` for TUI menus
+
+**Current status**: AREDN is a separate network from Meshtastic/RNS. The topology graph focuses on the mesh networks MeshForge bridges. AREDN nodes could be integrated as a future enhancement.
+
+### Traffic Inspector (Wireshark-like)
+
+MeshForge includes `monitoring/traffic_inspector.py` for deep packet inspection:
+- Protocol-aware packet parsing
+- Meshtastic and RNS protocols
+- Display filters (e.g., `"mesh.hops > 2"`)
+- Path tracing through mesh
+
+This focuses on Meshtastic/RNS mesh traffic, not general TCP/IP.
+
+## Files Modified
+
+| File | Changes |
+|------|---------|
+| `src/gateway/node_tracker.py` | Added topology edge creation for Meshtastic nodes in `add_node()` |
+
+## Verification
+
+- Python syntax check: PASSED
+- Code logic verified against `add_edge()` signature in `network_topology.py`
+
+## References
+
+- [AREDN Tools for Integrators](http://docs.arednmesh.org/en/latest/arednHow-toGuides/devtools.html)
+- [Topologr - AREDN Mesh Topology Explorer](https://www.arednmesh.org/content/topologr-aredn-mesh-topology-and-data-explorer)
+- [AREDN GitHub](https://github.com/aredn/aredn)
+
+## Session Entropy
+
+Low - Clear root cause identified and fixed. Well-scoped investigation.

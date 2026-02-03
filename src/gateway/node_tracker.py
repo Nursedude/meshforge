@@ -1052,6 +1052,7 @@ instance_control_port = 37429
 
     def add_node(self, node: UnifiedNode):
         """Add or update a node"""
+        is_new = False
         with self._lock:
             existing = self._nodes.get(node.id)
             if existing:
@@ -1062,9 +1063,24 @@ instance_control_port = 37429
                 if len(self._nodes) >= self.MAX_NODES:
                     self._evict_stale_nodes()
                 self._nodes[node.id] = node
+                is_new = True
                 logger.debug(f"Added new node: {node.id} ({node.name})")
 
             self._notify_callbacks("update", node)
+
+        # Add topology edge for Meshtastic nodes (outside lock to avoid deadlock)
+        # This ensures Meshtastic nodes appear in the D3.js topology graph
+        if self._network_topology and node.network in ("meshtastic", "both"):
+            try:
+                self._network_topology.add_edge(
+                    source_id="local",
+                    dest_id=node.id,
+                    hops=node.hops or 0,
+                    snr=node.snr,
+                    rssi=node.rssi,
+                )
+            except Exception as e:
+                logger.debug(f"Could not add topology edge for {node.id}: {e}")
 
     def _evict_stale_nodes(self):
         """Evict oldest offline nodes to stay within MAX_NODES. Called under _lock."""
