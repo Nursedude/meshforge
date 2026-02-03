@@ -79,11 +79,12 @@ class TrafficInspectorMixin:
                     ("4", "Packet Details         - Deep packet inspection"),
                     ("5", "Path Visualization     - Multi-hop path view"),
                     ("6", "Traffic Statistics     - Analyze traffic patterns"),
-                    ("7", "Filter Reference       - Available filter fields"),
-                    ("8", "Export Data            - Export captures/paths"),
-                    ("9", "Clear Capture          - Clear captured data"),
+                    ("7", "View Traffic Log       - Read log file"),
+                    ("8", "Filter Reference       - Available filter fields"),
+                    ("9", "Export Data            - Export captures/paths"),
+                    ("0", "Clear Capture          - Clear captured data"),
                 ],
-                height=18, width=65
+                height=19, width=65
             )
 
             if not choice:
@@ -102,57 +103,72 @@ class TrafficInspectorMixin:
             elif choice == "6":
                 self._traffic_statistics()
             elif choice == "7":
-                self._traffic_filter_reference()
+                self._traffic_view_log()
             elif choice == "8":
-                self._traffic_export()
+                self._traffic_filter_reference()
             elif choice == "9":
+                self._traffic_export()
+            elif choice == "0":
                 self._traffic_clear()
 
     def _traffic_live_view(self) -> None:
         """View live traffic stream."""
-        inspector = self._get_inspector()
-        if not inspector:
-            return
+        try:
+            inspector = self._get_inspector()
+            if not inspector:
+                return
 
-        stats = inspector.get_capture_stats()
+            stats = inspector.get_capture_stats()
 
-        info = [
-            "Live Traffic View",
-            "=" * 60,
-            "",
-            f"Packets Captured: {stats.get('packets_captured', 0)}",
-            f"Meshtastic: {stats.get('packets_meshtastic', 0)}",
-            f"RNS: {stats.get('packets_rns', 0)}",
-            f"Bytes: {stats.get('bytes_captured', 0):,}",
-            "",
-            "=" * 60,
-            "",
-            "Note: For real-time traffic monitoring, the inspector",
-            "needs to be connected to meshtasticd or RNS services.",
-            "",
-            "Recent packets:",
-            "-" * 60,
-        ]
+            # Show log file path
+            log_path = inspector.get_log_path()
+            log_info = f"Log file: {log_path}" if log_path else "Logging: disabled"
 
-        # Show recent packets
-        packets = inspector.get_packets(limit=20)
-        if packets:
-            for pkt in packets[:15]:
-                summary = pkt.get_summary()
-                if len(summary) > 58:
-                    summary = summary[:55] + "..."
-                info.append(summary)
-        else:
-            info.append("No packets captured yet.")
-            info.append("")
-            info.append("Traffic will appear here once the bridge is active")
-            info.append("or packets are captured from the mesh network.")
+            info = [
+                "Live Traffic View",
+                "=" * 60,
+                "",
+                f"Packets Captured: {stats.get('packets_captured', 0)}",
+                f"Meshtastic: {stats.get('packets_meshtastic', 0)}",
+                f"RNS: {stats.get('packets_rns', 0)}",
+                f"Bytes: {stats.get('bytes_captured', 0):,}",
+                "",
+                log_info,
+                "",
+                "=" * 60,
+                "",
+                "Note: For real-time traffic monitoring, the inspector",
+                "needs to be connected to meshtasticd or RNS services.",
+                "",
+                "Recent packets:",
+                "-" * 60,
+            ]
 
-        self.dialog.msgbox(
-            "Live Traffic",
-            "\n".join(info),
-            height=30, width=70
-        )
+            # Show recent packets
+            packets = inspector.get_packets(limit=20)
+            if packets:
+                for pkt in packets[:15]:
+                    summary = pkt.get_summary()
+                    if len(summary) > 58:
+                        summary = summary[:55] + "..."
+                    info.append(summary)
+            else:
+                info.append("No packets captured yet.")
+                info.append("")
+                info.append("Traffic will appear here once the bridge is active")
+                info.append("or packets are captured from the mesh network.")
+
+            self.dialog.msgbox(
+                "Live Traffic",
+                "\n".join(info),
+                height=32, width=72
+            )
+        except Exception as e:
+            self.dialog.msgbox(
+                "Error",
+                f"Failed to load traffic view:\n{e}",
+                height=8, width=50
+            )
 
     def _traffic_packet_list(self) -> None:
         """Browse captured packets."""
@@ -324,36 +340,43 @@ class TrafficInspectorMixin:
             self.dialog.msgbox("Error", "Path visualizer not available.", height=6, width=40)
             return
 
-        inspector = self._get_inspector()
-        if not inspector:
-            return
+        try:
+            inspector = self._get_inspector()
+            if not inspector:
+                return
 
-        visualizer = PathVisualizer()
+            visualizer = PathVisualizer()
 
-        # Get recent packets with path traces
-        packets = inspector.get_packets(limit=50)
-        for pkt in packets:
-            hops = inspector.trace_path(pkt.id)
-            if hops:
-                visualizer.add_path_trace(pkt.id, hops)
+            # Get recent packets with path traces
+            packets = inspector.get_packets(limit=50)
+            for pkt in packets:
+                hops = inspector.trace_path(pkt.id)
+                if hops:
+                    visualizer.add_path_trace(pkt.id, hops)
 
-        if not visualizer._paths:
-            # Add sample path for demo
+            if not visualizer.has_paths():
+                # No path data available
+                self.dialog.msgbox(
+                    "No Path Data",
+                    "No path traces available yet.\n\n"
+                    "Path data is collected when messages are relayed\n"
+                    "through the mesh network.",
+                    height=10, width=50
+                )
+                return
+
+            ascii_view = visualizer.generate_ascii()
             self.dialog.msgbox(
-                "No Path Data",
-                "No path traces available yet.\n\n"
-                "Path data is collected when messages are relayed\n"
-                "through the mesh network.",
-                height=10, width=50
+                "Path Visualization",
+                ascii_view,
+                height=30, width=82
             )
-            return
-
-        ascii_view = visualizer.generate_ascii()
-        self.dialog.msgbox(
-            "Path Visualization",
-            ascii_view,
-            height=30, width=82
-        )
+        except Exception as e:
+            self.dialog.msgbox(
+                "Error",
+                f"Failed to generate path visualization:\n{e}",
+                height=8, width=55
+            )
 
     def _path_html_view(self) -> None:
         """Generate and open HTML path visualization."""
@@ -363,81 +386,88 @@ class TrafficInspectorMixin:
             self.dialog.msgbox("Error", "Path visualizer not available.", height=6, width=40)
             return
 
-        inspector = self._get_inspector()
-        if not inspector:
-            return
+        try:
+            inspector = self._get_inspector()
+            if not inspector:
+                return
 
-        visualizer = PathVisualizer()
+            visualizer = PathVisualizer()
 
-        # Get recent packets
-        packets = inspector.get_packets(limit=100)
-        path_count = 0
+            # Get recent packets
+            packets = inspector.get_packets(limit=100)
+            path_count = 0
 
-        for pkt in packets:
-            hops = inspector.trace_path(pkt.id)
-            if hops:
-                visualizer.add_path_trace(pkt.id, hops)
-                path_count += 1
+            for pkt in packets:
+                hops = inspector.trace_path(pkt.id)
+                if hops:
+                    visualizer.add_path_trace(pkt.id, hops)
+                    path_count += 1
 
-        if path_count == 0:
-            # Create demo data if no real paths
-            self.dialog.msgbox(
-                "Generating Demo",
-                "No real path data available.\n"
-                "Generating visualization with sample data...",
-                height=7, width=50
-            )
-
-            # Add demo nodes and path
-            visualizer.add_node("local", "Local Node", "local")
-            visualizer.add_node("relay1", "Relay-1", "relay")
-            visualizer.add_node("relay2", "Relay-2", "relay")
-            visualizer.add_node("dest", "Destination", "destination")
-
-            from monitoring.traffic_inspector import HopInfo, HopState
-
-            demo_hops = [
-                HopInfo(0, "local", "Local Node", HopState.RECEIVED, snr=12.5, rssi=-85),
-                HopInfo(1, "relay1", "Relay-1", HopState.RELAYED, snr=8.2, rssi=-92, latency_ms=150),
-                HopInfo(2, "relay2", "Relay-2", HopState.RELAYED, snr=5.1, rssi=-98, latency_ms=180),
-                HopInfo(3, "dest", "Destination", HopState.DELIVERED, snr=3.5, rssi=-105, latency_ms=200),
-            ]
-            visualizer.add_path_trace("demo_path", demo_hops)
-
-        # Generate HTML
-        output_path = visualizer.generate()
-
-        # Detect SSH/headless environment
-        is_ssh = bool(os.environ.get('SSH_CLIENT') or os.environ.get('SSH_TTY'))
-        has_display = bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
-
-        if is_ssh or not has_display:
-            # SSH/headless - show path only, don't try browser
-            self.dialog.msgbox(
-                "Path Visualization Generated",
-                f"HTML visualization saved to:\n{output_path}\n\n"
-                "No graphical display detected.\n"
-                "Copy this file to view in a browser.",
-                height=12, width=60
-            )
-        else:
-            self.dialog.msgbox(
-                "Path Visualization Generated",
-                f"HTML visualization saved to:\n{output_path}\n\n"
-                "Opening in browser...",
-                height=9, width=60
-            )
-
-            # Try to open in browser (only when display available)
-            try:
-                webbrowser.open(f"file://{output_path}")
-            except Exception as e:
+            if path_count == 0:
+                # Create demo data if no real paths
                 self.dialog.msgbox(
-                    "Browser Error",
-                    f"Could not open browser:\n{e}\n\n"
-                    f"Manually open: {output_path}",
-                    height=10, width=55
+                    "Generating Demo",
+                    "No real path data available.\n"
+                    "Generating visualization with sample data...",
+                    height=7, width=50
                 )
+
+                # Add demo nodes and path
+                visualizer.add_node("local", "Local Node", "local")
+                visualizer.add_node("relay1", "Relay-1", "relay")
+                visualizer.add_node("relay2", "Relay-2", "relay")
+                visualizer.add_node("dest", "Destination", "destination")
+
+                from monitoring.traffic_inspector import HopInfo, HopState
+
+                demo_hops = [
+                    HopInfo(0, "local", "Local Node", HopState.RECEIVED, snr=12.5, rssi=-85),
+                    HopInfo(1, "relay1", "Relay-1", HopState.RELAYED, snr=8.2, rssi=-92, latency_ms=150),
+                    HopInfo(2, "relay2", "Relay-2", HopState.RELAYED, snr=5.1, rssi=-98, latency_ms=180),
+                    HopInfo(3, "dest", "Destination", HopState.DELIVERED, snr=3.5, rssi=-105, latency_ms=200),
+                ]
+                visualizer.add_path_trace("demo_path", demo_hops)
+
+            # Generate HTML
+            output_path = visualizer.generate()
+
+            # Detect SSH/headless environment
+            is_ssh = bool(os.environ.get('SSH_CLIENT') or os.environ.get('SSH_TTY'))
+            has_display = bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
+
+            if is_ssh or not has_display:
+                # SSH/headless - show path only, don't try browser
+                self.dialog.msgbox(
+                    "Path Visualization Generated",
+                    f"HTML visualization saved to:\n{output_path}\n\n"
+                    "No graphical display detected.\n"
+                    "Copy this file to view in a browser.",
+                    height=12, width=60
+                )
+            else:
+                self.dialog.msgbox(
+                    "Path Visualization Generated",
+                    f"HTML visualization saved to:\n{output_path}\n\n"
+                    "Opening in browser...",
+                    height=9, width=60
+                )
+
+                # Try to open in browser (only when display available)
+                try:
+                    webbrowser.open(f"file://{output_path}")
+                except Exception as e:
+                    self.dialog.msgbox(
+                        "Browser Error",
+                        f"Could not open browser:\n{e}\n\n"
+                        f"Manually open: {output_path}",
+                        height=10, width=55
+                    )
+        except Exception as e:
+            self.dialog.msgbox(
+                "Error",
+                f"Failed to generate HTML visualization:\n{e}",
+                height=8, width=55
+            )
 
     def _path_trace_message(self) -> None:
         """Trace a specific message's path."""
@@ -530,18 +560,86 @@ class TrafficInspectorMixin:
 
     def _traffic_statistics(self) -> None:
         """Show traffic statistics."""
-        inspector = self._get_inspector()
-        if not inspector:
-            return
+        try:
+            inspector = self._get_inspector()
+            if not inspector:
+                return
 
-        stats = inspector.get_stats()
-        output = inspector.format_stats(stats)
+            stats = inspector.get_stats()
+            output = inspector.format_stats(stats)
 
-        self.dialog.msgbox(
-            "Traffic Statistics",
-            output,
-            height=30, width=75
-        )
+            self.dialog.msgbox(
+                "Traffic Statistics",
+                output,
+                height=30, width=75
+            )
+        except Exception as e:
+            self.dialog.msgbox(
+                "Error",
+                f"Failed to load traffic statistics:\n{e}",
+                height=8, width=50
+            )
+
+    def _traffic_view_log(self) -> None:
+        """View the traffic log file."""
+        try:
+            inspector = self._get_inspector()
+            if not inspector:
+                return
+
+            log_path = inspector.get_log_path()
+            if not log_path:
+                self.dialog.msgbox(
+                    "Logging Disabled",
+                    "Traffic logging is not enabled.",
+                    height=6, width=40
+                )
+                return
+
+            from pathlib import Path
+            log_file = Path(log_path)
+
+            if not log_file.exists():
+                self.dialog.msgbox(
+                    "No Log File",
+                    f"Log file does not exist yet:\n{log_path}\n\n"
+                    "Traffic will be logged when packets are captured.",
+                    height=10, width=60
+                )
+                return
+
+            # Read last 50 lines of log
+            try:
+                with open(log_path, 'r') as f:
+                    lines = f.readlines()
+
+                # Show last 40 lines (or all if less)
+                display_lines = lines[-40:] if len(lines) > 40 else lines
+                content = "".join(display_lines)
+
+                if len(lines) > 40:
+                    content = f"... (showing last 40 of {len(lines)} lines)\n\n" + content
+
+                content += f"\n\nLog file: {log_path}"
+
+                self.dialog.msgbox(
+                    "Traffic Log",
+                    content,
+                    height=35, width=105
+                )
+            except IOError as e:
+                self.dialog.msgbox(
+                    "Error",
+                    f"Failed to read log file:\n{e}",
+                    height=8, width=50
+                )
+
+        except Exception as e:
+            self.dialog.msgbox(
+                "Error",
+                f"Failed to view traffic log:\n{e}",
+                height=8, width=50
+            )
 
     def _traffic_filter_reference(self) -> None:
         """Show available filter fields."""

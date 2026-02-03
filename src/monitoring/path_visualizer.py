@@ -309,6 +309,14 @@ class PathVisualizer:
         for path in self._paths:
             path.is_active = (path.path_id == path_id)
 
+    def has_paths(self) -> bool:
+        """Check if any paths have been added."""
+        return len(self._paths) > 0
+
+    def get_path_count(self) -> int:
+        """Get number of paths."""
+        return len(self._paths)
+
     def get_path_stats(self) -> Dict[str, Any]:
         """Get statistics across all paths."""
         if not self._paths:

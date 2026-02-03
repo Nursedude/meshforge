@@ -73,6 +73,11 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+# Traffic logging configuration
+TRAFFIC_LOG_MAX_SIZE = 10 * 1024 * 1024  # 10MB max log size
+TRAFFIC_LOG_BACKUP_COUNT = 3
+
+
 # =============================================================================
 # ENUMS AND CONSTANTS
 # =============================================================================
@@ -1525,6 +1530,125 @@ class TrafficAnalyzer:
 
 
 # =============================================================================
+# TRAFFIC LOGGER (HUMAN-READABLE LOG FILE)
+# =============================================================================
+
+class TrafficLogger:
+    """
+    Writes mesh traffic to a human-readable log file.
+
+    Provides real-time visibility into mesh traffic similar to Wireshark's
+    packet log, but in a format suitable for terminal viewing.
+    """
+
+    def __init__(self, log_path: Optional[str] = None):
+        if log_path is None:
+            log_dir = get_real_user_home() / ".cache" / "meshforge" / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = str(log_dir / "traffic.log")
+
+        self._log_path = log_path
+        self._enabled = True
+        self._lock = threading.Lock()
+        self._packet_count = 0
+
+        # Create/truncate log file with header
+        self._write_header()
+
+    def _write_header(self) -> None:
+        """Write log file header."""
+        try:
+            with open(self._log_path, 'w') as f:
+                f.write("=" * 100 + "\n")
+                f.write(" MESHFORGE TRAFFIC LOG ".center(100, "=") + "\n")
+                f.write("=" * 100 + "\n")
+                f.write(f"Started: {datetime.now().isoformat()}\n")
+                f.write(f"Log file: {self._log_path}\n")
+                f.write("-" * 100 + "\n")
+                f.write(f"{'Time':<12} {'Dir':<4} {'Proto':<10} {'Source':<14} "
+                        f"{'Dest':<14} {'Port':<16} {'Hops':<5} {'SNR':<8} {'Size':<8}\n")
+                f.write("-" * 100 + "\n")
+        except IOError as e:
+            logger.error(f"Failed to create traffic log: {e}")
+
+    def log_packet(self, packet: 'MeshPacket') -> None:
+        """Log a packet to the traffic log file."""
+        if not self._enabled:
+            return
+
+        with self._lock:
+            try:
+                self._packet_count += 1
+
+                # Format packet line
+                time_str = packet.timestamp.strftime("%H:%M:%S.%f")[:12]
+                dir_sym = {"inbound": "<-", "outbound": "->", "relayed": "<>", "internal": ".."}
+                dir_str = dir_sym.get(packet.direction.value, "??")
+                proto = packet.protocol.value[:10]
+                src = packet.source[:14] if packet.source else "?"
+                dst = packet.destination[:14] if packet.destination else "bcast"
+                port = (packet.port_name[:16] if packet.port_name else "-")
+                hops = str(packet.hops_taken) if packet.hops_taken else "-"
+                snr = f"{packet.snr:.1f}" if packet.snr is not None else "-"
+                size = str(packet.size) if packet.size else "-"
+
+                line = f"{time_str:<12} {dir_str:<4} {proto:<10} {src:<14} {dst:<14} {port:<16} {hops:<5} {snr:<8} {size:<8}\n"
+
+                # Check file size and rotate if needed
+                self._maybe_rotate()
+
+                with open(self._log_path, 'a') as f:
+                    f.write(line)
+
+            except IOError as e:
+                logger.debug(f"Failed to write traffic log: {e}")
+
+    def _maybe_rotate(self) -> None:
+        """Rotate log file if it exceeds max size."""
+        try:
+            if Path(self._log_path).stat().st_size > TRAFFIC_LOG_MAX_SIZE:
+                # Rotate backup files
+                for i in range(TRAFFIC_LOG_BACKUP_COUNT - 1, 0, -1):
+                    src = f"{self._log_path}.{i}"
+                    dst = f"{self._log_path}.{i + 1}"
+                    if Path(src).exists():
+                        Path(src).rename(dst)
+
+                # Move current to .1
+                Path(self._log_path).rename(f"{self._log_path}.1")
+
+                # Start fresh
+                self._write_header()
+        except (IOError, OSError):
+            pass
+
+    def get_log_path(self) -> str:
+        """Get the path to the traffic log file."""
+        return self._log_path
+
+    def get_packet_count(self) -> int:
+        """Get number of packets logged."""
+        return self._packet_count
+
+    def enable(self) -> None:
+        """Enable traffic logging."""
+        self._enabled = True
+
+    def disable(self) -> None:
+        """Disable traffic logging."""
+        self._enabled = False
+
+    def is_enabled(self) -> bool:
+        """Check if logging is enabled."""
+        return self._enabled
+
+    def clear(self) -> None:
+        """Clear the log file."""
+        self._packet_count = 0
+        self._write_header()
+
+
+# =============================================================================
 # TRAFFIC INSPECTOR (MAIN INTERFACE)
 # =============================================================================
 
@@ -1552,10 +1676,23 @@ class TrafficInspector:
     """
 
     def __init__(self, db_path: Optional[str] = None,
-                 max_packets: int = 10000):
+                 max_packets: int = 10000,
+                 enable_logging: bool = True):
         self._capture = TrafficCapture(db_path, max_packets)
         self._analyzer = TrafficAnalyzer(self._capture)
         self._running = False
+
+        # Traffic logging to human-readable file
+        self._logger: Optional[TrafficLogger] = None
+        if enable_logging:
+            self._logger = TrafficLogger()
+            # Register logger as callback for new packets
+            self._capture.register_callback(self._log_packet)
+
+    def _log_packet(self, packet: MeshPacket) -> None:
+        """Internal callback to log packets."""
+        if self._logger:
+            self._logger.log_packet(packet)
 
     def capture(self, data: bytes, metadata: Dict[str, Any]) -> Optional[MeshPacket]:
         """Capture and dissect a packet."""
@@ -1607,7 +1744,32 @@ class TrafficInspector:
 
     def clear(self) -> int:
         """Clear all captured packets."""
+        if self._logger:
+            self._logger.clear()
         return self._capture.clear_all()
+
+    def get_log_path(self) -> Optional[str]:
+        """Get the path to the traffic log file."""
+        if self._logger:
+            return self._logger.get_log_path()
+        return None
+
+    def enable_logging(self) -> None:
+        """Enable traffic logging."""
+        if self._logger is None:
+            self._logger = TrafficLogger()
+            self._capture.register_callback(self._log_packet)
+        else:
+            self._logger.enable()
+
+    def disable_logging(self) -> None:
+        """Disable traffic logging."""
+        if self._logger:
+            self._logger.disable()
+
+    def is_logging_enabled(self) -> bool:
+        """Check if traffic logging is enabled."""
+        return self._logger is not None and self._logger.is_enabled()
 
     @staticmethod
     def get_filter_fields() -> Dict[str, str]:
