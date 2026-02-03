@@ -53,7 +53,15 @@ class TrafficInspectorMixin:
             return None
 
         if not hasattr(self, '_traffic_inspector'):
-            self._traffic_inspector = TrafficInspector()
+            try:
+                self._traffic_inspector = TrafficInspector()
+            except Exception as e:
+                self.dialog.msgbox(
+                    "Traffic Inspector Error",
+                    f"Failed to initialize Traffic Inspector:\n{e}",
+                    height=8, width=55
+                )
+                return None
 
         return self._traffic_inspector
 
