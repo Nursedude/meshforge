@@ -23,8 +23,7 @@ MeshForge is a **Network Operations Center (NOC)** bridging Meshtastic and Retic
 sudo python3 src/launcher_tui/main.py   # Primary interface (TUI)
 python3 src/standalone.py               # Zero-dependency RF tools
 
-# GTK4 desktop exists but is FROZEN (not actively developed)
-# sudo python3 src/main_gtk.py
+# GTK4 desktop was REMOVED (TUI is the only interface now)
 
 # Verify changes
 python3 -m pytest tests/ -v       # Run tests
@@ -39,7 +38,6 @@ python3 -c "from src.__version__ import __version__; print(__version__)"
 src/
 ├── launcher_tui/      # Terminal UI — PRIMARY INTERFACE
 │   └── main.py        # NOC dispatcher (whiptail/dialog)
-├── gtk_ui/            # GTK4 Desktop — FROZEN (not actively developed)
 ├── gateway/           # RNS-Meshtastic bridge
 │   ├── rns_bridge.py  # Main gateway bridge
 │   └── message_queue.py # Persistent message queue (SQLite)
@@ -217,7 +215,7 @@ Split files exceeding 1,500 lines (see `.claude/foundations/persistent_issues.md
 - `hamclock.py` (2,625) → Extract API client
 - `mesh_tools.py` (1,953) → Monitor
 
-*Note: 7 UIs consolidated → TUI + browser maps. GTK4 frozen (exists, not developed).*
+*Note: 7 UIs consolidated → TUI + browser maps. GTK4 removed.*
 
 ## Commit Style
 
