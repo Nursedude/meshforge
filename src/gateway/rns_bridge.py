@@ -100,6 +100,19 @@ except ImportError:
     HAS_EVENT_BUS = False
     emit_message = None
 
+# Import RNS sniffer for Wireshark-grade packet capture
+try:
+    from monitoring.rns_sniffer import (
+        get_rns_sniffer, RNSPacketInfo, RNSPacketType,
+        start_rns_capture, integrate_with_traffic_inspector
+    )
+    HAS_RNS_SNIFFER = True
+except ImportError:
+    HAS_RNS_SNIFFER = False
+    get_rns_sniffer = None
+    RNSPacketInfo = None
+    RNSPacketType = None
+
 
 @dataclass
 class BridgedMessage:
@@ -384,6 +397,15 @@ class RNSMeshtasticBridge:
             self._persistent_queue.start_processing(interval=2.0)
             logger.info("Persistent message queue processing started")
 
+        # Start RNS packet sniffer for Wireshark-grade traffic visibility
+        if HAS_RNS_SNIFFER:
+            try:
+                start_rns_capture()
+                integrate_with_traffic_inspector()
+                logger.info("RNS packet sniffer started for traffic capture")
+            except Exception as e:
+                logger.debug(f"Could not start RNS sniffer: {e}")
+
         logger.info("Bridge started")
         self._notify_status("started")
         return True
@@ -415,6 +437,14 @@ class RNSMeshtasticBridge:
 
         # Stop WebSocket server
         self._stop_websocket_server()
+
+        # Stop RNS sniffer
+        if HAS_RNS_SNIFFER:
+            try:
+                from monitoring.rns_sniffer import stop_rns_capture
+                stop_rns_capture()
+            except Exception:
+                pass
 
         logger.info("Bridge stopped")
         self._notify_status("stopped")
@@ -1186,6 +1216,25 @@ class RNSMeshtasticBridge:
             node = UnifiedNode.from_rns(source_hash)
             self.node_tracker.add_node(node)
 
+            # Capture LXMF message for traffic inspection
+            if HAS_RNS_SNIFFER:
+                try:
+                    sniffer = get_rns_sniffer()
+                    if sniffer and sniffer._running:
+                        # Encode message content as payload
+                        content_bytes = message.content.encode('utf-8') if message.content else b''
+                        packet_info = RNSPacketInfo(
+                            packet_type=RNSPacketType.DATA,
+                            source_hash=source_hash,
+                            direction="inbound",
+                            payload=content_bytes,
+                            payload_size=len(content_bytes),
+                            announce_aspect="lxmf.delivery",
+                        )
+                        sniffer._store_packet(packet_info)
+                except Exception as e:
+                    logger.debug(f"RNS sniffer LXMF capture error: {e}")
+
             msg = BridgedMessage(
                 source_network="rns",
                 source_id=source_hash.hex(),
@@ -1231,6 +1280,37 @@ class RNSMeshtasticBridge:
     def _on_rns_announce(self, dest_hash, announced_identity, app_data):
         """Handle RNS announce for node discovery"""
         try:
+            # Capture announce packet for traffic inspection
+            if HAS_RNS_SNIFFER:
+                try:
+                    import RNS
+                    sniffer = get_rns_sniffer()
+                    if sniffer and sniffer._running:
+                        packet_info = RNSPacketInfo(
+                            packet_type=RNSPacketType.ANNOUNCE,
+                            destination_hash=dest_hash,
+                            direction="inbound",
+                            announce_app_data=app_data,
+                            announce_aspect="lxmf.delivery",
+                        )
+                        # Get identity hash if available
+                        if announced_identity:
+                            try:
+                                packet_info.source_hash = announced_identity.hash
+                                packet_info.announce_identity = announced_identity.hash
+                            except Exception:
+                                pass
+                        # Get hop count
+                        try:
+                            if RNS.Transport.has_path(dest_hash):
+                                hops = RNS.Transport.hops_to(dest_hash)
+                                packet_info.hops = hops if hops is not None else 0
+                        except Exception:
+                            pass
+                        sniffer._store_packet(packet_info)
+                except Exception as e:
+                    logger.debug(f"RNS sniffer capture error: {e}")
+
             node = UnifiedNode.from_rns(dest_hash, app_data=app_data)
             self.node_tracker.add_node(node)
             logger.debug(f"Discovered RNS node: {dest_hash.hex()[:8]}")

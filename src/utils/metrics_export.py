@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +235,56 @@ METRICS = {
         help_text="Number of network devices discovered",
         labels=["type"],  # meshtasticd, web, other
     ),
+
+    # RNS Sniffer metrics
+    "meshforge_rns_packets_captured": MetricDefinition(
+        name="meshforge_rns_packets_captured",
+        metric_type=COUNTER,
+        help_text="Total RNS packets captured by sniffer",
+        labels=["packet_type"],
+    ),
+    "meshforge_rns_announces_seen": MetricDefinition(
+        name="meshforge_rns_announces_seen",
+        metric_type=COUNTER,
+        help_text="Total RNS announces observed",
+        labels=[],
+    ),
+    "meshforge_rns_paths_discovered": MetricDefinition(
+        name="meshforge_rns_paths_discovered",
+        metric_type=GAUGE,
+        help_text="Number of RNS paths in path table",
+        labels=[],
+    ),
+    "meshforge_rns_links_active": MetricDefinition(
+        name="meshforge_rns_links_active",
+        metric_type=GAUGE,
+        help_text="Number of active RNS links",
+        labels=[],
+    ),
+    "meshforge_rns_links_total": MetricDefinition(
+        name="meshforge_rns_links_total",
+        metric_type=COUNTER,
+        help_text="Total RNS links established",
+        labels=[],
+    ),
+    "meshforge_rns_sniffer_running": MetricDefinition(
+        name="meshforge_rns_sniffer_running",
+        metric_type=GAUGE,
+        help_text="Whether RNS sniffer is capturing (1) or not (0)",
+        labels=[],
+    ),
+    "meshforge_rns_bytes_captured": MetricDefinition(
+        name="meshforge_rns_bytes_captured",
+        metric_type=COUNTER,
+        help_text="Total bytes captured by RNS sniffer",
+        labels=[],
+    ),
+    "meshforge_rns_path_hops": MetricDefinition(
+        name="meshforge_rns_path_hops",
+        metric_type=GAUGE,
+        help_text="Hop count for known RNS path",
+        labels=["destination"],
+    ),
 }
 
 
@@ -300,6 +350,7 @@ class PrometheusExporter:
         self._collectors.append(self._collect_node_metrics)
         self._collectors.append(self._collect_gateway_metrics)
         self._collectors.append(self._collect_tcp_metrics)
+        self._collectors.append(self._collect_rns_metrics)
 
     def register_collector(self, collector: Callable[[], List[str]]) -> None:
         """
@@ -671,6 +722,84 @@ class PrometheusExporter:
 
         except Exception as e:
             logger.debug(f"Error collecting TCP metrics: {e}")
+
+        return lines
+
+    def _collect_rns_metrics(self) -> List[str]:
+        """Collect RNS sniffer metrics for Wireshark-grade visibility."""
+        lines = []
+
+        try:
+            from monitoring.rns_sniffer import get_rns_sniffer
+        except ImportError:
+            logger.debug("RNS sniffer not available for metrics collection")
+            return lines
+
+        try:
+            sniffer = get_rns_sniffer()
+            if sniffer is None:
+                return lines
+
+            stats = sniffer.get_stats()
+
+            # Sniffer running status
+            defn = METRICS["meshforge_rns_sniffer_running"]
+            lines.append(f"# HELP {defn.name} {defn.help_text}")
+            lines.append(f"# TYPE {defn.name} {defn.metric_type}")
+            lines.append(_format_metric_line(defn.name, 1 if sniffer._running else 0))
+
+            # Packets captured
+            defn = METRICS["meshforge_rns_packets_captured"]
+            lines.append(f"# HELP {defn.name} {defn.help_text}")
+            lines.append(f"# TYPE {defn.name} {defn.metric_type}")
+            lines.append(_format_metric_line(
+                defn.name, stats.get("packets_captured", 0), {"packet_type": "total"}
+            ))
+
+            # Announces seen
+            defn = METRICS["meshforge_rns_announces_seen"]
+            lines.append(f"# HELP {defn.name} {defn.help_text}")
+            lines.append(f"# TYPE {defn.name} {defn.metric_type}")
+            lines.append(_format_metric_line(defn.name, stats.get("announces_seen", 0)))
+
+            # Bytes captured
+            defn = METRICS["meshforge_rns_bytes_captured"]
+            lines.append(f"# HELP {defn.name} {defn.help_text}")
+            lines.append(f"# TYPE {defn.name} {defn.metric_type}")
+            lines.append(_format_metric_line(defn.name, stats.get("bytes_captured", 0)))
+
+            # Paths discovered
+            defn = METRICS["meshforge_rns_paths_discovered"]
+            lines.append(f"# HELP {defn.name} {defn.help_text}")
+            lines.append(f"# TYPE {defn.name} {defn.metric_type}")
+            lines.append(_format_metric_line(defn.name, stats.get("path_count", 0)))
+
+            # Links total
+            defn = METRICS["meshforge_rns_links_total"]
+            lines.append(f"# HELP {defn.name} {defn.help_text}")
+            lines.append(f"# TYPE {defn.name} {defn.metric_type}")
+            lines.append(_format_metric_line(defn.name, stats.get("links_established", 0)))
+
+            # Active links
+            defn = METRICS["meshforge_rns_links_active"]
+            lines.append(f"# HELP {defn.name} {defn.help_text}")
+            lines.append(f"# TYPE {defn.name} {defn.metric_type}")
+            lines.append(_format_metric_line(defn.name, stats.get("active_links", 0)))
+
+            # Path hops for known paths (top 10 most recent)
+            paths = sniffer.get_path_table()
+            if paths:
+                defn = METRICS["meshforge_rns_path_hops"]
+                lines.append(f"# HELP {defn.name} {defn.help_text}")
+                lines.append(f"# TYPE {defn.name} {defn.metric_type}")
+                for path in sorted(paths, key=lambda p: p.last_seen, reverse=True)[:10]:
+                    dest_short = path.destination_hash.hex()[:16]
+                    lines.append(_format_metric_line(
+                        defn.name, path.hops, {"destination": dest_short}
+                    ))
+
+        except Exception as e:
+            logger.debug(f"Error collecting RNS metrics: {e}")
 
         return lines
 

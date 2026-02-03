@@ -771,17 +771,37 @@ class RNSDissector(PacketDissector):
     Dissector for Reticulum (RNS) packets.
 
     Parses RNS protocol data including:
-    - Destination hash
-    - Hop count
+    - Packet type (DATA, ANNOUNCE, LINK_*, PATH_*)
+    - Header fields (flags, hop count)
+    - Destination hash (16 bytes)
     - Interface info
-    - Service type
+    - Service type (LXMF, Nomad, etc.)
+    - Link state tracking
+
+    Wire format: [HEADER 2B] [ADDRESSES 16/32B] [CONTEXT 1B] [DATA 0-465B]
+    Reference: https://reticulum.network/manual/understanding.html
     """
+
+    # RNS packet types from header
+    RNS_PACKET_TYPES = {
+        0x00: "DATA",
+        0x01: "ANNOUNCE",
+        0x02: "LINK_REQUEST",
+        0x03: "LINK_PROOF",
+        0x04: "LINK_RTT",
+        0x05: "LINK_KEEPALIVE",
+        0x06: "LINK_CLOSE",
+        0x07: "PATH_REQUEST",
+        0x08: "PATH_RESPONSE",
+    }
 
     def can_dissect(self, data: bytes, metadata: Dict[str, Any]) -> bool:
         """Check if this looks like an RNS packet."""
         if metadata.get("protocol") == "rns":
             return True
         if "dest_hash" in metadata or "destination_hash" in metadata:
+            return True
+        if metadata.get("packet_type") in self.RNS_PACKET_TYPES.values():
             return True
         return False
 
@@ -796,34 +816,53 @@ class RNSDissector(PacketDissector):
         # Extract RNS-specific fields
         dest_hash = metadata.get("dest_hash", metadata.get("destination_hash"))
         if isinstance(dest_hash, str):
-            packet.rns_dest_hash = bytes.fromhex(dest_hash)
+            try:
+                packet.rns_dest_hash = bytes.fromhex(dest_hash)
+            except ValueError:
+                pass
         elif isinstance(dest_hash, bytes):
             packet.rns_dest_hash = dest_hash
+
+        # Source hash (for announces)
+        source_hash = metadata.get("source_hash", metadata.get("identity_hash"))
+        if isinstance(source_hash, str):
+            try:
+                packet.source = source_hash
+            except ValueError:
+                packet.source = "local"
+        elif isinstance(source_hash, bytes):
+            packet.source = source_hash.hex()
+        else:
+            packet.source = metadata.get("source", "local")
 
         packet.destination = metadata.get("destination", "")
         if packet.rns_dest_hash:
             packet.destination = packet.rns_dest_hash.hex()[:16]
 
-        packet.source = metadata.get("source", "local")
         packet.rns_interface = metadata.get("interface", "")
         packet.rns_service = metadata.get("service_type", metadata.get("aspect", ""))
 
         # Hop count
         packet.hops_taken = int(metadata.get("hops", 0))
         packet.hop_limit = 128 - packet.hops_taken  # RNS has higher hop limit
+        packet.hop_start = 128  # RNS default TTL
 
         # Direction
-        if metadata.get("direction") == "outbound":
+        direction = metadata.get("direction", "inbound")
+        if direction == "outbound":
             packet.direction = PacketDirection.OUTBOUND
+        elif direction == "internal":
+            packet.direction = PacketDirection.INTERNAL
         else:
             packet.direction = PacketDirection.INBOUND
 
         # Build protocol tree
-        packet.tree = self._build_tree(packet, metadata)
+        packet.tree = self._build_tree(packet, metadata, data)
 
         return packet
 
-    def _build_tree(self, packet: MeshPacket, metadata: Dict[str, Any]) -> PacketTree:
+    def _build_tree(self, packet: MeshPacket, metadata: Dict[str, Any],
+                    raw_data: bytes) -> PacketTree:
         """Build hierarchical protocol tree for RNS."""
         tree = PacketTree()
 
@@ -833,32 +872,155 @@ class RNSDissector(PacketDissector):
         # RNS layer
         rns = tree.add_layer("Reticulum", "rns")
 
+        # Packet type
+        packet_type = metadata.get("packet_type", "DATA")
+        tree.add_field(rns, "Packet Type", "rns.type", packet_type, FieldType.STRING,
+                       "RNS packet type")
+
+        # Header fields (if raw data available)
+        if raw_data and len(raw_data) >= 2:
+            header = PacketField(name="Header", abbrev="rns.header",
+                                value=None, field_type=FieldType.NESTED)
+            rns.children.append(header)
+
+            flags = (raw_data[0] >> 4) & 0x0F
+            hops = raw_data[0] & 0x0F
+            type_raw = (raw_data[1] >> 4) & 0x0F
+
+            tree.add_field(header, "Flags", "rns.header.flags", flags, FieldType.INTEGER,
+                          "Header flags")
+            tree.add_field(header, "Hop Count", "rns.header.hops", hops, FieldType.INTEGER,
+                          "Hops traversed")
+            tree.add_field(header, "Type Byte", "rns.header.type", type_raw, FieldType.INTEGER,
+                          "Packet type byte")
+
+            # Context byte at position 18 (after 16-byte hash)
+            if len(raw_data) >= 19:
+                context = raw_data[18]
+                tree.add_field(header, "Context", "rns.context", context, FieldType.INTEGER,
+                              "Context byte")
+
         # Destination
         tree.add_field(rns, "Destination Hash", "rns.dest_hash",
                        packet.rns_dest_hash.hex() if packet.rns_dest_hash else "",
-                       FieldType.BYTES, "16-byte destination hash")
+                       FieldType.BYTES, "16-byte destination hash (truncated SHA-256)")
+
+        # Source (for announces)
+        if packet.source and packet.source != "local":
+            tree.add_field(rns, "Source Hash", "rns.source_hash", packet.source,
+                          FieldType.BYTES, "Source identity hash")
 
         # Routing
-        tree.add_field(rns, "Hops", "rns.hops", packet.hops_taken, FieldType.INTEGER,
-                       "Number of hops to destination")
-        tree.add_field(rns, "Interface", "rns.interface", packet.rns_interface, FieldType.STRING,
+        routing = PacketField(name="Routing", abbrev="rns.routing",
+                             value=None, field_type=FieldType.NESTED)
+        rns.children.append(routing)
+
+        tree.add_field(routing, "Hops", "rns.hops", packet.hops_taken, FieldType.INTEGER,
+                       "Number of hops traversed")
+        tree.add_field(routing, "TTL", "rns.ttl", packet.hop_limit, FieldType.INTEGER,
+                       "Remaining time-to-live (max 128)")
+        tree.add_field(routing, "Interface", "rns.interface", packet.rns_interface, FieldType.STRING,
                        "RNS interface name")
+
+        # Interface type if available
+        iface_type = metadata.get("interface_type", "")
+        if iface_type:
+            tree.add_field(routing, "Interface Type", "rns.iface_type", iface_type, FieldType.STRING,
+                          "Interface type (TCP, UDP, LoRa, etc.)")
 
         # Service info
         if packet.rns_service:
-            tree.add_field(rns, "Service", "rns.service", packet.rns_service, FieldType.STRING,
-                           "Service type/aspect")
+            tree.add_field(rns, "Service/Aspect", "rns.service", packet.rns_service, FieldType.STRING,
+                           "Service type or aspect filter (e.g., lxmf.delivery)")
 
-        # Announce details if available
-        if "announce_data" in metadata:
+        # Announce details if packet is an announce
+        if packet_type == "ANNOUNCE" or "announce" in metadata:
             announce = PacketField(name="Announce", abbrev="rns.announce",
                                    value=None, field_type=FieldType.NESTED)
             rns.children.append(announce)
 
-            ann_data = metadata["announce_data"]
-            if "app_data" in ann_data:
-                tree.add_field(announce, "App Data", "rns.announce.app",
-                               ann_data["app_data"], FieldType.BYTES)
+            # Aspect
+            aspect = metadata.get("aspect", metadata.get("announce_aspect", ""))
+            if aspect:
+                tree.add_field(announce, "Aspect", "rns.announce.aspect", aspect, FieldType.STRING,
+                              "Announce aspect filter")
+
+            # App data
+            app_data = metadata.get("announce_app_data", metadata.get("app_data"))
+            if app_data:
+                if isinstance(app_data, bytes):
+                    tree.add_field(announce, "App Data Size", "rns.announce.app_size",
+                                  len(app_data), FieldType.INTEGER)
+                    # Try to decode as display name
+                    try:
+                        decoded = app_data.decode('utf-8', errors='ignore')
+                        if decoded.isprintable():
+                            tree.add_field(announce, "Display Name", "rns.announce.name",
+                                          decoded, FieldType.STRING)
+                    except Exception:
+                        pass
+                elif isinstance(app_data, str):
+                    tree.add_field(announce, "App Data", "rns.announce.app_data",
+                                  app_data, FieldType.STRING)
+
+            # Identity hash
+            identity = metadata.get("identity_hash", metadata.get("announce_identity"))
+            if identity:
+                if isinstance(identity, bytes):
+                    tree.add_field(announce, "Identity Hash", "rns.announce.identity",
+                                  identity.hex(), FieldType.BYTES)
+                else:
+                    tree.add_field(announce, "Identity Hash", "rns.announce.identity",
+                                  str(identity), FieldType.STRING)
+
+        # Link details if this is a link packet
+        link_id = metadata.get("link_id")
+        link_state = metadata.get("link_state")
+        if link_id or link_state or packet_type.startswith("LINK_"):
+            link = PacketField(name="Link", abbrev="rns.link",
+                              value=None, field_type=FieldType.NESTED)
+            rns.children.append(link)
+
+            if link_id:
+                if isinstance(link_id, bytes):
+                    tree.add_field(link, "Link ID", "rns.link.id", link_id.hex(), FieldType.BYTES)
+                else:
+                    tree.add_field(link, "Link ID", "rns.link.id", str(link_id), FieldType.STRING)
+
+            if link_state:
+                tree.add_field(link, "State", "rns.link.state", link_state, FieldType.STRING,
+                              "Link state (pending, active, closed)")
+
+            # RTT if available
+            rtt = metadata.get("rtt_ms")
+            if rtt is not None:
+                tree.add_field(link, "RTT", "rns.link.rtt", rtt, FieldType.FLOAT,
+                              "Round-trip time in milliseconds")
+
+        # LXMF-specific fields
+        if packet.rns_service and "lxmf" in packet.rns_service.lower():
+            lxmf = PacketField(name="LXMF", abbrev="rns.lxmf",
+                              value=None, field_type=FieldType.NESTED)
+            rns.children.append(lxmf)
+
+            # Message fields if available
+            lxmf_title = metadata.get("lxmf_title", metadata.get("title"))
+            lxmf_content = metadata.get("lxmf_content", metadata.get("content"))
+            lxmf_stamp = metadata.get("lxmf_stamp")
+
+            if lxmf_title:
+                tree.add_field(lxmf, "Title", "rns.lxmf.title", lxmf_title, FieldType.STRING)
+            if lxmf_content:
+                preview = lxmf_content[:100] + "..." if len(lxmf_content) > 100 else lxmf_content
+                tree.add_field(lxmf, "Content Preview", "rns.lxmf.content", preview, FieldType.STRING)
+            if lxmf_stamp:
+                tree.add_field(lxmf, "Stamp", "rns.lxmf.stamp", lxmf_stamp, FieldType.STRING)
+
+        # Payload size
+        payload_size = metadata.get("payload_size", len(raw_data) - 19 if len(raw_data) > 19 else 0)
+        if payload_size > 0:
+            tree.add_field(rns, "Payload Size", "rns.payload_size", payload_size, FieldType.INTEGER,
+                          "Data payload size in bytes")
 
         return tree
 
@@ -961,10 +1123,33 @@ class DisplayFilter:
             "mesh.text": "Text message content",
 
             # RNS fields
-            "rns.dest_hash": "Destination hash",
-            "rns.hops": "Hop count",
+            "rns.type": "RNS packet type (DATA/ANNOUNCE/LINK_*/PATH_*)",
+            "rns.dest_hash": "Destination hash (16-byte hex)",
+            "rns.source_hash": "Source identity hash",
+            "rns.hops": "Hop count traversed",
+            "rns.ttl": "Remaining time-to-live",
             "rns.interface": "Interface name",
-            "rns.service": "Service type",
+            "rns.iface_type": "Interface type (TCP/UDP/LoRa/etc.)",
+            "rns.service": "Service type/aspect",
+            "rns.context": "Context byte value",
+            "rns.payload_size": "Payload size in bytes",
+            # RNS Header fields
+            "rns.header.flags": "Header flags",
+            "rns.header.hops": "Header hop count",
+            "rns.header.type": "Packet type byte",
+            # RNS Announce fields
+            "rns.announce.aspect": "Announce aspect filter",
+            "rns.announce.identity": "Announced identity hash",
+            "rns.announce.name": "Announced display name",
+            "rns.announce.app_size": "App data size",
+            # RNS Link fields
+            "rns.link.id": "Link identifier",
+            "rns.link.state": "Link state (pending/active/closed)",
+            "rns.link.rtt": "Round-trip time (ms)",
+            # LXMF fields
+            "rns.lxmf.title": "LXMF message title",
+            "rns.lxmf.content": "LXMF message content preview",
+            "rns.lxmf.stamp": "LXMF timestamp stamp",
         }
 
 
