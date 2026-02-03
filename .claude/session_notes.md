@@ -3,9 +3,9 @@
 > **LoRa Mesh Network Development & Operations Suite**
 > *Build. Test. Deploy. Monitor.*
 
-## Current Version: 0.4.8-alpha
-## Last Updated: 2026-02-02
-## Branch: `claude/session-management-setup-KMbuT`
+## Current Version: 0.5.0-beta
+## Last Updated: 2026-02-03
+## Branch: `main` (PRs merged)
 
 ---
 
@@ -22,19 +22,49 @@
 # 1. Check current state
 git status && git log --oneline -5
 
-# 2. Test the Web UI with Map
-sudo python3 src/main_web.py
-# Then open http://localhost:8080 and click the "Map" tab
+# 2. Launch TUI (PRIMARY INTERFACE)
+sudo python3 src/launcher_tui/main.py
 
-# 3. Test GTK UI
-sudo python3 src/main_gtk.py
+# 3. Test MQTT Setup (new feature)
+# TUI: Configuration → Service Config → MQTT Setup
 
 # 4. Test version checker standalone
 python3 src/updates/version_checker.py
 
-# 5. Install desktop integration (optional)
-sudo ./scripts/install-desktop.sh
+# 5. Verify MQTT messages
+mosquitto_sub -h localhost -t 'msh/#' -v
 ```
+
+---
+
+## Session: 2026-02-03 - MQTT Multi-Consumer Architecture
+
+**Major PRs Merged:**
+
+| PR | Description |
+|----|-------------|
+| #670 | MQTT → WebSocket bridge for web UI access |
+| #669 | meshtasticd architecture validation script |
+| #668 | MQTT mixin API fix |
+| #667 | MQTT setup wizard and local broker mode |
+| #666 | Local MQTT broker support for multi-consumer |
+| #664 | WebSocket broadcast to Gateway Bridge |
+| #663 | MeshForge self-update feature |
+
+**Architecture Completed:**
+```
+meshtasticd
+    ├── TCP:4403 → Gateway Bridge → RNS → WebSocket:5001
+    └── MQTT → mosquitto:1883 → MQTT Monitor
+                             → meshing-around
+                             → Grafana/InfluxDB
+```
+
+**New TUI Features:**
+- MQTT Setup Wizard (Configuration → Service Config → MQTT Setup)
+- Local/Public broker toggle (MQTT Monitor → Configure)
+- WebSocket Bridge for web UI (MQTT Monitor → WebSocket Bridge)
+- MeshForge self-update (Updates → Update MeshForge)
 
 ---
 
