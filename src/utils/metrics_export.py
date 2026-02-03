@@ -203,6 +203,38 @@ METRICS = {
         help_text="Unix timestamp of last metrics collection",
         labels=[],
     ),
+
+    # TCP connection metrics
+    "meshforge_tcp_connections": MetricDefinition(
+        name="meshforge_tcp_connections",
+        metric_type=GAUGE,
+        help_text="Number of TCP connections by state",
+        labels=["state", "port"],
+    ),
+    "meshforge_tcp_meshtasticd_connections": MetricDefinition(
+        name="meshforge_tcp_meshtasticd_connections",
+        metric_type=GAUGE,
+        help_text="Active connections to meshtasticd (port 4403)",
+        labels=["remote_addr"],
+    ),
+    "meshforge_tcp_connection_rtt_ms": MetricDefinition(
+        name="meshforge_tcp_connection_rtt_ms",
+        metric_type=GAUGE,
+        help_text="TCP connection round-trip time in milliseconds",
+        labels=["remote_addr", "remote_port"],
+    ),
+    "meshforge_tcp_connections_total": MetricDefinition(
+        name="meshforge_tcp_connections_total",
+        metric_type=COUNTER,
+        help_text="Total TCP connections seen since start",
+        labels=[],
+    ),
+    "meshforge_network_devices_discovered": MetricDefinition(
+        name="meshforge_network_devices_discovered",
+        metric_type=GAUGE,
+        help_text="Number of network devices discovered",
+        labels=["type"],  # meshtasticd, web, other
+    ),
 }
 
 
@@ -267,6 +299,7 @@ class PrometheusExporter:
         self._collectors.append(self._collect_message_metrics)
         self._collectors.append(self._collect_node_metrics)
         self._collectors.append(self._collect_gateway_metrics)
+        self._collectors.append(self._collect_tcp_metrics)
 
     def register_collector(self, collector: Callable[[], List[str]]) -> None:
         """
@@ -574,6 +607,70 @@ class PrometheusExporter:
         lines.append(f"# TYPE {defn.name} {defn.metric_type}")
         lines.append(_format_metric_line(defn.name, meshtastic_connected, {"network": "meshtastic"}))
         lines.append(_format_metric_line(defn.name, rns_connected, {"network": "rns"}))
+
+        return lines
+
+    def _collect_tcp_metrics(self) -> List[str]:
+        """Collect TCP connection metrics."""
+        lines = []
+
+        try:
+            from monitoring.tcp_monitor import TCPMonitor, TCPState
+        except ImportError:
+            logger.debug("TCP monitor not available for metrics collection")
+            return lines
+
+        try:
+            monitor = TCPMonitor()
+            connections = monitor._get_tcp_connections()
+
+            # Count connections by state and port
+            state_port_counts: Dict[str, Dict[str, int]] = {}
+            meshtasticd_connections = []
+            total_connections = len(connections)
+
+            for conn in connections:
+                state = conn["state"].value
+                # Determine the relevant port (4403 for meshtasticd)
+                port = "4403" if 4403 in (conn["local_port"], conn["remote_port"]) else "other"
+
+                if state not in state_port_counts:
+                    state_port_counts[state] = {}
+                if port not in state_port_counts[state]:
+                    state_port_counts[state][port] = 0
+                state_port_counts[state][port] += 1
+
+                # Track meshtasticd connections
+                if conn["local_port"] == 4403 or conn["remote_port"] == 4403:
+                    meshtasticd_connections.append(conn)
+
+            # TCP connections by state
+            defn = METRICS["meshforge_tcp_connections"]
+            lines.append(f"# HELP {defn.name} {defn.help_text}")
+            lines.append(f"# TYPE {defn.name} {defn.metric_type}")
+            for state, ports in state_port_counts.items():
+                for port, count in ports.items():
+                    lines.append(_format_metric_line(
+                        defn.name, count, {"state": state, "port": port}
+                    ))
+
+            # Meshtasticd connections
+            defn = METRICS["meshforge_tcp_meshtasticd_connections"]
+            lines.append(f"# HELP {defn.name} {defn.help_text}")
+            lines.append(f"# TYPE {defn.name} {defn.metric_type}")
+            for conn in meshtasticd_connections:
+                remote = conn["remote_addr"]
+                if conn["state"] == TCPState.ESTABLISHED:
+                    lines.append(_format_metric_line(defn.name, 1, {"remote_addr": remote}))
+
+            # Total connections
+            defn = METRICS["meshforge_tcp_connections_total"]
+            lines.append(f"# HELP {defn.name} {defn.help_text}")
+            lines.append(f"# TYPE {defn.name} {defn.metric_type}")
+            lines.append(_format_metric_line(defn.name, total_connections, {}))
+
+        except Exception as e:
+            logger.debug(f"Error collecting TCP metrics: {e}")
 
         return lines
 

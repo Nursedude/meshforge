@@ -361,6 +361,8 @@ class SystemToolsMixin:
         """Comprehensive network diagnostics."""
         while True:
             choices = [
+                ("tcp_monitor", "TCP Monitor (Meshtasticd Connections)"),
+                ("network_scan", "Discover Meshtasticd Devices"),
                 ("ss", "ss -tuln (Listening Ports)"),
                 ("ss_all", "ss -tunap (All Connections)"),
                 ("netstat", "netstat -an (Legacy - All)"),
@@ -429,6 +431,10 @@ class SystemToolsMixin:
             self._ping_test()
         elif cmd_type == 'wifi':
             self._wifi_status()
+        elif cmd_type == 'tcp_monitor':
+            self._tcp_monitor_view()
+        elif cmd_type == 'network_scan':
+            self._network_scan_view()
 
     def _dns_lookup(self):
         """Perform DNS lookup."""
@@ -570,6 +576,174 @@ class SystemToolsMixin:
             subprocess.run(['iwconfig'], timeout=10)
         else:
             print("No WiFi tools found. Install: sudo apt install iw")
+
+        print("\n" + "=" * 60)
+        self._wait_for_enter()
+
+    def _tcp_monitor_view(self):
+        """Display TCP connections related to Meshtastic."""
+        subprocess.run(['clear'], check=False, timeout=5)
+        print("=== TCP Connection Monitor ===\n")
+        print("Monitoring connections to meshtasticd (port 4403) and web interfaces\n")
+
+        try:
+            from monitoring.tcp_monitor import TCPMonitor, TCPState
+        except ImportError:
+            print("TCP Monitor not available.")
+            print("Check that the monitoring module is installed correctly.")
+            self._wait_for_enter()
+            return
+
+        monitor = TCPMonitor()
+        connections = monitor._get_tcp_connections()
+
+        # Group by type
+        meshtasticd_conns = []
+        web_conns = []
+        other_conns = []
+
+        for conn in connections:
+            if 4403 in (conn["local_port"], conn["remote_port"]):
+                meshtasticd_conns.append(conn)
+            elif any(p in (conn["local_port"], conn["remote_port"]) for p in (80, 443, 8080)):
+                web_conns.append(conn)
+            else:
+                other_conns.append(conn)
+
+        # Display meshtasticd connections
+        print("--- Meshtasticd Connections (port 4403) ---")
+        if meshtasticd_conns:
+            print(f"{'Remote Address':<20} {'Port':<8} {'State':<15} {'Process':<20}")
+            print("-" * 65)
+            for conn in meshtasticd_conns:
+                remote = conn["remote_addr"]
+                port = conn["remote_port"] if conn["remote_port"] != 4403 else conn["local_port"]
+                state = conn["state"].value
+                proc = conn.get("process_name", "unknown") or "unknown"
+                print(f"{remote:<20} {port:<8} {state:<15} {proc:<20}")
+        else:
+            print("  No active meshtasticd connections")
+        print()
+
+        # Display web connections
+        print("--- Web Interface Connections (ports 80, 443, 8080) ---")
+        if web_conns:
+            print(f"{'Remote Address':<20} {'Port':<8} {'State':<15} {'Process':<20}")
+            print("-" * 65)
+            for conn in web_conns[:10]:  # Limit to 10
+                remote = conn["remote_addr"]
+                port = conn["remote_port"]
+                state = conn["state"].value
+                proc = conn.get("process_name", "unknown") or "unknown"
+                print(f"{remote:<20} {port:<8} {state:<15} {proc:<20}")
+            if len(web_conns) > 10:
+                print(f"  ... and {len(web_conns) - 10} more")
+        else:
+            print("  No active web connections")
+        print()
+
+        # Summary
+        print("--- Summary ---")
+        state_counts = {}
+        for conn in connections:
+            state = conn["state"].value
+            state_counts[state] = state_counts.get(state, 0) + 1
+
+        print(f"Total connections: {len(connections)}")
+        print(f"  Meshtasticd: {len(meshtasticd_conns)}")
+        print(f"  Web: {len(web_conns)}")
+        print(f"  Other: {len(other_conns)}")
+        print()
+        print("Connection states:")
+        for state, count in sorted(state_counts.items()):
+            print(f"  {state}: {count}")
+
+        print("\n" + "=" * 60)
+        self._wait_for_enter()
+
+    def _network_scan_view(self):
+        """Scan network for meshtasticd devices."""
+        subprocess.run(['clear'], check=False, timeout=5)
+        print("=== Network Device Discovery ===\n")
+        print("Scanning for Meshtastic devices on the local network...\n")
+
+        try:
+            from monitoring.tcp_monitor import NetworkScanner
+        except ImportError:
+            print("Network Scanner not available.")
+            print("Check that the monitoring module is installed correctly.")
+            self._wait_for_enter()
+            return
+
+        # Get subnet to scan
+        subnet = self.dialog.inputbox(
+            "Network Scan",
+            "Enter subnet to scan (CIDR notation):\n\n"
+            "Examples:\n"
+            "  192.168.1.0/24 (256 hosts)\n"
+            "  10.0.0.0/24 (256 hosts)\n"
+            "  Leave blank for auto-detect",
+            ""
+        )
+
+        subprocess.run(['clear'], check=False, timeout=5)
+        print("=== Scanning Network ===\n")
+
+        scanner = NetworkScanner(timeout=1.0, max_threads=50)
+
+        # Progress callback
+        def on_progress(current, total):
+            pct = (current / total) * 100
+            bar_len = 40
+            filled = int(bar_len * current / total)
+            bar = "=" * filled + "-" * (bar_len - filled)
+            print(f"\rProgress: [{bar}] {pct:.0f}% ({current}/{total})", end="", flush=True)
+
+        scanner.on_progress = on_progress
+
+        try:
+            if subnet:
+                devices = scanner.scan_subnet(subnet)
+            else:
+                devices = scanner.scan_local_network()
+        except Exception as e:
+            print(f"\nError scanning network: {e}")
+            self._wait_for_enter()
+            return
+
+        print("\n\n")
+
+        if not devices:
+            print("No devices with open Meshtastic ports found.")
+            print("\nNote: Devices must have port 4403 (meshtasticd) or web ports open.")
+        else:
+            # Show meshtasticd devices first
+            meshtasticd_devices = [d for d in devices if d.is_meshtasticd]
+            web_devices = [d for d in devices if d.is_web_enabled and not d.is_meshtasticd]
+
+            if meshtasticd_devices:
+                print("--- Meshtasticd Devices (port 4403) ---")
+                print(f"{'IP Address':<18} {'Hostname':<30} {'Response':<12}")
+                print("-" * 60)
+                for dev in meshtasticd_devices:
+                    hostname = dev.hostname or "(no hostname)"
+                    response = f"{dev.response_time_ms:.1f}ms" if dev.response_time_ms else "N/A"
+                    print(f"{dev.ip_address:<18} {hostname:<30} {response:<12}")
+                print()
+
+            if web_devices:
+                print("--- Web-Enabled Devices ---")
+                print(f"{'IP Address':<18} {'Hostname':<30} {'Ports':<20}")
+                print("-" * 70)
+                for dev in web_devices:
+                    hostname = dev.hostname or "(no hostname)"
+                    ports = ", ".join(f"{p}" for p in dev.ports.keys())
+                    print(f"{dev.ip_address:<18} {hostname:<30} {ports:<20}")
+                print()
+
+            print(f"Total devices found: {len(devices)}")
+            print(f"  With meshtasticd: {len(meshtasticd_devices)}")
+            print(f"  With web interface: {len(web_devices)}")
 
         print("\n" + "=" * 60)
         self._wait_for_enter()

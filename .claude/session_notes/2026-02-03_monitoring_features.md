@@ -416,3 +416,148 @@ This focuses on Meshtastic/RNS mesh traffic, not general TCP/IP.
 ## Session Entropy
 
 Low - Clear root cause identified and fixed. Well-scoped investigation.
+
+---
+
+# Session 4: Add TCP/IP Monitoring
+
+**Date**: 2026-02-03
+**Branch**: `claude/add-tcp-monitoring-9jVW0`
+
+## Objective
+
+Add TCP/IP level monitoring to MeshForge to provide Wireshark-like visibility into:
+1. TCP connections to/from meshtasticd (port 4403)
+2. Web client connections to meshtasticd
+3. Network discovery of Meshtastic devices by TCP/IP address
+4. Socket-level metrics (RTT, connection states, bytes transferred)
+
+## Rationale
+
+- meshtasticd can run web-clients remotely
+- meshtasticd nodes have TCP/IP addresses
+- Visibility at TCP/IP layer helps debug network issues beyond RF mesh
+
+## Planned Components
+
+### 1. TCPConnectionMonitor
+- Track active TCP connections to meshtasticd
+- Monitor connection states (ESTABLISHED, CLOSE_WAIT, TIME_WAIT, etc.)
+- Measure connection latency and throughput
+- Use `ss` or `/proc/net/tcp` for socket state info
+
+### 2. NetworkScanner
+- Discover meshtasticd instances on local network
+- Scan common ports (4403 TCP, 80 HTTP web interface)
+- Report device IP addresses and response times
+
+### 3. ConnectionMetrics
+- RTT (round-trip time) measurements
+- Bytes sent/received per connection
+- Connection duration and state history
+- Integration with existing Prometheus metrics
+
+### 4. TUI Integration
+- New menu option: "TCP/IP Monitor"
+- Real-time display of active connections
+- Network device discovery view
+
+## Files To Create/Modify
+
+```
+src/monitoring/tcp_monitor.py     # NEW - Core TCP monitoring
+src/utils/network_scanner.py      # NEW - Device discovery
+src/utils/metrics_export.py       # MODIFY - Add TCP metrics
+src/launcher_tui/main.py          # MODIFY - Add TUI menu
+tests/test_tcp_monitor.py         # NEW - Unit tests
+```
+
+## Implementation Notes
+
+- Use `psutil` or `socket` stdlib for cross-platform compatibility
+- Avoid requiring root/sudo for basic monitoring
+- Parse `/proc/net/tcp` for Linux socket states
+- Integrate with existing callback architecture
+
+## Session Progress
+
+- [x] Design TCP monitor architecture
+- [x] Create TCPConnectionMonitor class
+- [x] Add port scanner for discovery
+- [x] Add connection metrics
+- [x] Integrate with metrics_export.py
+- [x] Add TUI menu integration
+- [x] Write unit tests
+- [x] Commit and push
+
+## Files Created
+
+| File | Description |
+|------|-------------|
+| `src/monitoring/tcp_monitor.py` | Core TCP monitoring classes |
+| `tests/test_tcp_monitor.py` | Comprehensive unit tests |
+
+## Files Modified
+
+| File | Changes |
+|------|---------|
+| `src/monitoring/__init__.py` | Export TCP monitor classes |
+| `src/utils/metrics_export.py` | Add TCP metrics collection |
+| `src/launcher_tui/system_tools_mixin.py` | Add TUI menu options |
+
+## Key Components
+
+### TCPMonitor
+- Tracks TCP connections by polling system sockets
+- Filters for meshtasticd (port 4403) and web ports
+- Callbacks: on_connection_added, on_connection_removed, on_connection_state_change
+- Uses psutil if available, falls back to /proc/net/tcp on Linux
+
+### NetworkScanner
+- Parallel port scanning with configurable threads
+- Discovers meshtasticd devices on local network
+- Measures response time for each device
+- CIDR subnet scanning support
+
+### TUI Integration
+New menu options in "Network Diagnostics":
+- TCP Monitor (Meshtasticd Connections) - View active connections
+- Discover Meshtasticd Devices - Scan network for devices
+
+### Prometheus Metrics
+New metrics added:
+- `meshforge_tcp_connections{state, port}` - Connection counts by state
+- `meshforge_tcp_meshtasticd_connections{remote_addr}` - Active meshtasticd connections
+- `meshforge_tcp_connection_rtt_ms` - Round-trip time
+- `meshforge_tcp_connections_total` - Total connections seen
+- `meshforge_network_devices_discovered{type}` - Discovered device counts
+
+## Usage Examples
+
+```python
+# Monitor TCP connections
+from monitoring.tcp_monitor import TCPMonitor
+
+monitor = TCPMonitor()
+monitor.on_connection_added = lambda c: print(f"New: {c.remote_addr}")
+monitor.start()
+
+connections = monitor.get_meshtasticd_connections()
+for conn in connections:
+    print(f"{conn.remote_addr}:{conn.remote_port} - {conn.state.value}")
+
+monitor.stop()
+
+# Discover devices
+from monitoring.tcp_monitor import NetworkScanner
+
+scanner = NetworkScanner()
+devices = scanner.scan_subnet("192.168.1.0/24")
+for dev in devices:
+    if dev.is_meshtasticd:
+        print(f"Found meshtasticd at {dev.ip_address}")
+```
+
+## Session Entropy
+
+Low - Focused implementation with clean modular design.
