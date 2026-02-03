@@ -34,6 +34,8 @@ https://www.wireshark.org/docs/wsdg_html_chunked/ChDissectAdd.html
 import hashlib
 import json
 import logging
+import os
+import random
 import re
 import sqlite3
 import threading
@@ -346,8 +348,8 @@ class MeshPacket:
     Like Wireshark's frame_data, this captures all packet metadata
     and enables cross-protocol analysis.
     """
-    # Unique identifier
-    id: str = field(default_factory=lambda: f"pkt_{int(time.time()*1000)}")
+    # Unique identifier (microseconds + random for uniqueness)
+    id: str = field(default_factory=lambda: f"pkt_{int(time.time()*1000000)}_{random.randint(0, 9999):04d}")
 
     # Timing
     timestamp: datetime = field(default_factory=datetime.now)
