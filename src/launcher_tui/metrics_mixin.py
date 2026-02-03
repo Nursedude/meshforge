@@ -791,26 +791,31 @@ class MetricsMixin:
 
     def _grafana_install(self):
         """Show Grafana installation instructions."""
-        instructions = """GRAFANA INSTALLATION
+        instructions = """GRAFANA INSTALLATION (Raspberry Pi / Debian)
 ==================================================
 
-Option 1: APT (Debian/Ubuntu)
-  sudo apt-get install -y software-properties-common
-  sudo add-apt-repository "deb https://packages.grafana.com/oss/deb stable main"
-  wget -q -O - https://packages.grafana.com/gpg.key | sudo apt-key add -
-  sudo apt-get update
-  sudo apt-get install grafana
+Step 1: Add Grafana GPG key
+  curl -fsSL https://apt.grafana.com/gpg.key | \\
+    sudo gpg --dearmor -o /usr/share/keyrings/grafana.gpg
+
+Step 2: Add Grafana repository
+  echo "deb [signed-by=/usr/share/keyrings/grafana.gpg] \\
+    https://apt.grafana.com stable main" | \\
+    sudo tee /etc/apt/sources.list.d/grafana.list
+
+Step 3: Install Grafana
+  sudo apt update
+  sudo apt install grafana
+
+Step 4: Enable and start service
   sudo systemctl enable grafana-server
   sudo systemctl start grafana-server
-
-Option 2: Quick install script
-  sudo apt install grafana
 
 After install:
   - Access at http://localhost:3000
   - Default login: admin / admin
-  - Add Prometheus data source
-  - Import MeshForge dashboards
+  - Add Prometheus data source (http://localhost:9090)
+  - Import MeshForge dashboards from dashboards/ folder
 """
         self.dialog.msgbox("Install Grafana", instructions)
 
