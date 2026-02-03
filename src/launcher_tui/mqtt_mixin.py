@@ -121,9 +121,10 @@ class MQTTMixin:
             connected = self._mqtt_subscriber.is_connected()
             lines.append(f"Status: {'Connected' if connected else 'Disconnected'}")
 
-            # Get subscriber stats
-            node_count = len(self._mqtt_subscriber.nodes) if hasattr(self._mqtt_subscriber, 'nodes') else 0
-            lines.append(f"Nodes discovered: {node_count}")
+            # Get subscriber stats using proper API
+            stats = self._mqtt_subscriber.get_stats()
+            lines.append(f"Nodes discovered: {stats.get('node_count', 0)}")
+            lines.append(f"Messages received: {stats.get('messages_received', 0)}")
 
             # Get config info
             config = self._load_mqtt_config()
@@ -159,20 +160,49 @@ class MQTTMixin:
         self.dialog.infobox("Starting MQTT", "Connecting to MQTT broker...")
 
         try:
-            self._mqtt_subscriber = MQTTNodelessSubscriber(
-                broker=config.get('broker', 'mqtt.meshtastic.org'),
-                port=config.get('port', 8883),
-                topic=config.get('topic', 'msh/US/2/e/LongFast/#'),
-                username=config.get('username'),
-                password=config.get('password')
-            )
+            # Convert TUI config format to subscriber config format
+            # The subscriber expects: broker, port, root_topic, channel, key, use_tls, etc.
+            broker = config.get('broker', 'mqtt.meshtastic.org')
+            port = config.get('port', 8883)
+            topic = config.get('topic', 'msh/US/2/e/LongFast/#')
 
-            # Start in background thread
-            self._mqtt_thread = threading.Thread(
-                target=self._mqtt_subscriber.run,
-                daemon=True
-            )
-            self._mqtt_thread.start()
+            # Parse root_topic and channel from full topic string
+            # Topic format: msh/2/json/{channel}/# or msh/{region}/2/e/{channel}/#
+            parts = topic.rstrip('#').rstrip('/').split('/')
+            if len(parts) >= 4:
+                # Extract channel (last non-empty part before #)
+                channel = parts[-1] if parts[-1] else 'LongFast'
+                # Build root_topic from parts before channel
+                # For msh/2/json/HawaiiNet -> root = msh/2/e (standard encrypted path)
+                # For msh/US/2/e/LongFast -> root = msh/US/2/e
+                if '/json/' in topic:
+                    # Local broker format: msh/2/json/{channel}/#
+                    root_topic = '/'.join(parts[:-1]).replace('/json', '/e')
+                else:
+                    # Public broker format: msh/{region}/2/e/{channel}/#
+                    root_topic = '/'.join(parts[:-1])
+            else:
+                root_topic = 'msh/US/2/e'
+                channel = 'LongFast'
+
+            subscriber_config = {
+                "broker": broker,
+                "port": port,
+                "username": config.get('username') or "",
+                "password": config.get('password') or "",
+                "root_topic": root_topic,
+                "channel": channel,
+                "key": "AQ==",  # Default Meshtastic key
+                "use_tls": config.get('use_tls', port == 8883),
+                "auto_reconnect": True,
+                "reconnect_delay": 2 if broker == 'localhost' else 5,
+                "max_reconnect_delay": 30 if broker == 'localhost' else 60,
+            }
+
+            self._mqtt_subscriber = MQTTNodelessSubscriber(config=subscriber_config)
+
+            # Start the subscriber (it manages its own loop thread)
+            success = self._mqtt_subscriber.start()
 
             # Wait a moment for connection
             time.sleep(2)
@@ -348,18 +378,24 @@ class MQTTMixin:
 
     def _show_mqtt_nodes(self):
         """Show nodes discovered via MQTT."""
-        if not self._mqtt_subscriber or not hasattr(self._mqtt_subscriber, 'nodes'):
+        nodes = []
+        if self._mqtt_subscriber:
+            # Use proper API to get nodes
+            nodes = self._mqtt_subscriber.get_nodes()
+
+        if not nodes:
             # Try to load from cache
-            nodes = self._load_mqtt_cache()
-            if not nodes:
+            cache_data = self._load_mqtt_cache()
+            if cache_data:
+                # Cache is GeoJSON features, convert to display format
+                nodes = cache_data
+            else:
                 self.dialog.msgbox(
                     "No Nodes",
                     "No MQTT nodes discovered yet.\n\n"
                     "Start the subscriber and wait for network activity."
                 )
                 return
-        else:
-            nodes = list(self._mqtt_subscriber.nodes.values())
 
         if not nodes:
             self.dialog.msgbox("No Nodes", "No nodes discovered yet.")
@@ -368,10 +404,20 @@ class MQTTMixin:
         # Build node list for menu
         choices = []
         for i, node in enumerate(nodes[:50]):  # Limit to 50 for display
-            name = getattr(node, 'name', None) or getattr(node, 'id', f'Node {i}')
-            network = getattr(node, 'network', 'mqtt')
-            last_seen = getattr(node, 'last_seen', 'unknown')
-            choices.append((str(i), f"{name[:20]:<20} {network} ({last_seen})"))
+            # Handle both MQTTNode objects and GeoJSON feature dicts
+            if hasattr(node, 'long_name'):
+                # MQTTNode object
+                name = node.long_name or node.short_name or node.node_id
+                last_seen = node.get_age_string()
+            elif isinstance(node, dict):
+                # GeoJSON feature from cache
+                props = node.get('properties', node)
+                name = props.get('name', props.get('id', f'Node {i}'))
+                last_seen = props.get('last_seen', 'cached')
+            else:
+                name = f'Node {i}'
+                last_seen = 'unknown'
+            choices.append((str(i), f"{str(name)[:20]:<20} mqtt ({last_seen})"))
 
         if len(nodes) > 50:
             choices.append(("more", f"... and {len(nodes) - 50} more nodes"))
@@ -386,23 +432,21 @@ class MQTTMixin:
         """Show MQTT statistics."""
         lines = ["MQTT STATISTICS", "=" * 40, ""]
 
-        if self._mqtt_subscriber and hasattr(self._mqtt_subscriber, 'nodes'):
-            nodes = self._mqtt_subscriber.nodes
+        if self._mqtt_subscriber:
+            # Use proper API to get stats
+            stats = self._mqtt_subscriber.get_stats()
 
-            # Count by network type
-            meshtastic = sum(1 for n in nodes.values() if getattr(n, 'network', '') == 'meshtastic')
-            online = sum(1 for n in nodes.values() if getattr(n, 'is_online', False))
-
-            lines.append(f"Total nodes: {len(nodes)}")
-            lines.append(f"Online: {online}")
-            lines.append(f"Meshtastic: {meshtastic}")
+            lines.append(f"Total nodes: {stats.get('node_count', 0)}")
+            lines.append(f"Online (15 min): {stats.get('online_count', 0)}")
+            lines.append(f"With position: {stats.get('with_position', 0)}")
             lines.append("")
+            lines.append(f"Messages received: {stats.get('messages_received', 0)}")
+            lines.append(f"Messages rejected: {stats.get('messages_rejected', 0)}")
+            lines.append(f"Reconnect attempts: {stats.get('reconnect_attempts', 0)}")
 
-            # Recent activity
-            now = time.time()
-            recent_1h = sum(1 for n in nodes.values()
-                          if hasattr(n, 'last_heard') and (now - n.last_heard) < 3600)
-            lines.append(f"Active in last hour: {recent_1h}")
+            if stats.get('connect_time'):
+                lines.append("")
+                lines.append(f"Connected since: {stats['connect_time']}")
         else:
             # Load from cache
             cache = self._load_mqtt_cache()
@@ -423,17 +467,22 @@ class MQTTMixin:
         export_path = get_real_user_home() / ".local" / "share" / "meshforge" / "mqtt_export.json"
 
         try:
-            if self._mqtt_subscriber and hasattr(self._mqtt_subscriber, 'nodes'):
-                # Export from live data
+            if self._mqtt_subscriber:
+                # Export from live data using proper API
+                nodes = self._mqtt_subscriber.get_nodes()
                 nodes_data = []
-                for node in self._mqtt_subscriber.nodes.values():
+                for node in nodes:
                     nodes_data.append({
-                        'id': getattr(node, 'id', ''),
-                        'name': getattr(node, 'name', ''),
-                        'network': getattr(node, 'network', 'mqtt'),
-                        'lat': getattr(node, 'lat', None),
-                        'lon': getattr(node, 'lon', None),
-                        'last_seen': getattr(node, 'last_seen', ''),
+                        'id': node.node_id,
+                        'name': node.long_name or node.short_name or node.node_id,
+                        'network': 'meshtastic',
+                        'lat': node.latitude,
+                        'lon': node.longitude,
+                        'last_seen': node.get_age_string(),
+                        'battery': node.battery_level,
+                        'snr': node.snr,
+                        'rssi': node.rssi,
+                        'hardware': node.hardware_model,
                     })
             else:
                 nodes_data = self._load_mqtt_cache()

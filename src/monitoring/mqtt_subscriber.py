@@ -48,6 +48,7 @@ DEFAULT_KEY = "AQ=="  # Default Meshtastic encryption key
 # Local broker defaults (for meshtasticd → mosquitto → MeshForge architecture)
 LOCAL_BROKER = "localhost"
 LOCAL_PORT = 1883
+LOCAL_ROOT_TOPIC = "msh/2/e"  # No region prefix for local meshtasticd publishing
 
 # Robustness limits
 MAX_PAYLOAD_BYTES = 65536  # 64 KB max per MQTT message
@@ -776,7 +777,7 @@ class MQTTNodelessSubscriber:
 def create_local_subscriber(
     broker: str = LOCAL_BROKER,
     port: int = LOCAL_PORT,
-    root_topic: str = DEFAULT_ROOT_TOPIC,
+    root_topic: str = LOCAL_ROOT_TOPIC,
     channel: str = DEFAULT_CHANNEL,
 ) -> MQTTNodelessSubscriber:
     """

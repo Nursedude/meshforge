@@ -196,11 +196,14 @@
 
 | File | Lines | Action |
 |------|-------|--------|
-| mesh_tools.py | 1953 | Monitor |
-| tools.py | 1842 | Monitor |
-| tui/app.py | 1734 | Consider extracting panes |
+| traffic_inspector.py | 1989 | Consider splitting UI/logic |
+| rns_bridge.py | 1849 | Monitor (gateway core) |
+| launcher_tui/main.py | 1794 | Extracted to mixins, monitor |
+| diagnostics/engine.py | 1767 | Consider splitting by category |
+| node_tracker.py | 1610 | Monitor (complex state machine) |
 
-*Note: rns.py (673), main_web.py (1314), launcher_tui/main.py (1845), and hamclock.py (2107) successfully refactored.*
+*Note: Previous large files (mesh_tools.py, tools.py, tui/app.py) were refactored/consolidated.*
+*Last updated: 2026-02-03*
 
 ---
 
