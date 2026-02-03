@@ -67,8 +67,40 @@ sudo meshforge
 - The previous WebSocket fix (for MessageListener) was correct but couldn't work because rnsd owned the TCP connection
 - This fix completes the picture: Gateway Bridge = single owner of meshtasticd connection + broadcasts to all web clients
 
-## Next Session
+## Next Session: Local MQTT Integration
 
-1. Test on Pi after merge
-2. Verify WebSocket real-time messages work with Gateway Bridge
-3. Consider documenting the two architecture options
+**Priority:** Add local MQTT broker support for reliability architecture
+
+### Target Architecture
+```
+meshtasticd
+    ├── TCP:4403 → Gateway Bridge → RNS transport
+    └── MQTT → local mosquitto → MeshForge MessageListener
+                              → meshing-around
+                              → maps/grafana/telemetry/sensors
+```
+
+### Tasks
+1. **Test current fix** - Verify Gateway Bridge WebSocket works on Pi
+2. **Set up mosquitto** - Local MQTT broker on Pi
+3. **Configure meshtasticd MQTT** - Publish to local broker
+4. **Adapt MQTTNodelessSubscriber** - Point to localhost instead of mqtt.meshtastic.org
+5. **Wire MQTT → WebSocket** - MessageListener subscribes to local MQTT, broadcasts to WebSocket
+
+### Files to Modify
+- `src/monitoring/mqtt_subscriber.py` - Already has MQTT subscriber, needs local broker config
+- `src/utils/message_listener.py` - Could add MQTT mode alongside TCP mode
+- meshtasticd config - Enable MQTT publishing
+
+### Benefits
+- Multiple consumers (MeshForge, meshing-around, grafana, etc.)
+- Decoupled from TCP one-client limitation
+- Telemetry/sensor data flows to dashboards
+- Reliability - MQTT broker persists messages
+
+### Reference
+- Existing repo: meshing-around-meshforge (private channel)
+- Public pattern: mqtt.meshtastic.org
+
+### Branch Policy
+- Branches deleted after merge to main (normal workflow)
