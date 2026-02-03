@@ -1136,6 +1136,12 @@ class RNSMeshtasticBridge:
                 })
                 self.node_tracker.add_node(node)
 
+            # Extract relay node (Meshtastic 2.6+)
+            # relayNode is the last byte of the node ID that relayed this packet
+            relay_node = packet.get('relayNode')
+            if relay_node and relay_node > 0:
+                self._discover_relay_node(relay_node, from_id, packet)
+
             # Handle text messages
             if portnum == 'TEXT_MESSAGE_APP':
                 payload = decoded.get('payload', b'')
@@ -1207,6 +1213,62 @@ class RNSMeshtasticBridge:
 
         except Exception as e:
             logger.error(f"Error processing Meshtastic message: {e}")
+
+    def _discover_relay_node(self, relay_byte: int, from_id: str, packet: dict):
+        """
+        Discover relay node from Meshtastic 2.6+ relayNode field.
+
+        The relayNode field only contains the last byte of the relay node's ID.
+        We try to match it against known nodes or create a placeholder.
+        """
+        try:
+            if relay_byte <= 0 or relay_byte > 255:
+                return
+
+            # Try to find existing node matching this last byte
+            for node in self.node_tracker.get_meshtastic_nodes():
+                if node.meshtastic_id:
+                    try:
+                        node_num = int(node.meshtastic_id[1:], 16)
+                        if (node_num & 0xFF) == relay_byte:
+                            # Found the relay node - update topology
+                            if self._network_topology and from_id:
+                                self._network_topology.add_edge(
+                                    source_id=node.id,
+                                    dest_id=from_id,
+                                    hops=1,  # Direct relay relationship
+                                    snr=packet.get('rxSnr'),
+                                    rssi=packet.get('rxRssi'),
+                                )
+                            logger.debug(f"Relay path: {node.meshtastic_id} -> {from_id}")
+                            return
+                    except (ValueError, TypeError):
+                        continue
+
+            # No match - create partial relay node for tracking
+            partial_id = f"!????{relay_byte:02x}"
+            node = UnifiedNode(
+                id=partial_id,
+                name=f"Relay-{relay_byte:02x}",
+                network="meshtastic",
+                meshtastic_id=partial_id,
+            )
+            self.node_tracker.add_node(node)
+
+            # Add topology edge from unknown relay to sender
+            if self._network_topology and from_id:
+                self._network_topology.add_edge(
+                    source_id=partial_id,
+                    dest_id=from_id,
+                    hops=1,
+                    snr=packet.get('rxSnr'),
+                    rssi=packet.get('rxRssi'),
+                )
+
+            logger.info(f"Discovered relay node via packet routing: {partial_id}")
+
+        except Exception as e:
+            logger.debug(f"Error discovering relay node: {e}")
 
     def _on_lxmf_receive(self, message):
         """Handle incoming LXMF message"""

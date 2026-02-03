@@ -81,6 +81,10 @@ class MQTTNode:
     via_mqtt: bool = True
     hop_start: Optional[int] = None
     hops_away: Optional[int] = None
+    # Relay tracking (Meshtastic 2.6+)
+    relay_node: Optional[int] = None  # Last byte of relay node ID
+    next_hop: Optional[int] = None    # Last byte of expected next-hop node
+    discovered_via_relay: bool = False  # Node discovered by seeing it relay packets
 
     def is_online(self, threshold_minutes: int = 15) -> bool:
         """Check if node was seen recently."""
@@ -161,6 +165,8 @@ class MQTTNodelessSubscriber:
             "messages_received": 0,
             "messages_rejected": 0,
             "nodes_discovered": 0,
+            "nodes_discovered_via_relay": 0,  # Nodes found through relay_node field
+            "relay_nodes_merged": 0,  # Partial relay nodes matched to full IDs
             "nodes_pruned": 0,
             "connect_time": None,
             "last_message_time": None,
@@ -491,9 +497,123 @@ class MQTTNodelessSubscriber:
                 self._nodes[node_id] = MQTTNode(node_id=node_id)
                 with self._stats_lock:
                     self._stats["nodes_discovered"] += 1
+
+                # Check if this node matches a previously discovered relay node
+                if node_id.startswith("!") and not node_id.startswith("!????"):
+                    self._try_merge_relay_node(node_id)
             else:
                 self._nodes[node_id].last_seen = datetime.now()
             return self._nodes[node_id]
+
+    def _try_merge_relay_node(self, full_node_id: str) -> None:
+        """
+        Check if this full node ID matches a partial relay node and merge them.
+        Called under _nodes_lock.
+        """
+        try:
+            full_num = int(full_node_id[1:], 16)
+            last_byte = full_num & 0xFF
+            partial_id = f"!????{last_byte:02x}"
+
+            if partial_id in self._nodes:
+                # Found matching partial relay node - merge
+                partial_node = self._nodes[partial_id]
+                full_node = self._nodes[full_node_id]
+
+                # Transfer relay discovery flag
+                full_node.discovered_via_relay = True
+
+                # Remove partial entry
+                del self._nodes[partial_id]
+
+                with self._stats_lock:
+                    self._stats["relay_nodes_merged"] += 1
+
+                logger.info(
+                    f"Merged relay node {partial_id} -> {full_node_id} "
+                    f"({partial_node.long_name} -> {full_node.long_name or 'unknown'})"
+                )
+        except (ValueError, TypeError, KeyError):
+            pass
+
+    def _discover_relay_node(self, relay_byte: int, data: Dict) -> Optional[MQTTNode]:
+        """
+        Discover a relay node from its last byte (Meshtastic 2.6+ relay_node field).
+
+        The relay_node field only contains the last byte of the node ID. We try to:
+        1. Match it against existing nodes
+        2. If no match, create a partial entry that can be filled in later
+
+        This allows us to discover nodes that relay packets but never send their
+        own telemetry/position, which is common for managed flood routing.
+        """
+        if relay_byte <= 0 or relay_byte > 255:
+            return None
+
+        # Try to find an existing node matching this last byte
+        with self._nodes_lock:
+            for node_id, node in self._nodes.items():
+                if node_id.startswith("!"):
+                    try:
+                        # Extract last byte of node ID
+                        node_num = int(node_id[1:], 16)
+                        if (node_num & 0xFF) == relay_byte:
+                            # Found matching node - update last_seen
+                            node.last_seen = datetime.now()
+                            logger.debug(f"Relay activity from known node: {node_id}")
+                            return node
+                    except (ValueError, TypeError):
+                        continue
+
+            # No match found - create a placeholder node with partial ID
+            # Format: !????xxxx where xxxx is the hex of the last byte
+            partial_id = f"!????{relay_byte:02x}"
+
+            if partial_id not in self._nodes:
+                # Create new node discovered via relay
+                relay_node = MQTTNode(
+                    node_id=partial_id,
+                    discovered_via_relay=True,
+                    long_name=f"Relay-{relay_byte:02x}",
+                    short_name=f"R{relay_byte:02x}",
+                )
+                self._nodes[partial_id] = relay_node
+                with self._stats_lock:
+                    self._stats["nodes_discovered"] += 1
+                    self._stats["nodes_discovered_via_relay"] += 1
+                logger.info(f"Discovered relay node via packet routing: {partial_id}")
+                return relay_node
+            else:
+                # Update existing partial node
+                self._nodes[partial_id].last_seen = datetime.now()
+                return self._nodes[partial_id]
+
+    def _match_relay_to_full_node(self, partial_id: str, full_node_id: str) -> bool:
+        """
+        Match a partial relay node ID to a full node ID when we learn the full ID.
+
+        When a node that was discovered via relay sends its own telemetry,
+        we can merge the partial entry with the full node info.
+        """
+        if not partial_id.startswith("!????"):
+            return False
+
+        try:
+            relay_byte = int(partial_id[-2:], 16)
+            full_num = int(full_node_id[1:], 16)
+            if (full_num & 0xFF) == relay_byte:
+                # Match! Merge the nodes
+                with self._nodes_lock:
+                    if partial_id in self._nodes and full_node_id in self._nodes:
+                        # Copy relay discovery flag to full node
+                        self._nodes[full_node_id].discovered_via_relay = True
+                        # Remove partial entry
+                        del self._nodes[partial_id]
+                        logger.info(f"Merged relay node {partial_id} -> {full_node_id}")
+                        return True
+        except (ValueError, TypeError):
+            pass
+        return False
 
     def _safe_float(self, value: Any, min_val: float, max_val: float) -> Optional[float]:
         """Safely extract and validate a float value within range."""
@@ -540,6 +660,25 @@ class MQTTNodelessSubscriber:
             hops = self._safe_int(data["hops_away"], 0, 15)
             if hops is not None:
                 node.hops_away = hops
+
+        # Extract relay node info (Meshtastic 2.6+)
+        # relay_node is the last byte of the node ID that relayed this packet
+        if "relay_node" in data or "relayNode" in data:
+            relay = self._safe_int(
+                data.get("relay_node") or data.get("relayNode"), 0, 255
+            )
+            if relay is not None and relay > 0:
+                node.relay_node = relay
+                # Discover the relay node if we haven't seen it
+                self._discover_relay_node(relay, data)
+
+        # Extract next_hop info (Meshtastic 2.6+)
+        if "next_hop" in data or "nextHop" in data:
+            next_hop = self._safe_int(
+                data.get("next_hop") or data.get("nextHop"), 0, 255
+            )
+            if next_hop is not None and next_hop > 0:
+                node.next_hop = next_hop
 
         # Notify callbacks (snapshot for thread-safe iteration)
         for callback in list(self._node_callbacks):
@@ -715,6 +854,17 @@ class MQTTNodelessSubscriber:
             return [n for n in self._nodes.values()
                     if n.latitude is not None and n.longitude is not None]
 
+    def get_relay_discovered_nodes(self) -> List[MQTTNode]:
+        """Get nodes discovered via relay_node field (no direct telemetry yet)."""
+        with self._nodes_lock:
+            return [n for n in self._nodes.values() if n.discovered_via_relay]
+
+    def get_partial_relay_nodes(self) -> List[MQTTNode]:
+        """Get nodes with partial IDs (discovered via relay, not yet identified)."""
+        with self._nodes_lock:
+            return [n for n in self._nodes.values()
+                    if n.node_id.startswith("!????")]
+
     def get_messages(self, limit: int = 100) -> List[MQTTMessage]:
         """Get recent messages."""
         with self._messages_lock:
@@ -728,6 +878,8 @@ class MQTTNodelessSubscriber:
             "node_count": len(self._nodes),
             "online_count": len(self.get_online_nodes()),
             "with_position": len(self.get_nodes_with_position()),
+            "relay_discovered": len(self.get_relay_discovered_nodes()),
+            "partial_relay_nodes": len(self.get_partial_relay_nodes()),
             "message_count": len(self._messages),
         }
 
@@ -772,6 +924,10 @@ class MQTTNodelessSubscriber:
                         "hardware": node.hardware_model,
                         "role": node.role,
                         "hops_away": node.hops_away,
+                        # Relay tracking (Meshtastic 2.6+)
+                        "discovered_via_relay": node.discovered_via_relay,
+                        "relay_node": node.relay_node,
+                        "next_hop": node.next_hop,
                     }
                 }
                 features.append(feature)

@@ -408,6 +408,10 @@ class MessageListener:
         hop_limit = packet.get('hopLimit', 0)
         hops_away = hop_start - hop_limit if hop_start else 0
 
+        # Relay tracking (Meshtastic 2.6+)
+        relay_node = packet.get('relayNode')  # Last byte of relay node ID
+        next_hop = packet.get('nextHop')  # Last byte of next-hop node ID
+
         # Update status
         self._status.messages_received += 1
         self._status.last_message_time = datetime.now()
@@ -423,6 +427,8 @@ class MessageListener:
             'hops_away': hops_away,
             'hop_start': hop_start,
             'hop_limit': hop_limit,
+            'relay_node': relay_node,  # Meshtastic 2.6+
+            'next_hop': next_hop,  # Meshtastic 2.6+
             'timestamp': datetime.now().isoformat(),
             'is_broadcast': to_id in ('!ffffffff', '^all', None),
         }

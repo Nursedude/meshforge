@@ -371,6 +371,10 @@ class MeshPacket:
     via_mqtt: bool = False    # Received via MQTT
     want_ack: bool = False    # ACK requested
 
+    # Relay tracking (Meshtastic 2.6+)
+    relay_node: Optional[int] = None  # Last byte of relay node ID
+    next_hop: Optional[int] = None    # Last byte of next-hop node ID
+
     # Payload
     portnum: int = 0          # Meshtastic port number
     port_name: str = ""       # Human-readable port name
@@ -627,10 +631,18 @@ class MeshtasticDissector(PacketDissector):
         if "airUtilTx" in metadata:
             packet.air_util_tx = metadata["airUtilTx"]
 
+        # Relay tracking (Meshtastic 2.6+)
+        relay_node = metadata.get("relayNode")
+        if relay_node and relay_node > 0:
+            packet.relay_node = relay_node
+        next_hop = metadata.get("nextHop")
+        if next_hop and next_hop > 0:
+            packet.next_hop = next_hop
+
         # Direction
         if metadata.get("direction") == "outbound":
             packet.direction = PacketDirection.OUTBOUND
-        elif metadata.get("relayed"):
+        elif metadata.get("relayed") or packet.relay_node:
             packet.direction = PacketDirection.RELAYED
         else:
             packet.direction = PacketDirection.INBOUND
@@ -673,6 +685,14 @@ class MeshtasticDissector(PacketDissector):
                        "Received via MQTT broker")
         tree.add_field(routing, "Want ACK", "mesh.ack", packet.want_ack, FieldType.BOOLEAN,
                        "Acknowledgement requested")
+
+        # Relay tracking (Meshtastic 2.6+)
+        if packet.relay_node is not None:
+            tree.add_field(routing, "Relay Node", "mesh.relay", f"!????{packet.relay_node:02x}",
+                           FieldType.STRING, "Last byte of relay node ID (Meshtastic 2.6+)")
+        if packet.next_hop is not None:
+            tree.add_field(routing, "Next Hop", "mesh.next_hop", f"!????{packet.next_hop:02x}",
+                           FieldType.STRING, "Expected next-hop relay (Meshtastic 2.6+)")
 
         # Payload
         payload_field = PacketField(name="Payload", abbrev="mesh.payload",

@@ -297,6 +297,11 @@ class UnifiedNode:
     last_seen: Optional[datetime] = None
     first_seen: Optional[datetime] = None
 
+    # Relay tracking (Meshtastic 2.6+)
+    discovered_via_relay: bool = False  # Node discovered by seeing it relay packets
+    relay_node: Optional[int] = None  # Last byte of node that relayed to us
+    next_hop: Optional[int] = None  # Last byte of expected next-hop for our packets
+
     # State machine for granular status tracking
     # Initialized in __post_init__ if available
     _state_machine: Optional[Any] = field(default=None, repr=False)
@@ -596,9 +601,18 @@ class UnifiedNode:
 
         # Radio metrics
         node.snr = mesh_node.get('snr')
+        node.rssi = mesh_node.get('rssi') or mesh_node.get('rxRssi')
         node.hops = mesh_node.get('hopsAway')
         node.last_seen = datetime.now()
         node.is_online = True
+
+        # Relay tracking (Meshtastic 2.6+)
+        relay_node = mesh_node.get('relayNode')
+        if relay_node and relay_node > 0:
+            node.relay_node = relay_node
+        next_hop = mesh_node.get('nextHop')
+        if next_hop and next_hop > 0:
+            node.next_hop = next_hop
 
         # Update state machine with live data
         if node._state_machine is not None:
