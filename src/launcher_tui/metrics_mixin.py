@@ -29,6 +29,7 @@ class MetricsMixin:
             ("recent", "Recent Metrics"),
             ("export", "Export Metrics (CSV)"),
             ("prometheus", "Prometheus Server"),
+            ("grafana", "Grafana Dashboards"),
             ("cleanup", "Database Maintenance"),
             ("back", "Back"),
         ]
@@ -57,6 +58,8 @@ class MetricsMixin:
                 self._metrics_export()
             elif choice == "prometheus":
                 self._metrics_prometheus()
+            elif choice == "grafana":
+                self._grafana_menu()
             elif choice == "cleanup":
                 self._metrics_cleanup()
 
@@ -649,3 +652,206 @@ class MetricsMixin:
 
             except Exception as e:
                 self.dialog.msgbox("Error", f"Cleanup failed:\n{e}")
+
+    # =========================================================================
+    # Grafana Dashboard Management
+    # =========================================================================
+
+    def _grafana_menu(self):
+        """Grafana dashboards menu."""
+        import subprocess
+        import shutil
+        from pathlib import Path
+
+        # Check Grafana status
+        grafana_running = False
+        grafana_url = "http://localhost:3000"
+        try:
+            result = subprocess.run(
+                ['systemctl', 'is-active', 'grafana-server'],
+                capture_output=True, text=True, timeout=5
+            )
+            grafana_running = result.stdout.strip() == 'active'
+        except Exception:
+            pass
+
+        # Find dashboards directory
+        src_dir = Path(__file__).parent.parent.parent
+        dashboards_dir = src_dir / "dashboards"
+        dashboard_files = list(dashboards_dir.glob("meshforge-*.json")) if dashboards_dir.exists() else []
+
+        status_lines = []
+        if grafana_running:
+            status_lines.append(f"Grafana: RUNNING at {grafana_url}")
+        else:
+            status_lines.append("Grafana: NOT RUNNING")
+        status_lines.append(f"Dashboards available: {len(dashboard_files)}")
+
+        while True:
+            choices = [
+                ("status", "Grafana Status"),
+                ("open", "Open Grafana (browser)"),
+                ("dashboards", "View Dashboard Files"),
+                ("install", "Install Grafana"),
+                ("import", "Import Dashboard Instructions"),
+                ("back", "Back"),
+            ]
+
+            choice = self.dialog.menu(
+                "Grafana Dashboards",
+                "\n".join(status_lines),
+                choices
+            )
+
+            if choice is None or choice == "back":
+                break
+
+            if choice == "status":
+                self._grafana_status()
+            elif choice == "open":
+                self._grafana_open(grafana_url)
+            elif choice == "dashboards":
+                self._grafana_list_dashboards(dashboard_files)
+            elif choice == "install":
+                self._grafana_install()
+            elif choice == "import":
+                self._grafana_import_instructions(dashboard_files)
+
+    def _grafana_status(self):
+        """Show detailed Grafana status."""
+        import subprocess
+        import shutil
+
+        lines = ["GRAFANA STATUS", "=" * 50, ""]
+
+        # Check service
+        try:
+            result = subprocess.run(
+                ['systemctl', 'status', 'grafana-server'],
+                capture_output=True, text=True, timeout=10
+            )
+            # Extract key lines
+            for line in result.stdout.split('\n')[:10]:
+                lines.append(line)
+        except FileNotFoundError:
+            lines.append("systemctl not available")
+        except Exception as e:
+            lines.append(f"Error checking status: {e}")
+
+        # Check if installed
+        lines.append("")
+        if shutil.which('grafana-server'):
+            lines.append("grafana-server: INSTALLED")
+        else:
+            lines.append("grafana-server: NOT FOUND")
+            lines.append("")
+            lines.append("Install with: sudo apt install grafana")
+
+        self.dialog.msgbox("Grafana Status", "\n".join(lines))
+
+    def _grafana_open(self, url: str):
+        """Open Grafana in browser."""
+        import subprocess
+        import threading
+
+        def open_browser():
+            try:
+                subprocess.run(['xdg-open', url], timeout=10)
+            except Exception:
+                pass
+
+        threading.Thread(target=open_browser, daemon=True).start()
+        self.dialog.msgbox(
+            "Opening Grafana",
+            f"Opening {url} in browser...\n\n"
+            f"Default login:\n"
+            f"  Username: admin\n"
+            f"  Password: admin"
+        )
+
+    def _grafana_list_dashboards(self, dashboard_files):
+        """Show available dashboard files."""
+        from pathlib import Path
+
+        if not dashboard_files:
+            self.dialog.msgbox("No Dashboards", "No MeshForge dashboard files found.")
+            return
+
+        lines = ["AVAILABLE DASHBOARDS", "=" * 50, ""]
+        for f in dashboard_files:
+            lines.append(f"  {f.name}")
+
+        lines.append("")
+        lines.append(f"Location: {dashboard_files[0].parent}")
+        lines.append("")
+        lines.append("Import these via Grafana UI:")
+        lines.append("  Dashboards > Import > Upload JSON")
+
+        self.dialog.msgbox("Dashboard Files", "\n".join(lines))
+
+    def _grafana_install(self):
+        """Show Grafana installation instructions."""
+        instructions = """GRAFANA INSTALLATION
+==================================================
+
+Option 1: APT (Debian/Ubuntu)
+  sudo apt-get install -y software-properties-common
+  sudo add-apt-repository "deb https://packages.grafana.com/oss/deb stable main"
+  wget -q -O - https://packages.grafana.com/gpg.key | sudo apt-key add -
+  sudo apt-get update
+  sudo apt-get install grafana
+  sudo systemctl enable grafana-server
+  sudo systemctl start grafana-server
+
+Option 2: Quick install script
+  sudo apt install grafana
+
+After install:
+  - Access at http://localhost:3000
+  - Default login: admin / admin
+  - Add Prometheus data source
+  - Import MeshForge dashboards
+"""
+        self.dialog.msgbox("Install Grafana", instructions)
+
+    def _grafana_import_instructions(self, dashboard_files):
+        """Show how to import dashboards."""
+        from pathlib import Path
+
+        if not dashboard_files:
+            dash_path = "dashboards/"
+        else:
+            dash_path = str(dashboard_files[0].parent)
+
+        instructions = f"""IMPORT MESHFORGE DASHBOARDS
+==================================================
+
+1. Open Grafana: http://localhost:3000
+
+2. Add Prometheus data source:
+   Configuration > Data Sources > Add > Prometheus
+   URL: http://localhost:9090
+
+3. Import dashboards:
+   Dashboards > Import > Upload JSON file
+
+   Dashboard files location:
+   {dash_path}
+
+   Available dashboards:
+"""
+        for f in dashboard_files:
+            instructions += f"   - {f.name}\n"
+
+        instructions += """
+4. Select your Prometheus data source
+
+5. Click Import
+
+The dashboards will show:
+- Node counts and status
+- Gateway connections
+- Message queue depth
+- Service health
+"""
+        self.dialog.msgbox("Import Instructions", instructions)
