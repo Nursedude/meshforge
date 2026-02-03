@@ -43,7 +43,7 @@ class MapDataCollector:
 
     # Default cache ages in hours
     DEFAULT_NODE_CACHE_MAX_AGE_HOURS = 48
-    DEFAULT_RNS_CACHE_MAX_AGE_HOURS = 1
+    DEFAULT_RNS_CACHE_MAX_AGE_HOURS = 24  # Increased from 1 hour
     DEFAULT_ONLINE_THRESHOLD_MINUTES = 15
     # Meshtasticd connection defaults
     DEFAULT_MESHTASTICD_HOST = "localhost"
@@ -238,7 +238,14 @@ class MapDataCollector:
             if fid and fid not in features:
                 features[fid] = f
 
-        # Source 5: Last-known cache (fill gaps)
+        # Source 5: RNS direct query (from rnsd path table)
+        rns_direct_features = self._collect_rns_direct()
+        for f in rns_direct_features:
+            fid = f["properties"].get("id", "")
+            if fid and fid not in features:
+                features[fid] = f
+
+        # Source 6: Last-known cache (fill gaps)
         if not features:
             cache_features = self._load_cache()
             for f in cache_features:
@@ -247,7 +254,8 @@ class MapDataCollector:
                     features[fid] = f
 
         sources = self._get_source_summary(
-            tcp_features, mqtt_features, tracker_features, aredn_features, direct_radio_features
+            tcp_features, mqtt_features, tracker_features, aredn_features,
+            direct_radio_features, rns_direct_features
         )
         geojson = {
             "type": "FeatureCollection",
@@ -270,7 +278,8 @@ class MapDataCollector:
             f"(meshtasticd:{sources.get('meshtasticd', 0)} "
             f"direct_radio:{sources.get('direct_radio', 0)} "
             f"mqtt:{sources.get('mqtt', 0)} "
-            f"tracker:{sources.get('node_tracker', 0)})"
+            f"tracker:{sources.get('node_tracker', 0)} "
+            f"rns_direct:{sources.get('rns_direct', 0)})"
         )
 
         # Cache result
@@ -900,6 +909,130 @@ class MapDataCollector:
             last_seen="online",
         )
 
+    def _collect_rns_direct(self) -> List[Dict]:
+        """Collect RNS nodes directly from rnsd shared instance.
+
+        Queries the RNS path table for known destinations when rnsd is running.
+        This supplements the temp cache file with live data from rnsd.
+
+        Returns:
+            List of GeoJSON features for RNS destinations with stored positions.
+        """
+        features = []
+
+        # Quick check if rnsd shared instance is running (port 37428)
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            result = sock.connect_ex(('localhost', 37428))
+            sock.close()
+            if result != 0:
+                logger.debug("rnsd shared instance not available on port 37428")
+                return []
+        except OSError:
+            return []
+
+        try:
+            import RNS
+        except ImportError:
+            logger.debug("RNS module not available for direct query")
+            return []
+
+        try:
+            # Connect to the shared RNS instance
+            # This connects as a client to the running rnsd
+            reticulum = RNS.Reticulum()
+
+            # Check for known destinations in path table
+            if hasattr(RNS.Transport, 'path_table') and RNS.Transport.path_table:
+                for dest_hash, path_data in RNS.Transport.path_table.items():
+                    try:
+                        if isinstance(dest_hash, bytes) and len(dest_hash) == 16:
+                            node_id = f"rns_{dest_hash.hex()[:16]}"
+
+                            # Extract hop count from path tuple if available
+                            hops = 0
+                            if isinstance(path_data, tuple) and len(path_data) > 1:
+                                hops = path_data[1]
+
+                            # For now, we can't get positions from path table alone
+                            # But we can check the node tracker cache for matching entries
+                            # This creates a placeholder that may be merged with cached data
+                            feature = self._make_feature(
+                                node_id=node_id,
+                                name=f"RNS:{dest_hash.hex()[:8]}",
+                                lat=None, lon=None,  # No position from path table
+                                network="rns",
+                                is_online=True,  # In path table = reachable
+                                hops=hops,
+                            )
+                            # Only add if we got a valid feature (has position from merge)
+                            # For now, skip nodes without position
+                            # features.append(feature)
+
+                    except Exception as e:
+                        logger.debug(f"Error processing RNS destination: {e}")
+
+            # Also check NomadNet peer cache if available
+            nomadnet_peers = self._load_nomadnet_peers()
+            for peer in nomadnet_peers:
+                feature = self._rns_peer_to_feature(peer)
+                if feature:
+                    features.append(feature)
+
+            if features:
+                logger.debug(f"RNS direct: {len(features)} nodes with position")
+
+        except Exception as e:
+            logger.debug(f"RNS direct query error: {e}")
+
+        return features
+
+    def _load_nomadnet_peers(self) -> List[Dict]:
+        """Load known peers from NomadNet cache if available."""
+        peers = []
+        try:
+            from utils.paths import get_real_user_home
+            nomadnet_dir = get_real_user_home() / '.nomadnetwork'
+            peer_file = nomadnet_dir / 'storage' / 'peers'
+            if peer_file.exists():
+                with open(peer_file, 'rb') as f:
+                    import msgpack
+                    data = msgpack.unpack(f, raw=False)
+                    if isinstance(data, dict):
+                        for peer_hash, peer_data in data.items():
+                            if isinstance(peer_data, dict):
+                                peers.append({
+                                    'hash': peer_hash.hex() if isinstance(peer_hash, bytes) else peer_hash,
+                                    'name': peer_data.get('display_name', ''),
+                                    'lat': peer_data.get('latitude'),
+                                    'lon': peer_data.get('longitude'),
+                                })
+        except ImportError:
+            logger.debug("msgpack not available for NomadNet peer reading")
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.debug(f"NomadNet peer loading error: {e}")
+        return peers
+
+    def _rns_peer_to_feature(self, peer: Dict) -> Optional[Dict]:
+        """Convert NomadNet peer entry to GeoJSON feature."""
+        lat = peer.get('lat')
+        lon = peer.get('lon')
+
+        if not lat or not lon:
+            return None
+
+        peer_hash = peer.get('hash', 'unknown')
+        return self._make_feature(
+            node_id=f"rns_{peer_hash[:16]}",
+            name=peer.get('name', f"RNS:{peer_hash[:8]}"),
+            lat=lat, lon=lon,
+            network="rns",
+            is_online=True,
+        )
+
     def _node_cache_to_feature(self, node: Dict) -> Optional[Dict]:
         """Convert a node cache entry to a GeoJSON feature."""
         lat = node.get("latitude") or node.get("lat")
@@ -1022,7 +1155,8 @@ class MapDataCollector:
             logger.debug(f"Cache save error: {e}")
 
     def _get_source_summary(
-        self, tcp: List, mqtt: List, tracker: List, aredn: List = None, direct_radio: List = None
+        self, tcp: List, mqtt: List, tracker: List, aredn: List = None,
+        direct_radio: List = None, rns_direct: List = None
     ) -> Dict:
         """Summarize which sources contributed data."""
         return {
@@ -1031,4 +1165,5 @@ class MapDataCollector:
             "mqtt": len(mqtt),
             "node_tracker": len(tracker),
             "aredn": len(aredn) if aredn else 0,
+            "rns_direct": len(rns_direct) if rns_direct else 0,
         }
