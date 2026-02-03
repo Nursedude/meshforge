@@ -468,6 +468,7 @@ class MeshForgeLauncher(
                 ("status", "Service Status      All services with health"),
                 ("network", "Network Status      Ports, interfaces, conflicts"),
                 ("nodes", "Node Count          Meshtastic + RNS nodes"),
+                ("datapath", "Data Path Check     Test all data sources"),
                 ("metrics", "Historical Trends   Metrics over time"),
                 ("alerts", "View Alerts         Current warnings"),
                 ("back", "Back"),
@@ -488,6 +489,8 @@ class MeshForgeLauncher(
                 self._network_menu()
             elif choice == "nodes":
                 self._show_node_counts()
+            elif choice == "datapath":
+                self._data_path_diagnostic()
             elif choice == "metrics":
                 self._metrics_menu()
             elif choice == "alerts":
@@ -556,6 +559,168 @@ class MeshForgeLauncher(
         except Exception:
             print("  RNS: unavailable")
 
+        print()
+        self._wait_for_enter()
+
+    def _data_path_diagnostic(self):
+        """Test all data collection paths to diagnose zero-data issues."""
+        subprocess.run(['clear'], check=False, timeout=5)
+        print("=== Data Path Diagnostic ===\n")
+        print("Testing all data sources...\n")
+
+        results = []
+
+        # Test 1: meshtasticd TCP connection
+        print("[1/6] Testing meshtasticd TCP (port 4403)...")
+        try:
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(3)
+            result = sock.connect_ex(('localhost', 4403))
+            sock.close()
+            if result == 0:
+                results.append(("meshtasticd TCP", "OK", "Port 4403 accepting connections"))
+                print("      \033[0;32mOK\033[0m - Port 4403 reachable")
+            else:
+                results.append(("meshtasticd TCP", "FAIL", f"Connection refused (code {result})"))
+                print(f"      \033[0;31mFAIL\033[0m - Connection refused")
+        except Exception as e:
+            results.append(("meshtasticd TCP", "FAIL", str(e)))
+            print(f"      \033[0;31mFAIL\033[0m - {e}")
+
+        # Test 2: meshtastic CLI node count
+        print("[2/6] Testing meshtastic CLI...")
+        try:
+            result = subprocess.run(
+                ['meshtastic', '--host', 'localhost', '--info'],
+                capture_output=True, text=True, timeout=15
+            )
+            if result.returncode == 0:
+                # Count nodes from output
+                node_lines = [l for l in result.stdout.split('\n') if 'Node' in l or '!' in l]
+                results.append(("meshtastic CLI", "OK", f"Responded, ~{len(node_lines)} node refs"))
+                print(f"      \033[0;32mOK\033[0m - CLI responded")
+            else:
+                results.append(("meshtastic CLI", "WARN", result.stderr[:50] if result.stderr else "No output"))
+                print(f"      \033[0;33mWARN\033[0m - Non-zero exit")
+        except FileNotFoundError:
+            results.append(("meshtastic CLI", "SKIP", "CLI not installed"))
+            print("      \033[0;33mSKIP\033[0m - CLI not found")
+        except subprocess.TimeoutExpired:
+            results.append(("meshtastic CLI", "FAIL", "Timeout after 15s"))
+            print("      \033[0;31mFAIL\033[0m - Timeout")
+        except Exception as e:
+            results.append(("meshtastic CLI", "FAIL", str(e)[:50]))
+            print(f"      \033[0;31mFAIL\033[0m - {e}")
+
+        # Test 3: meshtastic Python API
+        print("[3/6] Testing meshtastic Python API...")
+        try:
+            import meshtastic.tcp_interface
+            iface = meshtastic.tcp_interface.TCPInterface(hostname='localhost', connectNow=True)
+            node_count = len(iface.nodes) if iface.nodes else 0
+            iface.close()
+            results.append(("meshtastic API", "OK", f"{node_count} nodes in nodeDB"))
+            print(f"      \033[0;32mOK\033[0m - {node_count} nodes found")
+        except ImportError:
+            results.append(("meshtastic API", "SKIP", "meshtastic module not installed"))
+            print("      \033[0;33mSKIP\033[0m - Module not installed")
+        except Exception as e:
+            err_msg = str(e)[:50]
+            results.append(("meshtastic API", "FAIL", err_msg))
+            print(f"      \033[0;31mFAIL\033[0m - {err_msg}")
+
+        # Test 4: pubsub availability
+        print("[4/6] Testing pubsub (for live capture)...")
+        try:
+            from pubsub import pub
+            # Check if any listeners on meshtastic.receive
+            listeners = pub.getDefaultTopicMgr().getTopic('meshtastic.receive', okIfNone=True)
+            if listeners:
+                count = len(list(listeners.getListeners()))
+                results.append(("pubsub", "OK", f"{count} listener(s) on meshtastic.receive"))
+                print(f"      \033[0;32mOK\033[0m - {count} listener(s) registered")
+            else:
+                results.append(("pubsub", "WARN", "Topic exists but no listeners"))
+                print("      \033[0;33mWARN\033[0m - No listeners registered")
+        except ImportError:
+            results.append(("pubsub", "SKIP", "pubsub module not installed"))
+            print("      \033[0;33mSKIP\033[0m - Module not installed")
+        except Exception as e:
+            results.append(("pubsub", "WARN", str(e)[:50]))
+            print(f"      \033[0;33mWARN\033[0m - {e}")
+
+        # Test 5: MapDataCollector
+        print("[5/6] Testing MapDataCollector...")
+        try:
+            from utils.map_data_collector import MapDataCollector
+            collector = MapDataCollector(enable_history=False)
+            geojson = collector.collect(max_age_seconds=30)
+            props = geojson.get('properties', {})
+            total = props.get('total_nodes', 0)
+            with_gps = props.get('nodes_with_position', 0)
+            sources = props.get('sources', {})
+            active_sources = [k for k, v in sources.items() if v > 0]
+            if total > 0:
+                results.append(("MapDataCollector", "OK", f"{total} nodes ({with_gps} with GPS)"))
+                print(f"      \033[0;32mOK\033[0m - {total} nodes, sources: {active_sources}")
+            else:
+                results.append(("MapDataCollector", "WARN", "0 nodes returned"))
+                print("      \033[0;33mWARN\033[0m - 0 nodes (check meshtasticd connection)")
+        except ImportError:
+            results.append(("MapDataCollector", "SKIP", "Module not available"))
+            print("      \033[0;33mSKIP\033[0m - Module not available")
+        except Exception as e:
+            results.append(("MapDataCollector", "FAIL", str(e)[:50]))
+            print(f"      \033[0;31mFAIL\033[0m - {e}")
+
+        # Test 6: RNS path table
+        print("[6/6] Testing RNS path table...")
+        try:
+            result = subprocess.run(
+                ['rnpath', '-t'],
+                capture_output=True, text=True, timeout=10
+            )
+            lines = [l for l in result.stdout.splitlines() if l.strip() and not l.startswith('Path')]
+            path_count = len(lines)
+            if path_count > 0:
+                results.append(("RNS paths", "OK", f"{path_count} known paths"))
+                print(f"      \033[0;32mOK\033[0m - {path_count} paths in table")
+            else:
+                results.append(("RNS paths", "WARN", "Path table empty"))
+                print("      \033[0;33mWARN\033[0m - No paths (normal if no RNS traffic yet)")
+        except FileNotFoundError:
+            results.append(("RNS paths", "SKIP", "rnpath not installed"))
+            print("      \033[0;33mSKIP\033[0m - rnpath not found")
+        except Exception as e:
+            results.append(("RNS paths", "WARN", str(e)[:50]))
+            print(f"      \033[0;33mWARN\033[0m - {e}")
+
+        # Summary
+        print("\n" + "=" * 50)
+        print("SUMMARY")
+        print("=" * 50)
+        ok_count = len([r for r in results if r[1] == "OK"])
+        fail_count = len([r for r in results if r[1] == "FAIL"])
+        warn_count = len([r for r in results if r[1] == "WARN"])
+
+        for test, status, detail in results:
+            if status == "OK":
+                print(f"  \033[0;32m✓\033[0m {test:<20} {detail}")
+            elif status == "FAIL":
+                print(f"  \033[0;31m✗\033[0m {test:<20} {detail}")
+            elif status == "WARN":
+                print(f"  \033[0;33m!\033[0m {test:<20} {detail}")
+            else:
+                print(f"  \033[2m-\033[0m {test:<20} {detail}")
+
+        print()
+        if fail_count > 0:
+            print(f"Result: {fail_count} FAILED - check service connections")
+        elif warn_count > 0 and ok_count == 0:
+            print("Result: No data sources working - check meshtasticd")
+        elif ok_count > 0:
+            print(f"Result: {ok_count} sources OK - data should be flowing")
         print()
         self._wait_for_enter()
 
