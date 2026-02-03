@@ -198,10 +198,165 @@ Tests:
 |------|---------|
 | `scripts/test_meshtasticd_architecture.py` | Pi validation test script |
 
+## Test Checklists for Pi Validation
+
+### P1: TUI MQTT Monitor Test Checklist
+
+Run on Pi with meshtasticd + mosquitto running.
+
+**Prerequisites:**
+```bash
+sudo systemctl status meshtasticd   # must be active
+sudo systemctl status mosquitto     # must be active
+mosquitto_sub -h localhost -t 'msh/#' -v -C 1  # must see messages
+```
+
+**Test Sequence:**
+
+1. [ ] **Launch TUI**
+   ```bash
+   sudo python3 src/launcher_tui/main.py
+   ```
+
+2. [ ] **Navigate to MQTT Monitor**
+   - Mesh Networks → MQTT Monitor
+   - Status should show "Not running"
+
+3. [ ] **Configure for Local Broker**
+   - Configure → Use Local Broker
+   - Should show "Local Mode Set" confirmation
+   - Topic should be `msh/2/json/{channel}/#` (auto-detected channel)
+
+4. [ ] **Start Subscriber**
+   - Start Subscriber
+   - Should show "Connecting to MQTT broker..."
+   - After 2s, should show "MQTT Started" or "Connection Issue"
+   - Status should change to "Connected"
+
+5. [ ] **Verify Node Discovery**
+   - Wait 30-60 seconds for mesh activity
+   - View Nodes → Should populate with discovered nodes
+   - Statistics → Should show message count > 0
+
+6. [ ] **Stop and Restart**
+   - Stop Subscriber → Confirm
+   - Status should return to "Not running"
+   - Start Subscriber again → Should reconnect
+
+7. [ ] **Export Data**
+   - Export Data
+   - Verify file at `~/.local/share/meshforge/mqtt_export.json`
+
+**Pass Criteria:**
+- All steps complete without errors
+- Nodes discovered from local mesh traffic
+- Data persists in cache file
+
+---
+
+### P1: Gateway Bridge + MQTT Parallel Test Checklist
+
+Tests both data paths running simultaneously.
+
+**Prerequisites:**
+```bash
+sudo systemctl status meshtasticd   # must be active
+sudo systemctl status mosquitto     # must be active
+sudo systemctl status rnsd          # should be STOPPED (we'll use internal RNS)
+```
+
+**Test Sequence:**
+
+1. [ ] **Start MQTT Monitor First**
+   - TUI: Mesh Networks → MQTT Monitor
+   - Configure → Use Local Broker
+   - Start Subscriber
+   - Verify status "Connected"
+
+2. [ ] **Start Gateway Bridge (parallel)**
+   - TUI: Mesh Networks → Gateway Bridge → Start Bridge (background)
+   - Should start successfully
+   - Check logs: `tail -f /tmp/meshforge_gateway.log`
+
+3. [ ] **Verify Both Running**
+   - MQTT Monitor status: "Connected" ✓
+   - Gateway Bridge status: "Running" ✓
+   - `lsof -i :4403` - should show bridge_cli.py connection
+   - `mosquitto_sub -t 'msh/#' -C 1` - should still receive messages
+
+4. [ ] **Test Message Flow**
+   - Send a test message via Meshtastic radio
+   - Verify in MQTT Monitor (Statistics → message count increases)
+   - Verify in Gateway Bridge logs (message received)
+
+5. [ ] **Stop Gateway Bridge**
+   - Gateway Bridge → Stop
+   - MQTT Monitor should continue working
+
+6. [ ] **Stop MQTT Monitor**
+   - MQTT Monitor → Stop Subscriber
+   - Both paths now inactive
+
+**Architecture Validation:**
+```
+meshtasticd (TCP:4403) ──→ Gateway Bridge (exclusive)
+meshtasticd (MQTT)     ──→ mosquitto:1883 ──→ MQTT Monitor (parallel)
+                                          ──→ (other consumers)
+```
+
+**Pass Criteria:**
+- Both paths operate simultaneously without conflict
+- TCP:4403 exclusive to Gateway Bridge
+- MQTT continues working when Gateway Bridge stops
+- No resource contention
+
+---
+
+## P2 Implementation: MQTT → WebSocket Bridge
+
+**Completed**: MQTT → WebSocket bridge for web UI access without Gateway Bridge.
+
+### New Files
+| File | Purpose |
+|------|---------|
+| `src/utils/mqtt_websocket_bridge.py` | Bridge MQTT subscriber data to WebSocket:5001 |
+
+### Modified Files
+| File | Change |
+|------|--------|
+| `src/launcher_tui/mqtt_mixin.py` | Added WebSocket Bridge toggle in MQTT menu |
+
+### How It Works
+
+```
+MQTT Subscriber ─┬─> TUI display (existing)
+                 ├─> Cache file (existing)
+                 └─> WebSocket Bridge ──> ws://0.0.0.0:5001 ──> Web UI (NEW)
+```
+
+### TUI Menu Path
+
+Mesh Networks → MQTT Monitor → WebSocket Bridge → Toggle On/Off
+
+### Requirements
+
+- MQTT subscriber must be running first
+- `websockets` Python package (usually already installed)
+
+### Web UI Integration
+
+When WebSocket bridge is enabled:
+1. Web UI connects to `ws://localhost:5001`
+2. Receives `mesh_message` events (text messages)
+3. Receives `node_update` events (node telemetry/position)
+4. Same format as Gateway Bridge WebSocket output
+
+---
+
 ## Handoff Notes
 
-- Branch: `claude/complete-meshtasticd-architecture-e3iVs`
-- Architecture is functionally complete
-- Test script created for Pi validation
-- Real-world testing on Pi confirmed working
-- Next: Run test script on Pi, verify TUI MQTT Monitor flow
+- Branch: `claude/complete-meshtasticd-architecture-SHBl3`
+- Architecture is functionally complete (including P2)
+- All data paths now have WebSocket output option
+- Test checklists added for systematic Pi validation
+- Next: Run test checklists on Pi, test WebSocket bridge with web UI

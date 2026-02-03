@@ -122,6 +122,15 @@ def test_gateway_bridge_import() -> bool:
         return False
 
 
+def test_websocket_bridge_import() -> bool:
+    """Test that MQTT→WebSocket bridge can be imported."""
+    try:
+        from utils.mqtt_websocket_bridge import MQTTWebSocketBridge, is_bridge_available
+        return is_bridge_available()
+    except ImportError:
+        return False
+
+
 def main():
     print(f"\n{BLUE}═══════════════════════════════════════════════════════════════{RESET}")
     print(f"{BLUE}    MeshForge meshtasticd Architecture Test{RESET}")
@@ -193,6 +202,9 @@ def main():
     bridge_import = test_gateway_bridge_import()
     print(f"  {check_mark(bridge_import)} Gateway Bridge (gateway.rns_bridge)")
 
+    ws_bridge_import = test_websocket_bridge_import()
+    print(f"  {check_mark(ws_bridge_import)} WebSocket Bridge (utils.mqtt_websocket_bridge)")
+
     print()
 
     # =========================================================================
@@ -217,7 +229,8 @@ def main():
 
     if meshtasticd_running and mosquitto_running and mqtt_import:
         print(f"\n{GREEN}Architecture Status: READY{RESET}")
-        print("""
+        ws_note = "  • WebSocket Bridge: MQTT Monitor → WebSocket Bridge → Enable\n" if ws_bridge_import else ""
+        print(f"""
 Both data paths are available:
   • TCP:4403 → Gateway Bridge (exclusive, one client)
   • MQTT → mosquitto → multiple consumers
@@ -225,7 +238,7 @@ Both data paths are available:
 TUI Quick Start:
   • MQTT Monitor: Mesh Networks → MQTT Monitor → Configure → Use Local Broker
   • Gateway Bridge: Mesh Networks → Gateway Bridge
-""")
+{ws_note}""")
     else:
         print(f"\n{YELLOW}Architecture Status: PARTIAL{RESET}")
         print("\nMissing components:")

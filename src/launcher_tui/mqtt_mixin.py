@@ -5,6 +5,7 @@ Provides:
 - Start/stop MQTT subscriber
 - Configure MQTT broker settings
 - View MQTT node statistics
+- WebSocket bridge for web UI (MQTT → WebSocket:5001)
 """
 
 import json
@@ -39,6 +40,14 @@ except ImportError:
     _HAS_MQTT = False
     MQTTNodelessSubscriber = None
 
+# Try to import the MQTT→WebSocket bridge
+try:
+    from utils.mqtt_websocket_bridge import MQTTWebSocketBridge, is_bridge_available
+    _HAS_WS_BRIDGE = is_bridge_available()
+except ImportError:
+    _HAS_WS_BRIDGE = False
+    MQTTWebSocketBridge = None
+
 
 class MQTTMixin:
     """MQTT monitoring control for mesh networks."""
@@ -46,6 +55,7 @@ class MQTTMixin:
     # Class-level subscriber instance (shared across menu calls)
     _mqtt_subscriber: Optional[Any] = None
     _mqtt_thread: Optional[threading.Thread] = None
+    _mqtt_ws_bridge: Optional[Any] = None  # MQTT→WebSocket bridge
 
     def _mqtt_menu(self):
         """MQTT monitoring menu - nodeless mesh observation."""
@@ -56,6 +66,9 @@ class MQTTMixin:
             broker = config.get('broker', 'mqtt.meshtastic.org')
             mode = "Local" if broker == "localhost" else "Public"
 
+            # Check WebSocket bridge status
+            ws_status = self._get_ws_bridge_status()
+
             choices = [
                 ("status", f"Status              {status}"),
                 ("start", "Start Subscriber    Connect to MQTT broker"),
@@ -64,8 +77,13 @@ class MQTTMixin:
                 ("nodes", "View Nodes          Show discovered nodes"),
                 ("stats", "Statistics          Node counts, activity"),
                 ("export", "Export Data         Save nodes to file"),
-                ("back", "Back"),
             ]
+
+            # Add WebSocket bridge option if available
+            if _HAS_WS_BRIDGE:
+                choices.append(("websocket", f"WebSocket Bridge    {ws_status}"))
+
+            choices.append(("back", "Back"))
 
             subtitle = f"MQTT Mode: {mode} ({broker})\n"
             if mode == "Local":
@@ -96,6 +114,8 @@ class MQTTMixin:
                 self._show_mqtt_stats()
             elif choice == "export":
                 self._export_mqtt_data()
+            elif choice == "websocket":
+                self._toggle_ws_bridge()
 
     def _get_mqtt_status(self) -> str:
         """Get current MQTT subscriber status."""
@@ -104,6 +124,68 @@ class MQTTMixin:
         if self._mqtt_subscriber and self._mqtt_subscriber.is_connected():
             return "Connected"
         return "Not running"
+
+    def _get_ws_bridge_status(self) -> str:
+        """Get WebSocket bridge status."""
+        if not _HAS_WS_BRIDGE:
+            return "Unavailable"
+        if self._mqtt_ws_bridge and self._mqtt_ws_bridge.is_running:
+            clients = self._mqtt_ws_bridge.connected_clients
+            return f"Running ({clients} clients)"
+        return "Stopped"
+
+    def _toggle_ws_bridge(self):
+        """Toggle the MQTT→WebSocket bridge for web UI access."""
+        if not _HAS_WS_BRIDGE:
+            self.dialog.msgbox(
+                "WebSocket Unavailable",
+                "WebSocket bridge not available.\n\n"
+                "Install websockets: pip install websockets"
+            )
+            return
+
+        # Check if MQTT subscriber is running
+        if not self._mqtt_subscriber or not self._mqtt_subscriber.is_connected():
+            self.dialog.msgbox(
+                "MQTT Not Running",
+                "Start the MQTT subscriber first.\n\n"
+                "The WebSocket bridge forwards MQTT data to web clients."
+            )
+            return
+
+        # Toggle bridge state
+        if self._mqtt_ws_bridge and self._mqtt_ws_bridge.is_running:
+            # Stop the bridge
+            if self.dialog.yesno(
+                "Stop WebSocket Bridge",
+                "Stop the WebSocket bridge?\n\n"
+                "Web UI clients will disconnect."
+            ):
+                self._mqtt_ws_bridge.stop()
+                self._mqtt_ws_bridge = None
+                self.dialog.msgbox("Stopped", "WebSocket bridge stopped.")
+        else:
+            # Start the bridge
+            self.dialog.infobox("Starting", "Starting WebSocket bridge...")
+
+            try:
+                from utils.mqtt_websocket_bridge import MQTTWebSocketBridge
+                self._mqtt_ws_bridge = MQTTWebSocketBridge(self._mqtt_subscriber)
+
+                if self._mqtt_ws_bridge.start():
+                    self.dialog.msgbox(
+                        "WebSocket Bridge Started",
+                        "MQTT→WebSocket bridge is now running!\n\n"
+                        "Web UI can connect to: ws://localhost:5001\n\n"
+                        "This enables the web map and dashboard to\n"
+                        "receive mesh data via MQTT monitoring."
+                    )
+                else:
+                    self._mqtt_ws_bridge = None
+                    self.dialog.msgbox("Error", "Failed to start WebSocket bridge.")
+            except Exception as e:
+                logger.error(f"WebSocket bridge error: {e}")
+                self.dialog.msgbox("Error", f"WebSocket bridge error:\n{e}")
 
     def _show_mqtt_status(self):
         """Show detailed MQTT status."""
@@ -134,6 +216,20 @@ class MQTTMixin:
                 lines.append(f"  Broker: {config.get('broker', 'mqtt.meshtastic.org')}")
                 lines.append(f"  Port: {config.get('port', 8883)}")
                 lines.append(f"  Topic: {config.get('topic', 'msh/US/2/e/LongFast/#')}")
+
+            # WebSocket bridge status
+            if _HAS_WS_BRIDGE:
+                lines.append("")
+                lines.append("WEBSOCKET BRIDGE:")
+                if self._mqtt_ws_bridge and self._mqtt_ws_bridge.is_running:
+                    ws_stats = self._mqtt_ws_bridge.get_stats()
+                    lines.append(f"  Status: Running")
+                    lines.append(f"  Port: ws://0.0.0.0:{ws_stats.get('websocket_port', 5001)}")
+                    lines.append(f"  Clients: {ws_stats.get('websocket_clients', 0)}")
+                    lines.append(f"  Messages bridged: {ws_stats.get('messages_bridged', 0)}")
+                else:
+                    lines.append(f"  Status: Stopped")
+                    lines.append(f"  Enable for web UI access")
         else:
             lines.append("Status: Not running")
             lines.append("")
@@ -231,12 +327,21 @@ class MQTTMixin:
             self.dialog.msgbox("Not Running", "MQTT subscriber is not running.")
             return
 
+        # Note if WebSocket bridge is running
+        ws_running = self._mqtt_ws_bridge and self._mqtt_ws_bridge.is_running
+        ws_note = "\n\nWebSocket bridge will also be stopped." if ws_running else ""
+
         if self.dialog.yesno(
             "Stop MQTT",
-            "Stop the MQTT subscriber?\n\n"
-            "Node data will be preserved in cache."
+            f"Stop the MQTT subscriber?\n\n"
+            f"Node data will be preserved in cache.{ws_note}"
         ):
             try:
+                # Stop WebSocket bridge first if running
+                if self._mqtt_ws_bridge:
+                    self._mqtt_ws_bridge.stop()
+                    self._mqtt_ws_bridge = None
+
                 self._mqtt_subscriber.stop()
                 self._mqtt_subscriber = None
                 self.dialog.msgbox("Stopped", "MQTT subscriber stopped.")
