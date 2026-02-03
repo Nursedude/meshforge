@@ -449,13 +449,137 @@ class MetricsMixin:
         except Exception as e:
             self.dialog.msgbox("Error", f"Export failed:\n{e}")
 
+    # Class-level storage for prometheus server state
+    _prometheus_server = None
+    _prometheus_port = 9090
+
     def _metrics_prometheus(self):
-        """Start Prometheus metrics server."""
-        # Get port from user
+        """Prometheus metrics server menu."""
+        while True:
+            # Check server status
+            server_running = self._prometheus_server is not None
+            port = self._prometheus_port
+
+            if server_running:
+                status = f"[RUNNING on port {port}]"
+            else:
+                status = "[STOPPED]"
+
+            choices = []
+            if server_running:
+                choices.append(("stop", "Stop Server"))
+                choices.append(("test", "Test Endpoint"))
+            else:
+                choices.append(("start", "Start Server"))
+                choices.append(("port", f"Set Port (current: {port})"))
+
+            choices.extend([
+                ("curl", "Show curl Command"),
+                ("back", "Back"),
+            ])
+
+            choice = self.dialog.menu(
+                "Prometheus Server",
+                f"Prometheus metrics exporter:\n{status}",
+                choices
+            )
+
+            if choice is None or choice == "back":
+                break
+
+            if choice == "start":
+                self._prometheus_start()
+            elif choice == "stop":
+                self._prometheus_stop()
+            elif choice == "test":
+                self._prometheus_test()
+            elif choice == "port":
+                self._prometheus_set_port()
+            elif choice == "curl":
+                self._prometheus_show_curl()
+
+    def _prometheus_start(self):
+        """Start Prometheus server in background thread."""
+        try:
+            from utils.metrics_export import start_metrics_server
+        except ImportError:
+            self.dialog.msgbox("Error", "Prometheus exporter module not available.")
+            return
+
+        if self._prometheus_server is not None:
+            self.dialog.msgbox("Already Running", "Server is already running.")
+            return
+
+        port = self._prometheus_port
+
+        try:
+            self._prometheus_server = start_metrics_server(port=port)
+            self.dialog.msgbox(
+                "Server Started",
+                f"Prometheus metrics server started.\n\n"
+                f"Port: {port}\n"
+                f"Endpoint: http://localhost:{port}/metrics\n\n"
+                "Server runs in background while TUI is active."
+            )
+        except Exception as e:
+            self._prometheus_server = None
+            self.dialog.msgbox("Error", f"Failed to start server:\n{e}")
+
+    def _prometheus_stop(self):
+        """Stop the Prometheus server."""
+        if self._prometheus_server is None:
+            self.dialog.msgbox("Not Running", "Server is not running.")
+            return
+
+        try:
+            self._prometheus_server.shutdown()
+            self._prometheus_server = None
+            self.dialog.msgbox("Server Stopped", "Prometheus metrics server stopped.")
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed to stop server:\n{e}")
+
+    def _prometheus_test(self):
+        """Test the Prometheus endpoint."""
+        import subprocess
+
+        port = self._prometheus_port
+        url = f"http://localhost:{port}/metrics"
+
+        subprocess.run(['clear'], check=False, timeout=5)
+        print(f"=== Testing Prometheus Endpoint ===")
+        print(f"URL: {url}\n")
+
+        try:
+            result = subprocess.run(
+                ['curl', '-s', url],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                # Show first 50 lines
+                lines = result.stdout.split('\n')[:50]
+                print('\n'.join(lines))
+                if len(result.stdout.split('\n')) > 50:
+                    print(f"\n... ({len(result.stdout.split(chr(10)))} total lines)")
+            else:
+                print(f"Error: {result.stderr}")
+        except FileNotFoundError:
+            print("curl not found. Install with: apt install curl")
+        except subprocess.TimeoutExpired:
+            print("Request timed out.")
+        except Exception as e:
+            print(f"Error: {e}")
+
+        print()
+        self._wait_for_enter()
+
+    def _prometheus_set_port(self):
+        """Configure the Prometheus port."""
         port_str = self.dialog.inputbox(
             "Prometheus Port",
             "Enter port for Prometheus metrics server:",
-            "9090"
+            str(self._prometheus_port)
         )
 
         if not port_str:
@@ -465,45 +589,22 @@ class MetricsMixin:
             port = int(port_str)
             if not (1024 <= port <= 65535):
                 raise ValueError("Port must be between 1024 and 65535")
+            self._prometheus_port = port
         except ValueError as e:
             self.dialog.msgbox("Invalid Port", str(e))
-            return
 
-        # Confirm before starting
-        if not self.dialog.yesno(
-            "Start Server",
-            f"Start Prometheus metrics server on port {port}?\n\n"
-            f"Scrape endpoint: http://localhost:{port}/metrics\n\n"
-            "The server will run until you stop it (Ctrl+C).\n"
-            "This will exit the TUI.",
-            default_no=False
-        ):
-            return
-
-        # Start the server (exits TUI)
-        try:
-            from utils.metrics_export import start_metrics_server
-            import signal
-            import sys
-
-            # Clear screen and show info
-            print("\033[2J\033[H")  # Clear screen
-            print(f"Starting Prometheus metrics server on port {port}...")
-            print(f"Scrape endpoint: http://localhost:{port}/metrics")
-            print("")
-            print("Press Ctrl+C to stop the server.")
-            print("")
-
-            server = start_metrics_server(port=port)
-
-            # Wait for interrupt
-            signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
-            signal.pause()
-
-        except ImportError:
-            self.dialog.msgbox("Error", "Prometheus exporter module not available.")
-        except Exception as e:
-            self.dialog.msgbox("Error", f"Failed to start server:\n{e}")
+    def _prometheus_show_curl(self):
+        """Show curl command for scraping."""
+        port = self._prometheus_port
+        self.dialog.msgbox(
+            "Prometheus Scrape",
+            f"To test the metrics endpoint:\n\n"
+            f"  curl http://localhost:{port}/metrics\n\n"
+            f"Prometheus scrape config:\n\n"
+            f"  - job_name: 'meshforge'\n"
+            f"    static_configs:\n"
+            f"      - targets: ['localhost:{port}']"
+        )
 
     def _metrics_cleanup(self):
         """Database maintenance options."""
