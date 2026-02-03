@@ -4,11 +4,25 @@ Pre-built Grafana dashboards for monitoring MeshForge mesh networks.
 
 ## Available Dashboards
 
+### Prometheus Dashboards
+
 | Dashboard | Description | UID |
 |-----------|-------------|-----|
 | **MeshForge Overview** | System health, service status, message queues | `meshforge-overview` |
 | **MeshForge Node Metrics** | Per-node SNR, RSSI, battery, status table | `meshforge-nodes` |
 | **MeshForge Gateway** | Gateway connections, message flow, errors | `meshforge-gateway` |
+
+### InfluxDB Dashboard
+
+| Dashboard | Description | UID |
+|-----------|-------------|-----|
+| **MeshForge InfluxDB** | Node trends, signal quality, message activity | `meshforge-influxdb` |
+
+### Grafana Infinity Plugin Dashboard
+
+| Dashboard | Description | UID |
+|-----------|-------------|-----|
+| **MeshForge Infinity** | JSON API integration (no Prometheus required) | `meshforge-infinity` |
 
 ## Quick Start
 
@@ -33,7 +47,7 @@ from utils.metrics_export import setup_textfile_exporter
 setup_textfile_exporter()
 ```
 
-### 2. Configure Prometheus
+### 2a. Configure Prometheus (for Prometheus dashboards)
 
 Add to your `prometheus.yml`:
 
@@ -44,6 +58,39 @@ scrape_configs:
       - targets: ['localhost:9090']
     scrape_interval: 15s
 ```
+
+### 2b. Configure InfluxDB (for InfluxDB dashboard)
+
+```python
+from utils.metrics_export import start_influxdb_exporter
+
+# InfluxDB 2.x
+exporter = start_influxdb_exporter(
+    url="http://localhost:8086",
+    token="your-token",
+    org="meshforge",
+    bucket="metrics",
+    interval=15
+)
+
+# InfluxDB 1.x
+exporter = start_influxdb_exporter(
+    url="http://localhost:8086",
+    database="meshforge",
+    interval=15
+)
+```
+
+### 2c. Configure Infinity Plugin (for JSON API dashboard)
+
+1. Install the Infinity data source plugin in Grafana
+2. Add a new Infinity data source with URL: `http://localhost:9090`
+3. No authentication required
+
+The JSON API endpoints are:
+- `/api/json/metrics` - System metrics
+- `/api/json/nodes` - Node list
+- `/api/json/status` - Service status
 
 ### 3. Import Dashboards to Grafana
 
