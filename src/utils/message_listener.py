@@ -2,12 +2,19 @@
 MeshForge Lightweight Message Listener
 
 Standalone message receiver that doesn't require the full gateway bridge.
-Uses Meshtastic pubsub to receive messages and store them for the UI.
+Supports two modes:
+  - TCP: Direct connection to meshtasticd via pubsub (default)
+  - MQTT: Subscribe to local MQTT broker (for multi-consumer architecture)
 
 Usage:
     from utils.message_listener import MessageListener
 
+    # TCP mode (default) - requires exclusive TCP access
     listener = MessageListener()
+    listener.start()
+
+    # MQTT mode - works alongside other TCP consumers
+    listener = MessageListener(mode="mqtt")
     listener.start()
 
     # Messages automatically stored via messaging.store_incoming()
@@ -29,6 +36,10 @@ DISCONNECTED = "disconnected"
 CONNECTING = "connecting"
 CONNECTED = "connected"
 ERROR = "error"
+
+# Listener modes
+MODE_TCP = "tcp"
+MODE_MQTT = "mqtt"
 
 
 @dataclass
@@ -62,21 +73,35 @@ class MessageListener:
     a new connection. meshtasticd only supports ONE TCP connection at a time.
     """
 
-    def __init__(self, host: str = "localhost", store_messages: bool = True):
+    def __init__(
+        self,
+        host: str = "localhost",
+        store_messages: bool = True,
+        mode: str = MODE_TCP,
+        mqtt_broker: str = "localhost",
+        mqtt_port: int = 1883,
+    ):
         """
         Initialize the listener.
 
         Args:
-            host: Meshtastic host (localhost for meshtasticd)
+            host: Meshtastic host for TCP mode (localhost for meshtasticd)
             store_messages: Whether to store messages via messaging.store_incoming()
+            mode: Listener mode - "tcp" (default) or "mqtt"
+            mqtt_broker: MQTT broker hostname for mqtt mode
+            mqtt_port: MQTT broker port for mqtt mode (1883 for non-TLS)
         """
         self.host = host
         self.store_messages = store_messages
+        self.mode = mode
+        self.mqtt_broker = mqtt_broker
+        self.mqtt_port = mqtt_port
         self._status = ListenerStatus(state=DISCONNECTED)
         self._running = False
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._interface = None
+        self._mqtt_subscriber = None  # For MQTT mode
         self._owns_connection = False  # Track if we created the connection
         self._callbacks: List[Callable] = []
         self._lock = threading.Lock()
@@ -129,23 +154,33 @@ class MessageListener:
         self._running = False
         self._stop_event.set()
 
-        # Unsubscribe from pubsub
-        try:
-            from pubsub import pub
-            pub.unsubscribe(self._on_receive, "meshtastic.receive")
-        except Exception as e:
-            logger.debug(f"Cleanup: pubsub unsubscribe: {e}")
-
-        # Only close interface if we own it (not borrowing from gateway)
-        if self._interface and self._owns_connection:
+        if self.mode == MODE_MQTT:
+            # Stop MQTT subscriber
+            if self._mqtt_subscriber:
+                try:
+                    self._mqtt_subscriber.stop()
+                except Exception as e:
+                    logger.debug(f"Cleanup: MQTT stop: {e}")
+                self._mqtt_subscriber = None
+        else:
+            # TCP mode cleanup
+            # Unsubscribe from pubsub
             try:
-                from utils.meshtastic_connection import safe_close_interface, get_connection_manager
-                safe_close_interface(self._interface)
-                # Release persistent connection if we acquired it
-                get_connection_manager().release_persistent()
+                from pubsub import pub
+                pub.unsubscribe(self._on_receive, "meshtastic.receive")
             except Exception as e:
-                logger.debug(f"Cleanup: interface close: {e}")
-            self._interface = None
+                logger.debug(f"Cleanup: pubsub unsubscribe: {e}")
+
+            # Only close interface if we own it (not borrowing from gateway)
+            if self._interface and self._owns_connection:
+                try:
+                    from utils.meshtastic_connection import safe_close_interface, get_connection_manager
+                    safe_close_interface(self._interface)
+                    # Release persistent connection if we acquired it
+                    get_connection_manager().release_persistent()
+                except Exception as e:
+                    logger.debug(f"Cleanup: interface close: {e}")
+                self._interface = None
 
         self._owns_connection = False
         self._status.state = DISCONNECTED
@@ -155,6 +190,75 @@ class MessageListener:
         """Main listener loop."""
         self._status.state = CONNECTING
 
+        if self.mode == MODE_MQTT:
+            self._run_mqtt_mode()
+        else:
+            self._run_tcp_mode()
+
+    def _run_mqtt_mode(self):
+        """Run listener in MQTT mode - subscribe to local MQTT broker."""
+        try:
+            from monitoring.mqtt_subscriber import create_local_subscriber
+        except ImportError as e:
+            self._status.state = ERROR
+            self._status.error = f"MQTT module not available: {e}"
+            logger.error(f"Cannot start MQTT listener: {e}")
+            return
+
+        try:
+            # Create local MQTT subscriber
+            logger.info(f"Connecting to MQTT broker {self.mqtt_broker}:{self.mqtt_port}")
+            self._mqtt_subscriber = create_local_subscriber(
+                broker=self.mqtt_broker,
+                port=self.mqtt_port,
+            )
+
+            # Register callback for text messages
+            self._mqtt_subscriber.register_message_callback(self._on_mqtt_message)
+
+            # Start the subscriber
+            if self._mqtt_subscriber.start():
+                self._status.state = CONNECTED
+                self._status.connected_since = datetime.now()
+                self._status.error = None
+                logger.info("MQTT message listener connected")
+            else:
+                # Wait for async connection
+                for _ in range(10):
+                    time.sleep(0.5)
+                    if self._mqtt_subscriber.is_connected():
+                        self._status.state = CONNECTED
+                        self._status.connected_since = datetime.now()
+                        self._status.error = None
+                        logger.info("MQTT message listener connected")
+                        break
+                else:
+                    self._status.state = ERROR
+                    self._status.error = "MQTT connection timeout"
+                    logger.warning("MQTT connection pending - will retry in background")
+
+            # Keep thread alive while running
+            while self._running:
+                if self._stop_event.wait(1):
+                    break
+
+                # Check MQTT connection health
+                if not self._mqtt_subscriber.is_connected():
+                    if self._status.state == CONNECTED:
+                        logger.warning("MQTT connection lost")
+                        self._status.state = CONNECTING
+                elif self._status.state != CONNECTED:
+                    self._status.state = CONNECTED
+                    self._status.connected_since = datetime.now()
+                    logger.info("MQTT reconnected")
+
+        except Exception as e:
+            self._status.state = ERROR
+            self._status.error = str(e)
+            logger.error(f"MQTT listener error: {e}")
+
+    def _run_tcp_mode(self):
+        """Run listener in TCP mode - direct meshtasticd connection."""
         try:
             # Import dependencies
             try:
@@ -478,6 +582,65 @@ class MessageListener:
         except Exception as e:
             logger.debug(f"Error processing position: {e}")
 
+    def _on_mqtt_message(self, mqtt_msg):
+        """Handle message received via MQTT subscriber.
+
+        Args:
+            mqtt_msg: MQTTMessage from mqtt_subscriber
+        """
+        try:
+            # Update status
+            self._status.messages_received += 1
+            self._status.last_message_time = datetime.now()
+
+            # Build message dict matching TCP format
+            msg_data = {
+                'from_id': mqtt_msg.from_id,
+                'to_id': mqtt_msg.to_id if mqtt_msg.to_id not in ('!ffffffff', '^all') else None,
+                'content': mqtt_msg.text,
+                'channel': mqtt_msg.channel,
+                'snr': mqtt_msg.snr,
+                'rssi': mqtt_msg.rssi,
+                'hops_away': None,  # Not available in MQTT JSON
+                'hop_start': mqtt_msg.hop_start,
+                'hop_limit': None,
+                'timestamp': mqtt_msg.timestamp.isoformat(),
+                'is_broadcast': mqtt_msg.to_id in ('!ffffffff', '^all', None),
+                'via_mqtt': True,  # Flag that this came from MQTT
+            }
+
+            logger.info(
+                f"MQTT RX: {mqtt_msg.from_id} -> {mqtt_msg.to_id or 'broadcast'} "
+                f"[ch={mqtt_msg.channel}, SNR={mqtt_msg.snr}]: {mqtt_msg.text[:50]}..."
+            )
+
+            # Store message if enabled
+            if self.store_messages:
+                try:
+                    from commands import messaging
+                    messaging.store_incoming(
+                        from_id=mqtt_msg.from_id,
+                        content=mqtt_msg.text,
+                        network="meshtastic",
+                        to_id=msg_data['to_id'],
+                        channel=mqtt_msg.channel,
+                        snr=mqtt_msg.snr,
+                        rssi=mqtt_msg.rssi,
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not store message: {e}")
+
+            # Notify callbacks
+            with self._lock:
+                for callback in self._callbacks:
+                    try:
+                        callback(msg_data)
+                    except Exception as e:
+                        logger.error(f"Callback error: {e}")
+
+        except Exception as e:
+            logger.error(f"Error processing MQTT message: {e}")
+
 
 # Singleton instance
 _listener: Optional[MessageListener] = None
@@ -491,20 +654,56 @@ def get_listener() -> MessageListener:
     return _listener
 
 
-def start_listener(host: str = "localhost") -> bool:
+def start_listener(host: str = "localhost", mode: str = MODE_TCP) -> bool:
     """
     Start the global message listener.
+
+    Args:
+        host: Meshtastic host for TCP mode
+        mode: "tcp" (default) or "mqtt"
 
     Returns:
         True if started successfully
     """
+    global _listener
     listener = get_listener()
-    if listener.host != host:
+
+    # Check if we need to recreate with different settings
+    if listener.host != host or listener.mode != mode:
         listener.stop()
-        global _listener
-        _listener = MessageListener(host=host)
+        _listener = MessageListener(host=host, mode=mode)
         listener = _listener
+
     return listener.start()
+
+
+def start_mqtt_listener(
+    broker: str = "localhost",
+    port: int = 1883,
+) -> bool:
+    """
+    Start the global message listener in MQTT mode.
+
+    This is the recommended mode when the TCP port is occupied by another
+    component (like rnsd or Gateway Bridge).
+
+    Args:
+        broker: MQTT broker hostname (default: localhost)
+        port: MQTT broker port (default: 1883)
+
+    Returns:
+        True if started successfully
+    """
+    global _listener
+    if _listener:
+        _listener.stop()
+
+    _listener = MessageListener(
+        mode=MODE_MQTT,
+        mqtt_broker=broker,
+        mqtt_port=port,
+    )
+    return _listener.start()
 
 
 def stop_listener():
