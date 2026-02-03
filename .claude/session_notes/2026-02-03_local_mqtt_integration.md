@@ -2,7 +2,7 @@
 
 **Date**: 2026-02-03
 **Branch**: `claude/fix-mesh-message-display-StJRJ`
-**Status**: Code pushed - Ready for Pi testing
+**Status**: MQTT confirmed working on Pi - Ready for automation
 
 ## Pickup Items Status
 
@@ -137,14 +137,26 @@ print(get_listener_status())
 "
 ```
 
-## Next Steps (Pi Required)
+## Pi Test Results
 
-1. **Test Gateway Bridge WebSocket** - From previous PR (merged)
-   - Stop rnsd, start Gateway Bridge, verify WebSocket messages at ws://localhost:5001
-2. **Test local MQTT integration** - This session's code
-   - Install mosquitto, configure meshtasticd MQTT, verify messages flow
+**MQTT working** - Messages flowing through local mosquitto:
+```
+msh/2/e/HawaiiNet/!96078a94      # Encrypted
+msh/2/json/HawaiiNet/!96078a94   # JSON nodeinfo from VolcanoAI (VAIL)
+```
+
+**Topic structure discovery**: `msh/2/json/{channel}/{node_id}` (no region prefix)
+- Need to configure subscriber with `root_topic="msh/2/e"` and `channel="HawaiiNet"`
+
+## Next Steps
+
+1. **Automate MQTT setup in TUI** - MeshForge should handle:
+   - Install mosquitto (`apt install mosquitto`)
+   - Configure meshtasticd MQTT settings
+   - Auto-detect topic/channel from meshtasticd config
+   - One-click "Enable Local MQTT Architecture"
+2. **Test Gateway Bridge WebSocket** - From previous PR (merged)
 3. **Integration with TUI** - Add MQTT mode option to Monitoring menu
-4. **WebSocket bridge** - Optional: MQTT subscriber can also broadcast to WebSocket
 
 ## Notes
 
