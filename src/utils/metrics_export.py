@@ -635,20 +635,57 @@ class PrometheusExporter:
 
 
 class MetricsHTTPHandler(http.server.BaseHTTPRequestHandler):
-    """HTTP handler for Prometheus metrics endpoint."""
+    """HTTP handler for Prometheus metrics endpoint and Grafana JSON API."""
 
     exporter: Optional[PrometheusExporter] = None
 
     def do_GET(self):
         """Handle GET request."""
+        # CORS headers for Grafana
         if self.path == "/metrics":
             self._serve_metrics()
         elif self.path == "/health" or self.path == "/healthz":
             self._serve_health()
+        # Grafana JSON API endpoints
+        elif self.path == "/api/json/metrics":
+            self._serve_json_metrics()
+        elif self.path == "/api/json/nodes":
+            self._serve_json_nodes()
+        elif self.path == "/api/json/status":
+            self._serve_json_status()
+        elif self.path == "/":
+            self._serve_index()
         else:
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"Not Found")
+
+    def _add_cors_headers(self):
+        """Add CORS headers for Grafana."""
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def _serve_index(self):
+        """Serve index page with available endpoints."""
+        content = """MeshForge Metrics Server
+
+Endpoints:
+  /metrics          - Prometheus format (for Prometheus scraper)
+  /health           - Health check
+  /api/json/metrics - JSON metrics (for Grafana Infinity plugin)
+  /api/json/nodes   - Node data JSON
+  /api/json/status  - System status JSON
+
+Grafana Setup:
+  1. Install 'Infinity' data source plugin
+  2. Add data source: URL = http://localhost:9090
+  3. Query: /api/json/metrics or /api/json/nodes
+"""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(content.encode('utf-8'))
 
     def _serve_metrics(self):
         """Serve Prometheus metrics."""
@@ -670,6 +707,137 @@ class MetricsHTTPHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(500)
             self.end_headers()
             self.wfile.write(str(e).encode('utf-8'))
+
+    def _serve_json_metrics(self):
+        """Serve metrics as JSON for Grafana Infinity plugin."""
+        import json
+
+        try:
+            metrics = {}
+
+            # Get node counts from MapDataCollector
+            try:
+                from utils.map_data_collector import MapDataCollector
+                collector = MapDataCollector(enable_history=False)
+                geojson = collector.collect(max_age_seconds=60)
+                props = geojson.get('properties', {})
+                metrics['nodes_total'] = props.get('total_nodes', 0)
+                metrics['nodes_with_gps'] = props.get('nodes_with_position', 0)
+                metrics['sources'] = props.get('sources', {})
+            except Exception as e:
+                logger.debug(f"MapDataCollector error: {e}")
+                metrics['nodes_total'] = 0
+                metrics['nodes_with_gps'] = 0
+
+            # Get service status
+            try:
+                from utils.service_check import check_service
+                mesh_status = check_service("meshtasticd")
+                rns_status = check_service("rnsd")
+                metrics['meshtasticd_running'] = 1 if mesh_status.available else 0
+                metrics['rnsd_running'] = 1 if rns_status.available else 0
+            except Exception:
+                metrics['meshtasticd_running'] = 0
+                metrics['rnsd_running'] = 0
+
+            # Uptime
+            if self.exporter:
+                metrics['uptime_seconds'] = time.time() - self.exporter.start_time
+
+            metrics['timestamp'] = datetime.now().isoformat()
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self._add_cors_headers()
+            self.end_headers()
+            self.wfile.write(json.dumps(metrics, indent=2).encode('utf-8'))
+
+        except Exception as e:
+            logger.error(f"Error serving JSON metrics: {e}")
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+
+    def _serve_json_nodes(self):
+        """Serve node data as JSON for Grafana."""
+        import json
+
+        try:
+            nodes = []
+
+            try:
+                from utils.map_data_collector import MapDataCollector
+                collector = MapDataCollector(enable_history=False)
+                geojson = collector.collect(max_age_seconds=60)
+
+                for feature in geojson.get('features', []):
+                    props = feature.get('properties', {})
+                    coords = feature.get('geometry', {}).get('coordinates', [0, 0])
+                    nodes.append({
+                        'id': props.get('id', ''),
+                        'name': props.get('name', ''),
+                        'lat': coords[1] if len(coords) > 1 else 0,
+                        'lon': coords[0] if len(coords) > 0 else 0,
+                        'snr': props.get('snr'),
+                        'battery': props.get('battery'),
+                        'last_heard': props.get('last_heard'),
+                        'online': props.get('online', False),
+                    })
+            except Exception as e:
+                logger.debug(f"Node collection error: {e}")
+
+            result = {
+                'timestamp': datetime.now().isoformat(),
+                'count': len(nodes),
+                'nodes': nodes
+            }
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self._add_cors_headers()
+            self.end_headers()
+            self.wfile.write(json.dumps(result, indent=2).encode('utf-8'))
+
+        except Exception as e:
+            logger.error(f"Error serving JSON nodes: {e}")
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+
+    def _serve_json_status(self):
+        """Serve system status as JSON."""
+        import json
+
+        try:
+            from __version__ import __version__
+        except ImportError:
+            __version__ = "unknown"
+
+        status = {
+            'version': __version__,
+            'timestamp': datetime.now().isoformat(),
+            'services': {},
+        }
+
+        # Check services
+        for svc in ['meshtasticd', 'rnsd', 'mosquitto', 'grafana-server']:
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ['systemctl', 'is-active', svc],
+                    capture_output=True, text=True, timeout=5
+                )
+                status['services'][svc] = result.stdout.strip()
+            except Exception:
+                status['services'][svc] = 'unknown'
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self._add_cors_headers()
+        self.end_headers()
+        self.wfile.write(json.dumps(status, indent=2).encode('utf-8'))
 
     def _serve_health(self):
         """Serve health check endpoint."""
