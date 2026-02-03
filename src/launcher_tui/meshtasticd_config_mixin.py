@@ -77,33 +77,41 @@ class MeshtasticdConfigMixin:
                 self._restart_meshtasticd()
 
     def _show_web_client_info(self):
-        """Show meshtasticd web client URL for full radio configuration."""
-        import socket
-        try:
-            local_ip = socket.gethostbyname(socket.gethostname())
-            if local_ip.startswith('127.'):
-                # Fallback: get IP from interface
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                s.settimeout(2)
-                s.connect(("8.8.8.8", 80))
-                local_ip = s.getsockname()[0]
-                s.close()
-        except Exception:
-            local_ip = "YOUR_PI_IP"
+        """Show meshtasticd web client with browser launch option.
 
-        web_url = f"https://{local_ip}:9443"
+        Delegates to _open_web_client() in main.py which provides:
+        - Browser launch functionality
+        - URL display for copying
+        - SSL certificate acceptance guidance
+        """
+        # Call the unified web client handler from main.py (inherited via mixin)
+        if hasattr(self, '_open_web_client'):
+            self._open_web_client()
+        else:
+            # Fallback if method not available (shouldn't happen)
+            import socket
+            try:
+                local_ip = socket.gethostbyname(socket.gethostname())
+                if local_ip.startswith('127.'):
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.settimeout(2)
+                    s.connect(("8.8.8.8", 80))
+                    local_ip = s.getsockname()[0]
+                    s.close()
+            except Exception:
+                local_ip = "YOUR_PI_IP"
 
-        self.dialog.msgbox(
-            "Meshtastic Web Client",
-            f"Full radio configuration via browser:\n\n"
-            f"  URL: {web_url}\n\n"
-            f"Set these to join your mesh network:\n"
-            f"  Config → LoRa → Region  (US, EU_868, etc.)\n"
-            f"  Config → LoRa → Preset  (LONG_FAST, etc.)\n"
-            f"  Config → Channels       (PSK, name)\n\n"
-            f"The web client gives full access to all\n"
-            f"meshtasticd settings, maps, and messaging."
-        )
+            self.dialog.msgbox(
+                "Meshtastic Web Client",
+                f"Full radio configuration via browser:\n\n"
+                f"  URL: https://{local_ip}:9443\n\n"
+                f"Set these to join your mesh network:\n"
+                f"  Config → LoRa → Region  (US, EU_868, etc.)\n"
+                f"  Config → LoRa → Preset  (LONG_FAST, etc.)\n"
+                f"  Config → Channels       (PSK, name)\n\n"
+                f"The web client gives full access to all\n"
+                f"meshtasticd settings, maps, and messaging."
+            )
 
     def _meshtasticd_status(self):
         """Show meshtasticd service status."""
