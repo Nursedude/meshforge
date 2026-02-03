@@ -46,6 +46,7 @@ class UpdatesMixin:
             choices = [
                 ("check", "Check for Updates"),
                 ("update-all", "Update All Components"),
+                ("meshforge", "Update MeshForge"),
                 ("meshtasticd", "Update meshtasticd"),
                 ("cli", "Update Meshtastic CLI"),
                 ("firmware", "Update Node Firmware (Info)"),
@@ -65,6 +66,8 @@ class UpdatesMixin:
                 self._check_updates()
             elif choice == "update-all":
                 self._update_all()
+            elif choice == "meshforge":
+                self._update_meshforge()
             elif choice == "meshtasticd":
                 self._update_meshtasticd()
             elif choice == "cli":
@@ -132,8 +135,8 @@ class UpdatesMixin:
         updates_needed = []
         for key, info in versions.items():
             if info.update_available and info.update_command:
-                # Skip firmware (manual process)
-                if key != 'firmware':
+                # Skip firmware (manual process) and meshforge (handled separately)
+                if key not in ('firmware', 'meshforge'):
                     updates_needed.append((key, info))
 
         if not updates_needed:
@@ -314,6 +317,112 @@ class UpdatesMixin:
             "Use: meshtastic --export-config > backup.yaml",
             width=60,
             height=22
+        )
+
+    def _update_meshforge(self):
+        """Update MeshForge itself (git pull + pip install)."""
+        from pathlib import Path
+
+        # Get MeshForge install directory
+        meshforge_dir = Path(__file__).parent.parent.parent  # src/launcher_tui -> src -> meshforge root
+
+        # Check if it's a git repo
+        git_dir = meshforge_dir / '.git'
+        if not git_dir.exists():
+            self.dialog.msgbox(
+                "Not a Git Repository",
+                "MeshForge is not installed via git.\n\n"
+                "To update, re-run the installer:\n\n"
+                "curl -sSL https://raw.githubusercontent.com/Nursedude/meshforge/main/install.sh | sudo bash"
+            )
+            return
+
+        # Confirm update
+        if not self.dialog.yesno(
+            "Update MeshForge",
+            "This will:\n\n"
+            "1. Pull latest code from GitHub (git pull)\n"
+            "2. Install/update Python dependencies\n\n"
+            "Continue?"
+        ):
+            return
+
+        # Step 1: Git pull
+        self.dialog.infobox("Updating MeshForge", "Step 1/2: Pulling latest code from GitHub...")
+
+        try:
+            result = subprocess.run(
+                ['git', 'pull', 'origin', 'main'],
+                cwd=str(meshforge_dir),
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            git_output = result.stdout + result.stderr
+
+            if result.returncode != 0:
+                self.dialog.msgbox(
+                    "Git Pull Failed",
+                    f"Failed to pull updates:\n\n{git_output[:500]}"
+                )
+                return
+
+        except subprocess.TimeoutExpired:
+            self.dialog.msgbox("Error", "Git pull timed out after 60 seconds.")
+            return
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Git pull failed: {e}")
+            return
+
+        # Step 2: Install dependencies
+        self.dialog.infobox("Updating MeshForge", "Step 2/2: Installing Python dependencies...")
+
+        requirements_file = meshforge_dir / 'requirements.txt'
+        if not requirements_file.exists():
+            self.dialog.msgbox("Error", "requirements.txt not found!")
+            return
+
+        # Determine pip command based on venv or system install
+        venv_pip = meshforge_dir / 'venv' / 'bin' / 'pip'
+        no_venv_marker = meshforge_dir / '.no-venv'
+
+        try:
+            if venv_pip.exists() and not no_venv_marker.exists():
+                # Use venv pip
+                pip_cmd = [str(venv_pip), 'install', '-r', str(requirements_file)]
+            else:
+                # Use system pip with --break-system-packages if needed
+                pip_cmd = ['pip3', 'install', '--break-system-packages', '-r', str(requirements_file)]
+
+            result = subprocess.run(
+                pip_cmd,
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            pip_output = result.stdout + result.stderr
+
+            if result.returncode != 0:
+                self.dialog.msgbox(
+                    "Pip Install Failed",
+                    f"Failed to install dependencies:\n\n{pip_output[:500]}"
+                )
+                return
+
+        except subprocess.TimeoutExpired:
+            self.dialog.msgbox("Error", "Pip install timed out after 5 minutes.")
+            return
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Pip install failed: {e}")
+            return
+
+        # Success!
+        self.dialog.msgbox(
+            "Update Complete",
+            "MeshForge has been updated!\n\n"
+            f"Git: {git_output.strip()[:200]}\n\n"
+            "Please restart MeshForge to apply changes.\n\n"
+            "Run: sudo meshforge"
         )
 
     def _run_update_command(self, component: str, command: str) -> Tuple[bool, str]:

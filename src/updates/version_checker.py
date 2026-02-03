@@ -64,6 +64,70 @@ def compare_versions(installed: str, latest: str) -> bool:
     return latest_tuple > inst_tuple
 
 
+def get_meshforge_version() -> Optional[str]:
+    """Get installed MeshForge version from __version__.py"""
+    try:
+        # Import from the package
+        try:
+            from __version__ import __version__
+            return __version__
+        except ImportError:
+            pass
+
+        # Fallback: read the file directly
+        version_file = Path(__file__).parent.parent / '__version__.py'
+        if version_file.exists():
+            content = version_file.read_text()
+            match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', content)
+            if match:
+                return match.group(1)
+
+    except Exception as e:
+        logger.debug(f"Error getting MeshForge version: {e}")
+
+    return None
+
+
+def get_latest_meshforge_version() -> Optional[str]:
+    """Get latest MeshForge version from GitHub"""
+    cache_key = 'meshforge_latest'
+
+    # Check cache
+    if cache_key in _version_cache:
+        cached = _version_cache[cache_key]
+        if datetime.now() - cached['timestamp'] < _cache_ttl:
+            return cached['version']
+
+    try:
+        import urllib.request
+        import ssl
+
+        ctx = ssl.create_default_context()
+
+        # Check the __version__.py file in the main branch
+        url = 'https://raw.githubusercontent.com/Nursedude/meshforge/main/src/__version__.py'
+        req = urllib.request.Request(url, headers={'User-Agent': 'MeshForge'})
+
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as response:
+            content = response.read().decode()
+            match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', content)
+            if match:
+                version = match.group(1)
+
+                # Cache result
+                _version_cache[cache_key] = {
+                    'version': version,
+                    'timestamp': datetime.now()
+                }
+
+                return version
+
+    except Exception as e:
+        logger.debug(f"Error getting latest MeshForge version: {e}")
+
+    return None
+
+
 def get_meshtasticd_version() -> Optional[str]:
     """Get installed meshtasticd version"""
     try:
@@ -258,6 +322,15 @@ def get_latest_firmware_version() -> Optional[str]:
 def check_all_versions() -> Dict[str, VersionInfo]:
     """Check all component versions and return status"""
     results = {}
+
+    # MeshForge itself
+    meshforge = VersionInfo(name='MeshForge')
+    meshforge.installed = get_meshforge_version()
+    meshforge.latest = get_latest_meshforge_version()
+    if meshforge.installed and meshforge.latest:
+        meshforge.update_available = compare_versions(meshforge.installed, meshforge.latest)
+    meshforge.update_command = 'meshforge-update'  # Special command handled by TUI
+    results['meshforge'] = meshforge
 
     # meshtasticd
     meshtasticd = VersionInfo(name='meshtasticd')
