@@ -298,7 +298,9 @@ class MeshtasticConnectionManager:
         """
         Resolve AUTO mode to actual connection mode.
 
-        AUTO tries serial first (MeshForge-owned), then falls back to TCP.
+        AUTO mode priority:
+        1. TCP if meshtasticd is available (preferred - daemon manages the radio)
+        2. SERIAL if USB device detected and TCP unavailable
 
         Returns:
             Resolved ConnectionMode (TCP or SERIAL)
@@ -306,19 +308,20 @@ class MeshtasticConnectionManager:
         if self.mode != ConnectionMode.AUTO:
             return self.mode
 
-        # AUTO mode: prefer serial if USB device available
-        if self.serial_port or self._detect_usb_device():
-            logger.info("AUTO mode: USB device detected, using SERIAL mode")
-            return ConnectionMode.SERIAL
-
-        # Fall back to TCP
+        # AUTO mode: prefer TCP if meshtasticd is running
+        # This avoids conflicts when meshtasticd holds the serial port
         if self.is_available():
-            logger.info("AUTO mode: meshtasticd available, using TCP mode")
+            logger.info("AUTO mode: meshtasticd available on TCP, using TCP mode")
             return ConnectionMode.TCP
 
-        # Default to serial (will fail with clear message if no device)
-        logger.info("AUTO mode: no meshtasticd, defaulting to SERIAL mode")
-        return ConnectionMode.SERIAL
+        # Fall back to serial if USB device available
+        if self.serial_port or self._detect_usb_device():
+            logger.info("AUTO mode: no meshtasticd, USB device detected, using SERIAL mode")
+            return ConnectionMode.SERIAL
+
+        # Default to TCP (will fail with clear message if no meshtasticd)
+        logger.info("AUTO mode: no USB device, defaulting to TCP mode")
+        return ConnectionMode.TCP
 
     def _create_interface(self):
         """
