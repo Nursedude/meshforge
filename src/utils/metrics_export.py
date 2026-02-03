@@ -430,23 +430,49 @@ class PrometheusExporter:
         return lines
 
     def _collect_node_metrics(self) -> List[str]:
-        """Collect node metrics from MetricsHistory."""
+        """Collect node metrics from MapDataCollector and MetricsHistory."""
         lines = []
+        node_count = 0
+        nodes_with_gps = 0
 
+        # Primary source: MapDataCollector (has actual node data)
+        try:
+            from utils.map_data_collector import MapDataCollector
+            collector = MapDataCollector(enable_history=False)
+            geojson = collector.collect(max_age_seconds=60)
+            props = geojson.get("properties", {})
+            node_count = props.get("total_nodes", 0)
+            nodes_with_gps = props.get("nodes_with_position", 0)
+            logger.debug(f"MapDataCollector: {node_count} total, {nodes_with_gps} with GPS")
+        except ImportError:
+            logger.debug("MapDataCollector not available")
+        except Exception as e:
+            logger.debug(f"Error collecting from MapDataCollector: {e}")
+
+        # Fallback to MetricsHistory if MapDataCollector returned 0
+        if node_count == 0:
+            try:
+                from utils.metrics_history import get_metrics_history, MetricType
+                history = get_metrics_history()
+                stats = history.get_statistics()
+                node_count = stats.get("unique_nodes", 0)
+            except ImportError:
+                logger.debug("MetricsHistory not available")
+            except Exception as e:
+                logger.debug(f"Error collecting from MetricsHistory: {e}")
+
+        # Emit node count metrics
+        defn = METRICS["meshforge_nodes_total"]
+        lines.append(f"# HELP {defn.name} {defn.help_text}")
+        lines.append(f"# TYPE {defn.name} {defn.metric_type}")
+        lines.append(_format_metric_line(defn.name, node_count, {"state": "tracked"}))
+        if nodes_with_gps > 0:
+            lines.append(_format_metric_line(defn.name, nodes_with_gps, {"state": "with_gps"}))
+
+        # Per-node SNR/RSSI metrics from MetricsHistory
         try:
             from utils.metrics_history import get_metrics_history, MetricType
             history = get_metrics_history()
-            stats = history.get_statistics()
-
-            # Total nodes by state
-            defn = METRICS["meshforge_nodes_total"]
-            lines.append(f"# HELP {defn.name} {defn.help_text}")
-            lines.append(f"# TYPE {defn.name} {defn.metric_type}")
-            lines.append(_format_metric_line(defn.name, stats.get("unique_nodes", 0), {"state": "tracked"}))
-
-            # Per-node metrics (limit to avoid explosion)
-            # Get latest SNR and RSSI for each node
-            now = time.time()
 
             # SNR metrics
             snr_added = False
@@ -471,32 +497,68 @@ class PrometheusExporter:
                     lines.append(_format_metric_line(defn.name, point.value, {"node_id": point.node_id}))
 
         except ImportError:
-            logger.debug("MetricsHistory not available")
+            pass
         except Exception as e:
-            logger.debug(f"Error collecting node metrics: {e}")
+            logger.debug(f"Error collecting SNR/RSSI metrics: {e}")
 
         return lines
 
     def _collect_gateway_metrics(self) -> List[str]:
-        """Collect gateway-specific metrics."""
+        """Collect gateway-specific metrics from service status."""
         lines = []
 
+        meshtastic_connected = 0
+        rns_connected = 0
+
+        # Check meshtasticd service status
         try:
-            from gateway.bridge_health import BridgeHealthMonitor
-            # BridgeHealthMonitor may be a singleton or need instantiation
-            # This is a placeholder for actual integration
-
-            defn = METRICS["meshforge_gateway_connections"]
-            lines.append(f"# HELP {defn.name} {defn.help_text}")
-            lines.append(f"# TYPE {defn.name} {defn.metric_type}")
-            # These would be populated from actual bridge state
-            lines.append(_format_metric_line(defn.name, 0, {"network": "meshtastic"}))
-            lines.append(_format_metric_line(defn.name, 0, {"network": "rns"}))
-
+            from utils.service_check import check_service
+            mesh_status = check_service("meshtasticd")
+            if mesh_status.available:
+                meshtastic_connected = 1
         except ImportError:
-            pass
+            # Fallback: check if port 4403 is listening
+            try:
+                import socket
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex(("localhost", 4403))
+                sock.close()
+                if result == 0:
+                    meshtastic_connected = 1
+            except Exception:
+                pass
         except Exception as e:
-            logger.debug(f"Error collecting gateway metrics: {e}")
+            logger.debug(f"Error checking meshtasticd: {e}")
+
+        # Check rnsd service status
+        try:
+            from utils.service_check import check_service
+            rns_status = check_service("rnsd")
+            if rns_status.available:
+                rns_connected = 1
+        except ImportError:
+            # Fallback: check if UDP port 37428 is in use (rnsd default)
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["ss", "-uln"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if "37428" in result.stdout:
+                    rns_connected = 1
+            except Exception:
+                pass
+        except Exception as e:
+            logger.debug(f"Error checking rnsd: {e}")
+
+        defn = METRICS["meshforge_gateway_connections"]
+        lines.append(f"# HELP {defn.name} {defn.help_text}")
+        lines.append(f"# TYPE {defn.name} {defn.metric_type}")
+        lines.append(_format_metric_line(defn.name, meshtastic_connected, {"network": "meshtastic"}))
+        lines.append(_format_metric_line(defn.name, rns_connected, {"network": "rns"}))
 
         return lines
 
