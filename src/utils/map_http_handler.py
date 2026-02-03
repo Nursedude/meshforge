@@ -10,7 +10,9 @@ Endpoints:
 - GET /api/nodes/history  -> node history stats + unique nodes (24h)
 - GET /api/nodes/trajectory/<id> -> trajectory GeoJSON for a node
 - GET /api/nodes/snapshot -> historical network snapshot for playback
-- GET /api/messages/queue -> pending messages from gateway queue
+- GET /api/messages/queue -> pending OUTBOUND messages from gateway queue
+- GET /api/messages/received -> RECEIVED inbound messages from mesh
+- GET /api/messages/rx-status -> MessageListener status (RX enabled?)
 - GET /api/network/topology -> network topology for D3.js visualization
 - GET /api/status    -> server health check + history stats
 - GET /*             -> static files from web/
@@ -90,6 +92,10 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
             self._serve_snapshot()
         elif self.path == '/api/messages/queue' or self.path == '/api/messages/queue/':
             self._serve_message_queue()
+        elif self.path.startswith('/api/messages/received'):
+            self._serve_received_messages()
+        elif self.path == '/api/messages/rx-status' or self.path == '/api/messages/rx-status/':
+            self._serve_rx_status()
         elif self.path == '/api/network/topology' or self.path == '/api/network/topology/':
             self._serve_network_topology()
         # ─────────────────────────────────────────────────────────────
@@ -601,6 +607,85 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
             "count": len(messages),
             "timestamp": datetime.now().isoformat()
         })
+
+    def _serve_received_messages(self):
+        """Serve received (inbound) messages from the messages database.
+
+        Query params:
+            limit: Max messages to return (default 50)
+            network: Filter by network (all, meshtastic, rns)
+            since: Only messages after this ISO timestamp
+
+        This endpoint returns messages RECEIVED from the mesh, stored by
+        the MessageListener. Use /api/messages/queue for pending OUTBOUND messages.
+        """
+        from urllib.parse import urlparse, parse_qs
+
+        # Parse query parameters
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+        limit = int(params.get('limit', ['50'])[0])
+        network = params.get('network', ['all'])[0]
+        since = params.get('since', [None])[0]
+
+        messages = []
+
+        try:
+            from commands import messaging
+            result = messaging.get_messages(limit=limit, network=network)
+
+            if result.success and result.data:
+                all_messages = result.data.get('messages', [])
+
+                # Filter by timestamp if 'since' is provided
+                if since:
+                    try:
+                        since_dt = datetime.fromisoformat(since.replace('Z', '+00:00'))
+                        all_messages = [
+                            m for m in all_messages
+                            if m.get('timestamp') and
+                            datetime.fromisoformat(m['timestamp']) > since_dt
+                        ]
+                    except (ValueError, TypeError):
+                        pass  # Invalid timestamp, skip filtering
+
+                # Filter to show only received messages (from_id != 'local')
+                messages = [m for m in all_messages if m.get('from_id') != 'local']
+
+        except ImportError:
+            logger.debug("Messaging module not available")
+        except Exception as e:
+            logger.debug(f"Error getting received messages: {e}")
+
+        self._serve_json({
+            "messages": messages,
+            "count": len(messages),
+            "timestamp": datetime.now().isoformat(),
+            "endpoint": "received"  # Distinguish from /queue
+        })
+
+    def _serve_rx_status(self):
+        """Serve the RX (message listener) status.
+
+        Returns whether the MessageListener is running and stats
+        about received messages.
+        """
+        status = {
+            "state": "disconnected",
+            "messages_received": 0,
+            "last_message_time": None,
+            "error": None,
+        }
+
+        try:
+            from utils.message_listener import get_listener_status
+            status = get_listener_status()
+        except ImportError:
+            status["error"] = "MessageListener not available"
+        except Exception as e:
+            status["error"] = str(e)
+
+        self._serve_json(status)
 
     def _serve_network_topology(self):
         """Serve network topology data for D3.js visualization."""

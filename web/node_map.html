@@ -833,6 +833,49 @@
             white-space: nowrap;
         }
 
+        /* Message section styling */
+        .message-section-title {
+            font-size: 10px;
+            color: #6a7a8a;
+            margin-bottom: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Received message styling */
+        .received-msg {
+            flex-wrap: wrap;
+        }
+        .msg-from {
+            color: #26c6da;
+            font-weight: 500;
+            min-width: 60px;
+        }
+        .msg-preview {
+            color: #9aa0a6;
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 10px;
+        }
+        .msg-time {
+            color: #6a7a8a;
+            font-size: 9px;
+            margin-left: auto;
+        }
+
+        /* Message received flash */
+        .update-indicator.message-received .update-dot {
+            background: #26c6da;
+            animation: message-pulse 0.5s ease-out 3;
+        }
+        @keyframes message-pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.5); }
+            100% { transform: scale(1); }
+        }
+
         /* View toggle buttons */
         .view-toggle {
             position: absolute;
@@ -1136,8 +1179,15 @@
 
     <!-- Phase 4: Message Queue Panel -->
     <div class="message-queue-panel" id="message-queue-panel">
-        <div class="legend-title">Message Queue</div>
-        <div id="queue-items"></div>
+        <div class="legend-title">Messages</div>
+        <div class="message-section">
+            <div class="message-section-title">Received (Inbox)</div>
+            <div id="received-items"></div>
+        </div>
+        <div class="message-section" style="margin-top:8px;padding-top:8px;border-top:1px solid #3a4a5a;">
+            <div class="message-section-title">Outbound Queue</div>
+            <div id="queue-items"></div>
+        </div>
     </div>
 
     <!-- Offline mode indicator -->
@@ -1475,7 +1525,9 @@
         // Phase 4 additions
         currentView: 'map',      // 'map' or 'topology'
         topology: null,          // D3 force simulation
-        messageQueue: [],        // pending messages
+        messageQueue: [],        // pending outbound messages
+        receivedMessages: [],    // received inbound messages
+        lastReceivedTime: null,  // for incremental updates
         flowAnimations: []       // active message flow animations
     };
 
@@ -1975,14 +2027,15 @@
         return [[sourceLatLng.lat, sourceLatLng.lng], [targetLatLng.lat, targetLatLng.lng]];
     }
 
-    // Load and display message queue
+    // Load and display messages (both received and outbound queue)
     async function loadMessageQueue() {
+        // Load outbound queue
         try {
             const response = await fetch('/api/messages/queue');
             if (response.ok) {
                 const data = await response.json();
                 state.messageQueue = data.messages || [];
-                renderMessageQueue();
+                renderOutboundQueue();
 
                 // Animate recent messages
                 if (document.getElementById('filter-messages').checked) {
@@ -1998,9 +2051,82 @@
         } catch (e) {
             // Message queue API not available
         }
+
+        // Load received messages
+        await loadReceivedMessages();
     }
 
-    function renderMessageQueue() {
+    async function loadReceivedMessages() {
+        try {
+            // Use incremental loading if we have a last timestamp
+            let url = '/api/messages/received?limit=20';
+            if (state.lastReceivedTime) {
+                url += '&since=' + encodeURIComponent(state.lastReceivedTime);
+            }
+
+            const response = await fetch(url);
+            if (response.ok) {
+                const data = await response.json();
+                const newMessages = data.messages || [];
+
+                if (state.lastReceivedTime && newMessages.length > 0) {
+                    // Prepend new messages to existing ones
+                    state.receivedMessages = [...newMessages, ...state.receivedMessages].slice(0, 50);
+                } else if (!state.lastReceivedTime) {
+                    // First load - just use the messages
+                    state.receivedMessages = newMessages;
+                }
+
+                // Update timestamp for next incremental load
+                if (newMessages.length > 0 && newMessages[0].timestamp) {
+                    state.lastReceivedTime = newMessages[0].timestamp;
+                }
+
+                renderReceivedMessages();
+
+                // Flash indicator when new messages arrive
+                if (newMessages.length > 0 && state.lastReceivedTime) {
+                    const indicator = document.getElementById('update-indicator');
+                    if (indicator) {
+                        indicator.classList.add('message-received');
+                        setTimeout(() => indicator.classList.remove('message-received'), 2000);
+                    }
+                }
+            }
+        } catch (e) {
+            // Received messages API not available
+            console.debug('Received messages API not available:', e);
+        }
+    }
+
+    function renderReceivedMessages() {
+        const container = document.getElementById('received-items');
+        if (!container) return;
+
+        if (state.receivedMessages.length === 0) {
+            container.innerHTML = '<div style="color:#6a7a8a;font-size:11px">No messages received</div>';
+            return;
+        }
+
+        container.innerHTML = state.receivedMessages.slice(0, 10).map(msg => {
+            const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : '';
+            const from = msg.from_id || 'Unknown';
+            const preview = (msg.content || '').substring(0, 30) + ((msg.content || '').length > 30 ? '...' : '');
+            const snrInfo = msg.snr != null ? ` SNR:${msg.snr}` : '';
+
+            return `
+                <div class="queue-item received-msg" title="${msg.content || ''}${snrInfo}">
+                    <div class="queue-network ${msg.network || 'meshtastic'}"></div>
+                    <span class="queue-direction">←</span>
+                    <span class="msg-from">${from.substring(0, 10)}</span>
+                    <span class="msg-preview">${preview}</span>
+                    <span class="msg-time">${time}</span>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function renderOutboundQueue() {
         const container = document.getElementById('queue-items');
         if (!container) return;
 
@@ -2016,6 +2142,12 @@
                 <span class="queue-target">${msg.target_name || msg.target || 'Unknown'}</span>
             </div>
         `).join('');
+    }
+
+    // Alias for backward compatibility
+    function renderMessageQueue() {
+        renderOutboundQueue();
+        renderReceivedMessages();
     }
 
     // ============================================

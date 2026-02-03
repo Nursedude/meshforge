@@ -127,7 +127,8 @@ class MapServer:
     """
 
     def __init__(self, port: int = 5000, host: str = "0.0.0.0",
-                 cors_origins: Optional[List[str]] = None):
+                 cors_origins: Optional[List[str]] = None,
+                 enable_message_listener: bool = True):
         """Initialize map server.
 
         Args:
@@ -140,23 +141,64 @@ class MapServer:
                   - None: Allow all origins (*) - best for LAN/AREDN access
                   - List: Only allow specified origins, e.g.,
                     ["http://localhost", "http://192.168.1."]
+            enable_message_listener: Start MessageListener for inbound messages (default True)
         """
         self.port = port
         self.host = host
         self.cors_origins = cors_origins
+        self.enable_message_listener = enable_message_listener
         self.collector = MapDataCollector()
         self._server: Optional[HTTPServer] = None
         self._thread: Optional[threading.Thread] = None
+        self._message_listener_started = False
 
         # Find web directory
         src_dir = Path(__file__).parent.parent
         self.web_dir = str(src_dir.parent / "web")
+
+    def _start_message_listener(self):
+        """Start the MessageListener for receiving inbound mesh messages."""
+        if not self.enable_message_listener:
+            return
+
+        try:
+            from utils.message_listener import start_listener, get_listener_status
+            success = start_listener(host="localhost")
+            if success:
+                self._message_listener_started = True
+                logger.info("MessageListener started - inbound messages enabled")
+                print("  Message RX: Enabled (listening for inbound messages)")
+            else:
+                status = get_listener_status()
+                logger.warning(f"MessageListener failed to start: {status.get('error', 'unknown')}")
+                print("  Message RX: Failed to start (check meshtasticd)")
+        except ImportError as e:
+            logger.debug(f"MessageListener not available: {e}")
+            print("  Message RX: Not available")
+        except Exception as e:
+            logger.warning(f"Error starting MessageListener: {e}")
+
+    def _stop_message_listener(self):
+        """Stop the MessageListener."""
+        if not self._message_listener_started:
+            return
+
+        try:
+            from utils.message_listener import stop_listener
+            stop_listener()
+            self._message_listener_started = False
+            logger.info("MessageListener stopped")
+        except Exception as e:
+            logger.debug(f"Error stopping MessageListener: {e}")
 
     def start(self):
         """Start server (blocking)."""
         MapRequestHandler.collector = self.collector
         MapRequestHandler.web_dir = self.web_dir
         MapRequestHandler.allowed_origins = self.cors_origins
+
+        # Start message listener for inbound messages
+        self._start_message_listener()
 
         self._server = HTTPServer((self.host, self.port), MapRequestHandler)
         logger.info(f"Map server starting on http://{self.host}:{self.port}")
@@ -177,6 +219,7 @@ class MapServer:
             self._server.serve_forever()
         except KeyboardInterrupt:
             print("\nShutting down map server...")
+            self._stop_message_listener()
             self._server.shutdown()
 
     def start_background(self):
@@ -185,6 +228,9 @@ class MapServer:
         MapRequestHandler.web_dir = self.web_dir
         MapRequestHandler.allowed_origins = self.cors_origins
 
+        # Start message listener for inbound messages
+        self._start_message_listener()
+
         self._server = HTTPServer((self.host, self.port), MapRequestHandler)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
@@ -192,6 +238,7 @@ class MapServer:
 
     def stop(self):
         """Stop the server."""
+        self._stop_message_listener()
         if self._server:
             self._server.shutdown()
             self._server = None
