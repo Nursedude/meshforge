@@ -1473,11 +1473,46 @@ Made with aloha for the mesh community
 
 def main():
     """Main entry point."""
+    # Suppress logging output that would corrupt the TUI display
+    # Redirect to file so errors can still be debugged
+    import logging
+    import os
+
+    # Set all loggers to CRITICAL to prevent output during TUI
+    logging.getLogger().setLevel(logging.CRITICAL)
+    for name in logging.root.manager.loggerDict:
+        logging.getLogger(name).setLevel(logging.CRITICAL)
+
+    # Redirect stderr to log file to prevent TUI corruption
+    log_dir = Path("/tmp")
+    try:
+        from utils.paths import get_real_user_home
+        log_dir = get_real_user_home() / ".cache" / "meshforge" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    stderr_log = log_dir / "tui_errors.log"
+    _original_stderr = sys.stderr
+    try:
+        sys.stderr = open(stderr_log, 'a')
+    except Exception:
+        pass  # Keep original stderr if can't redirect
+
     try:
         launcher = MeshForgeLauncher()
         launcher.run()
     except KeyboardInterrupt:
         print("\n\nExiting MeshForge...")
+        sys.exit(0)
+    finally:
+        # Restore stderr
+        try:
+            if sys.stderr != _original_stderr:
+                sys.stderr.close()
+                sys.stderr = _original_stderr
+        except Exception:
+            pass
         sys.exit(0)
 
 
