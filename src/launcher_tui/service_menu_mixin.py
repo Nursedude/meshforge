@@ -263,6 +263,7 @@ class ServiceMenuMixin:
                 ("start-rns", "Start rnsd"),
                 ("restart-rns", "Restart rnsd"),
                 ("install", "Install meshtasticd"),
+                ("mqtt-setup", "MQTT Setup           Install & configure broker"),
                 ("back", "Back"),
             ]
 
@@ -400,6 +401,8 @@ class ServiceMenuMixin:
                 self._wait_for_enter()
             elif choice == "install":
                 self._install_native_meshtasticd()
+            elif choice == "mqtt-setup":
+                self._mqtt_setup_wizard()
             else:
                 self._manage_service(choice)
 
@@ -879,3 +882,276 @@ WantedBy=multi-user.target
                     timeout=15
                 )
             self._wait_for_enter()
+
+    # =========================================================================
+    # MQTT Setup Wizard - Local broker for multi-consumer architecture
+    # =========================================================================
+
+    def _mqtt_setup_wizard(self):
+        """MQTT setup wizard - install mosquitto and configure meshtasticd.
+
+        This enables the local MQTT architecture where meshtasticd publishes
+        to a local mosquitto broker, allowing multiple consumers (MeshForge,
+        meshing-around, Grafana, etc.) to receive mesh messages.
+        """
+        # Introduction
+        if not self.dialog.yesno(
+            "MQTT Setup Wizard",
+            "This wizard will set up local MQTT architecture:\n\n"
+            "1. Install mosquitto MQTT broker\n"
+            "2. Configure meshtasticd to publish to local broker\n"
+            "3. Enable uplink on primary channel\n\n"
+            "Benefits:\n"
+            "• Multiple apps can receive mesh messages\n"
+            "• No more TCP one-client limitation\n"
+            "• Works with meshing-around, Grafana, etc.\n\n"
+            "Continue with setup?"
+        ):
+            return
+
+        # Step 1: Check/Install mosquitto
+        self.dialog.infobox("MQTT Setup", "Step 1/3: Checking mosquitto...")
+
+        if not self._is_mosquitto_installed():
+            if self.dialog.yesno(
+                "Install Mosquitto",
+                "Mosquitto MQTT broker is not installed.\n\n"
+                "Install it now?\n\n"
+                "This will run: apt install mosquitto mosquitto-clients"
+            ):
+                if not self._install_mosquitto():
+                    return
+            else:
+                self.dialog.msgbox(
+                    "Setup Cancelled",
+                    "MQTT setup requires mosquitto.\n\n"
+                    "Install manually with:\n"
+                    "  sudo apt install mosquitto mosquitto-clients"
+                )
+                return
+        else:
+            self.dialog.infobox("MQTT Setup", "Mosquitto is already installed.")
+
+        # Step 2: Ensure mosquitto is running
+        self.dialog.infobox("MQTT Setup", "Step 2/3: Starting mosquitto service...")
+        if not self._ensure_mosquitto_running():
+            self.dialog.msgbox(
+                "Warning",
+                "Could not start mosquitto service.\n\n"
+                "Check: sudo systemctl status mosquitto"
+            )
+            # Continue anyway - user might fix manually
+
+        # Step 3: Configure meshtasticd
+        self.dialog.infobox("MQTT Setup", "Step 3/3: Configuring meshtasticd...")
+
+        # Auto-detect channel name
+        channel_name = self._auto_detect_primary_channel()
+
+        if not self._configure_meshtasticd_mqtt_local(channel_name):
+            self.dialog.msgbox(
+                "Warning",
+                "Could not fully configure meshtasticd MQTT.\n\n"
+                "You may need to configure manually:\n"
+                "  meshtastic --set mqtt.enabled true\n"
+                "  meshtastic --set mqtt.address localhost\n"
+                "  meshtastic --set mqtt.json_enabled true\n"
+                "  meshtastic --ch-index 0 --ch-set uplink_enabled true"
+            )
+            return
+
+        # Success!
+        topic_pattern = f"msh/2/json/{channel_name}/#" if channel_name else "msh/2/json/+/#"
+        self.dialog.msgbox(
+            "MQTT Setup Complete",
+            "Local MQTT architecture is ready!\n\n"
+            "Services:\n"
+            f"  • Mosquitto: localhost:1883\n"
+            f"  • Topic: {topic_pattern}\n\n"
+            "Test with:\n"
+            f"  mosquitto_sub -h localhost -t 'msh/#' -v\n\n"
+            "MeshForge will now receive messages via MQTT\n"
+            "alongside other consumers like meshing-around."
+        )
+
+    def _is_mosquitto_installed(self) -> bool:
+        """Check if mosquitto is installed."""
+        try:
+            result = subprocess.run(
+                ['which', 'mosquitto'],
+                capture_output=True, text=True, timeout=5
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    def _install_mosquitto(self) -> bool:
+        """Install mosquitto MQTT broker.
+
+        Returns True if installation succeeded.
+        """
+        subprocess.run(['clear'], check=False, timeout=5)
+        print("=== Installing Mosquitto MQTT Broker ===\n")
+
+        try:
+            # Update package list
+            print("Updating package list...")
+            result = subprocess.run(
+                ['apt-get', 'update'],
+                timeout=120
+            )
+
+            # Install mosquitto and clients
+            print("\nInstalling mosquitto and mosquitto-clients...")
+            result = subprocess.run(
+                ['apt-get', 'install', '-y', 'mosquitto', 'mosquitto-clients'],
+                timeout=300
+            )
+
+            if result.returncode != 0:
+                print("\n\033[0;31mError:\033[0m Installation failed.")
+                self._wait_for_enter()
+                return False
+
+            print("\n\033[0;32m✓\033[0m Mosquitto installed successfully.")
+            self._wait_for_enter()
+            return True
+
+        except subprocess.TimeoutExpired:
+            print("\n\033[0;31mError:\033[0m Installation timed out.")
+            self._wait_for_enter()
+            return False
+        except Exception as e:
+            print(f"\n\033[0;31mError:\033[0m {e}")
+            self._wait_for_enter()
+            return False
+
+    def _ensure_mosquitto_running(self) -> bool:
+        """Ensure mosquitto service is running and enabled.
+
+        Returns True if mosquitto is running.
+        """
+        try:
+            # Enable and start mosquitto
+            if _HAS_SERVICE_CHECK:
+                success, msg = enable_service('mosquitto', start=True)
+                return success
+            else:
+                # Fallback to direct systemctl calls
+                subprocess.run(
+                    ['systemctl', 'enable', 'mosquitto'],
+                    timeout=30, check=False
+                )
+                subprocess.run(
+                    ['systemctl', 'start', 'mosquitto'],
+                    timeout=30, check=False
+                )
+
+                # Check if running
+                result = subprocess.run(
+                    ['systemctl', 'is-active', 'mosquitto'],
+                    capture_output=True, text=True, timeout=5
+                )
+                return result.stdout.strip() == 'active'
+
+        except Exception:
+            return False
+
+    def _auto_detect_primary_channel(self) -> Optional[str]:
+        """Auto-detect primary channel name from meshtasticd.
+
+        Returns channel name or None if detection fails.
+        """
+        try:
+            # Try meshtastic CLI
+            cli = shutil.which('meshtastic') or 'meshtastic'
+            result = subprocess.run(
+                [cli, '--host', 'localhost', '--ch-index', '0', '--info'],
+                capture_output=True, text=True, timeout=15
+            )
+
+            if result.returncode == 0:
+                # Parse channel name from output
+                for line in result.stdout.split('\n'):
+                    if 'name' in line.lower():
+                        parts = line.split(':')
+                        if len(parts) >= 2:
+                            name = parts[1].strip().strip('"\'')
+                            if name and name.lower() != 'none':
+                                return name
+
+        except Exception:
+            pass
+
+        return None
+
+    def _configure_meshtasticd_mqtt_local(self, channel_name: Optional[str] = None) -> bool:
+        """Configure meshtasticd to use local mosquitto broker.
+
+        Args:
+            channel_name: Optional channel name for display (auto-detected)
+
+        Returns True if configuration succeeded.
+        """
+        subprocess.run(['clear'], check=False, timeout=5)
+        print("=== Configuring meshtasticd for Local MQTT ===\n")
+
+        cli = shutil.which('meshtastic') or 'meshtastic'
+        success = True
+
+        try:
+            # Enable MQTT
+            print("Enabling MQTT...")
+            result = subprocess.run(
+                [cli, '--host', 'localhost', '--set', 'mqtt.enabled', 'true'],
+                timeout=15
+            )
+            if result.returncode != 0:
+                success = False
+
+            # Set broker to localhost
+            print("Setting broker to localhost...")
+            result = subprocess.run(
+                [cli, '--host', 'localhost', '--set', 'mqtt.address', 'localhost'],
+                timeout=15
+            )
+            if result.returncode != 0:
+                success = False
+
+            # Enable JSON mode for human-readable messages
+            print("Enabling JSON mode...")
+            result = subprocess.run(
+                [cli, '--host', 'localhost', '--set', 'mqtt.json_enabled', 'true'],
+                timeout=15
+            )
+            if result.returncode != 0:
+                success = False
+
+            # Enable uplink on primary channel
+            print("Enabling uplink on primary channel...")
+            result = subprocess.run(
+                [cli, '--host', 'localhost',
+                 '--ch-index', '0', '--ch-set', 'uplink_enabled', 'true'],
+                timeout=15
+            )
+            if result.returncode != 0:
+                success = False
+
+            if success:
+                print(f"\n\033[0;32m✓\033[0m Configuration complete!")
+                if channel_name:
+                    print(f"  Channel: {channel_name}")
+                print(f"  Broker: localhost:1883")
+                print(f"  JSON mode: enabled")
+                print(f"  Uplink: enabled (channel 0)")
+            else:
+                print("\n\033[0;33mWarning:\033[0m Some settings may have failed.")
+                print("Check meshtasticd is running: sudo systemctl status meshtasticd")
+
+            self._wait_for_enter()
+            return success
+
+        except Exception as e:
+            print(f"\n\033[0;31mError:\033[0m {e}")
+            self._wait_for_enter()
+            return False

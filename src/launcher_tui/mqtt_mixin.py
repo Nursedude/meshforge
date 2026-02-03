@@ -50,24 +50,32 @@ class MQTTMixin:
     def _mqtt_menu(self):
         """MQTT monitoring menu - nodeless mesh observation."""
         while True:
-            # Get current status
+            # Get current status and mode
             status = self._get_mqtt_status()
+            config = self._load_mqtt_config()
+            broker = config.get('broker', 'mqtt.meshtastic.org')
+            mode = "Local" if broker == "localhost" else "Public"
 
             choices = [
                 ("status", f"Status              {status}"),
                 ("start", "Start Subscriber    Connect to MQTT broker"),
                 ("stop", "Stop Subscriber     Disconnect from broker"),
-                ("config", "Configure           Broker settings"),
+                ("config", f"Configure           Mode: {mode}"),
                 ("nodes", "View Nodes          Show discovered nodes"),
                 ("stats", "Statistics          Node counts, activity"),
                 ("export", "Export Data         Save nodes to file"),
                 ("back", "Back"),
             ]
 
+            subtitle = f"MQTT Mode: {mode} ({broker})\n"
+            if mode == "Local":
+                subtitle += "Multi-consumer: shares messages with other apps"
+            else:
+                subtitle += "Nodeless monitoring without local radio"
+
             choice = self.dialog.menu(
                 "MQTT Monitoring",
-                "Nodeless mesh observation via MQTT.\n"
-                "Monitor mesh networks without local radio.",
+                subtitle,
                 choices
             )
 
@@ -214,12 +222,16 @@ class MQTTMixin:
             port = config.get('port', 8883)
             topic = config.get('topic', 'msh/US/2/e/LongFast/#')
 
+            # Determine current mode
+            mode = "Local" if broker == "localhost" else "Public"
+
             choices = [
+                ("local", f"Use Local Broker    Quick: localhost:1883"),
+                ("public", f"Use Public Broker   Quick: mqtt.meshtastic.org"),
                 ("broker", f"Broker              {broker}"),
                 ("port", f"Port                {port}"),
                 ("topic", f"Topic               {topic[:30]}..."),
                 ("auth", "Authentication      Username/password"),
-                ("reset", "Reset to Defaults   Use public broker"),
                 ("save", "Save & Exit"),
                 ("back", "Cancel"),
             ]
@@ -233,7 +245,54 @@ class MQTTMixin:
             if choice is None or choice == "back":
                 break
 
-            if choice == "broker":
+            if choice == "local":
+                # Quick setup for local mosquitto broker
+                channel = self._detect_local_channel()
+                topic = f"msh/2/json/{channel}/#" if channel else "msh/2/json/+/#"
+                config = {
+                    'broker': 'localhost',
+                    'port': 1883,
+                    'topic': topic,
+                    'username': None,
+                    'password': None,
+                    'use_tls': False
+                }
+                self._save_mqtt_config(config)
+                self.dialog.msgbox(
+                    "Local Mode Set",
+                    f"Configured for local mosquitto broker:\n\n"
+                    f"  Broker: localhost:1883\n"
+                    f"  Topic: {topic}\n"
+                    f"  TLS: disabled\n\n"
+                    "Make sure:\n"
+                    "  1. Mosquitto is running (systemctl status mosquitto)\n"
+                    "  2. Meshtasticd MQTT is configured\n\n"
+                    "Use Service Config → MQTT Setup for full setup."
+                )
+                break
+
+            elif choice == "public":
+                # Quick setup for public Meshtastic broker
+                config = {
+                    'broker': 'mqtt.meshtastic.org',
+                    'port': 8883,
+                    'topic': 'msh/US/2/e/LongFast/#',
+                    'username': 'meshdev',
+                    'password': 'large4cats',
+                    'use_tls': True
+                }
+                self._save_mqtt_config(config)
+                self.dialog.msgbox(
+                    "Public Mode Set",
+                    "Configured for public Meshtastic broker:\n\n"
+                    "  Broker: mqtt.meshtastic.org:8883\n"
+                    "  Topic: msh/US/2/e/LongFast/#\n"
+                    "  TLS: enabled\n\n"
+                    "This is nodeless monitoring - no local radio needed."
+                )
+                break
+
+            elif choice == "broker":
                 new_broker = self.dialog.inputbox(
                     "MQTT Broker",
                     "Enter MQTT broker hostname:",
@@ -277,15 +336,6 @@ class MQTTMixin:
                 )
                 if password is not None:
                     config['password'] = password if password else None
-
-            elif choice == "reset":
-                config = {
-                    'broker': 'mqtt.meshtastic.org',
-                    'port': 8883,
-                    'topic': 'msh/US/2/e/LongFast/#',
-                    'username': None,
-                    'password': None
-                }
 
             elif choice == "save":
                 self._save_mqtt_config(config)
@@ -442,3 +492,32 @@ class MQTTMixin:
         except Exception as e:
             logger.debug(f"Error loading MQTT cache: {e}")
         return []
+
+    def _detect_local_channel(self) -> Optional[str]:
+        """Detect primary channel name from local meshtasticd.
+
+        Returns channel name or None if detection fails.
+        Used to construct correct MQTT topic for local broker.
+        """
+        import shutil
+        try:
+            cli = shutil.which('meshtastic') or 'meshtastic'
+            result = subprocess.run(
+                [cli, '--host', 'localhost', '--ch-index', '0', '--info'],
+                capture_output=True, text=True, timeout=15
+            )
+
+            if result.returncode == 0:
+                # Parse channel name from output
+                for line in result.stdout.split('\n'):
+                    if 'name' in line.lower():
+                        parts = line.split(':')
+                        if len(parts) >= 2:
+                            name = parts[1].strip().strip('"\'')
+                            if name and name.lower() not in ('none', ''):
+                                logger.debug(f"Detected channel: {name}")
+                                return name
+        except Exception as e:
+            logger.debug(f"Could not detect channel: {e}")
+
+        return None
