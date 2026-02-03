@@ -1,7 +1,7 @@
 # Meshtastic Web UI Inbound Message Fix - Design Document
 
 **Date**: 2026-02-03
-**Status**: In Progress
+**Status**: Implemented
 **Priority**: Critical (blocks field work on uConsole/RPi)
 
 ## Problem Statement
@@ -187,6 +187,109 @@ MeshForge could optionally start this proxy or integrate its functionality.
 2. `src/utils/map_http_handler.py` - Add WebSocket upgrade handler
 3. `src/utils/message_listener.py` - Add broadcast callback
 4. `web/node_map.html` - Replace polling with WebSocket client
+
+## Implementation Notes (2026-02-03)
+
+### Files Modified/Created
+
+1. **`src/utils/websocket_server.py`** (NEW)
+   - `MessageWebSocketServer` class with asyncio event loop in background thread
+   - Thread-safe `broadcast()` method for pushing messages
+   - Message history ring buffer (last 50 messages)
+   - Client management with automatic cleanup
+   - Singleton pattern with `get_websocket_server()`
+
+2. **`src/utils/map_data_service.py`**
+   - Added `enable_websocket` and `websocket_port` parameters to `MapServer`
+   - Added `_start_websocket_server()` and `_stop_websocket_server()` methods
+   - Added `_register_websocket_callback()` to connect MessageListener to WebSocket
+   - Updated `start()`, `start_background()`, and `stop()` to manage WebSocket lifecycle
+
+3. **`src/utils/map_http_handler.py`**
+   - Added `/api/websocket/status` endpoint returning WebSocket URL and stats
+
+4. **`web/node_map.html`**
+   - Added WebSocket state tracking (`websocket`, `websocketConnected`, `websocketRetries`)
+   - Added `initWebSocket()`, `connectWebSocket()`, `handleWebSocketMessage()` functions
+   - Added `handleNewMessage()` for real-time message processing
+   - Modified `loadReceivedMessages()` to skip polling when WebSocket connected
+   - Added fallback polling (every 10s) when WebSocket disconnected
+   - Added visual WebSocket connection indicator (green dot = connected)
+   - Added CSS for WebSocket indicator
+
+5. **`requirements.txt`**
+   - Added `websockets>=12.0` dependency
+
+### Architecture Summary
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Web Browsers                              │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
+│  │  Browser 1  │  │  Browser 2  │  │  Browser 3  │         │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘         │
+│         │ WS             │ WS             │ WS             │
+└─────────┼────────────────┼────────────────┼─────────────────┘
+          │                │                │
+          ▼                ▼                ▼
+   ┌─────────────────────────────────────────────────────────┐
+   │              MeshForge Map Server                        │
+   │                                                          │
+   │  ┌─────────────────────┐  ┌─────────────────────┐       │
+   │  │  HTTP Server :5000  │  │  WebSocket :5001    │       │
+   │  │  (map, API, static) │  │  (real-time msgs)   │       │
+   │  └─────────────────────┘  └──────────┬──────────┘       │
+   │                                       │                  │
+   │  ┌─────────────────────┐             │                  │
+   │  │  MessageListener    │─────────────┘                  │
+   │  │  (pubsub callback)  │   broadcast()                  │
+   │  └──────────┬──────────┘                                │
+   └─────────────┼────────────────────────────────────────────┘
+                 │ SINGLE Connection
+                 ▼
+        ┌────────────────────┐
+        │     meshtasticd    │
+        │      (Port 4403)   │
+        └────────────────────┘
+```
+
+### WebSocket Protocol
+
+**Server → Client Messages:**
+```json
+// On connect - message history
+{"type": "history", "messages": [...]}
+
+// Connection confirmed
+{"type": "connected", "message": "...", "timestamp": "..."}
+
+// New message arrives
+{"type": "message", "data": {"from_id": "!abc123", "content": "Hello", ...}}
+
+// Heartbeat response
+{"type": "pong", "timestamp": "..."}
+```
+
+**Client → Server Messages:**
+```json
+// Request message history
+{"type": "get_history", "limit": 20}
+
+// Heartbeat
+{"type": "ping"}
+
+// Get server stats
+{"type": "get_stats"}
+```
+
+### Testing
+
+1. Start MeshForge: `python3 src/utils/map_data_service.py`
+2. Open browser: `http://localhost:5000/`
+3. Enable "Messages" filter in map controls
+4. Verify green WebSocket indicator appears
+5. Send message from another Meshtastic node
+6. Verify message appears in real-time (< 1 second)
 
 ## References
 

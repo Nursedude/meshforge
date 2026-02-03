@@ -783,6 +783,23 @@
         .flow-path-rns { stroke: #ab47bc; }
         .flow-path-gateway { stroke: #ffa726; }
 
+        /* WebSocket connection indicator */
+        .ws-connected, .ws-disconnected {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-left: 6px;
+            vertical-align: middle;
+        }
+        .ws-connected {
+            background: #66bb6a;
+            box-shadow: 0 0 4px #66bb6a;
+        }
+        .ws-disconnected {
+            background: #888;
+        }
+
         /* Message queue panel */
         .message-queue-panel {
             position: absolute;
@@ -1179,7 +1196,7 @@
 
     <!-- Phase 4: Message Queue Panel -->
     <div class="message-queue-panel" id="message-queue-panel">
-        <div class="legend-title">Messages</div>
+        <div class="legend-title">Messages <span id="ws-indicator" class="ws-disconnected" title="Real-time: Checking..."></span></div>
         <div class="message-section">
             <div class="message-section-title">Received (Inbox)</div>
             <div id="received-items"></div>
@@ -1528,7 +1545,11 @@
         messageQueue: [],        // pending outbound messages
         receivedMessages: [],    // received inbound messages
         lastReceivedTime: null,  // for incremental updates
-        flowAnimations: []       // active message flow animations
+        flowAnimations: [],      // active message flow animations
+        // WebSocket for real-time messages
+        websocket: null,         // WebSocket connection
+        websocketConnected: false,
+        websocketRetries: 0
     };
 
     // ============================================
@@ -2057,6 +2078,11 @@
     }
 
     async function loadReceivedMessages() {
+        // Skip HTTP polling if WebSocket is connected
+        if (state.websocketConnected) {
+            return;
+        }
+
         try {
             // Use incremental loading if we have a last timestamp
             let url = '/api/messages/received?limit=20';
@@ -2086,16 +2112,158 @@
 
                 // Flash indicator when new messages arrive
                 if (newMessages.length > 0 && state.lastReceivedTime) {
-                    const indicator = document.getElementById('update-indicator');
-                    if (indicator) {
-                        indicator.classList.add('message-received');
-                        setTimeout(() => indicator.classList.remove('message-received'), 2000);
-                    }
+                    flashNewMessageIndicator();
                 }
             }
         } catch (e) {
             // Received messages API not available
             console.debug('Received messages API not available:', e);
+        }
+    }
+
+    // ============================================
+    // WebSocket Real-Time Messages
+    // ============================================
+
+    async function initWebSocket() {
+        try {
+            // Get WebSocket server info
+            const response = await fetch('/api/websocket/status');
+            if (!response.ok) {
+                console.debug('WebSocket status API not available');
+                return;
+            }
+
+            const wsStatus = await response.json();
+            if (!wsStatus.available || !wsStatus.url) {
+                console.debug('WebSocket server not available:', wsStatus.error);
+                return;
+            }
+
+            connectWebSocket(wsStatus.url);
+
+        } catch (e) {
+            console.debug('Could not initialize WebSocket:', e);
+        }
+    }
+
+    function connectWebSocket(url) {
+        if (state.websocket && state.websocket.readyState === WebSocket.OPEN) {
+            return; // Already connected
+        }
+
+        console.log('Connecting to WebSocket:', url);
+
+        try {
+            state.websocket = new WebSocket(url);
+
+            state.websocket.onopen = () => {
+                console.log('WebSocket connected');
+                state.websocketConnected = true;
+                state.websocketRetries = 0;
+                updateConnectionIndicator(true);
+            };
+
+            state.websocket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleWebSocketMessage(data);
+                } catch (e) {
+                    console.error('WebSocket message parse error:', e);
+                }
+            };
+
+            state.websocket.onclose = (event) => {
+                console.log('WebSocket disconnected:', event.code, event.reason);
+                state.websocketConnected = false;
+                state.websocket = null;
+                updateConnectionIndicator(false);
+
+                // Retry connection with exponential backoff
+                if (state.websocketRetries < 5) {
+                    const delay = Math.min(1000 * Math.pow(2, state.websocketRetries), 30000);
+                    state.websocketRetries++;
+                    console.log(`WebSocket reconnecting in ${delay}ms (attempt ${state.websocketRetries})`);
+                    setTimeout(() => initWebSocket(), delay);
+                }
+            };
+
+            state.websocket.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+
+        } catch (e) {
+            console.error('WebSocket connection failed:', e);
+        }
+    }
+
+    function handleWebSocketMessage(data) {
+        switch (data.type) {
+            case 'connected':
+                console.log('WebSocket server says:', data.message);
+                break;
+
+            case 'history':
+                // Initial message history from server
+                if (data.messages && data.messages.length > 0) {
+                    state.receivedMessages = data.messages;
+                    renderReceivedMessages();
+                }
+                break;
+
+            case 'message':
+                // Real-time new message
+                if (data.data) {
+                    handleNewMessage(data.data);
+                }
+                break;
+
+            case 'pong':
+                // Heartbeat response
+                break;
+
+            default:
+                console.debug('Unknown WebSocket message type:', data.type);
+        }
+    }
+
+    function handleNewMessage(msg) {
+        // Add to received messages (at the beginning)
+        state.receivedMessages.unshift(msg);
+
+        // Keep only last 50 messages
+        if (state.receivedMessages.length > 50) {
+            state.receivedMessages = state.receivedMessages.slice(0, 50);
+        }
+
+        // Update timestamp for any fallback polling
+        if (msg.timestamp) {
+            state.lastReceivedTime = msg.timestamp;
+        }
+
+        // Render and flash
+        renderReceivedMessages();
+        flashNewMessageIndicator();
+
+        // Animate message flow on topology view if sender is visible
+        if (state.currentView === 'topology' && msg.from_id) {
+            animateMessageFlow(msg.from_id, 'local');
+        }
+    }
+
+    function flashNewMessageIndicator() {
+        const indicator = document.getElementById('update-indicator');
+        if (indicator) {
+            indicator.classList.add('message-received');
+            setTimeout(() => indicator.classList.remove('message-received'), 2000);
+        }
+    }
+
+    function updateConnectionIndicator(connected) {
+        const indicator = document.getElementById('ws-indicator');
+        if (indicator) {
+            indicator.className = connected ? 'ws-connected' : 'ws-disconnected';
+            indicator.title = connected ? 'Real-time: Connected' : 'Real-time: Disconnected (polling)';
         }
     }
 
@@ -4119,6 +4287,9 @@
 
     refreshNodes();
 
+    // Initialize WebSocket for real-time messages
+    initWebSocket();
+
     // Auto-refresh every 30 seconds (only if no embedded data pushing updates)
     if (!window.meshforgeData) {
         setInterval(refreshNodes, 30000);
@@ -4126,6 +4297,13 @@
 
     // Periodic cache status update
     setInterval(updateCacheStatus, 60000);
+
+    // Fallback: Poll for received messages if WebSocket is disconnected
+    setInterval(() => {
+        if (!state.websocketConnected && document.getElementById('filter-messages').checked) {
+            loadReceivedMessages();
+        }
+    }, 10000);
 
     // Phase 4: Filter event listeners for clustering and messages
     ['filter-clustering', 'filter-messages'].forEach(id => {

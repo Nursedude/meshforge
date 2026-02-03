@@ -96,6 +96,8 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
             self._serve_received_messages()
         elif self.path == '/api/messages/rx-status' or self.path == '/api/messages/rx-status/':
             self._serve_rx_status()
+        elif self.path == '/api/websocket/status' or self.path == '/api/websocket/status/':
+            self._serve_websocket_status()
         elif self.path == '/api/network/topology' or self.path == '/api/network/topology/':
             self._serve_network_topology()
         # ─────────────────────────────────────────────────────────────
@@ -682,6 +684,51 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
             status = get_listener_status()
         except ImportError:
             status["error"] = "MessageListener not available"
+        except Exception as e:
+            status["error"] = str(e)
+
+        self._serve_json(status)
+
+    def _serve_websocket_status(self):
+        """Serve WebSocket server status and connection info.
+
+        Returns WebSocket URL and stats for clients to connect.
+        """
+        status = {
+            "available": False,
+            "url": None,
+            "port": 5001,
+            "connected_clients": 0,
+            "messages_broadcast": 0,
+        }
+
+        try:
+            from utils.websocket_server import (
+                get_websocket_server, is_websocket_available
+            )
+
+            if not is_websocket_available():
+                status["error"] = "websockets library not installed"
+                self._serve_json(status)
+                return
+
+            ws_server = get_websocket_server()
+            if ws_server._running:
+                stats = ws_server.stats
+                status["available"] = True
+                status["port"] = ws_server.port
+                # Build WebSocket URL based on request host
+                host = self.headers.get('Host', 'localhost:5000')
+                hostname = host.split(':')[0]
+                status["url"] = f"ws://{hostname}:{ws_server.port}/"
+                status["connected_clients"] = stats.connected_clients
+                status["messages_broadcast"] = stats.messages_broadcast
+                status["total_connections"] = stats.total_connections
+                if stats.started_at:
+                    status["started_at"] = stats.started_at.isoformat()
+
+        except ImportError:
+            status["error"] = "WebSocket server not available"
         except Exception as e:
             status["error"] = str(e)
 

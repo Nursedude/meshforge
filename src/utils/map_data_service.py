@@ -119,6 +119,9 @@ class MapServer:
     - GET /api/radio/status   -> radio connection status
     - POST /api/radio/message -> send message via radio
 
+    WebSocket:
+    - ws://localhost:5001/  -> real-time message stream
+
     Usage:
         server = MapServer(port=5000)
         server.start()     # Blocks
@@ -128,7 +131,9 @@ class MapServer:
 
     def __init__(self, port: int = 5000, host: str = "0.0.0.0",
                  cors_origins: Optional[List[str]] = None,
-                 enable_message_listener: bool = True):
+                 enable_message_listener: bool = True,
+                 enable_websocket: bool = True,
+                 websocket_port: int = 5001):
         """Initialize map server.
 
         Args:
@@ -142,19 +147,67 @@ class MapServer:
                   - List: Only allow specified origins, e.g.,
                     ["http://localhost", "http://192.168.1."]
             enable_message_listener: Start MessageListener for inbound messages (default True)
+            enable_websocket: Start WebSocket server for real-time message push (default True)
+            websocket_port: WebSocket server port (default 5001)
         """
         self.port = port
         self.host = host
         self.cors_origins = cors_origins
         self.enable_message_listener = enable_message_listener
+        self.enable_websocket = enable_websocket
+        self.websocket_port = websocket_port
         self.collector = MapDataCollector()
         self._server: Optional[HTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self._message_listener_started = False
+        self._websocket_started = False
 
         # Find web directory
         src_dir = Path(__file__).parent.parent
         self.web_dir = str(src_dir.parent / "web")
+
+    def _start_websocket_server(self):
+        """Start the WebSocket server for real-time message broadcast."""
+        if not self.enable_websocket:
+            return
+
+        try:
+            from utils.websocket_server import (
+                get_websocket_server, is_websocket_available
+            )
+
+            if not is_websocket_available():
+                logger.info("WebSocket: Not available (install websockets library)")
+                print("  WebSocket: Not available (pip install websockets)")
+                return
+
+            ws_server = get_websocket_server(port=self.websocket_port)
+            if ws_server.start():
+                self._websocket_started = True
+                logger.info(f"WebSocket server started on port {self.websocket_port}")
+                print(f"  WebSocket: ws://localhost:{self.websocket_port}/")
+            else:
+                logger.warning("WebSocket server failed to start")
+                print("  WebSocket: Failed to start")
+
+        except ImportError as e:
+            logger.debug(f"WebSocket server not available: {e}")
+            print("  WebSocket: Not available")
+        except Exception as e:
+            logger.warning(f"Error starting WebSocket server: {e}")
+
+    def _stop_websocket_server(self):
+        """Stop the WebSocket server."""
+        if not self._websocket_started:
+            return
+
+        try:
+            from utils.websocket_server import stop_websocket_server
+            stop_websocket_server()
+            self._websocket_started = False
+            logger.info("WebSocket server stopped")
+        except Exception as e:
+            logger.debug(f"Error stopping WebSocket server: {e}")
 
     def _start_message_listener(self):
         """Start the MessageListener for receiving inbound mesh messages."""
@@ -162,12 +215,17 @@ class MapServer:
             return
 
         try:
-            from utils.message_listener import start_listener, get_listener_status
+            from utils.message_listener import start_listener, get_listener_status, get_listener
+
+            # Start the listener
             success = start_listener(host="localhost")
             if success:
                 self._message_listener_started = True
                 logger.info("MessageListener started - inbound messages enabled")
                 print("  Message RX: Enabled (listening for inbound messages)")
+
+                # Register WebSocket broadcast callback
+                self._register_websocket_callback()
             else:
                 status = get_listener_status()
                 logger.warning(f"MessageListener failed to start: {status.get('error', 'unknown')}")
@@ -177,6 +235,29 @@ class MapServer:
             print("  Message RX: Not available")
         except Exception as e:
             logger.warning(f"Error starting MessageListener: {e}")
+
+    def _register_websocket_callback(self):
+        """Register callback to broadcast messages to WebSocket clients."""
+        if not self._websocket_started:
+            return
+
+        try:
+            from utils.message_listener import get_listener
+            from utils.websocket_server import broadcast_message
+
+            listener = get_listener()
+
+            def on_message(msg_data):
+                """Callback to broadcast messages to WebSocket clients."""
+                broadcast_message(msg_data)
+
+            listener.add_callback(on_message)
+            logger.info("WebSocket broadcast callback registered")
+
+        except ImportError as e:
+            logger.debug(f"Could not register WebSocket callback: {e}")
+        except Exception as e:
+            logger.warning(f"Error registering WebSocket callback: {e}")
 
     def _stop_message_listener(self):
         """Stop the MessageListener."""
@@ -191,11 +272,19 @@ class MapServer:
         except Exception as e:
             logger.debug(f"Error stopping MessageListener: {e}")
 
+    def _stop_all_services(self):
+        """Stop all background services (MessageListener, WebSocket)."""
+        self._stop_message_listener()
+        self._stop_websocket_server()
+
     def start(self):
         """Start server (blocking)."""
         MapRequestHandler.collector = self.collector
         MapRequestHandler.web_dir = self.web_dir
         MapRequestHandler.allowed_origins = self.cors_origins
+
+        # Start WebSocket server first (so callback can be registered)
+        self._start_websocket_server()
 
         # Start message listener for inbound messages
         self._start_message_listener()
@@ -219,7 +308,7 @@ class MapServer:
             self._server.serve_forever()
         except KeyboardInterrupt:
             print("\nShutting down map server...")
-            self._stop_message_listener()
+            self._stop_all_services()
             self._server.shutdown()
 
     def start_background(self):
@@ -227,6 +316,9 @@ class MapServer:
         MapRequestHandler.collector = self.collector
         MapRequestHandler.web_dir = self.web_dir
         MapRequestHandler.allowed_origins = self.cors_origins
+
+        # Start WebSocket server first (so callback can be registered)
+        self._start_websocket_server()
 
         # Start message listener for inbound messages
         self._start_message_listener()
@@ -238,7 +330,7 @@ class MapServer:
 
     def stop(self):
         """Stop the server."""
-        self._stop_message_listener()
+        self._stop_all_services()
         if self._server:
             self._server.shutdown()
             self._server = None

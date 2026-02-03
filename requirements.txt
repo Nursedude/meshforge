@@ -20,6 +20,9 @@ python-dotenv>=1.0.0
 # Coverage maps
 folium>=0.15.0
 
+# WebSocket support (real-time message broadcast)
+websockets>=12.0
+
 # Testing
 pytest>=7.0.0
 
