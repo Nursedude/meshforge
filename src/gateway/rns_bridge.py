@@ -154,6 +154,7 @@ class RNSMeshtasticBridge:
 
         # State
         self._running = False
+        self._websocket_started = False
         self._connected_mesh = False
         self._connected_rns = False
         self._rns_via_rnsd = False  # True when rnsd handles RNS (bridge defers)
@@ -345,6 +346,9 @@ class RNSMeshtasticBridge:
         self._running = True
         self.stats['start_time'] = datetime.now()
 
+        # Start WebSocket server for real-time message broadcast to web UI
+        self._start_websocket_server()
+
         # Start node tracker
         self.node_tracker.start()
 
@@ -408,6 +412,9 @@ class RNSMeshtasticBridge:
         for thread in [self._mesh_thread, self._rns_thread, self._bridge_thread]:
             if thread and thread.is_alive():
                 thread.join(timeout=5)
+
+        # Stop WebSocket server
+        self._stop_websocket_server()
 
         logger.info("Bridge stopped")
         self._notify_status("stopped")
@@ -1138,6 +1145,24 @@ class RNSMeshtasticBridge:
                 except Exception as e:
                     logger.debug(f"Could not store incoming message: {e}")
 
+                # Broadcast to WebSocket for real-time web UI updates
+                try:
+                    from utils.websocket_server import broadcast_message
+                    broadcast_message({
+                        'from_id': from_id,
+                        'to_id': to_id,
+                        'content': text,
+                        'channel': packet.get('channel', 0),
+                        'snr': packet.get('rxSnr'),
+                        'rssi': packet.get('rxRssi'),
+                        'timestamp': datetime.now().isoformat(),
+                        'is_broadcast': to_id is None,
+                    })
+                except ImportError:
+                    pass  # WebSocket server not available
+                except Exception as e:
+                    logger.debug(f"Could not broadcast to WebSocket: {e}")
+
                 # Queue for bridging if enabled (non-blocking to prevent deadlock)
                 if self._should_bridge(msg):
                     try:
@@ -1665,6 +1690,33 @@ class RNSMeshtasticBridge:
                 )
             except Exception as e:
                 logger.debug(f"Event bus emit failed: {e}")
+
+    def _start_websocket_server(self):
+        """Start WebSocket server for real-time message broadcast to web UI."""
+        try:
+            from utils.websocket_server import start_websocket_server, is_websocket_available
+            if is_websocket_available():
+                if start_websocket_server(port=5001):
+                    logger.info("WebSocket server started on port 5001")
+                    self._websocket_started = True
+                else:
+                    logger.debug("WebSocket server failed to start")
+            else:
+                logger.debug("WebSocket not available (websockets library not installed)")
+        except ImportError:
+            logger.debug("WebSocket server module not available")
+        except Exception as e:
+            logger.debug(f"Could not start WebSocket server: {e}")
+
+    def _stop_websocket_server(self):
+        """Stop WebSocket server."""
+        if getattr(self, '_websocket_started', False):
+            try:
+                from utils.websocket_server import stop_websocket_server
+                stop_websocket_server()
+                logger.info("WebSocket server stopped")
+            except Exception as e:
+                logger.debug(f"Error stopping WebSocket server: {e}")
 
     def _notify_status(self, status: str):
         """Notify status callbacks (thread-safe snapshot)"""
