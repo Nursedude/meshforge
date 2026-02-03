@@ -599,6 +599,7 @@ class MeshtasticDissector(PacketDissector):
         packet.channel = int(metadata.get("channel", 0))
         packet.hop_limit = int(metadata.get("hopLimit", 3))
         packet.hop_start = int(metadata.get("hopStart", 3))
+        packet.hops_taken = packet.hop_start - packet.hop_limit  # Recalculate after setting
         packet.via_mqtt = bool(metadata.get("viaMqtt", False))
         packet.want_ack = bool(metadata.get("wantAck", False))
 

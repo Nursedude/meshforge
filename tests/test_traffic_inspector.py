@@ -470,12 +470,13 @@ class TestTrafficCapture:
         capture = TrafficCapture(db_path=temp_db)
 
         # Capture packets with different hop counts
+        # hops_taken = hop_start - hop_limit, so set hop_limit=0 and hop_start=hops
         for hops in [1, 2, 3, 4, 5]:
             capture.capture_packet(b"", {
                 "from": "!test",
                 "to": "!dest",
-                "hopLimit": 3 - hops + 3,
-                "hopStart": 3,
+                "hopLimit": 0,
+                "hopStart": hops,
             })
 
         # Filter for hops > 2
