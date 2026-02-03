@@ -13,7 +13,7 @@
   <a href="https://github.com/Nursedude/meshforge"><img src="https://img.shields.io/badge/version-0.5.0--beta-blue.svg" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green.svg" alt="License"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.9+-yellow.svg" alt="Python"></a>
-  <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-2624%20passing-brightgreen.svg" alt="Tests"></a>
+  <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-2963%20functions-brightgreen.svg" alt="Tests"></a>
 </p>
 
 <p align="center">
@@ -203,18 +203,20 @@ python3 -c "from src.__version__ import show_version_history; show_version_histo
 |----------|-------------|--------|
 | **Radio Management** | Install/configure meshtasticd, LoRa presets, channels, SPI/USB auto-detect | Stable |
 | **TUI Interface** | Installer, service control, device config wizard (name, region, TX power, MQTT), gateway config, diagnostics | Stable |
-| **Multi-Mesh Gateway** | Meshtastic ↔ RNS bridge, persistent message queue (SQLite), routing | Stable |
+| **Multi-Mesh Gateway** | Meshtastic ↔ RNS bridge, persistent message queue (SQLite), WebSocket broadcast | Stable |
+| **MQTT Architecture** | Local mosquitto broker, multi-consumer support, setup wizard | Stable |
 | **Traffic Inspector** | Wireshark-grade packet visibility, protocol dissection, multi-hop path tracing | Stable |
 | **NomadNet/RNS** | Config editor, interface templates, rnstatus/rnpath, identity management | Stable |
 | **Network Monitoring** | MQTT node tracking, live logs, port inspection, service health | Stable |
 | **Coverage Maps** | Interactive Folium maps, SNR-based link quality, offline tile caching | Stable |
-| **Live NOC Map** | Real-time browser view, Meshtastic + RNS nodes, field ops tools | Stable |
+| **Live NOC Map** | Browser view with WebSocket updates, node markers, signal heatmap | Beta |
 | **RF Engineering** | Link budget, Fresnel zone, path loss, site planning, space weather | Stable |
 | **AI Diagnostics** | Offline knowledge base (20+ topics), rule-based troubleshooting | Stable |
 | **AI PRO Mode** | Claude API integration, log analysis, predictive diagnostics | Stable (requires API key) |
 | **Config API** | RESTful configuration management with NGINX reliability patterns | Stable |
 | **AREDN** | Node discovery, link quality, service enumeration | Stable |
-| **Prometheus Metrics** | HTTP endpoint, Grafana dashboards, alerting rules | Stable |
+| **Prometheus Metrics** | HTTP endpoint on port 9090, metrics exporter | Stable |
+| **Grafana Dashboards** | Pre-built JSON dashboards, manual import required | Dashboards Ready |
 | **uConsole AIO V2** | Hardware detection, GPIO power control, meshtasticd auto-config | Code Ready (hardware Q2 2026) |
 
 ### Roadmap
@@ -225,6 +227,17 @@ python3 -c "from src.__version__ import show_version_history; show_version_histo
 | Packet decode (protobuf + RNS frames) | Q2 2026 | Planned |
 | SDR spectrum analysis (RTL-SDR) | Q2 2026 | Planned |
 | GPS tracking + GPX export | Q2 2026 | Planned |
+| NanoVNA antenna integration | Q2 2026 | Alpha |
+| Firmware flashing | Q3 2026 | Alpha (high risk) |
+
+### Known Limitations
+
+| Feature | Limitation | Workaround |
+|---------|-----------|------------|
+| **Live NOC Map** | Node trails require historical data | Enable MQTT subscriber for data collection |
+| **Grafana** | Dashboards require manual import | See `dashboards/README.md` for instructions |
+| **TCP:4403** | Only one client can connect | Use MQTT path for multi-consumer scenarios |
+| **WebSocket** | Requires Gateway Bridge or MQTT bridge | Start one of the bridges first |
 
 *Goal: Complete network operations visibility with historical analysis.*
 
@@ -319,6 +332,28 @@ sequenceDiagram
     D->>M: LoRa broadcast
 ```
 
+### MQTT Multi-Consumer Architecture
+
+MeshForge supports dual data paths from meshtasticd:
+
+```
+meshtasticd
+    ├── TCP:4403 → Gateway Bridge → RNS transport → WebSocket:5001
+    │              (exclusive - one client)
+    │
+    └── MQTT → mosquitto:1883 → MQTT Subscriber (MeshForge)
+                              → meshing-around
+                              → Grafana/InfluxDB
+                              → other consumers (unlimited)
+```
+
+**Key insight**: TCP:4403 allows only one client, but MQTT supports unlimited subscribers.
+
+**Setup via TUI**:
+- MQTT Setup Wizard: `Configuration → Service Config → MQTT Setup`
+- MQTT Monitor: `Mesh Networks → MQTT Monitor → Configure → Use Local Broker`
+- WebSocket Bridge: `MQTT Monitor → WebSocket Bridge` (for web UI without Gateway Bridge)
+
 ### Design Principles
 
 - **TUI is a dispatcher** — selects what to run, not how to run it
@@ -412,23 +447,34 @@ gen.add_nodes_from_geojson(node_data)
 gen.generate("field_coverage.html")  # Opens in any browser
 ```
 
-### Live NOC Map (Alpha)
+### Live NOC Map (Beta)
 
-Real-time browser-based network operations view:
+Real-time browser-based network operations view at `http://localhost:8080`:
 
-- **WebSocket updates** — sub-second node position refresh
-- **Animated transitions** — smooth node movement visualization
-- **Status dashboard** — online/offline counts, network health score
-- **Field operations panel** — range test, coverage estimation, deployment tools
-- **Node filtering** — by type, status, signal strength, last seen
-- **Cluster mode** — auto-group dense node areas for performance
-- **Alert system** — visual + audio notifications for node events
+**Working Features**:
+- **WebSocket updates** — real-time node position refresh (requires bridge running)
+- **Node markers** — color-coded by status (online/stale/offline)
+- **Signal heatmap** — toggle SNR-based heat visualization
+- **Node popup details** — battery, SNR, hardware, altitude
+- **Node list** — click to focus map on node
 
+**In Development**:
+- **Node trails** — requires historical data collection (enable MQTT subscriber)
+- **Network topology** — D3.js force-directed graph view
+- **Alert system** — visual notifications for node events
+
+**Access**:
 ```bash
-# Access from TUI (alpha branch)
-sudo python3 src/launcher_tui/main.py
-# Navigate: Maps → Live NOC View
+# Via TUI: Maps → Start Map Server
+# Or directly:
+sudo python3 src/utils/map_data_service.py
+# Open http://localhost:8080 in browser
 ```
+
+**Data Sources**:
+- Gateway Bridge → WebSocket:5001 (real-time)
+- MQTT Subscriber → mosquitto:1883 (multi-consumer)
+- MQTT → WebSocket Bridge (connects MQTT to web UI)
 
 ---
 
@@ -513,15 +559,36 @@ server = start_metrics_server(port=9090)
 # Metrics at http://localhost:9090/metrics
 ```
 
-Pre-built Grafana dashboards in `dashboards/`. See `docs/METRICS.md` for full documentation.
+**TUI Access**: `Tools → Historical Metrics → Prometheus Server → Start Server`
+
+### Grafana Dashboards
+
+Pre-built dashboards are available in `dashboards/`:
+
+| Dashboard | Description |
+|-----------|-------------|
+| `meshforge-overview.json` | Health scores, service status, message queues |
+| `meshforge-nodes.json` | Per-node SNR, RSSI, battery metrics |
+| `meshforge-gateway.json` | Gateway connections, message flow |
+
+**Setup Requirements**:
+1. Install Prometheus and Grafana separately
+2. Start MeshForge metrics server (port 9090)
+3. Add Prometheus scrape target for `localhost:9090`
+4. Import dashboards via Grafana UI → Dashboards → Import
+
+See `dashboards/README.md` and `docs/METRICS.md` for full setup instructions.
 
 ### Ports
 
-| Port | Service |
-|------|---------|
-| 4403 | meshtasticd TCP API |
-| 9443 | meshtasticd Web UI |
-| 9090 | Prometheus metrics (optional) |
+| Port | Service | Notes |
+|------|---------|-------|
+| 4403 | meshtasticd TCP API | Single client limit |
+| 1883 | mosquitto MQTT | Multi-consumer (optional) |
+| 5001 | MeshForge WebSocket | Real-time messages |
+| 8080 | MeshForge Web UI | Maps, node browser |
+| 9090 | Prometheus metrics | Optional |
+| 9443 | meshtasticd Web UI | Official Meshtastic UI |
 
 ---
 
