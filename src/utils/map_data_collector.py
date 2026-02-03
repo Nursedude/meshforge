@@ -45,6 +45,9 @@ class MapDataCollector:
     DEFAULT_NODE_CACHE_MAX_AGE_HOURS = 48
     DEFAULT_RNS_CACHE_MAX_AGE_HOURS = 1
     DEFAULT_ONLINE_THRESHOLD_MINUTES = 15
+    # Meshtasticd connection defaults
+    DEFAULT_MESHTASTICD_HOST = "localhost"
+    DEFAULT_MESHTASTICD_PORT = 4403
 
     def __init__(self, cache_dir: Optional[Path] = None, enable_history: bool = True):
         if cache_dir:
@@ -70,6 +73,8 @@ class MapDataCollector:
                     "node_cache_max_age_hours": self.DEFAULT_NODE_CACHE_MAX_AGE_HOURS,
                     "rns_cache_max_age_hours": self.DEFAULT_RNS_CACHE_MAX_AGE_HOURS,
                     "online_status_threshold_minutes": self.DEFAULT_ONLINE_THRESHOLD_MINUTES,
+                    "meshtasticd_host": self.DEFAULT_MESHTASTICD_HOST,
+                    "meshtasticd_port": self.DEFAULT_MESHTASTICD_PORT,
                 }
             )
         except ImportError:
@@ -142,6 +147,31 @@ class MapDataCollector:
             self._settings.set("online_status_threshold_minutes", minutes)
             self._settings.save()
             logger.info(f"Online status threshold set to {minutes} minutes")
+
+    def get_meshtasticd_host(self) -> str:
+        """Get meshtasticd host setting."""
+        if self._settings:
+            return self._settings.get("meshtasticd_host", self.DEFAULT_MESHTASTICD_HOST)
+        return self.DEFAULT_MESHTASTICD_HOST
+
+    def get_meshtasticd_port(self) -> int:
+        """Get meshtasticd port setting."""
+        if self._settings:
+            return int(self._settings.get("meshtasticd_port", self.DEFAULT_MESHTASTICD_PORT))
+        return self.DEFAULT_MESHTASTICD_PORT
+
+    def set_meshtasticd_connection(self, host: str, port: int) -> None:
+        """Set meshtasticd connection parameters.
+
+        Args:
+            host: Hostname or IP address of meshtasticd
+            port: TCP port (default: 4403)
+        """
+        if self._settings:
+            self._settings.set("meshtasticd_host", host)
+            self._settings.set("meshtasticd_port", port)
+            self._settings.save()
+            logger.info(f"Meshtasticd connection set to {host}:{port}")
 
     def get_nodes_without_position(self) -> List[Dict]:
         """Get list of nodes that have no GPS position.
@@ -258,21 +288,26 @@ class MapDataCollector:
         return geojson
 
     def _collect_meshtasticd(self) -> List[Dict]:
-        """Collect nodes from meshtasticd via TCP:4403.
+        """Collect nodes from meshtasticd via TCP.
+
+        Uses configurable host/port (default: localhost:4403).
 
         Strategy:
         1. Try the Python TCP interface (structured data, most reliable)
         2. Fall back to CLI parsing if Python module unavailable
         """
         features = []
+        host = self.get_meshtasticd_host()
+        port = self.get_meshtasticd_port()
 
         # Quick check if port is open before attempting connection
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(2)
-            result = sock.connect_ex(('localhost', 4403))
+            result = sock.connect_ex((host, port))
             sock.close()
             if result != 0:
+                logger.debug(f"meshtasticd not reachable at {host}:{port}")
                 return []
         except OSError:
             return []
@@ -304,7 +339,9 @@ class MapDataCollector:
 
         features = []
         no_position_nodes = []
-        manager = get_connection_manager()
+        host = self.get_meshtasticd_host()
+        port = self.get_meshtasticd_port()
+        manager = get_connection_manager(host=host, port=port)
 
         # Don't block if someone else holds the connection
         if not manager.acquire_lock(timeout=5.0):
@@ -574,8 +611,12 @@ class MapDataCollector:
                 logger.debug("meshtastic CLI not found")
                 return []
 
+            host = self.get_meshtasticd_host()
+            port = self.get_meshtasticd_port()
+            host_arg = f"{host}:{port}" if port != 4403 else host
+
             result = subprocess.run(
-                [cli_path, '--host', 'localhost', '--info'],
+                [cli_path, '--host', host_arg, '--info'],
                 capture_output=True, text=True, timeout=15
             )
             if result.returncode != 0:

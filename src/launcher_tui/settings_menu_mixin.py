@@ -49,15 +49,37 @@ class SettingsMenuMixin:
         if choice is None or choice == "back":
             return
         elif choice == "localhost":
+            self._save_meshtasticd_connection("localhost", 4403)
             self.dialog.msgbox("Connection", "Connection set to localhost:4403")
         elif choice == "serial":
             port = self.dialog.inputbox("Serial Port", "Enter serial port:", "/dev/ttyUSB0")
             if port:
                 self.dialog.msgbox("Connection", f"Connection set to {port}")
         elif choice == "remote":
-            host = self.dialog.inputbox("Remote Host", "Enter host:port:", "192.168.1.100:4403")
-            if host:
-                self.dialog.msgbox("Connection", f"Connection set to {host}")
+            host_input = self.dialog.inputbox("Remote Host", "Enter host:port:", "192.168.1.100:4403")
+            if host_input:
+                # Parse host:port
+                if ':' in host_input:
+                    parts = host_input.rsplit(':', 1)
+                    host = parts[0]
+                    try:
+                        port = int(parts[1])
+                    except ValueError:
+                        port = 4403
+                else:
+                    host = host_input
+                    port = 4403
+                self._save_meshtasticd_connection(host, port)
+                self.dialog.msgbox("Connection", f"Connection set to {host}:{port}")
+
+    def _save_meshtasticd_connection(self, host: str, port: int):
+        """Save meshtasticd connection settings for MapDataCollector."""
+        try:
+            from utils.map_data_collector import MapDataCollector
+            collector = MapDataCollector()
+            collector.set_meshtasticd_connection(host, port)
+        except ImportError:
+            pass  # MapDataCollector not available
 
     def _configure_hamclock(self):
         """Configure HamClock settings - test API connection."""
