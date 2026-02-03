@@ -206,11 +206,26 @@ METRICS = {
 }
 
 
+def _escape_label_value(value: str) -> str:
+    """Escape special characters in Prometheus label values.
+
+    Per Prometheus exposition format, label values must escape:
+    - Backslash (\\) -> \\\\
+    - Double quote (") -> \\"
+    - Newline (\\n) -> \\n
+    """
+    # Order matters: escape backslash first to avoid double-escaping
+    value = value.replace('\\', '\\\\')
+    value = value.replace('"', '\\"')
+    value = value.replace('\n', '\\n')
+    return value
+
+
 def _format_labels(labels: Dict[str, str]) -> str:
     """Format labels for Prometheus exposition format."""
     if not labels:
         return ""
-    pairs = [f'{k}="{v}"' for k, v in sorted(labels.items())]
+    pairs = [f'{k}="{_escape_label_value(str(v))}"' for k, v in sorted(labels.items())]
     return "{" + ",".join(pairs) + "}"
 
 

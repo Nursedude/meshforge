@@ -448,19 +448,39 @@ class CoverageMapGenerator:
     }
 
     # Custom node marker icons by role
+    # Maps Meshtastic role names to FontAwesome icons
     NODE_ICONS = {
         'ROUTER': {'icon': 'tower-broadcast', 'color': 'red', 'prefix': 'fa'},
         'ROUTER_CLIENT': {'icon': 'tower-broadcast', 'color': 'orange', 'prefix': 'fa'},
         'REPEATER': {'icon': 'arrows-repeat', 'color': 'purple', 'prefix': 'fa'},
         'CLIENT': {'icon': 'mobile', 'color': 'blue', 'prefix': 'fa'},
         'CLIENT_MUTE': {'icon': 'mobile', 'color': 'gray', 'prefix': 'fa'},
+        'CLIENT_HIDDEN': {'icon': 'mobile', 'color': 'lightgray', 'prefix': 'fa'},
         'TRACKER': {'icon': 'location-dot', 'color': 'green', 'prefix': 'fa'},
         'SENSOR': {'icon': 'thermometer', 'color': 'cadetblue', 'prefix': 'fa'},
         'TAK': {'icon': 'crosshairs', 'color': 'darkred', 'prefix': 'fa'},
         'TAK_TRACKER': {'icon': 'crosshairs', 'color': 'darkgreen', 'prefix': 'fa'},
         'LOST_AND_FOUND': {'icon': 'magnifying-glass', 'color': 'darkblue', 'prefix': 'fa'},
+        # Additional roles that may be added in future Meshtastic versions
+        'GATEWAY': {'icon': 'tower-broadcast', 'color': 'purple', 'prefix': 'fa'},
+        'RELAY': {'icon': 'arrows-repeat', 'color': 'orange', 'prefix': 'fa'},
         'DEFAULT': {'icon': 'circle', 'color': 'blue', 'prefix': 'fa'},
     }
+
+    # Pattern-based icon fallbacks for unknown roles
+    # Allows graceful handling of new Meshtastic roles
+    ROLE_PATTERNS = [
+        ('ROUTER', {'icon': 'tower-broadcast', 'color': 'red', 'prefix': 'fa'}),
+        ('CLIENT', {'icon': 'mobile', 'color': 'blue', 'prefix': 'fa'}),
+        ('TRACK', {'icon': 'location-dot', 'color': 'green', 'prefix': 'fa'}),
+        ('SENSOR', {'icon': 'thermometer', 'color': 'cadetblue', 'prefix': 'fa'}),
+        ('TAK', {'icon': 'crosshairs', 'color': 'darkred', 'prefix': 'fa'}),
+        ('REPEAT', {'icon': 'arrows-repeat', 'color': 'purple', 'prefix': 'fa'}),
+        ('GATEWAY', {'icon': 'tower-broadcast', 'color': 'purple', 'prefix': 'fa'}),
+    ]
+
+    # Track unknown roles for logging (avoid spam)
+    _unknown_roles_logged: set = set()
 
     # Network-specific colors
     NETWORK_COLORS = {
@@ -485,6 +505,43 @@ class CoverageMapGenerator:
         self._coverage_radius = self.PRESET_RANGES.get(lora_preset, 5000)
         self._offline = offline
         self._custom_markers = custom_markers
+
+    @classmethod
+    def get_icon_for_role(cls, role: str) -> Dict[str, str]:
+        """Get icon configuration for a node role.
+
+        Uses exact match first, then pattern matching fallback for unknown roles.
+        This allows graceful handling of new Meshtastic roles.
+
+        Args:
+            role: Node role string (e.g., 'ROUTER', 'CLIENT', 'TRACKER')
+
+        Returns:
+            Dict with 'icon', 'color', 'prefix' keys
+        """
+        if not role:
+            return cls.NODE_ICONS['DEFAULT']
+
+        role_upper = role.upper().replace(' ', '_')
+
+        # Try exact match first
+        if role_upper in cls.NODE_ICONS:
+            return cls.NODE_ICONS[role_upper]
+
+        # Try pattern-based fallback
+        for pattern, icon_config in cls.ROLE_PATTERNS:
+            if pattern in role_upper:
+                # Log first occurrence of unknown role that matched a pattern
+                if role_upper not in cls._unknown_roles_logged:
+                    cls._unknown_roles_logged.add(role_upper)
+                    logger.debug(f"Unknown role '{role}' matched pattern '{pattern}'")
+                return icon_config
+
+        # No match - use default and log once
+        if role_upper not in cls._unknown_roles_logged:
+            cls._unknown_roles_logged.add(role_upper)
+            logger.info(f"Unknown node role '{role}', using default icon")
+        return cls.NODE_ICONS['DEFAULT']
 
     def add_node(self, node: MapNode) -> None:
         """Add a single node to the map."""
@@ -728,8 +785,7 @@ class CoverageMapGenerator:
 
             # Determine marker style based on role (if custom markers enabled)
             if self._custom_markers and node.role:
-                role_upper = node.role.upper().replace(' ', '_')
-                icon_config = self.NODE_ICONS.get(role_upper, self.NODE_ICONS['DEFAULT'])
+                icon_config = self.get_icon_for_role(node.role)
 
                 # Adjust color for offline nodes
                 color = icon_config['color']

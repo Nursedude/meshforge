@@ -397,7 +397,14 @@ class MQTTNodelessSubscriber:
             if len(payload) > MAX_PAYLOAD_BYTES:
                 with self._stats_lock:
                     self._stats["messages_rejected"] += 1
-                logger.debug(f"Rejected oversized payload: {len(payload)} bytes")
+                # Log topic structure for debugging (strip node ID for privacy)
+                # Topic format: msh/{region}/2/e/{channel}/!nodeId
+                topic_parts = topic.split('/')
+                safe_topic = '/'.join(topic_parts[:-1]) + '/...' if len(topic_parts) > 2 else topic
+                logger.warning(
+                    f"Rejected oversized MQTT payload: {len(payload)} bytes "
+                    f"(max: {MAX_PAYLOAD_BYTES}), topic pattern: {safe_topic}"
+                )
                 return
 
             with self._stats_lock:

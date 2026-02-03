@@ -203,6 +203,31 @@ class NodeStateMachine:
         logger.debug(f"State transition: {old_state.name} -> {new_state.name} ({reason})")
         return True
 
+    def expect_response(self) -> None:
+        """
+        Record that a response was expected (for intermittent detection).
+
+        Call this during periodic polling intervals when you expect to hear
+        from the node. The ratio of actual_responses / expected_responses
+        is used to detect intermittent connectivity.
+
+        Example usage:
+            # During each polling cycle
+            state_machine.expect_response()
+
+            # When node actually responds
+            state_machine.record_response(snr=8.5)
+        """
+        self._expected_responses += 1
+
+        # Prevent counters from growing unbounded - reset after window size
+        if self._expected_responses > self.config.intermittent_window * 10:
+            # Keep the ratio but scale down
+            if self._expected_responses > 0:
+                ratio = self._actual_responses / self._expected_responses
+                self._expected_responses = self.config.intermittent_window
+                self._actual_responses = int(self._expected_responses * ratio)
+
     def record_response(self, snr: Optional[float] = None,
                         rssi: Optional[int] = None) -> NodeState:
         """
@@ -220,6 +245,11 @@ class NodeStateMachine:
         now = datetime.now()
         self._last_response = now
         self._actual_responses += 1
+
+        # Auto-increment expected if not being tracked externally
+        # This ensures intermittent detection works even without explicit expect_response() calls
+        if self._expected_responses == 0:
+            self._expected_responses = 1
 
         # Record signal quality
         if snr is not None:
@@ -335,20 +365,29 @@ class NodeStateMachine:
         return False
 
     def _check_stable_responses(self) -> bool:
-        """Check if response pattern has stabilized."""
-        # Simple check: at least 3 responses in last minute
+        """Check if response pattern has stabilized.
+
+        Returns True if the node is responding reliably enough to be
+        considered stable (not intermittent).
+        """
+        # Need a recent response to consider stable
         if self._last_response is None:
             return False
 
+        # Must be in INTERMITTENT state for at least 60 seconds
+        # before we can declare it stable again
         time_since = (datetime.now() - self._state_since).total_seconds()
         if time_since < 60:
             return False
 
-        # Rough heuristic: actual responses / expected > threshold
-        if self._expected_responses == 0:
-            return True
+        # If not enough data to evaluate, use time-based heuristic:
+        # At least 3 responses in the last minute suggests stability
+        if self._expected_responses < 3:
+            # Fall back to response count since entering state
+            return self._actual_responses >= 3
 
-        ratio = self._actual_responses / max(1, self._expected_responses)
+        # Use response ratio when we have enough data
+        ratio = self._actual_responses / self._expected_responses
         return ratio > (1 - self.config.intermittent_miss_ratio)
 
     def get_transitions(self, count: int = 10) -> List[StateTransition]:

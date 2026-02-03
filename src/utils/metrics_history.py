@@ -300,20 +300,36 @@ class MetricsHistory:
         self._cleanup_thread.start()
 
     def _perform_cleanup(self):
-        """Remove old data beyond retention period."""
+        """Remove old data beyond retention period and reclaim disk space."""
         cutoff = datetime.now() - timedelta(days=self._retention_days)
+        deleted_raw = 0
+        deleted_hourly = 0
 
         with self._transaction() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 "DELETE FROM metrics WHERE timestamp < ?",
                 (cutoff.isoformat(),)
             )
-            conn.execute(
+            deleted_raw = cursor.rowcount
+
+            cursor = conn.execute(
                 "DELETE FROM metrics_hourly WHERE hour_start < ?",
                 (cutoff.isoformat(),)
             )
+            deleted_hourly = cursor.rowcount
 
-        logger.debug(f"Cleaned metrics older than {cutoff.isoformat()}")
+        # Run VACUUM to reclaim disk space (must be outside transaction)
+        # Only vacuum if we actually deleted something significant
+        if deleted_raw > 100 or deleted_hourly > 10:
+            try:
+                conn = self._get_connection()
+                conn.execute("VACUUM")
+                logger.debug(f"Vacuumed database after deleting {deleted_raw} raw, {deleted_hourly} hourly records")
+            except Exception as e:
+                # VACUUM can fail if another connection is active; not critical
+                logger.debug(f"VACUUM skipped: {e}")
+
+        logger.debug(f"Cleaned metrics older than {cutoff.isoformat()} (deleted {deleted_raw} raw, {deleted_hourly} hourly)")
 
     def _aggregate_old_data(self):
         """Aggregate raw data older than aggregation threshold into hourly buckets."""
