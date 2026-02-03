@@ -1,8 +1,8 @@
 # Session Notes: meshtasticd Multi-Consumer Architecture Audit
 
 **Date**: 2026-02-03
-**Branch**: `claude/meshtasticd-testing-6ix6g`
-**Status**: Architecture complete - testing phase
+**Branch**: `claude/complete-meshtasticd-architecture-e3iVs`
+**Status**: Testing phase - code review complete, test script created
 
 ## Target Architecture
 
@@ -147,10 +147,61 @@ sudo systemctl stop rnsd  # if running separately
 # Via TUI: Gateway → Start Gateway Bridge
 ```
 
+## Parallel Operation Analysis
+
+**Key Insight**: Both paths CAN run simultaneously because they use different transports:
+
+| Path | Transport | Limit | Use Case |
+|------|-----------|-------|----------|
+| TCP:4403 | meshtasticd TCP | **1 client** | Gateway Bridge (exclusive) |
+| MQTT | mosquitto:1883 | **Unlimited** | MQTT Monitor, meshing-around, Grafana |
+
+**Why it works**:
+- meshtasticd has a hard limit of ONE TCP client
+- BUT it can publish to MQTT simultaneously
+- MQTT broker (mosquitto) allows unlimited subscribers
+- Gateway Bridge takes TCP:4403, everything else uses MQTT
+
+**Operational Pattern**:
+```
+Gateway Bridge running?
+├── YES → Use MQTT path for monitoring (MQTT Monitor, etc.)
+└── NO  → Can use either path (TCP for direct access, MQTT for multi-consumer)
+```
+
+## Test Script
+
+Created `scripts/test_meshtasticd_architecture.py` for Pi validation:
+
+```bash
+# Run on Pi
+python3 scripts/test_meshtasticd_architecture.py
+```
+
+Tests:
+1. Service status (meshtasticd, mosquitto)
+2. Port connectivity (TCP:4403, MQTT:1883)
+3. MQTT topic activity (msh/#)
+4. MeshForge module imports
+5. MQTT subscriber connection
+
+## Session Progress
+
+### Code Review Complete ✓
+- `mqtt_mixin.py`: Correct API usage (get_nodes, get_stats, start/stop)
+- `mqtt_subscriber.py`: LOCAL_ROOT_TOPIC = "msh/2/e" for local broker
+- `service_menu_mixin.py`: MQTT Setup Wizard working
+- TUI menu paths: Mesh Networks → MQTT Monitor → Configure → Use Local Broker
+
+### Files Added
+| File | Purpose |
+|------|---------|
+| `scripts/test_meshtasticd_architecture.py` | Pi validation test script |
+
 ## Handoff Notes
 
-- All code changes committed and pushed to `claude/meshtasticd-testing-6ix6g`
-- PR ready to create: https://github.com/Nursedude/meshforge/pull/new/claude/meshtasticd-testing-6ix6g
+- Branch: `claude/complete-meshtasticd-architecture-e3iVs`
 - Architecture is functionally complete
+- Test script created for Pi validation
 - Real-world testing on Pi confirmed working
-- Next session: focus on P1 TUI testing items
+- Next: Run test script on Pi, verify TUI MQTT Monitor flow
