@@ -180,97 +180,111 @@ class TrafficInspectorMixin:
 
     def _traffic_packet_list(self) -> None:
         """Browse captured packets."""
-        inspector = self._get_inspector()
-        if not inspector:
-            return
+        try:
+            inspector = self._get_inspector()
+            if not inspector:
+                return
 
-        # Get filter if any
-        filter_expr = getattr(self, '_traffic_filter', None)
+            # Get filter if any
+            filter_expr = getattr(self, '_traffic_filter', None)
 
-        packets = inspector.get_packets(
-            limit=100,
-            filter=filter_expr
-        )
+            packets = inspector.get_packets(
+                limit=100,
+                filter=filter_expr
+            )
 
-        if not packets:
+            if not packets:
+                self.dialog.msgbox(
+                    "No Packets",
+                    "No packets match the current filter.\n\n"
+                    f"Filter: {filter_expr or '(none)'}",
+                    height=8, width=50
+                )
+                return
+
+            # Build menu choices
+            choices = []
+            for i, pkt in enumerate(packets[:50]):
+                time_str = pkt.timestamp.strftime("%H:%M:%S")
+                src = pkt.source[:10] if pkt.source else "?"
+                port = pkt.port_name[:12] if pkt.port_name else pkt.protocol.value[:12]
+                hops = f"h{pkt.hops_taken}" if pkt.hops_taken else ""
+                label = f"{time_str} {src:<10} {port:<12} {hops}"
+                choices.append((str(i), label))
+
+            title = f"Captured Packets ({len(packets)} total)"
+            if filter_expr:
+                title += f"\nFilter: {filter_expr}"
+
+            choice = self.dialog.menu(
+                title,
+                "Select a packet to view details",
+                choices=choices,
+                height=25, width=70
+            )
+
+            if choice:
+                idx = int(choice)
+                if idx < len(packets):
+                    self._show_packet_detail(packets[idx])
+        except Exception as e:
             self.dialog.msgbox(
-                "No Packets",
-                "No packets match the current filter.\n\n"
-                f"Filter: {filter_expr or '(none)'}",
+                "Error",
+                f"Failed to load packet list:\n{e}",
                 height=8, width=50
             )
-            return
-
-        # Build menu choices
-        choices = []
-        for i, pkt in enumerate(packets[:50]):
-            time_str = pkt.timestamp.strftime("%H:%M:%S")
-            src = pkt.source[:10] if pkt.source else "?"
-            port = pkt.port_name[:12] if pkt.port_name else pkt.protocol.value[:12]
-            hops = f"h{pkt.hops_taken}" if pkt.hops_taken else ""
-            label = f"{time_str} {src:<10} {port:<12} {hops}"
-            choices.append((str(i), label))
-
-        title = f"Captured Packets ({len(packets)} total)"
-        if filter_expr:
-            title += f"\nFilter: {filter_expr}"
-
-        choice = self.dialog.menu(
-            title,
-            "Select a packet to view details",
-            choices=choices,
-            height=25, width=70
-        )
-
-        if choice:
-            idx = int(choice)
-            if idx < len(packets):
-                self._show_packet_detail(packets[idx])
 
     def _traffic_apply_filter(self) -> None:
         """Apply a display filter."""
-        inspector = self._get_inspector()
-        if not inspector:
-            return
+        try:
+            inspector = self._get_inspector()
+            if not inspector:
+                return
 
-        current = getattr(self, '_traffic_filter', '')
+            current = getattr(self, '_traffic_filter', '')
 
-        # Show filter input
-        result = self.dialog.inputbox(
-            "Display Filter",
-            "Enter a Wireshark-style filter expression:\n\n"
-            "Examples:\n"
-            "  mesh.hops > 2\n"
-            "  mesh.from == \"!abc123\"\n"
-            "  mesh.portnum == 1\n"
-            "  mesh.snr >= -5\n\n"
-            "Leave empty to clear filter.",
-            init=current,
-            height=16, width=60
-        )
+            # Show filter input
+            result = self.dialog.inputbox(
+                "Display Filter",
+                "Enter a Wireshark-style filter expression:\n\n"
+                "Examples:\n"
+                "  mesh.hops > 2\n"
+                "  mesh.from == \"!abc123\"\n"
+                "  mesh.portnum == 1\n"
+                "  mesh.snr >= -5\n\n"
+                "Leave empty to clear filter.",
+                init=current,
+                height=16, width=60
+            )
 
-        if result is not None:
-            self._traffic_filter = result if result else None
+            if result is not None:
+                self._traffic_filter = result if result else None
 
-            # Test filter
-            if result:
-                test_filter = DisplayFilter(result)
-                if not test_filter.compile():
-                    self.dialog.msgbox(
-                        "Filter Warning",
-                        "Filter may not parse correctly.\n"
-                        "Check syntax and field names.",
-                        height=7, width=45
-                    )
-                else:
-                    # Count matches
-                    packets = inspector.get_packets(limit=1000, filter=result)
-                    self.dialog.msgbox(
-                        "Filter Applied",
-                        f"Filter: {result}\n\n"
-                        f"Matching packets: {len(packets)}",
-                        height=8, width=50
-                    )
+                # Test filter
+                if result:
+                    test_filter = DisplayFilter(result)
+                    if not test_filter.compile():
+                        self.dialog.msgbox(
+                            "Filter Warning",
+                            "Filter may not parse correctly.\n"
+                            "Check syntax and field names.",
+                            height=7, width=45
+                        )
+                    else:
+                        # Count matches
+                        packets = inspector.get_packets(limit=1000, filter=result)
+                        self.dialog.msgbox(
+                            "Filter Applied",
+                            f"Filter: {result}\n\n"
+                            f"Matching packets: {len(packets)}",
+                            height=8, width=50
+                        )
+        except Exception as e:
+            self.dialog.msgbox(
+                "Error",
+                f"Failed to apply filter:\n{e}",
+                height=8, width=50
+            )
 
     def _traffic_packet_detail(self) -> None:
         """Select and view packet details."""
@@ -299,14 +313,23 @@ class TrafficInspectorMixin:
 
     def _show_packet_detail(self, packet: 'MeshPacket') -> None:
         """Display detailed packet information."""
-        inspector = self._get_inspector()
-        detail = inspector.format_packet_detail(packet)
+        try:
+            inspector = self._get_inspector()
+            if not inspector:
+                return
+            detail = inspector.format_packet_detail(packet)
 
-        self.dialog.msgbox(
-            f"Packet: {packet.id[:20]}",
-            detail,
-            height=30, width=75
-        )
+            self.dialog.msgbox(
+                f"Packet: {packet.id[:20]}",
+                detail,
+                height=30, width=75
+            )
+        except Exception as e:
+            self.dialog.msgbox(
+                "Error",
+                f"Failed to display packet details:\n{e}",
+                height=8, width=50
+            )
 
     def _traffic_path_visualization(self) -> None:
         """Multi-hop path visualization."""
@@ -479,92 +502,106 @@ class TrafficInspectorMixin:
 
     def _path_trace_message(self) -> None:
         """Trace a specific message's path."""
-        inspector = self._get_inspector()
-        if not inspector:
-            return
+        try:
+            inspector = self._get_inspector()
+            if not inspector:
+                return
 
-        packet_id = self.dialog.inputbox(
-            "Trace Message Path",
-            "Enter packet ID to trace:\n\n"
-            "(Use Packet List to find IDs)",
-            height=10, width=50
-        )
+            packet_id = self.dialog.inputbox(
+                "Trace Message Path",
+                "Enter packet ID to trace:\n\n"
+                "(Use Packet List to find IDs)",
+                height=10, width=50
+            )
 
-        if packet_id:
-            hops = inspector.trace_path(packet_id)
-            if hops:
-                from monitoring.path_visualizer import TracedPath
+            if packet_id:
+                hops = inspector.trace_path(packet_id)
+                if hops:
+                    from monitoring.path_visualizer import TracedPath
 
-                path = TracedPath.from_hop_list(f"trace_{packet_id[:8]}", hops, packet_id)
-                visualizer = PathVisualizer()
-                visualizer.add_path(path)
+                    path = TracedPath.from_hop_list(f"trace_{packet_id[:8]}", hops, packet_id)
+                    visualizer = PathVisualizer()
+                    visualizer.add_path(path)
 
-                report = visualizer.format_path_report(path)
-                self.dialog.msgbox(
-                    f"Path Trace: {packet_id[:16]}",
-                    report,
-                    height=30, width=75
-                )
-            else:
-                self.dialog.msgbox(
-                    "No Path Data",
-                    f"No path trace available for packet:\n{packet_id}",
-                    height=7, width=50
-                )
+                    report = visualizer.format_path_report(path)
+                    self.dialog.msgbox(
+                        f"Path Trace: {packet_id[:16]}",
+                        report,
+                        height=30, width=75
+                    )
+                else:
+                    self.dialog.msgbox(
+                        "No Path Data",
+                        f"No path trace available for packet:\n{packet_id}",
+                        height=7, width=50
+                    )
+        except Exception as e:
+            self.dialog.msgbox(
+                "Error",
+                f"Failed to trace message path:\n{e}",
+                height=8, width=50
+            )
 
     def _path_statistics(self) -> None:
         """Show path statistics."""
-        inspector = self._get_inspector()
-        if not inspector:
-            return
+        try:
+            inspector = self._get_inspector()
+            if not inspector:
+                return
 
-        from monitoring.path_visualizer import PathVisualizer
+            from monitoring.path_visualizer import PathVisualizer
 
-        visualizer = PathVisualizer()
+            visualizer = PathVisualizer()
 
-        # Collect path data
-        packets = inspector.get_packets(limit=200)
-        for pkt in packets:
-            hops = inspector.trace_path(pkt.id)
-            if hops:
-                visualizer.add_path_trace(pkt.id, hops)
+            # Collect path data
+            packets = inspector.get_packets(limit=200)
+            for pkt in packets:
+                hops = inspector.trace_path(pkt.id)
+                if hops:
+                    visualizer.add_path_trace(pkt.id, hops)
 
-        stats = visualizer.get_path_stats()
+            stats = visualizer.get_path_stats()
 
-        if not stats or stats.get('total_paths', 0) == 0:
+            if not stats or stats.get('total_paths', 0) == 0:
+                self.dialog.msgbox(
+                    "No Statistics",
+                    "No path data available for statistics.",
+                    height=6, width=45
+                )
+                return
+
+            info = [
+                "Path Statistics",
+                "=" * 50,
+                "",
+                f"Total Paths Traced: {stats.get('total_paths', 0)}",
+                f"Success Rate:       {stats.get('success_rate', 0)*100:.1f}%",
+                f"Average Hops:       {stats.get('avg_hops', 0):.1f}",
+                f"Maximum Hops:       {stats.get('max_hops', 0)}",
+                "",
+                "Signal Quality:",
+                f"  Average SNR:      {stats.get('avg_snr', 'N/A')}",
+                f"  Minimum SNR:      {stats.get('min_snr', 'N/A')}",
+                "",
+                "Latency:",
+                f"  Average:          {stats.get('avg_latency_ms', 'N/A')} ms",
+                "",
+                f"Unique Nodes:       {stats.get('unique_nodes', 0)}",
+                "",
+                "=" * 50,
+            ]
+
             self.dialog.msgbox(
-                "No Statistics",
-                "No path data available for statistics.",
-                height=6, width=45
+                "Path Statistics",
+                "\n".join(info),
+                height=24, width=55
             )
-            return
-
-        info = [
-            "Path Statistics",
-            "=" * 50,
-            "",
-            f"Total Paths Traced: {stats.get('total_paths', 0)}",
-            f"Success Rate:       {stats.get('success_rate', 0)*100:.1f}%",
-            f"Average Hops:       {stats.get('avg_hops', 0):.1f}",
-            f"Maximum Hops:       {stats.get('max_hops', 0)}",
-            "",
-            "Signal Quality:",
-            f"  Average SNR:      {stats.get('avg_snr', 'N/A')}",
-            f"  Minimum SNR:      {stats.get('min_snr', 'N/A')}",
-            "",
-            "Latency:",
-            f"  Average:          {stats.get('avg_latency_ms', 'N/A')} ms",
-            "",
-            f"Unique Nodes:       {stats.get('unique_nodes', 0)}",
-            "",
-            "=" * 50,
-        ]
-
-        self.dialog.msgbox(
-            "Path Statistics",
-            "\n".join(info),
-            height=24, width=55
-        )
+        except Exception as e:
+            self.dialog.msgbox(
+                "Error",
+                f"Failed to calculate path statistics:\n{e}",
+                height=8, width=50
+            )
 
     def _traffic_statistics(self) -> None:
         """Show traffic statistics."""
@@ -680,90 +717,106 @@ class TrafficInspectorMixin:
 
     def _traffic_export(self) -> None:
         """Export traffic data."""
-        inspector = self._get_inspector()
-        if not inspector:
-            return
-
-        choice = self.dialog.menu(
-            "Export Data",
-            "Choose export format",
-            choices=[
-                ("1", "JSON         - Full packet data"),
-                ("2", "CSV          - Packet summary"),
-                ("3", "Path HTML    - Path visualization"),
-            ],
-            height=11, width=50
-        )
-
-        if not choice:
-            return
-
         try:
-            from utils.paths import get_real_user_home
-        except ImportError:
-            from pathlib import Path
-            get_real_user_home = Path.home
+            inspector = self._get_inspector()
+            if not inspector:
+                return
 
-        export_dir = get_real_user_home() / ".cache" / "meshforge" / "exports"
-        export_dir.mkdir(parents=True, exist_ok=True)
+            choice = self.dialog.menu(
+                "Export Data",
+                "Choose export format",
+                choices=[
+                    ("1", "JSON         - Full packet data"),
+                    ("2", "CSV          - Packet summary"),
+                    ("3", "Path HTML    - Path visualization"),
+                ],
+                height=11, width=50
+            )
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            if not choice:
+                return
 
-        if choice == "1":
-            # JSON export
-            import json
-            packets = inspector.get_packets(limit=1000)
-            data = [p.to_dict() for p in packets]
-            output_path = export_dir / f"traffic_{timestamp}.json"
-            with open(output_path, 'w') as f:
-                json.dump(data, f, indent=2)
+            try:
+                from utils.paths import get_real_user_home
+            except ImportError:
+                from pathlib import Path
+                get_real_user_home = Path.home
 
-        elif choice == "2":
-            # CSV export
-            packets = inspector.get_packets(limit=1000)
-            output_path = export_dir / f"traffic_{timestamp}.csv"
-            with open(output_path, 'w') as f:
-                f.write("id,timestamp,direction,protocol,source,destination,port,hops,snr,rssi,size\n")
-                for p in packets:
-                    f.write(f"{p.id},{p.timestamp.isoformat()},{p.direction.value},"
-                            f"{p.protocol.value},{p.source},{p.destination},"
-                            f"{p.port_name},{p.hops_taken},{p.snr or ''},{p.rssi or ''},{p.size}\n")
+            export_dir = get_real_user_home() / ".cache" / "meshforge" / "exports"
+            export_dir.mkdir(parents=True, exist_ok=True)
 
-        elif choice == "3":
-            # Path HTML export
-            from monitoring.path_visualizer import PathVisualizer
-            visualizer = PathVisualizer()
-            packets = inspector.get_packets(limit=100)
-            for pkt in packets:
-                hops = inspector.trace_path(pkt.id)
-                if hops:
-                    visualizer.add_path_trace(pkt.id, hops)
-            output_path = visualizer.generate(str(export_dir / f"paths_{timestamp}.html"))
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = None
 
-        self.dialog.msgbox(
-            "Export Complete",
-            f"Data exported to:\n{output_path}",
-            height=7, width=55
-        )
+            if choice == "1":
+                # JSON export
+                import json
+                packets = inspector.get_packets(limit=1000)
+                data = [p.to_dict() for p in packets]
+                output_path = export_dir / f"traffic_{timestamp}.json"
+                with open(output_path, 'w') as f:
+                    json.dump(data, f, indent=2)
+
+            elif choice == "2":
+                # CSV export
+                packets = inspector.get_packets(limit=1000)
+                output_path = export_dir / f"traffic_{timestamp}.csv"
+                with open(output_path, 'w') as f:
+                    f.write("id,timestamp,direction,protocol,source,destination,port,hops,snr,rssi,size\n")
+                    for p in packets:
+                        f.write(f"{p.id},{p.timestamp.isoformat()},{p.direction.value},"
+                                f"{p.protocol.value},{p.source},{p.destination},"
+                                f"{p.port_name},{p.hops_taken},{p.snr or ''},{p.rssi or ''},{p.size}\n")
+
+            elif choice == "3":
+                # Path HTML export
+                from monitoring.path_visualizer import PathVisualizer
+                visualizer = PathVisualizer()
+                packets = inspector.get_packets(limit=100)
+                for pkt in packets:
+                    hops = inspector.trace_path(pkt.id)
+                    if hops:
+                        visualizer.add_path_trace(pkt.id, hops)
+                output_path = visualizer.generate(str(export_dir / f"paths_{timestamp}.html"))
+
+            if output_path:
+                self.dialog.msgbox(
+                    "Export Complete",
+                    f"Data exported to:\n{output_path}",
+                    height=7, width=55
+                )
+        except Exception as e:
+            self.dialog.msgbox(
+                "Error",
+                f"Failed to export data:\n{e}",
+                height=8, width=50
+            )
 
     def _traffic_clear(self) -> None:
         """Clear captured traffic data."""
-        inspector = self._get_inspector()
-        if not inspector:
-            return
+        try:
+            inspector = self._get_inspector()
+            if not inspector:
+                return
 
-        confirm = self.dialog.yesno(
-            "Clear Capture Data",
-            "This will delete all captured packets.\n\n"
-            "Are you sure?",
-            height=8, width=45
-        )
+            confirm = self.dialog.yesno(
+                "Clear Capture Data",
+                "This will delete all captured packets.\n\n"
+                "Are you sure?",
+                height=8, width=45
+            )
 
-        if confirm:
-            count = inspector.clear()
-            self._traffic_filter = None
+            if confirm:
+                count = inspector.clear()
+                self._traffic_filter = None
+                self.dialog.msgbox(
+                    "Cleared",
+                    f"Deleted {count} packets from capture.",
+                    height=6, width=40
+                )
+        except Exception as e:
             self.dialog.msgbox(
-                "Cleared",
-                f"Deleted {count} packets from capture.",
-                height=6, width=40
+                "Error",
+                f"Failed to clear capture data:\n{e}",
+                height=8, width=50
             )
