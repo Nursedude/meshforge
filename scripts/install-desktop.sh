@@ -185,6 +185,8 @@ echo
 echo "Or search for 'MeshForge' in your application launcher."
 echo
 echo "To run from command line:"
-echo "  meshforge        # TUI launcher (works over SSH)"
-echo "  meshforge help   # Show available commands"
+echo "  meshforge            # TUI launcher (default, works over SSH)"
+echo "  meshforge tui        # Same as default"
+echo "  meshforge maps       # Coverage map generator"
+echo "  meshforge prometheus # Metrics exporter"
 echo
