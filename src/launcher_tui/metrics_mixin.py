@@ -28,6 +28,7 @@ class MetricsMixin:
             ("edge", "Edge/Link Metrics"),
             ("recent", "Recent Metrics"),
             ("export", "Export Metrics (CSV)"),
+            ("prometheus", "Prometheus Server"),
             ("cleanup", "Database Maintenance"),
             ("back", "Back"),
         ]
@@ -54,6 +55,8 @@ class MetricsMixin:
                 self._metrics_recent()
             elif choice == "export":
                 self._metrics_export()
+            elif choice == "prometheus":
+                self._metrics_prometheus()
             elif choice == "cleanup":
                 self._metrics_cleanup()
 
@@ -445,6 +448,62 @@ class MetricsMixin:
 
         except Exception as e:
             self.dialog.msgbox("Error", f"Export failed:\n{e}")
+
+    def _metrics_prometheus(self):
+        """Start Prometheus metrics server."""
+        # Get port from user
+        port_str = self.dialog.inputbox(
+            "Prometheus Port",
+            "Enter port for Prometheus metrics server:",
+            "9090"
+        )
+
+        if not port_str:
+            return
+
+        try:
+            port = int(port_str)
+            if not (1024 <= port <= 65535):
+                raise ValueError("Port must be between 1024 and 65535")
+        except ValueError as e:
+            self.dialog.msgbox("Invalid Port", str(e))
+            return
+
+        # Confirm before starting
+        if not self.dialog.yesno(
+            "Start Server",
+            f"Start Prometheus metrics server on port {port}?\n\n"
+            f"Scrape endpoint: http://localhost:{port}/metrics\n\n"
+            "The server will run until you stop it (Ctrl+C).\n"
+            "This will exit the TUI.",
+            default_no=False
+        ):
+            return
+
+        # Start the server (exits TUI)
+        try:
+            from utils.metrics_export import start_metrics_server
+            import signal
+            import sys
+
+            # Clear screen and show info
+            print("\033[2J\033[H")  # Clear screen
+            print(f"Starting Prometheus metrics server on port {port}...")
+            print(f"Scrape endpoint: http://localhost:{port}/metrics")
+            print("")
+            print("Press Ctrl+C to stop the server.")
+            print("")
+
+            server = start_metrics_server(port=port)
+
+            # Wait for interrupt
+            signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
+            signal.pause()
+
+        except ImportError:
+            self.dialog.msgbox("Error", "Prometheus exporter module not available.")
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed to start server:\n{e}")
 
     def _metrics_cleanup(self):
         """Database maintenance options."""
