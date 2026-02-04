@@ -453,6 +453,10 @@ class NodeMonitor:
                 except (TypeError, ValueError, OSError):
                     pass
 
+            # Favorites (BaseUI 2.7+)
+            # The meshtastic API returns isFavorite as a boolean
+            node_info.is_favorite = data.get('isFavorite', False)
+
             return node_info
 
         except Exception as e:

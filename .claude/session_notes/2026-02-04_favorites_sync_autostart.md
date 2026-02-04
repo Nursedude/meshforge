@@ -265,3 +265,104 @@ meshtastic --host localhost --set-favorite-node '!ba4bf9d0'
 # Remove favorite
 meshtastic --host localhost --remove-favorite-node '!ba4bf9d0'
 ```
+
+---
+
+## Session 2: Favorites Implementation Complete
+
+**Date:** 2026-02-04
+**Branch:** `claude/meshtastic-favorites-sync-X4usr`
+
+### Work Completed
+
+#### 1. Favorites Parsing Implementation
+
+**Files Modified:**
+
+- `src/monitoring/node_monitor.py` - Added `isFavorite` extraction in `_parse_node_data()`
+- `src/gateway/node_tracker.py` - Added favorites extraction in `from_meshtastic()`, `to_dict()`, `_load_cache()`
+
+**Code Changes:**
+```python
+# node_monitor.py - _parse_node_data()
+node_info.is_favorite = data.get('isFavorite', False)
+
+# node_tracker.py - from_meshtastic()
+if mesh_node.get('isFavorite', False):
+    node.is_favorite = True
+    node.favorite_updated = datetime.now()
+
+# node_tracker.py - to_dict() serialization
+"is_favorite": self.is_favorite,
+"favorite_updated": self.favorite_updated.isoformat() if self.favorite_updated else None,
+
+# node_tracker.py - _load_cache() restoration
+node.is_favorite = node_data.get('is_favorite', False)
+```
+
+#### 2. TUI Favorites Menu (NEW FILE)
+
+**Created:** `src/launcher_tui/favorites_mixin.py`
+
+**Features:**
+- `_favorites_menu()` - Main favorites management menu
+- `_show_favorites_list()` - Display list of favorite nodes
+- `_show_all_nodes_with_favorites()` - All nodes with favorite toggle
+- `_toggle_favorite_by_id()` - Toggle favorite by entering node ID
+- `_toggle_favorite_on_node()` - Toggle favorite on specific node
+- `_set_favorite_on_device()` - Send setFavorite/removeFavorite to device
+- `_sync_favorites_from_device()` - Pull favorites from device NodeDB
+- `_filter_nodes_by_favorites()` - Filter node lists to favorites only
+
+**Menu Structure:**
+```
+Favorites Menu
+├── View Favorites List
+├── All Nodes (toggle favorites)
+├── Toggle Favorite by ID
+├── Sync Favorites from Device
+└── Back
+```
+
+#### 3. TUI Integration
+
+**Files Modified:**
+
+- `src/launcher_tui/main.py` - Added FavoritesMixin import and inheritance
+- `src/launcher_tui/radio_menu_mixin.py` - Added "Favorites (BaseUI 2.7+)" menu option
+- `src/launcher_tui/topology_mixin.py` - Added [*] indicator for favorites in node details
+
+**Access Path:**
+```
+Main Menu → Radio Tools → Favorites (BaseUI 2.7+)
+```
+
+### Files Ready for Commit
+
+1. `src/monitoring/node_monitor.py` - `isFavorite` parsing
+2. `src/gateway/node_tracker.py` - Favorites in from_meshtastic, to_dict, _load_cache
+3. `src/launcher_tui/favorites_mixin.py` - **NEW** Complete favorites mixin
+4. `src/launcher_tui/main.py` - FavoritesMixin integration
+5. `src/launcher_tui/radio_menu_mixin.py` - Favorites menu option
+6. `src/launcher_tui/topology_mixin.py` - [*] indicator in node details
+
+### API Patterns Used
+
+**Reading Favorites:**
+```python
+for node_num, node_info in interface.nodes.items():
+    is_fav = node_info.get('isFavorite', False)
+```
+
+**Writing Favorites:**
+```python
+local_node = interface.getNode(interface.myInfo.my_node_num)
+local_node.setFavorite("!abcd1234")  # Add
+local_node.removeFavorite("!abcd1234")  # Remove
+```
+
+### Session Health Check
+
+**Entropy Level:** LOW - All tasks completed, code compiles
+**Code Status:** Verified with py_compile and import tests
+**Blocking Issues:** None - Ready for commit

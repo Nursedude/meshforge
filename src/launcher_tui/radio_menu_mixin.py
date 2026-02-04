@@ -54,6 +54,7 @@ class RadioMenuMixin:
             choices.extend([
                 ("info", "Radio Info (meshtastic --info)"),
                 ("nodes", "Node List (meshtastic --nodes)"),
+                ("favorites", "Favorites (BaseUI 2.7+)"),
                 ("channels", "Channel Info"),
                 ("send", "Send Message"),
                 ("position", "Position (view/set)"),
@@ -92,6 +93,8 @@ class RadioMenuMixin:
                 self._radio_run([cli] + conn_args + ['--info'], "Radio Info")
             elif choice == "nodes":
                 self._radio_run([cli] + conn_args + ['--nodes'], "Node List")
+            elif choice == "favorites":
+                self._favorites_menu()  # From FavoritesMixin
             elif choice == "channels":
                 self._radio_run([cli] + conn_args + ['--ch-index', '0', '--ch-getall'], "Channels")
             elif choice == "position":

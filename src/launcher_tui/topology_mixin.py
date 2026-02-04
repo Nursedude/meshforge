@@ -200,7 +200,8 @@ class TopologyMixin:
             lines.append("IDENTITY:")
             lines.append("-" * 50)
             if node_data.name:
-                lines.append(f"  Name:     {node_data.name}")
+                fav_star = " [*]" if getattr(node_data, 'is_favorite', False) else ""
+                lines.append(f"  Name:     {node_data.name}{fav_star}")
             if node_data.short_name:
                 lines.append(f"  Short:    {node_data.short_name}")
             if node_data.meshtastic_id:

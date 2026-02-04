@@ -669,6 +669,9 @@ class UnifiedNode:
             "service_capabilities": self.service_capabilities if self.service_capabilities else None,
             # PKI status (Meshtastic 2.5+)
             "pki_status": self.pki_status.to_dict() if self.pki_status.state != PKIKeyState.UNKNOWN else None,
+            # Favorites (BaseUI 2.7+)
+            "is_favorite": self.is_favorite,
+            "favorite_updated": self.favorite_updated.isoformat() if self.favorite_updated else None,
             # Granular state
             "state": self.state.name if self.state else None,
             "state_display": self.state_name,
@@ -770,6 +773,11 @@ class UnifiedNode:
         # Update state machine with live data
         if node._state_machine is not None:
             node._state_machine.record_response(snr=node.snr)
+
+        # Favorites (BaseUI 2.7+)
+        if mesh_node.get('isFavorite', False):
+            node.is_favorite = True
+            node.favorite_updated = datetime.now()
 
         return node
 
@@ -1487,6 +1495,13 @@ instance_control_port = 37429
                         node._state_machine = NodeStateMachine.from_dict(node_data['state_machine'])
                     except Exception as e:
                         logger.debug(f"Could not restore state machine: {e}")
+                # Restore favorites from cache (BaseUI 2.7+)
+                node.is_favorite = node_data.get('is_favorite', False)
+                if node_data.get('favorite_updated'):
+                    try:
+                        node.favorite_updated = datetime.fromisoformat(node_data['favorite_updated'])
+                    except (ValueError, TypeError):
+                        pass
                 self._nodes[node.id] = node
 
             logger.info(f"Loaded {len(self._nodes)} nodes from cache")

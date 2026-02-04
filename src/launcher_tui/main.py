@@ -130,6 +130,7 @@ from traffic_inspector_mixin import TrafficInspectorMixin
 from updates_mixin import UpdatesMixin
 from mqtt_mixin import MQTTMixin
 from gateway_config_mixin import GatewayConfigMixin
+from favorites_mixin import FavoritesMixin
 
 
 class MeshForgeLauncher(
@@ -160,7 +161,8 @@ class MeshForgeLauncher(
     TrafficInspectorMixin,
     UpdatesMixin,
     MQTTMixin,
-    GatewayConfigMixin
+    GatewayConfigMixin,
+    FavoritesMixin
 ):
     """MeshForge launcher with raspi-config style interface."""
 
