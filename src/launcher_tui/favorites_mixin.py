@@ -133,65 +133,68 @@ class FavoritesMixin:
 
     def _show_all_nodes_with_favorites(self):
         """Show all Meshtastic nodes with favorites toggle."""
-        try:
-            tracker = self._get_node_tracker()
-            if not tracker:
-                self.dialog.msgbox(
-                    "Unavailable",
-                    "Node tracker not available.\n\n"
-                    "Start the gateway or MQTT monitor first."
-                )
-                return
+        # Use loop instead of recursion to prevent stack overflow
+        while True:
+            try:
+                tracker = self._get_node_tracker()
+                if not tracker:
+                    self.dialog.msgbox(
+                        "Unavailable",
+                        "Node tracker not available.\n\n"
+                        "Start the gateway or MQTT monitor first."
+                    )
+                    return
 
-            nodes = tracker.get_meshtastic_nodes()
+                nodes = tracker.get_meshtastic_nodes()
 
-            if not nodes:
-                self.dialog.msgbox(
-                    "No Nodes",
-                    "No Meshtastic nodes discovered yet.\n\n"
-                    "Connect to meshtasticd or start MQTT monitoring\n"
-                    "to discover nodes."
-                )
-                return
+                if not nodes:
+                    self.dialog.msgbox(
+                        "No Nodes",
+                        "No Meshtastic nodes discovered yet.\n\n"
+                        "Connect to meshtasticd or start MQTT monitoring\n"
+                        "to discover nodes."
+                    )
+                    return
 
-            # Sort: favorites first, then by name
-            nodes.sort(key=lambda n: (
-                0 if getattr(n, 'is_favorite', False) else 1,
-                n.name.lower() if n.name else "zzz"
-            ))
-
-            # Build menu choices
-            node_choices = []
-            for node in nodes[:75]:  # Limit for TUI
-                is_fav = getattr(node, 'is_favorite', False)
-                star = "[*]" if is_fav else "[ ]"
-
-                name = node.name or node.short_name or "Unknown"
-                name = name[:20]  # Truncate
-                mesh_id = node.meshtastic_id or node.id
-
-                status = "+" if node.is_online else "-"
-
-                node_choices.append((
-                    mesh_id,
-                    f"{star} {name} ({mesh_id[-8:]}) {status}"
+                # Sort: favorites first, then by name
+                nodes.sort(key=lambda n: (
+                    0 if getattr(n, 'is_favorite', False) else 1,
+                    n.name.lower() if n.name else "zzz"
                 ))
 
-            node_choices.append(("back", "Back"))
+                # Build menu choices
+                node_choices = []
+                for node in nodes[:75]:  # Limit for TUI
+                    is_fav = getattr(node, 'is_favorite', False)
+                    star = "[*]" if is_fav else "[ ]"
 
-            selected = self.dialog.menu(
-                f"All Nodes ({len(nodes)})",
-                "[*] = favorite | Select to toggle:",
-                node_choices
-            )
+                    name = node.name or node.short_name or "Unknown"
+                    name = name[:20]  # Truncate
+                    mesh_id = node.meshtastic_id or node.id
 
-            if selected and selected != "back":
-                self._toggle_favorite_on_node(selected)
-                # Refresh the list
-                self._show_all_nodes_with_favorites()
+                    status = "+" if node.is_online else "-"
 
-        except Exception as e:
-            self.dialog.msgbox("Error", f"Failed to show nodes:\n{e}")
+                    node_choices.append((
+                        mesh_id,
+                        f"{star} {name} ({mesh_id[-8:]}) {status}"
+                    ))
+
+                node_choices.append(("back", "Back"))
+
+                selected = self.dialog.menu(
+                    f"All Nodes ({len(nodes)})",
+                    "[*] = favorite | Select to toggle:",
+                    node_choices
+                )
+
+                if selected and selected != "back":
+                    self._toggle_favorite_on_node(selected)
+                    continue  # Loop back to refresh list
+                return  # Exit on "back" or cancel
+
+            except Exception as e:
+                self.dialog.msgbox("Error", f"Failed to show nodes:\n{e}")
+                return
 
     def _show_favorite_node_details(self, node_id: str):
         """Show details for a favorite node with option to remove."""

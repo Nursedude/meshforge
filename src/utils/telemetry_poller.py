@@ -81,10 +81,11 @@ class TelemetryPoller:
         self._poll_records: Dict[str, PollRecord] = {}
         self._records_lock = threading.Lock()
 
-        # Rate limiting
+        # Rate limiting (protected by _rate_limit_lock)
         self._last_request_time: float = 0
         self._requests_this_minute: int = 0
         self._minute_start: float = 0
+        self._rate_limit_lock = threading.Lock()
 
         # Statistics
         self._stats = {
@@ -304,21 +305,22 @@ class TelemetryPoller:
 
     def _can_send_request(self) -> bool:
         """Check if we can send a request (rate limiting)."""
-        now = time.time()
+        with self._rate_limit_lock:
+            now = time.time()
 
-        # Reset minute counter if needed
-        if now - self._minute_start >= 60:
-            self._minute_start = now
-            self._requests_this_minute = 0
+            # Reset minute counter if needed
+            if now - self._minute_start >= 60:
+                self._minute_start = now
+                self._requests_this_minute = 0
 
-        # Check rate limits
-        if self._requests_this_minute >= MAX_REQUESTS_PER_MINUTE:
-            return False
+            # Check rate limits
+            if self._requests_this_minute >= MAX_REQUESTS_PER_MINUTE:
+                return False
 
-        if now - self._last_request_time < MIN_POLL_INTERVAL_SECONDS:
-            return False
+            if now - self._last_request_time < MIN_POLL_INTERVAL_SECONDS:
+                return False
 
-        return True
+            return True
 
     def _request_telemetry(self, node_id: str) -> bool:
         """
@@ -334,9 +336,10 @@ class TelemetryPoller:
         if not node_id.startswith('!'):
             node_id = f"!{node_id}"
 
-        # Update rate limiting
-        self._last_request_time = time.time()
-        self._requests_this_minute += 1
+        # Update rate limiting (thread-safe)
+        with self._rate_limit_lock:
+            self._last_request_time = time.time()
+            self._requests_this_minute += 1
 
         with self._stats_lock:
             self._stats["total_requests"] += 1
@@ -414,13 +417,12 @@ class TelemetryPoller:
         """Find the meshtastic CLI binary."""
         import os
         from pathlib import Path
+        from utils.paths import get_real_user_home
 
         # Check common locations
         candidates = [
-            # pipx install location
-            Path.home() / ".local" / "bin" / "meshtastic",
-            # SUDO_USER's pipx install
-            Path("/home") / os.environ.get("SUDO_USER", "") / ".local" / "bin" / "meshtastic",
+            # pipx install location (uses real user home, not /root with sudo)
+            get_real_user_home() / ".local" / "bin" / "meshtastic",
             # System-wide
             Path("/usr/local/bin/meshtastic"),
             Path("/usr/bin/meshtastic"),
