@@ -5,12 +5,14 @@ Provides network testing and diagnostics methods extracted from main launcher
 to reduce file size and improve maintainability.
 
 Includes:
+- Network menu and diagnostics display
 - Ping test
 - Meshtastic device discovery
 - DNS lookup
 """
 
 import logging
+import socket as sock
 import subprocess
 from pathlib import Path
 
@@ -128,3 +130,125 @@ class NetworkToolsMixin:
             self.dialog.msgbox("Error", f"DNS lookup failed:\n{e}")
         except Exception as e:
             self.dialog.msgbox("Error", str(e))
+
+    def _network_menu(self):
+        """Network diagnostics - terminal-native."""
+        while True:
+            choices = [
+                ("status", "Quick Network Status"),
+                ("ports", "Listening Ports (ss -tlnp)"),
+                ("ifaces", "Network Interfaces (ip addr)"),
+                ("conns", "Active Connections (ss -tunp)"),
+                ("routes", "Routing Table (ip route)"),
+                ("ping", "Ping Test"),
+                ("dns", "DNS Lookup"),
+                ("discover", "Meshtastic Device Discovery"),
+                ("back", "Back"),
+            ]
+
+            choice = self.dialog.menu(
+                "Network & Ports",
+                "Network diagnostics (terminal-native):",
+                choices
+            )
+
+            if choice is None or choice == "back":
+                break
+
+            if choice == "status":
+                self._run_terminal_network()
+            elif choice == "ports":
+                subprocess.run(['clear'], check=False, timeout=5)
+                print("=== Listening Ports ===\n")
+                subprocess.run(['ss', '-tlnp'], timeout=10)
+                self._wait_for_enter()
+            elif choice == "ifaces":
+                subprocess.run(['clear'], check=False, timeout=5)
+                print("=== Network Interfaces ===\n")
+                subprocess.run(['ip', '-c', 'addr'], timeout=10)
+                self._wait_for_enter()
+            elif choice == "conns":
+                subprocess.run(['clear'], check=False, timeout=5)
+                print("=== Active Connections ===\n")
+                subprocess.run(['ss', '-tunp'], timeout=10)
+                self._wait_for_enter()
+            elif choice == "routes":
+                subprocess.run(['clear'], check=False, timeout=5)
+                print("=== Routing Table ===\n")
+                subprocess.run(['ip', 'route'], timeout=10)
+                self._wait_for_enter()
+            elif choice == "ping":
+                self._ping_test()
+            elif choice == "dns":
+                self._dns_lookup()
+            elif choice == "discover":
+                self._meshtastic_discovery()
+
+    def _run_terminal_network(self):
+        """Show network diagnostics directly in terminal."""
+        subprocess.run(['clear'], check=False, timeout=5)
+        print("MeshForge Network Status")
+        print("=" * 50)
+        print()
+
+        # Port checks
+        print("Port Checks:")
+        ports = [
+            (4403, 'meshtasticd TCP API'),
+            (9443, 'meshtasticd Web Client'),
+            (37428, 'rnsd (RNS shared instance)'),
+            (1883, 'MQTT broker'),
+        ]
+
+        for port, desc in ports:
+            try:
+                s = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
+                try:
+                    s.settimeout(1)
+                    result = s.connect_ex(('127.0.0.1', port))
+                finally:
+                    s.close()
+                if result == 0:
+                    print(f"  \033[0;32m●\033[0m {port:<6} {desc}")
+                else:
+                    print(f"  \033[2m○\033[0m {port:<6} {desc} (not listening)")
+            except Exception:
+                print(f"  ? {port:<6} {desc} (check failed)")
+
+        # Local IP
+        print()
+        try:
+            s = sock.socket(sock.AF_INET, sock.SOCK_DGRAM)
+            s.settimeout(2)
+            try:
+                s.connect(("8.8.8.8", 80))
+                local_ip = s.getsockname()[0]
+            finally:
+                s.close()
+            print(f"  Local IP: {local_ip}")
+        except Exception:
+            print("  Local IP: Unable to determine")
+
+        # Internet connectivity
+        print()
+        print("Connectivity:")
+        try:
+            s = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
+            try:
+                s.settimeout(3)
+                result = s.connect_ex(('8.8.8.8', 53))
+            finally:
+                s.close()
+            if result == 0:
+                print(f"  \033[0;32m●\033[0m Internet (Google DNS)")
+            else:
+                print(f"  \033[0;31m●\033[0m Internet (no route to 8.8.8.8)")
+        except Exception:
+            print(f"  \033[0;31m●\033[0m Internet (unreachable)")
+
+        print()
+        print("-" * 50)
+        try:
+            self._wait_for_enter("\nPress Enter to return to menu...")
+        except KeyboardInterrupt:
+            print()

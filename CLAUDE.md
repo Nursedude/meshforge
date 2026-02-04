@@ -212,16 +212,18 @@ else:
 
 Split files exceeding 1,500 lines (see `.claude/foundations/persistent_issues.md` Issue #6):
 
-**Current files needing attention (2026-02-04):**
-- `traffic_inspector.py` (2,194) → Extract dissectors, models, storage
-- `rns_bridge.py` (1,991) → Extract Meshtastic handler
-- `node_tracker.py` (1,808) → Extract data classes
-- `launcher_tui/main.py` (1,799) → **Regressed!** Extract network tools, web client mixins
+**All files now under threshold (2026-02-04):**
+- ✅ `traffic_inspector.py` (442 lines)
+- ✅ `rns_bridge.py` (1,587 lines) - Meshtastic handler extracted
+- ✅ `node_tracker.py` (911 lines) - Data classes extracted
+- ✅ `launcher_tui/main.py` (1,404 lines) - Network tools in mixin
 
-**Previously refactored:**
-- ✅ `launcher_tui/main.py` (was 2,822 → 1,336, now regressed to 1,799)
-- ✅ `hamclock.py` (2,625 → 1,525)
-- ✅ GTK4 panels removed (TUI is now only interface)
+**Refactoring history:**
+- `launcher_tui/main.py` (was 2,822 → 1,336 → 1,799 → 1,404)
+- `rns_bridge.py` (was 1,991 → 1,587, MeshtasticHandler extracted)
+- `node_tracker.py` (was 1,808 → 911, node_models.py extracted)
+- `hamclock.py` (2,625 → 1,525)
+- GTK4 panels removed (TUI is now only interface)
 
 *Note: Always check if a mixin exists before adding to main.py.*
 
