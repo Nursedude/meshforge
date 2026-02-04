@@ -72,7 +72,7 @@ else
 fi
 
 # 4. Import check - RF tools
-if python3 -c "from src.utils.rf import haversine_distance, fspl_db" 2>/dev/null; then
+if python3 -c "from src.utils.rf import haversine_distance, free_space_path_loss" 2>/dev/null; then
     pass "RF tools import OK"
 else
     fail "RF tools import failed"
