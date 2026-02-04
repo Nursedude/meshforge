@@ -2,7 +2,7 @@
 
 ## Current Version: v4.2.0
 ## Session Date: 2026-02-04
-## Branch: `claude/extract-node-tracker-dataclasses-Fiiod`
+## Branch: `claude/extract-meshtastic-handler-GHHrq`
 
 ---
 
@@ -23,48 +23,51 @@ python3 src/standalone.py               # Zero-dependency RF tools
 
 ## Latest Session Summary (2026-02-04)
 
-### Major Accomplishments - File Size Refactoring
+### Major Accomplishments - Meshtastic Handler Extraction
 
-1. **Extracted node_tracker.py dataclasses** (`src/gateway/node_models.py`) - NEW!
-   - Created new `node_models.py` with extracted dataclasses (931 lines)
-   - Reduced `node_tracker.py` from 1,808 to 911 lines (51% reduction)
+1. **Extracted MeshtasticHandler** (`src/gateway/meshtastic_handler.py`) - NEW!
+   - Created new `meshtastic_handler.py` (595 lines)
+   - Reduced `rns_bridge.py` from 1,991 to 1,587 lines (~20% reduction)
    - Both files now under 1,500 line threshold per Issue #6 guidelines
-   - Extracted types: Position, PKIKeyState, PKIStatus, AirQualityMetrics,
-     HealthMetrics, DetectionSensor, SignalSample, Telemetry, UnifiedNode
+   - Uses dependency injection for shared state (config, node_tracker, health, etc.)
+   - Extracted methods: connect, disconnect, send_text, queue_send, run_loop,
+     _on_receive, _handle_text_message, _discover_relay_node, _poll,
+     _handle_connection_lost, _update_nodes, _test_cli, _send_via_cli
 
 ### Files Changed
-- `src/gateway/node_models.py` - NEW: Extracted dataclasses
-- `src/gateway/node_tracker.py` - Refactored to import from node_models.py
+- `src/gateway/meshtastic_handler.py` - NEW: Extracted handler class
+- `src/gateway/rns_bridge.py` - Refactored to use MeshtasticHandler
 
-### Commit
-```
-f3827e8 refactor: Extract node_tracker dataclasses to node_models.py
+### Dependency Injection Pattern
+```python
+self._mesh_handler = MeshtasticHandler(
+    config=self.config,
+    node_tracker=self.node_tracker,
+    health=self.health,
+    stop_event=self._stop_event,
+    stats=self.stats,
+    stats_lock=self._stats_lock,
+    message_queue=self._mesh_to_rns_queue,
+    message_callback=self._notify_message,
+    status_callback=lambda status: self._notify_status(status),
+)
 ```
 
 ---
 
-## Remaining Work (for next session)
+## Previous Session Summary (2026-02-04)
 
-### rns_bridge.py (1,991 lines) - Meshtastic Handler Extraction
+### File Size Refactoring - node_tracker.py
 
-The Meshtastic handling code is deeply interleaved with RNSMeshtasticBridge class.
-Extraction requires creating a MeshtasticHandler class that delegates to shared state.
+1. **Extracted node_tracker.py dataclasses** (`src/gateway/node_models.py`)
+   - Created new `node_models.py` with extracted dataclasses (931 lines)
+   - Reduced `node_tracker.py` from 1,808 to 911 lines (51% reduction)
+   - Extracted types: Position, PKIKeyState, PKIStatus, AirQualityMetrics,
+     HealthMetrics, DetectionSensor, SignalSample, Telemetry, UnifiedNode
 
-**Key methods to extract (~400 lines):**
-- `_meshtastic_loop` (line 728) - Main thread loop
-- `_connect_meshtastic` (line 856) - Connection establishment
-- `_disconnect_meshtastic` (line 906) - Disconnection
-- `_on_meshtastic_receive` (line 1123) - Message receive handler
-- `_poll_meshtastic` (line 1683) - Health checks
-- `_handle_connection_lost` (line 1705) - Connection loss handling
-- `_update_meshtastic_nodes` (line 1666) - Node tracking
-- `_test_meshtastic` (line 1735) - Connection testing
-- `send_to_meshtastic` (line 469) - Message sending
+---
 
-**Complexity Note:**
-These methods share state like `self._mesh_interface`, `self._connected_mesh`,
-`self.node_tracker`, `self.health`, `self.config`. Extraction requires passing
-references to shared objects via MeshtasticHandler constructor.
+## Remaining Work (for future sessions)
 
 ### Other Files Over Threshold (from persistent_issues.md)
 - `traffic_inspector.py` (2,194 lines) - Extract dissectors, models, storage

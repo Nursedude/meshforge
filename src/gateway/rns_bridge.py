@@ -21,6 +21,7 @@ from .bridge_health import (
     BridgeHealthMonitor, DeliveryTracker, classify_error,
     BridgeStatus, MessageOrigin
 )
+from .meshtastic_handler import MeshtasticHandler
 
 # Import circuit breaker for destination-level failure handling
 try:
@@ -168,14 +169,12 @@ class RNSMeshtasticBridge:
         # State
         self._running = False
         self._websocket_started = False
-        self._connected_mesh = False
         self._connected_rns = False
         self._rns_via_rnsd = False  # True when rnsd handles RNS (bridge defers)
         self._rns_init_failed_permanently = False  # True if RNS can't be initialized from this thread
         self._rns_pre_initialized = False  # True if RNS was initialized from main thread
 
-        # Reconnection strategies (exponential backoff with jitter)
-        self._mesh_reconnect = ReconnectStrategy.for_meshtastic()
+        # Reconnection strategy for RNS (Meshtastic reconnect is in handler)
         self._rns_reconnect = ReconnectStrategy.for_rns()
         self._stop_event = threading.Event()
 
@@ -208,10 +207,8 @@ class RNSMeshtasticBridge:
         self._identity = None
         self._lxmf_source = None
 
-        # Meshtastic interface and connection manager
-        self._mesh_interface = None
-        self._conn_manager = None
-        self._pubsub_handler = None
+        # Meshtastic handler (encapsulates connection and message handling)
+        self._mesh_handler: Optional[MeshtasticHandler] = None
 
         # Statistics
         self.stats = {
@@ -223,14 +220,12 @@ class RNSMeshtasticBridge:
         }
 
         # Persistent message queue for reliable delivery
+        # Note: Meshtastic sender registered after handler init below
         self._persistent_queue = None
         if HAS_PERSISTENT_QUEUE:
             try:
                 self._persistent_queue = PersistentMessageQueue()
-                # Register send handlers for each destination
-                self._persistent_queue.register_sender(
-                    "meshtastic", self._queue_send_meshtastic
-                )
+                # RNS sender registered here, Meshtastic sender after handler init
                 self._persistent_queue.register_sender(
                     "rns", self._queue_send_rns
                 )
@@ -278,13 +273,32 @@ class RNSMeshtasticBridge:
         # MQTT filtering configuration
         self._filter_mqtt_messages = False  # Set True to drop MQTT-originated messages
 
+        # Initialize Meshtastic handler with dependency injection
+        self._mesh_handler = MeshtasticHandler(
+            config=self.config,
+            node_tracker=self.node_tracker,
+            health=self.health,
+            stop_event=self._stop_event,
+            stats=self.stats,
+            stats_lock=self._stats_lock,
+            message_queue=self._mesh_to_rns_queue,
+            message_callback=self._notify_message,
+            status_callback=lambda status: self._notify_status(status),
+        )
+
+        # Register Meshtastic sender now that handler exists
+        if self._persistent_queue:
+            self._persistent_queue.register_sender(
+                "meshtastic", self._mesh_handler.queue_send
+            )
+
     @property
     def is_running(self) -> bool:
         return self._running
 
     @property
     def is_connected(self) -> bool:
-        return self._connected_mesh or self._connected_rns
+        return (self._mesh_handler and self._mesh_handler.is_connected) or self._connected_rns
 
     @property
     def bridge_status(self) -> BridgeStatus:
@@ -427,7 +441,8 @@ class RNSMeshtasticBridge:
         self.node_tracker.stop()
 
         # Close connections
-        self._disconnect_meshtastic()
+        if self._mesh_handler:
+            self._mesh_handler.disconnect()
         self._disconnect_rns()
 
         # Wait for threads
@@ -455,10 +470,11 @@ class RNSMeshtasticBridge:
         if self.stats['start_time']:
             uptime = (datetime.now() - self.stats['start_time']).total_seconds()
 
+        mesh_connected = self._mesh_handler.is_connected if self._mesh_handler else False
         return {
             'running': self._running,
             'enabled': self.config.enabled,
-            'meshtastic_connected': self._connected_mesh,
+            'meshtastic_connected': mesh_connected,
             'rns_connected': self._connected_rns,
             'rns_via_rnsd': self._rns_via_rnsd,
             'uptime_seconds': uptime,
@@ -467,30 +483,11 @@ class RNSMeshtasticBridge:
         }
 
     def send_to_meshtastic(self, message: str, destination: str = None, channel: int = 0) -> bool:
-        """Send a message to Meshtastic network"""
-        if not self._connected_mesh:
-            logger.warning("Not connected to Meshtastic")
+        """Send a message to Meshtastic network."""
+        if not self._mesh_handler:
+            logger.warning("Meshtastic handler not initialized")
             return False
-
-        try:
-            if self._mesh_interface:
-                # For broadcasts, use ^all instead of None
-                dest = destination if destination else "^all"
-                logger.info(f"Sending to Meshtastic: dest={dest}, ch={channel}, msg={message[:50]}")
-                self._mesh_interface.sendText(
-                    message,
-                    destinationId=dest,
-                    channelIndex=channel
-                )
-                return True
-            else:
-                # Fallback to CLI
-                return self._send_via_cli(message, destination, channel)
-        except Exception as e:
-            logger.error(f"Failed to send to Meshtastic: {e}")
-            with self._stats_lock:
-                self.stats['errors'] += 1
-            return False
+        return self._mesh_handler.send_text(message, destination, channel)
 
     def send_to_rns(self, message: str, destination_hash: bytes = None) -> bool:
         """Send a message to RNS network via LXMF"""
@@ -572,25 +569,6 @@ class RNSMeshtasticBridge:
             logger.error(f"Failed to send to RNS: {e}")
             with self._stats_lock:
                 self.stats['errors'] += 1
-            return False
-
-    def _queue_send_meshtastic(self, payload: Dict) -> bool:
-        """Send handler for persistent queue - Meshtastic destination."""
-        message = payload.get('message', '')
-        destination = payload.get('destination')
-        channel = payload.get('channel', 0)
-
-        if not self._connected_mesh:
-            return False
-
-        try:
-            if self._mesh_interface:
-                dest = destination if destination else "^all"
-                self._mesh_interface.sendText(message, destinationId=dest, channelIndex=channel)
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"Queue send to Meshtastic failed: {e}")
             return False
 
     def _queue_send_rns(self, payload: Dict) -> bool:
@@ -707,7 +685,7 @@ class RNSMeshtasticBridge:
 
         # Test Meshtastic
         try:
-            if self._test_meshtastic():
+            if self._mesh_handler and self._mesh_handler.test_connection():
                 results['meshtastic']['connected'] = True
         except Exception as e:
             results['meshtastic']['error'] = str(e)
@@ -726,53 +704,9 @@ class RNSMeshtasticBridge:
     # ========================================
 
     def _meshtastic_loop(self):
-        """Main loop for Meshtastic connection with auto-reconnect.
-
-        Uses ReconnectStrategy for exponential backoff with jitter.
-        Records events to BridgeHealthMonitor for metrics.
-        """
-        while self._running:
-            try:
-                if not self._connected_mesh:
-                    if not self._mesh_reconnect.should_retry():
-                        logger.warning("Meshtastic reconnection: max attempts reached, resetting")
-                        self._mesh_reconnect.reset()
-                        self._stop_event.wait(self._mesh_reconnect.config.max_delay)
-                        continue
-
-                    logger.info(f"Attempting Meshtastic connection "
-                               f"(attempt {self._mesh_reconnect.attempts + 1})...")
-                    self.health.record_connection_event("meshtastic", "retry")
-                    self._connect_meshtastic()
-
-                    if self._connected_mesh:
-                        self._mesh_reconnect.record_success()
-                        self.health.record_connection_event("meshtastic", "connected")
-                        logger.info("Meshtastic connection established")
-                    else:
-                        self._mesh_reconnect.record_failure()
-                        self._mesh_reconnect.wait(self._stop_event)
-                        continue
-
-                if self._connected_mesh:
-                    self._poll_meshtastic()
-
-                self._stop_event.wait(1)
-
-            except (BrokenPipeError, ConnectionResetError, OSError) as e:
-                category = self.health.record_error("meshtastic", e)
-                logger.warning(f"Meshtastic connection error ({category}): {e}")
-                self._handle_connection_lost()
-                self.health.record_connection_event("meshtastic", "disconnected", str(e))
-                self._mesh_reconnect.record_failure()
-                self._mesh_reconnect.wait(self._stop_event)
-            except Exception as e:
-                category = self.health.record_error("meshtastic", e)
-                logger.error(f"Meshtastic loop error ({category}): {e}")
-                self._connected_mesh = False
-                self.health.record_connection_event("meshtastic", "error", str(e))
-                self._mesh_reconnect.record_failure()
-                self._mesh_reconnect.wait(self._stop_event)
+        """Main loop for Meshtastic connection - delegates to handler."""
+        if self._mesh_handler:
+            self._mesh_handler.run_loop()
 
     def _rns_loop(self):
         """Main loop for RNS connection with auto-reconnect.
@@ -852,67 +786,6 @@ class RNSMeshtasticBridge:
             except Exception as e:
                 logger.error(f"Bridge loop error: {e}")
                 self._stop_event.wait(1)
-
-    def _connect_meshtastic(self):
-        """Connect to Meshtastic via TCP using singleton connection manager"""
-        try:
-            from pubsub import pub
-            from utils.meshtastic_connection import get_connection_manager
-
-            host = self.config.meshtastic.host
-            port = self.config.meshtastic.port
-
-            logger.info(f"Connecting to Meshtastic at {host}:{port}")
-
-            # Use singleton connection manager to prevent connection conflicts
-            # meshtasticd only allows ONE TCP client - this ensures we share
-            self._conn_manager = get_connection_manager(host, port)
-
-            # Acquire persistent connection (stays open for message receiving)
-            if not self._conn_manager.acquire_persistent(owner="gateway_bridge"):
-                logger.error("Could not acquire persistent Meshtastic connection")
-                self._connected_mesh = False
-                return
-
-            # Get the interface for operations
-            self._mesh_interface = self._conn_manager.get_interface()
-
-            if self._mesh_interface is None:
-                logger.error("Failed to get Meshtastic interface from connection manager")
-                self._connected_mesh = False
-                return
-
-            # Subscribe to messages (store reference for proper unsubscribe)
-            def on_receive(packet, interface):
-                self._on_meshtastic_receive(packet)
-
-            self._pubsub_handler = on_receive
-            pub.subscribe(self._pubsub_handler, "meshtastic.receive")
-
-            # Get initial node list
-            self._update_meshtastic_nodes()
-
-            self._connected_mesh = True
-            logger.info("Connected to Meshtastic via connection manager")
-            self._notify_status("meshtastic_connected")
-
-        except ImportError as e:
-            logger.warning(f"Meshtastic/connection manager not available: {e}, using CLI fallback")
-            self._connected_mesh = self._test_meshtastic_cli()
-        except Exception as e:
-            logger.error(f"Failed to connect to Meshtastic: {e}")
-            self._connected_mesh = False
-
-    def _disconnect_meshtastic(self):
-        """Disconnect from Meshtastic via connection manager"""
-        # Release persistent connection through the manager
-        if hasattr(self, '_conn_manager') and self._conn_manager:
-            try:
-                self._conn_manager.release_persistent()
-            except Exception as e:
-                logger.debug(f"Error releasing persistent connection: {e}")
-        self._mesh_interface = None
-        self._connected_mesh = False
 
     def _init_rns_main_thread(self):
         """Pre-initialize RNS from the main thread.
@@ -1119,156 +992,6 @@ class RNSMeshtasticBridge:
         self._identity = None
         self._reticulum = None
         self._connected_rns = False
-
-    def _on_meshtastic_receive(self, packet: dict):
-        """Handle incoming Meshtastic message"""
-        try:
-            decoded = packet.get('decoded', {})
-            portnum = decoded.get('portnum')
-
-            # Update node info
-            from_id = packet.get('fromId')
-            if from_id:
-                node = UnifiedNode.from_meshtastic({
-                    'num': int(from_id[1:], 16) if from_id.startswith('!') else 0,
-                    'snr': packet.get('rxSnr'),
-                    'hopsAway': packet.get('hopStart', 0) - packet.get('hopLimit', 0),
-                })
-                self.node_tracker.add_node(node)
-
-            # Extract relay node (Meshtastic 2.6+)
-            # relayNode is the last byte of the node ID that relayed this packet
-            relay_node = packet.get('relayNode')
-            if relay_node and relay_node > 0:
-                self._discover_relay_node(relay_node, from_id, packet)
-
-            # Handle text messages
-            if portnum == 'TEXT_MESSAGE_APP':
-                payload = decoded.get('payload', b'')
-                if isinstance(payload, bytes):
-                    text = payload.decode('utf-8', errors='ignore')
-                else:
-                    text = str(payload)
-
-                msg = BridgedMessage(
-                    source_network="meshtastic",
-                    source_id=from_id,
-                    destination_id=packet.get('toId'),
-                    content=text,
-                    is_broadcast=packet.get('toId') == '!ffffffff',
-                    metadata={
-                        'channel': packet.get('channel', 0),
-                        'snr': packet.get('rxSnr'),
-                    }
-                )
-
-                # Store incoming message for UI/history
-                try:
-                    from commands import messaging
-                    to_id = packet.get('toId')
-                    # Convert broadcast marker to None
-                    if to_id == '!ffffffff' or to_id == '^all':
-                        to_id = None
-                    messaging.store_incoming(
-                        from_id=from_id,
-                        content=text,
-                        network="meshtastic",
-                        to_id=to_id,
-                        channel=packet.get('channel', 0),
-                        snr=packet.get('rxSnr'),
-                        rssi=packet.get('rxRssi'),
-                    )
-                except Exception as e:
-                    logger.debug(f"Could not store incoming message: {e}")
-
-                # Broadcast to WebSocket for real-time web UI updates
-                try:
-                    from utils.websocket_server import broadcast_message
-                    broadcast_message({
-                        'from_id': from_id,
-                        'to_id': to_id,
-                        'content': text,
-                        'channel': packet.get('channel', 0),
-                        'snr': packet.get('rxSnr'),
-                        'rssi': packet.get('rxRssi'),
-                        'timestamp': datetime.now().isoformat(),
-                        'is_broadcast': to_id is None,
-                    })
-                except ImportError:
-                    pass  # WebSocket server not available
-                except Exception as e:
-                    logger.debug(f"Could not broadcast to WebSocket: {e}")
-
-                # Queue for bridging if enabled (non-blocking to prevent deadlock)
-                if self._should_bridge(msg):
-                    try:
-                        self._mesh_to_rns_queue.put_nowait(msg)
-                    except Full:
-                        logger.warning("Mesh→RNS queue full, dropping message")
-                        with self._stats_lock:
-                            self.stats['errors'] += 1
-
-                # Notify callbacks
-                self._notify_message(msg)
-
-        except Exception as e:
-            logger.error(f"Error processing Meshtastic message: {e}")
-
-    def _discover_relay_node(self, relay_byte: int, from_id: str, packet: dict):
-        """
-        Discover relay node from Meshtastic 2.6+ relayNode field.
-
-        The relayNode field only contains the last byte of the relay node's ID.
-        We try to match it against known nodes or create a placeholder.
-        """
-        try:
-            if relay_byte <= 0 or relay_byte > 255:
-                return
-
-            # Try to find existing node matching this last byte
-            for node in self.node_tracker.get_meshtastic_nodes():
-                if node.meshtastic_id:
-                    try:
-                        node_num = int(node.meshtastic_id[1:], 16)
-                        if (node_num & 0xFF) == relay_byte:
-                            # Found the relay node - update topology
-                            if self._network_topology and from_id:
-                                self._network_topology.add_edge(
-                                    source_id=node.id,
-                                    dest_id=from_id,
-                                    hops=1,  # Direct relay relationship
-                                    snr=packet.get('rxSnr'),
-                                    rssi=packet.get('rxRssi'),
-                                )
-                            logger.debug(f"Relay path: {node.meshtastic_id} -> {from_id}")
-                            return
-                    except (ValueError, TypeError):
-                        continue
-
-            # No match - create partial relay node for tracking
-            partial_id = f"!????{relay_byte:02x}"
-            node = UnifiedNode(
-                id=partial_id,
-                name=f"Relay-{relay_byte:02x}",
-                network="meshtastic",
-                meshtastic_id=partial_id,
-            )
-            self.node_tracker.add_node(node)
-
-            # Add topology edge from unknown relay to sender
-            if self._network_topology and from_id:
-                self._network_topology.add_edge(
-                    source_id=partial_id,
-                    dest_id=from_id,
-                    hops=1,
-                    snr=packet.get('rxSnr'),
-                    rssi=packet.get('rxRssi'),
-                )
-
-            logger.info(f"Discovered relay node via packet routing: {partial_id}")
-
-        except Exception as e:
-            logger.debug(f"Error discovering relay node: {e}")
 
     def _on_lxmf_receive(self, message):
         """Handle incoming LXMF message"""
@@ -1663,139 +1386,12 @@ class RNSMeshtasticBridge:
             self._requeue_failed_message(msg, "meshtastic")
             self.health.record_message_failed("rns_to_mesh", requeued=True)
 
-    def _update_meshtastic_nodes(self):
-        """Update node tracker with Meshtastic nodes"""
-        if not self._mesh_interface:
-            return
-
-        try:
-            my_info = self._mesh_interface.getMyNodeInfo()
-            my_id = my_info.get('num', 0)
-
-            for node_id, node_data in self._mesh_interface.nodes.items():
-                is_local = node_data.get('num') == my_id
-                node = UnifiedNode.from_meshtastic(node_data, is_local=is_local)
-                self.node_tracker.add_node(node)
-
-        except Exception as e:
-            logger.error(f"Error updating Meshtastic nodes: {e}")
-
-    def _poll_meshtastic(self):
-        """Poll Meshtastic for health check and updates"""
-        # Check connection health - detect dropped connections early
-        if self._mesh_interface:
-            try:
-                # Check if interface is still connected
-                if hasattr(self._mesh_interface, 'isConnected'):
-                    if not self._mesh_interface.isConnected:
-                        logger.warning("Meshtastic connection lost (isConnected=False)")
-                        self._handle_connection_lost()
-                        return
-                # Also check if we can access basic properties (catches broken pipes)
-                if hasattr(self._mesh_interface, 'nodes'):
-                    _ = len(self._mesh_interface.nodes)  # Triggers exception if dead
-            except (BrokenPipeError, ConnectionResetError, OSError) as e:
-                logger.warning(f"Meshtastic connection lost: {e}")
-                self._handle_connection_lost()
-                return
-            except Exception as e:
-                logger.debug(f"Meshtastic health check error: {e}")
-
-    def _handle_connection_lost(self):
-        """Handle lost meshtastic connection - cleanup and prepare for reconnect"""
-        logger.info("Handling lost Meshtastic connection...")
-        self._connected_mesh = False
-
-        # Release the persistent connection properly
-        if hasattr(self, '_conn_manager') and self._conn_manager:
-            try:
-                self._conn_manager.release_persistent()
-            except Exception as e:
-                logger.debug(f"Error releasing connection after loss: {e}")
-
-        # Unsubscribe from pub/sub to avoid stale callbacks
-        try:
-            from pubsub import pub
-            if self._pubsub_handler:
-                pub.unsubscribe(self._pubsub_handler, "meshtastic.receive")
-                self._pubsub_handler = None
-        except Exception:
-            pass
-
-        self._mesh_interface = None
-        self._notify_status("meshtastic_disconnected")
-
-        # Wait for cooldown before reconnect attempt
-        try:
-            from utils.meshtastic_connection import wait_for_cooldown
-            wait_for_cooldown()
-        except ImportError:
-            self._stop_event.wait(2)  # Interruptible fallback cooldown
-
-    def _test_meshtastic(self) -> bool:
-        """Test Meshtastic connection"""
-        sock = None
-        try:
-            import socket
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(5)
-            result = sock.connect_ex((
-                self.config.meshtastic.host,
-                self.config.meshtastic.port
-            ))
-            return result == 0
-        except (OSError, socket.error, socket.timeout) as e:
-            logger.debug(f"Meshtastic connection test failed: {e}")
-            return False
-        finally:
-            if sock:
-                try:
-                    sock.close()
-                except Exception as e:
-                    logger.debug(f"Socket close during cleanup: {e}")
-
-    def _test_meshtastic_cli(self) -> bool:
-        """Test Meshtastic CLI availability"""
-        try:
-            from utils.cli import find_meshtastic_cli
-            cli_path = find_meshtastic_cli()
-            if not cli_path:
-                logger.debug("Meshtastic CLI not found")
-                return False
-
-            result = subprocess.run(
-                [cli_path, '--info'],
-                capture_output=True,
-                timeout=10
-            )
-            return result.returncode == 0
-        except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError) as e:
-            logger.debug(f"Meshtastic CLI test failed: {e}")
-            return False
-
     def _test_rns(self) -> bool:
         """Test RNS availability"""
         try:
             import RNS
             return True
         except ImportError:
-            return False
-
-    def _send_via_cli(self, message: str, destination: str = None, channel: int = 0) -> bool:
-        """Send via Meshtastic CLI as fallback"""
-        try:
-            from utils.cli import find_meshtastic_cli
-            cli_path = find_meshtastic_cli() or 'meshtastic'
-            cmd = [cli_path, '--host', self.config.meshtastic.host, '--sendtext', message]
-            if destination:
-                cmd.extend(['--dest', destination])
-            if channel > 0:
-                cmd.extend(['--ch-index', str(channel)])
-
-            result = subprocess.run(cmd, capture_output=True, timeout=30)
-            return result.returncode == 0
-        except Exception as e:
-            logger.error(f"CLI send failed: {e}")
             return False
 
     def _notify_message(self, msg: BridgedMessage):
