@@ -44,8 +44,8 @@ class TestMainMenuMethods:
         required_methods = [
             '_dashboard_menu',
             '_mesh_networks_menu',
-            '_rf_menu',
-            '_maps_menu',
+            '_rf_sdr_menu',
+            '_maps_viz_menu',
             '_config_menu',
             '_system_menu',
         ]
