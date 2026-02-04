@@ -59,6 +59,16 @@ VALID_LON_RANGE = (-180.0, 180.0)
 VALID_SNR_RANGE = (-50.0, 50.0)  # dB
 VALID_RSSI_RANGE = (-200, 0)  # dBm
 
+# Mesh congestion thresholds (from Meshtastic ROUTER_LATE documentation)
+# See: https://meshtastic.org/blog/demystifying-router-late/
+CHUTIL_WARNING_THRESHOLD = 25.0   # Channel utilization warning at 25%
+CHUTIL_CRITICAL_THRESHOLD = 40.0  # Channel utilization critical at 40%
+AIRUTILTX_WARNING_THRESHOLD = 7.0  # TX airtime warning at 7-8%
+AIRUTILTX_CRITICAL_THRESHOLD = 10.0  # TX airtime critical at 10%
+
+# Mesh size tracking
+MESH_SIZE_WINDOW_HOURS = 24  # Track unique nodes seen in last 24 hours
+
 
 @dataclass
 class MQTTNode:
@@ -85,6 +95,18 @@ class MQTTNode:
     relay_node: Optional[int] = None  # Last byte of relay node ID
     next_hop: Optional[int] = None    # Last byte of expected next-hop node
     discovered_via_relay: bool = False  # Node discovered by seeing it relay packets
+    # Environment metrics (BME280, BME680, BMP280)
+    temperature: Optional[float] = None  # Celsius
+    humidity: Optional[float] = None     # 0-100%
+    pressure: Optional[float] = None     # hPa (barometric)
+    gas_resistance: Optional[float] = None  # Ohms (BME680 VOC)
+    # Air quality metrics (PMSA003I, SCD4X)
+    pm25_standard: Optional[int] = None   # PM2.5 standard µg/m³
+    pm25_environmental: Optional[int] = None  # PM2.5 environmental µg/m³
+    pm10_standard: Optional[int] = None   # PM10 standard µg/m³
+    pm10_environmental: Optional[int] = None  # PM10 environmental µg/m³
+    co2: Optional[int] = None             # CO2 ppm (SCD4X)
+    iaq: Optional[int] = None             # Indoor Air Quality index
 
     def is_online(self, threshold_minutes: int = 15) -> bool:
         """Check if node was seen recently."""
@@ -172,7 +194,17 @@ class MQTTNodelessSubscriber:
             "last_message_time": None,
             "reconnect_attempts": 0,
             "last_disconnect_reason": "",
+            # Mesh health tracking (Meshtastic 2.7+)
+            "nodes_chutil_warning": 0,    # Nodes with ChUtil > 25%
+            "nodes_chutil_critical": 0,   # Nodes with ChUtil > 40%
+            "nodes_airutiltx_warning": 0, # Nodes with AirUtilTX > 7%
+            "nodes_airutiltx_critical": 0, # Nodes with AirUtilTX > 10%
+            "nodes_with_env_metrics": 0,  # Nodes with environment sensors
+            "nodes_with_aq_metrics": 0,   # Nodes with air quality sensors
         }
+
+        # Mesh size tracking - unique node IDs seen with timestamps
+        self._mesh_size_history: Dict[str, datetime] = {}
 
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from file or return defaults."""
@@ -764,6 +796,52 @@ class MQTTNodelessSubscriber:
             if air_util is not None:
                 node.air_util_tx = air_util
 
+        # Environment metrics (BME280, BME680, BMP280, etc.)
+        env = payload.get("environment_metrics", {})
+        if isinstance(env, dict) and env:
+            temp = self._safe_float(env.get("temperature"), -50.0, 100.0)
+            if temp is not None:
+                node.temperature = temp
+
+            humidity = self._safe_float(env.get("relative_humidity"), 0.0, 100.0)
+            if humidity is not None:
+                node.humidity = humidity
+
+            pressure = self._safe_float(env.get("barometric_pressure"), 300.0, 1200.0)
+            if pressure is not None:
+                node.pressure = pressure
+
+            gas = self._safe_float(env.get("gas_resistance"), 0.0, 1000000.0)
+            if gas is not None:
+                node.gas_resistance = gas
+
+        # Air quality metrics (PMSA003I, SCD4X)
+        aq = payload.get("air_quality_metrics", {})
+        if isinstance(aq, dict) and aq:
+            pm25_std = self._safe_int(aq.get("pm25_standard"), 0, 1000)
+            if pm25_std is not None:
+                node.pm25_standard = pm25_std
+
+            pm25_env = self._safe_int(aq.get("pm25_environmental"), 0, 1000)
+            if pm25_env is not None:
+                node.pm25_environmental = pm25_env
+
+            pm10_std = self._safe_int(aq.get("pm10_standard"), 0, 1000)
+            if pm10_std is not None:
+                node.pm10_standard = pm10_std
+
+            pm10_env = self._safe_int(aq.get("pm10_environmental"), 0, 1000)
+            if pm10_env is not None:
+                node.pm10_environmental = pm10_env
+
+            co2 = self._safe_int(aq.get("co2"), 0, 10000)
+            if co2 is not None:
+                node.co2 = co2
+
+            iaq = self._safe_int(aq.get("iaq"), 0, 500)
+            if iaq is not None:
+                node.iaq = iaq
+
     def _handle_text_message(self, data: Dict) -> None:
         """Handle text message."""
         payload = data.get("payload", {})
@@ -865,6 +943,140 @@ class MQTTNodelessSubscriber:
             return [n for n in self._nodes.values()
                     if n.node_id.startswith("!????")]
 
+    def get_congested_nodes(self, warning_only: bool = False) -> List[MQTTNode]:
+        """Get nodes with high channel utilization or TX airtime.
+
+        Based on ROUTER_LATE thresholds from Meshtastic documentation:
+        - ChUtil > 25% = warning, > 40% = critical
+        - AirUtilTX > 7% = warning, > 10% = critical
+
+        Args:
+            warning_only: If True, only return nodes at warning level.
+                          If False, return both warning and critical.
+
+        Returns:
+            List of MQTTNode objects with congestion issues.
+        """
+        with self._nodes_lock:
+            congested = []
+            for node in self._nodes.values():
+                if node.channel_utilization is not None:
+                    if warning_only:
+                        if CHUTIL_WARNING_THRESHOLD <= node.channel_utilization < CHUTIL_CRITICAL_THRESHOLD:
+                            congested.append(node)
+                    elif node.channel_utilization >= CHUTIL_WARNING_THRESHOLD:
+                        congested.append(node)
+                        continue
+
+                if node.air_util_tx is not None:
+                    if warning_only:
+                        if AIRUTILTX_WARNING_THRESHOLD <= node.air_util_tx < AIRUTILTX_CRITICAL_THRESHOLD:
+                            if node not in congested:
+                                congested.append(node)
+                    elif node.air_util_tx >= AIRUTILTX_WARNING_THRESHOLD:
+                        if node not in congested:
+                            congested.append(node)
+
+            return congested
+
+    def get_nodes_with_environment_metrics(self) -> List[MQTTNode]:
+        """Get nodes that have environment sensor data (temp, humidity, pressure)."""
+        with self._nodes_lock:
+            return [n for n in self._nodes.values()
+                    if n.temperature is not None or n.humidity is not None or n.pressure is not None]
+
+    def get_nodes_with_air_quality(self) -> List[MQTTNode]:
+        """Get nodes that have air quality sensor data (PM2.5, CO2)."""
+        with self._nodes_lock:
+            return [n for n in self._nodes.values()
+                    if n.pm25_standard is not None or n.co2 is not None]
+
+    def get_mesh_health(self) -> Dict[str, Any]:
+        """Get mesh health summary based on congestion metrics.
+
+        Returns dict with:
+        - status: "healthy", "warning", or "critical"
+        - chutil_avg: Average channel utilization across online nodes
+        - airutiltx_avg: Average TX airtime across online nodes
+        - congested_nodes: Count of nodes with congestion issues
+        - recommendations: List of suggested actions
+        """
+        online = self.get_online_nodes()
+        if not online:
+            return {
+                "status": "unknown",
+                "chutil_avg": None,
+                "airutiltx_avg": None,
+                "congested_nodes": 0,
+                "recommendations": ["No online nodes to assess mesh health"]
+            }
+
+        # Calculate averages
+        chutil_values = [n.channel_utilization for n in online if n.channel_utilization is not None]
+        airutiltx_values = [n.air_util_tx for n in online if n.air_util_tx is not None]
+
+        chutil_avg = sum(chutil_values) / len(chutil_values) if chutil_values else None
+        airutiltx_avg = sum(airutiltx_values) / len(airutiltx_values) if airutiltx_values else None
+
+        congested = self.get_congested_nodes()
+        recommendations = []
+
+        # Determine status and recommendations
+        status = "healthy"
+
+        if chutil_avg is not None and chutil_avg >= CHUTIL_CRITICAL_THRESHOLD:
+            status = "critical"
+            recommendations.append(f"Channel utilization at {chutil_avg:.1f}% - mesh is congested")
+            recommendations.append("Consider reducing traffic or switching to slower modulation")
+        elif chutil_avg is not None and chutil_avg >= CHUTIL_WARNING_THRESHOLD:
+            status = "warning"
+            recommendations.append(f"Channel utilization at {chutil_avg:.1f}% - approaching congestion")
+
+        if airutiltx_avg is not None and airutiltx_avg >= AIRUTILTX_CRITICAL_THRESHOLD:
+            status = "critical"
+            recommendations.append(f"TX airtime at {airutiltx_avg:.1f}% - nodes transmitting too much")
+            recommendations.append("Review ROUTER_LATE nodes and consider CLIENT role instead")
+        elif airutiltx_avg is not None and airutiltx_avg >= AIRUTILTX_WARNING_THRESHOLD:
+            if status != "critical":
+                status = "warning"
+            recommendations.append(f"TX airtime at {airutiltx_avg:.1f}% - monitor closely")
+
+        if not recommendations:
+            recommendations.append("Mesh operating within normal parameters")
+
+        return {
+            "status": status,
+            "chutil_avg": round(chutil_avg, 1) if chutil_avg else None,
+            "airutiltx_avg": round(airutiltx_avg, 1) if airutiltx_avg else None,
+            "congested_nodes": len(congested),
+            "nodes_with_metrics": len(chutil_values),
+            "recommendations": recommendations
+        }
+
+    def get_mesh_size(self) -> Dict[str, int]:
+        """Get mesh size statistics.
+
+        Returns:
+            Dict with:
+            - total_nodes: Total unique nodes discovered
+            - nodes_24h: Nodes seen in last 24 hours
+            - nodes_online: Nodes seen in last 15 minutes
+        """
+        now = datetime.now()
+        cutoff_24h = now.timestamp() - (MESH_SIZE_WINDOW_HOURS * 3600)
+
+        with self._nodes_lock:
+            nodes_24h = sum(
+                1 for node in self._nodes.values()
+                if node.last_seen.timestamp() >= cutoff_24h
+            )
+
+            return {
+                "total_nodes": len(self._nodes),
+                "nodes_24h": nodes_24h,
+                "nodes_online": len(self.get_online_nodes()),
+            }
+
     def get_messages(self, limit: int = 100) -> List[MQTTMessage]:
         """Get recent messages."""
         with self._messages_lock:
@@ -872,7 +1084,10 @@ class MQTTNodelessSubscriber:
             return messages[-limit:]
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get subscriber statistics."""
+        """Get subscriber statistics including mesh health metrics."""
+        mesh_health = self.get_mesh_health()
+        mesh_size = self.get_mesh_size()
+
         return {
             **self._stats,
             "node_count": len(self._nodes),
@@ -881,6 +1096,16 @@ class MQTTNodelessSubscriber:
             "relay_discovered": len(self.get_relay_discovered_nodes()),
             "partial_relay_nodes": len(self.get_partial_relay_nodes()),
             "message_count": len(self._messages),
+            # Mesh health (Meshtastic 2.7+)
+            "mesh_health_status": mesh_health["status"],
+            "mesh_chutil_avg": mesh_health["chutil_avg"],
+            "mesh_airutiltx_avg": mesh_health["airutiltx_avg"],
+            "congested_nodes": mesh_health["congested_nodes"],
+            # Extended telemetry stats
+            "nodes_with_env_metrics": len(self.get_nodes_with_environment_metrics()),
+            "nodes_with_aq_metrics": len(self.get_nodes_with_air_quality()),
+            # Mesh size
+            "mesh_size_24h": mesh_size["nodes_24h"],
         }
 
     def register_node_callback(self, callback: Callable[[MQTTNode], None]) -> None:
@@ -928,6 +1153,21 @@ class MQTTNodelessSubscriber:
                         "discovered_via_relay": node.discovered_via_relay,
                         "relay_node": node.relay_node,
                         "next_hop": node.next_hop,
+                        # Congestion metrics (Meshtastic 2.7+)
+                        "channel_utilization": node.channel_utilization,
+                        "air_util_tx": node.air_util_tx,
+                        "is_congested": (
+                            (node.channel_utilization is not None and node.channel_utilization >= CHUTIL_WARNING_THRESHOLD) or
+                            (node.air_util_tx is not None and node.air_util_tx >= AIRUTILTX_WARNING_THRESHOLD)
+                        ),
+                        # Environment metrics
+                        "temperature": node.temperature,
+                        "humidity": node.humidity,
+                        "pressure": node.pressure,
+                        # Air quality metrics
+                        "pm25": node.pm25_standard,
+                        "co2": node.co2,
+                        "iaq": node.iaq,
                     }
                 }
                 features.append(feature)
