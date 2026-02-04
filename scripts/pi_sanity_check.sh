@@ -107,7 +107,7 @@ if python3 -m pytest --version 2>/dev/null; then
     # 8. Run RF tests (critical for HAM operations)
     echo ""
     echo "--- Running RF Tests ---"
-    if python3 -m pytest tests/test_rf.py -v --tb=short 2>&1; then
+    if python3 -m pytest tests/test_rf_utils.py -v --tb=short 2>&1; then
         pass "RF tests passed"
     else
         fail "RF tests failed"
