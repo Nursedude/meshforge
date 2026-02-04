@@ -96,6 +96,8 @@ class NodeInfo:
     # PKI fields (Meshtastic 2.5+)
     public_key: Optional[bytes] = None           # 32-byte Curve25519 public key
     public_key_hex: Optional[str] = None         # Hex string for display
+    # Favorites (BaseUI 2.7+)
+    is_favorite: bool = False                    # Marked as favorite in BaseUI
 
     def __post_init__(self):
         if self.position is None:

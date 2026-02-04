@@ -48,6 +48,14 @@ except ImportError:
     _HAS_WS_BRIDGE = False
     MQTTWebSocketBridge = None
 
+# Try to import TelemetryPoller for auto-start
+try:
+    from utils.telemetry_poller import get_telemetry_poller
+    _HAS_TELEMETRY_POLLER = True
+except ImportError:
+    _HAS_TELEMETRY_POLLER = False
+    get_telemetry_poller = None
+
 
 class MQTTMixin:
     """MQTT monitoring control for mesh networks."""
@@ -56,6 +64,92 @@ class MQTTMixin:
     _mqtt_subscriber: Optional[Any] = None
     _mqtt_thread: Optional[threading.Thread] = None
     _mqtt_ws_bridge: Optional[Any] = None  # MQTT→WebSocket bridge
+
+    def _maybe_auto_start_mqtt_and_telemetry(self):
+        """Auto-start MQTT subscriber and TelemetryPoller if configured.
+
+        Called at TUI startup. Follows the same pattern as _maybe_auto_start_map().
+        Silent operation - no dialogs, all errors suppressed to prevent TUI corruption.
+        """
+        if not _HAS_MQTT:
+            return
+
+        config = self._load_mqtt_config()
+
+        # Check if auto-start is enabled
+        if not config.get('auto_start', False):
+            return
+
+        # Check if already connected
+        if self._mqtt_subscriber and self._mqtt_subscriber.is_connected():
+            return
+
+        # Suppress output to prevent TUI corruption during startup
+        try:
+            import logging
+            from contextlib import redirect_stdout, redirect_stderr
+            from io import StringIO
+
+            root_logger = logging.getLogger()
+            old_level = root_logger.level
+            root_logger.setLevel(logging.CRITICAL + 1)
+
+            try:
+                with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                    self._auto_start_mqtt_quiet(config)
+            finally:
+                root_logger.setLevel(old_level)
+
+        except Exception:
+            pass  # Non-fatal, don't interrupt startup
+
+    def _auto_start_mqtt_quiet(self, config: Dict[str, Any]):
+        """Quietly start MQTT subscriber without any UI feedback.
+
+        Args:
+            config: MQTT configuration dictionary
+        """
+        broker = config.get('broker', 'mqtt.meshtastic.org')
+        port = config.get('port', 8883)
+        topic = config.get('topic', 'msh/US/2/e/LongFast/#')
+
+        # Parse root_topic and channel from full topic string
+        parts = topic.rstrip('#').rstrip('/').split('/')
+        if len(parts) >= 4:
+            channel = parts[-1] if parts[-1] else 'LongFast'
+            if '/json/' in topic:
+                root_topic = '/'.join(parts[:-1]).replace('/json', '/e')
+            else:
+                root_topic = '/'.join(parts[:-1])
+        else:
+            root_topic = 'msh/US/2/e'
+            channel = 'LongFast'
+
+        subscriber_config = {
+            "broker": broker,
+            "port": port,
+            "username": config.get('username') or "",
+            "password": config.get('password') or "",
+            "root_topic": root_topic,
+            "channel": channel,
+            "key": "AQ==",  # Default Meshtastic key
+            "use_tls": config.get('use_tls', port == 8883),
+            "auto_reconnect": True,
+            "reconnect_delay": 2 if broker == 'localhost' else 5,
+            "max_reconnect_delay": 30 if broker == 'localhost' else 60,
+        }
+
+        self._mqtt_subscriber = MQTTNodelessSubscriber(config=subscriber_config)
+        self._mqtt_subscriber.start()
+
+        # Also start TelemetryPoller if available and auto_start_telemetry is enabled
+        if _HAS_TELEMETRY_POLLER and config.get('auto_start_telemetry', True):
+            # Get the singleton poller with auto_start=True
+            # Default to 30 minute poll interval
+            get_telemetry_poller(
+                poll_interval_minutes=config.get('telemetry_poll_minutes', 30),
+                auto_start=True
+            )
 
     def _mqtt_menu(self):
         """MQTT monitoring menu - nodeless mesh observation."""
@@ -363,6 +457,12 @@ class MQTTMixin:
             # Determine current mode
             mode = "Local" if broker == "localhost" else "Public"
 
+            # Auto-start settings
+            auto_start = config.get('auto_start', False)
+            auto_telem = config.get('auto_start_telemetry', True)
+            auto_status = "ON" if auto_start else "OFF"
+            telem_status = "ON" if auto_telem else "OFF"
+
             choices = [
                 ("local", f"Use Local Broker    Quick: localhost:1883"),
                 ("public", f"Use Public Broker   Quick: mqtt.meshtastic.org"),
@@ -370,6 +470,8 @@ class MQTTMixin:
                 ("port", f"Port                {port}"),
                 ("topic", f"Topic               {topic[:30]}..."),
                 ("auth", "Authentication      Username/password"),
+                ("autostart", f"Auto-Start          [{auto_status}] Start on TUI launch"),
+                ("autotelem", f"Auto Telemetry      [{telem_status}] Poll silent nodes"),
                 ("save", "Save & Exit"),
                 ("back", "Cancel"),
             ]
@@ -474,6 +576,33 @@ class MQTTMixin:
                 )
                 if password is not None:
                     config['password'] = password if password else None
+
+            elif choice == "autostart":
+                # Toggle auto-start on TUI launch
+                current = config.get('auto_start', False)
+                config['auto_start'] = not current
+                new_state = "ENABLED" if config['auto_start'] else "DISABLED"
+                self.dialog.msgbox(
+                    "Auto-Start",
+                    f"MQTT auto-start: {new_state}\n\n"
+                    "When enabled, MQTT subscriber will start\n"
+                    "automatically when the TUI launches.\n\n"
+                    "Save configuration to apply."
+                )
+
+            elif choice == "autotelem":
+                # Toggle TelemetryPoller auto-start
+                current = config.get('auto_start_telemetry', True)
+                config['auto_start_telemetry'] = not current
+                new_state = "ENABLED" if config['auto_start_telemetry'] else "DISABLED"
+                self.dialog.msgbox(
+                    "Auto Telemetry",
+                    f"TelemetryPoller auto-start: {new_state}\n\n"
+                    "When enabled (and MQTT auto-start is on),\n"
+                    "the TelemetryPoller will poll silent 2.7+\n"
+                    "nodes in the background.\n\n"
+                    "Save configuration to apply."
+                )
 
             elif choice == "save":
                 self._save_mqtt_config(config)

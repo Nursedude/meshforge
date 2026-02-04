@@ -382,6 +382,10 @@ class UnifiedNode:
     # PKI status (Meshtastic 2.5+)
     pki_status: PKIStatus = field(default_factory=PKIStatus)
 
+    # Favorites (BaseUI 2.7+)
+    is_favorite: bool = False  # Marked as favorite in BaseUI
+    favorite_updated: Optional[datetime] = None  # When favorite status last changed
+
     def __post_init__(self):
         if self.first_seen is None:
             self.first_seen = datetime.now()

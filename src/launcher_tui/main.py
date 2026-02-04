@@ -275,6 +275,9 @@ class MeshForgeLauncher(
         # Auto-start map server if configured
         self._maybe_auto_start_map()
 
+        # Auto-start MQTT subscriber and TelemetryPoller if configured
+        self._maybe_auto_start_mqtt_and_telemetry()
+
         self._run_main_menu()
 
     def _run_startup_checks(self) -> bool:

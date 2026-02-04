@@ -111,6 +111,8 @@ class MQTTNode:
     heart_bpm: Optional[int] = None       # Heart rate (beats per minute)
     spo2: Optional[int] = None            # Blood oxygen saturation %
     body_temperature: Optional[float] = None  # Body temperature (Celsius)
+    # Favorites (BaseUI 2.7+)
+    is_favorite: bool = False             # Marked as favorite in BaseUI
 
     def is_online(self, threshold_minutes: int = 15) -> bool:
         """Check if node was seen recently."""
