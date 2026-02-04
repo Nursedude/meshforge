@@ -1,8 +1,8 @@
 # MeshForge - Development Session Notes
 
-## Current Version: v4.2.0
+## Current Version: v0.5.0-beta
 ## Session Date: 2026-02-04
-## Branch: `claude/extract-meshtastic-handler-GHHrq`
+## Branch: `claude/refactor-network-tools-EY2eA`
 
 ---
 
@@ -23,35 +23,54 @@ python3 src/standalone.py               # Zero-dependency RF tools
 
 ## Latest Session Summary (2026-02-04)
 
-### Major Accomplishments - Meshtastic Handler Extraction
+### Major Accomplishments - Test Infrastructure for Pi Deployment
 
-1. **Extracted MeshtasticHandler** (`src/gateway/meshtastic_handler.py`) - NEW!
+1. **TUI Smoke Tests** (`tests/test_tui_smoke.py`) - NEW!
+   - Tests all TUI imports work correctly
+   - Verifies main menu methods exist
+   - Checks all mixins contribute their methods
+   - Validates critical user workflow paths are accessible
+   - Catches wiring errors and missing methods early
+
+2. **Service Menu Mixin Tests** (`tests/test_service_menu_mixin.py`) - NEW!
+   - Tests bridge detection (running/stopped)
+   - Tests rnsd direct control (for systems without systemd unit)
+   - Tests systemd unit detection
+   - Tests MQTT setup wizard flow
+   - Tests SPI config fixing
+
+3. **Pi Sanity Check Script** (`scripts/pi_sanity_check.sh`) - NEW!
+   - Quick diagnostic script for Pi deployments
+   - Checks Python environment
+   - Verifies TUI imports
+   - Runs RF tests (critical for HAM operations)
+   - Checks service status
+   - Run after updates: `sudo ./scripts/pi_sanity_check.sh`
+
+### Test Coverage Assessment
+- **Current state:** 91 test files, ~40K lines of tests
+- **Backend coverage:** Strong (RF, services, gateway, diagnostics)
+- **TUI coverage gap:** 16 of 31 mixins had no direct tests (now partially addressed)
+- **Priority areas identified:** RNS menu, MQTT mixin, channel config
+
+### Files Added
+- `tests/test_tui_smoke.py` - TUI accessibility tests
+- `tests/test_service_menu_mixin.py` - Service workflow tests
+- `scripts/pi_sanity_check.sh` - Pi deployment diagnostic
+
+### Branch
+- `claude/refactor-network-tools-EY2eA`
+
+---
+
+## Previous Session Summary (2026-02-04)
+
+### Meshtastic Handler Extraction
+
+1. **Extracted MeshtasticHandler** (`src/gateway/meshtastic_handler.py`)
    - Created new `meshtastic_handler.py` (595 lines)
    - Reduced `rns_bridge.py` from 1,991 to 1,587 lines (~20% reduction)
-   - Both files now under 1,500 line threshold per Issue #6 guidelines
-   - Uses dependency injection for shared state (config, node_tracker, health, etc.)
-   - Extracted methods: connect, disconnect, send_text, queue_send, run_loop,
-     _on_receive, _handle_text_message, _discover_relay_node, _poll,
-     _handle_connection_lost, _update_nodes, _test_cli, _send_via_cli
-
-### Files Changed
-- `src/gateway/meshtastic_handler.py` - NEW: Extracted handler class
-- `src/gateway/rns_bridge.py` - Refactored to use MeshtasticHandler
-
-### Dependency Injection Pattern
-```python
-self._mesh_handler = MeshtasticHandler(
-    config=self.config,
-    node_tracker=self.node_tracker,
-    health=self.health,
-    stop_event=self._stop_event,
-    stats=self.stats,
-    stats_lock=self._stats_lock,
-    message_queue=self._mesh_to_rns_queue,
-    message_callback=self._notify_message,
-    status_callback=lambda status: self._notify_status(status),
-)
-```
+   - Uses dependency injection for shared state
 
 ---
 
