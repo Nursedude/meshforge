@@ -14,9 +14,11 @@ import logging
 import os
 from datetime import datetime
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Dict, List, Optional, Callable, Any, TYPE_CHECKING
 from pathlib import Path
 import json
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,67 @@ class Position:
             "altitude": self.altitude,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None
         }
+
+
+class PKIKeyState(Enum):
+    """
+    PKI key verification state for Meshtastic 2.5+ nodes.
+
+    Meshtastic uses TOFU (Trust On First Use) model with Curve25519 keys.
+    """
+    UNKNOWN = "unknown"           # No key seen yet
+    TRUSTED = "trusted"           # TOFU - first key accepted
+    CHANGED = "changed"           # Key changed (warning - potential MITM!)
+    VERIFIED = "verified"         # Manually verified out-of-band
+    LEGACY = "legacy"             # Pre-2.5 node, no PKI support
+
+
+@dataclass
+class PKIStatus:
+    """
+    PKI encryption status for a Meshtastic node.
+
+    Tracks public key state for direct message encryption.
+    See: https://meshtastic.org/docs/overview/encryption/
+    """
+    state: PKIKeyState = PKIKeyState.UNKNOWN
+    public_key: Optional[bytes] = None       # 32-byte Curve25519 public key
+    public_key_hex: Optional[str] = None     # Hex string for display
+    first_seen: Optional[datetime] = None    # When key was first seen
+    last_changed: Optional[datetime] = None  # When key last changed (if CHANGED)
+    is_admin_trusted: bool = False           # Is in admin_key list
+
+    def key_fingerprint(self) -> str:
+        """
+        6-character fingerprint for visual verification.
+
+        Allows out-of-band key verification (e.g., compare over phone).
+        """
+        if not self.public_key:
+            return "------"
+        h = hashlib.sha256(self.public_key).hexdigest()
+        return h[:6].upper()
+
+    def to_dict(self) -> dict:
+        return {
+            "state": self.state.value,
+            "public_key_hex": self.public_key_hex,
+            "fingerprint": self.key_fingerprint(),
+            "first_seen": self.first_seen.isoformat() if self.first_seen else None,
+            "last_changed": self.last_changed.isoformat() if self.last_changed else None,
+            "is_admin_trusted": self.is_admin_trusted
+        }
+
+    @classmethod
+    def from_public_key(cls, public_key: bytes, is_admin: bool = False) -> "PKIStatus":
+        """Create PKIStatus from a public key (TOFU)."""
+        return cls(
+            state=PKIKeyState.TRUSTED,
+            public_key=public_key,
+            public_key_hex=public_key.hex() if public_key else None,
+            first_seen=datetime.now(),
+            is_admin_trusted=is_admin
+        )
 
 
 @dataclass
@@ -316,6 +379,9 @@ class UnifiedNode:
     service_aspect: Optional[str] = None  # Raw aspect filter (lxmf.delivery, nomadnetwork.node, etc.)
     service_capabilities: List[str] = field(default_factory=list)  # Service capabilities
 
+    # PKI status (Meshtastic 2.5+)
+    pki_status: PKIStatus = field(default_factory=PKIStatus)
+
     def __post_init__(self):
         if self.first_seen is None:
             self.first_seen = datetime.now()
@@ -396,6 +462,61 @@ class UnifiedNode:
             # Trim to max size
             if len(self.rssi_history) > self.MAX_SIGNAL_SAMPLES:
                 self.rssi_history = self.rssi_history[-self.MAX_SIGNAL_SAMPLES:]
+
+    def update_pki_status(self, public_key: bytes, is_admin: bool = False) -> bool:
+        """
+        Update PKI status with a new public key.
+
+        Implements TOFU (Trust On First Use) model:
+        - First key seen: Trusted automatically
+        - Same key seen again: No change
+        - Different key seen: Mark as CHANGED (warning!)
+
+        Args:
+            public_key: 32-byte Curve25519 public key
+            is_admin: Whether this key is in admin_key list
+
+        Returns:
+            True if key was new or changed, False if unchanged
+        """
+        if not public_key or len(public_key) != 32:
+            return False
+
+        now = datetime.now()
+
+        if self.pki_status.state == PKIKeyState.UNKNOWN:
+            # First key - TOFU
+            self.pki_status = PKIStatus(
+                state=PKIKeyState.TRUSTED,
+                public_key=public_key,
+                public_key_hex=public_key.hex(),
+                first_seen=now,
+                is_admin_trusted=is_admin
+            )
+            logger.info(f"PKI: First key for {self.id}, fingerprint: {self.pki_status.key_fingerprint()}")
+            return True
+
+        elif self.pki_status.public_key != public_key:
+            # Key changed - WARNING!
+            old_fingerprint = self.pki_status.key_fingerprint()
+            self.pki_status.state = PKIKeyState.CHANGED
+            self.pki_status.last_changed = now
+            # Note: Keep old key until manually verified
+            new_fp = hashlib.sha256(public_key).hexdigest()[:6].upper()
+            logger.warning(
+                f"PKI KEY CHANGED for {self.id}! "
+                f"Old: {old_fingerprint}, New: {new_fp} - Potential MITM!"
+            )
+            return True
+
+        # Key unchanged
+        return False
+
+    def verify_pki_key(self):
+        """Manually mark the current key as verified (out-of-band verification)."""
+        if self.pki_status.state in (PKIKeyState.TRUSTED, PKIKeyState.CHANGED):
+            self.pki_status.state = PKIKeyState.VERIFIED
+            logger.info(f"PKI: Key verified for {self.id}")
 
     @property
     def snr_trend(self) -> str:
@@ -542,6 +663,8 @@ class UnifiedNode:
             "service_type": self.service_type,
             "service_aspect": self.service_aspect,
             "service_capabilities": self.service_capabilities if self.service_capabilities else None,
+            # PKI status (Meshtastic 2.5+)
+            "pki_status": self.pki_status.to_dict() if self.pki_status.state != PKIKeyState.UNKNOWN else None,
             # Granular state
             "state": self.state.name if self.state else None,
             "state_display": self.state_name,

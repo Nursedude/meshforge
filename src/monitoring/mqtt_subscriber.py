@@ -107,6 +107,10 @@ class MQTTNode:
     pm10_environmental: Optional[int] = None  # PM10 environmental µg/m³
     co2: Optional[int] = None             # CO2 ppm (SCD4X)
     iaq: Optional[int] = None             # Indoor Air Quality index
+    # Health metrics (MAX30102, pulse oximeters) - Meshtastic 2.7+
+    heart_bpm: Optional[int] = None       # Heart rate (beats per minute)
+    spo2: Optional[int] = None            # Blood oxygen saturation %
+    body_temperature: Optional[float] = None  # Body temperature (Celsius)
 
     def is_online(self, threshold_minutes: int = 15) -> bool:
         """Check if node was seen recently."""
@@ -201,6 +205,7 @@ class MQTTNodelessSubscriber:
             "nodes_airutiltx_critical": 0, # Nodes with AirUtilTX > 10%
             "nodes_with_env_metrics": 0,  # Nodes with environment sensors
             "nodes_with_aq_metrics": 0,   # Nodes with air quality sensors
+            "nodes_with_health_metrics": 0,  # Nodes with health sensors (HR, SpO2)
         }
 
         # Mesh size tracking - unique node IDs seen with timestamps
@@ -841,6 +846,31 @@ class MQTTNodelessSubscriber:
             iaq = self._safe_int(aq.get("iaq"), 0, 500)
             if iaq is not None:
                 node.iaq = iaq
+
+        # Health metrics (MAX30102, pulse oximeters) - Meshtastic 2.7+
+        # Protobuf: health_metrics { heart_bpm, spO2, temperature }
+        health = payload.get("health_metrics", {})
+        if isinstance(health, dict) and health:
+            heart_bpm = self._safe_int(health.get("heart_bpm"), 30, 250)
+            if heart_bpm is not None:
+                node.heart_bpm = heart_bpm
+
+            spo2 = self._safe_int(health.get("spO2"), 70, 100)
+            if spo2 is not None:
+                node.spo2 = spo2
+
+            # Body temperature (different from environment temperature)
+            body_temp = self._safe_float(health.get("temperature"), 30.0, 45.0)
+            if body_temp is not None:
+                node.body_temperature = body_temp
+
+            # Track nodes with health sensors
+            with self._stats_lock:
+                if "nodes_with_health_metrics" not in self._stats:
+                    self._stats["nodes_with_health_metrics"] = 0
+                # Count unique nodes with health data (simple count for now)
+                if heart_bpm is not None or spo2 is not None:
+                    self._stats["nodes_with_health_metrics"] += 1
 
     def _handle_text_message(self, data: Dict) -> None:
         """Handle text message."""
