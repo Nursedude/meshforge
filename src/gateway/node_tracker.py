@@ -737,6 +737,32 @@ class UnifiedNode:
         if next_hop and next_hop > 0:
             node.next_hop = next_hop
 
+        # PKI status (Meshtastic 2.5+)
+        # Extract public_key from user dict if available
+        public_key = user.get('publicKey')
+        if public_key:
+            # Handle different formats: bytes, base64 string
+            key_bytes = None
+            if isinstance(public_key, bytes) and len(public_key) == 32:
+                key_bytes = public_key
+            elif isinstance(public_key, str):
+                try:
+                    import base64
+                    decoded = base64.b64decode(public_key)
+                    if len(decoded) == 32:
+                        key_bytes = decoded
+                except Exception:
+                    pass
+
+            if key_bytes:
+                # Check if this is an admin key
+                is_admin = False
+                admin_keys = mesh_node.get('adminKey', [])
+                if admin_keys and key_bytes.hex() in [k if isinstance(k, str) else k.hex() if isinstance(k, bytes) else '' for k in admin_keys]:
+                    is_admin = True
+
+                node.update_pki_status(key_bytes, is_admin=is_admin)
+
         # Update state machine with live data
         if node._state_machine is not None:
             node._state_machine.record_response(snr=node.snr)

@@ -76,6 +76,7 @@ class MQTTMixin:
                 ("config", f"Configure           Mode: {mode}"),
                 ("nodes", "View Nodes          Show discovered nodes"),
                 ("stats", "Statistics          Node counts, activity"),
+                ("telemetry", "Request Telemetry   Poll silent 2.7+ nodes"),
                 ("export", "Export Data         Save nodes to file"),
             ]
 
@@ -112,6 +113,8 @@ class MQTTMixin:
                 self._show_mqtt_nodes()
             elif choice == "stats":
                 self._show_mqtt_stats()
+            elif choice == "telemetry":
+                self._request_telemetry_menu()
             elif choice == "export":
                 self._export_mqtt_data()
             elif choice == "websocket":
@@ -508,30 +511,180 @@ class MQTTMixin:
 
         # Build node list for menu
         choices = []
-        for i, node in enumerate(nodes[:50]):  # Limit to 50 for display
+        node_list = nodes[:50]  # Limit to 50 for display
+        for i, node in enumerate(node_list):
             # Handle both MQTTNode objects and GeoJSON feature dicts
             if hasattr(node, 'long_name'):
                 # MQTTNode object
                 name = node.long_name or node.short_name or node.node_id
                 last_seen = node.get_age_string()
+                # Add health indicator if present
+                health_ind = ""
+                if hasattr(node, 'heart_bpm') and node.heart_bpm:
+                    health_ind = " [H]"
             elif isinstance(node, dict):
                 # GeoJSON feature from cache
                 props = node.get('properties', node)
                 name = props.get('name', props.get('id', f'Node {i}'))
                 last_seen = props.get('last_seen', 'cached')
+                health_ind = ""
             else:
                 name = f'Node {i}'
                 last_seen = 'unknown'
-            choices.append((str(i), f"{str(name)[:20]:<20} mqtt ({last_seen})"))
+                health_ind = ""
+            choices.append((str(i), f"{str(name)[:18]:<18}{health_ind} ({last_seen})"))
 
         if len(nodes) > 50:
             choices.append(("more", f"... and {len(nodes) - 50} more nodes"))
+        choices.append(("back", "Back"))
 
-        self.dialog.menu(
-            f"MQTT Nodes ({len(nodes)})",
-            "Nodes discovered via MQTT monitoring:",
-            choices
-        )
+        while True:
+            selected = self.dialog.menu(
+                f"MQTT Nodes ({len(nodes)})",
+                "Select a node for details, or Back to exit:",
+                choices
+            )
+
+            if selected is None or selected == "back" or selected == "more":
+                break
+
+            try:
+                idx = int(selected)
+                if 0 <= idx < len(node_list):
+                    self._show_mqtt_node_details(node_list[idx])
+            except (ValueError, IndexError):
+                pass
+
+    def _show_mqtt_node_details(self, node):
+        """Show detailed information for an MQTT-discovered node."""
+        lines = []
+
+        if hasattr(node, 'node_id'):
+            # MQTTNode object
+            lines.append(f"NODE: {node.node_id}")
+            lines.append("=" * 50)
+            lines.append("")
+
+            # Identity
+            lines.append("IDENTITY:")
+            lines.append("-" * 50)
+            if node.long_name:
+                lines.append(f"  Long Name:  {node.long_name}")
+            if node.short_name:
+                lines.append(f"  Short Name: {node.short_name}")
+            if node.hardware_model:
+                lines.append(f"  Hardware:   {node.hardware_model}")
+            if node.role:
+                lines.append(f"  Role:       {node.role}")
+            lines.append(f"  Via MQTT:   Yes")
+            lines.append(f"  Last Seen:  {node.get_age_string()}")
+            lines.append("")
+
+            # Health Metrics (Meshtastic 2.7+)
+            has_health = (
+                (hasattr(node, 'heart_bpm') and node.heart_bpm) or
+                (hasattr(node, 'spo2') and node.spo2) or
+                (hasattr(node, 'body_temperature') and node.body_temperature)
+            )
+            if has_health:
+                lines.append("HEALTH METRICS:")
+                lines.append("-" * 50)
+                if hasattr(node, 'heart_bpm') and node.heart_bpm:
+                    lines.append(f"  Heart Rate: {node.heart_bpm} BPM")
+                if hasattr(node, 'spo2') and node.spo2:
+                    lines.append(f"  SpO2:       {node.spo2}%")
+                if hasattr(node, 'body_temperature') and node.body_temperature:
+                    lines.append(f"  Body Temp:  {node.body_temperature:.1f}C")
+                lines.append("")
+
+            # Device Telemetry
+            has_device = node.battery_level or node.voltage
+            has_channel = node.channel_utilization or node.air_util_tx
+            if has_device or has_channel:
+                lines.append("DEVICE TELEMETRY:")
+                lines.append("-" * 50)
+                if node.battery_level:
+                    lines.append(f"  Battery:    {node.battery_level}%")
+                if node.voltage:
+                    lines.append(f"  Voltage:    {node.voltage:.2f}V")
+                if node.channel_utilization:
+                    chutil = node.channel_utilization
+                    warn = " [!]" if chutil > 25 else ""
+                    lines.append(f"  ChUtil:     {chutil:.1f}%{warn}")
+                if node.air_util_tx:
+                    airutil = node.air_util_tx
+                    warn = " [!]" if airutil > 7 else ""
+                    lines.append(f"  AirUtilTX:  {airutil:.1f}%{warn}")
+                lines.append("")
+
+            # Environment Metrics
+            has_env = node.temperature or node.humidity or node.pressure
+            if has_env:
+                lines.append("ENVIRONMENT:")
+                lines.append("-" * 50)
+                if node.temperature:
+                    lines.append(f"  Temperature: {node.temperature:.1f}C")
+                if node.humidity:
+                    lines.append(f"  Humidity:    {node.humidity:.0f}%")
+                if node.pressure:
+                    lines.append(f"  Pressure:    {node.pressure:.0f} hPa")
+                lines.append("")
+
+            # Air Quality
+            has_aq = node.pm25_standard or node.co2 or node.iaq
+            if has_aq:
+                lines.append("AIR QUALITY:")
+                lines.append("-" * 50)
+                if node.pm25_standard:
+                    lines.append(f"  PM2.5:      {node.pm25_standard} ug/m3")
+                if node.pm10_standard:
+                    lines.append(f"  PM10:       {node.pm10_standard} ug/m3")
+                if node.co2:
+                    lines.append(f"  CO2:        {node.co2} ppm")
+                if node.iaq:
+                    lines.append(f"  IAQ Index:  {node.iaq}")
+                lines.append("")
+
+            # Signal Quality
+            if node.snr or node.rssi:
+                lines.append("SIGNAL QUALITY:")
+                lines.append("-" * 50)
+                if node.snr:
+                    lines.append(f"  SNR:        {node.snr:.1f} dB")
+                if node.rssi:
+                    lines.append(f"  RSSI:       {node.rssi} dBm")
+                if node.hops_away is not None:
+                    lines.append(f"  Hops:       {node.hops_away}")
+                lines.append("")
+
+            # Position
+            if node.latitude and node.longitude:
+                lines.append("POSITION:")
+                lines.append("-" * 50)
+                lines.append(f"  Latitude:   {node.latitude:.6f}")
+                lines.append(f"  Longitude:  {node.longitude:.6f}")
+                if node.altitude:
+                    lines.append(f"  Altitude:   {node.altitude}m")
+                lines.append("")
+
+            # Relay info (Meshtastic 2.6+)
+            if hasattr(node, 'relay_node') and node.relay_node:
+                lines.append("RELAY INFO:")
+                lines.append("-" * 50)
+                lines.append(f"  Relay Node: !...{node.relay_node:02x}")
+                if hasattr(node, 'next_hop') and node.next_hop:
+                    lines.append(f"  Next Hop:   !...{node.next_hop:02x}")
+                lines.append("")
+
+        else:
+            # GeoJSON feature or other dict format
+            props = node.get('properties', node)
+            lines.append(f"NODE: {props.get('id', 'Unknown')}")
+            lines.append("=" * 50)
+            lines.append(f"Name: {props.get('name', 'Unknown')}")
+            lines.append(f"Last Seen: {props.get('last_seen', 'Unknown')}")
+
+        self.dialog.msgbox("Node Details", "\n".join(lines))
 
     def _show_mqtt_stats(self):
         """Show MQTT statistics."""
@@ -541,13 +694,58 @@ class MQTTMixin:
             # Use proper API to get stats
             stats = self._mqtt_subscriber.get_stats()
 
-            lines.append(f"Total nodes: {stats.get('node_count', 0)}")
-            lines.append(f"Online (15 min): {stats.get('online_count', 0)}")
-            lines.append(f"With position: {stats.get('with_position', 0)}")
+            lines.append("NODE COUNTS:")
+            lines.append(f"  Total nodes:      {stats.get('node_count', 0)}")
+            lines.append(f"  Online (15 min):  {stats.get('online_count', 0)}")
+            lines.append(f"  With position:    {stats.get('with_position', 0)}")
             lines.append("")
-            lines.append(f"Messages received: {stats.get('messages_received', 0)}")
-            lines.append(f"Messages rejected: {stats.get('messages_rejected', 0)}")
-            lines.append(f"Reconnect attempts: {stats.get('reconnect_attempts', 0)}")
+
+            # Sensor stats (Meshtastic 2.7+)
+            env_count = stats.get('nodes_with_env_metrics', 0)
+            aq_count = stats.get('nodes_with_aq_metrics', 0)
+            health_count = stats.get('nodes_with_health_metrics', 0)
+            if env_count or aq_count or health_count:
+                lines.append("SENSOR NODES:")
+                if env_count:
+                    lines.append(f"  Environment:      {env_count}")
+                if aq_count:
+                    lines.append(f"  Air Quality:      {aq_count}")
+                if health_count:
+                    lines.append(f"  Health Metrics:   {health_count}")
+                lines.append("")
+
+            # Mesh health warnings
+            chutil_warn = stats.get('nodes_chutil_warning', 0)
+            chutil_crit = stats.get('nodes_chutil_critical', 0)
+            airutil_warn = stats.get('nodes_airutiltx_warning', 0)
+            airutil_crit = stats.get('nodes_airutiltx_critical', 0)
+            if chutil_warn or chutil_crit or airutil_warn or airutil_crit:
+                lines.append("MESH HEALTH:")
+                if chutil_warn:
+                    lines.append(f"  ChUtil >25%:      {chutil_warn} nodes")
+                if chutil_crit:
+                    lines.append(f"  ChUtil >40%:      {chutil_crit} nodes [!]")
+                if airutil_warn:
+                    lines.append(f"  AirUtil >7%:      {airutil_warn} nodes")
+                if airutil_crit:
+                    lines.append(f"  AirUtil >10%:     {airutil_crit} nodes [!]")
+                lines.append("")
+
+            # Relay discovery stats (Meshtastic 2.6+)
+            relay_discovered = stats.get('nodes_discovered_via_relay', 0)
+            relay_merged = stats.get('relay_nodes_merged', 0)
+            if relay_discovered or relay_merged:
+                lines.append("RELAY DISCOVERY:")
+                if relay_discovered:
+                    lines.append(f"  Via relay:        {relay_discovered}")
+                if relay_merged:
+                    lines.append(f"  Merged nodes:     {relay_merged}")
+                lines.append("")
+
+            lines.append("TRAFFIC:")
+            lines.append(f"  Messages recv:    {stats.get('messages_received', 0)}")
+            lines.append(f"  Messages rejected:{stats.get('messages_rejected', 0)}")
+            lines.append(f"  Reconnect tries:  {stats.get('reconnect_attempts', 0)}")
 
             if stats.get('connect_time'):
                 lines.append("")
@@ -675,3 +873,293 @@ class MQTTMixin:
             logger.debug(f"Could not detect channel: {e}")
 
         return None
+
+    def _request_telemetry_menu(self):
+        """Request telemetry from silent Meshtastic 2.7+ nodes.
+
+        Meshtastic 2.7.13+ no longer sends telemetry by default to reduce
+        mesh congestion. This menu allows requesting telemetry from specific
+        nodes or identifying silent nodes that haven't reported recently.
+        """
+        try:
+            from utils.telemetry_poller import TelemetryPoller, get_telemetry_poller
+            _HAS_POLLER = True
+        except ImportError:
+            _HAS_POLLER = False
+
+        choices = [
+            ("single", "Request from Node    Enter node ID manually"),
+            ("silent", "Find Silent Nodes    Nodes with stale telemetry"),
+            ("batch", "Poll Silent Nodes    Request from all silent"),
+        ]
+
+        if _HAS_POLLER:
+            poller = get_telemetry_poller()
+            stats = poller.get_stats()
+            choices.append(("stats", f"Poller Statistics    {stats.get('total_requests', 0)} requests"))
+
+        choices.append(("back", "Back"))
+
+        while True:
+            choice = self.dialog.menu(
+                "Telemetry Requests",
+                "Request telemetry from silent Meshtastic 2.7+ nodes.\n\n"
+                "These nodes don't broadcast telemetry by default to reduce\n"
+                "mesh congestion. Use this to poll them explicitly.",
+                choices
+            )
+
+            if choice is None or choice == "back":
+                break
+
+            if choice == "single":
+                self._request_single_telemetry()
+            elif choice == "silent":
+                self._show_silent_nodes()
+            elif choice == "batch":
+                self._batch_telemetry_request()
+            elif choice == "stats":
+                self._show_poller_stats()
+
+    def _request_single_telemetry(self):
+        """Request telemetry from a single node by ID."""
+        node_id = self.dialog.inputbox(
+            "Request Telemetry",
+            "Enter the Meshtastic node ID (e.g., !ba4bf9d0):",
+            init="!"
+        )
+
+        if not node_id or node_id == "!":
+            return
+
+        # Validate format
+        if not node_id.startswith('!'):
+            node_id = f"!{node_id}"
+
+        self.dialog.infobox("Requesting", f"Sending telemetry request to {node_id}...")
+
+        try:
+            from utils.telemetry_poller import get_telemetry_poller
+            poller = get_telemetry_poller()
+            success = poller.poll_node_now(node_id)
+
+            if success:
+                self.dialog.msgbox(
+                    "Request Sent",
+                    f"Telemetry request sent to {node_id}.\n\n"
+                    "The node should respond within a few seconds.\n"
+                    "Check MQTT Nodes view for updated data."
+                )
+            else:
+                self.dialog.msgbox(
+                    "Request Failed",
+                    f"Failed to send telemetry request to {node_id}.\n\n"
+                    "Possible reasons:\n"
+                    "- meshtastic CLI not found\n"
+                    "- Rate limited (max 4 requests/minute)\n"
+                    "- meshtasticd not running"
+                )
+        except ImportError:
+            self._fallback_telemetry_request(node_id)
+
+    def _fallback_telemetry_request(self, node_id: str):
+        """Fallback telemetry request using direct CLI call."""
+        import shutil
+
+        cli = shutil.which('meshtastic')
+        if not cli:
+            self.dialog.msgbox(
+                "CLI Not Found",
+                "meshtastic CLI not found.\n\n"
+                "Install it with: pipx install meshtastic"
+            )
+            return
+
+        try:
+            result = subprocess.run(
+                [cli, '--host', 'localhost', '--request-telemetry', '--dest', node_id],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode == 0:
+                self.dialog.msgbox(
+                    "Request Sent",
+                    f"Telemetry request sent to {node_id}.\n\n"
+                    f"Output:\n{result.stdout[:500] if result.stdout else 'No output'}"
+                )
+            else:
+                self.dialog.msgbox(
+                    "Request Failed",
+                    f"Failed to request telemetry:\n{result.stderr[:500] if result.stderr else 'Unknown error'}"
+                )
+        except subprocess.TimeoutExpired:
+            self.dialog.msgbox("Timeout", "Telemetry request timed out after 30 seconds.")
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed to request telemetry:\n{e}")
+
+    def _show_silent_nodes(self):
+        """Show nodes with stale or missing telemetry."""
+        if not self._mqtt_subscriber:
+            self.dialog.msgbox(
+                "MQTT Not Running",
+                "Start the MQTT subscriber first to discover nodes."
+            )
+            return
+
+        nodes = self._mqtt_subscriber.get_nodes()
+        if not nodes:
+            self.dialog.msgbox("No Nodes", "No nodes discovered yet.")
+            return
+
+        try:
+            from utils.telemetry_poller import TelemetryPoller
+            poller = TelemetryPoller()
+
+            # Build node list for the poller
+            node_list = []
+            for node in nodes:
+                node_list.append({
+                    'id': node.node_id,
+                    'is_online': node.is_online(),
+                    'telemetry_timestamp': node.last_seen  # Use last_seen as proxy
+                })
+
+            silent = poller.identify_silent_nodes(node_list, telemetry_age_threshold=1800)  # 30 min
+
+            if not silent:
+                self.dialog.msgbox(
+                    "No Silent Nodes",
+                    "All online nodes have recent telemetry.\n\n"
+                    "Threshold: 30 minutes"
+                )
+                return
+
+            # Display silent nodes
+            lines = [
+                "SILENT NODES (>30 min without telemetry)",
+                "=" * 50,
+                "",
+            ]
+
+            for node_id in silent[:20]:
+                # Find the node to show more info
+                for node in nodes:
+                    if node.node_id == node_id:
+                        name = node.long_name or node.short_name or node_id
+                        age = node.get_age_string()
+                        lines.append(f"  {node_id}  {name[:15]:<15} ({age})")
+                        break
+                else:
+                    lines.append(f"  {node_id}")
+
+            if len(silent) > 20:
+                lines.append(f"\n  ... and {len(silent) - 20} more")
+
+            lines.append("")
+            lines.append("Use 'Poll Silent Nodes' to request telemetry from all.")
+
+            self.dialog.msgbox("Silent Nodes", "\n".join(lines))
+
+        except ImportError:
+            self.dialog.msgbox(
+                "Module Not Found",
+                "TelemetryPoller module not available."
+            )
+
+    def _batch_telemetry_request(self):
+        """Request telemetry from all silent nodes."""
+        if not self._mqtt_subscriber:
+            self.dialog.msgbox(
+                "MQTT Not Running",
+                "Start the MQTT subscriber first to discover nodes."
+            )
+            return
+
+        if not self.dialog.yesno(
+            "Confirm Batch Request",
+            "This will send telemetry requests to all silent nodes.\n\n"
+            "Requests are rate-limited to 4/minute to avoid\n"
+            "congesting the mesh.\n\n"
+            "Continue?"
+        ):
+            return
+
+        nodes = self._mqtt_subscriber.get_nodes()
+        if not nodes:
+            self.dialog.msgbox("No Nodes", "No nodes discovered yet.")
+            return
+
+        try:
+            from utils.telemetry_poller import get_telemetry_poller, TelemetryPoller
+
+            poller = get_telemetry_poller()
+
+            # Identify silent nodes
+            node_list = []
+            for node in nodes:
+                node_list.append({
+                    'id': node.node_id,
+                    'is_online': node.is_online(),
+                    'telemetry_timestamp': node.last_seen
+                })
+
+            silent = poller.identify_silent_nodes(node_list, telemetry_age_threshold=1800)
+
+            if not silent:
+                self.dialog.msgbox("No Silent Nodes", "No silent nodes to poll.")
+                return
+
+            # Poll nodes (rate limited)
+            self.dialog.infobox("Polling", f"Sending requests to {min(5, len(silent))} nodes...")
+
+            success_count = 0
+            for node_id in silent[:5]:  # Max 5 per batch
+                if poller.poll_node_now(node_id):
+                    success_count += 1
+                time.sleep(0.5)  # Brief pause between attempts
+
+            self.dialog.msgbox(
+                "Batch Complete",
+                f"Telemetry requests sent: {success_count}/{min(5, len(silent))}\n\n"
+                f"Total silent nodes: {len(silent)}\n"
+                f"Rate limit: 4 requests/minute\n\n"
+                "Run again to poll more nodes."
+            )
+
+        except ImportError:
+            self.dialog.msgbox(
+                "Module Not Found",
+                "TelemetryPoller module not available."
+            )
+
+    def _show_poller_stats(self):
+        """Show telemetry poller statistics."""
+        try:
+            from utils.telemetry_poller import get_telemetry_poller
+            poller = get_telemetry_poller()
+            stats = poller.get_stats()
+
+            lines = [
+                "TELEMETRY POLLER STATISTICS",
+                "=" * 40,
+                "",
+                f"Total requests:      {stats.get('total_requests', 0)}",
+                f"Successful:          {stats.get('successful_requests', 0)}",
+                f"Failed:              {stats.get('failed_requests', 0)}",
+                f"Rate limited:        {stats.get('rate_limited', 0)}",
+                "",
+                f"Nodes polled:        {stats.get('nodes_polled', 0)}",
+            ]
+
+            if stats.get('last_poll_cycle'):
+                lines.append(f"Last poll cycle:     {stats['last_poll_cycle']}")
+
+            self.dialog.msgbox("Poller Statistics", "\n".join(lines))
+
+        except ImportError:
+            self.dialog.msgbox(
+                "Module Not Found",
+                "TelemetryPoller module not available."
+            )

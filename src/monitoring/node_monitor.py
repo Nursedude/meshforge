@@ -93,6 +93,9 @@ class NodeInfo:
     hops_away: Optional[int] = None
     via_mqtt: bool = False
     is_licensed: bool = False
+    # PKI fields (Meshtastic 2.5+)
+    public_key: Optional[bytes] = None           # 32-byte Curve25519 public key
+    public_key_hex: Optional[str] = None         # Hex string for display
 
     def __post_init__(self):
         if self.position is None:
@@ -367,6 +370,24 @@ class NodeMonitor:
             if not isinstance(node_num, int):
                 node_num = 0
 
+            # Extract PKI public key (Meshtastic 2.5+)
+            # The meshtastic-python API provides public_key as bytes in user dict
+            public_key = user.get('publicKey')
+            public_key_hex = None
+            if public_key:
+                if isinstance(public_key, bytes) and len(public_key) == 32:
+                    public_key_hex = public_key.hex()
+                elif isinstance(public_key, str):
+                    # Handle base64 encoded key
+                    try:
+                        import base64
+                        decoded = base64.b64decode(public_key)
+                        if len(decoded) == 32:
+                            public_key = decoded
+                            public_key_hex = decoded.hex()
+                    except Exception:
+                        public_key = None
+
             node_info = NodeInfo(
                 node_id=f"!{node_num:08x}" if node_num else str(node_id),
                 node_num=node_num,
@@ -378,6 +399,8 @@ class NodeMonitor:
                 hops_away=data.get('hopsAway'),
                 via_mqtt=data.get('viaMqtt', False),
                 is_licensed=user.get('isLicensed', False),
+                public_key=public_key if isinstance(public_key, bytes) else None,
+                public_key_hex=public_key_hex,
             )
 
             # Position - handle both float (latitude) and integer (latitudeI) formats

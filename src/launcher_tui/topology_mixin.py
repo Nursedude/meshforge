@@ -177,11 +177,9 @@ class TopologyMixin:
             self.dialog.msgbox("Error", f"Failed to list nodes:\n{e}")
 
     def _show_node_details(self, node_id: str):
-        """Show details for a specific node."""
+        """Show details for a specific node including PKI and health metrics."""
         topology = self._get_topology()
-
-        if topology is None:
-            return
+        tracker = self._get_node_tracker()
 
         lines = [
             f"NODE: {node_id}",
@@ -189,34 +187,144 @@ class TopologyMixin:
             "",
         ]
 
-        # Get edges involving this node
-        try:
-            topo_dict = topology.to_dict()
-            edges = topo_dict.get("edges", [])
+        # Try to get UnifiedNode data from tracker for extended info
+        node_data = None
+        if tracker:
+            try:
+                node_data = tracker.get_node(node_id)
+            except Exception:
+                pass
 
-            node_edges = [e for e in edges
-                          if e.get("source_id") == node_id or e.get("dest_id") == node_id]
+        # Display basic node info
+        if node_data:
+            lines.append("IDENTITY:")
+            lines.append("-" * 50)
+            if node_data.name:
+                lines.append(f"  Name:     {node_data.name}")
+            if node_data.short_name:
+                lines.append(f"  Short:    {node_data.short_name}")
+            if node_data.meshtastic_id:
+                lines.append(f"  Mesh ID:  {node_data.meshtastic_id}")
+            if node_data.hardware_model:
+                lines.append(f"  Hardware: {node_data.hardware_model}")
+            if node_data.role:
+                lines.append(f"  Role:     {node_data.role}")
+            if node_data.firmware_version:
+                lines.append(f"  Firmware: {node_data.firmware_version}")
+            lines.append(f"  Status:   {node_data.state_name} {node_data.state_icon}")
+            lines.append("")
 
-            if node_edges:
-                lines.append("CONNECTIONS:")
+            # PKI Status (Meshtastic 2.5+)
+            if node_data.pki_status and hasattr(node_data.pki_status, 'state'):
+                from gateway.node_tracker import PKIKeyState
+                pki = node_data.pki_status
+                lines.append("PKI ENCRYPTION:")
                 lines.append("-" * 50)
+                state_icons = {
+                    PKIKeyState.UNKNOWN: "[?]",
+                    PKIKeyState.TRUSTED: "[OK]",
+                    PKIKeyState.CHANGED: "[!!]",
+                    PKIKeyState.VERIFIED: "[V]",
+                    PKIKeyState.LEGACY: "[-]",
+                }
+                icon = state_icons.get(pki.state, "[?]")
+                lines.append(f"  Status:      {pki.state.value.title()} {icon}")
+                if pki.public_key_hex:
+                    lines.append(f"  Fingerprint: {pki.key_fingerprint()}")
+                    # Show abbreviated key
+                    key_short = pki.public_key_hex[:16] + "..." if len(pki.public_key_hex) > 16 else pki.public_key_hex
+                    lines.append(f"  Public Key:  {key_short}")
+                if pki.first_seen:
+                    lines.append(f"  First Seen:  {pki.first_seen.strftime('%Y-%m-%d %H:%M')}")
+                if pki.state == PKIKeyState.CHANGED and pki.last_changed:
+                    lines.append(f"  KEY CHANGED: {pki.last_changed.strftime('%Y-%m-%d %H:%M')} !!!")
+                if pki.is_admin_trusted:
+                    lines.append(f"  Admin Key:   Yes")
+                lines.append("")
 
-                for edge in node_edges:
-                    src = edge.get("source_id", "")[:15]
-                    dst = edge.get("dest_id", "")[:15]
-                    hops = edge.get("hops", 0)
-                    active = "Active" if edge.get("is_active", False) else "Inactive"
-                    snr = edge.get("snr")
-                    snr_str = f"{snr:.1f}dB" if snr else "N/A"
-
-                    lines.append(f"  {src} → {dst}")
-                    lines.append(f"    Hops: {hops} | SNR: {snr_str} | {active}")
+            # Health Metrics (Meshtastic 2.7+)
+            if node_data.telemetry and node_data.telemetry.health:
+                health = node_data.telemetry.health
+                if health.heart_rate or health.spo2 or health.body_temperature:
+                    lines.append("HEALTH METRICS:")
+                    lines.append("-" * 50)
+                    if health.heart_rate:
+                        lines.append(f"  Heart Rate:  {health.heart_rate} BPM")
+                    if health.spo2:
+                        lines.append(f"  SpO2:        {health.spo2}%")
+                    if health.body_temperature:
+                        lines.append(f"  Body Temp:   {health.body_temperature:.1f}C")
+                    if health.timestamp:
+                        lines.append(f"  Updated:     {health.timestamp.strftime('%H:%M:%S')}")
                     lines.append("")
-            else:
-                lines.append("No direct connections found.")
 
-        except Exception as e:
-            lines.append(f"Error loading details: {e}")
+            # Device Telemetry
+            if node_data.telemetry:
+                telem = node_data.telemetry
+                has_device = telem.battery_level is not None or telem.voltage is not None
+                has_env = telem.temperature is not None or telem.humidity is not None
+                if has_device or has_env:
+                    lines.append("TELEMETRY:")
+                    lines.append("-" * 50)
+                    if telem.battery_level is not None:
+                        lines.append(f"  Battery:    {telem.battery_level}%")
+                    if telem.voltage is not None:
+                        lines.append(f"  Voltage:    {telem.voltage:.2f}V")
+                    if telem.channel_utilization is not None:
+                        lines.append(f"  ChUtil:     {telem.channel_utilization:.1f}%")
+                    if telem.air_util_tx is not None:
+                        lines.append(f"  AirUtilTX:  {telem.air_util_tx:.1f}%")
+                    if telem.temperature is not None:
+                        lines.append(f"  Temp:       {telem.temperature:.1f}C")
+                    if telem.humidity is not None:
+                        lines.append(f"  Humidity:   {telem.humidity:.0f}%")
+                    if telem.pressure is not None:
+                        lines.append(f"  Pressure:   {telem.pressure:.0f} hPa")
+                    lines.append("")
+
+            # Signal Quality
+            if node_data.snr is not None or node_data.rssi is not None:
+                lines.append("SIGNAL QUALITY:")
+                lines.append("-" * 50)
+                if node_data.snr is not None:
+                    trend = node_data.snr_trend if hasattr(node_data, 'snr_trend') else ""
+                    trend_icon = {"improving": "^", "degrading": "v", "stable": "-"}.get(trend, "")
+                    lines.append(f"  SNR:        {node_data.snr:.1f} dB {trend_icon}")
+                if node_data.rssi is not None:
+                    lines.append(f"  RSSI:       {node_data.rssi} dBm")
+                if node_data.hops is not None:
+                    lines.append(f"  Hops:       {node_data.hops}")
+                lines.append("")
+
+        # Get edges involving this node (topology connections)
+        if topology:
+            try:
+                topo_dict = topology.to_dict()
+                edges = topo_dict.get("edges", [])
+
+                node_edges = [e for e in edges
+                              if e.get("source_id") == node_id or e.get("dest_id") == node_id]
+
+                if node_edges:
+                    lines.append("CONNECTIONS:")
+                    lines.append("-" * 50)
+
+                    for edge in node_edges:
+                        src = edge.get("source_id", "")[:15]
+                        dst = edge.get("dest_id", "")[:15]
+                        hops = edge.get("hops", 0)
+                        active = "Active" if edge.get("is_active", False) else "Inactive"
+                        snr = edge.get("snr")
+                        snr_str = f"{snr:.1f}dB" if snr else "N/A"
+
+                        lines.append(f"  {src} -> {dst}")
+                        lines.append(f"    Hops: {hops} | SNR: {snr_str} | {active}")
+                        lines.append("")
+                elif not node_data:
+                    lines.append("No direct connections found.")
+
+            except Exception as e:
+                lines.append(f"Error loading topology: {e}")
 
         self.dialog.msgbox("Node Details", "\n".join(lines))
 

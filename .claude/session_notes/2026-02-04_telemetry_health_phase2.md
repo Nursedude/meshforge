@@ -354,10 +354,64 @@ Node dict has pki_status: True
 - Implementation plan structured
 - Code changes compile and function correctly
 
-**Next Session:**
-- Integrate PKI parsing from meshtastic-python API
-- Add TUI display for health metrics and PKI status
-- Implement TelemetryPoller for silent nodes
+**Completed This Session (2026-02-04 Follow-up):**
+
+### 1. PKI Parsing Integration
+- Updated `src/monitoring/node_monitor.py`:
+  - Added `public_key` and `public_key_hex` fields to `NodeInfo` dataclass
+  - Added PKI extraction in `_parse_node_data()` method
+  - Handles both bytes and base64-encoded keys
+- Updated `src/gateway/node_tracker.py`:
+  - Added PKI status extraction in `from_meshtastic()` method
+  - Checks for admin_key list membership
+
+### 2. TUI Display for Health Metrics and PKI
+- Updated `src/launcher_tui/topology_mixin.py`:
+  - Enhanced `_show_node_details()` with PKI status display
+  - Shows fingerprint, state (TRUSTED/CHANGED/VERIFIED), key info
+  - Added health metrics section (heart rate, SpO2, body temp)
+  - Added detailed telemetry display (battery, voltage, ChUtil, environment)
+  - Added signal quality trends
+- Updated `src/launcher_tui/mqtt_mixin.py`:
+  - Added `_show_mqtt_node_details()` with comprehensive node info
+  - Health metrics, environment, air quality, signal quality sections
+  - Enhanced `_show_mqtt_stats()` with health/sensor node counts
+  - Allows selecting individual nodes from the list to see details
+
+### 3. TelemetryPoller Implementation
+- Created `src/utils/telemetry_poller.py`:
+  - `TelemetryPoller` class for automatic polling of silent 2.7+ nodes
+  - Rate limiting (4 requests/minute, 10s between requests)
+  - `identify_silent_nodes()` method
+  - `poll_node_now()` for immediate single-node polling
+  - Background polling loop with configurable interval
+  - Singleton pattern via `get_telemetry_poller()`
+- Added TUI menu in mqtt_mixin.py:
+  - "Request Telemetry" menu option
+  - Single node request by ID
+  - Show silent nodes
+  - Batch polling of silent nodes
+  - Poller statistics display
+
+### 4. Favorites Sync (Research Complete - Pending Hardware Test)
+**Finding:** The `isFavorite` field is available in the meshtastic-python API.
+The field is part of the node data returned by `interface.nodes`.
+
+**Test Plan:**
+```python
+from meshtastic.tcp_interface import TCPInterface
+
+interface = TCPInterface(hostname='localhost')
+for node_num, node_info in interface.nodes.items():
+    is_fav = node_info.get('isFavorite', False)
+    print(f"Node {node_num}: favorite={is_fav}")
+interface.close()
+```
+
+**Next Step:** Test with physical BaseUI 2.7 device to verify:
+1. Favorites appear with correct `isFavorite` flag
+2. Determine if favorites can be SET via the API
+3. Implement TUI favorites management if API supports writes
 
 ---
 
