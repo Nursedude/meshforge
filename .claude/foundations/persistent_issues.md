@@ -232,41 +232,73 @@ from utils.service_check import check_service, check_port, ServiceState
 ### Symptom
 Files exceed the 1,500 line guideline from CLAUDE.md, making them difficult to navigate, test, and maintain.
 
-### Current Status (2026-01-19)
+### Current Status (2026-02-04)
 
-**Python files over 1,500 lines:**
+**Python files over 1,500 lines (NEEDS ATTENTION):**
 
-| File | Lines | Priority | Status |
-|------|-------|----------|--------|
-| `src/core/diagnostics/engine.py` | 1,677 | LOW | Monitor |
-| `src/gtk_ui/panels/tools.py` | 1,562 | LOW | Monitor |
-| `src/gtk_ui/panels/diagnostics.py` | 1,560 | LOW | Monitor |
-| `src/gtk_ui/app.py` | 1,539 | LOW | Monitor |
-| `src/gtk_ui/panels/hamclock.py` | 1,525 | - | ✅ Refactored from 2,625 |
+| File | Lines | Priority | Extraction Plan |
+|------|-------|----------|-----------------|
+| `src/monitoring/traffic_inspector.py` | 2,194 | HIGH | Extract dissectors → `packet_dissectors.py`, models → `traffic_models.py`, storage → `traffic_storage.py` |
+| `src/gateway/rns_bridge.py` | 1,991 | HIGH | Extract Meshtastic connection handling → `meshtastic_handler.py` |
+| `src/gateway/node_tracker.py` | 1,808 | HIGH | Extract data classes → `node_models.py` (Position, PKIStatus, AirQualityMetrics, HealthMetrics, etc.) |
+| `src/launcher_tui/main.py` | 1,799 | HIGH | ⚠️ REGRESSED from 1,336! Extract: network tools → `network_tools_mixin.py`, web client → `web_client_mixin.py` |
+| `src/core/diagnostics/engine.py` | 1,767 | LOW | Already has models.py - monitor only |
+| `src/utils/metrics_export.py` | 1,762 | MEDIUM | Extract metric definitions → `metric_definitions.py` |
+| `src/utils/knowledge_content.py` | 1,688 | LOW | Content file by design - no split needed |
+| `src/launcher_tui/rns_menu_mixin.py` | 1,524 | LOW | Near threshold - monitor |
 
-**Successfully refactored:**
-- `launcher_tui/main.py`: 2,822 → 1,336 lines ✅
-- `hamclock.py`: 2,625 → 1,525 lines ✅
-- `rns.py`: 673 lines ✅
-- `mesh_tools.py`: Now under 1,500 lines ✅
+**Regression Alert:**
+- `launcher_tui/main.py` grew from 1,336 → 1,799 lines (+463 lines)
+- Methods added to main.py instead of mixins:
+  - `_ping_test`, `_meshtastic_discovery`, `_dns_lookup` → should be `network_tools_mixin.py`
+  - `_open_web_client`, `_launch_web_client_browser`, etc. → should be `web_client_mixin.py`
+  - `_data_path_diagnostic` (160 lines) → should be `data_path_mixin.py`
+
+**GTK files removed from tracking (GTK deprecated):**
+- `src/gtk_ui/panels/tools.py`, `diagnostics.py`, `app.py`, `hamclock.py`
+- GTK4 interface was removed; TUI is now the only interface
 
 **Markdown files over 1,000 lines:**
 
 | File | Lines | Action |
 |------|-------|--------|
+| `.claude/foundations/persistent_issues.md` | 1,451 | Growing - consider archiving resolved issues |
 | `.claude/dude_ai_university.md` | 1,206 | Consider splitting by topic |
 | `.claude/foundations/ai_development_practices.md` | 1,069 | Review for outdated content |
+
+### Extraction Priority Order
+
+1. **traffic_inspector.py** (2,194 lines) - Largest, clear extraction boundaries
+   - Extract: `traffic_models.py` (enums, PacketField, PacketTree, MeshPacket, HopInfo) ~450 lines
+   - Extract: `packet_dissectors.py` (PacketDissector, MeshtasticDissector, RNSDissector) ~500 lines
+   - Extract: `traffic_storage.py` (TrafficCapture, TrafficStats, TrafficAnalyzer) ~550 lines
+   - Remaining in main: DisplayFilter, TrafficLogger, TrafficInspector, globals ~700 lines
+
+2. **launcher_tui/main.py** (1,799 lines) - Regression fix
+   - Extract: `network_tools_mixin.py` (ping, discovery, DNS) ~150 lines
+   - Extract: `web_client_mixin.py` (web client, browser, URLs) ~200 lines
+   - Extract: `data_path_mixin.py` (_data_path_diagnostic) ~160 lines
+   - Target: <1,300 lines
+
+3. **node_tracker.py** (1,808 lines)
+   - Extract: `node_models.py` (Position, PKIStatus, AirQualityMetrics, HealthMetrics, Telemetry) ~400 lines
+   - Target: ~1,400 lines
+
+4. **rns_bridge.py** (1,991 lines)
+   - Extract: `meshtastic_handler.py` (Meshtastic connection/send/receive) ~400 lines
+   - Target: ~1,600 lines (or split RNS handler too)
 
 ### Proper Fix
 
 Files over 1,500 lines should be split when adding new features to them.
-Previously refactored: launcher_tui (extracted mixins), hamclock (extracted API client),
+Previously refactored: launcher_tui (extracted 29 mixins), hamclock (extracted API client),
 rns.py (extracted config editor + mixins). Web UI and Rich CLI were deleted in consolidation.
 
 ### Prevention
 - Check file length before adding new features
 - Split files proactively at 1,000 lines
 - Use `wc -l src/**/*.py | sort -rn | head -10` to monitor
+- When adding to launcher_tui/main.py, **always check if a mixin exists or should be created**
 
 ---
 

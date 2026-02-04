@@ -211,11 +211,19 @@ else:
 ## File Size Guidelines
 
 Split files exceeding 1,500 lines (see `.claude/foundations/persistent_issues.md` Issue #6):
-- `launcher_tui/main.py` (2,822) → Extract menu handlers
-- `hamclock.py` (2,625) → Extract API client
-- `mesh_tools.py` (1,953) → Monitor
 
-*Note: 7 UIs consolidated → TUI + browser maps. GTK4 removed.*
+**Current files needing attention (2026-02-04):**
+- `traffic_inspector.py` (2,194) → Extract dissectors, models, storage
+- `rns_bridge.py` (1,991) → Extract Meshtastic handler
+- `node_tracker.py` (1,808) → Extract data classes
+- `launcher_tui/main.py` (1,799) → **Regressed!** Extract network tools, web client mixins
+
+**Previously refactored:**
+- ✅ `launcher_tui/main.py` (was 2,822 → 1,336, now regressed to 1,799)
+- ✅ `hamclock.py` (2,625 → 1,525)
+- ✅ GTK4 panels removed (TUI is now only interface)
+
+*Note: Always check if a mixin exists before adding to main.py.*
 
 ## Commit Style
 
