@@ -2,7 +2,7 @@
 
 ## Current Version: v0.5.0-beta
 ## Session Date: 2026-02-04
-## Branch: `claude/refactor-large-files-e5Zzy`
+## Branch: `claude/resolve-merge-conflicts-7VzvY`
 
 ---
 
@@ -22,6 +22,45 @@ python3 src/standalone.py               # Zero-dependency RF tools
 ---
 
 ## Latest Session Summary (2026-02-04)
+
+### Major Accomplishments - Test Infrastructure for Pi Deployment
+
+1. **TUI Smoke Tests** (`tests/test_tui_smoke.py`) - NEW!
+   - Tests all TUI imports work correctly
+   - Verifies main menu methods exist
+   - Checks all mixins contribute their methods
+   - Validates critical user workflow paths are accessible
+   - Catches wiring errors and missing methods early
+
+2. **Service Menu Mixin Tests** (`tests/test_service_menu_mixin.py`) - NEW!
+   - Tests bridge detection (running/stopped)
+   - Tests rnsd direct control (for systems without systemd unit)
+   - Tests systemd unit detection
+   - Tests MQTT setup wizard flow
+   - Tests SPI config fixing
+
+3. **Pi Sanity Check Script** (`scripts/pi_sanity_check.sh`) - NEW!
+   - Quick diagnostic script for Pi deployments
+   - Checks Python environment
+   - Verifies TUI imports
+   - Runs RF tests (critical for HAM operations)
+   - Checks service status
+   - Run after updates: `sudo ./scripts/pi_sanity_check.sh`
+
+### Test Coverage Assessment
+- **Current state:** 91 test files, ~40K lines of tests
+- **Backend coverage:** Strong (RF, services, gateway, diagnostics)
+- **TUI coverage gap:** 16 of 31 mixins had no direct tests (now partially addressed)
+- **Priority areas identified:** RNS menu, MQTT mixin, channel config
+
+### Files Added
+- `tests/test_tui_smoke.py` - TUI accessibility tests
+- `tests/test_service_menu_mixin.py` - Service workflow tests
+- `scripts/pi_sanity_check.sh` - Pi deployment diagnostic
+
+---
+
+## Previous Session Summary (2026-02-04)
 
 ### File Size Refactoring - launcher_tui/main.py
 
@@ -48,12 +87,16 @@ python3 src/standalone.py               # Zero-dependency RF tools
 
 ## Previous Session Summary (2026-02-04)
 
-### Major Accomplishments - Meshtastic Handler Extraction
+### Meshtastic Handler Extraction
 
-1. **Extracted MeshtasticHandler** (`src/gateway/meshtastic_handler.py`) - NEW!
+1. **Extracted MeshtasticHandler** (`src/gateway/meshtastic_handler.py`)
    - Created new `meshtastic_handler.py` (595 lines)
    - Reduced `rns_bridge.py` from 1,991 to 1,587 lines (~20% reduction)
    - Uses dependency injection for shared state (config, node_tracker, health, etc.)
+
+---
+
+## Previous Session Summary (2026-02-04)
 
 ### File Size Refactoring - node_tracker.py
 
@@ -190,4 +233,4 @@ From `.claude/dude_ai_university.md`:
 
 ---
 
-*73 de Dude AI - Session saved 2026-01-04*
+*73 de Dude AI - Session saved 2026-02-04*
