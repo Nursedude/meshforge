@@ -17,6 +17,13 @@ Endpoints:
 - GET /api/status    -> server health check + history stats
 - GET /*             -> static files from web/
 
+Meshtastic API Proxy (MeshForge-owned):
+- GET  /api/v1/fromradio -> multiplexed protobuf packets from meshtasticd
+- PUT  /api/v1/toradio   -> forwarded to meshtasticd
+- GET  /json/nodes       -> proxied from meshtasticd
+- GET  /json/report      -> proxied from meshtasticd
+- GET  /mesh/*           -> meshtastic web client (proxied from meshtasticd)
+
 Radio Control API (MeshForge-owned):
 - GET /api/radio/info     -> radio device information
 - GET /api/radio/nodes    -> nodes from connected radio
@@ -44,6 +51,8 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
     web_dir: Optional[str] = None
     # CORS: None = allow all, list = allow specific origins
     allowed_origins: Optional[List[str]] = None
+    # Meshtastic API proxy (set by MapServer when proxy is enabled)
+    api_proxy = None  # MeshtasticApiProxy instance
 
     def _send_cors_header(self):
         """Send appropriate CORS header based on configuration.
@@ -101,6 +110,21 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
         elif self.path == '/api/network/topology' or self.path == '/api/network/topology/':
             self._serve_network_topology()
         # ─────────────────────────────────────────────────────────────
+        # Meshtastic API Proxy - MeshForge owns the web client API
+        # ─────────────────────────────────────────────────────────────
+        elif self.path.startswith('/api/v1/fromradio'):
+            self._proxy_fromradio()
+        elif self.path == '/json/nodes' or self.path == '/json/nodes/':
+            self._proxy_json('/json/nodes')
+        elif self.path == '/json/report' or self.path == '/json/report/':
+            self._proxy_json('/json/report')
+        elif self.path == '/json/blink' or self.path == '/json/blink/':
+            self._proxy_json('/json/blink')
+        elif self.path.startswith('/mesh/') or self.path == '/mesh':
+            self._proxy_mesh_client()
+        elif self.path == '/api/proxy/status' or self.path == '/api/proxy/status/':
+            self._serve_proxy_status()
+        # ─────────────────────────────────────────────────────────────
         # Radio Control API - MeshForge-owned radio access
         # ─────────────────────────────────────────────────────────────
         elif self.path == '/api/radio/info' or self.path == '/api/radio/info/':
@@ -122,12 +146,32 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
                 super().do_GET()
 
     def do_POST(self):
-        """Handle POST requests for radio control actions."""
+        """Handle POST requests for radio control and meshtastic API proxy."""
+        # ─────────────────────────────────────────────────────────────
+        # Meshtastic API Proxy - POST endpoints
+        # ─────────────────────────────────────────────────────────────
+        if self.path.startswith('/api/v1/toradio'):
+            self._proxy_toradio()
+        elif self.path == '/json/blink' or self.path == '/json/blink/':
+            self._proxy_toradio_json('/json/blink')
+        elif self.path == '/restart' or self.path == '/restart/':
+            # Restrict device restart to localhost only
+            if self.client_address[0] not in ('127.0.0.1', '::1'):
+                self.send_error(403, "Restart only allowed from localhost")
+            else:
+                self._proxy_toradio_json('/restart')
         # ─────────────────────────────────────────────────────────────
         # Radio Control API - POST endpoints
         # ─────────────────────────────────────────────────────────────
-        if self.path == '/api/radio/message' or self.path == '/api/radio/message/':
+        elif self.path == '/api/radio/message' or self.path == '/api/radio/message/':
             self._handle_send_message()
+        else:
+            self.send_error(404, "Not Found")
+
+    def do_PUT(self):
+        """Handle PUT requests (meshtastic web client uses PUT for toradio)."""
+        if self.path.startswith('/api/v1/toradio'):
+            self._proxy_toradio()
         else:
             self.send_error(404, "Not Found")
 
@@ -135,8 +179,8 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
         """Handle CORS preflight requests."""
         self.send_response(200)
         self._send_cors_header()
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Accept')
         self.send_header('Content-Length', '0')
         self.end_headers()
 
@@ -851,6 +895,284 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
                 "gateway": len([n for n in nodes if n["is_gateway"]])
             },
             "timestamp": datetime.now().isoformat()
+        })
+
+    # ─────────────────────────────────────────────────────────────────
+    # Meshtastic API Proxy - MeshForge owns the web client
+    # ─────────────────────────────────────────────────────────────────
+
+    def _get_client_id(self) -> str:
+        """Generate a client ID from the request for per-client packet buffering.
+
+        Uses the client IP + a session cookie to distinguish browser tabs.
+        """
+        client_ip = self.client_address[0]
+
+        # Check for session cookie
+        cookie_header = self.headers.get('Cookie', '')
+        session_id = ''
+        for part in cookie_header.split(';'):
+            part = part.strip()
+            if part.startswith('meshforge_session='):
+                session_id = part.split('=', 1)[1]
+                break
+
+        if not session_id:
+            # Generate from User-Agent + remote port as fallback
+            ua = self.headers.get('User-Agent', '')
+            session_id = f"{hash(ua) & 0xFFFF:04x}"
+
+        return f"{client_ip}:{session_id}"
+
+    def _proxy_fromradio(self):
+        """Serve multiplexed FromRadio packets via the API proxy.
+
+        Each client gets its own stream of packets. The proxy ensures
+        ACK packets reach every connected browser.
+        """
+        if not self.api_proxy:
+            self.send_error(503, "Meshtastic API proxy not running")
+            return
+
+        client_id = self._get_client_id()
+        packet = self.api_proxy.get_next_packet(client_id)
+
+        # Check if we need to set a session cookie (for per-tab multiplexing)
+        cookie_header = self.headers.get('Cookie', '')
+        needs_cookie = 'meshforge_session=' not in cookie_header
+
+        if packet:
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/x-protobuf')
+            self.send_header('Content-Length', str(len(packet)))
+            self._send_cors_header()
+            self.send_header('Cache-Control', 'no-cache, no-store')
+            if needs_cookie:
+                import hashlib
+                session = hashlib.sha256(
+                    f"{self.client_address}{time.time()}".encode()
+                ).hexdigest()[:16]
+                self.send_header('Set-Cookie',
+                                 f'meshforge_session={session}; Path=/; SameSite=Lax')
+            self.end_headers()
+            self.wfile.write(packet)
+        else:
+            # No data - return empty 200 (meshtasticd convention)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/x-protobuf')
+            self.send_header('Content-Length', '0')
+            self._send_cors_header()
+            self.send_header('Cache-Control', 'no-cache, no-store')
+            if needs_cookie:
+                import hashlib
+                session = hashlib.sha256(
+                    f"{self.client_address}{time.time()}".encode()
+                ).hexdigest()[:16]
+                self.send_header('Set-Cookie',
+                                 f'meshforge_session={session}; Path=/; SameSite=Lax')
+            self.end_headers()
+
+    def _proxy_toradio(self):
+        """Forward ToRadio protobuf to meshtasticd via the proxy."""
+        if not self.api_proxy:
+            self.send_error(503, "Meshtastic API proxy not running")
+            return
+
+        # Meshtastic protobuf packets are small (< 512 bytes)
+        max_size = 512
+
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length > max_size:
+                self.send_error(413, "Payload too large")
+                return
+            if content_length > 0:
+                data = self.rfile.read(content_length)
+            else:
+                # No Content-Length: read with a cap
+                data = self.rfile.read(max_size)
+
+            if not data:
+                self.send_response(400)
+                self._send_cors_header()
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+
+            success = self.api_proxy.send_toradio(data)
+
+            if success:
+                self.send_response(200)
+                self._send_cors_header()
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+            else:
+                self.send_error(502, "Failed to forward to meshtasticd")
+
+        except Exception as e:
+            logger.debug(f"toradio proxy error: {e}")
+            self.send_error(500, str(e))
+
+    def _proxy_json(self, path: str):
+        """Proxy a /json/* endpoint from meshtasticd."""
+        if not self.api_proxy:
+            # Fallback: try direct HTTP client
+            try:
+                from utils.meshtastic_http import get_http_client
+                client = get_http_client()
+                if path == '/json/nodes':
+                    data = client.get_nodes_as_dicts()
+                    self._serve_json(data)
+                    return
+                elif path == '/json/report':
+                    data = client.get_report_raw()
+                    if data:
+                        self._serve_json(data)
+                        return
+            except Exception:
+                pass
+            self.send_error(503, "Meshtastic API proxy not running")
+            return
+
+        data = self.api_proxy.proxy_json(path)
+        if data:
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(data)))
+            self._send_cors_header()
+            self.send_header('Cache-Control', 'no-cache')
+            self.end_headers()
+            self.wfile.write(data)
+        else:
+            self.send_error(502, f"Could not proxy {path} from meshtasticd")
+
+    def _proxy_toradio_json(self, path: str):
+        """Proxy a POST JSON endpoint to meshtasticd (blink, restart, etc.)."""
+        if not self.api_proxy:
+            self.send_error(503, "Meshtastic API proxy not running")
+            return
+
+        result = self.api_proxy.proxy_static(path)
+        if result:
+            content, content_type = result
+            self.send_response(200)
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', str(len(content)))
+            self._send_cors_header()
+            self.end_headers()
+            self.wfile.write(content)
+        else:
+            self.send_error(502, f"Could not proxy {path}")
+
+    def _proxy_mesh_client(self):
+        """Serve the Meshtastic web client proxied from meshtasticd.
+
+        /mesh/         -> meshtasticd's index.html
+        /mesh/assets/* -> meshtasticd's static assets
+        """
+        if not self.api_proxy:
+            # Return a helpful page instead of an error
+            self._serve_mesh_client_fallback()
+            return
+
+        # Map /mesh/ to / on meshtasticd
+        path = self.path
+        if path == '/mesh' or path == '/mesh/':
+            path = '/'
+        elif path.startswith('/mesh/'):
+            path = path[5:]  # Strip /mesh prefix
+
+        result = self.api_proxy.proxy_static(path)
+        if result:
+            content, content_type = result
+
+            # For the index.html, inject base href so relative paths work
+            if path == '/' or path.endswith('.html'):
+                if isinstance(content, bytes):
+                    content_str = content.decode('utf-8', errors='replace')
+                    # Rewrite API URLs to go through MeshForge proxy
+                    content_str = content_str.replace(
+                        '</head>',
+                        '<base href="/mesh/">\n'
+                        '<script>\n'
+                        '// MeshForge API proxy: rewrite API calls to go through MeshForge\n'
+                        'window.__MESHFORGE_PROXY__ = true;\n'
+                        '</script>\n'
+                        '</head>'
+                    )
+                    content = content_str.encode('utf-8')
+                    content_type = 'text/html; charset=utf-8'
+
+            self.send_response(200)
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', str(len(content)))
+            self._send_cors_header()
+            if content_type.startswith('text/html'):
+                self.send_header('Cache-Control', 'no-cache')
+            self.end_headers()
+            self.wfile.write(content)
+        else:
+            self.send_error(502, "Could not proxy from meshtasticd web server")
+
+    def _serve_mesh_client_fallback(self):
+        """Serve a fallback page when meshtasticd web server is unavailable."""
+        html = """<!DOCTYPE html>
+<html><head><title>MeshForge - Meshtastic Web Client</title>
+<style>
+body { font-family: sans-serif; background: #0a0e1a; color: #e0e0e0;
+       display: flex; justify-content: center; align-items: center;
+       min-height: 100vh; margin: 0; }
+.card { background: #141e2e; border-radius: 12px; padding: 2em;
+        max-width: 500px; text-align: center; }
+h1 { color: #4fc3f7; }
+a { color: #66bb6a; }
+code { background: #1a2a3a; padding: 2px 8px; border-radius: 4px; }
+</style></head><body>
+<div class="card">
+<h1>Meshtastic Web Client</h1>
+<p>The meshtasticd web server is not reachable.</p>
+<p>Make sure meshtasticd is running with its web server enabled:</p>
+<pre style="text-align:left;background:#1a2a3a;padding:1em;border-radius:8px;">
+# /etc/meshtasticd/config.yaml
+Webserver:
+  Port: 9443
+</pre>
+<p>Then restart: <code>sudo systemctl restart meshtasticd</code></p>
+<p style="margin-top:2em;">
+  <a href="/">MeshForge NOC Map</a> |
+  <a href="/api/proxy/status">Proxy Status</a>
+</p>
+</div></body></html>"""
+        data = html.encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _serve_proxy_status(self):
+        """Serve API proxy status and statistics."""
+        if not self.api_proxy:
+            self._serve_json({
+                "enabled": False,
+                "error": "API proxy not started",
+            })
+            return
+
+        stats = self.api_proxy.stats
+        self._serve_json({
+            "enabled": True,
+            "connected": self.api_proxy.is_connected,
+            "target": f"{self.api_proxy.host}:{self.api_proxy.port}",
+            "tls": self.api_proxy.tls,
+            "packets_received": stats.packets_received,
+            "packets_forwarded": stats.packets_forwarded,
+            "toradio_forwarded": stats.toradio_forwarded,
+            "json_proxied": stats.json_proxied,
+            "active_clients": stats.active_clients,
+            "errors": stats.errors,
+            "started_at": stats.started_at.isoformat() if stats.started_at else None,
+            "last_packet": stats.last_packet_time.isoformat() if stats.last_packet_time else None,
         })
 
     # ─────────────────────────────────────────────────────────────────

@@ -112,6 +112,14 @@ class MapServer:
     - GET /api/status    -> server health check + history stats
     - GET /*             -> static files from web/
 
+    Meshtastic API Proxy (MeshForge-owned):
+    - GET  /api/v1/fromradio -> multiplexed protobuf from meshtasticd
+    - PUT  /api/v1/toradio   -> forwarded to meshtasticd
+    - GET  /json/nodes       -> proxied from meshtasticd
+    - GET  /json/report      -> proxied from meshtasticd
+    - GET  /mesh/*           -> meshtastic web client (proxied)
+    - GET  /api/proxy/status -> proxy health + stats
+
     Radio Control API (MeshForge-owned):
     - GET /api/radio/info     -> radio device information
     - GET /api/radio/nodes    -> nodes from connected radio
@@ -133,7 +141,11 @@ class MapServer:
                  cors_origins: Optional[List[str]] = None,
                  enable_message_listener: bool = True,
                  enable_websocket: bool = True,
-                 websocket_port: int = 5001):
+                 websocket_port: int = 5001,
+                 enable_api_proxy: bool = True,
+                 meshtasticd_host: str = 'localhost',
+                 meshtasticd_port: int = 9443,
+                 meshtasticd_tls: bool = True):
         """Initialize map server.
 
         Args:
@@ -149,6 +161,10 @@ class MapServer:
             enable_message_listener: Start MessageListener for inbound messages (default True)
             enable_websocket: Start WebSocket server for real-time message push (default True)
             websocket_port: WebSocket server port (default 5001)
+            enable_api_proxy: Start Meshtastic API proxy for web client (default True)
+            meshtasticd_host: meshtasticd host for API proxy (default 'localhost')
+            meshtasticd_port: meshtasticd web port for API proxy (default 9443)
+            meshtasticd_tls: Use TLS for API proxy (default True)
         """
         self.port = port
         self.host = host
@@ -156,11 +172,16 @@ class MapServer:
         self.enable_message_listener = enable_message_listener
         self.enable_websocket = enable_websocket
         self.websocket_port = websocket_port
+        self.enable_api_proxy = enable_api_proxy
+        self.meshtasticd_host = meshtasticd_host
+        self.meshtasticd_port = meshtasticd_port
+        self.meshtasticd_tls = meshtasticd_tls
         self.collector = MapDataCollector()
         self._server: Optional[HTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self._message_listener_started = False
         self._websocket_started = False
+        self._api_proxy_started = False
 
         # Find web directory
         src_dir = Path(__file__).parent.parent
@@ -208,6 +229,70 @@ class MapServer:
             logger.info("WebSocket server stopped")
         except Exception as e:
             logger.debug(f"Error stopping WebSocket server: {e}")
+
+    def _start_api_proxy(self):
+        """Start the Meshtastic API proxy for web client ownership.
+
+        MeshForge becomes the sole consumer of meshtasticd's HTTP API,
+        multiplexing packets to all connected web clients. This fixes
+        the 'waiting for delivery' bug and enables multi-client access.
+        """
+        if not self.enable_api_proxy:
+            return
+
+        try:
+            from gateway.meshtastic_api_proxy import MeshtasticApiProxy
+
+            proxy = MeshtasticApiProxy(
+                host=self.meshtasticd_host,
+                port=self.meshtasticd_port,
+                tls=self.meshtasticd_tls,
+            )
+
+            # Auto-detect port if default doesn't work
+            if not proxy._probe():
+                logger.info("API proxy: default port failed, auto-detecting...")
+                if proxy.auto_detect_port():
+                    logger.info(f"API proxy: found meshtasticd at {proxy._base_url}")
+                else:
+                    logger.warning(
+                        "API proxy: meshtasticd web server not found. "
+                        "Proxy will start anyway and retry on connection."
+                    )
+
+            if proxy.start():
+                self._api_proxy_started = True
+                MapRequestHandler.api_proxy = proxy
+                logger.info(
+                    f"Meshtastic API proxy started → "
+                    f"{proxy._base_url}"
+                )
+                print(f"  API Proxy: {proxy._base_url} (meshtastic web client at /mesh/)")
+            else:
+                logger.warning("Meshtastic API proxy failed to start")
+                print("  API Proxy: Failed to start")
+
+        except ImportError as e:
+            logger.debug(f"API proxy not available: {e}")
+            print("  API Proxy: Not available")
+        except Exception as e:
+            logger.warning(f"Error starting API proxy: {e}")
+            print(f"  API Proxy: Error - {e}")
+
+    def _stop_api_proxy(self):
+        """Stop the Meshtastic API proxy."""
+        if not self._api_proxy_started:
+            return
+
+        try:
+            # Stop the actual instance we started (not the singleton)
+            if MapRequestHandler.api_proxy:
+                MapRequestHandler.api_proxy.stop()
+            MapRequestHandler.api_proxy = None
+            self._api_proxy_started = False
+            logger.info("Meshtastic API proxy stopped")
+        except Exception as e:
+            logger.debug(f"Error stopping API proxy: {e}")
 
     def _start_message_listener(self):
         """Start the MessageListener for receiving inbound mesh messages."""
@@ -273,15 +358,19 @@ class MapServer:
             logger.debug(f"Error stopping MessageListener: {e}")
 
     def _stop_all_services(self):
-        """Stop all background services (MessageListener, WebSocket)."""
+        """Stop all background services (MessageListener, WebSocket, API Proxy)."""
         self._stop_message_listener()
         self._stop_websocket_server()
+        self._stop_api_proxy()
 
     def start(self):
         """Start server (blocking)."""
         MapRequestHandler.collector = self.collector
         MapRequestHandler.web_dir = self.web_dir
         MapRequestHandler.allowed_origins = self.cors_origins
+
+        # Start Meshtastic API proxy (owns the web client API)
+        self._start_api_proxy()
 
         # Start WebSocket server first (so callback can be registered)
         self._start_websocket_server()
@@ -291,17 +380,20 @@ class MapServer:
 
         self._server = HTTPServer((self.host, self.port), MapRequestHandler)
         logger.info(f"Map server starting on http://{self.host}:{self.port}")
-        print(f"MeshForge Map Server running on port {self.port}")
+        print(f"MeshForge NOC Server running on port {self.port}")
         if self.host == "0.0.0.0":
             # Show all available IPs when binding to all interfaces
             ips = get_all_ips()
             print("  Access via any of these URLs:")
             for ip in ips:
-                print(f"    http://{ip}:{self.port}/")
+                print(f"    NOC Map:    http://{ip}:{self.port}/")
+                print(f"    Mesh Client: http://{ip}:{self.port}/mesh/")
         elif self.host in ("127.0.0.1", "localhost"):
-            print(f"  URL: http://localhost:{self.port}/")
+            print(f"  NOC Map:     http://localhost:{self.port}/")
+            print(f"  Mesh Client: http://localhost:{self.port}/mesh/")
         else:
-            print(f"  URL: http://{self.host}:{self.port}/")
+            print(f"  NOC Map:     http://{self.host}:{self.port}/")
+            print(f"  Mesh Client: http://{self.host}:{self.port}/mesh/")
         print("  Press Ctrl+C to stop")
 
         try:
@@ -316,6 +408,9 @@ class MapServer:
         MapRequestHandler.collector = self.collector
         MapRequestHandler.web_dir = self.web_dir
         MapRequestHandler.allowed_origins = self.cors_origins
+
+        # Start Meshtastic API proxy (owns the web client API)
+        self._start_api_proxy()
 
         # Start WebSocket server first (so callback can be registered)
         self._start_websocket_server()
