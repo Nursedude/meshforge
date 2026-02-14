@@ -1,8 +1,25 @@
 # MeshForge Technical Debt Reduction Plan
 
 > Created: 2026-01-18
-> Status: Planning Phase
+> Status: **PAUSED** — Core functionality must work before cleanup continues
 > Estimated Impact: 25-35% code reduction in gtk_ui/panels
+
+## PRIORITY OVERRIDE (2026-02-14)
+
+**The gateway bridge does not work.** Messages do not flow between RNS and
+Meshtastic on real hardware. No amount of import cleanup, test coverage, or
+code organization matters until the core mission works:
+
+1. **meshtasticd connects and stays connected**
+2. **rnsd connects and stays connected**
+3. **A message sent from RNS arrives on a Meshtastic node**
+4. **A message sent from Meshtastic arrives via RNS**
+
+All remaining tech debt phases (1.2, 2.x, 3.x, 4.x) are ON HOLD until
+gateway end-to-end messaging is verified on hardware.
+
+**Next session priority**: Trim unnecessary code/tests that don't serve
+gateway functionality, then focus on making message flow work.
 
 ## Philosophy
 

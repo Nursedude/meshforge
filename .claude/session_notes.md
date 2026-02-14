@@ -131,26 +131,46 @@
 
 ---
 
-## Project Health Snapshot (2026-02-13)
+## Project Health Snapshot (2026-02-14)
 
 | Metric | Value | Status |
 |--------|-------|--------|
 | Version | v0.5.4-beta | MQTT bridge release |
-| Python files | 261 | Well-modularized |
-| Total lines | 291K+ | Healthy |
-| Test count | 4,046+ | Comprehensive |
-| Tests passing | 4,046 pass, 19 skip, 0 fail | Clean |
+| Python files | 261 | Possibly over-modularized |
+| Total lines | 291K+ | Large for a NOC tool |
+| Test count | 4,071 | Many — but gateway untested on hardware |
+| Tests passing | 4,071 pass, 19 skip, 0 fail | Clean |
+| **Gateway E2E** | **NOT WORKING** | **PRIORITY 1** |
+| **Messages flowing** | **NO** | **PRIORITY 1** |
 | Lint | Clean | MF001-MF004 all passing |
-| Files >1,500 loc | 2 (knowledge_content.py by design, main.py 1521 borderline) | Monitor |
 | TUI mixin files | 33 | All wired |
-| P2 feature accessibility | 8/8 complete | **DONE** |
-| Documentation | 51+ MD files | Extensive |
-| Session notes | 44+ entries | Good tracking |
-| Persistent issues | Issue #20 fixed, #21 upstream, #27 open | Active |
+| Tech debt Phase 1.1 | Complete (safe_import) | DONE |
+| Tech debt remaining | ON HOLD | Gateway first |
 
 ---
 
 ## Session Log
+
+### Session: safe_import Review + Over-Engineering Reckoning (2026-02-14)
+
+**What**: Reviewed safe_import migration from prior session. Found 15 files where
+safe_import was over-applied to first-party modules. Reverted to direct imports.
+Fixed cli.py (rich wrongly wrapped as optional) and messaging.py (dead imports).
+
+**Result**: -199 lines net. 4,071 tests pass.
+
+**Critical realization**: Gateway bridge still doesn't work on hardware. Messages
+don't flow. We've been optimizing imports and wiring TUI menus while the core
+function is broken. Technical debt plan paused. All priorities reordered to
+**make the gateway work first**.
+
+**Session notes updated**: Priority 1 is now gateway end-to-end messaging.
+All cleanup/polish/debt work is ON HOLD.
+
+**Entropy watch**: HIGH — this session itself was over-engineering (cleaning up
+imports instead of fixing the bridge). Caught by user. Course corrected.
+
+---
 
 ### Session: Final TUI Wiring + Issue #20 Fix (2026-02-13)
 
@@ -262,10 +282,36 @@
 
 ## Quick Reference: Next Session Pickup
 
-1. ~~**P2 quick wins**: Wire remaining modules to TUI~~ **DONE** (8/8 complete)
-2. ~~**P2 reliability**: Issue #20 service detection~~ **DONE** (systemctl-only, port fallback removed)
-3. **P2 architecture**: Event bus for RX message propagation (Issue #20 Phase 3)
-4. **P2 display**: Status display separation — service state vs CLI detection (Issue #20 Phase 2)
-5. **P3 debt**: Import boilerplate consolidation (`safe_import()` pattern, 86 try/except blocks)
-6. **P3 debt**: main.py at 1521 lines — borderline, consider extracting another menu method
-7. **Hardware**: Test all backlog items on MOC1/MOC2
+### PRIORITY 1: Make the gateway work (NOT negotiable)
+
+**The gateway bridge does not work on real hardware.** Messages do not flow.
+Everything else is secondary until this is verified end-to-end:
+
+1. **Trim unnecessary code/tests** — audit for over-engineering, remove anything
+   that doesn't serve core gateway/messaging functionality
+2. **meshtasticd connection** — verify connect, stay connected, recover from drops
+3. **rnsd connection** — verify connect, stay connected, shared instance mode
+4. **TX: RNS → Meshtastic** — send a message from RNS side, verify on Meshtastic node
+5. **RX: Meshtastic → RNS** — send from Meshtastic node, verify arrives in RNS
+6. **Hardware test on MOC1/MOC2** — the only test that matters
+
+### PRIORITY 2: Previously completed (for reference)
+
+- ~~P2 quick wins: Wire remaining modules to TUI~~ **DONE** (8/8)
+- ~~P2 reliability: Issue #20 service detection~~ **DONE**
+- ~~P3 debt: Import boilerplate~~ **DONE** (safe_import migration, 2026-02-14)
+
+### ON HOLD (until gateway works)
+
+- Event bus for RX message propagation (Issue #20 Phase 3)
+- Status display separation (Issue #20 Phase 2)
+- Configuration centralization (tech debt Phase 1.2)
+- main.py size monitoring
+- All other P3 items
+
+### Honest Assessment (2026-02-14)
+
+The codebase has 261 Python files, 4,071 tests, 33 TUI mixins, and extensive
+documentation. But the core mission — bridging RNS and Meshtastic — doesn't
+work on hardware. The ratio of infrastructure to working functionality is
+inverted. Next session must focus exclusively on making messages flow.
