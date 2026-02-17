@@ -411,28 +411,73 @@ class MessageTracer:
 |--------|---------------------------|-----------|
 | **Language** | C++ (embedded) | Python 3.9+ |
 | **Target** | Firmware (RAK4631, LoRa32u4II) | Linux/Raspberry Pi |
-| **Protocols** | MeshCore ↔ Meshtastic | RNS/LXMF ↔ Meshtastic |
-| **Message Format** | Canonical intermediate | Direct translation |
+| **Protocols** | MeshCore ↔ Meshtastic | MeshCore ↔ Meshtastic ↔ RNS/LXMF |
+| **Message Format** | Canonical intermediate | CanonicalMessage (implemented) |
 | **Reliability** | Counter overflow, config dedup | Exponential backoff, health monitor |
 | **Persistence** | None (RAM only) | SQLite message queue |
 | **UI** | WebSerial PWA | TUI (whiptail/dialog) |
-| **MQTT Handling** | Filter at bridge | Monitor/consume |
+| **MQTT Handling** | Filter at bridge | Filter + monitor (origin tracking) |
+
+---
+
+## Gateway Connection Architecture
+
+The MeshForge gateway bridges three mesh protocols. Each protocol connects to
+its radio differently:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   MeshForge Gateway Host                │
+│                                                         │
+│  Meshtastic radio ── USB ──> meshtasticd ── TCP :4403 ──┤
+│                                                         │
+│  MeshCore radio ─── USB serial ─────────────────────────┤──> Gateway
+│                  or TCP (WiFi firmware / ser2net)        │    Bridge
+│                  or BLE (future)                         │
+│                                                         │
+│  RNS transport ──── rnsd / direct ──────────────────────┤
+└─────────────────────────────────────────────────────────┘
+```
+
+### MeshCore companion radio connection options
+
+| Method | Transport | Config | Use Case |
+|--------|-----------|--------|----------|
+| **Serial** | USB cable | `device_path: /dev/ttyUSB1` | Most common — direct USB to companion radio |
+| **TCP** | WiFi / LAN | `tcp_host: <ip>, tcp_port: 4000` | Companion on WiFi firmware, or serial-to-TCP bridge |
+| **BLE** | Bluetooth LE | `connection_type: ble` | Wireless — config ready, pending meshcore_py support |
+
+### Meshtastic node connection
+
+Meshtastic uses a daemon (`meshtasticd`) that owns the serial connection to the
+radio. MeshForge connects to `meshtasticd` over TCP (default `localhost:4403`).
+The Meshtastic radio is typically USB-attached to the same host.
+
+### Typical two-radio gateway setup
+
+The simplest gateway setup uses two USB radios on the same host:
+- `/dev/ttyUSB0` — Meshtastic radio (managed by meshtasticd)
+- `/dev/ttyUSB1` — MeshCore companion radio (managed directly by MeshForge)
+
+Both radios are LoRa devices but operate on different frequencies and modulation
+parameters (see Protocol-Specific Radio Configuration above), so they do not
+interfere with each other.
 
 ---
 
 ## Implementation Roadmap
 
-### Phase 1: Reliability (Sprint)
-1. Implement circuit breaker for message queue
-2. Add cross-network health dependency checks
-3. Add message origin tracking
-4. Audit timeout coverage
+### Phase 1: Reliability — DONE
+1. ~~Implement circuit breaker for message queue~~
+2. ~~Add cross-network health dependency checks~~
+3. ~~Add message origin tracking~~
+4. ~~Audit timeout coverage~~
 
-### Phase 2: Extensibility (Sprint)
-1. Design canonical message format
-2. Implement protocol adapters (Meshtastic, RNS)
-3. Add lenient parsing mode
-4. Create protocol plugin interface
+### Phase 2: Extensibility — DONE
+1. ~~Design canonical message format~~ (CanonicalMessage)
+2. ~~Implement protocol adapters (Meshtastic, RNS, MeshCore)~~
+3. ~~Add lenient parsing mode~~
+4. ~~Create protocol plugin interface~~
 
 ### Phase 3: Observability (Sprint)
 1. Prometheus metrics export
@@ -440,16 +485,18 @@ class MessageTracer:
 3. Distributed tracing
 4. Health event persistence
 
-### Phase 4: MeshCore Support (Future)
-1. Add MeshCore protocol adapter
-2. Implement frequency switching logic
-3. Test interoperability
-4. Document integration
+### Phase 4: MeshCore Hardening (In Progress)
+1. ~~Add MeshCore protocol adapter~~ (meshcore_handler.py)
+2. ~~Implement three-way bridge routing~~ (meshcore_bridge_mixin.py)
+3. Wire up BLE transport when meshcore_py supports it
+4. Field test interoperability
 
 ---
 
 ## References
 
+- MeshCore: https://github.com/meshcore-dev/MeshCore
+- MeshCore CLI (Python): https://github.com/fdlamotte/meshcore-cli
 - MeshCore-Meshtastic-Proxy: https://github.com/wdunn001/MeshCore-Meshtastic-Proxy
 - MeshCore Protocol: Radio mesh at 910.525 MHz, SF7, BW 62.5 kHz
 - Meshtastic LongFast: 906.875 MHz, SF11, BW 250 kHz
@@ -458,3 +505,4 @@ class MessageTracer:
 ---
 
 *Analysis conducted for MeshForge v0.4.8-alpha enhancement planning*
+*Updated 2026-02-17: Reflects implemented MeshCore support and connection options*

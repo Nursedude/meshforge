@@ -11,8 +11,19 @@ Uses the same dependency injection pattern as MeshtasticHandler:
 - stats: Shared statistics dict
 - callbacks: Message/status notification
 
+Connection methods (meshcore-cli / meshcore_py):
+- Serial (USB): Direct USB to companion radio (e.g. /dev/ttyUSB1 @ 115200)
+- TCP/IP:       Network connection to companion radio on WiFi firmware
+                or a serial-to-TCP bridge (default port 4000)
+- BLE:          Bluetooth LE to companion radio (config ready, handler
+                pending meshcore_py BLE transport support)
+
+Typical gateway setup uses two radios on the same host:
+  Meshtastic radio  -->  meshtasticd (USB)  -->  TCP :4403  -->  MeshForge
+  MeshCore radio    -->  USB serial or TCP  ------------------>  MeshForge
+
 MeshCore differences from Meshtastic:
-- No daemon (direct USB serial connection via meshcore_py)
+- No daemon (MeshForge connects directly via meshcore_py)
 - Async API (wrapped in dedicated asyncio event loop thread)
 - Pure radio (no MQTT/internet origin — all messages are radio)
 - Up to 64 hops (vs 7 for Meshtastic)

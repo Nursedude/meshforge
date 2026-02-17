@@ -254,21 +254,26 @@ class MeshCoreConfig:
     """
     MeshCore companion radio configuration.
 
-    MeshCore uses a direct connection to a companion radio via USB serial
-    (or TCP/BLE). Unlike Meshtastic, there is no daemon — MeshForge manages
-    the connection directly via meshcore_py.
+    Unlike Meshtastic (which uses meshtasticd as a daemon), MeshForge connects
+    directly to the MeshCore companion radio via meshcore_py. Three connection
+    methods are supported:
+
+      serial  — USB cable to companion radio (most common for gateway setups)
+      tcp     — Network connection to a companion radio running WiFi firmware,
+                or to a serial-to-TCP bridge (e.g. ser2net)
+      ble     — Bluetooth LE (config ready; pending meshcore_py BLE transport)
 
     Requires: pip install meshcore (Python 3.10+)
     Hardware: MeshCore companion radio (RAK4631, Heltec V3, T-Deck, etc.)
     """
     enabled: bool = False
 
-    # Connection settings
-    device_path: str = "/dev/ttyUSB1"    # USB serial device
-    baud_rate: int = 115200
+    # Connection settings — choose one of: serial | tcp | ble
+    device_path: str = "/dev/ttyUSB1"    # Serial: USB device path
+    baud_rate: int = 115200              # Serial: baud rate
     connection_type: str = "serial"       # serial | tcp | ble
-    tcp_host: str = ""
-    tcp_port: int = 4000
+    tcp_host: str = ""                   # TCP: hostname or IP
+    tcp_port: int = 4000                 # TCP: port (meshcore-cli default 5000)
 
     # Message handling
     auto_fetch_messages: bool = True      # Start auto message fetching on connect
