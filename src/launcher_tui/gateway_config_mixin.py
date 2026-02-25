@@ -73,6 +73,7 @@ class GatewayConfigMixin:
                 ("rns", "RNS Settings"),
                 ("routing", "Routing Rules"),
                 ("telemetry", "Telemetry Settings"),
+                ("topology", "Topology View       Data paths & services"),
                 ("templates", "Load Template"),
                 ("validate", "Validate Config"),
                 ("save", "Save Configuration"),
@@ -113,6 +114,7 @@ class GatewayConfigMixin:
                 "rns": ("RNS Settings", self._config_rns),
                 "routing": ("Routing Rules", self._config_routing),
                 "telemetry": ("Telemetry Settings", self._config_telemetry),
+                "topology": ("Topology View", self._show_gateway_topology),
                 "templates": ("Load Template", self._load_template),
                 "validate": ("Validate Config", self._validate_gateway_config),
             }
@@ -705,3 +707,38 @@ class GatewayConfigMixin:
         lines.insert(2, f"Status: {status}")
 
         self.dialog.msgbox("Validation Results", "\n".join(lines), width=60, height=25)
+
+    def _show_gateway_topology(self, config):
+        """Show gateway topology diagram and transport paths."""
+        from backend import clear_screen
+
+        clear_screen()
+        print("=== Gateway Topology ===\n")
+
+        try:
+            from gateway.topology_inspector import TopologyInspector
+            inspector = TopologyInspector(config)
+            diagram = inspector.ascii_diagram()
+            print(diagram)
+        except ImportError:
+            print("Topology inspector module not available.")
+        except Exception as e:
+            print(f"Error generating topology: {e}")
+
+        # Show transport paths from registry
+        try:
+            from gateway.transport_registry import get_registry
+            registry = get_registry()
+            summary = registry.get_mode_summary(config.bridge_mode)
+            if summary:
+                print(f"\nTransport Paths ({summary['paths']} registered):")
+                print(f"  Protocols: {', '.join(summary['protocols'])}")
+                print(f"  Required:  {', '.join(summary['required_services'])}")
+                print(f"  Status:    {summary['status']}")
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"Registry error: {e}")
+
+        print()
+        self._wait_for_enter()

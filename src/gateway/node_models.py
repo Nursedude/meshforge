@@ -383,6 +383,11 @@ class UnifiedNode:
     meshcore_role: Optional[str] = None     # client, repeater, room_server
     meshcore_hops: Optional[int] = None     # Hop count from advertisement
 
+    # AREDN backhaul visibility
+    aredn_router_ip: Optional[str] = None    # AREDN router IP if node is behind one
+    aredn_reachable: bool = False            # Reachable via AREDN backhaul
+    aredn_link_quality: Optional[float] = None  # 0.0-1.0 backhaul link quality
+
     # Favorites (BaseUI 2.7+)
     is_favorite: bool = False  # Marked as favorite in BaseUI
     favorite_updated: Optional[datetime] = None  # When favorite status last changed

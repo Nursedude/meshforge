@@ -106,6 +106,7 @@ from meshcore_mixin import MeshCoreMixin
 from radio_mode_mixin import RadioModeMixin
 from meshcore_config_mixin import MeshCoreConfigMixin
 from tactical_ops_mixin import TacticalOpsMixin
+from nanovna_mixin import NanoVNAMixin
 
 
 class MeshForgeLauncher(
@@ -155,6 +156,7 @@ class MeshForgeLauncher(
     RadioModeMixin,
     MeshCoreConfigMixin,
     TacticalOpsMixin,
+    NanoVNAMixin,
 ):
     """MeshForge launcher with raspi-config style interface."""
 
@@ -894,6 +896,7 @@ class MeshForgeLauncher(
                 ("site", "Site Planner        Coverage estimation"),
                 ("freq", "Frequency Slots     Channel calculator"),
                 ("antenna", "Antenna Analysis    Compare antenna types"),
+                ("nanovna", "NanoVNA Analyzer    SWR, impedance, sweeps"),
                 ("sdr", "SDR Monitor         RF awareness (Airspy)"),
                 ("back", "Back"),
             ]
@@ -912,6 +915,7 @@ class MeshForgeLauncher(
                 "site": ("Site Planner", self._site_planner_menu),
                 "freq": ("Frequency Slots", self._calc_frequency_slot),
                 "antenna": ("Antenna Analysis", self._antenna_comparison),
+                "nanovna": ("NanoVNA Analyzer", self._nanovna_menu),
                 "sdr": ("SDR Monitor", self._rf_awareness_menu),
             }
             entry = dispatch.get(choice)

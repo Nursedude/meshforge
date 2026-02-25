@@ -911,6 +911,38 @@ instance_control_port = 37429
         except Exception as e:
             logger.debug(f"Error handling topology event: {e}")
 
+    # --- AREDN Topology API methods ---
+
+    def update_aredn_topology(self, reachability_map: Dict[str, Any]) -> int:
+        """Update node AREDN reachability from AREDNTopologyOverlay.
+
+        Args:
+            reachability_map: Dict mapping node_id to GatewayReachability-like dicts
+                with keys: via_aredn, aredn_router_ip, aredn_link_quality
+
+        Returns:
+            Number of nodes updated.
+        """
+        updated = 0
+        with self._lock:
+            for node_id, reach in reachability_map.items():
+                node = self._nodes.get(node_id)
+                if node is None:
+                    continue
+
+                via_aredn = reach.get('via_aredn', False) if isinstance(reach, dict) else getattr(reach, 'via_aredn', False)
+                router_ip = reach.get('aredn_router_ip', '') if isinstance(reach, dict) else getattr(reach, 'aredn_router_ip', '')
+                lq = reach.get('aredn_link_quality', 0.0) if isinstance(reach, dict) else getattr(reach, 'aredn_link_quality', 0.0)
+
+                node.aredn_reachable = via_aredn
+                node.aredn_router_ip = router_ip if via_aredn else None
+                node.aredn_link_quality = lq if via_aredn else None
+                updated += 1
+
+        if updated:
+            logger.debug(f"Updated AREDN reachability for {updated} nodes")
+        return updated
+
     # --- Topology API methods ---
 
     def get_topology_stats(self) -> Optional[Dict[str, Any]]:
