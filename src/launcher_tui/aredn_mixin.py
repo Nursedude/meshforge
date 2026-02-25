@@ -27,6 +27,7 @@ class AREDNMixin:
                 ("status", "Node Status"),
                 ("neighbors", "Neighbors & Links"),
                 ("services", "Advertised Services"),
+                ("backhaul", "Backhaul Status     Gateway reachability via AREDN"),
                 ("map", "Show on Map"),
                 ("web", "Open AREDN Web UI"),
                 ("scan", "Scan Network"),
@@ -46,6 +47,7 @@ class AREDNMixin:
                 "status": ("AREDN Status", self._aredn_node_status),
                 "neighbors": ("Neighbors & Links", self._aredn_neighbors),
                 "services": ("AREDN Services", self._aredn_services),
+                "backhaul": ("Backhaul Status", self._aredn_backhaul_status),
                 "map": ("Show on Map", self._aredn_map),
                 "web": ("AREDN Web UI", self._aredn_web),
                 "scan": ("Scan Network", self._aredn_scan),
@@ -332,5 +334,64 @@ class AREDNMixin:
 
         except Exception as e:
             print(f"Error: {e}")
+
+        self._wait_for_enter()
+
+    def _aredn_backhaul_status(self):
+        """Show AREDN backhaul status for gateway topology."""
+        clear_screen()
+        print("=== AREDN Backhaul Status ===\n")
+
+        try:
+            from gateway.aredn_topology import AREDNTopologyOverlay
+        except ImportError:
+            print("AREDN topology module not available.")
+            self._wait_for_enter()
+            return
+
+        overlay = AREDNTopologyOverlay()
+        summary = overlay.get_health_summary()
+
+        if not summary.connected:
+            print("No AREDN router detected.\n")
+            print("Check:")
+            print("  - AREDN router is on the local network")
+            print("  - Router is accessible at 10.x.x.x or localnode.local.mesh")
+            print("  - aredn module is installed")
+            self._wait_for_enter()
+            return
+
+        print(f"Local Router: {summary.local_router_name} ({summary.local_router_ip})")
+        print(f"Connected:    Yes")
+        print(f"Neighbors:    {summary.neighbor_count}")
+        print(f"Healthy:      {summary.healthy_links}")
+        print(f"Degraded:     {summary.degraded_links}")
+        print(f"Remote GWs:   {summary.remote_gateways}")
+
+        if summary.last_scan:
+            print(f"Last Scan:    {summary.last_scan.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        # Show links
+        links = overlay.discover_backhaul_links()
+        if links:
+            print(f"\n{'Remote Node':<25} {'IP':<16} {'Type':<6} {'LQ':>5} {'NLQ':>5} {'Status':>8}")
+            print("-" * 70)
+            for link in links:
+                status = "OK" if link.is_healthy else "WARN"
+                print(
+                    f"{link.remote_node_name:<25} "
+                    f"{link.remote_aredn_ip:<16} "
+                    f"{link.link_type.value:<6} "
+                    f"{link.link_quality:>5.0%} "
+                    f"{link.neighbor_quality:>5.0%} "
+                    f"{status:>8}"
+                )
+
+        # Show discovered gateways
+        gateways = overlay.get_remote_gateways()
+        if gateways:
+            print(f"\nRemote MeshForge Gateways via AREDN:")
+            for ip, name in gateways.items():
+                print(f"  {name} ({ip})")
 
         self._wait_for_enter()

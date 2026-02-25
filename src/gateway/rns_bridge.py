@@ -46,6 +46,11 @@ CircuitBreakerRegistry, HAS_CIRCUIT_BREAKER = safe_import(
     '.circuit_breaker', 'CircuitBreakerRegistry', package=__package__
 )
 
+# AREDN topology overlay (optional - visibility only)
+AREDNTopologyOverlay, HAS_AREDN_TOPOLOGY = safe_import(
+    '.aredn_topology', 'AREDNTopologyOverlay', package=__package__
+)
+
 # Import persistent message queue for reliable delivery
 PersistentMessageQueue, MessagePriority, HAS_PERSISTENT_QUEUE = safe_import(
     '.message_queue', 'PersistentMessageQueue', 'MessagePriority', package=__package__
@@ -237,6 +242,21 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
                 recovery_timeout=60.0,
             )
             logger.info("Circuit breaker initialized for destination tracking")
+
+        # AREDN topology overlay (visibility only)
+        self._aredn_overlay = None
+        self._aredn_thread = None
+        aredn_cfg = getattr(self.config, 'aredn_backhaul', None)
+        if HAS_AREDN_TOPOLOGY and aredn_cfg and aredn_cfg.enabled:
+            try:
+                self._aredn_overlay = AREDNTopologyOverlay(
+                    router_ip=aredn_cfg.router_ip,
+                    auto_detect=aredn_cfg.auto_detect,
+                    poll_interval_sec=aredn_cfg.poll_interval_sec,
+                )
+                logger.info("AREDN topology overlay initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize AREDN overlay: {e}")
 
         # MQTT filtering configuration
         self._filter_mqtt_messages = False  # Set True to drop MQTT-originated messages
@@ -583,6 +603,16 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
             except Exception as e:
                 logger.warning(f"Could not start RNS sniffer: {e}")
 
+        # Start AREDN topology polling (visibility only)
+        if self._aredn_overlay:
+            self._aredn_thread = threading.Thread(
+                target=self._aredn_poll_loop,
+                daemon=True,
+                name="AREDNTopology",
+            )
+            self._aredn_thread.start()
+            logger.info("AREDN topology polling started")
+
         logger.info("Bridge started")
         self._notify_status("started")
         return True
@@ -612,7 +642,8 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
 
         # Wait for threads
         for thread in [self._mesh_thread, self._rns_thread,
-                        self._bridge_thread, self._meshcore_thread]:
+                        self._bridge_thread, self._meshcore_thread,
+                        self._aredn_thread]:
             if thread and thread.is_alive():
                 thread.join(timeout=5)
 
@@ -629,6 +660,34 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
 
         logger.info("Bridge stopped")
         self._notify_status("stopped")
+
+    def _aredn_poll_loop(self):
+        """Periodically scan AREDN topology and update node reachability."""
+        overlay = self._aredn_overlay
+        aredn_cfg = getattr(self.config, 'aredn_backhaul', None)
+        try:
+            interval = int(aredn_cfg.poll_interval_sec) if aredn_cfg else 60
+        except (TypeError, ValueError):
+            interval = 60
+
+        while self._running:
+            try:
+                links = overlay.discover_backhaul_links()
+                if links:
+                    # Build reachability map for all tracked nodes
+                    nodes = self.node_tracker.get_all_nodes()
+                    reach_map = {}
+                    for node in nodes:
+                        reach = overlay.get_reachability(node.id)
+                        reach_map[node.id] = reach
+                    self.node_tracker.update_aredn_topology(reach_map)
+                    logger.debug(f"AREDN scan: {len(links)} links, "
+                                 f"{len(overlay.get_remote_gateways())} remote gateways")
+            except Exception as e:
+                logger.warning(f"AREDN poll error: {e}")
+
+            if self._stop_event.wait(interval):
+                break
 
     def get_status(self) -> dict:
         """Get current bridge status including subsystem states."""

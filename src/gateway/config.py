@@ -277,6 +277,22 @@ class MeshCoreConfig:
 
 
 @dataclass
+class AREDNBackhaulConfig:
+    """AREDN backhaul topology visibility configuration.
+
+    When enabled, the gateway periodically scans the local AREDN router
+    for neighbor links and identifies remote MeshForge gateways reachable
+    via AREDN WiFi backbone, DtD links, or VPN tunnels.
+
+    Scope: Read-only visibility -- no routing changes.
+    """
+    enabled: bool = False
+    router_ip: str = ""              # Auto-detect if empty
+    auto_detect: bool = True
+    poll_interval_sec: int = 60
+
+
+@dataclass
 class RNSConfig:
     """Reticulum Network Stack configuration"""
     config_dir: str = ""  # Empty = default ~/.reticulum
@@ -400,6 +416,9 @@ class GatewayConfig:
 
     # MeshCore companion radio (used when bridge_mode="meshcore_bridge" or "tri_bridge")
     meshcore: MeshCoreConfig = field(default_factory=MeshCoreConfig)
+
+    # AREDN backhaul topology visibility (read-only, all modes)
+    aredn_backhaul: AREDNBackhaulConfig = field(default_factory=AREDNBackhaulConfig)
 
     # Routing (used when bridge_mode="message_bridge")
     routing_rules: List[RoutingRule] = field(default_factory=list)
