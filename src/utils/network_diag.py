@@ -15,35 +15,8 @@ import socket
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from utils.safe_import import safe_import
-
 # Import canonical check_port from service_check
-_check_port, _HAS_SERVICE_CHECK = safe_import('utils.service_check', 'check_port')
-
-if _HAS_SERVICE_CHECK:
-    check_port = _check_port
-else:
-    # Fallback: try src-prefixed path
-    _check_port2, _HAS_SRC_CHECK = safe_import('src.utils.service_check', 'check_port')
-    if _HAS_SRC_CHECK:
-        check_port = _check_port2
-    else:
-        # Fallback implementation
-        def check_port(port: int, host: str = 'localhost') -> bool:
-            sock = None
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(1)
-                result = sock.connect_ex((host, port))
-                return result == 0
-            except (socket.error, OSError):
-                return False
-            finally:
-                if sock:
-                    try:
-                        sock.close()
-                    except Exception:
-                        pass
+from utils.service_check import check_port
 
 # TCP state mapping (hex to name)
 TCP_STATES = {

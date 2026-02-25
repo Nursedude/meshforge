@@ -23,9 +23,9 @@ When invoked with an error:
 
 ## Common MeshForge Errors
 
-### GTK/UI Errors
-- Threading: Must use `GLib.idle_add()` for UI updates from threads
-- Widget lifecycle: Don't access destroyed widgets
+### TUI Errors
+- Whiptail/dialog backend: Check `DialogBackend` fallback chain
+- Mixin method conflicts: 33 mixins share the launcher namespace
 
 ### Path Errors
 - Use `get_real_user_home()` not `Path.home()`

@@ -1,122 +1,45 @@
 # MeshForge Development Priorities
 
-> **Last Updated:** 2026-02-17
+> **Last Updated:** 2026-02-21
 > **Maintainer:** WH6GXZ / Dude AI
 
 ---
 
 ## Branch Strategy
 
-**Single-branch model** since v0.5.1 (alpha branch deprecated per DOCS changelog).
+**Dual-branch model** as of v0.5.4 (alpha restored for MeshCore development).
 
-| Branch | Purpose |
-|--------|---------|
-| `main` | All development — stable releases, features, fixes |
+| Branch | Version | Purpose |
+|--------|---------|---------|
+| `main` | `0.5.4-beta` | Stable beta — gateway bridge, TUI, monitoring, RF tools |
+| `alpha/meshcore-bridge` | `0.6.0-alpha` | MeshCore integration — 3-way routing, companion radio mgmt |
 
----
-
-## 🔴 Priority 1: Critical / Core Functionality
-
-### Gateway Bridge (rns_over_meshtastic_gateway)
-- [x] **RNS-Meshtastic bidirectional messaging** - Core bridge functionality
-- [x] **RNS Over Meshtastic transport layer** - Packet transport via LoRa
-- [x] **Message routing visualization** - See message flow between networks (2026-01-17)
-- [x] **Gateway setup wizard** - Guided configuration for new users (2026-01-12)
-- [x] **Bridge status monitoring** - Real-time health checks (API endpoints)
-- [x] `rns_bridge.py:624` - Implement regex matching for filters (2026-01-11)
-- [x] **Gateway config template** - gateway-hawaiinet.yaml (2026-01-20)
-
-### Rich CLI Enhancements (MOC2 Testing)
-- [x] **RNS/RNSD tools menu** - Mirror GTK panel functionality (2026-02-02):
-  - [x] rnsd service status/control - service_menu_mixin.py
-  - [x] Config file editor - rns_menu_mixin.py
-  - [x] Interface list - rns_interfaces_mixin.py
-  - [x] Announce management - auto-handled by RNS
-  - [x] NomadNet launcher - nomadnet_client_mixin.py
-- [x] **Device config wizard** - Complete setup flow (2026-02-02):
-  - [x] Long name (40 char) - meshtasticd_config_mixin.py
-  - [x] Short name (4 char) - meshtasticd_config_mixin.py
-  - [x] Region selection - radio_menu_mixin.py
-  - [x] Frequency slot - meshtasticd_config_mixin.py
-  - [x] Modem preset (Short Turbo, etc.) - meshtasticd_config_mixin.py
-  - [x] TX power - radio_menu_mixin.py (NEW)
-  - [x] Position (lat/lon) - radio_menu_mixin.py
-  - [x] MQTT policy - meshtasticd_config_mixin.py (NEW)
-- [x] **Gateway config menu** - For RNS bridge setup (2026-02-02) - gateway_config_mixin.py (NEW)
-
-### Code Quality
-- [x] **Consolidate `get_real_user_home()`** - Reviewed: try/except fallback pattern is intentional for robustness when utils.paths unavailable
-- [x] **Split large files** (>1500 lines) - COMPLETE:
-  - [x] `rns.py` (673 lines now) - Successfully refactored
-  - [x] `main_web.py` (1314 lines now) - Successfully refactored
-  - [x] `launcher_tui/main.py` (1845 lines now) - Extracted to mixins (2026-01-15)
-  - [x] `hamclock.py` (2107 lines now) - Extracted to mixins (2026-01-15)
-
-### Testing
-- [x] **Install pytest** - Available in environment
-- [x] **Add tests for gateway transport** - 39 tests for transport layer
-- [x] **Add tests for network diagnostics** - 28 tests (2026-01-15)
-
-### TUI-Bridge API Wiring
-- [ ] **MeshCore node listing** - Wire `_meshcore_nodes()` to live node tracker (filter `meshcore:` prefix) — currently placeholder text
-- [ ] **MeshCore stats** - Wire `_meshcore_stats()` to bridge stats API (`meshcore_rx/tx/acks`) — currently static help text
-- [ ] **Classifier MeshCore 3-way routing** - Verify `BRIDGE_MESHCORE` end-to-end with MeshCore source network (enum exists in `classifier.py`)
-- [ ] **Auto-review reliability triage** - Review 64 reliability issues: real vs false positive classification
+**Alpha branch contents** (16 commits ahead of main, PRs #847-#851):
+- `meshcore_handler.py` — MeshCore protocol handler (796 lines)
+- `canonical_message.py` — Multi-protocol canonical message format (437 lines)
+- `meshcore_bridge_mixin.py` — Bridge integration mixin (169 lines)
+- `meshcore_mixin.py` — TUI menu for MeshCore operations (391 lines)
+- `rns_config_mixin.py` + `rns_diagnostics_mixin.py` — Extracted from rns_menu_mixin
+- `message_routing.py` — Enhanced with 3-way routing (MeshCore source)
+- 1,839 lines of new tests (canonical_message, meshcore_handler, tribridge)
 
 ---
 
-## 🟠 Priority 2: Feature Completion
+## Open Work
 
-### RNS Management Panel (Phase 2)
-- [x] Install/update RNS, LXMF, NomadNet, MeshChat
-- [x] Service management for rnsd
-- [x] **RNODE device detection and setup** - Hardware wizard (2026-01-12)
-- [x] Configuration editor
+### TUI-Bridge API Wiring (Alpha)
+- [ ] **MeshCore node listing** — Wire `_meshcore_nodes()` to live node tracker (filter `meshcore:` prefix)
+- [ ] **MeshCore stats** — Wire `_meshcore_stats()` to bridge stats API (`meshcore_rx/tx/acks`)
+- [ ] **Classifier MeshCore 3-way routing** — Verify `BRIDGE_MESHCORE` end-to-end
+- [ ] **Auto-review reliability triage** — Review 64 reliability issues: real vs false positive
+
+### Service Pre-flight Expansion (Issue #3)
+- [ ] **34+ locations** still create TCPInterface/MQTT connections without `check_service()` pre-flight
+- [ ] **8 files** use raw `subprocess.run(['systemctl', ...])` bypassing `service_check` module
 
 ### Plugins
-- [x] `meshcore.py:81` - Implement actual MeshCore connection (2026-01-12)
-- [x] `meshcore.py:107` - Implement actual message sending (2026-01-12)
-- [x] **MQTT dashboard** - Bridge to MQTT brokers (2026-01-17)
-- [ ] **NanoVNA plugin** - Antenna tuning integration → `alpha`
-
-### Node Firmware
-- [ ] **Firmware flashing from TUI** - Flash meshtastic firmware (future)
-- [x] **Device backup/restore** - Save and restore node configs (2026-01-17)
-
----
-
-## 🟡 Priority 3: UI/UX Improvements
-
-### Dark Mode
-- [x] **CSS variable foundation** - Theme system with light/dark support (2026-01-12)
-- [x] GTK dark mode toggle - Settings panel with Force Dark Mode switch (verified 2026-01-15)
-- [x] Web UI dark mode (integration) - data-theme attribute support (2026-01-17)
-- [x] TUI dark mode - Toggle with T key (2026-01-17)
-- [x] Unified theme system - Settings persist across UI (2026-01-17)
-
-### TUI Improvements (→ `beta` branch)
-- [x] Better navigation - Tab switching with hotkeys (2026-01-17)
-- [x] Keyboard shortcuts - q, d, s, c, m, t, r, T (2026-01-17)
-- [x] Status bar with key info - Footer with bindings (2026-01-17)
-
-### Map Panel
-- [x] Memory leak fix (timer cleanup)
-- [x] Offline map tiles - OFFLINE_TILE_PROVIDERS added (2026-01-17)
-- [x] Custom markers for node types - NODE_ICONS by role (2026-01-17)
-
----
-
-## 🟢 Priority 4: Nice to Have
-
-### Analytics
-- [x] Coverage analytics - CoverageAnalyzer class (2026-01-17)
-- [x] VOACAP propagation predictions (2026-01-12)
-- [x] Link budget history/trends - AnalyticsStore with SQLite (2026-01-17)
-
-### API
-- [x] Local REST API documentation - docs/REST_API.md (2026-01-17)
-- [x] Webhook support for events - WebhookManager class (2026-01-17)
-- [x] Integration with external tools - via webhooks (2026-01-17)
+- [ ] **NanoVNA plugin** — Antenna tuning integration
+- [ ] **Firmware flashing from TUI** — Flash meshtastic firmware
 
 ### Documentation
 - [ ] Video tutorials
@@ -125,67 +48,22 @@
 
 ---
 
-## Completed ✅
+## Recently Completed
 
-- [x] GTK4 Desktop UI
-- [x] Unified Node Map
-- [x] RNS-Meshtastic Gateway (basic)
-- [x] **RNS Over Meshtastic transport layer** (2026-01-11)
-- [x] **Gateway transport API endpoints** (2026-01-11)
-- [x] **Gateway transport CLI commands** (2026-01-11)
-- [x] **Gateway transport tests (39 tests)** (2026-01-11)
-- [x] AREDN Integration
-- [x] Amateur Radio Compliance course
-- [x] Standalone boot mode
-- [x] MeshChat web interface integration
-- [x] Network Diagnostics panel
-- [x] NomadNet launch from GTK
-- [x] VOACAP HF propagation links
-- [x] Map panel memory leak fix
-- [x] **VTE launcher fallback improvements** (2026-01-11)
-- [x] **Frequency slot calculator with tests** (2026-01-11)
-- [x] **Network diagnostics tests** (2026-01-12)
-- [x] **Gateway setup documentation** (2026-01-12)
-- [x] **RNODE device detection module** (2026-01-12)
-- [x] **Gateway setup wizard** (2026-01-12)
-- [x] **MeshCore TCP connection** (2026-01-12)
-- [x] **Dark mode CSS foundation** (2026-01-12)
-- [x] **HamClock DX Spots integration** (2026-01-12)
-- [x] **HamClock Satellite tracking** (2026-01-12)
-- [x] **HamClock DE/DX location display** (2026-01-12)
-- [x] **meshtasticd responsive detection** (2026-01-17)
-- [x] **Sensors tab in Mesh Tools** (2026-01-17)
-- [x] **Message routing visualization** (2026-01-17)
-- [x] **MQTT dashboard improvements** (2026-01-17)
-- [x] **Device backup/restore** (2026-01-17)
-- [x] **Offline map tiles** (2026-01-17)
-- [x] **Custom node markers** (2026-01-17)
-- [x] **TUI dark mode + navigation + shortcuts** (2026-01-17)
-- [x] **Coverage analytics** (2026-01-17)
-- [x] **Link budget history/trends** (2026-01-17)
-- [x] **REST API documentation** (2026-01-17)
-- [x] **Webhook support** (2026-01-17)
-- [x] **MOC2 Health Check Fixes** (2026-01-20):
-  - [x] Fixed Table import in radio.py
-  - [x] Fixed meshtasticd.service (was using `meshtastic --tcp` client instead of daemon)
-  - [x] Added post-reboot guidance ("type meshforge to continue")
-  - [x] Added MeshAdv-Pi-Hat to template menu
-  - [x] Added post-config guidance (browser/CLI next steps)
-  - [x] Improved hardware-to-template mapping
-  - [x] Improved auto-review index_no_check pattern (19→0 false positives)
-  - [x] Created gateway-hawaiinet.yaml template
-- [x] **v0.5.2-beta** (2026-02-04): Refactoring wave — traffic_inspector, node_tracker, metrics_export, rns_menu_mixin splits
-- [x] **v0.5.3-beta** (2026-02-08): TUI service menu, MQTT mixin, meshtasticd config wizard
-- [x] **v0.5.4-beta** (2026-02-11): Gateway TX path fix — HTTP protobuf instead of CLI subprocess
+### 2026-02-20: Code Quality Sprint (PR pending)
+- [x] **Issue #1**: Path.home() — RESOLVED (3 violations fixed, 0 remaining)
+- [x] **Issue #5**: Fallback copies — RESOLVED (20 files consolidated to direct imports)
+- [x] **Issue #9**: Exception swallowing — 28 of 30 instances fixed across 7 files
+- [x] **Issue #3**: Service pre-flight — Gateway files (meshtastic_handler, mqtt_bridge, rns_bridge)
+- [x] **Issue #20 Phase 2**: Status display separation in meshtasticd_config_mixin
+- [x] **Issue #20 Phase 3**: Event bus wired to WebSocket server
+- [x] **.claude/ cleanup**: Removed 62 stale files (session notes, GTK issues), consolidated AI docs
 
----
-
-## Quick Wins (< 1 hour each)
-
-1. [x] Add pytest to requirements.txt
-2. [x] Create test for network diagnostics API (2026-01-12)
-3. [x] Add dark mode CSS variable foundation (2026-01-12)
-4. [x] Document gateway setup steps (2026-01-12)
+### v0.5.4-beta (2026-02-11)
+- [x] Gateway TX path fix — HTTP protobuf instead of CLI subprocess
+- [x] TUI service menu, MQTT mixin, meshtasticd config wizard
+- [x] Refactoring wave — traffic_inspector, node_tracker, metrics_export splits
+- [x] All daemon loops interruptible (H1 fix)
 
 ---
 
@@ -195,13 +73,14 @@
 
 | File | Lines | Status |
 |------|-------|--------|
-| knowledge_content.py | 1,824 | Over — content file by design, acceptable |
-| service_menu_mixin.py | 1,611 | Over — monitor; OpenHamClock/MQTT candidates for extraction |
-| rns_bridge.py | 1,525 | Over — MeshCoreBridgeMixin + MessageRouter + gateway_cli extracted |
-| map_data_collector.py | 1,516 | Borderline, monitor |
-| launcher_tui/main.py | 1,516 | Borderline — 33 mixins, monitor |
-
-*Last updated: 2026-02-17*
+| knowledge_content.py | 1,993 | OK — content file by design |
+| service_menu_mixin.py | 1,575 | MONITOR — OpenHamClock/MQTT extraction candidates |
+| rns_bridge.py | 1,570 | MONITOR — MeshCoreBridgeMixin + MessageRouter + gateway_cli extracted |
+| map_data_collector.py | 1,529 | Borderline, monitor |
+| nomadnet_client_mixin.py | 1,519 | MONITOR — new to tracking |
+| commands/rns.py | 1,516 | MONITOR — new to tracking |
+| launcher_tui/main.py | 1,507 | Borderline — 33 mixins, monitor |
+| prometheus_exporter.py | 1,505 | MONITOR — grew after metrics_export split |
 
 ---
 
@@ -210,10 +89,10 @@
 Focus areas for `/ralph-wiggum`:
 1. Message passing between RNS and Meshtastic
 2. Position/telemetry bridging
-3. Identity mapping (RNS hash ↔ Meshtastic node ID)
+3. Identity mapping (RNS hash <-> Meshtastic node ID)
 4. Error handling and reconnection
 5. Rate limiting and queue management
 
 ---
 
-*Made with aloha for the mesh community* 🤙
+*Made with aloha for the mesh community*

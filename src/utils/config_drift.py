@@ -46,6 +46,24 @@ class DriftResult:
     fix_hint: str = ""
     severity: str = "info"               # "info", "warning", "error"
 
+    @property
+    def can_auto_fix(self) -> bool:
+        """Whether the drift can be resolved by migrating to /etc/reticulum/.
+
+        Auto-fix is possible when drift is detected and at least one path
+        is not already /etc/reticulum (meaning migration would help).
+        """
+        if not self.drifted:
+            return False
+        # Resolve both sides consistently (handles symlinks)
+        etc_path = Path('/etc/reticulum').resolve()
+        gw_is_etc = (self.gateway_config_dir
+                      and self.gateway_config_dir.resolve() == etc_path)
+        rnsd_is_etc = (self.rnsd_config_dir
+                        and self.rnsd_config_dir.resolve() == etc_path)
+        # If both already point to /etc, migration won't help
+        return not (gw_is_etc and rnsd_is_etc)
+
 
 def _get_rnsd_pid() -> Optional[int]:
     """Get the PID of the running rnsd process.
@@ -296,8 +314,8 @@ def detect_rnsd_config_drift() -> DriftResult:
             f"(detected via {method})"
         ),
         fix_hint=(
-            f"Set rns.config_dir in gateway.json to '{rnsd_dir}', "
-            f"or move your RNS config to {rnsd_dir}/config"
+            f"Migrate config to /etc/reticulum/config (system-wide, preferred). "
+            f"This ensures rnsd, gateway, and all RNS clients use the same config."
         ),
         severity="warning",
     )

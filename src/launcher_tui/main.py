@@ -33,19 +33,15 @@ _launcher_dir = Path(__file__).parent
 if str(_launcher_dir) not in sys.path:
     sys.path.insert(0, str(_launcher_dir))
 
-from utils.safe_import import safe_import
-
 # Import version
-__version__, _HAS_VERSION = safe_import('__version__', '__version__')
-if not _HAS_VERSION:
-    __version__ = "0.5.0-beta"
+from __version__ import __version__
 
 # Import optional modules at module level
-_find_meshtastic_cli, _HAS_CLI_UTIL = safe_import('utils.cli', 'find_meshtastic_cli')
-_get_health_probe, _HAS_HEALTH_PROBE = safe_import('utils.active_health_probe', 'get_health_probe')
-_config_api_mod, _HAS_CONFIG_API = safe_import('utils.config_api')
-_lock_port_external, _HAS_PORT_LOCK = safe_import('utils.service_check', 'lock_port_external')
-_TopologyVisualizer, _HAS_TOPO_VIZ = safe_import('utils.topology_visualizer', 'TopologyVisualizer')
+from utils.cli import find_meshtastic_cli
+from utils.active_health_probe import get_health_probe
+from utils import config_api as config_api_mod
+from utils.service_check import lock_port_external
+# TopologyVisualizer imported in topology_mixin.py (export functions moved there)
 
 # Import centralized path utility - SINGLE SOURCE OF TRUTH for all paths
 # See: utils/paths.py (ReticulumPaths, get_real_user_home)
@@ -54,23 +50,14 @@ from utils.paths import get_real_user_home, ReticulumPaths
 
 # Import centralized service checker - SINGLE SOURCE OF TRUTH for service status
 # See: utils/service_check.py and .claude/foundations/install_reliability_triage.md
-check_service, check_port, apply_config_and_restart, ServiceState, _HAS_APPLY_RESTART = safe_import(
-    'utils.service_check', 'check_service', 'check_port', 'apply_config_and_restart', 'ServiceState'
-)
+from utils.service_check import check_service, check_port, apply_config_and_restart, ServiceState, _sudo_cmd
 
 # Import dialog backend directly (not through package namespace)
 from backend import DialogBackend, clear_screen
 
 # Import startup checks and conflict resolution (v0.4.8)
-StartupChecker, EnvironmentState, ServiceRunState, HAS_STARTUP_CHECKS = safe_import(
-    'startup_checks', 'StartupChecker', 'EnvironmentState', 'ServiceRunState'
-)
-if HAS_STARTUP_CHECKS:
-    check_and_resolve_conflicts, _ = safe_import(
-        'conflict_resolver', 'check_and_resolve_conflicts'
-    )
-else:
-    check_and_resolve_conflicts = None
+from startup_checks import StartupChecker, EnvironmentState, ServiceRunState
+from conflict_resolver import check_and_resolve_conflicts
 
 # Import mixins to reduce file size
 from rf_tools_mixin import RFToolsMixin
@@ -85,6 +72,7 @@ from quick_actions_mixin import QuickActionsMixin
 from emergency_mode_mixin import EmergencyModeMixin
 from rns_interfaces_mixin import RNSInterfacesMixin
 from nomadnet_client_mixin import NomadNetClientMixin
+from meshchat_client_mixin import MeshChatClientMixin
 from topology_mixin import TopologyMixin
 from rf_awareness_mixin import RFAwarenessMixin
 from metrics_mixin import MetricsMixin
@@ -115,6 +103,9 @@ from rnode_mixin import RNodeMixin
 from latency_mixin import LatencyMixin
 from dashboard_mixin import DashboardMixin
 from meshcore_mixin import MeshCoreMixin
+from radio_mode_mixin import RadioModeMixin
+from meshcore_config_mixin import MeshCoreConfigMixin
+from tactical_ops_mixin import TacticalOpsMixin
 
 
 class MeshForgeLauncher(
@@ -130,6 +121,7 @@ class MeshForgeLauncher(
     EmergencyModeMixin,
     RNSInterfacesMixin,
     NomadNetClientMixin,
+    MeshChatClientMixin,
     TopologyMixin,
     RFAwarenessMixin,
     MetricsMixin,
@@ -160,10 +152,13 @@ class MeshForgeLauncher(
     LatencyMixin,
     DashboardMixin,
     MeshCoreMixin,
+    RadioModeMixin,
+    MeshCoreConfigMixin,
+    TacticalOpsMixin,
 ):
     """MeshForge launcher with raspi-config style interface."""
 
-    def __init__(self):
+    def __init__(self, profile=None):
         self.dialog = DialogBackend()
         self.src_dir = Path(__file__).parent.parent  # src/ directory
         self.env = self._detect_environment()
@@ -172,8 +167,20 @@ class MeshForgeLauncher(
         self._bridge_log_path = None  # Path to active bridge log file
         self._config_api_server = None  # Config API HTTP server
         # Enhanced startup checker (v0.4.8)
-        self._startup_checker = StartupChecker() if HAS_STARTUP_CHECKS else None
+        self._startup_checker = StartupChecker()
         self._env_state: Optional[EnvironmentState] = None
+        # Deployment profile for menu filtering
+        self._profile = profile
+        self._feature_flags = getattr(profile, 'feature_flags', {}) if profile else {}
+
+    def _feature_enabled(self, feature: str) -> bool:
+        """Check if a feature is enabled in the current deployment profile.
+
+        When no profile is set, all features are enabled (backward compatible).
+        """
+        if not self._feature_flags:
+            return True
+        return self._feature_flags.get(feature, True)
 
     @staticmethod
     def _wait_for_enter(msg: str = "\nPress Enter to continue...") -> None:
@@ -194,10 +201,7 @@ class MeshForgeLauncher(
     def _get_meshtastic_cli(self) -> str:
         """Find the meshtastic CLI binary path, with caching."""
         if self._meshtastic_path is None:
-            if _HAS_CLI_UTIL:
-                self._meshtastic_path = _find_meshtastic_cli() or 'meshtastic'
-            else:
-                self._meshtastic_path = shutil.which('meshtastic') or 'meshtastic'
+            self._meshtastic_path = find_meshtastic_cli() or 'meshtastic'
         return self._meshtastic_path
 
     @staticmethod
@@ -375,23 +379,18 @@ class MeshForgeLauncher(
 
     def run(self):
         """Run the launcher."""
-        if not self.env['is_root']:
-            print("\nError: MeshForge requires root/sudo privileges")
-            print("Please run: sudo python3 src/launcher_tui/main.py")
-            sys.exit(1)
-
         if not self.dialog.available:
             # Fallback to basic launcher
             print("whiptail/dialog not available, using basic launcher...")
             self._run_basic_launcher()
             return
 
+        # Check for root without SUDO_USER (causes RNS auth issues)
+        self._check_root_without_sudo_user()
+
         # Run startup environment checks (v0.4.8)
         if not self._run_startup_checks():
             return  # User aborted due to conflicts
-
-        # Check for root without SUDO_USER (causes RNS auth issues)
-        self._check_root_without_sudo_user()
 
         # Check for first run and offer setup wizard
         if self._check_first_run():
@@ -430,12 +429,8 @@ class MeshForgeLauncher(
         rnsd, and mosquitto every 30 seconds. State changes are pushed
         to the EventBus, which the StatusBar subscribes to.
         """
-        if not _HAS_HEALTH_PROBE:
-            logger.debug("active_health_probe not available — health monitor disabled")
-            self._health_probe = None
-            return
         try:
-            self._health_probe = _get_health_probe(interval=30, fails=3, passes=2)
+            self._health_probe = get_health_probe(interval=30, fails=3, passes=2)
             self._health_probe.start()
             logger.info("Health monitor started (30s interval)")
         except Exception as e:
@@ -456,7 +451,7 @@ class MeshForgeLauncher(
         Returns:
             True to continue, False if user aborted
         """
-        if not HAS_STARTUP_CHECKS or not self._startup_checker:
+        if not self._startup_checker:
             return True
 
         # Get environment state
@@ -576,11 +571,7 @@ class MeshForgeLauncher(
             if self.dialog.yesno("Config Conflict", msg):
                 try:
                     usb_config.unlink()
-                    if _HAS_APPLY_RESTART:
-                        success, msg = apply_config_and_restart('meshtasticd')
-                    else:
-                        subprocess.run(['systemctl', 'daemon-reload'], timeout=30, check=False)
-                        subprocess.run(['systemctl', 'restart', 'meshtasticd'], timeout=30, check=False)
+                    apply_config_and_restart('meshtasticd')
                     self.dialog.msgbox(
                         "Fixed",
                         "Removed usb-serial.yaml\n"
@@ -623,13 +614,9 @@ class MeshForgeLauncher(
         Provides RESTful configuration API on localhost:8081.
         Silent operation - no dialogs on failure.
         """
-        if not _HAS_CONFIG_API:
-            logger.debug("Config API module not available")
-            return
-
         try:
-            create_gateway_config_api = _config_api_mod.create_gateway_config_api
-            ConfigAPIServer = _config_api_mod.ConfigAPIServer
+            create_gateway_config_api = config_api_mod.create_gateway_config_api
+            ConfigAPIServer = config_api_mod.ConfigAPIServer
             api = create_gateway_config_api()
             self._config_api_server = ConfigAPIServer(api, host="127.0.0.1", port=8081)
             if self._config_api_server.start():
@@ -656,12 +643,8 @@ class MeshForgeLauncher(
 
         Silent operation - logs result but no dialogs on failure.
         """
-        if not _HAS_PORT_LOCK:
-            logger.debug("Port lockdown not available (missing service_check)")
-            return
-
         try:
-            success, msg = _lock_port_external(9443)
+            success, msg = lock_port_external(9443)
             if success:
                 logger.info("Startup port lock: %s", msg)
             else:
@@ -740,16 +723,21 @@ class MeshForgeLauncher(
                 ("1", "Dashboard           Status, health, alerts"),
                 ("2", "Mesh Networks       Meshtastic, RNS, AREDN"),
                 ("3", "RF & SDR            Calculators, SDR monitoring"),
-                ("4", "Maps & Viz          Coverage maps, topology"),
-                ("5", "Configuration       Radio, services, settings"),
-                ("6", "System              Hardware, logs, Linux tools"),
-                # Quick Access
+            ]
+            if self._feature_enabled("maps"):
+                choices.append(("4", "Maps & Viz          Coverage maps, topology"))
+            choices.append(("5", "Configuration       Radio, services, settings"))
+            choices.append(("6", "System              Hardware, logs, Linux tools"))
+            # Quick Access
+            if self._feature_enabled("tactical"):
+                choices.append(("t", "Tactical Ops        SITREP, zones, QR, ATAK"))
+            choices.extend([
                 ("q", "Quick Actions       Common shortcuts"),
                 ("e", "Emergency Mode      Field operations"),
                 # Meta
                 ("a", "About               Version, help, web client"),
                 ("x", "Exit"),
-            ]
+            ])
 
             choice = self.dialog.menu(
                 f"MeshForge NOC v{__version__}",
@@ -786,6 +774,7 @@ class MeshForgeLauncher(
             "4": ("Maps & Visualization", self._maps_viz_menu),
             "5": ("Configuration", self._configuration_menu),
             "6": ("System Tools", self._system_menu),
+            "t": ("Tactical Ops", self._tactical_ops_menu),
             "q": ("Quick Actions", self._quick_actions_menu),
             "e": ("Emergency Mode", self._emergency_mode),
             "a": ("About", self._about_menu),
@@ -846,20 +835,26 @@ class MeshForgeLauncher(
     def _mesh_networks_menu(self):
         """Mesh Networks - Meshtastic, RNS, AREDN."""
         while True:
-            choices = [
-                ("meshtastic", "Meshtastic          Radio, channels, CLI"),
-                ("meshcore", "MeshCore            Companion radio, config"),
-                ("rns", "RNS / Reticulum     Status, gateway, NomadNet"),
-                ("gateway", "Gateway Bridge      RNS-Meshtastic-MeshCore"),
-                ("aredn", "AREDN Mesh          AREDN integration"),
-                ("messaging", "Messaging           Send/receive messages"),
-                ("traffic", "Traffic Classifier  Routing & notification stats"),
-                ("mqtt", "MQTT Monitor        Nodeless mesh observation"),
-                ("favorites", "Favorites           Manage favorite nodes"),
-                ("ham", "Ham Radio           Callsign, Part 97, ARES"),
-                ("services", "Service Control     Start/stop/restart"),
-                ("back", "Back"),
-            ]
+            choices = []
+            choices.append(("radio_mode", "Radio Mode          Select primary radio (Meshtastic/MeshCore)"))
+            if self._feature_enabled("meshtastic"):
+                choices.append(("meshtastic", "Meshtastic          Radio, channels, CLI"))
+            if self._feature_enabled("meshcore"):
+                choices.append(("meshcore", "MeshCore            Companion radio, status"))
+            choices.append(("mc_config", "MeshCore Config     /etc/meshcore/ management"))
+            if self._feature_enabled("rns"):
+                choices.append(("rns", "RNS / Reticulum     Status, gateway, messaging"))
+            if self._feature_enabled("gateway"):
+                choices.append(("gateway", "Gateway Bridge      RNS-Meshtastic-MeshCore"))
+            choices.append(("aredn", "AREDN Mesh          AREDN integration"))
+            choices.append(("messaging", "Messaging           Send/receive messages"))
+            choices.append(("traffic", "Traffic Classifier  Routing & notification stats"))
+            if self._feature_enabled("mqtt"):
+                choices.append(("mqtt", "MQTT Monitor        Nodeless mesh observation"))
+            choices.append(("favorites", "Favorites           Manage favorite nodes"))
+            choices.append(("ham", "Ham Radio           Callsign, Part 97, ARES"))
+            choices.append(("services", "Service Control     Start/stop/restart"))
+            choices.append(("back", "Back"))
 
             choice = self.dialog.menu(
                 "Mesh Networks",
@@ -871,8 +866,10 @@ class MeshForgeLauncher(
                 break
 
             dispatch = {
+                "radio_mode": ("Radio Mode", self._radio_mode_menu),
                 "meshtastic": ("Meshtastic Radio", self._radio_menu),
                 "meshcore": ("MeshCore Radio", self._meshcore_menu),
+                "mc_config": ("MeshCore Config", self._meshcore_config_menu),
                 "rns": ("RNS / Reticulum", self._rns_menu),
                 "gateway": ("Gateway Bridge", self._gateway_config_menu),
                 "aredn": ("AREDN Mesh", self._aredn_menu),
@@ -962,83 +959,6 @@ class MeshForgeLauncher(
             entry = dispatch.get(choice)
             if entry:
                 self._safe_call(*entry)
-
-    def _export_data_menu(self):
-        """Export data in various formats."""
-        while True:
-            choices = [
-                ("geojson", "GeoJSON             For mapping tools"),
-                ("csv", "CSV                 Spreadsheet format"),
-                ("graphml", "GraphML             For graph analysis"),
-                ("d3", "D3.js JSON          For web visualization"),
-                ("back", "Back"),
-            ]
-
-            choice = self.dialog.menu(
-                "Export Data",
-                "Export network data:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "geojson": ("GeoJSON Export", lambda: self._export_topology_data("geojson")),
-                "csv": ("CSV Export", lambda: self._export_topology_data("csv")),
-                "graphml": ("GraphML Export", lambda: self._export_topology_data("graphml")),
-                "d3": ("D3.js Export", lambda: self._export_topology_data("d3")),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self._safe_call(*entry)
-
-    def _export_topology_data(self, format_type: str):
-        """Export topology data in specified format."""
-        if not _HAS_TOPO_VIZ:
-            self.dialog.msgbox("Export Failed", "Topology visualizer module not available.")
-            return
-
-        try:
-            # Get topology from TopologyMixin (properly populated)
-            topology = self._get_topology()
-            if topology is None:
-                self.dialog.msgbox(
-                    "Export Unavailable",
-                    "Network topology not loaded.\n\n"
-                    "The gateway service may need to be running."
-                )
-                return
-
-            # Create visualizer from actual topology data
-            viz = _TopologyVisualizer.from_topology(topology)
-
-            if format_type == "geojson":
-                path, count = viz.export_geojson()
-                self.dialog.msgbox(
-                    "GeoJSON Export",
-                    f"Exported {count} features.\n\nFile: {path}"
-                )
-            elif format_type == "csv":
-                nodes_path, edges_path = viz.export_csv()
-                self.dialog.msgbox(
-                    "CSV Export",
-                    f"Exported CSV files:\n\nNodes: {nodes_path}\nEdges: {edges_path}"
-                )
-            elif format_type == "graphml":
-                path, count = viz.export_graphml()
-                self.dialog.msgbox(
-                    "GraphML Export",
-                    f"Exported {count} edges.\n\nFile: {path}"
-                )
-            elif format_type == "d3":
-                path, count = viz.export_d3_json()
-                self.dialog.msgbox(
-                    "D3.js Export",
-                    f"Exported {count} nodes + links.\n\nFile: {path}"
-                )
-        except Exception as e:
-            self.dialog.msgbox("Export Failed", f"Error: {e}")
 
     # --- NEW Submenu: Configuration (5) ---
 
@@ -1150,10 +1070,10 @@ class MeshForgeLauncher(
 
             if choice == "reboot":
                 if self.dialog.yesno("Confirm Reboot", "Reboot the system now?"):
-                    subprocess.run(['systemctl', 'reboot'], timeout=30)
+                    subprocess.run(_sudo_cmd(['systemctl', 'reboot']), timeout=30)
             elif choice == "shutdown":
                 if self.dialog.yesno("Confirm Shutdown", "Shutdown the system now?"):
-                    subprocess.run(['systemctl', 'poweroff'], timeout=30)
+                    subprocess.run(_sudo_cmd(['systemctl', 'poweroff']), timeout=30)
 
     # --- NEW Submenu: About (a) ---
 
@@ -1214,13 +1134,26 @@ SUPPORT:
 
     # --- Config Menu - meshtasticd config.d/ management ---
 
+    def _ensure_meshtasticd_config(self):
+        """Auto-create /etc/meshtasticd structure and templates if missing."""
+        try:
+            from core.meshtasticd_config import MeshtasticdConfig
+            MeshtasticdConfig().ensure_structure()
+        except PermissionError:
+            logger.debug("Cannot auto-create meshtasticd config (no root)")
+        except Exception as e:
+            logger.debug("meshtasticd config auto-create failed: %s", e)
+
     def _config_menu(self):
         """Configuration management for meshtasticd."""
+        # Auto-create /etc/meshtasticd structure if missing
+        self._ensure_meshtasticd_config()
+
         while True:
             choices = [
                 ("view", "View Active Config"),
                 ("overlays", "View config.d/ Overlays"),
-                ("available", "Available HAT Configs"),
+                ("available", "Available Hardware Configs"),
                 ("presets", "LoRa Presets"),
                 ("channels", "Channel Configuration"),
                 ("meshtasticd", "Advanced meshtasticd Config"),
@@ -1241,7 +1174,7 @@ SUPPORT:
             dispatch = {
                 "view": ("View Active Config", self._view_active_config),
                 "overlays": ("Config Overlays", self._view_config_overlays),
-                "available": ("Available HAT Configs", self._view_available_hats),
+                "available": ("Available Hardware Configs", self._view_available_configs),
                 "presets": ("LoRa Presets", self._radio_presets_menu),
                 "channels": ("Channel Config", self._channel_config_menu),
                 "meshtasticd": ("Advanced Config", self._meshtasticd_menu),
@@ -1258,6 +1191,11 @@ SUPPORT:
         print("=== meshtasticd config.yaml ===\n")
 
         config_path = Path('/etc/meshtasticd/config.yaml')
+
+        # Auto-create if missing
+        if not config_path.exists():
+            self._ensure_meshtasticd_config()
+
         if config_path.exists():
             print(f"File: {config_path}\n")
             try:
@@ -1265,32 +1203,42 @@ SUPPORT:
             except PermissionError:
                 print("Permission denied. Try: sudo cat /etc/meshtasticd/config.yaml")
         else:
-            print("config.yaml not found!")
-            print("\nInstall meshtasticd:")
-            print("  sudo apt install meshtasticd")
-            print("  # or run the MeshForge installer")
+            print("config.yaml not found!\n")
+            print("Run MeshForge with sudo to auto-create:")
+            print("  sudo python3 src/launcher_tui/main.py")
+            print("\nOr create manually:")
+            print("  sudo mkdir -p /etc/meshtasticd/{available.d,config.d}")
+            print("  sudo cp templates/config.yaml /etc/meshtasticd/")
+            print("  sudo cp templates/available.d/*.yaml /etc/meshtasticd/available.d/")
 
         self._wait_for_enter()
 
     def _view_config_overlays(self):
-        """Show config.d/ overlay files."""
+        """Show config.d/ overlay files (active hardware configs)."""
         clear_screen()
-        print("=== config.d/ Overlays ===\n")
+        print("=== config.d/ Active Hardware Configs ===\n")
 
         config_d = Path('/etc/meshtasticd/config.d')
+
+        # Auto-create if missing
+        if not config_d.exists():
+            self._ensure_meshtasticd_config()
+
         if not config_d.exists():
             print("config.d/ directory not found.")
-            print("Create it: sudo mkdir -p /etc/meshtasticd/config.d")
+            print("\nRun with sudo to auto-create, or:")
+            print("  sudo mkdir -p /etc/meshtasticd/config.d")
             self._wait_for_enter()
             return
 
         overlays = sorted(config_d.glob('*.yaml'))
         if not overlays:
-            print("No overlay files in config.d/")
-            print("\nOverlays override sections from config.yaml")
-            print("MeshForge writes here instead of touching config.yaml")
+            print("No active hardware configs in config.d/\n")
+            print("Select your hardware from:")
+            print("  Configuration > Available Hardware Configs")
+            print("  Configuration > Advanced meshtasticd Config > Hardware Config")
         else:
-            print(f"Found {len(overlays)} overlay(s):\n")
+            print(f"Found {len(overlays)} active config(s):\n")
             for f in overlays:
                 size = f.stat().st_size
                 print(f"  {f.name} ({size} bytes)")
@@ -1306,32 +1254,54 @@ SUPPORT:
 
         self._wait_for_enter()
 
-    def _view_available_hats(self):
-        """Show available HAT configurations from meshtasticd package."""
+    def _view_available_configs(self):
+        """Show available hardware configs (USB + SPI HATs)."""
         clear_screen()
-        print("=== Available HAT Configs ===\n")
+        print("=== Available Hardware Configs ===\n")
 
         available_d = Path('/etc/meshtasticd/available.d')
+
+        # Auto-create if missing
         if not available_d.exists():
-            print("available.d/ not found.")
-            print("meshtasticd package should provide this.")
-            print("\nInstall: sudo apt install meshtasticd")
+            self._ensure_meshtasticd_config()
+
+        if not available_d.exists():
+            print("available.d/ not found.\n")
+            print("Run with sudo to auto-create, or:")
+            print("  sudo mkdir -p /etc/meshtasticd/available.d")
+            print("  sudo cp templates/available.d/*.yaml /etc/meshtasticd/available.d/")
             self._wait_for_enter()
             return
 
         configs = sorted(available_d.glob('*.yaml'))
         if not configs:
-            print("No HAT configs available.")
+            print("No hardware configs available.")
         else:
-            print(f"Found {len(configs)} HAT config(s):\n")
-            for i, f in enumerate(configs, 1):
-                print(f"  {i:2d}. {f.name}")
+            # Categorize USB vs SPI
+            usb_configs = [f for f in configs if '-usb' in f.stem or f.stem.startswith('usb-')]
+            spi_configs = [f for f in configs if f not in usb_configs]
 
-            print("\nTo activate a HAT config:")
-            print("  sudo cp /etc/meshtasticd/available.d/<file>.yaml \\")
-            print("         /etc/meshtasticd/config.d/")
-            print("  sudo systemctl restart meshtasticd")
-            print("\nWARNING: Only ONE Lora config should be in config.d/")
+            if usb_configs:
+                print(f"USB Radios ({len(usb_configs)}):")
+                for i, f in enumerate(usb_configs, 1):
+                    print(f"  {i:2d}. {f.stem}")
+
+            if spi_configs:
+                if usb_configs:
+                    print()
+                print(f"SPI HATs ({len(spi_configs)}):")
+                for i, f in enumerate(spi_configs, 1):
+                    print(f"  {i:2d}. {f.stem}")
+
+            # Show active
+            config_d = Path('/etc/meshtasticd/config.d')
+            if config_d.exists():
+                active = list(config_d.glob('*.yaml'))
+                if active:
+                    print(f"\nActive: {', '.join(f.stem for f in active)}")
+
+            print(f"\nTotal: {len(configs)} templates")
+            print("\nActivate via: Configuration > Advanced meshtasticd Config > Hardware Config")
 
         self._wait_for_enter()
 
@@ -1423,10 +1393,17 @@ def main():
     import os
     import datetime
 
-    # Set all loggers to CRITICAL to prevent output during TUI
-    logging.getLogger().setLevel(logging.CRITICAL)
+    # Suppress CONSOLE logging to prevent TUI corruption, but keep file
+    # handlers active so errors are still captured in log files.
+    root = logging.getLogger()
+    for handler in root.handlers:
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+            handler.setLevel(logging.CRITICAL)
     for name in logging.root.manager.loggerDict:
-        logging.getLogger(name).setLevel(logging.CRITICAL)
+        lgr = logging.getLogger(name)
+        for handler in lgr.handlers:
+            if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+                handler.setLevel(logging.CRITICAL)
 
     # Redirect stderr to log file to prevent TUI corruption
     log_dir = Path("/tmp")
@@ -1435,14 +1412,39 @@ def main():
         log_dir = get_real_user_home() / ".cache" / "meshforge" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
     except Exception:
-        pass
+        logger.debug("Could not create log dir, falling back to /tmp")
 
     stderr_log = log_dir / "tui_errors.log"
     _original_stderr = sys.stderr
+
+    # Last-resort exception hook — catches crashes that bypass try/except
+    _original_excepthook = sys.excepthook
+
+    def _crash_hook(exc_type, exc_value, exc_tb):
+        try:
+            with open(stderr_log, 'a') as f:
+                f.write(f"\n{'='*60}\n")
+                f.write(f"[{datetime.datetime.now().isoformat()}] "
+                        f"UNHANDLED {exc_type.__name__}\n")
+                traceback.print_exception(
+                    exc_type, exc_value, exc_tb, file=f)
+                f.write(f"{'='*60}\n")
+                f.flush()
+        except Exception:
+            pass
+        _original_excepthook(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _crash_hook
+
+    # Show log path before stderr redirect so user knows where to look
+    print(f"  Log: {stderr_log}", file=_original_stderr)
+
+    _stderr_file = None
     try:
-        sys.stderr = open(stderr_log, 'a')
+        _stderr_file = open(stderr_log, 'a')  # noqa: SIM115 — long-lived redirect
+        sys.stderr = _stderr_file
     except Exception:
-        pass  # Keep original stderr if can't redirect
+        logger.debug("Could not redirect stderr, keeping original")
 
     launcher = None
     exit_code = 0
@@ -1454,9 +1456,10 @@ def main():
     except Exception as e:
         # Restore stderr FIRST so the user can see the error message
         try:
-            if sys.stderr != _original_stderr:
-                sys.stderr.close()
-                sys.stderr = _original_stderr
+            sys.stderr = _original_stderr
+            if _stderr_file is not None:
+                _stderr_file.close()
+                _stderr_file = None
         except Exception:
             pass
 
@@ -1502,13 +1505,15 @@ def main():
             except Exception as e:
                 logger.warning(f"Cleanup failed for map server: {e}")
 
-        # Restore stderr
+        # Restore stderr and close the log file handle
         try:
-            if sys.stderr != _original_stderr:
-                sys.stderr.close()
-                sys.stderr = _original_stderr
+            sys.stderr = _original_stderr
+            if _stderr_file is not None:
+                _stderr_file.flush()
+                _stderr_file.close()
         except Exception:
             pass
+        sys.excepthook = _original_excepthook
         sys.exit(exit_code)
 
 

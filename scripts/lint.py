@@ -3,11 +3,16 @@
 MeshForge Linter - Check for common issues and coding standards.
 
 Checks:
-- Path.home() violations (must use get_real_user_home for sudo compatibility)
-- shell=True in subprocess calls (security risk)
-- Bare except: clauses (should use except Exception:)
-- Missing timeout in subprocess calls
-- Command injection risks
+- MF001: Path.home() violations (must use get_real_user_home for sudo compatibility)
+- MF002: shell=True in subprocess calls (security risk)
+- MF003: Bare except: clauses (should use except Exception:)
+- MF004: Missing timeout in subprocess calls
+- MF005: GLib.idle_add check for thread-safe UI updates
+- MF006: safe_import for first-party modules (must use direct imports)
+- MF007: Direct TCPInterface creation (must use connection manager, Issue #17)
+- MF008: Raw systemctl for service state decisions (must use service_check, Issue #20)
+- MF009: RNS.Reticulum() without configdir (causes EADDRINUSE, Issue #12)
+- MF010: time.sleep() in daemon loops (must use _stop_event.wait(), H1)
 
 Usage:
     python3 scripts/lint.py [files...]
@@ -189,6 +194,22 @@ class MeshForgeLinter:
                             "subprocess call without timeout parameter"
                         ))
 
+        # MF006: safe_import for first-party modules
+        # First-party modules must use direct imports, not safe_import
+        if 'safe_import(' in line and 'safe_import.py' not in filepath:
+            first_party_prefixes = (
+                "'utils.", "'commands.", "'gateway.", "'core.",
+                "'launcher_tui.", "'config.", "'monitoring.", "'plugins.",
+                "'cli.", "'agent.", "'amateur.", "'diagnostics.", "'updates.",
+            )
+            if any(prefix in line for prefix in first_party_prefixes):
+                # Skip docstrings/comments/examples
+                if not stripped.startswith('#') and not stripped.startswith('"') and not stripped.startswith("'"):
+                    issues.append(LintIssue(
+                        filepath, lineno, Severity.ERROR, "MF006",
+                        "safe_import used for first-party module - use direct import instead"
+                    ))
+
         # MF005: GLib.idle_add check - UI updates from threads
         # Only check for actual GTK widget methods, not generic list operations
         gtk_ui_methods = ['set_text', 'set_label', 'set_markup', 'set_sensitive', 'set_visible',
@@ -205,6 +226,91 @@ class MeshForgeLinter:
                         issues.append(LintIssue(
                             filepath, lineno, Severity.INFO, "MF005",
                             "UI update in thread context - ensure GLib.idle_add() is used"
+                        ))
+
+        # MF007: Direct TCPInterface creation (bypasses connection manager)
+        # meshtasticd supports ONE TCP client — direct creation causes thrashing (Issue #17)
+        if 'TCPInterface(' in line:
+            # Allowlist: files that ARE the connection infrastructure
+            conn_infrastructure = (
+                'connection_manager.py', 'meshtastic_connection.py', 'connections.py',
+            )
+            # Files that use the global lock correctly (tracked, not violations)
+            lock_aware_files = (
+                'node_monitor.py', 'device_controller.py',
+                'rns_transport.py', 'mesh_bridge.py',
+            )
+            basename = os.path.basename(filepath)
+            is_infra = any(f in filepath for f in conn_infrastructure)
+            is_lock_aware = any(f in filepath for f in lock_aware_files)
+            is_string = stripped.startswith('"') or stripped.startswith("'")
+            is_comment = stripped.startswith('#')
+            is_test = '/tests/' in filepath or 'test_' in basename
+            if not is_infra and not is_lock_aware and not is_string and not is_comment and not is_test:
+                issues.append(LintIssue(
+                    filepath, lineno, Severity.ERROR, "MF007",
+                    "Direct TCPInterface() creation — use MeshtasticConnection from "
+                    "connection_manager.py or acquire MESHTASTIC_CONNECTION_LOCK first (Issue #17)"
+                ))
+
+        # MF008: Raw systemctl for service state decisions (bypasses service_check)
+        if 'systemctl' in line and 'subprocess' in line:
+            basename = os.path.basename(filepath)
+            # Only flag state-determining calls, not display-only (status --no-pager)
+            is_state_check = (
+                "'is-active'" in line or '"is-active"' in line or
+                "'restart'" in line or '"restart"' in line or
+                "'start'" in line or '"start"' in line or
+                "'stop'" in line or '"stop"' in line or
+                "'enable'" in line or '"enable"' in line
+            )
+            is_display_only = '--no-pager' in line or "'status'" in line or '"status"' in line
+            is_service_check = 'service_check.py' in filepath
+            is_string = stripped.startswith('"') or stripped.startswith("'")
+            if is_state_check and not is_display_only and not is_service_check and not is_string:
+                issues.append(LintIssue(
+                    filepath, lineno, Severity.WARNING, "MF008",
+                    "Raw systemctl call — use helpers from utils.service_check instead (Issue #20)"
+                ))
+
+        # MF009: RNS.Reticulum() without configdir
+        # Without configdir, RNS reads user config with interfaces → EADDRINUSE (Issue #12)
+        if 'Reticulum(' in line and 'configdir' not in line:
+            basename = os.path.basename(filepath)
+            is_test = '/tests/' in filepath or 'test_' in basename
+            is_comment = stripped.startswith('#')
+            is_string = stripped.startswith('"') or stripped.startswith("'")
+            # Only flag actual code calls — pattern: assignment or standalone call
+            # e.g. "self._reticulum = RNS.Reticulum(" or "reticulum = RNS.Reticulum("
+            is_actual_call = bool(re.search(
+                r'=\s*\w*\.?Reticulum\s*\(', line
+            ))
+            if not is_test and not is_comment and not is_string and is_actual_call:
+                # Check if configdir is on the next few lines (multi-line call)
+                line_idx = content.find(line)
+                if line_idx != -1:
+                    following = content[line_idx:line_idx + 300]
+                    if 'configdir' not in following.split(')')[0]:
+                        issues.append(LintIssue(
+                            filepath, lineno, Severity.ERROR, "MF009",
+                            "RNS.Reticulum() without configdir= — will cause EADDRINUSE "
+                            "when rnsd is running (Issue #12)"
+                        ))
+
+        # MF010: time.sleep() in daemon loops (should use _stop_event.wait())
+        if 'time.sleep(' in line:
+            is_string = stripped.startswith('"') or stripped.startswith("'")
+            is_comment = stripped.startswith('#')
+            if not is_string and not is_comment:
+                # Check if we're inside a daemon loop method
+                func_match = content.rfind('def ', 0, content.find(line))
+                if func_match != -1:
+                    func_sig = content[func_match:func_match + 200].split('\n')[0]
+                    daemon_patterns = ('_loop', '_run', 'run_forever', '_poll', '_monitor')
+                    if any(p in func_sig for p in daemon_patterns):
+                        issues.append(LintIssue(
+                            filepath, lineno, Severity.WARNING, "MF010",
+                            "time.sleep() in daemon loop — use _stop_event.wait() for clean shutdown"
                         ))
 
         return issues

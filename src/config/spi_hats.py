@@ -10,10 +10,7 @@ from rich.panel import Panel
 
 from config.hardware import HardwareDetector
 from utils.logger import log
-from utils.safe_import import safe_import
-
-# Service management helper (optional)
-_enable_service, _HAS_ENABLE_SERVICE = safe_import('utils.service_check', 'enable_service')
+from utils.service_check import _sudo_cmd, _sudo_write, enable_service
 
 console = Console()
 
@@ -342,37 +339,38 @@ class SPIHatConfigurator:
         ]
 
         for dir_path in config_dirs:
-            Path(dir_path).mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                _sudo_cmd(['mkdir', '-p', dir_path]),
+                check=False, timeout=10
+            )
 
-        # Generate config.yaml content
+        # Generate hardware config content
         yaml_content = self.generate_config_yaml(config)
 
-        # Save to config.yaml
-        config_yaml_path = '/etc/meshtasticd/config.yaml'
-        try:
-            with open(config_yaml_path, 'w') as f:
-                f.write(yaml_content)
-            saved_files.append(config_yaml_path)
-        except PermissionError:
-            console.print(f"[red]Permission denied: {config_yaml_path}[/red]")
-            console.print("[yellow]Try running with sudo[/yellow]")
+        # NEVER overwrite /etc/meshtasticd/config.yaml — that is the user's
+        # file (MaxNodes, MaxMessageQueue, etc.).  Hardware-specific settings
+        # go to available.d/ with a symlink in config.d/ only.
 
         # Save device-specific config to available.d
         hat_name = config.get('hat', 'unknown').lower().replace(' ', '-')
         available_path = f'/etc/meshtasticd/available.d/{hat_name}.yaml'
-        try:
-            with open(available_path, 'w') as f:
-                f.write(yaml_content)
+        success, msg = _sudo_write(available_path, yaml_content)
+        if success:
             saved_files.append(available_path)
 
             # Create symlink in config.d to enable
             config_d_path = f'/etc/meshtasticd/config.d/{hat_name}.yaml'
-            if os.path.exists(config_d_path):
-                os.remove(config_d_path)
-            os.symlink(available_path, config_d_path)
+            subprocess.run(
+                _sudo_cmd(['rm', '-f', config_d_path]),
+                check=False, timeout=10
+            )
+            subprocess.run(
+                _sudo_cmd(['ln', '-s', available_path, config_d_path]),
+                check=False, timeout=10
+            )
             saved_files.append(config_d_path)
-        except PermissionError:
-            console.print(f"[red]Permission denied writing to available.d[/red]")
+        else:
+            console.print(f"[red]Failed to write to available.d: {msg}[/red]")
 
         return saved_files
 
@@ -483,7 +481,7 @@ class SPIHatConfigurator:
             time.sleep(2)
 
             # Reboot
-            subprocess.run(['reboot'], check=False, timeout=10)
+            subprocess.run(_sudo_cmd(['reboot']), check=False, timeout=10)
         else:
             console.print("\n[yellow]Please reboot manually when ready:[/yellow]")
             console.print("  [cyan]sudo reboot[/cyan]\n")
@@ -512,18 +510,16 @@ TTYVHangup=yes
 WantedBy=multi-user.target
 """
         try:
-            # Write service file
-            with open(AUTOSTART_SERVICE, 'w') as f:
-                f.write(service_content)
+            # Write service file (needs sudo for /etc/systemd/system/)
+            success, msg = _sudo_write(AUTOSTART_SERVICE, service_content)
+            if not success:
+                log(f"Failed to write service file: {msg}", 'error')
+                raise PermissionError(msg)
 
             # Enable the service for next boot
-            if _HAS_ENABLE_SERVICE:
-                success, msg = _enable_service('meshtasticd-installer-resume.service')
-                if not success:
-                    log(f"Warning: {msg}", 'warning')
-            else:
-                subprocess.run(['systemctl', 'daemon-reload'], check=False, timeout=30)
-                subprocess.run(['systemctl', 'enable', 'meshtasticd-installer-resume.service'], check=False, timeout=15)
+            success, msg = enable_service('meshtasticd-installer-resume.service')
+            if not success:
+                log(f"Warning: {msg}", 'warning')
 
             log("Resume service created for post-reboot installer start")
         except PermissionError:

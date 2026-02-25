@@ -7,7 +7,8 @@
 python3 -m pytest tests/ -v
 
 # Run specific test file
-python3 -m pytest tests/test_rf.py -v
+python3 -m pytest tests/test_rf.py -v             # RF calculations
+python3 -m pytest tests/test_rns_bridge.py -v     # Gateway bridge
 
 # Run with coverage
 python3 -m pytest tests/ --cov=src --cov-report=term-missing
@@ -21,10 +22,19 @@ python3 -m py_compile src/**/*.py
 ## Test Locations
 
 ```
-tests/
-├── test_rf.py       # RF calculations (well-tested)
-├── test_utils.py    # Utility functions
-└── conftest.py      # Shared fixtures
+tests/                             # 1,986 tests across 60 files
+├── conftest.py                    # Shared fixtures (mock_meshtastic, mock_rns, no_network)
+├── test_rns_bridge.py             # Gateway bridge (140 tests)
+├── test_rf.py                     # RF calculations (107 tests)
+├── test_rns_transport.py          # RNS transport (97 tests)
+├── test_meshtastic_protobuf.py    # Protobuf client (74 tests)
+├── test_message_queue.py          # SQLite queue (72 tests)
+├── test_status_bar.py             # TUI status bar (70 tests)
+├── test_node_tracker.py           # Node tracking (68 tests)
+├── test_mqtt_robustness.py        # MQTT reliability (66 tests)
+├── test_commands.py               # CLI commands (61 tests)
+├── ... (50 more test files)
+└── test_regression_guards.py      # Architectural regression prevention (9 tests)
 ```
 
 ---

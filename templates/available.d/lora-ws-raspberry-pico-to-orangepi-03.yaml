@@ -1,0 +1,47 @@
+# Waveshare SX1262 on Orange Pi Zero3 via Pico Adapter
+# Hardware: SX1262 via SPI1.1 with gpiochip line mapping
+# Source: meshtastic/firmware bin/config.d
+#
+# Copy to: /etc/meshtasticd/config.d/lora-ws-raspberry-pico-to-orangepi-03.yaml
+#
+# Note: Orange Pi Zero3 uses gpiochip1 for all GPIO lines.
+#       Pin numbers reference the 26-pin header.
+
+Lora:
+  Module: sx1262
+  DIO2_AS_RF_SWITCH: true
+  DIO3_TCXO_VOLTAGE: true
+  spidev: spidev1.1
+  SCK:
+    pin: 23
+    gpiochip: 1
+    line: 230
+  Busy:
+    pin: 18
+    gpiochip: 1
+    line: 78
+  MOSI:
+    pin: 19
+    gpiochip: 1
+    line: 231
+  MISO:
+    pin: 21
+    gpiochip: 1
+    line: 232
+  Reset:
+    pin: 22
+    gpiochip: 1
+    line: 71
+  IRQ:
+    pin: 26
+    gpiochip: 1
+    line: 74
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

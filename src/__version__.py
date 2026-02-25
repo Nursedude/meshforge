@@ -3,17 +3,49 @@ MeshForge - LoRa Mesh Network Development & Operations Suite
 Version information and changelog
 """
 
-__version__ = "0.5.4-beta"
-__version_info__ = (0, 5, 4, 'beta')
-__release_date__ = "2026-02-11"
+__version__ = "0.6.0-alpha"
+__version_info__ = (0, 6, 0, 'alpha')
+__release_date__ = "2026-02-25"
 __app_name__ = "MeshForge"
-__app_description__ = "LoRa Mesh Network Development & Operations Suite"
+__app_description__ = "Mesh Network Operations Center & Development Ecosystem"
 __app_tagline__ = "Build. Test. Deploy. Monitor."
 __target_audience__ = "RF engineers, network operators, and amateur radio operators"
-__status__ = "beta"  # alpha=experimental, beta=testing, stable=production
+__status__ = "alpha"  # alpha=experimental, beta=testing, stable=production
+
+# Alpha branch tracking
+# alpha/meshcore-bridge branched from main at 0.5.4-beta
+# MeshCore-primary radio mode: meshforge --mode meshcore
+ALPHA_BRANCH = "alpha/meshcore-bridge"
+ALPHA_VERSION = "0.6.0-alpha"
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "0.6.0-alpha",
+        "date": "2026-02-25",
+        "status": "alpha",
+        "branch": "alpha/meshcore-bridge",
+        "changes": [
+            "ARCHITECTURE: RadioMode abstraction — select primary radio (Meshtastic/MeshCore/Dual)",
+            "FEATURE: meshcore_primary bridge mode — MeshCore as primary radio with RNS backhaul",
+            "FEATURE: MeshCore config manager (/etc/meshcore/) mirroring meshtasticd pattern",
+            "FEATURE: Radio Mode TUI menu — select and persist primary radio preference",
+            "FEATURE: MeshCore Config TUI — /etc/meshcore/ setup, templates, device detection",
+            "FEATURE: Gateway bridge supports optional Meshtastic in meshcore_primary mode",
+            "FEATURE: MeshCore registered in service_check.py with device detection helper",
+            "FEATURE: template_meshcore_primary() gateway config template",
+            "FEATURE: MeshCore protocol handler with meshcore_py integration",
+            "FEATURE: Canonical message format for multi-protocol bridging",
+            "FEATURE: 3-way routing classifier — Meshtastic, RNS, and MeshCore sources",
+            "FEATURE: MeshCore TUI menu — companion radio management, device detection",
+            "FEATURE: MeshCore bridge mixin for gateway orchestrator",
+            "REFACTOR: Extracted rns_config_mixin.py and rns_diagnostics_mixin.py from rns_menu_mixin",
+            "REFACTOR: Delegated MeshCore plugin to gateway handler pattern",
+            "TEST: 553 tests for canonical_message.py",
+            "TEST: 602 tests for meshcore_handler.py",
+            "TEST: 684 tests for tribridge integration (3-way routing)",
+        ]
+    },
     {
         "version": "0.5.4-beta",
         "date": "2026-02-11",
@@ -84,7 +116,7 @@ VERSION_HISTORY = [
             "REFACTOR: Removed dead _handle_choice() and _network_tools_submenu()",
             "REFACTOR: Extracted rns_sniffer_mixin, metrics modules, diagnostic checks",
             "DOCS: README updated with TUI menu structure, code health, raspi-config patterns",
-            "DOCS: Single-branch model — alpha branch deprecated",
+            "DOCS: Single-branch model — alpha branch deprecated (restored v0.6.0-alpha for MeshCore)",
         ]
     },
     {

@@ -41,10 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from utils.safe_import import safe_import
-
-# Optional: centralized path utility
-_get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
+from utils.paths import get_real_user_home
 
 
 class StructuredFormatter(logging.Formatter):
@@ -93,16 +90,7 @@ def setup_structured_logging(
         The configured handler (for testing/removal)
     """
     if log_dir is None:
-        if _HAS_PATHS:
-            log_dir = _get_real_user_home() / ".config" / "meshforge" / "logs"
-        else:
-            import os as _os
-            sudo_user = _os.environ.get('SUDO_USER')
-            if sudo_user and sudo_user != 'root':
-                log_dir = Path(f'/home/{sudo_user}/.config/meshforge/logs')
-            else:
-                # Avoid Path.home() which returns /root under sudo (MF001)
-                log_dir = Path('/tmp/meshforge/logs')
+        log_dir = get_real_user_home() / ".config" / "meshforge" / "logs"
 
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "meshforge_structured.jsonl"

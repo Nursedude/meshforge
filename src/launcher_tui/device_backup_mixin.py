@@ -7,15 +7,10 @@ Provides UI for commands/device_backup.py functionality.
 
 import subprocess
 from backend import clear_screen
-from utils.safe_import import safe_import
-
-# Module-level safe imports
-_create_backup, _HAS_CREATE_BACKUP = safe_import('commands.device_backup', 'create_backup')
-_list_backups, _get_backup_dir, _HAS_LIST_BACKUPS = safe_import(
-    'commands.device_backup', 'list_backups', 'get_backup_dir'
-)
-_restore_backup, _HAS_RESTORE_BACKUP = safe_import('commands.device_backup', 'restore_backup')
-_delete_backup, _HAS_DELETE_BACKUP = safe_import('commands.device_backup', 'delete_backup')
+from commands.device_backup import create_backup
+from commands.device_backup import list_backups, get_backup_dir
+from commands.device_backup import restore_backup
+from commands.device_backup import delete_backup
 
 
 class DeviceBackupMixin:
@@ -53,10 +48,6 @@ class DeviceBackupMixin:
 
     def _create_device_backup(self):
         """Create a new device backup."""
-        if not _HAS_CREATE_BACKUP:
-            self.dialog.msgbox("Error", "Backup module not available.")
-            return
-
         # Ask for connection type
         conn_choices = [
             ("localhost", "Local TCP (localhost:4403)"),
@@ -116,7 +107,7 @@ class DeviceBackupMixin:
         self.dialog.infobox("Creating Backup", "Backing up device configuration...")
 
         # Create the backup
-        result = _create_backup(
+        result = create_backup(
             connection=connection,
             port=port,
             backup_type="full",
@@ -138,14 +129,10 @@ class DeviceBackupMixin:
 
     def _list_device_backups(self):
         """List available device backups."""
-        if not _HAS_LIST_BACKUPS:
-            self.dialog.msgbox("Error", "Backup module not available.")
-            return
-
-        backups = _list_backups()
+        backups = list_backups()
 
         if not backups:
-            backup_dir = _get_backup_dir()
+            backup_dir = get_backup_dir()
             self.dialog.msgbox(
                 "No Backups",
                 f"No backups found.\n\nBackup directory:\n{backup_dir}"
@@ -178,11 +165,7 @@ class DeviceBackupMixin:
 
     def _restore_device_backup(self):
         """Restore device from a backup."""
-        if not _HAS_RESTORE_BACKUP:
-            self.dialog.msgbox("Error", "Backup module not available.")
-            return
-
-        backups = _list_backups()
+        backups = list_backups()
 
         if not backups:
             self.dialog.msgbox("No Backups", "No backups available to restore.")
@@ -266,7 +249,7 @@ class DeviceBackupMixin:
         self.dialog.infobox("Restoring", "Restoring device configuration...")
 
         # Restore the backup
-        result = _restore_backup(
+        result = restore_backup(
             backup_id=selected,
             connection=connection,
             port=port
@@ -286,11 +269,7 @@ class DeviceBackupMixin:
 
     def _delete_device_backup(self):
         """Delete a device backup."""
-        if not _HAS_DELETE_BACKUP:
-            self.dialog.msgbox("Error", "Backup module not available.")
-            return
-
-        backups = _list_backups()
+        backups = list_backups()
 
         if not backups:
             self.dialog.msgbox("No Backups", "No backups available to delete.")
@@ -325,7 +304,7 @@ class DeviceBackupMixin:
             return
 
         # Delete the backup
-        result = _delete_backup(selected)
+        result = delete_backup(selected)
 
         if result['success']:
             self.dialog.msgbox("Deleted", "Backup deleted successfully.")

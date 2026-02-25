@@ -16,7 +16,10 @@ from typing import Optional, List
 from pathlib import Path
 
 from .base import CommandResult
-from utils.service_check import check_service
+from utils.service_check import (
+    check_service, start_service, stop_service, restart_service,
+    enable_service, disable_service
+)
 
 # Expose for tests that check module attributes
 HAS_SERVICE_CHECK = True
@@ -191,26 +194,10 @@ def start(name: str) -> CommandResult:
     Returns:
         CommandResult indicating success/failure
     """
-    try:
-        result = subprocess.run(
-            ['sudo', 'systemctl', 'start', name],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        if result.returncode == 0:
-            return CommandResult.ok(f"Service {name} started")
-        else:
-            return CommandResult.fail(
-                f"Failed to start {name}",
-                error=result.stderr or result.stdout
-            )
-    except subprocess.TimeoutExpired:
-        return CommandResult.fail(f"Timeout starting {name}")
-    except FileNotFoundError:
-        return CommandResult.fail("systemctl not available")
-    except Exception as e:
-        return CommandResult.fail(f"Error starting {name}: {e}")
+    success, msg = start_service(name)
+    if success:
+        return CommandResult.ok(f"Service {name} started")
+    return CommandResult.fail(f"Failed to start {name}", error=msg)
 
 
 def stop(name: str) -> CommandResult:
@@ -220,26 +207,10 @@ def stop(name: str) -> CommandResult:
     Args:
         name: Service name
     """
-    try:
-        result = subprocess.run(
-            ['sudo', 'systemctl', 'stop', name],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        if result.returncode == 0:
-            return CommandResult.ok(f"Service {name} stopped")
-        else:
-            return CommandResult.fail(
-                f"Failed to stop {name}",
-                error=result.stderr or result.stdout
-            )
-    except subprocess.TimeoutExpired:
-        return CommandResult.fail(f"Timeout stopping {name}")
-    except FileNotFoundError:
-        return CommandResult.fail("systemctl not available")
-    except Exception as e:
-        return CommandResult.fail(f"Error stopping {name}: {e}")
+    success, msg = stop_service(name)
+    if success:
+        return CommandResult.ok(f"Service {name} stopped")
+    return CommandResult.fail(f"Failed to stop {name}", error=msg)
 
 
 def restart(name: str) -> CommandResult:
@@ -249,64 +220,26 @@ def restart(name: str) -> CommandResult:
     Args:
         name: Service name
     """
-    try:
-        result = subprocess.run(
-            ['sudo', 'systemctl', 'restart', name],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        if result.returncode == 0:
-            return CommandResult.ok(f"Service {name} restarted")
-        else:
-            return CommandResult.fail(
-                f"Failed to restart {name}",
-                error=result.stderr or result.stdout
-            )
-    except subprocess.TimeoutExpired:
-        return CommandResult.fail(f"Timeout restarting {name}")
-    except Exception as e:
-        return CommandResult.fail(f"Error restarting {name}: {e}")
+    success, msg = restart_service(name)
+    if success:
+        return CommandResult.ok(f"Service {name} restarted")
+    return CommandResult.fail(f"Failed to restart {name}", error=msg)
 
 
 def enable(name: str) -> CommandResult:
     """Enable a service to start on boot."""
-    try:
-        result = subprocess.run(
-            ['sudo', 'systemctl', 'enable', name],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        if result.returncode == 0:
-            return CommandResult.ok(f"Service {name} enabled")
-        else:
-            return CommandResult.fail(
-                f"Failed to enable {name}",
-                error=result.stderr
-            )
-    except Exception as e:
-        return CommandResult.fail(f"Error enabling {name}: {e}")
+    success, msg = enable_service(name)
+    if success:
+        return CommandResult.ok(f"Service {name} enabled")
+    return CommandResult.fail(f"Failed to enable {name}", error=msg)
 
 
 def disable(name: str) -> CommandResult:
     """Disable a service from starting on boot."""
-    try:
-        result = subprocess.run(
-            ['sudo', 'systemctl', 'disable', name],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        if result.returncode == 0:
-            return CommandResult.ok(f"Service {name} disabled")
-        else:
-            return CommandResult.fail(
-                f"Failed to disable {name}",
-                error=result.stderr
-            )
-    except Exception as e:
-        return CommandResult.fail(f"Error disabling {name}: {e}")
+    success, msg = disable_service(name)
+    if success:
+        return CommandResult.ok(f"Service {name} disabled")
+    return CommandResult.fail(f"Failed to disable {name}", error=msg)
 
 
 def get_logs(name: str, lines: int = 50, follow: bool = False) -> CommandResult:

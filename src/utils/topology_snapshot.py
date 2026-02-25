@@ -39,11 +39,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from utils.safe_import import safe_import
+from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)
-
-# Import centralized path utility for sudo compatibility
-_get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
 
 # Optional dependencies for topology capture
 _get_global_node_tracker, _HAS_GLOBAL_TRACKER = safe_import(
@@ -52,16 +50,6 @@ _get_global_node_tracker, _HAS_GLOBAL_TRACKER = safe_import(
 _MapDataCollector, _HAS_MAP_COLLECTOR = safe_import(
     'utils.map_data_collector', 'MapDataCollector'
 )
-
-def get_real_user_home() -> Path:
-    """Get real user home, with fallback for sudo compatibility."""
-    if _HAS_PATHS:
-        return _get_real_user_home()
-    sudo_user = os.environ.get('SUDO_USER', '')
-    if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-        return Path(f'/home/{sudo_user}')
-    return Path('/root')
-
 
 @dataclass
 class TopologySnapshot:

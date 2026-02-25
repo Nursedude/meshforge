@@ -72,24 +72,28 @@ class MQTTMixin:
         if self._mqtt_subscriber and self._mqtt_subscriber.is_connected():
             return
 
-        # Suppress output to prevent TUI corruption during startup
+        # Suppress console output to prevent TUI corruption, keep file logging
         try:
             import logging
             from contextlib import redirect_stdout, redirect_stderr
             from io import StringIO
 
             root_logger = logging.getLogger()
-            old_level = root_logger.level
-            root_logger.setLevel(logging.CRITICAL + 1)
+            old_handler_levels = []
+            for handler in root_logger.handlers:
+                if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+                    old_handler_levels.append((handler, handler.level))
+                    handler.setLevel(logging.CRITICAL + 1)
 
             try:
                 with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
                     self._auto_start_mqtt_quiet(config)
             finally:
-                root_logger.setLevel(old_level)
+                for handler, level in old_handler_levels:
+                    handler.setLevel(level)
 
         except Exception as e:
-            logger.debug("MQTT auto-start failed: %s", e)
+            logger.warning("MQTT auto-start failed: %s", e)
 
     def _auto_start_mqtt_quiet(self, config: Dict[str, Any]):
         """Quietly start MQTT subscriber without any UI feedback.

@@ -6,7 +6,7 @@ description: >
 
   Use when working with: (1) Meshtasticd configuration and service management, (2) RNS/Reticulum
   network setup and bridging, (3) LoRa radio configuration (presets, frequencies, regions),
-  (4) MeshForge GTK/TUI/Web UI development, (5) Gateway bridge between Meshtastic and RNS,
+  (4) MeshForge TUI development, (5) Gateway bridge between Meshtastic and RNS,
   (6) RF calculations and link budgets, (7) Node discovery and monitoring.
 
   Triggers: meshtastic, meshtasticd, rnsd, reticulum, lora, meshforge, gateway, rnode, nomadnet
@@ -19,7 +19,7 @@ description: >
 MeshForge is a Network Operations Center (NOC) bridging Meshtastic and Reticulum mesh networks.
 First open-source tool to unify these incompatible mesh ecosystems.
 
-**Version:** 0.4.7-beta
+**Version:** 0.5.4-beta
 **Callsign:** WH6GXZ (Nursedude)
 
 ## Development Principles
@@ -92,40 +92,29 @@ else:
     print(status.fix_hint)  # "sudo systemctl start meshtasticd"
 ```
 
-## GTK Threading Rule
+## TUI Threading Rule
 
-UI updates ONLY from main thread:
+Background work in TUI uses daemon threads. Keep heavy operations off the main thread:
 ```python
+import threading
+
 def background_work():
     result = slow_operation()
-    GLib.idle_add(update_ui, result)  # Schedule on main thread
+    # TUI refreshes on next input loop — no GLib.idle_add needed
 
 threading.Thread(target=background_work, daemon=True).start()
-```
-
-## Message Listener Pattern (RX Messages)
-
-```python
-from utils.message_listener import MessageListener
-
-listener = MessageListener()
-listener.add_callback(self._on_message)
-listener.start()
-
-def _on_message(self, msg_data):
-    GLib.idle_add(self._update_ui, msg_data)
 ```
 
 ## Common Commands
 
 ```bash
 # Launch interfaces
-sudo python3 src/launcher.py      # Auto-detect UI
-python3 src/standalone.py         # Zero-dependency mode
+sudo python3 src/launcher_tui/main.py  # Primary interface (TUI)
+python3 src/standalone.py               # Zero-dependency mode
 
 # Verify changes
 python3 -m pytest tests/ -v       # Run tests
-python3 scripts/lint.py           # Security lint
+python3 scripts/lint.py            # Security lint
 
 # Service management
 sudo systemctl status meshtasticd
@@ -137,18 +126,21 @@ systemctl status rnsd             # User service, no sudo
 
 ```
 src/
+├── launcher_tui/      # Terminal UI — PRIMARY INTERFACE
+│   ├── main.py        # NOC dispatcher (whiptail/dialog)
+│   ├── backend/       # Backend services
+│   └── *_mixin.py     # 46 feature mixins
 ├── gateway/           # RNS-Meshtastic bridge
-│   ├── rns_bridge.py  # Main gateway
+│   ├── rns_bridge.py  # Main gateway (MQTT transport)
 │   └── message_queue.py # SQLite queue
+├── commands/          # Command modules
+│   └── propagation.py # Space weather (NOAA primary)
 ├── utils/
 │   ├── paths.py       # get_real_user_home()
-│   ├── service_check.py # check_service()
-│   └── message_listener.py # RX message callbacks
-├── gtk_ui/
-│   ├── panel_base.py  # Lifecycle management
-│   └── panels/        # UI panels
-└── core/
-    └── orchestrator.py # Service management
+│   ├── service_check.py # check_service() — SINGLE SOURCE OF TRUTH
+│   └── rf.py          # RF calculations
+├── monitoring/        # MQTT subscriber
+└── core/              # Orchestrator, diagnostics, plugin base
 ```
 
 ## Persistent Issues Reference
@@ -158,11 +150,11 @@ See `.claude/foundations/persistent_issues.md` for detailed issue tracking.
 Critical resolved issues:
 - #1 Path.home() → Use get_real_user_home()
 - #17 Connection contention → Shared connection manager
-- #20 Service detection → Phases 1&2 complete, Phase 3 uses MessageListener
+- #20 Service detection → Phases 1&2 complete
 
 ## For Detailed Reference
 
 - Architecture: `.claude/foundations/domain_architecture.md`
-- Timeline: `.claude/memory_timeline.md`
+- Index: `.claude/INDEX.md`
 - Research: `.claude/research/` directory
 - Knowledge Base: `src/utils/knowledge_base.py`

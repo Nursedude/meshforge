@@ -30,7 +30,9 @@ SignalTrend, SignalTrendingManager, _HAS_SIGNAL = safe_import(
 get_http_client, _HAS_HTTP = safe_import(
     'utils.meshtastic_http', 'get_http_client'
 )
-meshtastic_tcp, _HAS_MESHTASTIC_TCP = safe_import('meshtastic.tcp_interface')
+
+# TCP fallback removed (Issue #17/#29 — single-client contention).
+# HTTP API provides the same data without competing for meshtasticd's TCP slot.
 
 
 class NodeHealthMixin:
@@ -259,30 +261,10 @@ class NodeHealthMixin:
         else:
             logger.debug("meshtastic_http module not available")
 
-        # Fallback: meshtastic TCP API (legacy, needs meshtastic Python lib)
-        if _HAS_MESHTASTIC_TCP:
-            try:
-                iface = meshtastic_tcp.TCPInterface(
-                    hostname='localhost', connectNow=True
-                )
-                if iface.nodes:
-                    for node_id, node in iface.nodes.items():
-                        device_metrics = node.get('deviceMetrics', {})
-                        user = node.get('user', {})
-                        if device_metrics:
-                            nodes[node_id] = {
-                                'battery_level': device_metrics.get('batteryLevel'),
-                                'voltage': device_metrics.get('voltage'),
-                                'short_name': user.get('shortName', node_id[:8]),
-                                'long_name': user.get('longName', ''),
-                            }
-                iface.close()
-            except (ConnectionRefusedError, OSError, TimeoutError) as e:
-                logger.debug(f"meshtasticd not reachable for telemetry: {e}")
-            except Exception as e:
-                logger.warning(f"Unexpected error querying meshtastic telemetry: {e}")
-        else:
-            logger.debug("meshtastic module not installed, skipping TCP telemetry")
+        # TCP fallback removed: direct TCPInterface creation contends with
+        # meshtasticd's single TCP slot, breaking the web client at :9443.
+        # HTTP API above provides the same telemetry data without contention.
+        # See persistent_issues.md Issue #17 and #29.
 
         return nodes
 
@@ -406,31 +388,9 @@ class NodeHealthMixin:
         else:
             logger.debug("meshtastic_http module not available")
 
-        # Fallback: meshtastic TCP API (legacy)
-        if _HAS_MESHTASTIC_TCP:
-            try:
-                iface = meshtastic_tcp.TCPInterface(
-                    hostname='localhost', connectNow=True
-                )
-                if iface.nodes:
-                    for node_id, node in iface.nodes.items():
-                        user = node.get('user', {})
-                        snr = node.get('snr')
-                        rssi = node.get('rssi')
-                        hops = node.get('hopsAway')
-                        if snr is not None or rssi is not None:
-                            nodes[node_id] = {
-                                'snr': snr,
-                                'rssi': rssi,
-                                'short_name': user.get('shortName', node_id[:8]),
-                                'hops_away': hops,
-                            }
-                iface.close()
-            except (ConnectionRefusedError, OSError, TimeoutError) as e:
-                logger.debug(f"meshtasticd not reachable for signal data: {e}")
-            except Exception as e:
-                logger.warning(f"Unexpected error querying meshtastic signal data: {e}")
-        else:
-            logger.debug("meshtastic module not installed, skipping signal data")
+        # TCP fallback removed: direct TCPInterface creation contends with
+        # meshtasticd's single TCP slot, breaking the web client at :9443.
+        # HTTP API above provides the same signal data without contention.
+        # See persistent_issues.md Issue #17 and #29.
 
         return nodes

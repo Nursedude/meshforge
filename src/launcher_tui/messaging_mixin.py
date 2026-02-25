@@ -12,7 +12,7 @@ from utils.safe_import import safe_import
 logger = logging.getLogger(__name__)
 
 # --- Optional dependencies (module-level) ---
-event_bus, _HAS_EVENT_BUS = safe_import('utils.event_bus', 'event_bus')
+from utils.event_bus import event_bus
 
 (send_message, get_messages, get_conversations, get_stats,
  start_receiving, stop_receiving, get_rx_status,
@@ -75,10 +75,6 @@ class MessagingMixin:
         Press Enter to stop and return to menu.
         """
         import threading
-
-        if not _HAS_EVENT_BUS:
-            self.dialog.msgbox("Unavailable", "Event bus module not available.\nFile: src/utils/event_bus.py")
-            return
 
         clear_screen()
         print("=== Live Message Feed ===")

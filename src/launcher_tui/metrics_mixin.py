@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 get_metrics_history, MetricType, _HAS_METRICS_HISTORY = safe_import(
     'utils.metrics_history', 'get_metrics_history', 'MetricType'
 )
-get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
+from utils.paths import get_real_user_home
 start_metrics_server, _HAS_METRICS_EXPORT = safe_import(
     'utils.metrics_export', 'start_metrics_server'
 )
@@ -427,20 +427,7 @@ class MetricsMixin:
             return
 
         # Default export path
-        if _HAS_PATHS:
-            export_dir = get_real_user_home() / ".cache" / "meshforge"
-        else:
-            import os
-            sudo_user = os.environ.get('SUDO_USER', '')
-            if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-                export_dir = Path(f'/home/{sudo_user}') / ".cache" / "meshforge"
-            else:
-                # Fallback: use LOGNAME or /tmp to avoid /root with sudo (MF001)
-                logname = os.environ.get('LOGNAME', '')
-                if logname and logname != 'root' and '/' not in logname and '..' not in logname:
-                    export_dir = Path(f'/home/{logname}') / ".cache" / "meshforge"
-                else:
-                    export_dir = Path('/tmp') / "meshforge"
+        export_dir = get_real_user_home() / ".cache" / "meshforge"
 
         export_dir.mkdir(parents=True, exist_ok=True)
 

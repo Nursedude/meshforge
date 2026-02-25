@@ -10,11 +10,11 @@
 
 [project]
 name = "meshforge"
-version = "0.4.6-beta"
+version = "0.5.4-beta"
 description = "Network Operations Center bridging Meshtastic and Reticulum mesh networks"
 readme = "README.md"
 requires-python = ">=3.9"
-license = {text = "MIT"}
+license = {text = "GPL-3.0"}
 authors = [
     {name = "WH6GXZ (Nursedude)", email = "meshforge@example.com"}
 ]
@@ -22,11 +22,10 @@ keywords = ["meshtastic", "reticulum", "mesh", "ham-radio", "lora", "networking"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
-    "Environment :: X11 Applications :: GTK",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Telecommunications Industry",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
@@ -84,7 +83,6 @@ branch = true
 omit = [
     "*/tests/*",
     "*/__pycache__/*",
-    "*/gtk_ui/*",  # GTK code is hard to test
     "*/tui/*",     # TUI code is hard to test
 ]
 
@@ -131,7 +129,7 @@ force_grid_wrap = 0
 use_parentheses = true
 ensure_newline_before_comments = true
 skip_gitignore = true
-known_first_party = ["src", "utils", "gateway", "gtk_ui", "tui", "web", "commands"]
+known_first_party = ["src", "utils", "gateway", "tui", "commands"]
 
 # ============================================================================
 # RUFF CONFIGURATION (Fast linter - optional)

@@ -25,17 +25,38 @@ Usage:
         show_fix(status.fix_hint)
 """
 
+import os
+import re
 import socket
 import subprocess
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 from enum import Enum
 
 from utils.ports import MESHTASTICD_PORT, MQTT_PORT, RNS_SHARED_INSTANCE_PORT
 
 logger = logging.getLogger(__name__)
+
+
+def _sudo_cmd(cmd: List[str]) -> List[str]:
+    """Prefix a command with 'sudo' when MeshForge is not running as root.
+
+    Allows MeshForge to run as a normal user and only elevate for
+    specific operations (systemctl, iptables, etc.).  When already root,
+    returns the command unchanged.
+
+    Args:
+        cmd: Command and arguments, e.g. ['systemctl', 'restart', 'rnsd']
+
+    Returns:
+        The command, possibly prefixed with ['sudo'].
+    """
+    if os.geteuid() != 0:
+        return ['sudo'] + cmd
+    return cmd
 
 # Public API - these are the functions/classes intended for external use
 __all__ = [
@@ -44,22 +65,34 @@ __all__ = [
     'require_service',      # Check with exception on failure
     'check_port',           # TCP port check (utility)
     'check_udp_port',       # UDP port check (utility)
+    'check_rns_shared_instance',  # RNS shared instance check (domain socket + TCP + UDP)
+    'get_rns_shared_instance_info',  # RNS shared instance diagnostics
+    'get_udp_port_owner',   # UDP port owner lookup (process name + PID)
     'check_process_running', # Process check via pgrep (utility)
     'check_systemd_service', # Systemd status check
     # Service management
     'daemon_reload',             # Reload systemd daemon
     'enable_service',            # Enable service at boot
+    'disable_service',           # Disable service at boot
+    'start_service',             # Start a systemd service
+    'stop_service',              # Stop a systemd service
+    'restart_service',           # Restart a systemd service
     'apply_config_and_restart',  # Reload daemon + restart service
     # Port lockdown (MeshForge owns the browser)
     'lock_port_external',        # Block external access to a port
     'unlock_port_external',      # Restore external access to a port
     'check_port_locked',         # Check if port is locked to localhost
     'persist_iptables',          # Save iptables rules to survive reboot
+    # Privilege elevation & file I/O
+    '_sudo_cmd',            # Prefix command with sudo when not root
+    '_sudo_write',          # Write file content with privilege elevation
     # Data classes
     'ServiceStatus',        # Return type from check_service
     'ServiceState',         # Status enum (AVAILABLE, DEGRADED, FAILED, etc.)
     # Configuration
     'KNOWN_SERVICES',       # Service configuration dict
+    # MeshCore
+    'check_meshcore_device',  # Check if MeshCore companion radio is connected
 ]
 
 
@@ -102,7 +135,7 @@ KNOWN_SERVICES = {
     },
     'rnsd': {
         'port': RNS_SHARED_INSTANCE_PORT,
-        'port_type': 'udp',
+        'port_type': 'unix_socket',  # RNS uses abstract domain sockets on Linux
         'systemd_name': 'rnsd',
         'is_systemd': True,  # rnsd runs as systemd service (install_noc.sh creates unit)
         'description': 'Reticulum Network Stack daemon',
@@ -121,6 +154,13 @@ KNOWN_SERVICES = {
         'is_systemd': False,  # NomadNet is a user-space app, NOT a systemd service
         'description': 'NomadNet mesh messaging client',
         'fix_hint': 'Start with: nomadnetwork (run as user, not root)',
+    },
+    'meshcore': {
+        'port': None,  # MeshCore has no daemon — MeshForge connects directly
+        'systemd_name': None,
+        'is_systemd': False,  # No daemon process; managed by MeshForge gateway
+        'description': 'MeshCore companion radio (managed by MeshForge)',
+        'fix_hint': 'Connect MeshCore companion radio via USB. Install: pip install meshcore',
     },
 }
 
@@ -180,6 +220,30 @@ def _detect_radio_hardware() -> dict:
 # =============================================================================
 
 
+def check_meshcore_device(device_path: str = "") -> bool:
+    """Check if a MeshCore companion radio device is available.
+
+    MeshCore has no daemon — this checks whether the serial device exists.
+    Does NOT verify the device is running MeshCore firmware.
+
+    Args:
+        device_path: Specific device to check (e.g., '/dev/ttyUSB0').
+                     If empty, scans for any USB serial device.
+
+    Returns:
+        True if device path exists or any USB serial device is found.
+    """
+    from pathlib import Path
+
+    if device_path and device_path != "auto":
+        return Path(device_path).exists()
+
+    # Scan for any USB serial device
+    usb_devices = list(Path("/dev").glob("ttyUSB*")) + \
+                  list(Path("/dev").glob("ttyACM*"))
+    return len(usb_devices) > 0
+
+
 def check_port(port: int, host: str = 'localhost', timeout: float = 2.0) -> bool:
     """
     Check if a TCP port is accepting connections.
@@ -211,11 +275,13 @@ def check_port(port: int, host: str = 'localhost', timeout: float = 2.0) -> bool
 
 def check_udp_port(port: int, host: str = '127.0.0.1', timeout: float = 2.0) -> bool:
     """
-    Check if a UDP port is in use by trying to bind to it.
+    Check if a UDP port is in use.
 
-    For services like rnsd that use UDP, we can check if the port is already
-    bound by attempting to bind ourselves - if it fails with EADDRINUSE, the
-    service is running.
+    Primary method: read /proc/net/udp + /proc/net/udp6 (kernel socket table).
+    This is reliable even when the service sets SO_REUSEADDR/SO_REUSEPORT,
+    which causes bind-test false negatives.
+
+    Fallback chain: ss → lsof → bind test.
 
     Args:
         port: UDP port number
@@ -225,25 +291,70 @@ def check_udp_port(port: int, host: str = '127.0.0.1', timeout: float = 2.0) -> 
     Returns:
         True if port appears to be in use (service running), False otherwise
     """
-    # Try multiple addresses since service might bind to different interfaces
+    # Primary: read /proc/net/udp directly (always available on Linux,
+    # no external tool required). Port is stored as hex in column 1
+    # (local_address) in the format ADDR:PORT_HEX.
+    hex_port = f'{port:04X}'
+    for proc_path in ('/proc/net/udp', '/proc/net/udp6'):
+        try:
+            with open(proc_path, 'r') as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        # local_address is "ADDR:PORT_HEX"
+                        local = parts[1]
+                        if local.endswith(':' + hex_port):
+                            return True
+        except (OSError, IOError):
+            continue
+
+    # Fallback 1: ss (not always installed — e.g., minimal containers)
+    try:
+        result = subprocess.run(
+            ['ss', '-uln'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            port_str = str(port)
+            for line in result.stdout.split('\n'):
+                parts = line.split()
+                if len(parts) >= 5:
+                    local_addr = parts[4]
+                    if local_addr.endswith(':' + port_str):
+                        return True
+            return False
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        pass
+
+    # Fallback 2: lsof (commonly available)
+    try:
+        result = subprocess.run(
+            ['lsof', '-i', f'UDP:{port}', '-nP'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # Any output means something has the port open
+            lines = result.stdout.strip().split('\n')
+            if len(lines) > 1:  # Header + at least one entry
+                return True
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        pass
+
+    # Fallback 3: bind test (unreliable with SO_REUSEADDR, last resort)
     hosts_to_check = [host]
     if host == '127.0.0.1':
-        hosts_to_check.append('0.0.0.0')  # Also check wildcard
+        hosts_to_check.append('0.0.0.0')
 
     for check_host in hosts_to_check:
         sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.settimeout(timeout)
-            # Try to bind to the port - if it fails, port is in use
             sock.bind((check_host, port))
-            # If we successfully bound, port was NOT in use on this address
             sock.close()
-            continue  # Try next address
+            continue
         except OSError as e:
-            # EADDRINUSE (98 on Linux) means the port is already bound
-            # This indicates the service IS running
-            if e.errno in (98, 48, 10048):  # Linux, macOS, Windows EADDRINUSE
+            if e.errno in (98, 48, 10048):  # EADDRINUSE
                 return True
             logger.debug(f"UDP port check error for {check_host}:{port}: {e}")
         finally:
@@ -251,9 +362,178 @@ def check_udp_port(port: int, host: str = '127.0.0.1', timeout: float = 2.0) -> 
                 try:
                     sock.close()
                 except Exception:
-                    pass  # Socket close errors are non-critical
+                    pass
 
     return False
+
+
+def get_udp_port_owner(port: int) -> Optional[Tuple[str, int]]:
+    """Get the process name and PID that owns a UDP port.
+
+    Primary: ``ss -ulnp``. Fallback: ``/proc/net/udp`` inode scan.
+
+    Args:
+        port: UDP port number to check.
+
+    Returns:
+        Tuple of ``(process_name, pid)`` if found, ``None`` otherwise.
+    """
+    # Primary: ss -ulnp shows process info for UDP listeners
+    try:
+        result = subprocess.run(
+            ['ss', '-ulnp', 'sport', '=', f':{port}'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # Parse users:(("process",pid=NNN,fd=N)) pattern
+            m = re.search(
+                r'users:\(\("([^"]+)",pid=(\d+)',
+                result.stdout
+            )
+            if m:
+                return (m.group(1), int(m.group(2)))
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        pass
+
+    # Fallback: find inode in /proc/net/udp, then scan /proc/*/fd
+    hex_port = f'{port:04X}'
+    target_inode = None
+    for proc_path in ('/proc/net/udp', '/proc/net/udp6'):
+        try:
+            with open(proc_path, 'r') as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 10:
+                        local = parts[1]
+                        if local.endswith(':' + hex_port):
+                            target_inode = parts[9]
+                            break
+            if target_inode:
+                break
+        except (OSError, IOError):
+            continue
+
+    if not target_inode:
+        return None
+
+    # Scan /proc/*/fd for the inode
+    proc_dir = Path('/proc')
+    for pid_dir in proc_dir.iterdir():
+        if not pid_dir.name.isdigit():
+            continue
+        fd_dir = pid_dir / 'fd'
+        try:
+            for fd in fd_dir.iterdir():
+                try:
+                    link = os.readlink(str(fd))
+                    if f'socket:[{target_inode}]' in link:
+                        comm_path = pid_dir / 'comm'
+                        name = comm_path.read_text().strip()
+                        return (name, int(pid_dir.name))
+                except (OSError, ValueError):
+                    continue
+        except (OSError, PermissionError):
+            continue
+
+    return None
+
+
+def check_rns_shared_instance(instance_name: str = 'default',
+                               port: int = 37428) -> bool:
+    """Check if the RNS shared instance is available.
+
+    Uses passive detection (reads /proc files) to avoid disrupting the
+    shared instance.  Safe to call in tight poll loops.
+
+    Checks in priority order:
+        1. ``/proc/net/unix`` for abstract domain socket (Linux default)
+        2. TCP port via ``check_port()`` (fallback)
+        3. UDP port via ``check_udp_port()`` (legacy)
+
+    Args:
+        instance_name: RNS instance name (default: ``'default'``).
+        port: Shared instance port for TCP/UDP fallback (default: 37428).
+
+    Returns:
+        True if the shared instance is detected via any method.
+    """
+    info = get_rns_shared_instance_info(instance_name, port)
+    return info['available']
+
+
+def _check_proc_net_unix(socket_name: str) -> bool:
+    """Check if an abstract Unix domain socket exists via /proc/net/unix.
+
+    Passive check — reads a proc file, never connects to the service.
+    Abstract sockets appear in /proc/net/unix with ``@`` prefix.
+
+    Args:
+        socket_name: Socket name WITHOUT the null byte or ``@`` prefix.
+                     e.g. ``'rns/default'`` to match ``@rns/default``.
+
+    Returns:
+        True if the socket is listed in /proc/net/unix.
+    """
+    target = f'@{socket_name}'
+    try:
+        with open('/proc/net/unix', 'r') as f:
+            for line in f:
+                if target in line:
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def get_rns_shared_instance_info(instance_name: str = 'default',
+                                  port: int = 37428) -> dict:
+    """Get detailed shared instance connectivity info for diagnostics.
+
+    Returns a dict with keys:
+        - ``available`` (bool): Whether shared instance is reachable.
+        - ``method`` (str): Detection method that succeeded
+          (``'unix_socket'``, ``'tcp'``, ``'udp'``, or ``'none'``).
+        - ``detail`` (str): Human-readable connection detail.
+
+    Args:
+        instance_name: RNS instance name (default: ``'default'``).
+        port: Shared instance port for TCP/UDP fallback (default: 37428).
+    """
+    # 1. Passive check: scan /proc/net/unix for the abstract domain socket.
+    # RNS creates @rns/{instance_name} (LocalInterface data transport).
+    # This mirrors how check_udp_port() reads /proc/net/udp — no connection
+    # to the service, zero side effects, safe to call in tight poll loops.
+    socket_name = f'rns/{instance_name}'
+    if _check_proc_net_unix(socket_name):
+        return {
+            'available': True,
+            'method': 'unix_socket',
+            'detail': f'@rns/{instance_name} (abstract domain socket)',
+        }
+
+    # 2. TCP port (used when shared_instance_type = tcp in RNS config)
+    if check_port(port):
+        return {
+            'available': True,
+            'method': 'tcp',
+            'detail': f'127.0.0.1:{port} (TCP)',
+        }
+
+    # 3. UDP port (legacy fallback)
+    if check_udp_port(port):
+        return {
+            'available': True,
+            'method': 'udp',
+            'detail': f'127.0.0.1:{port} (UDP)',
+        }
+
+    return {
+        'available': False,
+        'method': 'none',
+        'detail': (f'No shared instance found '
+                   f'(checked @rns/{instance_name}, '
+                   f'TCP:{port}, UDP:{port})'),
+    }
 
 
 def check_process_running(process_name: str) -> bool:
@@ -449,10 +729,33 @@ def check_service(name: str, port: Optional[int] = None, host: str = 'localhost'
             # Check for placeholder services (active but exited = not a real daemon)
             if is_active and sub_state == "exited":
                 # This is a placeholder or oneshot that ran and exited
-                # Check if this is a mismatch (SPI HAT but USB placeholder)
                 hardware = _detect_radio_hardware()
 
-                if hardware['has_spi'] and not hardware['has_usb']:
+                # Check if the real binary exists — stale placeholder if so
+                has_binary = False
+                try:
+                    bin_result = subprocess.run(
+                        ['which', 'meshtasticd'],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    has_binary = bin_result.returncode == 0
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
+
+                if has_binary:
+                    # Real binary exists but service is a placeholder — stale
+                    return ServiceStatus(
+                        name=name,
+                        available=False,
+                        state=ServiceState.DEGRADED,
+                        message=f"{description}: stale placeholder — meshtasticd binary available",
+                        fix_hint="Restart NOC to auto-fix, or run: sudo bash scripts/install_noc.sh",
+                        port=check_port_num,
+                        detection_method="systemctl (exited) + binary exists"
+                    )
+                elif hardware['has_spi'] and not hardware['has_usb']:
                     # SPI HAT detected but placeholder service - MISMATCH!
                     return ServiceStatus(
                         name=name,
@@ -464,7 +767,7 @@ def check_service(name: str, port: Optional[int] = None, host: str = 'localhost'
                         detection_method="systemctl (exited) + hardware mismatch"
                     )
                 elif hardware['has_usb']:
-                    # USB radio - placeholder is correct
+                    # USB radio, no native binary — placeholder is expected
                     return ServiceStatus(
                         name=name,
                         available=False,
@@ -686,20 +989,20 @@ def apply_config_and_restart(service_name: str = 'meshtasticd', timeout: int = 3
     """
     try:
         # Step 1: Reload systemd daemon to pick up any service file changes
-        daemon_reload = subprocess.run(
-            ['systemctl', 'daemon-reload'],
+        reload_cmd = subprocess.run(
+            _sudo_cmd(['systemctl', 'daemon-reload']),
             capture_output=True,
             text=True,
             timeout=timeout
         )
-        if daemon_reload.returncode != 0:
-            error_msg = daemon_reload.stderr.strip() or "daemon-reload failed"
+        if reload_cmd.returncode != 0:
+            error_msg = reload_cmd.stderr.strip() or "daemon-reload failed"
             logger.error(f"daemon-reload failed: {error_msg}")
             return False, f"daemon-reload failed: {error_msg}"
 
         # Step 2: Restart the service
         restart = subprocess.run(
-            ['systemctl', 'restart', service_name],
+            _sudo_cmd(['systemctl', 'restart', service_name]),
             capture_output=True,
             text=True,
             timeout=timeout
@@ -710,6 +1013,16 @@ def apply_config_and_restart(service_name: str = 'meshtasticd', timeout: int = 3
             return False, f"restart {service_name} failed: {error_msg}"
 
         logger.info(f"Successfully restarted {service_name}")
+
+        # Wait for TCP port readiness (meshtasticd binds 4403 on startup)
+        if service_name == 'meshtasticd':
+            tcp_ready = _wait_for_tcp_ready(4403, max_wait=15)
+            if tcp_ready:
+                return True, f"{service_name} restarted and accepting connections"
+            else:
+                logger.warning("meshtasticd restarted but TCP:4403 not ready within 15s")
+                return True, f"{service_name} restarted (TCP port not yet ready)"
+
         return True, f"{service_name} restarted successfully"
 
     except subprocess.TimeoutExpired:
@@ -721,6 +1034,30 @@ def apply_config_and_restart(service_name: str = 'meshtasticd', timeout: int = 3
     except Exception as e:
         logger.error(f"Error restarting {service_name}: {e}")
         return False, f"Error: {e}"
+
+
+def _wait_for_tcp_ready(port: int, host: str = 'localhost', max_wait: int = 15) -> bool:
+    """Poll a TCP port until it accepts connections.
+
+    Used after service restart to ensure the daemon is fully initialized
+    and accepting client connections before returning.
+
+    Args:
+        port: TCP port number to check
+        host: Host to connect to (default: localhost)
+        max_wait: Maximum seconds to wait (default: 15)
+
+    Returns:
+        True if port became ready, False if timeout
+    """
+    for _attempt in range(max_wait):
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                logger.debug("TCP port %d ready", port)
+                return True
+        except (ConnectionRefusedError, OSError):
+            time.sleep(1)
+    return False
 
 
 def daemon_reload(timeout: int = 30) -> Tuple[bool, str]:
@@ -747,7 +1084,7 @@ def daemon_reload(timeout: int = 30) -> Tuple[bool, str]:
     """
     try:
         result = subprocess.run(
-            ['systemctl', 'daemon-reload'],
+            _sudo_cmd(['systemctl', 'daemon-reload']),
             capture_output=True,
             text=True,
             timeout=timeout
@@ -800,7 +1137,7 @@ def enable_service(service_name: str, start: bool = False, timeout: int = 30) ->
     try:
         # Step 1: Reload systemd daemon to pick up service file changes
         reload_result = subprocess.run(
-            ['systemctl', 'daemon-reload'],
+            _sudo_cmd(['systemctl', 'daemon-reload']),
             capture_output=True,
             text=True,
             timeout=timeout
@@ -812,7 +1149,7 @@ def enable_service(service_name: str, start: bool = False, timeout: int = 30) ->
 
         # Step 2: Enable the service
         enable_result = subprocess.run(
-            ['systemctl', 'enable', service_name],
+            _sudo_cmd(['systemctl', 'enable', service_name]),
             capture_output=True,
             text=True,
             timeout=timeout
@@ -825,7 +1162,7 @@ def enable_service(service_name: str, start: bool = False, timeout: int = 30) ->
         # Step 3: Optionally start the service
         if start:
             start_result = subprocess.run(
-                ['systemctl', 'start', service_name],
+                _sudo_cmd(['systemctl', 'start', service_name]),
                 capture_output=True,
                 text=True,
                 timeout=timeout
@@ -849,6 +1186,254 @@ def enable_service(service_name: str, start: bool = False, timeout: int = 30) ->
         return False, "systemctl not found - is this a systemd system?"
     except Exception as e:
         logger.error(f"Error enabling {service_name}: {e}")
+        return False, f"Error: {e}"
+
+
+def disable_service(service_name: str, timeout: int = 30) -> Tuple[bool, str]:
+    """
+    Disable a systemd service from starting at boot.
+
+    Args:
+        service_name: Name of the systemd service to disable
+        timeout: Timeout in seconds (default: 30)
+
+    Returns:
+        Tuple of (success: bool, message: str)
+
+    Example:
+        from utils.service_check import disable_service
+
+        success, msg = disable_service('meshtasticd')
+        if not success:
+            show_error(msg)
+    """
+    try:
+        result = subprocess.run(
+            _sudo_cmd(['systemctl', 'disable', service_name]),
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+        if result.returncode != 0:
+            error_msg = result.stderr.strip() or f"disable {service_name} failed"
+            logger.error(f"disable {service_name} failed: {error_msg}")
+            return False, f"disable {service_name} failed: {error_msg}"
+
+        logger.info(f"Successfully disabled {service_name}")
+        return True, f"{service_name} disabled"
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"Timeout while disabling {service_name}")
+        return False, f"Timeout while disabling {service_name}"
+    except FileNotFoundError:
+        logger.error("systemctl not found")
+        return False, "systemctl not found - is this a systemd system?"
+    except Exception as e:
+        logger.error(f"Error disabling {service_name}: {e}")
+        return False, f"Error: {e}"
+
+
+def start_service(service_name: str, timeout: int = 30) -> Tuple[bool, str]:
+    """
+    Start a systemd service.
+
+    Args:
+        service_name: Name of the systemd service to start
+        timeout: Timeout in seconds (default: 30)
+
+    Returns:
+        Tuple of (success: bool, message: str)
+
+    Example:
+        from utils.service_check import start_service
+
+        success, msg = start_service('meshtasticd')
+        if not success:
+            show_error(msg)
+    """
+    try:
+        result = subprocess.run(
+            _sudo_cmd(['systemctl', 'start', service_name]),
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+        if result.returncode != 0:
+            error_msg = result.stderr.strip() or f"start {service_name} failed"
+            logger.error(f"start {service_name} failed: {error_msg}")
+            return False, f"start {service_name} failed: {error_msg}"
+
+        logger.info(f"Successfully started {service_name}")
+        return True, f"{service_name} started"
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"Timeout while starting {service_name}")
+        return False, f"Timeout while starting {service_name}"
+    except FileNotFoundError:
+        logger.error("systemctl not found")
+        return False, "systemctl not found - is this a systemd system?"
+    except Exception as e:
+        logger.error(f"Error starting {service_name}: {e}")
+        return False, f"Error: {e}"
+
+
+def stop_service(service_name: str, timeout: int = 30) -> Tuple[bool, str]:
+    """
+    Stop a systemd service.
+
+    Args:
+        service_name: Name of the systemd service to stop
+        timeout: Timeout in seconds (default: 30)
+
+    Returns:
+        Tuple of (success: bool, message: str)
+
+    Example:
+        from utils.service_check import stop_service
+
+        success, msg = stop_service('meshtasticd')
+        if not success:
+            show_error(msg)
+    """
+    try:
+        result = subprocess.run(
+            _sudo_cmd(['systemctl', 'stop', service_name]),
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+        if result.returncode != 0:
+            error_msg = result.stderr.strip() or f"stop {service_name} failed"
+            logger.error(f"stop {service_name} failed: {error_msg}")
+            return False, f"stop {service_name} failed: {error_msg}"
+
+        logger.info(f"Successfully stopped {service_name}")
+        return True, f"{service_name} stopped"
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"Timeout while stopping {service_name}")
+        return False, f"Timeout while stopping {service_name}"
+    except FileNotFoundError:
+        logger.error("systemctl not found")
+        return False, "systemctl not found - is this a systemd system?"
+    except Exception as e:
+        logger.error(f"Error stopping {service_name}: {e}")
+        return False, f"Error: {e}"
+
+
+def restart_service(service_name: str, timeout: int = 30) -> Tuple[bool, str]:
+    """
+    Restart a systemd service.
+
+    For a simple restart without daemon-reload. If you've modified service
+    unit files or config that requires a reload, use apply_config_and_restart()
+    instead.
+
+    Args:
+        service_name: Name of the systemd service to restart
+        timeout: Timeout in seconds (default: 30)
+
+    Returns:
+        Tuple of (success: bool, message: str)
+
+    Example:
+        from utils.service_check import restart_service
+
+        success, msg = restart_service('meshtasticd')
+        if not success:
+            show_error(msg)
+    """
+    try:
+        result = subprocess.run(
+            _sudo_cmd(['systemctl', 'restart', service_name]),
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+        if result.returncode != 0:
+            error_msg = result.stderr.strip() or f"restart {service_name} failed"
+            logger.error(f"restart {service_name} failed: {error_msg}")
+            return False, f"restart {service_name} failed: {error_msg}"
+
+        logger.info(f"Successfully restarted {service_name}")
+        return True, f"{service_name} restarted"
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"Timeout while restarting {service_name}")
+        return False, f"Timeout while restarting {service_name}"
+    except FileNotFoundError:
+        logger.error("systemctl not found")
+        return False, "systemctl not found - is this a systemd system?"
+    except Exception as e:
+        logger.error(f"Error restarting {service_name}: {e}")
+        return False, f"Error: {e}"
+
+
+def _sudo_write(file_path: str, content: str, timeout: int = 10) -> Tuple[bool, str]:
+    """
+    Write content to a file, using sudo tee for privilege elevation when needed.
+
+    Use this for writing to system paths (/etc/, /boot/, /etc/systemd/system/)
+    where the current user may not have write access.
+
+    When already running as root, writes directly. When running as a normal user,
+    uses 'sudo tee' to elevate privileges for the write.
+
+    Args:
+        file_path: Absolute path to the file to write
+        content: String content to write
+        timeout: Timeout in seconds for the sudo tee command (default: 10)
+
+    Returns:
+        Tuple of (success: bool, message: str)
+
+    Example:
+        from utils.service_check import _sudo_write
+
+        service_content = '''[Unit]
+        Description=My Service
+        ...
+        '''
+        success, msg = _sudo_write('/etc/systemd/system/my.service', service_content)
+        if not success:
+            show_error(msg)
+    """
+    try:
+        if os.geteuid() == 0:
+            # Already root — write directly
+            Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(file_path, 'w') as f:
+                f.write(content)
+            logger.debug(f"Wrote {file_path} (as root)")
+            return True, f"Wrote {file_path}"
+
+        # Not root — use sudo tee to write with elevation
+        result = subprocess.run(
+            ['sudo', 'tee', file_path],
+            input=content,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+        if result.returncode != 0:
+            error_msg = result.stderr.strip() or f"Failed to write {file_path}"
+            logger.error(f"sudo tee failed for {file_path}: {error_msg}")
+            return False, f"Failed to write {file_path}: {error_msg}"
+
+        logger.debug(f"Wrote {file_path} (via sudo tee)")
+        return True, f"Wrote {file_path}"
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"Timeout writing {file_path}")
+        return False, f"Timeout writing {file_path}"
+    except PermissionError:
+        logger.error(f"Permission denied writing {file_path}")
+        return False, f"Permission denied: {file_path}"
+    except OSError as e:
+        logger.error(f"OS error writing {file_path}: {e}")
+        return False, f"OS error: {e}"
+    except Exception as e:
+        logger.error(f"Error writing {file_path}: {e}")
         return False, f"Error: {e}"
 
 
@@ -880,7 +1465,7 @@ def lock_port_external(port: int = 9443, timeout: int = 10) -> Tuple[bool, str]:
     try:
         # Check if rule already exists (idempotent)
         check = subprocess.run(
-            ['iptables', '-C', 'INPUT'] + rule_args,
+            _sudo_cmd(['iptables', '-C', 'INPUT'] + rule_args),
             capture_output=True, text=True, timeout=timeout
         )
         if check.returncode == 0:
@@ -889,7 +1474,7 @@ def lock_port_external(port: int = 9443, timeout: int = 10) -> Tuple[bool, str]:
 
         # Add the rule
         result = subprocess.run(
-            ['iptables', '-A', 'INPUT'] + rule_args,
+            _sudo_cmd(['iptables', '-A', 'INPUT'] + rule_args),
             capture_output=True, text=True, timeout=timeout
         )
         if result.returncode == 0:
@@ -925,7 +1510,7 @@ def unlock_port_external(port: int = 9443, timeout: int = 10) -> Tuple[bool, str
 
     try:
         result = subprocess.run(
-            ['iptables', '-D', 'INPUT'] + rule_args,
+            _sudo_cmd(['iptables', '-D', 'INPUT'] + rule_args),
             capture_output=True, text=True, timeout=timeout
         )
         if result.returncode == 0:
@@ -957,7 +1542,7 @@ def check_port_locked(port: int = 9443, timeout: int = 10) -> bool:
                  '!', '-s', '127.0.0.1', '-j', 'REJECT']
     try:
         result = subprocess.run(
-            ['iptables', '-C', 'INPUT'] + rule_args,
+            _sudo_cmd(['iptables', '-C', 'INPUT'] + rule_args),
             capture_output=True, text=True, timeout=timeout
         )
         return result.returncode == 0
@@ -977,7 +1562,7 @@ def persist_iptables(timeout: int = 30) -> Tuple[bool, str]:
     # Method 1: netfilter-persistent (Debian/Ubuntu with iptables-persistent)
     try:
         result = subprocess.run(
-            ['netfilter-persistent', 'save'],
+            _sudo_cmd(['netfilter-persistent', 'save']),
             capture_output=True, text=True, timeout=timeout
         )
         if result.returncode == 0:
@@ -1002,7 +1587,7 @@ def persist_iptables(timeout: int = 30) -> Tuple[bool, str]:
         rules_file = rules_dir / 'rules.v4'
 
         save_result = subprocess.run(
-            ['iptables-save'],
+            _sudo_cmd(['iptables-save']),
             capture_output=True, text=True, timeout=timeout
         )
         if save_result.returncode != 0:

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 from .base import CommandResult
 from utils.safe_import import safe_import
-from utils.service_check import check_service
+from utils.service_check import check_service, start_service, stop_service
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +282,30 @@ def validate_config(content: str) -> Tuple[bool, List[str]]:
             errors.append(f"Unknown interface type: {iface_type}")
 
     return len(errors) == 0, errors
+
+
+def _parse_share_instance(content: str) -> bool:
+    """Check if share_instance is enabled in the [reticulum] section.
+
+    The shared instance allows multiple RNS programs (rnsd, gateway, nomadnet)
+    to share a single Reticulum transport instance via UDP port 37428.
+
+    Returns True if share_instance = Yes (or True), False otherwise.
+    """
+    in_reticulum = False
+    for line in content.split('\n'):
+        stripped = line.strip()
+        if stripped.startswith('#'):
+            continue
+        if stripped == '[reticulum]':
+            in_reticulum = True
+            continue
+        if stripped.startswith('[') and in_reticulum:
+            break  # Left the [reticulum] section
+        if in_reticulum and 'share_instance' in stripped and '=' in stripped:
+            _, value = stripped.split('=', 1)
+            return value.strip().lower() in ('yes', 'true', '1')
+    return False
 
 
 def _parse_interfaces(content: str) -> List[Dict[str, Any]]:
@@ -686,19 +710,13 @@ def start_rnsd() -> CommandResult:
             data={'pid': status.data.get('rnsd_pid')}
         )
 
+    # Try systemctl first via centralized helper
+    success, msg = start_service('rnsd')
+    if success:
+        return CommandResult.ok("rnsd started via systemd")
+
+    # Fallback to direct start (non-systemd systems)
     try:
-        # Try systemctl first
-        result = subprocess.run(
-            ['sudo', 'systemctl', 'start', 'rnsd'],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-
-        if result.returncode == 0:
-            return CommandResult.ok("rnsd started via systemd")
-
-        # Fallback to direct start
         result = subprocess.run(
             ['rnsd', '--service'],
             capture_output=True,
@@ -730,19 +748,13 @@ def stop_rnsd() -> CommandResult:
     Returns:
         CommandResult indicating success
     """
+    # Try systemctl first via centralized helper
+    success, msg = stop_service('rnsd')
+    if success:
+        return CommandResult.ok("rnsd stopped via systemd")
+
+    # Fallback to pkill (non-systemd systems)
     try:
-        # Try systemctl first
-        result = subprocess.run(
-            ['sudo', 'systemctl', 'stop', 'rnsd'],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-
-        if result.returncode == 0:
-            return CommandResult.ok("rnsd stopped via systemd")
-
-        # Fallback to pkill
         result = subprocess.run(
             ['pkill', '-f', 'rnsd'],
             capture_output=True,
@@ -830,6 +842,15 @@ def check_connectivity() -> CommandResult:
 
         if connectivity['interfaces_enabled'] == 0:
             connectivity['issues'].append("No interfaces enabled")
+
+        # Check share_instance setting (required for gateway to connect)
+        share_instance = _parse_share_instance(content)
+        connectivity['share_instance'] = share_instance
+        if not share_instance:
+            connectivity['warnings'].append(
+                "share_instance not enabled in [reticulum] config — "
+                "gateway and other RNS clients cannot connect to rnsd"
+            )
     else:
         connectivity['issues'].append(f"Config error: {config_result.message}")
 
@@ -1277,28 +1298,17 @@ def list_known_destinations() -> CommandResult:
     # First check if rnsd is running (using improved detection)
     status = get_status()
     if not status.data.get('rnsd_running'):
-        # Also check UDP port as fallback
-        import socket
+        # Also check shared instance as fallback (domain socket, TCP, or UDP)
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(1)
-            try:
-                sock.bind(('127.0.0.1', 37428))
-                sock.close()
-                # If we can bind, rnsd is NOT running
+            from utils.service_check import check_rns_shared_instance
+            if not check_rns_shared_instance():
                 return CommandResult.fail(
                     "rnsd not running",
                     fix_hint="Start with: rnsd or sudo systemctl start rnsd"
                 )
-            except OSError as e:
-                sock.close()
-                if e.errno in (98, 48, 10048):  # EADDRINUSE
-                    pass  # rnsd is running, continue
-                else:
-                    return CommandResult.fail(
-                        "rnsd not running",
-                        fix_hint="Start with: rnsd or sudo systemctl start rnsd"
-                    )
+            # Shared instance is reachable, continue
+        except ImportError:
+            pass  # No service_check available, proceed anyway
         except Exception as e:
             logger.debug(f"RNS availability check error: {e}")
 

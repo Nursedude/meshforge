@@ -1,0 +1,30 @@
+#!/bin/bash
+# MeshForge Pre-Commit Hook
+#
+# Runs the linter on staged files and regression guard tests before each commit.
+# This prevents known anti-patterns from being reintroduced (Issue #29).
+#
+# Setup: git config core.hooksPath .githooks
+# Bypass: git commit --no-verify (use sparingly)
+
+set -e
+
+# Run MeshForge linter on staged files (errors only)
+echo "Running MeshForge linter..."
+if ! python3 scripts/lint.py --staged --severity error 2>/dev/null; then
+    echo ""
+    echo "Lint errors found. Fix before committing."
+    echo "Run: python3 scripts/lint.py --staged"
+    exit 1
+fi
+
+# Run regression guards (fast — file scanning only, no service deps)
+echo "Running regression guards..."
+if ! python3 -m pytest tests/test_regression_guards.py -x -q 2>/dev/null; then
+    echo ""
+    echo "Regression guard failed. A known anti-pattern was introduced."
+    echo "Run: python3 -m pytest tests/test_regression_guards.py -v"
+    exit 1
+fi
+
+echo "Pre-commit checks passed."

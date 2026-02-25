@@ -1,0 +1,26 @@
+# Heltec V3/V4 USB Radio Configuration
+# Chipset: ESP32-S3 (USB CDC)
+# USB ID: 303a:1001 (CDC), 303a:4001 (JTAG)
+#
+# V4 supports 28dBm TX power. Gateway capable.
+# Flash method: esptool
+# Power: 500mA typical, 1A peak (V4 at max TX)
+#
+# Copy to: /etc/meshtasticd/config.d/heltec-usb.yaml
+#
+# The device handles its own LoRa configuration.
+# Radio settings are configured via Meshtastic app/CLI:
+#   meshtastic --host localhost --set lora.region US
+#   meshtastic --host localhost --set lora.modem_preset LONG_FAST
+
+Serial:
+  Device: auto          # /dev/ttyACM0 typical for ESP32-S3 CDC
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

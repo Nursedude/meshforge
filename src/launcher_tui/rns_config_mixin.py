@@ -335,7 +335,7 @@ class RNSConfigMixin:
             issues.append(
                 f"Meshtastic_Interface.py plugin not installed at "
                 f"{ReticulumPaths.get_interfaces_dir()}/\n"
-                f"    Install from: https://github.com/landandair/RNS_Over_Meshtastic"
+                f"    Install from: RNS menu > Install Meshtastic Interface"
             )
 
         return issues

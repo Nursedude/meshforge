@@ -224,6 +224,4 @@ cat ~/.config/meshforge/mqtt_nodeless.json
 
 ## Related Documents
 
-- `.claude/session_notes/2026-02-03_gateway_websocket_fix.md` - WebSocket broadcast fix
-- `.claude/research/meshtasticd_port_conflicts.md` - TCP one-client issue
 - `examples/configs/gateway-mqtt.json` - Gateway MQTT config example

@@ -39,6 +39,7 @@ Usage:
 """
 
 import math
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -101,7 +102,7 @@ class AntennaSpec:
         }
 
 
-class AntennaPattern:
+class AntennaPattern(ABC):
     """Base class for antenna radiation patterns.
 
     All patterns implement gain_at(azimuth, elevation) returning
@@ -118,6 +119,7 @@ class AntennaPattern:
         self.peak_gain_dbi = peak_gain_dbi
         self.name = name or self.__class__.__name__
 
+    @abstractmethod
     def gain_at(self, azimuth: float, elevation: float = 0.0) -> float:
         """Calculate antenna gain at specified direction.
 
@@ -128,7 +130,6 @@ class AntennaPattern:
         Returns:
             Effective gain in dBi at the specified direction.
         """
-        raise NotImplementedError
 
     def gain_pattern(self, azimuth_step: float = 5.0,
                      elevation: float = 0.0) -> List[Tuple[float, float]]:
@@ -149,9 +150,9 @@ class AntennaPattern:
             az += azimuth_step
         return pattern
 
+    @abstractmethod
     def spec(self) -> AntennaSpec:
         """Return antenna specification dataclass."""
-        raise NotImplementedError
 
     def effective_range_factor(self, azimuth: float,
                                elevation: float = 0.0,

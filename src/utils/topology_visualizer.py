@@ -29,20 +29,7 @@ from html import escape as html_escape
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 
-from utils.safe_import import safe_import
-
-# Import centralized path utility for sudo compatibility
-_get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
-
-def get_real_user_home() -> Path:
-    """Get real user home, with fallback for sudo compatibility."""
-    if _HAS_PATHS:
-        return _get_real_user_home()
-    import os
-    sudo_user = os.environ.get('SUDO_USER', '')
-    if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-        return Path(f'/home/{sudo_user}')
-    return Path.home()
+from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)
 

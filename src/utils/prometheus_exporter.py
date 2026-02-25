@@ -36,7 +36,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from utils.metrics_common import (
     METRICS,
@@ -80,6 +80,34 @@ get_topology_snapshot_store, _HAS_TOPOLOGY_SNAPSHOT = safe_import(
 )
 
 logger = logging.getLogger(__name__)
+
+# Shared node data cache to avoid repeated MapDataCollector instantiation
+_node_geojson_cache: Dict[str, Any] = {}
+_node_geojson_cache_time: float = 0.0
+_NODE_CACHE_TTL: float = 5.0  # seconds
+
+
+def _collect_node_geojson() -> Dict[str, Any]:
+    """Collect node GeoJSON from MapDataCollector with short-lived cache.
+
+    Returns cached data if called within _NODE_CACHE_TTL seconds.
+    Returns empty dict if MapDataCollector is unavailable.
+    """
+    global _node_geojson_cache, _node_geojson_cache_time
+    now = time.time()
+    if now - _node_geojson_cache_time < _NODE_CACHE_TTL and _node_geojson_cache:
+        return _node_geojson_cache
+    if not _HAS_MAP_COLLECTOR:
+        return {}
+    try:
+        collector = MapDataCollector(enable_history=False)
+        geojson = collector.collect(max_age_seconds=60)
+        _node_geojson_cache = geojson
+        _node_geojson_cache_time = now
+        return geojson
+    except Exception as e:
+        logger.debug(f"MapDataCollector error: {e}")
+        return _node_geojson_cache if _node_geojson_cache else {}
 
 
 class PrometheusExporter:
@@ -294,16 +322,12 @@ class PrometheusExporter:
         nodes_with_gps = 0
 
         # Primary source: MapDataCollector (has actual node data)
-        if _HAS_MAP_COLLECTOR:
-            try:
-                collector = MapDataCollector(enable_history=False)
-                geojson = collector.collect(max_age_seconds=60)
-                props = geojson.get("properties", {})
-                node_count = props.get("total_nodes", 0)
-                nodes_with_gps = props.get("nodes_with_position", 0)
-                logger.debug(f"MapDataCollector: {node_count} total, {nodes_with_gps} with GPS")
-            except Exception as e:
-                logger.debug(f"Error collecting from MapDataCollector: {e}")
+        geojson = _collect_node_geojson()
+        if geojson:
+            props = geojson.get("properties", {})
+            node_count = props.get("total_nodes", 0)
+            nodes_with_gps = props.get("nodes_with_position", 0)
+            logger.debug(f"MapDataCollector: {node_count} total, {nodes_with_gps} with GPS")
 
         # Fallback to MetricsHistory if MapDataCollector returned 0
         if node_count == 0 and _HAS_METRICS_HISTORY:
@@ -1209,19 +1233,13 @@ Grafana Setup (Option 2 - Infinity plugin):
         try:
             metrics = {}
 
-            # Get node counts from MapDataCollector
-            if _HAS_MAP_COLLECTOR:
-                try:
-                    collector = MapDataCollector(enable_history=False)
-                    geojson = collector.collect(max_age_seconds=60)
-                    props = geojson.get('properties', {})
-                    metrics['nodes_total'] = props.get('total_nodes', 0)
-                    metrics['nodes_with_gps'] = props.get('nodes_with_position', 0)
-                    metrics['sources'] = props.get('sources', {})
-                except Exception as e:
-                    logger.debug(f"MapDataCollector error: {e}")
-                    metrics['nodes_total'] = 0
-                    metrics['nodes_with_gps'] = 0
+            # Get node counts from MapDataCollector (uses shared cache)
+            geojson = _collect_node_geojson()
+            if geojson:
+                props = geojson.get('properties', {})
+                metrics['nodes_total'] = props.get('total_nodes', 0)
+                metrics['nodes_with_gps'] = props.get('nodes_with_position', 0)
+                metrics['sources'] = props.get('sources', {})
             else:
                 metrics['nodes_total'] = 0
                 metrics['nodes_with_gps'] = 0
@@ -1283,11 +1301,9 @@ Grafana Setup (Option 2 - Infinity plugin):
         try:
             nodes = []
 
-            if _HAS_MAP_COLLECTOR:
+            geojson = _collect_node_geojson()
+            if geojson:
                 try:
-                    collector = MapDataCollector(enable_history=False)
-                    geojson = collector.collect(max_age_seconds=60)
-
                     for feature in geojson.get('features', []):
                         props = feature.get('properties', {})
                         coords = feature.get('geometry', {}).get('coordinates', [0, 0])

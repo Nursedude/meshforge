@@ -1,0 +1,28 @@
+# Waveshare SX126X XXXM LoRa HAT SPI Configuration
+# Hardware: SX1262 with antenna switch control
+# Manufacturer: Waveshare
+# Source: meshtastic/firmware bin/config.d
+#
+# Copy to: /etc/meshtasticd/config.d/lora-waveshare-sxxx.yaml
+#
+# IMPORTANT: Enable SPI first!
+#   sudo raspi-config nonint do_spi 0
+#   sudo reboot
+
+Lora:
+  Module: sx1262
+  DIO2_AS_RF_SWITCH: true
+  CS: 21
+  IRQ: 16
+  Busy: 20
+  Reset: 18
+  SX126X_ANT_SW: 6
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

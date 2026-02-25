@@ -36,11 +36,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-from utils.safe_import import safe_import
+from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)
-
-_get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
 
 
 class SyncCategory(Enum):
@@ -186,16 +184,7 @@ class OfflineSyncQueue:
 
     def _get_default_path(self) -> Path:
         """Get default database path."""
-        if _HAS_PATHS:
-            data_dir = _get_real_user_home() / ".local" / "share" / "meshforge"
-        else:
-            sudo_user = os.environ.get('SUDO_USER')
-            if sudo_user and sudo_user != 'root':
-                data_dir = Path(f'/home/{sudo_user}/.local/share/meshforge')
-            else:
-                data_dir = Path('/tmp/meshforge')
-                logger.warning(
-                    "Cannot determine real user home; using /tmp/meshforge")
+        data_dir = get_real_user_home() / ".local" / "share" / "meshforge"
         return data_dir / "offline_sync.db"
 
     def _init_db(self) -> None:

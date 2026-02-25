@@ -29,30 +29,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List
 
-from utils.safe_import import safe_import
-
-# Import centralized path utility - see persistent_issues.md Issue #1
-_get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
-
-# Import service management helpers
-_check_service, _HAS_SERVICE_CHECK = safe_import('utils.service_check', 'check_service')
-_apply_config_and_restart, _HAS_APPLY_RESTART = safe_import('utils.service_check', 'apply_config_and_restart')
-_enable_service, _HAS_ENABLE_SERVICE = safe_import('utils.service_check', 'enable_service')
+from utils.paths import get_real_user_home
+from utils.service_check import check_service as _check_service, apply_config_and_restart as _apply_config_and_restart, enable_service as _enable_service
 
 logger = logging.getLogger(__name__)
-
-
-def get_real_user_home() -> Path:
-    """Sudo-safe home directory resolution."""
-    if _HAS_PATHS:
-        return _get_real_user_home()
-    sudo_user = os.environ.get('SUDO_USER', '')
-    if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-        return Path(f'/home/{sudo_user}')
-    logname = os.environ.get('LOGNAME', '')
-    if logname and logname != 'root' and '/' not in logname and '..' not in logname:
-        return Path(f'/home/{logname}')
-    return Path('/root')
 
 
 class BrokerType(Enum):
@@ -672,20 +652,8 @@ def check_mosquitto_running() -> Tuple[bool, str]:
     Returns:
         (running, message) tuple
     """
-    if _HAS_SERVICE_CHECK:
-        status = _check_service('mosquitto')
-        return status.available, status.message
-
-    # Fallback: check via systemctl
-    try:
-        result = subprocess.run(
-            ["systemctl", "is-active", "mosquitto"],
-            capture_output=True, text=True, timeout=10
-        )
-        active = result.stdout.strip() == "active"
-        return active, "Running" if active else "Not running"
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return False, "Cannot determine status"
+    status = _check_service('mosquitto')
+    return status.available, status.message
 
 
 def restart_mosquitto() -> Tuple[bool, str]:
@@ -697,22 +665,7 @@ def restart_mosquitto() -> Tuple[bool, str]:
     if os.geteuid() != 0:
         return False, "Root privileges required. Run with sudo."
 
-    if _HAS_APPLY_RESTART:
-        return _apply_config_and_restart('mosquitto')
-
-    # Fallback
-    try:
-        result = subprocess.run(
-            ["systemctl", "restart", "mosquitto"],
-            capture_output=True, text=True, timeout=30
-        )
-        if result.returncode == 0:
-            return True, "Mosquitto restarted successfully"
-        return False, f"Restart failed: {result.stderr.strip()}"
-    except subprocess.TimeoutExpired:
-        return False, "Restart timed out"
-    except FileNotFoundError:
-        return False, "systemctl not found"
+    return _apply_config_and_restart('mosquitto')
 
 
 def enable_mosquitto_at_boot() -> Tuple[bool, str]:
@@ -724,22 +677,7 @@ def enable_mosquitto_at_boot() -> Tuple[bool, str]:
     if os.geteuid() != 0:
         return False, "Root privileges required. Run with sudo."
 
-    if _HAS_ENABLE_SERVICE:
-        return _enable_service('mosquitto', start=True)
-
-    # Fallback
-    try:
-        result = subprocess.run(
-            ["systemctl", "enable", "--now", "mosquitto"],
-            capture_output=True, text=True, timeout=30
-        )
-        if result.returncode == 0:
-            return True, "Mosquitto enabled at boot and started"
-        return False, f"Enable failed: {result.stderr.strip()}"
-    except subprocess.TimeoutExpired:
-        return False, "Enable timed out"
-    except FileNotFoundError:
-        return False, "systemctl not found"
+    return _enable_service('mosquitto', start=True)
 
 
 def get_meshtastic_mqtt_setup_commands(profile: BrokerProfile) -> str:

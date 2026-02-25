@@ -29,6 +29,7 @@ class DeviceType(Enum):
     GPS = "GPS Module"
     SDR = "SDR Receiver"
     BLUETOOTH = "Bluetooth Adapter"
+    SPI_BRIDGE = "USB-SPI/I2C Bridge"
     UNKNOWN = "Unknown Device"
 
 
@@ -90,6 +91,13 @@ class DeviceScanner:
             'meshtastic': True,
             'devices': ['ESP32-S3 boards'],
             'notes': 'Newer CH341 variant with better stability.',
+        },
+        '1a86:5512': {
+            'name': 'CH341 SPI/I2C Bridge',
+            'type': DeviceType.SPI_BRIDGE,
+            'meshtastic': True,
+            'devices': ['MeshToad E22', 'Pinedio USB', 'MeshStick 1262', 'PiggyStick LR1121'],
+            'notes': 'CH341 in EPP/MEM/I2C mode. Creates virtual SPI/I2C buses for LoRa radio.',
         },
         '10c4:ea60': {
             'name': 'CP2102/CP2104',

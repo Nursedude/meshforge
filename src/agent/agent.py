@@ -52,8 +52,10 @@ from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
 
+# First-party imports — direct per CLAUDE.md
+from utils.paths import get_real_user_home
+
 # Module-level safe imports for optional dependencies
-_get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
 _create_gateway_config_api, _HAS_CONFIG_API = safe_import(
     'utils.config_api', 'create_gateway_config_api'
 )
@@ -128,15 +130,7 @@ class AgentConfig:
         # Set default data directory
         if not self.data_dir:
             # Use real user's home for sudo compatibility
-            if _HAS_PATHS:
-                home = _get_real_user_home()
-            else:
-                import os as _os
-                _sudo_user = _os.environ.get('SUDO_USER', '')
-                if _sudo_user and _sudo_user != 'root' and '/' not in _sudo_user and '..' not in _sudo_user:
-                    home = Path(f'/home/{_sudo_user}')
-                else:
-                    home = Path.home()
+            home = get_real_user_home()
             self.data_dir = str(home / ".config" / "meshforge" / "agent")
 
         # Set default PID file
@@ -207,6 +201,7 @@ class AgentDaemon:
 
         # Background threads
         self._running = threading.Event()
+        self._stop_event = threading.Event()
         self._metrics_thread: Optional[threading.Thread] = None
         self._health_thread: Optional[threading.Thread] = None
 
@@ -250,6 +245,7 @@ class AgentDaemon:
 
                 # Start background threads
                 self._running.set()
+                self._stop_event.clear()
                 self._start_background_threads()
 
                 # Register signal handlers
@@ -278,6 +274,7 @@ class AgentDaemon:
 
             # Stop background threads
             self._running.clear()
+            self._stop_event.set()
 
             if self._metrics_thread:
                 self._metrics_thread.join(timeout=timeout / 3)
@@ -511,7 +508,9 @@ class AgentDaemon:
         from agent.protocol import Message, MessageType
 
         while self._running.is_set():
-            time.sleep(self.config.metrics_interval)
+            self._stop_event.wait(self.config.metrics_interval)
+            if self._stop_event.is_set():
+                break
 
             if not self._protocol or not self._protocol.is_connected:
                 continue

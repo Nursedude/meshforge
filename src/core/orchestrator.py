@@ -20,6 +20,7 @@ Usage:
 """
 
 import os
+import re
 import sys
 import time
 import socket
@@ -37,7 +38,14 @@ from utils.safe_import import safe_import
 _yaml, _HAS_YAML = safe_import('yaml')
 # Import centralized port checker for consistency across MeshForge
 # See: utils/service_check.py - SINGLE SOURCE OF TRUTH
-_centralized_check_port, _HAS_SERVICE_CHECK = safe_import('utils.service_check', 'check_port')
+from utils.service_check import (
+    check_port as _centralized_check_port,
+    check_service,
+    _detect_radio_hardware,
+    _sudo_cmd,
+    _sudo_write,
+    ServiceState as _CheckState,
+)
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -281,6 +289,130 @@ class ServiceOrchestrator:
             )
             logger.info("Configured for Python meshtastic CLI (USB radio)")
 
+    def _check_meshtasticd_config(self) -> bool:
+        """Check that meshtasticd has a radio config in config.d/.
+
+        Without a radio config template, meshtasticd starts but never binds
+        TCP port 4403 — causing health checks to fail.
+
+        If config.d/ is empty, REFUSES to start and logs clear instructions
+        directing the user to select hardware via the TUI or manual copy.
+        No auto-detection or auto-deployment of configs.
+
+        Returns:
+            True if config.d/ has at least one valid config.
+        """
+        config_d = MESHTASTICD_CONFIG_DIR / "config.d"
+        available_d = MESHTASTICD_CONFIG_DIR / "available.d"
+
+        # Check if config.d/ already has configs
+        if config_d.exists():
+            existing = list(config_d.glob("*.yaml"))
+            if existing:
+                # Defense-in-depth: ensure SPI templates have explicit
+                # Module: to prevent any residual Module: auto in
+                # config.yaml from triggering meshtasticd autoconf.
+                for tmpl in existing:
+                    self._validate_template_module(tmpl)
+                return True
+
+        # ── config.d/ is empty — REFUSE to start ──
+        logger.error(
+            "No radio config in /etc/meshtasticd/config.d/ — "
+            "meshtasticd cannot start without hardware configuration."
+        )
+        logger.error("")
+        logger.error("Select your radio hardware using one of these methods:")
+        logger.error("")
+        logger.error(
+            "  1. TUI: sudo python3 src/launcher_tui/main.py"
+        )
+        logger.error(
+            "     → Meshtasticd Config → Hardware Config"
+        )
+        logger.error("")
+        logger.error(
+            "  2. Manual: sudo cp /etc/meshtasticd/available.d/"
+            "<your-radio>.yaml /etc/meshtasticd/config.d/"
+        )
+        logger.error("")
+
+        # List available templates if the directory exists
+        if available_d.exists():
+            templates = sorted(available_d.glob("*.yaml"))
+            if templates:
+                logger.error("Available templates:")
+                for tmpl in templates:
+                    logger.error(f"  - {tmpl.name}")
+                logger.error("")
+
+        return False
+
+    def _validate_template_module(self, deployed_path: Path) -> None:
+        """Validate that a deployed config.d template has an explicit Lora.Module line.
+
+        Defense-in-depth: if a user manually copies an SPI template that
+        lacks Module:, this patches it to prevent any residual Module: auto
+        from triggering meshtasticd's autoconf hardware scan (which crashes
+        on EEPROM CRC32 missing, no CH341, etc.).
+
+        If Module: is missing, infers the correct value from the
+        RADIO_TEMPLATES metadata or falls back to sx1262 (most common).
+        """
+        try:
+            content = deployed_path.read_text()
+        except OSError as e:
+            logger.warning(f"Cannot read deployed template for Module check: {e}")
+            return
+
+        # Only relevant for SPI templates (those with Lora: + GPIO pins)
+        if 'Lora:' not in content or 'CS:' not in content:
+            return
+
+        # Already has explicit Module: — nothing to do
+        if re.search(r'^\s+Module:\s*\S', content, re.MULTILINE):
+            return
+
+        # Determine correct Module value from RADIO_TEMPLATES chip metadata
+        stem = deployed_path.stem
+        module_value = None
+        try:
+            from core.meshtasticd_config import RADIO_TEMPLATES
+            chip = RADIO_TEMPLATES.get(stem, {}).get("chip")
+            if chip:
+                module_value = chip
+        except ImportError:
+            pass
+
+        if not module_value:
+            # Filename heuristics
+            lower = stem.lower()
+            if 'sx1276' in lower or 'rfm9' in lower or 'rfm95' in lower:
+                module_value = 'sx1276'
+            elif 'sx1268' in lower or '400m' in lower:
+                module_value = 'sx1268'
+            else:
+                module_value = 'sx1262'
+
+        # Inject Module: line after Lora: header
+        patched = re.sub(
+            r'^(Lora:\s*\n)',
+            f'\\1  Module: {module_value}\n',
+            content,
+            count=1,
+            flags=re.MULTILINE,
+        )
+
+        if patched != content:
+            try:
+                deployed_path.write_text(patched)
+                logger.warning(
+                    f"Injected 'Module: {module_value}' into "
+                    f"{deployed_path.name} to prevent autoconf crash"
+                )
+            except OSError as e:
+                logger.error(f"Cannot patch deployed template: {e}")
+
     def get_config_info(self) -> Dict[str, Any]:
         """Get current configuration information."""
         return {
@@ -328,41 +460,44 @@ class ServiceOrchestrator:
         return config.systemd_name in result.stdout
 
     def is_running(self, service_name: str) -> bool:
-        """Check if service is running (systemctl is-active)."""
+        """Check if service is running via check_service() (SSOT)."""
         config = self.SERVICES.get(service_name)
         if not config:
             return False
 
-        result = subprocess.run(
-            ['systemctl', 'is-active', config.systemd_name],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        return result.returncode == 0
+        status = check_service(config.systemd_name)
+        return status.available
 
     def is_healthy(self, service_name: str) -> bool:
         """
-        Double-tap health check.
+        Service health = systemctl is-active.
 
-        First check: systemctl is-active
-        Second check: functional verification (port or command)
+        Port/command checks are readiness indicators, not health gates.
+        meshtasticd may be running (healthy) before port 4403 binds —
+        the user configures the radio via the web UI at port 9443.
+        For port readiness, use is_ready() instead.
+        """
+        return self.is_running(service_name)
+
+    def is_ready(self, service_name: str) -> bool:
+        """
+        Full readiness: service running AND port/command responding.
+
+        Use this when you need to verify the service is accepting
+        connections (e.g., before opening a TCP client to port 4403).
         """
         config = self.SERVICES.get(service_name)
         if not config:
             return False
 
-        # First tap: systemctl
         if not self.is_running(service_name):
             return False
 
-        # Second tap: functional check
         if config.check_port:
             return self._check_port(config.check_port)
         elif config.check_command:
             return self._check_command(config.check_command)
 
-        # No functional check defined, trust systemctl
         return True
 
     def _check_port(self, port: int, host: str = 'localhost', timeout: float = 2.0) -> bool:
@@ -370,18 +505,7 @@ class ServiceOrchestrator:
 
         Uses centralized port checker from utils/service_check.py for consistency.
         """
-        if _HAS_SERVICE_CHECK and _centralized_check_port is not None:
-            return _centralized_check_port(port, host, timeout)
-
-        # Fallback if service_check not available
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(timeout)
-            result = sock.connect_ex((host, port))
-            sock.close()
-            return result == 0
-        except (socket.error, OSError):
-            return False
+        return _centralized_check_port(port, host, timeout)
 
     def _check_command(self, command: List[str], timeout: int = 10) -> bool:
         """Run command and check for success."""
@@ -394,6 +518,24 @@ class ServiceOrchestrator:
             return result.returncode == 0
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return False
+
+    def _log_journal_tail(self, service_name: str, lines: int = 8):
+        """Log recent journal entries for a failed service to aid debugging."""
+        config = self.SERVICES.get(service_name)
+        if not config:
+            return
+        try:
+            result = subprocess.run(
+                ['journalctl', '-u', config.systemd_name, '-n', str(lines),
+                 '--no-pager', '-o', 'short-iso'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.stdout.strip():
+                logger.error(f"Recent {service_name} logs:")
+                for line in result.stdout.strip().splitlines():
+                    logger.error(f"  {line}")
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass
 
     def get_status(self, service_name: str) -> ServiceStatus:
         """Get detailed status of a service."""
@@ -429,15 +571,20 @@ class ServiceOrchestrator:
                 message=f"{service_name} is stopped"
             )
 
-        if not self.is_healthy(service_name):
-            return ServiceStatus(
-                name=service_name,
-                state=ServiceState.FAILED,
-                message=f"{service_name} running but not responding"
-            )
-
         # Get PID
         pid = self._get_pid(service_name)
+
+        # Port readiness is informational, not a failure state
+        if config.check_port and not self._check_port(config.check_port):
+            return ServiceStatus(
+                name=service_name,
+                state=ServiceState.RUNNING,
+                pid=pid,
+                message=(
+                    f"{service_name} is running "
+                    f"(port {config.check_port} not yet bound)"
+                )
+            )
 
         return ServiceStatus(
             name=service_name,
@@ -474,6 +621,110 @@ class ServiceOrchestrator:
     # Service Control
     # ─────────────────────────────────────────────────────────────
 
+    def _fix_stale_placeholder(self, service_name: str) -> bool:
+        """
+        Detect and fix stale placeholder service files.
+
+        When a previous install created a placeholder systemd unit (Type=oneshot,
+        ExecStart=/bin/echo ...) but the real binary has since been installed,
+        regenerate the service file from the template and daemon-reload.
+
+        Returns:
+            True if a fix was applied, False if no fix was needed or possible.
+        """
+        config = self.SERVICES.get(service_name)
+        if not config or not config.check_binary:
+            return False
+
+        # Read the current ExecStart from systemd
+        try:
+            result = subprocess.run(
+                ['systemctl', 'show', config.systemd_name, '--property=ExecStart'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            exec_start = result.stdout.strip()
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+
+        # Check if ExecStart is a placeholder (echo command)
+        if '/bin/echo' not in exec_start:
+            return False
+
+        # Placeholder detected — check if real binary exists
+        try:
+            bin_result = subprocess.run(
+                ['which', config.check_binary],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+
+        if bin_result.returncode != 0:
+            logger.error(
+                f"{service_name} service is a placeholder and binary not found. "
+                f"Install: sudo apt install {config.check_binary}"
+            )
+            return False
+
+        binary_path = bin_result.stdout.strip()
+        logger.warning(
+            f"{service_name} service is a stale placeholder — "
+            f"real binary found at {binary_path}"
+        )
+
+        # Regenerate from template (same logic as install_noc.sh)
+        template_path = (
+            Path(__file__).resolve().parent.parent.parent
+            / 'templates' / 'systemd' / 'meshtasticd-native.service'
+        )
+
+        if template_path.exists():
+            template = template_path.read_text()
+            service_content = template.replace('@MESHTASTICD_BIN@', binary_path)
+        else:
+            # Inline fallback (matches install_noc.sh NATIVE_USB_SERVICE)
+            service_content = (
+                "[Unit]\n"
+                "Description=Meshtastic Daemon\n"
+                "Documentation=https://meshtastic.org\n"
+                "After=network.target\n"
+                "\n"
+                "[Service]\n"
+                "Type=simple\n"
+                "User=root\n"
+                "WorkingDirectory=/etc/meshtasticd\n"
+                f"ExecStart={binary_path} -c /etc/meshtasticd/config.yaml\n"
+                "Restart=on-failure\n"
+                "RestartSec=5\n"
+                "\n"
+                "[Install]\n"
+                "WantedBy=multi-user.target\n"
+            )
+
+        service_path = f'/etc/systemd/system/{config.systemd_name}.service'
+        success, msg = _sudo_write(service_path, service_content)
+        if not success:
+            logger.error(f"Failed to fix placeholder service: {msg}")
+            return False
+
+        # Reload systemd so it picks up the new unit file
+        try:
+            subprocess.run(
+                _sudo_cmd(['systemctl', 'daemon-reload']),
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            logger.warning("daemon-reload failed after fixing placeholder")
+
+        logger.info(f"Fixed stale placeholder service for {service_name}")
+        return True
+
     def start_service(self, service_name: str, wait: bool = True) -> bool:
         """
         Start a service with health verification.
@@ -494,9 +745,21 @@ class ServiceOrchestrator:
             logger.error(f"{service_name} is not installed")
             return False
 
-        if self.is_healthy(service_name):
-            logger.info(f"{service_name} is already running and healthy")
+        # Already running — no need to validate pre-start config
+        # (the service's configuration is valid however it was set up)
+        if self.is_running(service_name):
+            logger.info(f"{service_name} is already running")
             return True
+
+        # Pre-start: ensure meshtasticd has a radio config in config.d/
+        # Only reached when we are about to START the service.
+        if service_name == 'meshtasticd' and config.check_port:
+            if not self._check_meshtasticd_config():
+                logger.error("meshtasticd cannot start without a radio config")
+                return False
+
+        # Auto-fix stale placeholder service files before starting
+        self._fix_stale_placeholder(service_name)
 
         logger.info(f"Starting {service_name}...")
         result = subprocess.run(
@@ -511,17 +774,94 @@ class ServiceOrchestrator:
             return False
 
         if wait:
-            # Wait for startup delay
-            time.sleep(config.startup_delay)
+            # Poll service status with crash detection instead of blind sleep
+            max_wait = config.startup_delay + 5  # e.g., 10s for meshtasticd
+            service_up = False
 
-            # Verify health (double-tap)
-            if not self.is_healthy(service_name):
-                logger.warning(f"{service_name} started but not healthy, retrying check...")
-                time.sleep(2)  # One more try
-                if not self.is_healthy(service_name):
-                    logger.error(f"{service_name} failed health check")
-                    self._emit('service_failed', service_name)
-                    return False
+            for elapsed in range(1, max_wait + 1):
+                time.sleep(1)
+                status = check_service(config.systemd_name)
+
+                if status.available:
+                    service_up = True
+                    break
+
+                if status.state == _CheckState.FAILED:
+                    # Service crashed — log diagnostics immediately
+                    logger.warning(
+                        f"{service_name} crashed during startup (after {elapsed}s)"
+                    )
+                    self._log_journal_tail(service_name, lines=8)
+
+                    # One restart attempt (device node may now be ready)
+                    logger.info(f"Restarting {service_name}...")
+                    subprocess.run(
+                        ['systemctl', 'restart', config.systemd_name],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    # Wait for second attempt
+                    for _ in range(config.startup_delay):
+                        time.sleep(1)
+                        status = check_service(config.systemd_name)
+                        if status.available:
+                            service_up = True
+                            break
+                    if not service_up:
+                        logger.error(
+                            f"{service_name} failed to start after restart"
+                        )
+                        self._log_journal_tail(service_name, lines=8)
+                        self._emit('service_failed', service_name)
+                        return False
+                    break
+
+            if not service_up:
+                # Timed out — never became available or crashed
+                logger.error(
+                    f"{service_name} did not start within {max_wait}s"
+                )
+                self._log_journal_tail(service_name, lines=8)
+                self._emit('service_failed', service_name)
+                return False
+
+            # Port readiness check with retries (non-blocking, per SSOT)
+            if config.check_port:
+                port_ready = False
+                for _ in range(5):
+                    if self._check_port(config.check_port):
+                        port_ready = True
+                        logger.info(
+                            f"{service_name} port {config.check_port} ready"
+                        )
+                        break
+                    time.sleep(1)
+
+                if not port_ready:
+                    # Re-check service state — it may have crashed during
+                    # the port-wait window (e.g., wrong radio config →
+                    # GPIO init failure → meshtasticd exits)
+                    post_port_status = check_service(config.systemd_name)
+                    if not post_port_status.available:
+                        logger.error(
+                            f"{service_name} crashed after start "
+                            f"(port {config.check_port} never bound, "
+                            f"service state: {post_port_status.state.value})"
+                        )
+                        self._log_journal_tail(service_name, lines=10)
+                        logger.error(
+                            "Check /etc/meshtasticd/config.d/ — verify "
+                            "the radio config matches your hardware "
+                            "(correct GPIO pins, Module type, etc.)."
+                        )
+                        self._emit('service_failed', service_name)
+                        return False
+
+                    # Service still running but port not bound — warn only
+                    logger.warning(
+                        f"{service_name} running but port {config.check_port} "
+                        f"not yet bound — may need more startup time or "
+                        f"radio configuration"
+                    )
 
         logger.info(f"{service_name} started successfully")
         self._emit('service_started', service_name)
@@ -587,7 +927,7 @@ class ServiceOrchestrator:
                     logger.error(f"  • {svc_name}")
                     logger.error(f"    Fix: {fix_cmd}")
                 logger.error("")
-                logger.error("After installing, run: sudo meshforge-noc --start")
+                logger.error("After installing, run: meshforge-noc --start")
                 logger.error("Or run the full installer: sudo bash /opt/meshforge/scripts/install_noc.sh")
                 return False
             else:
@@ -612,8 +952,8 @@ class ServiceOrchestrator:
                     logger.warning(f"Skipping {service_name}: dependency {dep} not available")
                     dep_failed = True
                     break
-                if not self.is_healthy(dep):
-                    logger.warning(f"Skipping {service_name}: dependency {dep} not healthy")
+                if not self.is_running(dep):
+                    logger.warning(f"Skipping {service_name}: dependency {dep} not running")
                     dep_failed = True
                     break
 
@@ -734,8 +1074,8 @@ class ServiceOrchestrator:
                 if not config or not config.required:
                     continue
 
-                if not self.is_healthy(service_name):
-                    logger.warning(f"{service_name} health check failed")
+                if not self.is_running(service_name):
+                    logger.warning(f"{service_name} not running")
 
                     if self.config.get('restart_on_failure', True):
                         max_attempts = self.config.get('max_restart_attempts', 3)
@@ -917,7 +1257,10 @@ def main():
             }.get(status.state, '?')
             pid_str = f" (PID: {status.pid})" if status.pid else ""
             print(f"  {state_icon} {name}: {status.state.value}{pid_str}")
-            if status.message and status.state not in (ServiceState.RUNNING,):
+            if status.message and (
+                status.state != ServiceState.RUNNING
+                or "not yet bound" in status.message
+            ):
                 print(f"      {status.message}")
         print()
         sys.exit(0)
@@ -929,11 +1272,14 @@ def main():
     if args.start or not any([args.stop, args.restart, args.status, args.install, args.config]):
         success = orch.startup(graceful=args.graceful)
         if (success or args.graceful) and args.monitor:
+            import threading
+            _stop_event = threading.Event()
             orch.start_monitoring()
             try:
-                while True:
-                    time.sleep(1)
+                while not _stop_event.is_set():
+                    _stop_event.wait(1)
             except KeyboardInterrupt:
+                _stop_event.set()
                 orch.shutdown()
         sys.exit(0 if success else 1)
 

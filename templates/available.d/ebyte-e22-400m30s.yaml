@@ -1,0 +1,32 @@
+# Ebyte E22-400M30S SPI Configuration (1W High-Power, 433MHz)
+# Hardware: SX1268 at +30dBm (1W)
+# Manufacturer: Ebyte
+# Region: 433MHz for EU/Asia
+#
+# WARNING: High-power module — requires adequate power supply.
+#
+# Copy to: /etc/meshtasticd/config.d/ebyte-e22-400m30s.yaml
+#
+# IMPORTANT: Enable SPI first!
+#   sudo raspi-config nonint do_spi 0
+#   sudo reboot
+
+Lora:
+  Module: sx1268
+  CS: 21
+  IRQ: 16
+  Busy: 20
+  Reset: 18
+  RXen: 12
+  TXen: 13
+  DIO2_AS_RF_SWITCH: true
+  DIO3_TCXO_VOLTAGE: true
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

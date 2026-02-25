@@ -17,11 +17,18 @@
             padding: 0;
             box-sizing: border-box;
         }
+        html {
+            overflow: hidden;
+            height: 100%;
+            width: 100%;
+        }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #0a0e1a;
             color: #e0e0e0;
             overflow: hidden;
+            height: 100%;
+            width: 100%;
         }
         #map {
             width: 100%;
@@ -258,6 +265,37 @@
             overflow-y: auto;
             flex: 1;
             min-height: 0;
+            padding-right: 4px;
+        }
+        /* Thin dark-themed scrollbar for panel */
+        .panel-body,
+        .panel-body .no-gps-list,
+        .panel-body .sim-links-list {
+            scrollbar-width: thin;
+            scrollbar-color: #2a3a4a #141e2e;
+            scrollbar-gutter: stable;
+        }
+        .panel-body::-webkit-scrollbar,
+        .panel-body .no-gps-list::-webkit-scrollbar,
+        .panel-body .sim-links-list::-webkit-scrollbar {
+            width: 6px;
+        }
+        .panel-body::-webkit-scrollbar-track,
+        .panel-body .no-gps-list::-webkit-scrollbar-track,
+        .panel-body .sim-links-list::-webkit-scrollbar-track {
+            background: #141e2e;
+            border-radius: 3px;
+        }
+        .panel-body::-webkit-scrollbar-thumb,
+        .panel-body .no-gps-list::-webkit-scrollbar-thumb,
+        .panel-body .sim-links-list::-webkit-scrollbar-thumb {
+            background: #2a3a4a;
+            border-radius: 3px;
+        }
+        .panel-body::-webkit-scrollbar-thumb:hover,
+        .panel-body .no-gps-list::-webkit-scrollbar-thumb:hover,
+        .panel-body .sim-links-list::-webkit-scrollbar-thumb:hover {
+            background: #3a4a5a;
         }
         .control-panel.collapsed .panel-body {
             display: none;

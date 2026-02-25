@@ -1,0 +1,7 @@
+# MeshForge Monitoring Dependencies (optional, enhances all profiles)
+
+# System monitoring
+psutil>=5.9.0
+
+# WebSocket support (real-time message broadcast)
+websockets>=12.0

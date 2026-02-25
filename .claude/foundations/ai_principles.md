@@ -247,40 +247,46 @@ In emergencies, humans experience:
 - Conservative recommendations (safety margins)
 - Human in the loop for critical decisions
 
-### 4.3 Nano Banana Integration Guidelines
+### 4.3 AI Interface Design Principles
 
-For UI/UX design generation using [Google's Nano Banana (Gemini 2.5 Flash Image)](https://developers.googleblog.com/en/introducing-gemini-2-5-flash-image/):
+> *Consolidated from ai_interface_guidelines.md*
 
-#### Effective Prompting for MeshForge UI
+#### Core Design Hierarchy
+1. **TRANSPARENCY** — Show the machine behind the magic
+2. **USER CONTROL** — The human is always in charge
+3. **CLARITY** — Plain language, clear expectations
+4. **ERROR RECOVERY** — Graceful failure, easy correction
+5. **INCLUSIVITY** — Design for everyone
+6. **FEEDBACK** — Listen, learn, improve
+7. **PRIVACY** — Protect by default
+8. **HUMAN-CENTRICITY** — Assist, don't replace
 
-```text
-TEMPLATE: MeshForge Panel Design
+#### Privacy Architecture
+- **LOCAL ONLY**: Configuration files, message history, location data, personal identifiers
+- **NEVER COLLECTED**: Message content, callsigns (unless user shares), network traffic
+- All AI processing happens on-device. User data never trains models.
 
-"Design a [panel type] interface for a mesh network management
-application. Style: modern GTK4/libadwaita dark theme.
+#### Human-Only Actions (AI can suggest but NEVER auto-execute)
+- Change encryption settings
+- Delete data
+- Broadcast emergency messages
+- Modify permissions
+- Factory reset
+- Update firmware
 
-Layout:
-- Header with title and action buttons
-- Main content area with [specific components]
-- Status indicators using green/yellow/red semantics
-- Sidebar navigation visible on left
-
-Requirements:
-- High contrast for outdoor/bright light use
-- Large touch targets (minimum 44px)
-- Clear visual hierarchy
-- No decorative elements that waste space
-- Monospace fonts for technical data
-
-Device: Desktop Linux application, 1024x768 minimum"
+#### Quick Reference Checklist
 ```
-
-#### UI Generation Workflow
-
-1. **Concept Phase**: Generate 3-5 layout variations
-2. **Refinement**: Iterate on best candidate
-3. **Implementation**: Extract design tokens, implement in GTK
-4. **Validation**: Test accessibility, responsive behavior
+□ AI indicator visible when AI is active
+□ Confidence shown for suggestions
+□ Accept/Reject/Adjust options on every suggestion
+□ Undo always available
+□ Can disable AI features
+□ No jargon in AI communication
+□ Limitations disclosed
+□ Recovery paths clear on errors
+□ Local processing, no unnecessary data collection
+□ Critical decisions always require human approval
+```
 
 ---
 
@@ -350,10 +356,10 @@ Inclusion checklist:
 - ARRL Emergency Communications Guidelines
 - Amateur Radio Emergency Service (ARES) Manual
 - Human Factors in Emergency Interface Design
-- GTK4 Human Interface Guidelines
-- Nano Banana UI/UX Best Practices (Google, 2025)
+- Apple HIG: Generative AI & Machine Learning
+- Apple Foundation Models Research
 
 ---
 
 *This document guides all MeshForge development decisions.*
-*Last updated: 2026-01-05*
+*Last updated: 2026-02-21*

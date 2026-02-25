@@ -12,47 +12,27 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 from backend import clear_screen
-from utils.safe_import import safe_import
-
 logger = logging.getLogger(__name__)
 
-# Import centralized service checking
-(check_systemd_service, check_process_running, check_service,
- apply_config_and_restart, enable_service, ServiceState,
- _HAS_SERVICE_CHECK) = safe_import(
-    'utils.service_check',
-    'check_systemd_service', 'check_process_running', 'check_service',
-    'apply_config_and_restart', 'enable_service', 'ServiceState',
+# Centralized service checking — first-party, always available
+from utils.service_check import (
+    check_systemd_service, check_process_running, check_service,
+    apply_config_and_restart, enable_service, start_service, stop_service,
+    restart_service, ServiceState, _sudo_cmd, check_udp_port,
+    check_rns_shared_instance,
+    lock_port_external, unlock_port_external,
+    check_port_locked, persist_iptables,
 )
-_HAS_APPLY_RESTART = _HAS_SERVICE_CHECK
 
-# Import centralized path utility
-get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
-if not _HAS_PATHS:
-    def get_real_user_home() -> Path:
-        sudo_user = os.environ.get('SUDO_USER', '')
-        if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-            return Path(f'/home/{sudo_user}')
-        logname = os.environ.get('LOGNAME', '')
-        if logname and logname != 'root' and '/' not in logname and '..' not in logname:
-            return Path(f'/home/{logname}')
-        return Path('/root')
-
-# Import port lockdown helpers
-(lock_port_external, unlock_port_external,
- check_port_locked, persist_iptables,
- _HAS_PORT_LOCKDOWN) = safe_import(
-    'utils.service_check',
-    'lock_port_external', 'unlock_port_external',
-    'check_port_locked', 'persist_iptables',
-)
+# Sudo-safe home directory — first-party, always available (MF001)
+from utils.paths import get_real_user_home
 
 # Import RNS identity helpers
-get_identity_path, _HAS_RNS_IDENTITY = safe_import('commands.rns', 'get_identity_path')
-create_identities, _HAS_RNS_CREATE = safe_import('commands.rns', 'create_identities')
+from commands.rns import get_identity_path
+from commands.rns import create_identities
 
 # Import propagation module
-propagation_mod, _HAS_PROPAGATION = safe_import('commands.propagation')
+from commands import propagation
 
 
 class ServiceMenuMixin:
@@ -106,15 +86,7 @@ class ServiceMenuMixin:
         Uses centralized service_check module when available.
         """
         try:
-            if _HAS_SERVICE_CHECK:
-                return check_process_running('bridge_cli.py')
-
-            # Fallback to direct pgrep call
-            result = subprocess.run(
-                ['pgrep', '-f', 'bridge_cli.py'],
-                capture_output=True, text=True, timeout=5
-            )
-            return result.returncode == 0
+            return check_process_running('bridge_cli.py')
         except (subprocess.SubprocessError, OSError) as e:
             logger.debug("Bridge process check failed: %s", e)
             return False
@@ -132,18 +104,8 @@ class ServiceMenuMixin:
 
         # 1. Check rnsd is running
         rnsd_running = False
-        if _HAS_SERVICE_CHECK:
-            status = check_service('rnsd')
-            rnsd_running = status.available
-        else:
-            try:
-                result = subprocess.run(
-                    ['pgrep', '-f', 'rnsd'],
-                    capture_output=True, text=True, timeout=5
-                )
-                rnsd_running = result.returncode == 0
-            except (subprocess.SubprocessError, OSError):
-                pass
+        status = check_service('rnsd')
+        rnsd_running = status.available
 
         if not rnsd_running:
             issues.append("rnsd is not running (required for RNS connectivity)")
@@ -162,10 +124,9 @@ class ServiceMenuMixin:
             pass
 
         # 3. Check gateway identity exists
-        if _HAS_RNS_IDENTITY:
-            gw_id = get_identity_path()
-            if not gw_id.exists():
-                issues.append("Gateway identity not created yet")
+        gw_id = get_identity_path()
+        if not gw_id.exists():
+            issues.append("Gateway identity not created yet")
 
         if not issues:
             return True
@@ -200,46 +161,32 @@ class ServiceMenuMixin:
         if not rnsd_running:
             print("[2] Starting rnsd (shared instance)...")
             try:
-                if _HAS_SERVICE_CHECK:
-                    from utils.service_check import apply_config_and_restart
-                    success, msg_text = apply_config_and_restart('rnsd')
-                    if success:
-                        print("  rnsd started via systemctl.")
-                    else:
-                        # Try direct start
-                        subprocess.run(
-                            ['systemctl', 'start', 'rnsd'],
-                            capture_output=True, text=True, timeout=15
-                        )
+                success, msg_text = apply_config_and_restart('rnsd')
+                if success:
+                    print("  rnsd started via systemctl.")
                 else:
-                    subprocess.run(
-                        ['systemctl', 'start', 'rnsd'],
-                        capture_output=True, text=True, timeout=15
-                    )
+                    # Try direct start as fallback
+                    start_service('rnsd')
                 time.sleep(2)
                 # Verify
-                if _HAS_SERVICE_CHECK:
-                    status = check_service('rnsd')
-                    if status.available:
-                        print("  rnsd is now running.\n")
-                    else:
-                        print(f"  Warning: {status.message}\n")
+                status = check_service('rnsd')
+                if status.available:
+                    print("  rnsd is now running.\n")
                 else:
-                    print("  rnsd start command sent.\n")
+                    print(f"  Warning: {status.message}\n")
             except (subprocess.SubprocessError, OSError) as e:
                 print(f"  Error starting rnsd: {e}")
                 print("  Bridge may fail to connect.\n")
 
         # Create gateway identity if missing
-        if _HAS_RNS_IDENTITY and _HAS_RNS_CREATE:
-            gw_id = get_identity_path()
-            if not gw_id.exists():
-                print("[3] Creating gateway identity...")
-                result = create_identities()
-                if result.success:
-                    print(f"  {result.message}\n")
-                else:
-                    print(f"  Warning: {result.message}\n")
+        gw_id = get_identity_path()
+        if not gw_id.exists():
+            print("[3] Creating gateway identity...")
+            result = create_identities()
+            if result.success:
+                print(f"  {result.message}\n")
+            else:
+                print(f"  Warning: {result.message}\n")
 
         # Restart NomadNet as client (if we stopped it)
         if nomadnet_conflict:
@@ -478,15 +425,8 @@ class ServiceMenuMixin:
                 # Check systemd first, fall back to interactive detection
                 is_systemd = False
                 try:
-                    if _HAS_SERVICE_CHECK:
-                        svc_status = check_service(svc)
-                        is_systemd = svc_status.available
-                    else:
-                        result = subprocess.run(
-                            ['systemctl', 'is-active', svc],
-                            capture_output=True, text=True, timeout=5
-                        )
-                        is_systemd = result.stdout.strip() == 'active'
+                    svc_status = check_service(svc)
+                    is_systemd = svc_status.available
                 except Exception:
                     pass
 
@@ -505,49 +445,27 @@ class ServiceMenuMixin:
                 continue
 
             try:
-                if _HAS_SERVICE_CHECK:
-                    # Use detailed check_service() as single source of truth
-                    svc_status = check_service(svc)
-                    _, is_enabled = check_systemd_service(svc)
+                svc_status = check_service(svc)
+                _, is_enabled = check_systemd_service(svc)
 
-                    boot_info = ""
-                    if svc_status.available and not is_enabled:
-                        boot_info = "  (not enabled at boot)"
-                        warnings.append(svc)
+                boot_info = ""
+                if svc_status.available and not is_enabled:
+                    boot_info = "  (not enabled at boot)"
+                    warnings.append(svc)
 
-                    if svc_status.available:
-                        print(f"  \033[0;32m●\033[0m {svc:<18} running{boot_info}")
-                    elif svc_status.state in (ServiceState.FAILED, ServiceState.DEGRADED):
-                        print(f"  \033[0;31m●\033[0m {svc:<18} FAILED")
-                        failed_services.append(svc)
-                    elif svc_status.state == ServiceState.NOT_RUNNING:
-                        print(f"  \033[2m○\033[0m {svc:<18} stopped")
+                if svc_status.available:
+                    # rnsd zombie detection: systemd active but shared instance not available
+                    if svc == 'rnsd' and not check_rns_shared_instance():
+                        print(f"  \033[0;33m●\033[0m {svc:<18} running (shared instance not available)")
                     else:
-                        print(f"  \033[2m○\033[0m {svc:<18} {svc_status.state.value}")
+                        print(f"  \033[0;32m●\033[0m {svc:<18} running{boot_info}")
+                elif svc_status.state in (ServiceState.FAILED, ServiceState.DEGRADED):
+                    print(f"  \033[0;31m●\033[0m {svc:<18} FAILED")
+                    failed_services.append(svc)
+                elif svc_status.state == ServiceState.NOT_RUNNING:
+                    print(f"  \033[2m○\033[0m {svc:<18} stopped")
                 else:
-                    result = subprocess.run(
-                        ['systemctl', 'is-active', svc],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    status = result.stdout.strip()
-                    enabled_result = subprocess.run(
-                        ['systemctl', 'is-enabled', svc],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    is_enabled = enabled_result.returncode == 0
-
-                    boot_info = ""
-                    if status == 'active' and not is_enabled:
-                        boot_info = "  (not enabled at boot)"
-                        warnings.append(svc)
-
-                    if status == 'active':
-                        print(f"  \033[0;32m●\033[0m {svc:<18} running{boot_info}")
-                    elif status == 'failed':
-                        print(f"  \033[0;31m●\033[0m {svc:<18} FAILED")
-                        failed_services.append(svc)
-                    else:
-                        print(f"  \033[2m○\033[0m {svc:<18} {status}")
+                    print(f"  \033[2m○\033[0m {svc:<18} {svc_status.state.value}")
             except (subprocess.SubprocessError, OSError) as e:
                 logger.debug("Service status check for %s failed: %s", svc, e)
                 print(f"  ? {svc:<18} unknown")
@@ -572,13 +490,6 @@ class ServiceMenuMixin:
 
     def _manage_port_lockdown(self):
         """Lock/unlock external access to meshtasticd port 9443."""
-        if not _HAS_PORT_LOCKDOWN:
-            self.dialog.msgbox(
-                "Unavailable",
-                "Port lockdown requires utils.service_check module."
-            )
-            return
-
         while True:
             locked = check_port_locked(9443)
             status_str = "\033[0;32mLOCKED\033[0m (localhost only)" if locked else "\033[0;31mOPEN\033[0m (external access allowed)"
@@ -648,7 +559,8 @@ class ServiceMenuMixin:
         """Restart the meshtasticd service."""
         clear_screen()
         print("Restarting meshtasticd...\n")
-        subprocess.run(['systemctl', 'restart', 'meshtasticd'], timeout=30)
+        success, msg = apply_config_and_restart('meshtasticd')
+        print(msg)
         subprocess.run(['systemctl', 'status', 'meshtasticd', '--no-pager', '-l'], timeout=10)
         self._wait_for_enter()
 
@@ -659,7 +571,8 @@ class ServiceMenuMixin:
         if not self._has_systemd_unit('rnsd'):
             self._start_rnsd_direct()
         else:
-            subprocess.run(['systemctl', 'start', 'rnsd'], timeout=30)
+            success, msg = start_service('rnsd')
+            print(msg)
             subprocess.run(['systemctl', 'status', 'rnsd', '--no-pager', '-l'], timeout=10)
         self._wait_for_enter()
 
@@ -673,7 +586,8 @@ class ServiceMenuMixin:
             time.sleep(0.5)
             self._start_rnsd_direct()
         else:
-            subprocess.run(['systemctl', 'restart', 'rnsd'], timeout=30)
+            success, msg = restart_service('rnsd')
+            print(msg)
             subprocess.run(['systemctl', 'status', 'rnsd', '--no-pager', '-l'], timeout=10)
         self._wait_for_enter()
 
@@ -706,25 +620,12 @@ class ServiceMenuMixin:
                     "Check: cat /etc/meshtasticd/config.yaml"
                 )
 
-            # Only create config.yaml if it doesn't exist or is empty
+            # Only create config.yaml if it doesn't exist or is empty.
+            # Uses centralized ensure_structure() so content stays in sync
+            # with templates/config.yaml.  NEVER overwrites user's config.
             if needs_config:
-                config_yaml.write_text("""---
-Lora:
-  Module: auto
-
-Logging:
-  LogLevel: info
-
-Webserver:
-  Port: 9443
-  RootPath: /usr/share/meshtasticd/web
-
-General:
-  MaxNodes: 200
-  MaxMessageQueue: 100
-  ConfigDirectory: /etc/meshtasticd/config.d/
-  AvailableDirectory: /etc/meshtasticd/available.d/
-""")
+                from core.meshtasticd_config import MeshtasticdConfig
+                MeshtasticdConfig().ensure_structure()
                 self.dialog.infobox("Fixing", "Created minimal config.yaml")
 
             # NOTE: We do NOT create HAT templates - meshtasticd provides them
@@ -749,11 +650,7 @@ General:
                     )
             else:
                 # Native daemon exists - restart service
-                if _HAS_APPLY_RESTART:
-                    success, msg = apply_config_and_restart('meshtasticd')
-                else:
-                    subprocess.run(['systemctl', 'daemon-reload'], timeout=30, check=False)
-                    subprocess.run(['systemctl', 'restart', 'meshtasticd'], timeout=30, check=False)
+                apply_config_and_restart('meshtasticd')
 
                 self.dialog.msgbox(
                     "Config Fixed",
@@ -831,38 +728,16 @@ General:
             result = subprocess.run(['which', 'meshtasticd'], capture_output=True, text=True, timeout=5)
             meshtasticd_bin = result.stdout.strip() if result.returncode == 0 else '/usr/bin/meshtasticd'
 
-            # Ensure config directories exist (meshtasticd package should create these)
+            # Ensure config directories and config.yaml exist.
+            # Uses centralized ensure_structure() — creates dirs, deploys
+            # templates from templates/config.yaml.  NEVER overwrites user's
+            # config.yaml (MaxNodes, MaxMessageQueue, etc.).
             config_dir = Path('/etc/meshtasticd')
-            config_dir.mkdir(parents=True, exist_ok=True)
-            (config_dir / 'available.d').mkdir(exist_ok=True)
-            (config_dir / 'config.d').mkdir(exist_ok=True)
-            (config_dir / 'ssl').mkdir(mode=0o700, exist_ok=True)
-
-            # Check if meshtasticd installed a valid config.yaml
-            # Only create one if missing or empty - NEVER overwrite
             config_yaml = config_dir / 'config.yaml'
-            if config_yaml.exists() and 'Webserver:' in config_yaml.read_text():
-                self.dialog.infobox("Installing", "Using existing config.yaml from meshtasticd package")
-            elif not config_yaml.exists() or not config_yaml.read_text().strip():
-                # No config or empty - create minimal one
-                config_yaml.write_text("""---
-Lora:
-  Module: auto
-
-Logging:
-  LogLevel: info
-
-Webserver:
-  Port: 9443
-  RootPath: /usr/share/meshtasticd/web
-
-General:
-  MaxNodes: 200
-  MaxMessageQueue: 100
-  ConfigDirectory: /etc/meshtasticd/config.d/
-  AvailableDirectory: /etc/meshtasticd/available.d/
-""")
-                self.dialog.infobox("Installing", "Created minimal config.yaml")
+            from core.meshtasticd_config import MeshtasticdConfig
+            MeshtasticdConfig().ensure_structure()
+            if config_yaml.exists():
+                self.dialog.infobox("Installing", "Config structure ready")
 
             # NOTE: We do NOT create HAT templates - meshtasticd package provides them
             # User selects their HAT from /etc/meshtasticd/available.d/ via Hardware Config menu
@@ -893,14 +768,9 @@ WantedBy=multi-user.target
             Path('/etc/systemd/system/meshtasticd.service').write_text(service_content)
 
             # Reload, enable, and start
-            if _HAS_APPLY_RESTART:
-                success, msg = enable_service('meshtasticd', start=True)
-                if not success:
-                    self.dialog.msgbox("Warning", f"Service setup issue: {msg}")
-            else:
-                subprocess.run(['systemctl', 'daemon-reload'], timeout=30, check=False)
-                subprocess.run(['systemctl', 'enable', 'meshtasticd'], timeout=30, check=False)
-                subprocess.run(['systemctl', 'restart', 'meshtasticd'], timeout=30, check=False)
+            success, msg = enable_service('meshtasticd', start=True)
+            if not success:
+                self.dialog.msgbox("Warning", f"Service setup issue: {msg}")
 
             self.dialog.msgbox(
                 "Success",
@@ -955,21 +825,9 @@ WantedBy=multi-user.target
             return False
 
     def _is_rnsd_running(self) -> bool:
-        """Check if rnsd is running as a process.
-
-        Uses centralized service_check module when available.
-        """
+        """Check if rnsd is running as a process."""
         try:
-            if _HAS_SERVICE_CHECK:
-                return check_process_running('rnsd')
-
-            # Fallback to direct pgrep call
-            result = subprocess.run(
-                ['pgrep', '-x', 'rnsd'],
-                capture_output=True,
-                timeout=5
-            )
-            return result.returncode == 0
+            return check_process_running('rnsd')
         except (subprocess.SubprocessError, OSError) as e:
             logger.debug("rnsd process check failed: %s", e)
             return False
@@ -1099,7 +957,8 @@ WantedBy=multi-user.target
             if use_direct_rnsd:
                 self._start_rnsd_direct()
             else:
-                subprocess.run(['systemctl', 'start', service_name], timeout=30)
+                success, msg = start_service(service_name)
+                print(msg)
                 subprocess.run(
                     ['systemctl', 'status', service_name, '--no-pager', '-l'],
                     timeout=10
@@ -1113,8 +972,8 @@ WantedBy=multi-user.target
                 if use_direct_rnsd:
                     self._stop_rnsd_direct()
                 else:
-                    subprocess.run(['systemctl', 'stop', service_name], timeout=30)
-                    print(f"{service_name} stopped.")
+                    success, msg = stop_service(service_name)
+                    print(msg)
                 self._wait_for_enter()
 
         elif action == "restart":
@@ -1125,7 +984,8 @@ WantedBy=multi-user.target
                 time.sleep(0.5)
                 self._start_rnsd_direct()
             else:
-                subprocess.run(['systemctl', 'restart', service_name], timeout=30)
+                success, msg = restart_service(service_name)
+                print(msg)
                 subprocess.run(
                     ['systemctl', 'status', service_name, '--no-pager', '-l'],
                     timeout=10
@@ -1280,13 +1140,12 @@ WantedBy=multi-user.target
                 )
                 if result.returncode == 0:
                     print("\033[0;32m✓\033[0m OpenHamClock started on port 3000")
-                    if _HAS_PROPAGATION:
-                        print("\nAuto-configuring MeshForge...")
-                        propagation_mod.configure_source(
-                            propagation_mod.DataSource.OPENHAMCLOCK,
-                            host="localhost", port=3000
-                        )
-                        print("\033[0;32m✓\033[0m MeshForge configured for OpenHamClock")
+                    print("\nAuto-configuring MeshForge...")
+                    propagation.configure_source(
+                        propagation.DataSource.OPENHAMCLOCK,
+                        host="localhost", port=3000
+                    )
+                    print("\033[0;32m✓\033[0m MeshForge configured for OpenHamClock")
                 else:
                     print(f"\033[0;31mError:\033[0m {result.stderr}")
 
@@ -1486,26 +1345,8 @@ WantedBy=multi-user.target
         """
         try:
             # Enable and start mosquitto
-            if _HAS_SERVICE_CHECK:
-                success, msg = enable_service('mosquitto', start=True)
-                return success
-            else:
-                # Fallback to direct systemctl calls
-                subprocess.run(
-                    ['systemctl', 'enable', 'mosquitto'],
-                    timeout=30, check=False
-                )
-                subprocess.run(
-                    ['systemctl', 'start', 'mosquitto'],
-                    timeout=30, check=False
-                )
-
-                # Check if running
-                result = subprocess.run(
-                    ['systemctl', 'is-active', 'mosquitto'],
-                    capture_output=True, text=True, timeout=5
-                )
-                return result.stdout.strip() == 'active'
+            success, msg = enable_service('mosquitto', start=True)
+            return success
 
         except (subprocess.SubprocessError, OSError) as e:
             logger.debug("mosquitto start/verify failed: %s", e)

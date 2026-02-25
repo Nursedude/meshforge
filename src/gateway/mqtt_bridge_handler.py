@@ -49,8 +49,9 @@ _get_protobuf_client, _HAS_PROTOBUF_CLIENT = safe_import(
     '.meshtastic_protobuf_client', 'get_protobuf_client', package='gateway',
 )
 
-# Optional paths utility
-_get_real_user_home_fn, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
+# Sudo-safe home directory — first-party, always available (MF001)
+from utils.paths import get_real_user_home as _get_real_user_home_fn
+from utils.service_check import check_service as _check_service
 
 if TYPE_CHECKING:
     from .bridge_health import BridgeHealthMonitor
@@ -163,8 +164,18 @@ class MQTTBridgeHandler:
             logger.error("paho-mqtt not installed. Install with: pip install paho-mqtt")
             return False
 
-        mqtt = _mqtt_mod
+        # Pre-flight: verify MQTT broker is running
         mqtt_cfg = self.config.mqtt_bridge
+        if mqtt_cfg.broker in ('localhost', '127.0.0.1', '::1'):
+            broker_status = _check_service('mosquitto')
+            if not broker_status.available:
+                logger.warning("mosquitto service check: %s (attempting connection anyway)",
+                               broker_status.message)
+                if broker_status.fix_hint:
+                    logger.info("Fix: %s", broker_status.fix_hint)
+                # Continue — mosquitto may be running outside systemd
+
+        mqtt = _mqtt_mod
 
         try:
             # Create MQTT client
@@ -531,10 +542,30 @@ class MQTTBridgeHandler:
     ) -> bool:
         """Send text via HTTP protobuf transport (preferred TX path).
 
-        Uses MeshtasticProtobufClient.send_text() which POSTs a serialized
-        ToRadio protobuf to /api/v1/toradio. Same endpoint the web client
-        uses — zero TCP contention, no subprocess overhead.
+        Primary: Stateless direct POST to /api/v1/toradio — NEVER reads
+        from /api/v1/fromradio, so the web client at :9443 is never
+        starved of delivery ACK packets.
+
+        Fallback: Session-based protobuf client (legacy, only if direct
+        send fails).
         """
+        # Convert hex node ID string to int (e.g. "!aabbccdd" -> 0xaabbccdd)
+        dest_num = None
+        if destination:
+            dest_num = self._node_id_to_num(destination)
+
+        # Primary: stateless direct send — zero fromradio contention
+        try:
+            from .meshtastic_protobuf_client import send_text_direct
+            host = self.config.meshtastic.host
+            http_port = getattr(self.config.meshtastic, 'http_port', 9443) or 9443
+            if send_text_direct(text=message, host=host, port=http_port,
+                                destination=dest_num, channel_index=channel):
+                return True
+        except Exception as e:
+            logger.debug(f"Stateless HTTP protobuf TX failed: {e}")
+
+        # Fallback: session-based send (reads fromradio during connect)
         if not _HAS_PROTOBUF_CLIENT:
             return False
 
@@ -548,18 +579,13 @@ class MQTTBridgeHandler:
                     logger.debug("Protobuf client failed to connect for TX")
                     return False
 
-            # Convert hex node ID string to int (e.g. "!aabbccdd" -> 0xaabbccdd)
-            dest_num = None
-            if destination:
-                dest_num = self._node_id_to_num(destination)
-
             return client.send_text(
                 text=message,
                 destination=dest_num,
                 channel_index=channel,
             )
         except Exception as e:
-            logger.debug(f"HTTP protobuf TX failed: {e}")
+            logger.debug(f"Session-based HTTP protobuf TX failed: {e}")
             return False
 
     @staticmethod
@@ -699,11 +725,7 @@ class MQTTBridgeHandler:
 
     def _get_user_bin(self):
         """Get user's local bin directory."""
-        if _HAS_PATHS:
-            return _get_real_user_home_fn() / '.local' / 'bin'
-        else:
-            from pathlib import Path
-            return Path.home() / '.local' / 'bin'
+        return _get_real_user_home_fn() / '.local' / 'bin'
 
     @staticmethod
     def _path_exists(path: str) -> bool:

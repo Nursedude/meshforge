@@ -13,6 +13,9 @@ _meshtastic, _HAS_MESHTASTIC = safe_import('meshtastic')
 _serial_interface, _HAS_SERIAL = safe_import('meshtastic.serial_interface')
 _tcp_interface, _HAS_TCP = safe_import('meshtastic.tcp_interface')
 
+# Connection manager for TCP (respects single-client constraint, Issue #17)
+from utils.connection_manager import MeshtasticConnection
+
 console = Console()
 
 
@@ -112,7 +115,16 @@ class DeviceConfigurator:
                 host = Prompt.ask("Enter hostname or IP (or 'b' to go back)", default="meshtastic.local")
                 if host.lower() in ('b', 'back', '0'):
                     return False
-                self.interface = _tcp_interface.TCPInterface(hostname=host)
+                # Use connection manager to respect meshtasticd's single-client
+                # TCP constraint (Issue #17). Store the context manager so we can
+                # clean up on disconnect.
+                self._conn_ctx = MeshtasticConnection(host=host)
+                self.interface = self._conn_ctx.__enter__()
+                if not self.interface:
+                    console.print("[yellow]Connection busy — another component is using meshtasticd[/yellow]")
+                    self._conn_ctx.__exit__(None, None, None)
+                    self._conn_ctx = None
+                    return False
                 console.print(f"[green]Connected via TCP: {host}[/green]")
                 return True
 
@@ -135,7 +147,12 @@ class DeviceConfigurator:
         """Disconnect from device"""
         if self.interface:
             try:
-                self.interface.close()
+                # If connected via connection manager, clean up context
+                if hasattr(self, '_conn_ctx') and self._conn_ctx:
+                    self._conn_ctx.__exit__(None, None, None)
+                    self._conn_ctx = None
+                else:
+                    self.interface.close()
                 console.print("\n[green]Disconnected from device[/green]")
             except Exception as e:
                 log_exception(e, "Device disconnect")

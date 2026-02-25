@@ -31,6 +31,7 @@ from .meshtastic_protobuf_client import (
     MeshtasticProtobufClient,
     get_protobuf_client,
     reset_protobuf_client,
+    send_text_direct,
 )
 from .meshtastic_protobuf_ops import (
     ProtobufEventType,
@@ -65,6 +66,7 @@ __all__ = [
     'MeshtasticProtobufClient',
     'get_protobuf_client',
     'reset_protobuf_client',
+    'send_text_direct',
     'ProtobufEventType',
     'ProtobufTransportConfig',
     'DeviceConfigSnapshot',

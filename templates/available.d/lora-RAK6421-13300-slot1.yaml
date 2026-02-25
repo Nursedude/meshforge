@@ -1,0 +1,30 @@
+# RAK6421 Pi-HAT with RAK13300 LoRa Module — Slot 1
+# Hardware: SX1262 (RAK13300)
+# Manufacturer: RAKwireless
+# Source: meshtastic/firmware bin/config.d
+#
+# Copy to: /etc/meshtasticd/config.d/lora-RAK6421-13300-slot1.yaml
+#
+# IMPORTANT: Enable SPI first!
+#   sudo raspi-config nonint do_spi 0
+#   sudo reboot
+
+Lora:
+  Module: sx1262
+  IRQ: 22       # IO6
+  Reset: 16     # IO4
+  Busy: 24      # IO5
+  DIO3_TCXO_VOLTAGE: true
+  DIO2_AS_RF_SWITCH: true
+  spidev: spidev0.0
+  # Ant_sw: 13  # IO3
+  # CS: 8
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

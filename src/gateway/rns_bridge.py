@@ -5,10 +5,12 @@ Bridges Reticulum Network Stack and Meshtastic networks
 MeshCore bridge processing extracted to meshcore_bridge_mixin.py.
 """
 
+import signal as _signal_mod
 import threading
 import time
 import logging
 import subprocess
+from contextlib import contextmanager
 from queue import Queue, Empty, Full
 from datetime import datetime
 from typing import Optional, Callable, Dict, Any
@@ -65,7 +67,7 @@ from utils.service_check import check_service, ServiceState
 HAS_SERVICE_CHECK = True
 
 # Import event bus for RX message notifications (Issue #17 Phase 3)
-from utils.event_bus import emit_message
+from utils.event_bus import emit_message, emit_tactical
 HAS_EVENT_BUS = True
 
 # RNS sniffer is optional monitoring — not required for message bridging
@@ -240,8 +242,48 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
         self._filter_mqtt_messages = False  # Set True to drop MQTT-originated messages
 
         # Initialize Meshtastic handler based on bridge mode
-        # MQTT bridge (recommended): zero interference with web client
-        # TCP bridge (legacy): holds persistent connection, blocks web client
+        # ── MeshCore handler (initialize FIRST when meshcore_primary) ──
+        # In meshcore_primary mode, MeshCore is the primary radio and
+        # Meshtastic is optional. In other modes, MeshCore is secondary.
+        meshcore_config = getattr(self.config, 'meshcore', None)
+        is_meshcore_primary = self.config.bridge_mode == "meshcore_primary"
+
+        if is_meshcore_primary:
+            # MeshCore-primary: initialize MeshCore handler first
+            if HAS_MESHCORE and meshcore_config:
+                logger.info("MeshCore-primary mode: initializing MeshCore handler")
+                # Force-enable meshcore config in meshcore_primary mode
+                meshcore_config.enabled = True
+                self._meshcore_handler = MeshCoreHandler(
+                    config=self.config,
+                    node_tracker=self.node_tracker,
+                    health=self.health,
+                    stop_event=self._stop_event,
+                    stats=self.stats,
+                    stats_lock=self._stats_lock,
+                    message_queue=self._meshcore_to_bridge_queue,
+                    message_callback=self._notify_message,
+                    status_callback=lambda status: self._notify_status(status),
+                    should_bridge=self._router.should_bridge,
+                )
+                if self._persistent_queue:
+                    self._persistent_queue.register_sender(
+                        "meshcore", self._meshcore_handler.queue_send
+                    )
+                self.health.set_subsystem_enabled("meshcore", True)
+                logger.info("MeshCore handler initialized (primary radio)")
+            else:
+                raise ImportError(
+                    "MeshCore-primary mode requires meshcore_py library. "
+                    "Install with: pip install meshcore"
+                )
+
+        # ── Meshtastic handler ──
+        # In meshcore_primary mode, Meshtastic is OPTIONAL (graceful degradation).
+        # In all other modes, Meshtastic is required.
+        meshtastic_required = not is_meshcore_primary
+        meshtastic_available = False
+
         if self.config.bridge_mode == "mqtt_bridge" and HAS_MQTT_BRIDGE:
             logger.info("Using MQTT bridge handler (zero-interference mode)")
             self._mesh_handler = MQTTBridgeHandler(
@@ -256,6 +298,39 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
                 status_callback=lambda status: self._notify_status(status),
                 should_bridge=self._router.should_bridge,
             )
+            meshtastic_available = True
+        elif is_meshcore_primary and (HAS_MQTT_BRIDGE or HAS_MESHTASTIC_LIB):
+            # In meshcore_primary mode, try to set up Meshtastic as optional bridge
+            if HAS_MQTT_BRIDGE:
+                logger.info("MeshCore-primary: Meshtastic available via MQTT (optional bridge)")
+                self._mesh_handler = MQTTBridgeHandler(
+                    config=self.config,
+                    node_tracker=self.node_tracker,
+                    health=self.health,
+                    stop_event=self._stop_event,
+                    stats=self.stats,
+                    stats_lock=self._stats_lock,
+                    message_queue=self._mesh_to_rns_queue,
+                    message_callback=self._notify_message,
+                    status_callback=lambda status: self._notify_status(status),
+                    should_bridge=self._router.should_bridge,
+                )
+                meshtastic_available = True
+            elif HAS_MESHTASTIC_LIB:
+                logger.info("MeshCore-primary: Meshtastic available via TCP (optional bridge)")
+                self._mesh_handler = MeshtasticHandler(
+                    config=self.config,
+                    node_tracker=self.node_tracker,
+                    health=self.health,
+                    stop_event=self._stop_event,
+                    stats=self.stats,
+                    stats_lock=self._stats_lock,
+                    message_queue=self._mesh_to_rns_queue,
+                    message_callback=self._notify_message,
+                    status_callback=lambda status: self._notify_status(status),
+                    should_bridge=self._router.should_bridge,
+                )
+                meshtastic_available = True
         elif HAS_MESHTASTIC_LIB:
             if self.config.bridge_mode == "mqtt_bridge" and not HAS_MQTT_BRIDGE:
                 logger.warning("MQTT bridge requested but paho-mqtt not available, "
@@ -273,46 +348,48 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
                 status_callback=lambda status: self._notify_status(status),
                 should_bridge=self._router.should_bridge,
             )
-        else:
+            meshtastic_available = True
+        elif meshtastic_required:
             raise ImportError(
                 "No Meshtastic handler available. Install paho-mqtt for MQTT bridge "
                 "(recommended) or meshtastic Python library for legacy TCP bridge."
             )
 
+        if is_meshcore_primary and not meshtastic_available:
+            logger.info("MeshCore-primary: running without Meshtastic (MeshCore + RNS only)")
+
         # Register Meshtastic sender now that handler exists
-        if self._persistent_queue:
+        if self._mesh_handler and self._persistent_queue:
             self._persistent_queue.register_sender(
                 "meshtastic", self._mesh_handler.queue_send
             )
 
-        # Initialize MeshCore handler if configured and available
-        meshcore_config = getattr(self.config, 'meshcore', None)
-        if HAS_MESHCORE and meshcore_config and meshcore_config.enabled:
-            logger.info("Initializing MeshCore handler")
-            self._meshcore_handler = MeshCoreHandler(
-                config=self.config,
-                node_tracker=self.node_tracker,
-                health=self.health,
-                stop_event=self._stop_event,
-                stats=self.stats,
-                stats_lock=self._stats_lock,
-                message_queue=self._meshcore_to_bridge_queue,
-                message_callback=self._notify_message,
-                status_callback=lambda status: self._notify_status(status),
-                should_bridge=self._router.should_bridge,
-            )
-            # Register MeshCore sender with persistent queue
-            if self._persistent_queue:
-                self._persistent_queue.register_sender(
-                    "meshcore", self._meshcore_handler.queue_send
+        # ── MeshCore handler (secondary mode — when NOT meshcore_primary) ──
+        if not is_meshcore_primary:
+            if HAS_MESHCORE and meshcore_config and meshcore_config.enabled:
+                logger.info("Initializing MeshCore handler (secondary)")
+                self._meshcore_handler = MeshCoreHandler(
+                    config=self.config,
+                    node_tracker=self.node_tracker,
+                    health=self.health,
+                    stop_event=self._stop_event,
+                    stats=self.stats,
+                    stats_lock=self._stats_lock,
+                    message_queue=self._meshcore_to_bridge_queue,
+                    message_callback=self._notify_message,
+                    status_callback=lambda status: self._notify_status(status),
+                    should_bridge=self._router.should_bridge,
                 )
-            # Tell health monitor that MeshCore is enabled
-            self.health.set_subsystem_enabled("meshcore", True)
-            logger.info("MeshCore handler initialized")
-        else:
-            if meshcore_config and meshcore_config.enabled and not HAS_MESHCORE:
-                logger.warning("MeshCore enabled in config but meshcore_handler not available")
-            self.health.set_subsystem_enabled("meshcore", False)
+                if self._persistent_queue:
+                    self._persistent_queue.register_sender(
+                        "meshcore", self._meshcore_handler.queue_send
+                    )
+                self.health.set_subsystem_enabled("meshcore", True)
+                logger.info("MeshCore handler initialized")
+            else:
+                if meshcore_config and meshcore_config.enabled and not HAS_MESHCORE:
+                    logger.warning("MeshCore enabled in config but meshcore_handler not available")
+                self.health.set_subsystem_enabled("meshcore", False)
 
     @property
     def is_running(self) -> bool:
@@ -443,19 +520,37 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
 
         # Start network threads
         if self.config.enabled:
-            self._mesh_thread = threading.Thread(
-                target=self._meshtastic_loop,
-                daemon=True,
-                name="MeshtasticBridge"
-            )
-            self._mesh_thread.start()
+            is_meshcore_primary = self.config.bridge_mode == "meshcore_primary"
 
+            # In meshcore_primary mode, start MeshCore FIRST (it's the primary radio)
+            if is_meshcore_primary and self._meshcore_handler:
+                self._meshcore_thread = threading.Thread(
+                    target=self._meshcore_loop,
+                    daemon=True,
+                    name="MeshCoreBridge"
+                )
+                self._meshcore_thread.start()
+                logger.info("MeshCore handler thread started (primary radio)")
+
+            # Start RNS (backhaul — always started when enabled)
             self._rns_thread = threading.Thread(
                 target=self._rns_loop,
                 daemon=True,
                 name="RNSBridge"
             )
             self._rns_thread.start()
+
+            # Start Meshtastic (optional in meshcore_primary mode)
+            if self._mesh_handler:
+                self._mesh_thread = threading.Thread(
+                    target=self._meshtastic_loop,
+                    daemon=True,
+                    name="MeshtasticBridge"
+                )
+                self._mesh_thread.start()
+            elif is_meshcore_primary:
+                logger.info("MeshCore-primary: Meshtastic handler not available, "
+                          "running MeshCore + RNS only")
 
             self._bridge_thread = threading.Thread(
                 target=self._bridge_loop,
@@ -464,15 +559,15 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
             )
             self._bridge_thread.start()
 
-        # Start MeshCore handler thread if initialized
-        if self._meshcore_handler:
+        # Start MeshCore handler thread (secondary mode — non-meshcore_primary)
+        if self._meshcore_handler and self.config.bridge_mode != "meshcore_primary":
             self._meshcore_thread = threading.Thread(
                 target=self._meshcore_loop,
                 daemon=True,
                 name="MeshCoreBridge"
             )
             self._meshcore_thread.start()
-            logger.info("MeshCore handler thread started")
+            logger.info("MeshCore handler thread started (secondary)")
 
         # Start persistent queue processing
         if self._persistent_queue:
@@ -486,7 +581,7 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
                 integrate_with_traffic_inspector()
                 logger.info("RNS packet sniffer started for traffic capture")
             except Exception as e:
-                logger.debug(f"Could not start RNS sniffer: {e}")
+                logger.warning(f"Could not start RNS sniffer: {e}")
 
         logger.info("Bridge started")
         self._notify_status("started")
@@ -529,8 +624,8 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
             try:
                 from monitoring.rns_sniffer import stop_rns_capture
                 stop_rns_capture()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"RNS sniffer stop error: {e}")
 
         logger.info("Bridge stopped")
         self._notify_status("stopped")
@@ -803,9 +898,15 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
     # ========================================
 
     def _meshtastic_loop(self):
-        """Main loop for Meshtastic connection - delegates to handler."""
+        """Main loop for Meshtastic connection - delegates to handler.
+
+        In meshcore_primary mode, this may not be started if no Meshtastic
+        handler is available (graceful degradation).
+        """
         if self._mesh_handler:
             self._mesh_handler.run_loop()
+        else:
+            logger.debug("Meshtastic loop skipped: no handler available")
 
     # _meshcore_loop() inherited from MeshCoreBridgeMixin
 
@@ -1003,7 +1104,37 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
         try:
             self._persistent_queue.process_once(batch_size=5)
         except Exception as e:
-            logger.debug(f"Persistent queue drain error: {e}")
+            logger.warning(f"Persistent queue drain error: {e}")
+
+    @staticmethod
+    @contextmanager
+    def _suppress_signal_in_thread():
+        """Suppress signal.signal() calls when not in the main thread.
+
+        LXMF.LXMRouter() and RNS.Reticulum() internally register signal
+        handlers for graceful shutdown. When called from a background
+        thread, signal.signal() raises ValueError. This context manager
+        temporarily replaces signal.signal with a safe wrapper that
+        returns SIG_DFL instead of raising.
+
+        On the main thread, this is a no-op passthrough.
+        """
+        if threading.current_thread() is threading.main_thread():
+            yield
+            return
+
+        original = _signal_mod.signal
+
+        def _safe_signal(signalnum, handler):
+            # Cannot register signal handlers from non-main thread.
+            # Return default disposition; bridge has its own shutdown logic.
+            return _signal_mod.SIG_DFL
+
+        _signal_mod.signal = _safe_signal
+        try:
+            yield
+        finally:
+            _signal_mod.signal = original
 
     def _init_rns_main_thread(self):
         """Pre-initialize RNS from the main thread.
@@ -1076,6 +1207,11 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
                 logger.warning(f"RNS port conflict: {e} (will retry in background)")
             else:
                 logger.warning(f"RNS pre-init failed: {e}")
+                try:
+                    from utils.gateway_diagnostic import diagnose_rnsd_connection
+                    diagnose_rnsd_connection(rns_pids, error=e)
+                except Exception:
+                    pass  # diagnostic failure should never block init
 
     def _connect_rns(self):
         """Initialize RNS and LXMF.
@@ -1092,47 +1228,67 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
             self._rns_init_failed_permanently = True
             return
 
+        # Pre-flight: verify rnsd is available (advisory, not blocking)
+        rnsd_status = check_service('rnsd')
+        if not rnsd_status.available:
+            logger.warning("rnsd not available: %s", rnsd_status.message)
+            if rnsd_status.fix_hint:
+                logger.info("Fix: %s", rnsd_status.fix_hint)
+            # Continue anyway — RNS can init standalone without rnsd
+
         RNS = _RNS_mod
         LXMF = _LXMF_mod
 
-        try:
-            if self._rns_pre_initialized:
-                logger.info("RNS pre-initialized, proceeding to LXMF setup")
-            else:
-                # Fallback: init RNS from background thread.
-                # Works when rnsd is running (client mode, no signal handlers).
-                config_dir = self.config.rns.config_dir or None
-                if not config_dir:
+        # Both RNS.Reticulum() and LXMF.LXMRouter() register signal
+        # handlers internally. When _connect_rns is called from the
+        # background _rns_loop thread, signal.signal() raises ValueError.
+        # Suppress signal registration for the entire init sequence.
+        with self._suppress_signal_in_thread():
+            try:
+                if self._rns_pre_initialized:
+                    logger.info("RNS pre-initialized, proceeding to LXMF setup")
+                else:
+                    # Fallback: init RNS from background thread.
+                    # Works when rnsd is running (client mode, no signal handlers).
+                    config_dir = self.config.rns.config_dir or None
+                    if not config_dir:
+                        try:
+                            effective = get_rnsd_effective_config_dir()
+                            config_dir = str(effective)
+                        except Exception:
+                            pass  # Use RNS default resolution
+
                     try:
-                        effective = get_rnsd_effective_config_dir()
-                        config_dir = str(effective)
-                    except Exception:
-                        pass  # Use RNS default resolution
+                        self._reticulum = RNS.Reticulum(configdir=config_dir)
+                    except Exception as e:
+                        err_msg = str(e).lower()
+                        if "reinitialise" in err_msg or "already running" in err_msg:
+                            logger.info("RNS already initialized, proceeding to LXMF")
+                        elif "signal only works in main thread" in err_msg:
+                            logger.warning("RNS needs main thread init (no rnsd running?)")
+                            self._rns_init_failed_permanently = True
+                            self._connected_rns = False
+                            return
+                        elif hasattr(e, 'errno') and getattr(e, 'errno', None) == 98:
+                            logger.warning(f"RNS port conflict: {e} (will retry)")
+                            self._connected_rns = False
+                            return
+                        else:
+                            raise
 
+                # Set up LXMF messaging on top of the RNS instance
+                self._setup_lxmf(RNS, LXMF)
+
+            except Exception as e:
+                logger.error(f"Failed to connect to RNS: {e}")
                 try:
-                    self._reticulum = RNS.Reticulum(configdir=config_dir)
-                except Exception as e:
-                    err_msg = str(e).lower()
-                    if "reinitialise" in err_msg or "already running" in err_msg:
-                        logger.info("RNS already initialized, proceeding to LXMF")
-                    elif "signal only works in main thread" in err_msg:
-                        logger.warning("RNS needs main thread init (no rnsd running?)")
-                        self._rns_init_failed_permanently = True
-                        self._connected_rns = False
-                        return
-                    elif hasattr(e, 'errno') and getattr(e, 'errno', None) == 98:
-                        logger.warning(f"RNS port conflict: {e} (will retry)")
-                        self._connected_rns = False
-                        return
-                    else:
-                        raise
-
-            # Set up LXMF messaging on top of the RNS instance
-            self._setup_lxmf(RNS, LXMF)
-
-        except Exception as e:
-            logger.error(f"Failed to connect to RNS: {e}")
-            self._connected_rns = False
+                    from utils.gateway_diagnostic import (
+                        diagnose_rnsd_connection, find_rns_processes
+                    )
+                    diagnose_rnsd_connection(find_rns_processes(), error=e)
+                except Exception:
+                    pass  # diagnostic failure should never block bridge
+                self._connected_rns = False
 
     def _setup_lxmf(self, RNS, LXMF):
         """Set up LXMF identity, router, and announce handler.
@@ -1477,7 +1633,24 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
                     }
                 )
             except Exception as e:
-                logger.debug(f"Event bus emit failed: {e}")
+                logger.warning(f"Event bus emit failed: {e}")
+
+        # Auto-ingest tactical messages (X1 format) to timeline + event bus
+        msg_type = getattr(msg, 'message_type', None)
+        if msg_type is not None and hasattr(msg_type, 'value') and msg_type.value == 'tactical':
+            try:
+                from tactical.x1_codec import decode as x1_decode, is_x1
+                if is_x1(msg.content):
+                    tac_msg = x1_decode(msg.content)
+                    emit_tactical(
+                        tactical_type=tac_msg.tactical_type.name,
+                        message_id=tac_msg.id,
+                        sender_id=tac_msg.sender_id,
+                        content=tac_msg.content,
+                        encryption_mode=tac_msg.encryption_mode.value,
+                    )
+            except Exception as e:
+                logger.warning(f"Tactical auto-ingest failed: {e}")
 
     def _start_websocket_server(self):
         """Start WebSocket server for real-time message broadcast to web UI."""

@@ -55,6 +55,12 @@ MQTT_PORT = 1883
 # OpenWebRX SDR interface
 OPENWEBRX_PORT = 8073
 
+# WebSocket server (real-time message broadcast)
+WEBSOCKET_PORT = 8080
+
+# Config API HTTP server
+CONFIG_API_PORT = 8081
+
 
 # =============================================================================
 # Port Groups (for diagnostics and status checks)

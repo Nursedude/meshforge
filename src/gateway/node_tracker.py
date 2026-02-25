@@ -49,7 +49,7 @@ from utils.safe_import import safe_import
 from utils.paths import get_real_user_home
 
 # Import event bus for node update events
-emit_node_update, _HAS_EVENT_BUS = safe_import('utils.event_bus', 'emit_node_update')
+from utils.event_bus import emit_node_update
 
 # Import RNS module (optional - for node discovery)
 _RNS_mod, _HAS_RNS = safe_import('RNS')
@@ -184,6 +184,17 @@ shared_instance_port = 37428
 instance_control_port = 37429
 """)
 
+                # Pre-flight: check if shared instance port is listening
+                try:
+                    from utils.service_check import check_rns_shared_instance
+                    if not check_rns_shared_instance():
+                        logger.warning(
+                            "rnsd PID %d found but shared instance not available "
+                            "(may be initializing or hung)", rns_pids[0]
+                        )
+                except ImportError:
+                    pass  # service_check not available, proceed anyway
+
                 # Connect using client-only config
                 self._reticulum = RNS.Reticulum(configdir=str(client_config_dir))
                 self._rns_connected = True
@@ -245,7 +256,11 @@ instance_control_port = 37429
 
             except Exception as e:
                 logger.warning(f"Could not connect to rnsd: {e}")
-                logger.info("RNS nodes may not appear on map - ensure rnsd is running properly")
+                try:
+                    from utils.gateway_diagnostic import diagnose_rnsd_connection
+                    diagnose_rnsd_connection(rns_pids, error=e)
+                except Exception:
+                    pass  # diagnostic failure should never block startup
                 self._rns_connected = False
 
         except Exception as e:
@@ -527,28 +542,27 @@ instance_control_port = 37429
                 logger.error(f"Callback error: {e}")
 
         # Emit to EventBus for decoupled subscribers (status bar, UI, etc.)
-        if _HAS_EVENT_BUS and emit_node_update is not None:
-            try:
-                # Map internal event names to EventBus event_type
-                event_type_map = {
-                    "update": "updated",
-                    "remove": "lost",
-                }
-                event_type = event_type_map.get(event, event)
+        try:
+            # Map internal event names to EventBus event_type
+            event_type_map = {
+                "update": "updated",
+                "remove": "lost",
+            }
+            event_type = event_type_map.get(event, event)
 
-                lat = node.position.latitude if node.position else None
-                lon = node.position.longitude if node.position else None
+            lat = node.position.latitude if node.position else None
+            lon = node.position.longitude if node.position else None
 
-                emit_node_update(
-                    event_type=event_type,
-                    node_id=node.id,
-                    node_name=node.name or "",
-                    latitude=lat,
-                    longitude=lon,
-                    raw_data=node.to_dict() if hasattr(node, 'to_dict') else None,
-                )
-            except Exception as e:
-                logger.debug(f"EventBus node emit failed: {e}")
+            emit_node_update(
+                event_type=event_type,
+                node_id=node.id,
+                node_name=node.name or "",
+                latitude=lat,
+                longitude=lon,
+                raw_data=node.to_dict() if hasattr(node, 'to_dict') else None,
+            )
+        except Exception as e:
+            logger.debug(f"EventBus node emit failed: {e}")
 
     def _cleanup_loop(self):
         """Periodically check node timeouts and save cache"""

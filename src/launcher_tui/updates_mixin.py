@@ -21,8 +21,8 @@ _check_all_versions, _VersionInfo, _HAS_VERSION_CHECKER = safe_import(
 )
 
 # Import service check for restart after updates
-_apply_config_and_restart, _HAS_SERVICE_CHECK = safe_import(
-    'utils.service_check', 'apply_config_and_restart'
+_apply_config_and_restart, daemon_reload, _sudo_cmd, _HAS_SERVICE_CHECK = safe_import(
+    'utils.service_check', 'apply_config_and_restart', 'daemon_reload', '_sudo_cmd'
 )
 
 
@@ -440,10 +440,7 @@ class UpdatesMixin:
 
             # Reload systemd
             if svc_msgs:
-                subprocess.run(
-                    ['systemctl', 'daemon-reload'],
-                    capture_output=True, timeout=10
-                )
+                daemon_reload()
         except (OSError, PermissionError) as e:
             svc_msgs.append(f"(warning: {e})")
         except Exception:
@@ -460,7 +457,7 @@ class UpdatesMixin:
             f"Git: {git_output.strip()[:200]}\n"
             f"{svc_info}\n"
             "Please restart MeshForge to apply changes.\n\n"
-            "Run: sudo meshforge"
+            "Run: meshforge"
         )
 
     def _run_update_command(self, component: str, command: str) -> Tuple[bool, str]:

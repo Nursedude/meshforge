@@ -54,6 +54,7 @@ class HardwareHealth:
     device_name: str = ""
     device_type: str = ""  # "spi", "usb", "unknown"
     port: str = ""
+    template_match: str = ""  # Matched template filename from available.d
 
 
 @dataclass
@@ -67,6 +68,7 @@ class NetworkHealth:
 class HealthSummary:
     """Complete health summary."""
     version: str = __version__
+    profile_name: str = ""  # Deployment profile name (if set)
     services: List[ServiceHealth] = field(default_factory=list)
     hardware: HardwareHealth = field(default_factory=HardwareHealth)
     network: NetworkHealth = field(default_factory=NetworkHealth)
@@ -85,14 +87,26 @@ class HealthSummary:
 def check_meshtasticd() -> ServiceHealth:
     """Check meshtasticd service status."""
     if HAS_SERVICE_CHECK:
+        from utils.service_check import check_port
         status = check_service('meshtasticd')
+
+        # Port 4403 is informational — service is healthy if systemctl says so
+        port_up = check_port(4403) if status.available else False
+        fix_hint = ""
+        if not status.available:
+            fix_hint = status.fix_hint
+        elif not port_up:
+            fix_hint = "Radio config via web UI: https://<ip>:9443"
+
         return ServiceHealth(
             name="meshtasticd",
             running=status.available,
-            port=4403 if status.available else None,
-            status_text=status.message,
+            port=4403 if port_up else None,
+            status_text=status.message if not status.available else (
+                "running" if port_up else "running (port 4403 not yet bound)"
+            ),
             optional=False,
-            fix_hint=status.fix_hint if not status.available else ""
+            fix_hint=fix_hint,
         )
 
     # Fallback: try systemctl directly
@@ -160,6 +174,45 @@ def check_rnsd() -> ServiceHealth:
         )
 
 
+def check_mosquitto() -> ServiceHealth:
+    """Check mosquitto MQTT broker status."""
+    if HAS_SERVICE_CHECK:
+        status = check_service('mosquitto')
+        return ServiceHealth(
+            name="mosquitto",
+            running=status.available,
+            port=1883 if status.available else None,
+            status_text=status.message,
+            optional=True,
+            fix_hint=status.fix_hint if not status.available else ""
+        )
+
+    # Fallback: try systemctl directly
+    try:
+        result = subprocess.run(
+            ['systemctl', 'is-active', 'mosquitto'],
+            capture_output=True, text=True, timeout=5
+        )
+        running = result.returncode == 0
+        return ServiceHealth(
+            name="mosquitto",
+            running=running,
+            port=1883 if running else None,
+            status_text="running" if running else "not running",
+            optional=True,
+            fix_hint="" if running else "sudo apt install mosquitto && sudo systemctl start mosquitto"
+        )
+    except Exception as e:
+        logger.debug("mosquitto check failed: %s", e)
+        return ServiceHealth(
+            name="mosquitto",
+            running=False,
+            status_text="check failed",
+            optional=True,
+            fix_hint="Install mosquitto: sudo apt install mosquitto"
+        )
+
+
 def detect_hardware() -> HardwareHealth:
     """Detect connected LoRa hardware."""
     hardware = HardwareHealth()
@@ -211,9 +264,57 @@ def detect_hardware() -> HardwareHealth:
             hardware.port = str(usb_devices[0])
             hardware.device_name = "USB Serial Radio"
             hardware.detected = True
+
+            # Try to identify specific device using USB vendor:product IDs
+            usb_id = _get_usb_vendor_product(usb_devices[0])
+            if usb_id:
+                try:
+                    from config.hardware import HardwareDetector
+                    device_name = HardwareDetector.get_device_name_for_usb_id(usb_id)
+                    if device_name:
+                        hardware.device_name = device_name
+                    template = HardwareDetector.match_usb_to_template(usb_id)
+                    if template:
+                        hardware.template_match = template
+                except ImportError:
+                    logger.debug("config.hardware not available for USB identification")
+
             break
 
     return hardware
+
+
+def _get_usb_vendor_product(dev_path: Path) -> Optional[str]:
+    """Get USB vendor:product ID for a serial device using udevadm.
+
+    Args:
+        dev_path: Path to /dev/ttyUSB* or /dev/ttyACM* device
+
+    Returns:
+        USB ID string like '303a:1001' or None if unavailable.
+    """
+    try:
+        result = subprocess.run(
+            ['udevadm', 'info', '--query=property', str(dev_path)],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode != 0:
+            return None
+
+        vendor = None
+        product = None
+        for line in result.stdout.splitlines():
+            if line.startswith('ID_VENDOR_ID='):
+                vendor = line.split('=', 1)[1].strip()
+            elif line.startswith('ID_MODEL_ID='):
+                product = line.split('=', 1)[1].strip()
+
+        if vendor and product:
+            return f"{vendor}:{product}"
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.debug("udevadm query failed for %s: %s", dev_path, e)
+
+    return None
 
 
 def get_node_count() -> int:
@@ -239,13 +340,43 @@ def get_node_count() -> int:
     return 0
 
 
-def run_health_check() -> HealthSummary:
-    """Run complete health check and return summary."""
+def run_health_check(profile=None) -> HealthSummary:
+    """Run complete health check and return summary.
+
+    Args:
+        profile: Optional ProfileDefinition from deployment_profiles.
+                 When provided, services are marked required/optional
+                 based on the profile instead of using hardcoded defaults.
+    """
     summary = HealthSummary()
 
-    # Check services
-    summary.services.append(check_meshtasticd())
-    summary.services.append(check_rnsd())
+    # Set profile context
+    if profile is not None:
+        summary.profile_name = getattr(profile, 'display_name', '')
+        required_services = set(getattr(profile, 'required_services', []))
+        optional_services = set(getattr(profile, 'optional_services', []))
+    else:
+        required_services = None
+        optional_services = None
+
+    # Check services — all 3, then mark optional per profile
+    service_checks = {
+        'meshtasticd': check_meshtasticd(),
+        'rnsd': check_rnsd(),
+        'mosquitto': check_mosquitto(),
+    }
+
+    for name, health in service_checks.items():
+        if required_services is not None:
+            # Profile-aware: override optional flag based on profile
+            if name in required_services:
+                health.optional = False
+            elif name in optional_services:
+                health.optional = True
+            else:
+                # Not in profile's services — mark as informational (optional)
+                health.optional = True
+        summary.services.append(health)
 
     # Detect hardware
     summary.hardware = detect_hardware()
@@ -299,8 +430,11 @@ def print_health_summary(summary: HealthSummary, use_color: bool = True) -> str:
 
     lines = []
 
-    # Header
-    lines.append(f"{BOLD}MeshForge v{summary.version}{RESET}")
+    # Header with optional profile name
+    header = f"{BOLD}MeshForge v{summary.version}{RESET}"
+    if summary.profile_name:
+        header += f"  [{summary.profile_name}]"
+    lines.append(header)
     lines.append("")
 
     # Services section
@@ -321,7 +455,10 @@ def print_health_summary(summary: HealthSummary, use_color: bool = True) -> str:
 
     # Hardware section
     if summary.hardware.detected:
-        lines.append(f"  {GREEN}✓{RESET} Hardware: {summary.hardware.device_name} detected")
+        hw_line = f"  {GREEN}✓{RESET} Hardware: {summary.hardware.device_name} detected"
+        if summary.hardware.template_match:
+            hw_line += f" (template: {summary.hardware.template_match})"
+        lines.append(hw_line)
     else:
         lines.append(f"  {YELLOW}⚠{RESET} Hardware: No radio detected")
 

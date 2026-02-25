@@ -1,0 +1,26 @@
+# Adafruit RFM9x LoRa Radio Bonnet SPI Configuration
+# Hardware: SX1276 (RFM95/RFM96)
+# Manufacturer: Adafruit
+#
+# Note: SX1276 does NOT have a Busy pin.
+#
+# Copy to: /etc/meshtasticd/config.d/adafruit-rfm9x.yaml
+#
+# IMPORTANT: Enable SPI first!
+#   sudo raspi-config nonint do_spi 0
+#   sudo reboot
+
+Lora:
+  Module: sx1276
+  CS: 7
+  IRQ: 25
+  Reset: 17
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

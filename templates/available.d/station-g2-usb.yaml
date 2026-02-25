@@ -1,0 +1,26 @@
+# Station G2 USB Radio Configuration
+# Chipset: CP2102 USB-Serial
+# USB ID: 10c4:ea60
+#
+# Gateway capable. PoE option available.
+# Flash method: esptool
+# Power: 5V DC or PoE (for Ethernet variant)
+#
+# Copy to: /etc/meshtasticd/config.d/station-g2-usb.yaml
+#
+# The device handles its own LoRa configuration.
+# Radio settings are configured via Meshtastic app/CLI:
+#   meshtastic --host localhost --set lora.region US
+#   meshtastic --host localhost --set lora.modem_preset LONG_FAST
+
+Serial:
+  Device: auto          # /dev/ttyUSB0 typical for CP2102
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

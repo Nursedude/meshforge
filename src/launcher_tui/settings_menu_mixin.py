@@ -9,7 +9,7 @@ from utils.safe_import import safe_import
 MapDataCollector, _HAS_MAP_DATA_COLLECTOR = safe_import(
     'utils.map_data_collector', 'MapDataCollector'
 )
-_propagation, _HAS_PROPAGATION = safe_import('commands.propagation')
+from commands import propagation
 
 
 class SettingsMenuMixin:
@@ -129,14 +129,10 @@ class SettingsMenuMixin:
 
     def _test_noaa_source(self):
         """Test NOAA SWPC connectivity and show current data."""
-        if not _HAS_PROPAGATION:
-            self.dialog.msgbox("Error", "Propagation module not available.")
-            return
-
-        result = _propagation.check_source(_propagation.DataSource.NOAA)
+        result = propagation.check_source(propagation.DataSource.NOAA)
         if result.success:
             # Also get current conditions
-            wx = _propagation.get_space_weather()
+            wx = propagation.get_space_weather()
             if wx.success:
                 d = wx.data
                 lines = [
@@ -160,13 +156,9 @@ class SettingsMenuMixin:
 
     def _configure_pskreporter(self):
         """Configure PSKReporter MQTT as propagation data source."""
-        if not _HAS_PROPAGATION:
-            self.dialog.msgbox("Error", "Propagation module not available.")
-            return
-
         while True:
             # Get current config
-            pskr_cfg = _propagation._sources.get(_propagation.DataSource.PSKREPORTER)
+            pskr_cfg = propagation._sources.get(propagation.DataSource.PSKREPORTER)
             current_call = pskr_cfg.callsign if pskr_cfg else ""
             current_bands = ", ".join(pskr_cfg.bands) if pskr_cfg and pskr_cfg.bands else "all"
             is_enabled = pskr_cfg.enabled if pskr_cfg else False
@@ -194,8 +186,8 @@ class SettingsMenuMixin:
 
             if choice == "enable":
                 new_state = not is_enabled
-                result = _propagation.configure_source(
-                    _propagation.DataSource.PSKREPORTER,
+                result = propagation.configure_source(
+                    propagation.DataSource.PSKREPORTER,
                     enabled=new_state,
                     callsign=current_call,
                     bands=pskr_cfg.bands if pskr_cfg else [],
@@ -217,8 +209,8 @@ class SettingsMenuMixin:
                     current_call,
                 )
                 if call is not None:
-                    _propagation.configure_source(
-                        _propagation.DataSource.PSKREPORTER,
+                    propagation.configure_source(
+                        propagation.DataSource.PSKREPORTER,
                         enabled=is_enabled,
                         callsign=call.strip(),
                         bands=pskr_cfg.bands if pskr_cfg else [],
@@ -235,8 +227,8 @@ class SettingsMenuMixin:
                 )
                 if bands_input is not None:
                     bands = [b.strip() for b in bands_input.split(",") if b.strip()]
-                    _propagation.configure_source(
-                        _propagation.DataSource.PSKREPORTER,
+                    propagation.configure_source(
+                        propagation.DataSource.PSKREPORTER,
                         enabled=is_enabled,
                         callsign=current_call,
                         bands=bands,
@@ -244,7 +236,7 @@ class SettingsMenuMixin:
                     )
 
             elif choice == "test":
-                result = _propagation.check_source(_propagation.DataSource.PSKREPORTER)
+                result = propagation.check_source(propagation.DataSource.PSKREPORTER)
                 if result.success:
                     self.dialog.msgbox(
                         "PSKReporter Connected",
@@ -289,18 +281,14 @@ class SettingsMenuMixin:
             self.dialog.msgbox("Error", "Invalid port number (1-65535).")
             return
 
-        if not _HAS_PROPAGATION:
-            self.dialog.msgbox("Error", "Propagation module not available.")
-            return
-
-        result = _propagation.configure_source(
-            _propagation.DataSource.OPENHAMCLOCK,
+        result = propagation.configure_source(
+            propagation.DataSource.OPENHAMCLOCK,
             host=host,
             port=int(port),
         )
         if result.success:
             # Test connectivity
-            test = _propagation.check_source(_propagation.DataSource.OPENHAMCLOCK)
+            test = propagation.check_source(propagation.DataSource.OPENHAMCLOCK)
             if test.success:
                 self.dialog.msgbox(
                     "OpenHamClock Connected",
@@ -347,17 +335,13 @@ class SettingsMenuMixin:
             self.dialog.msgbox("Error", "Invalid port number (1-65535).")
             return
 
-        if not _HAS_PROPAGATION:
-            self.dialog.msgbox("Error", "Propagation module not available.")
-            return
-
-        result = _propagation.configure_source(
-            _propagation.DataSource.HAMCLOCK,
+        result = propagation.configure_source(
+            propagation.DataSource.HAMCLOCK,
             host=host,
             port=int(port),
         )
         if result.success:
-            test = _propagation.check_source(_propagation.DataSource.HAMCLOCK)
+            test = propagation.check_source(propagation.DataSource.HAMCLOCK)
             if test.success:
                 self.dialog.msgbox(
                     "HamClock Connected",
@@ -380,49 +364,46 @@ class SettingsMenuMixin:
         """Test all configured propagation data sources."""
         lines = ["Propagation Source Status", "=" * 35, ""]
 
-        if not _HAS_PROPAGATION:
-            lines.append("Propagation module not available.")
+        # NOAA (always)
+        noaa = propagation.check_source(propagation.DataSource.NOAA)
+        status = "Connected" if noaa.success else "Unreachable"
+        lines.append(f"NOAA SWPC (primary): {status}")
+
+        # PSKReporter
+        pskr = propagation.check_source(propagation.DataSource.PSKREPORTER)
+        if pskr.success:
+            spots = pskr.data.get('spots_received', 0)
+            lines.append(f"PSKReporter MQTT: Connected ({spots} spots)")
         else:
-            # NOAA (always)
-            noaa = _propagation.check_source(_propagation.DataSource.NOAA)
-            status = "Connected" if noaa.success else "Unreachable"
-            lines.append(f"NOAA SWPC (primary): {status}")
+            lines.append(f"PSKReporter MQTT: Not configured")
 
-            # PSKReporter
-            pskr = _propagation.check_source(_propagation.DataSource.PSKREPORTER)
-            if pskr.success:
-                spots = pskr.data.get('spots_received', 0)
-                lines.append(f"PSKReporter MQTT: Connected ({spots} spots)")
-            else:
-                lines.append(f"PSKReporter MQTT: Not configured")
+        # OpenHamClock
+        ohc = propagation.check_source(propagation.DataSource.OPENHAMCLOCK)
+        if ohc.success:
+            lines.append(f"OpenHamClock: Connected")
+        else:
+            lines.append(f"OpenHamClock: Not configured")
 
-            # OpenHamClock
-            ohc = _propagation.check_source(_propagation.DataSource.OPENHAMCLOCK)
-            if ohc.success:
-                lines.append(f"OpenHamClock: Connected")
-            else:
-                lines.append(f"OpenHamClock: Not configured")
+        # HamClock
+        hc = propagation.check_source(propagation.DataSource.HAMCLOCK)
+        if hc.success:
+            lines.append(f"HamClock (legacy): Connected")
+        else:
+            lines.append(f"HamClock (legacy): Not configured")
 
-            # HamClock
-            hc = _propagation.check_source(_propagation.DataSource.HAMCLOCK)
-            if hc.success:
-                lines.append(f"HamClock (legacy): Connected")
-            else:
-                lines.append(f"HamClock (legacy): Not configured")
-
-            # Current data
-            wx = _propagation.get_space_weather()
-            if wx.success:
-                d = wx.data
-                lines.append("")
-                lines.append("-" * 35)
-                lines.append("Current Conditions:")
-                sfi = d.get('solar_flux')
-                kp = d.get('k_index')
-                if sfi:
-                    lines.append(f"  SFI: {int(sfi)}")
-                if kp is not None:
-                    lines.append(f"  Kp: {kp}")
-                lines.append(f"  {d.get('geomag_storm', '')}")
+        # Current data
+        wx = propagation.get_space_weather()
+        if wx.success:
+            d = wx.data
+            lines.append("")
+            lines.append("-" * 35)
+            lines.append("Current Conditions:")
+            sfi = d.get('solar_flux')
+            kp = d.get('k_index')
+            if sfi:
+                lines.append(f"  SFI: {int(sfi)}")
+            if kp is not None:
+                lines.append(f"  Kp: {kp}")
+            lines.append(f"  {d.get('geomag_storm', '')}")
 
         self.dialog.msgbox("Source Status", "\n".join(lines))

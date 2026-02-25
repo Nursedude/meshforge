@@ -5,17 +5,19 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
-from rich.prompt import Prompt, Confirm
-from rich.table import Table
-from rich.panel import Panel
 
-from utils.safe_import import safe_import
-
-_run_cli_async_gtk, _HAS_COMMON_GTK = safe_import('utils.common', 'run_cli_async_gtk')
-
-console = Console()
+# rich is an external/optional dependency — guard the import
+try:
+    from rich.console import Console
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+    from rich.prompt import Prompt, Confirm
+    from rich.table import Table
+    from rich.panel import Panel
+    console = Console()
+except ImportError:
+    Console = Progress = SpinnerColumn = TextColumn = BarColumn = None
+    Prompt = Confirm = Table = Panel = None
+    console = None
 
 
 def find_meshtastic_cli():
@@ -45,9 +47,10 @@ def find_meshtastic_cli():
             return user_path
 
     # Check common known locations
+    from utils.paths import get_real_user_home
     known_paths = [
         '/root/.local/bin/meshtastic',
-        os.path.expanduser('~/.local/bin/meshtastic'),
+        str(get_real_user_home() / '.local' / 'bin' / 'meshtastic'),
         '/usr/local/bin/meshtastic',
     ]
 
@@ -192,9 +195,6 @@ def show_panel(content, title=None, style="cyan"):
 def run_meshtastic_async(args, callback, host='localhost', timeout=30):
     """Run meshtastic CLI command asynchronously with callback.
 
-    Designed for GTK applications where CLI commands should run in
-    background threads. Uses common.run_cli_async_gtk if available.
-
     Args:
         args: Command arguments (without meshtastic prefix)
         callback: Function called with (success: bool, stdout: str, stderr: str)
@@ -204,28 +204,23 @@ def run_meshtastic_async(args, callback, host='localhost', timeout=30):
     Returns:
         The started thread
     """
-    if _HAS_COMMON_GTK:
+    import threading
+
+    def do_run():
         cli_path = find_meshtastic_cli()
-        return _run_cli_async_gtk(args, callback, cli_path=cli_path, host=host, timeout=timeout)
-    else:
-        # Fallback implementation
-        import threading
+        if not cli_path:
+            callback(False, "", "Meshtastic CLI not found")
+            return
 
-        def do_run():
-            cli_path = find_meshtastic_cli()
-            if not cli_path:
-                callback(False, "", "Meshtastic CLI not found")
-                return
+        cmd = [cli_path, '--host', host] + args
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            callback(result.returncode == 0, result.stdout, result.stderr)
+        except subprocess.TimeoutExpired:
+            callback(False, "", f"Command timed out after {timeout}s")
+        except Exception as e:
+            callback(False, "", str(e))
 
-            cmd = [cli_path, '--host', host] + args
-            try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-                callback(result.returncode == 0, result.stdout, result.stderr)
-            except subprocess.TimeoutExpired:
-                callback(False, "", f"Command timed out after {timeout}s")
-            except Exception as e:
-                callback(False, "", str(e))
-
-        thread = threading.Thread(target=do_run, daemon=True)
-        thread.start()
-        return thread
+    thread = threading.Thread(target=do_run, daemon=True)
+    thread.start()
+    return thread

@@ -18,14 +18,19 @@ import socket
 import subprocess
 from pathlib import Path
 
+# Ensure src directory is in path for imports
+_src_dir = Path(__file__).parent.parent
+if str(_src_dir) not in sys.path:
+    sys.path.insert(0, str(_src_dir))
+
 from utils.safe_import import safe_import
 
 # Module-level safe imports
-_check_port, _check_systemd_service, _check_process_running, _HAS_SERVICE_CHECK = safe_import(
-    'utils.service_check', 'check_port', 'check_systemd_service', 'check_process_running'
+_check_port, _check_udp_port, _check_systemd_service, _check_process_running, _HAS_SERVICE_CHECK = safe_import(
+    'utils.service_check', 'check_port', 'check_udp_port', 'check_systemd_service', 'check_process_running'
 )
 
-_find_meshtastic_cli, _HAS_CLI = safe_import('utils.cli', 'find_meshtastic_cli')
+from utils.cli import find_meshtastic_cli
 
 
 # ANSI colors
@@ -107,15 +112,39 @@ def _is_meshforge_process_running():
     return False
 
 
-def check_port(port):
-    """Check if a TCP port is listening.
+# UDP ports that require bind-test instead of TCP connect
+_UDP_PORTS = {37428}  # RNS shared instance
 
-    Uses centralized service_check module when available.
+
+def check_port(port):
+    """Check if a port is in use.
+
+    Uses UDP bind-test for known UDP ports (e.g., RNS 37428),
+    TCP connect for everything else.
     """
+    if port in _UDP_PORTS:
+        if _HAS_SERVICE_CHECK:
+            return _check_udp_port(port)
+        # Fallback: inline UDP bind test
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(1)
+            sock.bind(('127.0.0.1', port))
+            sock.close()
+            return False  # Bind succeeded = port NOT in use
+        except OSError as e:
+            return e.errno in (98, 48, 10048)  # EADDRINUSE = in use
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+        return False
+
     if _HAS_SERVICE_CHECK:
         return _check_port(port, host='127.0.0.1', timeout=1.0)
 
-    # Fallback to direct socket check
+    # Fallback to direct TCP socket check
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(1)
@@ -141,11 +170,7 @@ def get_local_ip():
 
 def _find_cli():
     """Find meshtastic CLI path using centralized resolver."""
-    if _HAS_CLI:
-        return _find_meshtastic_cli()
-    else:
-        import shutil
-        return shutil.which('meshtastic')
+    return find_meshtastic_cli()
 
 
 def get_radio_info():

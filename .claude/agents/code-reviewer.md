@@ -25,9 +25,9 @@ When invoked:
 - Use `get_real_user_home()` from `utils/paths.py`
 - Check: `grep -n "Path\.home()" <file> | grep -v get_real_user_home`
 
-### GTK Threading Safety
-- All UI updates from threads use `GLib.idle_add()`
-- Long operations run in daemon threads
+### TUI Architecture
+- 33-mixin whiptail/dialog interface (see `foundations/tui_architecture.md`)
+- Privilege separation: Viewer (no sudo) vs Admin (sudo) modes
 
 ### Error Handling
 - Actionable error messages

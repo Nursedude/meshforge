@@ -37,7 +37,7 @@ if _HAS_SERVICE_CHECK:
     check_systemd_service = _check_systemd_service
     ServiceState = _ServiceState
 
-_find_meshtastic_cli, _HAS_CLI = safe_import('utils.cli', 'find_meshtastic_cli')
+from utils.cli import find_meshtastic_cli
 
 
 class MeshtasticPreset(Enum):
@@ -484,11 +484,7 @@ def detect_meshtastic_settings(verbose: bool = False) -> Optional[Dict]:
         log_attempt("meshtasticd systemd service", False, str(e))
 
     # Check if meshtastic CLI is available using centralized finder
-    if _HAS_CLI:
-        _meshtastic_cli_path = _find_meshtastic_cli()
-    else:
-        import shutil
-        _meshtastic_cli_path = shutil.which('meshtastic')
+    _meshtastic_cli_path = find_meshtastic_cli()
     meshtastic_cli_available = _meshtastic_cli_path is not None
 
     def run_meshtastic_cmd(args: list, timeout: int = 10) -> tuple:

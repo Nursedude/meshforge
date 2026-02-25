@@ -1,0 +1,26 @@
+# Meshtoad / MeshStick SPI Radio Configuration
+# Hardware: SX1262 via CH341 USB-to-SPI adapter
+# Reference: https://github.com/markbirss/MESHSTICK
+#
+# Copy to: /etc/meshtasticd/config.d/meshtoad-spi.yaml
+#
+# The Meshtoad uses a CH341 chip as USB-to-SPI bridge.
+# Ensure the ch341 kernel module is loaded:
+#   sudo modprobe ch341
+#   lsmod | grep ch341
+
+Lora:
+  Module: sx1262
+  spidev: ch341
+  CS: 0
+  IRQ: 6
+  Reset: 2
+  Busy: 4
+  DIO2_AS_RF_SWITCH: true
+  DIO3_TCXO_VOLTAGE: true
+
+TCP:
+  Port: 4403
+
+Logging:
+  LogLevel: info

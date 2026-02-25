@@ -1182,6 +1182,68 @@ class TestRNSConnectionFlow:
         bridge._rns_loop()
         # Verify it ran without error (no assertion on logger needed)
 
+    def test_suppress_signal_noop_on_main_thread(self, bridge):
+        """Signal suppression is a no-op passthrough on the main thread."""
+        import signal
+        original = signal.signal
+        with bridge._suppress_signal_in_thread():
+            assert signal.signal is original
+
+    def test_suppress_signal_replaces_in_background_thread(self, bridge):
+        """Signal suppression replaces signal.signal in background threads."""
+        import signal
+        results = {}
+
+        def _check():
+            with bridge._suppress_signal_in_thread():
+                results['replaced'] = signal.signal is not _original
+                # Should return SIG_DFL instead of raising ValueError
+                results['retval'] = signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            results['restored'] = signal.signal is _original
+
+        _original = signal.signal
+        t = threading.Thread(target=_check)
+        t.start()
+        t.join(timeout=5)
+
+        assert results.get('replaced') is True
+        assert results.get('retval') == signal.SIG_DFL
+        assert results.get('restored') is True
+
+    def test_connect_rns_lxmf_signal_error_handled(self, bridge):
+        """LXMF signal error in background thread is suppressed by context manager."""
+        import signal as _signal_mod
+        bridge._rns_pre_initialized = True
+
+        mock_rns = MagicMock()
+        mock_lxmf = MagicMock()
+
+        # Simulate LXMF.LXMRouter() calling signal.signal() internally
+        def lxmf_router_init(*args, **kwargs):
+            # This would fail in a real background thread without suppression
+            _signal_mod.signal(_signal_mod.SIGTERM, _signal_mod.SIG_DFL)
+            return MagicMock()
+
+        mock_lxmf.LXMRouter = lxmf_router_init
+
+        with patch('gateway.rns_bridge._RNS_mod', mock_rns), \
+             patch('gateway.rns_bridge._LXMF_mod', mock_lxmf), \
+             patch('gateway.rns_bridge._HAS_RNS', True), \
+             patch('gateway.rns_bridge._HAS_LXMF', True):
+            # Run from background thread to trigger suppression
+            errors = []
+            def _run():
+                try:
+                    bridge._connect_rns()
+                except Exception as e:
+                    errors.append(e)
+
+            t = threading.Thread(target=_run)
+            t.start()
+            t.join(timeout=5)
+
+            assert not errors, f"Unexpected errors: {errors}"
+
 
 # ---------------------------------------------------------------------------
 # Module-level headless helpers

@@ -32,50 +32,25 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from enum import Enum
 
-from utils.safe_import import safe_import
-
 logger = logging.getLogger(__name__)
 
-# Import service check utilities
-check_service, ServiceState, ServiceStatus, _HAS_SERVICE_CHECK = safe_import(
-    'utils.service_check', 'check_service', 'ServiceState', 'ServiceStatus'
+# Service check utilities — first-party, always available (direct import per Issue #5)
+from utils.service_check import (
+    check_service, ServiceState, ServiceStatus,
+    check_udp_port, check_rns_shared_instance,
 )
 
-_ports_mod, _HAS_PORTS = safe_import('utils.ports')
-if _HAS_PORTS:
-    MESHTASTICD_PORT = _ports_mod.MESHTASTICD_PORT
-    MESHTASTICD_WEB_PORT = _ports_mod.MESHTASTICD_WEB_PORT
-    RNS_SHARED_INSTANCE_PORT = _ports_mod.RNS_SHARED_INSTANCE_PORT
-    RNS_TCP_SERVER_PORT = _ports_mod.RNS_TCP_SERVER_PORT
-    MQTT_PORT = _ports_mod.MQTT_PORT
-else:
-    # Fallback constants if utils not available
-    MESHTASTICD_PORT = 4403
-    MESHTASTICD_WEB_PORT = 9443
-    RNS_SHARED_INSTANCE_PORT = 37428
-    RNS_TCP_SERVER_PORT = 4242
-    MQTT_PORT = 1883
+from utils import ports
+MESHTASTICD_PORT = ports.MESHTASTICD_PORT
+MESHTASTICD_WEB_PORT = ports.MESHTASTICD_WEB_PORT
+RNS_SHARED_INSTANCE_PORT = ports.RNS_SHARED_INSTANCE_PORT
+RNS_TCP_SERVER_PORT = ports.RNS_TCP_SERVER_PORT
+MQTT_PORT = ports.MQTT_PORT
 
-# Import path utilities
-_get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
-if _HAS_PATHS:
-    get_real_user_home = _get_real_user_home
-else:
-    def get_real_user_home() -> Path:
-        sudo_user = os.environ.get('SUDO_USER', '')
-        if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-            return Path(f'/home/{sudo_user}')
-        # Fallback: check LOGNAME before defaulting to /root (MF001)
-        logname = os.environ.get('LOGNAME', '')
-        if logname and logname != 'root' and '/' not in logname and '..' not in logname:
-            return Path(f'/home/{logname}')
-        return Path('/root')
+# Sudo-safe home directory — first-party, always available (MF001)
+from utils.paths import get_real_user_home
 
-# Import ReticulumPaths and apply_config_and_restart for _heal_rns_storage_dirs
-_ReticulumPaths, _HAS_RETICULUM_PATHS = safe_import('utils.paths', 'ReticulumPaths')
-_apply_config_and_restart, _HAS_APPLY_RESTART = safe_import(
-    'utils.service_check', 'apply_config_and_restart'
-)
+from utils.paths import ReticulumPaths
 
 
 class ServiceRunState(Enum):
@@ -141,6 +116,9 @@ class EnvironmentState:
     is_first_run: bool = False
     config_exists: bool = False
 
+    # System-level warnings (udev bugs, packaging issues, etc.)
+    system_warnings: List[str] = field(default_factory=list)
+
     @property
     def has_conflicts(self) -> bool:
         """Check if there are any port conflicts."""
@@ -148,9 +126,13 @@ class EnvironmentState:
 
     @property
     def all_services_running(self) -> bool:
-        """Check if all expected services are running."""
+        """Check if all expected services are running and functional.
+
+        A service with state RUNNING but port not bound (zombie) is
+        not considered fully running.
+        """
         return all(
-            s.state == ServiceRunState.RUNNING
+            s.state == ServiceRunState.RUNNING and (not s.port or s.port_open)
             for s in self.services.values()
         )
 
@@ -214,7 +196,7 @@ class StartupChecker:
     # Services to check with their expected ports
     SERVICES_TO_CHECK = {
         'meshtasticd': {'port': MESHTASTICD_PORT, 'port_type': 'tcp', 'systemd': True},
-        'rnsd': {'port': RNS_SHARED_INSTANCE_PORT, 'port_type': 'udp', 'systemd': True},
+        'rnsd': {'port': RNS_SHARED_INSTANCE_PORT, 'port_type': 'unix_socket', 'systemd': True},
     }
 
     # Ports that MeshForge needs
@@ -251,8 +233,8 @@ class StartupChecker:
 
         # Ensure RNS storage directories exist (self-healing)
         # Prevents rnsd PermissionError on /etc/reticulum/storage/ratchets
-        if env.is_root:
-            self._heal_rns_storage_dirs()
+        # Runs as root or non-root — gracefully degrades if no permissions
+        self._heal_rns_storage_dirs()
 
         # Check services
         env.services = self._check_services()
@@ -266,6 +248,11 @@ class StartupChecker:
         # Check first run status
         env.is_first_run, env.config_exists = self._check_first_run()
 
+        # Detect system-level issues (udev packaging bugs, etc.)
+        alsa_warning = self._check_alsa_udev()
+        if alsa_warning:
+            env.system_warnings.append(alsa_warning)
+
         self._cache = env
         return env
 
@@ -274,52 +261,28 @@ class StartupChecker:
         self._cache = None
 
     def _heal_rns_storage_dirs(self):
-        """Create missing RNS storage directories and restart rnsd if needed.
+        """Ensure RNS storage directories exist with correct permissions.
 
         RNS requires several subdirectories under /etc/reticulum/storage/:
         - ratchets/ (Identity.persist_job key ratcheting)
         - resources/ (Reticulum.__init__ resource storage)
         - cache/announces/ (Transport announce caching)
-        If any are missing, we create them and restart rnsd.
+
+        This method ONLY creates missing directories and fixes permissions.
+        It never restarts rnsd — that's rnsd's job via systemd.  If rnsd is
+        crashing due to missing dirs, the health monitor will report it and
+        the user can restart from the service menu.
+
+        Previous versions auto-restarted rnsd here, which caused the #1
+        "gotcha": running sudo meshforge would restart rnsd under root
+        context, regenerating shared_instance auth tokens and breaking
+        RNS connectivity for the normal user.
         """
-        if not _HAS_RETICULUM_PATHS:
-            return
-
-        ratchets = _ReticulumPaths.ETC_RATCHETS
-        resources = _ReticulumPaths.ETC_RESOURCES
-        announces = _ReticulumPaths.ETC_ANNOUNCE_CACHE
-        needs_restart = (
-            _ReticulumPaths.ETC_BASE.exists()
-            and (
-                not ratchets.exists()
-                or not resources.exists()
-                or not announces.exists()
-                or self._has_permission_issues(announces)
-            )
-        )
-
-        if not _ReticulumPaths.ensure_system_dirs():
+        if not ReticulumPaths.ensure_system_dirs():
             logger.debug("Could not create /etc/reticulum directories")
             return
 
-        if needs_restart:
-            # Directories were just created — restart rnsd so it stops crashing
-            logger.info("Created missing RNS storage/ratchets dir, restarting rnsd")
-            if _HAS_APPLY_RESTART:
-                success, msg = _apply_config_and_restart('rnsd')
-                if success:
-                    logger.info("rnsd restarted after storage dir fix")
-                else:
-                    logger.warning("rnsd restart failed: %s", msg)
-            else:
-                # Fallback if service_check not available
-                try:
-                    subprocess.run(
-                        ['systemctl', 'restart', 'rnsd'],
-                        timeout=30, capture_output=True
-                    )
-                except Exception as e:
-                    logger.debug("rnsd restart fallback failed: %s", e)
+        logger.debug("RNS storage directories verified")
 
     @staticmethod
     def _has_permission_issues(dir_path: Path) -> bool:
@@ -463,8 +426,18 @@ class StartupChecker:
         return state, pid
 
     def _check_port(self, port: int, port_type: str = 'tcp') -> bool:
-        """Check if a port is open."""
+        """Check if a port is open.
+
+        For RNS (unix_socket), uses check_rns_shared_instance() which checks
+        abstract domain sockets (Linux default) and falls back to TCP/UDP.
+        For UDP ports, uses centralized check_udp_port().
+        """
         try:
+            if port_type == 'unix_socket':
+                return check_rns_shared_instance()
+            if port_type == 'udp':
+                return check_udp_port(port)
+
             sock_type = socket.SOCK_STREAM if port_type == 'tcp' else socket.SOCK_DGRAM
             with socket.socket(socket.AF_INET, sock_type) as sock:
                 sock.settimeout(1)
@@ -472,12 +445,12 @@ class StartupChecker:
                     result = sock.connect_ex(('127.0.0.1', port))
                     return result == 0
                 else:
-                    # For UDP, try to bind - if it fails, port is in use
+                    # Fallback UDP bind test (unreliable with SO_REUSEADDR)
                     try:
                         sock.bind(('127.0.0.1', port))
-                        return False  # We could bind, so port is not in use
+                        return False
                     except OSError:
-                        return True  # Port is in use
+                        return True
         except OSError as e:
             logger.debug("Port check for %d failed: %s", port, e)
             return False
@@ -629,6 +602,33 @@ class StartupChecker:
         config_exists = settings_file.exists()
 
         return is_first_run, config_exists
+
+    def _check_alsa_udev(self) -> Optional[str]:
+        """Detect broken ALSA udev rules (RPi OS packaging bug).
+
+        Returns a warning string if broken, None if OK or not applicable.
+        """
+        override = Path("/etc/udev/rules.d/90-alsa-restore.rules")
+        pkg_rules = Path("/usr/lib/udev/rules.d/90-alsa-restore.rules")
+
+        if override.exists() or not pkg_rules.exists():
+            return None
+
+        try:
+            content = pkg_rules.read_text()
+            gotos = set(re.findall(r'GOTO="([^"]+)"', content))
+            labels = set(re.findall(r'LABEL="([^"]+)"', content))
+            missing = gotos - labels
+            if missing:
+                return (
+                    f"ALSA udev rules have broken GOTO labels: {missing} "
+                    f"(fix: sudo python3 -c "
+                    f"\"from utils.udev_fix import fix_broken_udev_rules; "
+                    f"fix_broken_udev_rules()\")"
+                )
+        except OSError:
+            pass
+        return None
 
 
 def resolve_conflict(conflict: PortConflict, action: str = 'stop') -> bool:

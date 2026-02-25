@@ -6,7 +6,6 @@ changes without service restarts.
 This module provides:
 - RESTful GET/PUT/DELETE operations on config paths
 - Validation before applying changes
-- Change callbacks for live reload support
 - Thread-safe multi-process access
 - Audit logging for configuration changes
 
@@ -21,31 +20,25 @@ Example Usage:
     # Register validators
     api.register_validator("rns.port", ConfigValidator.port_validator())
 
-    # Register change callbacks for live reload
-    api.on_change("rns.port", lambda old, new: reconnect_rns(new))
-
     # Get configuration
     port = api.get("rns.port")  # Returns 37428
 
     # Update configuration (validates first)
     result = api.put("rns.port", 37429)
     if result.success:
-        print("Config updated and callbacks fired")
+        print("Config updated")
     else:
         print(f"Validation failed: {result.error}")
 
     # Delete (reset to default)
     result = api.delete("rns.port")
 
-HTTP Server (optional):
+HTTP Server (localhost:8081, auto-started by TUI):
     from utils.config_api import ConfigAPIServer
 
-    server = ConfigAPIServer(api, unix_socket="/var/run/meshforge/config.sock")
+    server = ConfigAPIServer(api, host="127.0.0.1", port=8081)
     server.start()
-    # curl --unix-socket /var/run/meshforge/config.sock http://localhost/config/rns/port
-
-Author: Claude Code (Opus 4.5)
-Session: claude/config-api-restful-ETusS
+    # curl http://localhost:8081/config/rns/port
 """
 
 from __future__ import annotations
@@ -55,7 +48,6 @@ import json
 import logging
 import os
 import re
-import socket
 import socketserver
 import threading
 import time
@@ -145,20 +137,6 @@ class ConfigChange:
             "new_value": self.new_value,
             "source": self.source,
         }
-
-
-@dataclass
-class ConfigSchema:
-    """Schema definition for a configuration key."""
-    path: str
-    type: type
-    description: str = ""
-    default: Any = None
-    required: bool = False
-    min_value: Optional[Union[int, float]] = None
-    max_value: Optional[Union[int, float]] = None
-    allowed_values: Optional[List[Any]] = None
-    pattern: Optional[str] = None  # regex for string validation
 
 
 # =============================================================================
@@ -289,31 +267,6 @@ class ConfigValidator:
         return validate
 
     @staticmethod
-    def ip_address_validator() -> Callable[[Any], ValidationResult]:
-        """Validate an IPv4 or IPv6 address."""
-        def validate(value: Any) -> ValidationResult:
-            if not isinstance(value, str):
-                return ValidationResult.fail(
-                    f"IP address must be a string, got {type(value).__name__}"
-                )
-            # Try IPv4
-            try:
-                socket.inet_pton(socket.AF_INET, value)
-                return ValidationResult.ok()
-            except socket.error:
-                pass
-            # Try IPv6
-            try:
-                socket.inet_pton(socket.AF_INET6, value)
-                return ValidationResult.ok()
-            except socket.error:
-                return ValidationResult.fail(
-                    f"Invalid IP address: {value}",
-                    "Use valid IPv4 (192.168.1.1) or IPv6 address"
-                )
-        return validate
-
-    @staticmethod
     def hostname_validator() -> Callable[[Any], ValidationResult]:
         """Validate a hostname."""
         # RFC 1123 hostname pattern
@@ -335,34 +288,6 @@ class ConfigValidator:
                 return ValidationResult.fail(
                     f"Invalid hostname: {value}",
                     "Use valid hostname (e.g., localhost, node1.mesh.local)"
-                )
-            return ValidationResult.ok()
-        return validate
-
-    @staticmethod
-    def path_validator(
-        must_exist: bool = False,
-        must_be_file: bool = False,
-        must_be_dir: bool = False
-    ) -> Callable[[Any], ValidationResult]:
-        """Validate a filesystem path."""
-        def validate(value: Any) -> ValidationResult:
-            if not isinstance(value, str):
-                return ValidationResult.fail(
-                    f"Path must be a string, got {type(value).__name__}"
-                )
-            path = Path(value)
-            if must_exist and not path.exists():
-                return ValidationResult.fail(
-                    f"Path does not exist: {value}"
-                )
-            if must_be_file and path.exists() and not path.is_file():
-                return ValidationResult.fail(
-                    f"Path is not a file: {value}"
-                )
-            if must_be_dir and path.exists() and not path.is_dir():
-                return ValidationResult.fail(
-                    f"Path is not a directory: {value}"
                 )
             return ValidationResult.ok()
         return validate
@@ -810,52 +735,6 @@ class ConfigurationAPI:
 
         return failures
 
-    # -------------------------------------------------------------------------
-    # Change Callbacks
-    # -------------------------------------------------------------------------
-
-    def on_change(
-        self,
-        path: str,
-        callback: Callable[[Any, Any], None]
-    ) -> None:
-        """Register a callback for configuration changes.
-
-        Callback is called with (old_value, new_value) when path changes.
-
-        Args:
-            path: Configuration path to watch
-            callback: Function called with (old_value, new_value)
-        """
-        with self._lock:
-            if path not in self._change_callbacks:
-                self._change_callbacks[path] = []
-            self._change_callbacks[path].append(callback)
-
-    def on_any_change(self, callback: Callable[[ConfigChange], None]) -> None:
-        """Register a callback for any configuration change.
-
-        Args:
-            callback: Function called with ConfigChange object
-        """
-        with self._lock:
-            self._global_callbacks.append(callback)
-
-    def remove_callback(self, path: str, callback: Callable) -> bool:
-        """Remove a specific callback.
-
-        Returns:
-            True if callback was found and removed
-        """
-        with self._lock:
-            if path in self._change_callbacks:
-                try:
-                    self._change_callbacks[path].remove(callback)
-                    return True
-                except ValueError:
-                    pass
-            return False
-
     def _fire_callbacks(
         self,
         path: str,
@@ -909,45 +788,6 @@ class ConfigurationAPI:
             if path_filter:
                 log = [c for c in log if c.path.startswith(path_filter)]
             return log[:limit]
-
-    # -------------------------------------------------------------------------
-    # Schema Management
-    # -------------------------------------------------------------------------
-
-    def register_schema(self, schema: ConfigSchema) -> None:
-        """Register a configuration schema with automatic validator.
-
-        Args:
-            schema: ConfigSchema definition
-        """
-        validators = []
-
-        # Type validation
-        if schema.type == int:
-            validators.append(ConfigValidator.integer_validator(
-                schema.min_value, schema.max_value
-            ))
-        elif schema.type == float:
-            validators.append(ConfigValidator.float_validator(
-                schema.min_value, schema.max_value
-            ))
-        elif schema.type == str:
-            validators.append(ConfigValidator.string_validator(
-                pattern=schema.pattern
-            ))
-        elif schema.type == bool:
-            validators.append(ConfigValidator.boolean_validator())
-
-        # Enum validation
-        if schema.allowed_values:
-            validators.append(ConfigValidator.enum_validator(schema.allowed_values))
-
-        # Register composite validator
-        if validators:
-            self.register_validator(
-                schema.path,
-                ConfigValidator.composite(*validators)
-            )
 
     # -------------------------------------------------------------------------
     # Utility Methods
@@ -1138,10 +978,23 @@ class ConfigAPIHandler(BaseHTTPRequestHandler):
         # Regular config path
         return ("config", ".".join(parts[1:]))
 
+    # Maximum request body size (1 MB)
+    _MAX_BODY_SIZE = 1_048_576
+
+    def _check_localhost(self) -> bool:
+        """Verify request originates from localhost. Returns True if allowed."""
+        try:
+            client_ip = __import__('ipaddress').ip_address(self.client_address[0])
+            return client_ip.is_loopback
+        except (ValueError, AttributeError):
+            return False
+
     def _read_body(self) -> Optional[Any]:
         """Read and parse JSON request body."""
         content_length = int(self.headers.get("Content-Length", 0))
         if content_length == 0:
+            return None
+        if content_length > self._MAX_BODY_SIZE:
             return None
 
         body = self.rfile.read(content_length)
@@ -1196,6 +1049,9 @@ class ConfigAPIHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         """Handle PUT requests (set configuration)."""
+        if not self._check_localhost():
+            self._send_error_json(403, "Forbidden — localhost only")
+            return
         if self.api is None:
             self._send_error_json(503, "Configuration API not initialized")
             return
@@ -1222,6 +1078,9 @@ class ConfigAPIHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         """Handle DELETE requests."""
+        if not self._check_localhost():
+            self._send_error_json(403, "Forbidden — localhost only")
+            return
         if self.api is None:
             self._send_error_json(503, "Configuration API not initialized")
             return
@@ -1240,6 +1099,9 @@ class ConfigAPIHandler(BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         """Handle PATCH requests (partial update)."""
+        if not self._check_localhost():
+            self._send_error_json(403, "Forbidden — localhost only")
+            return
         if self.api is None:
             self._send_error_json(503, "Configuration API not initialized")
             return
@@ -1263,6 +1125,9 @@ class ConfigAPIHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         """Handle POST requests (reset)."""
+        if not self._check_localhost():
+            self._send_error_json(403, "Forbidden — localhost only")
+            return
         if self.api is None:
             self._send_error_json(503, "Configuration API not initialized")
             return
@@ -1280,45 +1145,28 @@ class ConfigAPIHandler(BaseHTTPRequestHandler):
 
 
 class ConfigAPIServer:
-    """HTTP server for Configuration API.
-
-    Supports both TCP and Unix socket connections.
-    """
+    """HTTP server for Configuration API (TCP, localhost only)."""
 
     def __init__(
         self,
         api: ConfigurationAPI,
         host: str = "127.0.0.1",
         port: int = 8081,
-        unix_socket: Optional[str] = None
+        **kwargs
     ):
-        """Initialize the Configuration API server.
-
-        Args:
-            api: ConfigurationAPI instance
-            host: TCP host to bind (ignored if unix_socket set)
-            port: TCP port to bind (ignored if unix_socket set)
-            unix_socket: Path to Unix socket (preferred for security)
-        """
         self.api = api
         self.host = host
         self.port = port
-        self.unix_socket = unix_socket
         self._server = None
         self._thread = None
         self._running = False
 
     def start(self) -> bool:
-        """Start the HTTP server in a background thread.
-
-        Returns:
-            True if server started successfully
-        """
+        """Start the HTTP server in a background thread."""
         if self._running:
             logger.warning("ConfigAPIServer already running")
             return True
 
-        # Create handler class with API reference
         handler = type(
             "ConfigAPIHandlerWithAPI",
             (ConfigAPIHandler,),
@@ -1326,27 +1174,11 @@ class ConfigAPIServer:
         )
 
         try:
-            if self.unix_socket:
-                # Unix socket server
-                socket_path = Path(self.unix_socket)
-                socket_path.parent.mkdir(parents=True, exist_ok=True)
+            class TCPServer(socketserver.TCPServer):
+                allow_reuse_address = True
 
-                # Remove existing socket
-                if socket_path.exists():
-                    socket_path.unlink()
-
-                class UnixSocketServer(socketserver.UnixStreamServer):
-                    allow_reuse_address = True
-
-                self._server = UnixSocketServer(self.unix_socket, handler)
-                logger.info(f"ConfigAPI server starting on unix:{self.unix_socket}")
-            else:
-                # TCP server
-                class TCPServer(socketserver.TCPServer):
-                    allow_reuse_address = True
-
-                self._server = TCPServer((self.host, self.port), handler)
-                logger.info(f"ConfigAPI server starting on {self.host}:{self.port}")
+            self._server = TCPServer((self.host, self.port), handler)
+            logger.info(f"ConfigAPI server starting on {self.host}:{self.port}")
 
             self._running = True
             self._thread = threading.Thread(
@@ -1361,11 +1193,7 @@ class ConfigAPIServer:
             return False
 
     def stop(self, timeout: float = 5.0) -> None:
-        """Stop the HTTP server.
-
-        Args:
-            timeout: Maximum time to wait for shutdown
-        """
+        """Stop the HTTP server."""
         if not self._running:
             return
 
@@ -1377,15 +1205,6 @@ class ConfigAPIServer:
 
         if self._thread:
             self._thread.join(timeout=timeout)
-
-        # Clean up Unix socket
-        if self.unix_socket:
-            socket_path = Path(self.unix_socket)
-            if socket_path.exists():
-                try:
-                    socket_path.unlink()
-                except OSError:
-                    pass
 
         logger.info("ConfigAPI server stopped")
 
@@ -1482,18 +1301,16 @@ def create_gateway_config_api(settings_manager=None) -> ConfigurationAPI:
 def start_config_server(
     api: ConfigurationAPI,
     port: int = 8081,
-    unix_socket: str = None
 ) -> ConfigAPIServer:
     """Start a Configuration API HTTP server.
 
     Args:
         api: ConfigurationAPI instance
         port: TCP port (default 8081)
-        unix_socket: Optional Unix socket path
 
     Returns:
         Running ConfigAPIServer instance
     """
-    server = ConfigAPIServer(api, port=port, unix_socket=unix_socket)
+    server = ConfigAPIServer(api, port=port)
     server.start()
     return server

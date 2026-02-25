@@ -11,14 +11,11 @@ Provides link quality analysis tools:
 import logging
 from typing import Optional
 
-from utils.safe_import import safe_import
+from utils.link_quality import LinkQualityScorer
+from utils.link_quality import score_topology_edges
+from gateway.network_topology import get_network_topology
 
 logger = logging.getLogger(__name__)
-
-# Module-level safe imports
-_LinkQualityScorer, _HAS_LINK_QUALITY = safe_import('utils.link_quality', 'LinkQualityScorer')
-_score_topology_edges, _HAS_SCORE_TOPO = safe_import('utils.link_quality', 'score_topology_edges')
-_get_network_topology, _HAS_NET_TOPO = safe_import('gateway.network_topology', 'get_network_topology')
 
 
 class LinkQualityMixin:
@@ -60,21 +57,16 @@ class LinkQualityMixin:
 
     def _get_link_scorer(self):
         """Get the link quality scorer instance."""
-        if not _HAS_LINK_QUALITY:
-            return None
-        return _LinkQualityScorer()
+        return LinkQualityScorer()
 
     def _get_topology_scores(self):
         """Score all edges in the current topology."""
-        if not _HAS_SCORE_TOPO or not _HAS_NET_TOPO:
-            return None, None
-
         try:
-            topology = _get_network_topology()
+            topology = get_network_topology()
             if topology is None:
                 return None, None
 
-            return _score_topology_edges(topology), topology
+            return score_topology_edges(topology), topology
 
         except Exception as e:
             logger.error(f"Error scoring topology: {e}")

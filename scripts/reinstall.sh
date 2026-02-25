@@ -40,7 +40,14 @@ NC='\033[0m'
 
 # Defaults
 INSTALL_DIR="/opt/meshforge"
-BACKUP_DIR="/tmp/meshforge-reinstall-$$"
+BACKUP_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+# Use persistent location — /tmp gets wiped on reboot and could lose RNS identity
+if [[ -n "$SUDO_USER" ]]; then
+    BACKUP_BASE=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+else
+    BACKUP_BASE="$HOME"
+fi
+BACKUP_DIR="${BACKUP_BASE}/meshforge-backup-${BACKUP_TIMESTAMP}"
 REPO_URL="https://github.com/Nursedude/meshforge.git"
 BRANCH="main"
 NO_CONFIRM=false
@@ -255,6 +262,7 @@ if [[ -z "$INSTALL_DIR" ]] || [[ "$INSTALL_DIR" == "/" ]]; then
     exit 1
 fi
 if [[ -d "$INSTALL_DIR" ]]; then
+    cd /  # Escape CWD before removing it (script runs from inside INSTALL_DIR)
     rm -rf "$INSTALL_DIR"
     echo -e "  ${GREEN}✓${NC} Removed $INSTALL_DIR"
 else
@@ -386,13 +394,14 @@ echo -e "  Branch:   ${BOLD}${BRANCH}${NC} (${NEW_COMMIT})"
 echo -e "  Configs:  ${GREEN}${RESTORED} restored${NC}"
 echo ""
 echo -e "${CYAN}Commands:${NC}"
-echo "  sudo meshforge          Launch TUI"
+echo "  meshforge               Launch TUI"
 echo "  meshforge-status        Quick health check"
 echo "  meshforge-web           Open radio web client"
 echo ""
 
-# Clean up backup (configs are restored)
-rm -rf "$BACKUP_DIR"
-
+# Keep backup for safety — user can delete manually once verified
+echo -e "${CYAN}Backup preserved at: ${BOLD}${BACKUP_DIR}${NC}"
+echo -e "${CYAN}  Delete after verifying: rm -rf ${BACKUP_DIR}${NC}"
+echo ""
 echo -e "${CYAN}Made with aloha for the mesh community${NC}"
 echo ""

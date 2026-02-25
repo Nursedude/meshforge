@@ -1,0 +1,27 @@
+# MeshToad / MeshTadpole USB Radio Configuration
+# Chipset: CH340/CH341 USB-Serial
+# USB ID: 1a86:7523 (CH340), 1a86:55d4 (CH341 alternate)
+#
+# MtnMesh devices. 900mA peak power draw.
+# Note: Some MeshToad variants use CH341 in SPI mode — use
+# meshtoad-spi.yaml for those (USB-to-SPI bridge).
+#
+# Copy to: /etc/meshtasticd/config.d/meshtoad-usb.yaml
+#
+# The device handles its own LoRa configuration.
+# Radio settings are configured via Meshtastic app/CLI:
+#   meshtastic --host localhost --set lora.region US
+#   meshtastic --host localhost --set lora.modem_preset MEDIUM_FAST
+#   (MediumFast preset recommended for MtnMesh compatibility)
+
+Serial:
+  Device: auto          # /dev/ttyUSB0 typical for CH340
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

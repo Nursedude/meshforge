@@ -178,7 +178,11 @@ class MeshtasticHTTPClient:
         self._last_check: float = 0.0
         self._check_interval: float = 60.0  # Re-check availability every 60s
 
-        # SSL context for self-signed certs (meshtasticd default)
+        # SECURITY: meshtasticd uses self-signed certificates by default.
+        # Certificate verification is disabled to support this. This is safe
+        # for localhost/LAN connections but vulnerable to MITM if meshtasticd
+        # is accessed over an untrusted network. For non-LAN deployments,
+        # consider certificate pinning or a TLS-terminating reverse proxy.
         self._ssl_ctx = ssl.create_default_context()
         self._ssl_ctx.check_hostname = False
         self._ssl_ctx.verify_mode = ssl.CERT_NONE

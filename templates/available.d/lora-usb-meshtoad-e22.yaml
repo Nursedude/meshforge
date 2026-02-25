@@ -1,0 +1,37 @@
+# MeshToad E22 USB LoRa Adapter (CH341 + SX1262)
+# Hardware: SX1262 via CH341 USB-to-SPI bridge
+# USB ID: 1A86:5512 (WCH CH341)
+# Source: meshtastic/firmware bin/config.d
+#
+# Copy to: /etc/meshtasticd/config.d/lora-usb-meshtoad-e22.yaml
+#
+# Ensure the ch341 kernel module is loaded:
+#   sudo modprobe ch341
+#   lsmod | grep ch341
+
+Lora:
+  Module: sx1262
+  CS: 0
+  IRQ: 6
+  Reset: 2
+  Busy: 4
+  RXen: 1
+  DIO2_AS_RF_SWITCH: true
+  DIO3_TCXO_VOLTAGE: true
+  spidev: ch341
+  USB_PID: 0x5512
+  USB_VID: 0x1A86
+  # Optional: Reduce power to 10 dBm to
+  # avoid over-drawing the USB port
+  # SX126X_MAX_POWER: 10
+  # Optional: Set serial number for multi-radio support
+  # USB_Serialnum: 13374201
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

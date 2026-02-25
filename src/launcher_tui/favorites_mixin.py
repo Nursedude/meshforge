@@ -15,7 +15,11 @@ from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
 
-# Module-level safe imports
+# Connection manager for meshtasticd (respects single-client constraint)
+MeshtasticConnection, _HAS_CONN_MGR = safe_import(
+    'utils.connection_manager', 'MeshtasticConnection'
+)
+# Check if meshtastic TCP is available (for capability gating)
 _TCPInterface, _HAS_TCP_INTERFACE = safe_import('meshtastic.tcp_interface', 'TCPInterface')
 
 
@@ -413,9 +417,18 @@ class FavoritesMixin:
             return
 
         try:
-            interface = _TCPInterface(hostname='localhost')
+            # Use connection manager to respect meshtasticd's single-client
+            # TCP constraint (Issue #17). Direct TCPInterface() creation would
+            # contend with the gateway bridge and break :9443.
+            with MeshtasticConnection() as interface:
+                if not interface:
+                    self.dialog.msgbox(
+                        "Connection Busy",
+                        "Another component is using the meshtasticd connection.\n"
+                        "Please try again in a moment."
+                    )
+                    return
 
-            try:
                 favorites = []
                 non_favorites = []
 
@@ -461,9 +474,6 @@ class FavoritesMixin:
                     lines.append("No favorites set on device.")
 
                 self.dialog.msgbox("Sync Complete", "\n".join(lines))
-
-            finally:
-                interface.close()
 
         except ConnectionRefusedError:
             self.dialog.msgbox(

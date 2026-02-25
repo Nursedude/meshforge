@@ -1,0 +1,12 @@
+# MeshForge RNS Dependencies (gateway, full profiles)
+
+# Reticulum Network Stack
+rns>=0.7.0
+lxmf>=0.4.0
+
+# Cryptography / PyOpenSSL version alignment:
+# RNS pulls in cryptography 46.x (its constraint is >=3.4.7, so pip grabs latest).
+# PyOpenSSL <25.3.0 only supports cryptography<45, causing a resolver conflict.
+# Pin both explicitly so pip can resolve them together in a single pass.
+cryptography>=45.0.7,<47
+pyopenssl>=25.3.0

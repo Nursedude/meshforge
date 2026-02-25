@@ -14,18 +14,13 @@ from enum import Enum
 from pathlib import Path
 from typing import List, Dict, Optional
 
-# Import centralized path utility
+# First-party imports — always available
 from utils.paths import get_real_user_home
-from utils.safe_import import safe_import
+from utils.service_check import check_service, check_systemd_service, check_process_with_pid, ServiceState
+from utils.config_drift import detect_rnsd_config_drift
 
-# Optional dependencies — module-level safe imports
-check_service, check_systemd_service, check_process_with_pid, ServiceState, _HAS_SERVICE_CHECK = safe_import(
-    'utils.service_check', 'check_service', 'check_systemd_service',
-    'check_process_with_pid', 'ServiceState'
-)
-detect_rnsd_config_drift, _HAS_CONFIG_DRIFT = safe_import(
-    'utils.config_drift', 'detect_rnsd_config_drift'
-)
+# Optional external dependencies
+from utils.safe_import import safe_import
 _meshtastic_mod, _HAS_MESHTASTIC = safe_import('meshtastic')
 MeshChatService, MeshChatServiceState, _HAS_MESHCHAT = safe_import(
     'plugins.meshchat', 'MeshChatService', 'ServiceState'
@@ -33,6 +28,13 @@ MeshChatService, MeshChatServiceState, _HAS_MESHCHAT = safe_import(
 if not _HAS_MESHCHAT:
     MeshChatService, MeshChatServiceState, _HAS_MESHCHAT = safe_import(
         'src.plugins.meshchat', 'MeshChatService', 'ServiceState'
+    )
+MeshChatClient, _HAS_MESHCHAT_CLIENT = safe_import(
+    'plugins.meshchat.client', 'MeshChatClient'
+)
+if not _HAS_MESHCHAT_CLIENT:
+    MeshChatClient, _HAS_MESHCHAT_CLIENT = safe_import(
+        'src.plugins.meshchat.client', 'MeshChatClient'
     )
 
 
@@ -97,6 +99,7 @@ class GatewayDiagnostic:
 
         # Optional integrations
         self.results.append(self.check_meshchat())
+        self.results.append(self.check_meshchat_rns_integration())
 
         # Connection checks
         conn_types = self.detect_connection_types()
@@ -300,13 +303,12 @@ class GatewayDiagnostic:
             has_meshtastic = 'meshtastic' in content.lower()
 
             # Check for config drift between gateway and rnsd
-            if _HAS_CONFIG_DRIFT:
-                drift = detect_rnsd_config_drift()
-                if drift.drifted:
-                    issues.append(
-                        f"Config drift: gateway uses {drift.gateway_config_dir} "
-                        f"but rnsd uses {drift.rnsd_config_dir}"
-                    )
+            drift = detect_rnsd_config_drift()
+            if drift.drifted:
+                issues.append(
+                    f"Config drift: gateway uses {drift.gateway_config_dir} "
+                    f"but rnsd uses {drift.rnsd_config_dir}"
+                )
 
             if issues:
                 return CheckResult(
@@ -336,18 +338,7 @@ class GatewayDiagnostic:
     def check_rnsd_running(self) -> CheckResult:
         """Check if rnsd daemon is running."""
         try:
-            # Use centralized service check when available
-            if _HAS_SERVICE_CHECK:
-                running, pid = check_process_with_pid('rnsd')
-            else:
-                # Fallback to direct pgrep
-                result = subprocess.run(
-                    ['pgrep', '-f', 'rnsd'],
-                    capture_output=True, text=True, timeout=5
-                )
-                running = result.returncode == 0 and result.stdout.strip()
-                pid = result.stdout.strip().split('\n')[0] if running else None
-
+            running, pid = check_process_with_pid('rnsd')
             if running:
                 return CheckResult(
                     name="RNS Daemon (rnsd)",
@@ -498,17 +489,7 @@ class GatewayDiagnostic:
     def check_meshtasticd(self) -> CheckResult:
         """Check if meshtasticd service is running."""
         try:
-            # Use centralized service check when available
-            if _HAS_SERVICE_CHECK:
-                running, _ = check_process_with_pid('meshtasticd')
-            else:
-                # Fallback to direct pgrep
-                result = subprocess.run(
-                    ['pgrep', '-f', 'meshtasticd'],
-                    capture_output=True, text=True, timeout=5
-                )
-                running = result.returncode == 0 and result.stdout.strip()
-
+            running, _ = check_process_with_pid('meshtasticd')
             if running:
                 # Also check TCP port
                 if self.check_tcp_port('localhost', 4403):
@@ -592,6 +573,51 @@ class GatewayDiagnostic:
         except Exception as e:
             return CheckResult(
                 name="MeshChat (Optional)",
+                status=CheckStatus.SKIP,
+                message=f"Check skipped: {e}"
+            )
+
+    def check_meshchat_rns_integration(self) -> CheckResult:
+        """Check if MeshChat is properly connected to RNS (optional)."""
+        if not _HAS_MESHCHAT_CLIENT:
+            return CheckResult(
+                name="MeshChat-RNS Link",
+                status=CheckStatus.SKIP,
+                message="MeshChat client not available"
+            )
+
+        try:
+            client = MeshChatClient(timeout=3)
+            if not client.is_available():
+                return CheckResult(
+                    name="MeshChat-RNS Link",
+                    status=CheckStatus.SKIP,
+                    message="MeshChat not running"
+                )
+
+            mc_status = client.get_status()
+            if mc_status.rns_connected:
+                details = []
+                if mc_status.peer_count:
+                    details.append(f"{mc_status.peer_count} peers")
+                if mc_status.message_count:
+                    details.append(f"{mc_status.message_count} messages")
+                detail_str = f" ({', '.join(details)})" if details else ""
+                return CheckResult(
+                    name="MeshChat-RNS Link",
+                    status=CheckStatus.PASS,
+                    message=f"Connected to RNS{detail_str}"
+                )
+            else:
+                return CheckResult(
+                    name="MeshChat-RNS Link",
+                    status=CheckStatus.FAIL,
+                    message="MeshChat running but RNS not connected",
+                    fix_hint="Check that rnsd is running with share_instance = Yes"
+                )
+        except Exception as e:
+            return CheckResult(
+                name="MeshChat-RNS Link",
                 status=CheckStatus.SKIP,
                 message=f"Check skipped: {e}"
             )
@@ -707,19 +733,9 @@ class GatewayDiagnostic:
     def _check_ble_available(self) -> bool:
         """Check if Bluetooth LE is available."""
         try:
-            # Use centralized service checker if available
-            if _HAS_SERVICE_CHECK:
-                is_running, is_enabled = check_systemd_service('bluetooth')
-                if is_running:
-                    return True
-            else:
-                # Fallback to direct systemctl call
-                result = subprocess.run(
-                    ['systemctl', 'is-active', 'bluetooth'],
-                    capture_output=True, text=True, timeout=5
-                )
-                if result.stdout.strip() == 'active':
-                    return True
+            is_running, is_enabled = check_systemd_service('bluetooth')
+            if is_running:
+                return True
         except Exception:
             pass
 
@@ -759,8 +775,8 @@ class GatewayDiagnostic:
             if not plugin_path.exists():
                 lines.append(f"\n⚠  Meshtastic_Interface.py plugin NOT installed")
                 lines.append(f"   Required for RNS over Meshtastic bridging")
-                lines.append(f"   Install from: github.com/landandair/RNS_Over_Meshtastic")
-                lines.append(f"   Copy to: {ReticulumPaths.get_interfaces_dir()}/")
+                lines.append(f"   Install from: RNS menu > Install Meshtastic Interface")
+                lines.append(f"   Target: {ReticulumPaths.get_interfaces_dir()}/")
 
             # Recommend connection type
             config_path = ReticulumPaths.get_config_file()
@@ -942,6 +958,64 @@ def find_rns_processes() -> List[int]:
         pass
 
     return pids
+
+
+def diagnose_rnsd_connection(rns_pids: List[int], error: Exception = None) -> None:
+    """Log diagnostic info when rnsd connection fails.
+
+    Follows 'Eight Times Blind' principle: check port, check known causes,
+    show the log. POLICY: Diagnose only — never restarts services or
+    modifies configs.
+
+    Args:
+        rns_pids: PIDs returned by find_rns_processes()
+        error: The exception from the failed RNS.Reticulum() call
+    """
+    import logging
+    _log = logging.getLogger(__name__)
+
+    # 1. Check if shared instance is actually available
+    try:
+        from utils.service_check import check_rns_shared_instance
+        port_listening = check_rns_shared_instance()
+    except ImportError:
+        port_listening = None  # Can't check
+
+    if rns_pids and port_listening is False:
+        _log.warning(
+            "rnsd PID %d exists but shared instance not available "
+            "(zombie or hung during init)", rns_pids[0]
+        )
+    elif rns_pids and port_listening is True:
+        # Port is listening but connection still failed — likely auth or config issue
+        err_str = str(error).lower() if error else ""
+        if "authentication" in err_str or "digest" in err_str:
+            _log.warning("Cause: RPC auth mismatch (stale shared_instance tokens)")
+            _log.info("Fix: sudo systemctl stop rnsd && "
+                      "sudo rm -f /etc/reticulum/storage/shared_instance_* && "
+                      "sudo systemctl start rnsd")
+        else:
+            _log.warning("rnsd port 37428 listening but connection failed — "
+                         "possible config mismatch")
+
+    # 2. Show recent rnsd journal (the actual diagnostic, per "Eight Times Blind")
+    try:
+        r = subprocess.run(
+            ['journalctl', '-u', 'rnsd', '-n', '15', '--no-pager'],
+            capture_output=True, text=True, timeout=10
+        )
+        if r.stdout and r.stdout.strip():
+            _log.warning("Recent rnsd log:")
+            for line in r.stdout.strip().splitlines():
+                _log.warning("  %s", line.strip())
+        else:
+            _log.info("(no rnsd journal output)")
+    except (subprocess.SubprocessError, OSError, FileNotFoundError):
+        _log.debug("Could not read rnsd journal")
+
+    # 3. Actionable hints
+    _log.info("Restart rnsd: sudo systemctl restart rnsd")
+    _log.info("Full logs: journalctl -u rnsd -n 50")
 
 
 def kill_rns_processes(force: bool = False) -> Dict[str, any]:

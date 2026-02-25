@@ -212,6 +212,9 @@ class TestDetectRnsdConfigDrift:
 
         assert result.drifted
         assert "/etc/reticulum" in result.fix_hint
+        assert "Migrate" in result.fix_hint
+        # Should no longer suggest gateway.json workaround
+        assert "gateway.json" not in result.fix_hint
 
     @patch('src.utils.config_drift._get_rnsd_effective_config')
     @patch('src.utils.config_drift.ReticulumPaths.get_config_dir')
@@ -376,3 +379,39 @@ class TestDriftResult:
         )
         assert result.drifted is True
         assert result.rnsd_pid == 1234
+
+    def test_can_auto_fix_when_drifted_different_paths(self):
+        """Auto-fix available when gateway and rnsd use different non-etc paths."""
+        result = DriftResult(
+            drifted=True,
+            gateway_config_dir=Path('/home/user/.reticulum'),
+            rnsd_config_dir=Path('/root/.reticulum'),
+        )
+        assert result.can_auto_fix is True
+
+    def test_can_auto_fix_when_gateway_home_rnsd_etc(self):
+        """Auto-fix available when gateway uses home, rnsd uses /etc."""
+        result = DriftResult(
+            drifted=True,
+            gateway_config_dir=Path('/home/user/.reticulum'),
+            rnsd_config_dir=Path('/etc/reticulum'),
+        )
+        assert result.can_auto_fix is True
+
+    def test_cannot_auto_fix_when_not_drifted(self):
+        """No auto-fix when no drift detected."""
+        result = DriftResult(
+            drifted=False,
+            gateway_config_dir=Path('/etc/reticulum'),
+            rnsd_config_dir=Path('/etc/reticulum'),
+        )
+        assert result.can_auto_fix is False
+
+    def test_cannot_auto_fix_when_both_etc(self):
+        """No auto-fix when both already point to /etc/reticulum."""
+        result = DriftResult(
+            drifted=True,
+            gateway_config_dir=Path('/etc/reticulum'),
+            rnsd_config_dir=Path('/etc/reticulum'),
+        )
+        assert result.can_auto_fix is False

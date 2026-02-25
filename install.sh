@@ -199,8 +199,8 @@ echo -e "${GREEN}║         MeshForge Installation Complete!                  �
 echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${CYAN}Quick Start:${NC}"
-echo "  ${GREEN}sudo meshforge${NC}         - Launch TUI (raspi-config style)"
-echo "  ${GREEN}sudo meshforge-tui${NC}     - Same as above (explicit)"
+echo "  ${GREEN}meshforge${NC}              - Launch TUI (raspi-config style)"
+echo "  ${GREEN}meshforge-tui${NC}          - Same as above (explicit)"
 echo ""
 echo -e "${CYAN}Features:${NC}"
 echo "  • Meshtastic + Reticulum (RNS) gateway bridge"
@@ -216,7 +216,7 @@ if [[ -c /dev/tty ]]; then
     read -r response < /dev/tty
     if [[ "$response" =~ ^([nN][oO]|[nN])$ ]]; then
         echo ""
-        echo -e "${YELLOW}Installation complete. Run 'sudo meshforge' when ready.${NC}"
+        echo -e "${YELLOW}Installation complete. Run 'meshforge' when ready.${NC}"
         exit 0
     fi
 fi

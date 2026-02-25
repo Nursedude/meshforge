@@ -29,27 +29,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils.safe_import import safe_import
+from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)
-
-# Import path utility
-_get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
-
-def get_real_user_home() -> Path:
-    """Get real user home, with fallback for sudo compatibility."""
-    if _HAS_PATHS:
-        return _get_real_user_home()
-    import os
-    sudo_user = os.environ.get('SUDO_USER', '')
-    if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-        candidate = Path(f'/home/{sudo_user}')
-        return candidate
-    logname = os.environ.get('LOGNAME', '')
-    if logname and logname != 'root' and '/' not in logname and '..' not in logname:
-        candidate = Path(f'/home/{logname}')
-        return candidate
-    return Path('/root')
 
 
 # Default retention: 7 days

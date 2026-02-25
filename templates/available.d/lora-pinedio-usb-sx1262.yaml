@@ -1,0 +1,24 @@
+# Pine64 Pinedio USB LoRa Adapter (CH341 + SX1262)
+# Hardware: SX1262 via CH341 USB-to-SPI bridge
+# Source: meshtastic/firmware bin/config.d
+#
+# Copy to: /etc/meshtasticd/config.d/lora-pinedio-usb-sx1262.yaml
+#
+# Ensure the ch341 kernel module is loaded:
+#   sudo modprobe ch341
+#   lsmod | grep ch341
+
+Lora:
+  Module: sx1262
+  CS: 0
+  IRQ: 10
+  spidev: ch341
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

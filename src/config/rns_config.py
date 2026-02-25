@@ -459,7 +459,12 @@ class RNSConfigGenerator:
             config_path = ReticulumPaths.get_config_file()
             config_dir = config_path.parent
         else:
-            config_path = Path(path).expanduser()
+            # Resolve ~ using sudo-safe home directory (MF001)
+            path_str = str(path)
+            if path_str.startswith('~'):
+                from utils.paths import get_real_user_home
+                path_str = str(get_real_user_home()) + path_str[1:]
+            config_path = Path(path_str)
             config_dir = config_path.parent
 
         # Create directory if needed

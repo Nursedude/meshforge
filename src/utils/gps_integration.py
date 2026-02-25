@@ -30,12 +30,9 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Optional
 
-from utils.safe_import import safe_import
+from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)
-
-# Optional: centralized path utility
-_get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
 
 # gpsd connection settings
 GPSD_HOST = "localhost"
@@ -305,17 +302,7 @@ class GPSManager:
 
     def _get_default_path(self) -> Path:
         """Get default config path."""
-        if _HAS_PATHS:
-            config_dir = _get_real_user_home() / ".config" / "meshforge"
-        else:
-            import os
-            sudo_user = os.environ.get('SUDO_USER')
-            if sudo_user and sudo_user != 'root':
-                config_dir = Path(f'/home/{sudo_user}/.config/meshforge')
-            else:
-                config_dir = Path('/tmp/meshforge')
-                logger.warning(
-                    "Cannot determine real user home; using /tmp/meshforge")
+        config_dir = get_real_user_home() / ".config" / "meshforge"
         return config_dir / "operator_position.json"
 
     def _load_cached(self) -> None:

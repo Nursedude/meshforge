@@ -1,0 +1,27 @@
+# Starter Edition SX1262 I2C Raspberry Pi HAT
+# Hardware: SX1262
+# Source: meshtastic/firmware bin/config.d
+#
+# Copy to: /etc/meshtasticd/config.d/lora-starter-edition-sx1262-i2c.yaml
+#
+# IMPORTANT: Enable SPI first!
+#   sudo raspi-config nonint do_spi 0
+#   sudo reboot
+
+Lora:
+  Module: sx1262
+  DIO2_AS_RF_SWITCH: true
+  DIO3_TCXO_VOLTAGE: true
+  CS: 8
+  IRQ: 22
+  Busy: 4
+  Reset: 18
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

@@ -396,6 +396,35 @@ if ls /usr/lib/python3*/EXTERNALLY-MANAGED 1>/dev/null 2>&1; then
 fi
 
 # ─────────────────────────────────────────────────────────────────
+# Fix known ALSA udev packaging bug (RPi OS)
+# 90-alsa-restore.rules may have GOTO targets with no matching LABEL
+# ─────────────────────────────────────────────────────────────────
+ALSA_RULES="/usr/lib/udev/rules.d/90-alsa-restore.rules"
+if [[ -f "$ALSA_RULES" ]] && [[ ! -f /etc/udev/rules.d/90-alsa-restore.rules ]]; then
+    NEEDS_FIX=false
+    while IFS= read -r goto_label; do
+        if ! grep -q "LABEL=\"$goto_label\"" "$ALSA_RULES"; then
+            NEEDS_FIX=true
+            break
+        fi
+    done < <(grep -oP 'GOTO="\K[^"]+' "$ALSA_RULES" | sort -u)
+
+    if $NEEDS_FIX; then
+        echo -e "  ${YELLOW}Fixing broken ALSA udev rules (RPi OS packaging bug)...${NC}"
+        cp "$ALSA_RULES" /etc/udev/rules.d/90-alsa-restore.rules
+        # Append missing LABEL declarations before EOF
+        while IFS= read -r goto_label; do
+            if ! grep -q "LABEL=\"$goto_label\"" "$ALSA_RULES"; then
+                echo "LABEL=\"$goto_label\"" >> /etc/udev/rules.d/90-alsa-restore.rules
+                echo "    Added missing LABEL=\"$goto_label\""
+            fi
+        done < <(grep -oP 'GOTO="\K[^"]+' "$ALSA_RULES" | sort -u)
+        udevadm control --reload-rules 2>/dev/null || true
+        echo -e "  ${GREEN}ALSA udev rules fixed${NC}"
+    fi
+fi
+
+# ─────────────────────────────────────────────────────────────────
 # Install meshtasticd (auto-detect USB vs SPI)
 # ─────────────────────────────────────────────────────────────────
 if $INSTALL_MESHTASTICD; then
@@ -451,12 +480,27 @@ UDEV_RULES
     mkdir -p "$MESHTASTICD_CONFIG_DIR"/{available.d,config.d,ssl}
     chmod 700 "$MESHTASTICD_CONFIG_DIR/ssl"
 
-    # NOTE: We do NOT create HAT templates here!
-    # meshtasticd already ships with proper templates in available.d/
-    # See: /etc/meshtasticd/available.d/ after installing meshtasticd
-    # Users select their HAT via 'meshforge' menu which copies from available.d/ to config.d/
+    # Deploy MeshForge hardware templates (USB + SPI HATs) to available.d/
+    # Templates ship with MeshForge, not the meshtasticd Debian package
+    if [[ -d "$INSTALL_DIR/templates/available.d" ]]; then
+        cp -n "$INSTALL_DIR/templates/available.d/"*.yaml "$MESHTASTICD_CONFIG_DIR/available.d/" 2>/dev/null
+        DEPLOYED=$(ls -1 "$MESHTASTICD_CONFIG_DIR/available.d/"*.yaml 2>/dev/null | wc -l)
+        echo -e "  ${GREEN}✓ Deployed ${DEPLOYED} hardware templates to available.d/${NC}"
+    else
+        echo -e "  ${YELLOW}⚠ templates/available.d/ not found in $INSTALL_DIR${NC}"
+    fi
 
-    echo -e "  ${CYAN}Available configs (from meshtasticd):${NC}"
+    # Deploy config.yaml if missing
+    if [[ ! -f "$MESHTASTICD_CONFIG_DIR/config.yaml" ]]; then
+        if [[ -f "$INSTALL_DIR/templates/config.yaml" ]]; then
+            cp "$INSTALL_DIR/templates/config.yaml" "$MESHTASTICD_CONFIG_DIR/config.yaml"
+            echo -e "  ${GREEN}✓ Created config.yaml${NC}"
+        fi
+    else
+        echo -e "  ${GREEN}✓ config.yaml already exists${NC}"
+    fi
+
+    echo -e "  ${CYAN}Available hardware configs:${NC}"
     if ls "$MESHTASTICD_CONFIG_DIR/available.d/"*.yaml 2>/dev/null | head -5 >/dev/null; then
         ls -1 "$MESHTASTICD_CONFIG_DIR/available.d/"*.yaml 2>/dev/null | head -10 | xargs -I {} basename {} | sed 's/^/    - /'
         AVAIL_COUNT=$(ls -1 "$MESHTASTICD_CONFIG_DIR/available.d/"*.yaml 2>/dev/null | wc -l)
@@ -464,7 +508,7 @@ UDEV_RULES
             echo "    ... and $((AVAIL_COUNT - 10)) more"
         fi
     else
-        echo "    (will be populated when meshtasticd is installed)"
+        echo -e "  ${YELLOW}⚠ No templates deployed — TUI will generate from built-in list${NC}"
     fi
 
     # Install appropriate daemon based on radio type
@@ -503,7 +547,7 @@ UDEV_RULES
                 if ! $NATIVE_INSTALLED; then
                     echo -e "  ${YELLOW}Native meshtasticd required for SPI radios${NC}"
                     echo -e "  ${YELLOW}Install from: https://meshtastic.org/docs/software/linux-native/${NC}"
-                    pip3 install $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt
+                    pip3 install $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=45.0.7,<47' 'pyopenssl>=25.3.0'
 
                     # Create placeholder service explaining the requirement
                     cat > /etc/systemd/system/meshtasticd.service << 'SPI_NEEDS_NATIVE'
@@ -527,7 +571,7 @@ SPI_NEEDS_NATIVE
                         cat > "$MESHTASTICD_CONFIG_DIR/config.yaml" << 'FALLBACK_CONFIG'
 ---
 Lora:
-  Module: auto
+  # Module: auto  # Disabled — select hardware via TUI or copy template to config.d/
 
 Logging:
   LogLevel: info
@@ -546,7 +590,7 @@ FALLBACK_CONFIG
                     fi
 
                     # User needs to install native meshtasticd manually
-                    echo -e "  ${YELLOW}After installing meshtasticd, run 'sudo meshforge' to select your HAT${NC}"
+                    echo -e "  ${YELLOW}After installing meshtasticd, run 'meshforge' to select your HAT${NC}"
                 fi
             fi
 
@@ -615,7 +659,7 @@ FALLBACK_CONFIG
                             cat > "$MESHTASTICD_CONFIG_DIR/config.yaml" << 'REBOOT_CONFIG'
 ---
 Lora:
-  Module: auto
+  # Module: auto  # Disabled — select hardware via TUI or copy template to config.d/
 
 Logging:
   LogLevel: info
@@ -732,7 +776,7 @@ ADD_WEBSERVER
                         cat > "$MESHTASTICD_CONFIG_DIR/config.yaml" << 'SPI_CONFIG'
 ---
 Lora:
-  Module: auto
+  # Module: auto  # Disabled — select hardware via TUI or copy template to config.d/
 
 Logging:
   LogLevel: info
@@ -751,7 +795,12 @@ SPI_CONFIG
                     fi
 
                     # ── Step 4: Create systemd service ──
-                    cat > /etc/systemd/system/meshtasticd.service << NATIVE_SERVICE
+                    if [[ -f "$INSTALL_DIR/templates/systemd/meshtasticd-native.service" ]]; then
+                        sed "s|@MESHTASTICD_BIN@|${MESHTASTICD_BIN}|g" \
+                            "$INSTALL_DIR/templates/systemd/meshtasticd-native.service" \
+                            > /etc/systemd/system/meshtasticd.service
+                    else
+                        cat > /etc/systemd/system/meshtasticd.service << NATIVE_SERVICE
 [Unit]
 Description=Meshtastic Daemon (Native SPI)
 Documentation=https://meshtastic.org
@@ -768,6 +817,7 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 NATIVE_SERVICE
+                    fi
 
                     systemctl daemon-reload
 
@@ -821,7 +871,7 @@ NATIVE_SERVICE
             echo -e "  ${CYAN}Installing for USB serial radio...${NC}"
 
             # Install meshtastic Python package for CLI tools
-            pip3 install $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt
+            pip3 install $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=45.0.7,<47' 'pyopenssl>=25.3.0'
 
             USB_DEV=$(get_usb_device)
             echo -e "  ${GREEN}✓ Python meshtastic CLI installed${NC}"
@@ -829,33 +879,113 @@ NATIVE_SERVICE
                 echo -e "  ${GREEN}  USB device: $USB_DEV${NC}"
             fi
 
-            # Enable USB config if meshtasticd provides one
-            if [[ -f "$MESHTASTICD_CONFIG_DIR/available.d/usb-serial.yaml" ]]; then
-                cp "$MESHTASTICD_CONFIG_DIR/available.d/usb-serial.yaml" "$MESHTASTICD_CONFIG_DIR/config.d/"
+            NATIVE_INSTALLED=false
+
+            # Check if native meshtasticd is already installed
+            if command -v meshtasticd &>/dev/null; then
+                INSTALLED_VERSION=$(meshtasticd --version 2>/dev/null || echo "unknown")
+                echo -e "  ${GREEN}✓ Native meshtasticd already installed (${INSTALLED_VERSION})${NC}"
+                NATIVE_INSTALLED=true
+            else
+                # Install native meshtasticd via apt (same as SPI path)
+                if add_meshtastic_repo; then
+                    echo -e "  ${CYAN}Installing meshtasticd via apt...${NC}"
+                    if apt-get install -y -qq meshtasticd >/dev/null 2>&1; then
+                        if command -v meshtasticd &>/dev/null; then
+                            INSTALLED_VERSION=$(meshtasticd --version 2>/dev/null || echo "unknown")
+                            echo -e "  ${GREEN}✓ Native meshtasticd installed (${INSTALLED_VERSION})${NC}"
+                            NATIVE_INSTALLED=true
+                        else
+                            echo -e "  ${RED}Package installed but binary not found${NC}"
+                        fi
+                    else
+                        echo -e "  ${YELLOW}⚠ apt install meshtasticd failed — will use USB templates only${NC}"
+                    fi
+                else
+                    echo -e "  ${YELLOW}⚠ Could not add Meshtastic repo — will use USB templates only${NC}"
+                fi
             fi
 
-            # Check if native meshtasticd is available (can work with USB serial too)
-            if command -v meshtasticd &> /dev/null; then
+            if $NATIVE_INSTALLED; then
                 MESHTASTICD_BIN=$(command -v meshtasticd)
-                echo -e "  ${GREEN}✓ Native meshtasticd available: ${MESHTASTICD_BIN}${NC}"
 
-                # Only create USB config if config.d/ is empty (no existing HAT config)
-                if [[ -n "$USB_DEV" ]]; then
-                    EXISTING_CONFIGS=$(ls "$MESHTASTICD_CONFIG_DIR/config.d/"*.yaml 2>/dev/null | wc -l)
-                    if [[ "$EXISTING_CONFIGS" -eq 0 ]]; then
-                        cat > "$MESHTASTICD_CONFIG_DIR/config.d/usb-device.yaml" << USB_CONFIG
-# USB Serial Radio Configuration (auto-generated by MeshForge)
-Lora:
-  SerialPath: ${USB_DEV}
-USB_CONFIG
-                        echo -e "  ${GREEN}✓ Created USB device config${NC}"
+                # Let user select their USB hardware template from available.d
+                USB_TEMPLATES=()
+                for tmpl in "$MESHTASTICD_CONFIG_DIR/available.d/"*-usb.yaml "$MESHTASTICD_CONFIG_DIR/available.d/usb-"*.yaml; do
+                    [[ -f "$tmpl" ]] && USB_TEMPLATES+=("$tmpl")
+                done
+
+                if [[ ${#USB_TEMPLATES[@]} -gt 0 ]]; then
+                    # Check if a USB config is already in config.d/
+                    EXISTING_USB=""
+                    if [[ -d "$MESHTASTICD_CONFIG_DIR/config.d" ]]; then
+                        EXISTING_USB=$(ls -1 "$MESHTASTICD_CONFIG_DIR/config.d/"*.yaml 2>/dev/null | head -1)
+                    fi
+
+                    if [[ -n "$EXISTING_USB" ]]; then
+                        USB_NAME=$(basename "$EXISTING_USB")
+                        echo -e "  ${GREEN}✓ USB config already active: ${USB_NAME}${NC}"
                     else
-                        echo -e "  ${GREEN}✓ Existing config in config.d/ - skipping USB auto-config${NC}"
+                        # Build USB menu from available.d/ (mirrors SPI HAT selection)
+                        AVAIL_DIR="$MESHTASTICD_CONFIG_DIR/available.d"
+                        declare -a USB_OPTIONS=()
+                        for tmpl in "${USB_TEMPLATES[@]}"; do
+                            usb_base=$(basename "$tmpl" .yaml)
+                            usb_desc=$(grep "^#" "$tmpl" 2>/dev/null | head -1 | sed 's/^# *//' || echo "$usb_base")
+                            [[ -z "$usb_desc" ]] && usb_desc="$usb_base"
+                            USB_OPTIONS+=("$usb_base" "$usb_desc")
+                        done
+
+                        if [[ ${#USB_OPTIONS[@]} -gt 0 ]]; then
+                            USB_COUNT=$((${#USB_OPTIONS[@]} / 2))
+
+                            if command -v whiptail &>/dev/null; then
+                                MENU_H=$((USB_COUNT + 7))
+                                [[ $MENU_H -lt 12 ]] && MENU_H=12
+                                [[ $MENU_H -gt 22 ]] && MENU_H=22
+
+                                SELECTED_USB=$(whiptail --title "USB Radio Selection" --menu \
+                                    "Which USB radio is connected?\n\nConfigs from: ${AVAIL_DIR}/" \
+                                    $MENU_H 70 $USB_COUNT \
+                                    "${USB_OPTIONS[@]}" \
+                                    3>&1 1>&2 2>&3) || SELECTED_USB=""
+                            else
+                                # Fallback: numbered text menu
+                                echo "" >&2
+                                echo -e "  ${BOLD}Select your USB radio:${NC}" >&2
+                                i=1
+                                for ((idx=0; idx<${#USB_OPTIONS[@]}; idx+=2)); do
+                                    echo "    $i) ${USB_OPTIONS[$idx]} - ${USB_OPTIONS[$((idx+1))]}" >&2
+                                    ((i++))
+                                done
+                                echo "" >&2
+                                read -rp "  Select [1-${USB_COUNT}]: " usb_choice
+                                if [[ "$usb_choice" =~ ^[0-9]+$ ]] && [[ "$usb_choice" -ge 1 ]] && [[ "$usb_choice" -le "$USB_COUNT" ]]; then
+                                    idx=$(( (usb_choice - 1) * 2 ))
+                                    SELECTED_USB="${USB_OPTIONS[$idx]}"
+                                fi
+                            fi
+
+                            if [[ -n "$SELECTED_USB" ]]; then
+                                # Copy selected USB config to config.d/
+                                mkdir -p "$MESHTASTICD_CONFIG_DIR/config.d"
+                                cp "$AVAIL_DIR/${SELECTED_USB}.yaml" "$MESHTASTICD_CONFIG_DIR/config.d/"
+                                echo -e "  ${GREEN}✓ USB config installed: ${SELECTED_USB}.yaml${NC}"
+                            else
+                                echo -e "  ${YELLOW}⚠ No USB radio selected — meshtasticd may not start correctly${NC}"
+                                echo -e "  ${YELLOW}  Fix: cp /etc/meshtasticd/available.d/<your-radio>.yaml /etc/meshtasticd/config.d/${NC}"
+                            fi
+                        fi
                     fi
                 fi
 
-                # Create service using native meshtasticd
-                cat > /etc/systemd/system/meshtasticd.service << NATIVE_USB_SERVICE
+                # Deploy systemd service from template or create inline
+                if [[ -f "$INSTALL_DIR/templates/systemd/meshtasticd-native.service" ]]; then
+                    sed "s|@MESHTASTICD_BIN@|${MESHTASTICD_BIN}|g" \
+                        "$INSTALL_DIR/templates/systemd/meshtasticd-native.service" \
+                        > /etc/systemd/system/meshtasticd.service
+                else
+                    cat > /etc/systemd/system/meshtasticd.service << NATIVE_USB_SERVICE
 [Unit]
 Description=Meshtastic Daemon (USB Serial)
 Documentation=https://meshtastic.org
@@ -872,30 +1002,36 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 NATIVE_USB_SERVICE
+                fi
 
                 DAEMON_TYPE="native-usb"
             else
-                # No native daemon - USB radios work directly without a service
-                # The firmware handles mesh networking; CLI connects on demand
-                echo -e "  ${YELLOW}Note: USB radios don't require a daemon service${NC}"
-                echo -e "  ${YELLOW}  Use CLI: meshtastic --port ${USB_DEV:-/dev/ttyUSB0} --info${NC}"
+                # Native meshtasticd not available
+                echo -e "  ${YELLOW}Note: Native meshtasticd not installed${NC}"
+                echo -e "  ${YELLOW}  USB templates are available in ${MESHTASTICD_CONFIG_DIR}/available.d/${NC}"
+                echo -e "  ${YELLOW}  Install meshtasticd later: sudo apt install meshtasticd${NC}"
 
-                # Create a placeholder service that explains the situation
-                cat > /etc/systemd/system/meshtasticd.service << 'USB_PLACEHOLDER'
+                # Don't overwrite a working service with a placeholder
+                if systemctl show meshtasticd --property=ExecStart 2>/dev/null | grep -q meshtasticd; then
+                    echo -e "  ${GREEN}✓ Existing meshtasticd service is valid — keeping it${NC}"
+                    DAEMON_TYPE="native-usb"
+                else
+                    cat > /etc/systemd/system/meshtasticd.service << 'USB_PLACEHOLDER'
 [Unit]
-Description=Meshtastic USB Radio (No Daemon Needed)
+Description=Meshtastic (pending native install)
 Documentation=https://meshtastic.org
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/echo "USB radios work directly - use: meshtastic --port /dev/ttyUSB0 --info"
+ExecStart=/bin/echo "Install native meshtasticd: sudo apt install meshtasticd — then select hardware in MeshForge TUI"
 
 [Install]
 WantedBy=multi-user.target
 USB_PLACEHOLDER
 
-                DAEMON_TYPE="usb-direct"
+                    DAEMON_TYPE="usb-pending"
+                fi
             fi
             ;;
 
@@ -903,7 +1039,7 @@ USB_PLACEHOLDER
             echo -e "  ${YELLOW}⚠ No radio detected${NC}"
             echo -e "  ${YELLOW}  Installing Python meshtastic CLI tools${NC}"
 
-            pip3 install $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt
+            pip3 install $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=45.0.7,<47' 'pyopenssl>=25.3.0'
 
             # Check if native meshtasticd is available
             if command -v meshtasticd &> /dev/null; then
@@ -932,10 +1068,14 @@ NATIVE_GENERIC
 
                 DAEMON_TYPE="native"
             else
-                # Create a placeholder service
                 echo -e "  ${YELLOW}  Connect USB radio or configure SPI HAT${NC}"
 
-                cat > /etc/systemd/system/meshtasticd.service << 'NO_RADIO_SERVICE'
+                # Don't overwrite a working service with a placeholder
+                if systemctl show meshtasticd --property=ExecStart 2>/dev/null | grep -q meshtasticd; then
+                    echo -e "  ${GREEN}✓ Existing meshtasticd service is valid — keeping it${NC}"
+                    DAEMON_TYPE="native"
+                else
+                    cat > /etc/systemd/system/meshtasticd.service << 'NO_RADIO_SERVICE'
 [Unit]
 Description=Meshtastic (No Radio Configured)
 Documentation=https://meshtastic.org
@@ -949,7 +1089,8 @@ ExecStart=/bin/echo "No radio detected. Connect USB radio or configure SPI HAT, 
 WantedBy=multi-user.target
 NO_RADIO_SERVICE
 
-                DAEMON_TYPE="placeholder"
+                    DAEMON_TYPE="placeholder"
+                fi
             fi
             ;;
     esac
@@ -975,7 +1116,7 @@ if $INSTALL_RNS; then
         apt-get install -y -qq pipx &>/dev/null
     fi
 
-    pip3 install $PIP_ARGS --ignore-installed -q rns
+    pip3 install $PIP_ARGS --ignore-installed -q rns 'cryptography>=45.0.7,<47' 'pyopenssl>=25.3.0'
 
     # Create /etc/reticulum directory structure
     # RNS stores data in a 'storage' subdirectory of its config directory.
@@ -995,11 +1136,41 @@ if $INSTALL_RNS; then
     chmod 755 /etc/reticulum/storage/resources
     chmod 755 /etc/reticulum/interfaces
 
+    # Deploy reticulum config — template if none exists, validate if it does
+    if [[ ! -f /etc/reticulum/config ]]; then
+        if [[ -f "$INSTALL_DIR/templates/reticulum.conf" ]]; then
+            cp "$INSTALL_DIR/templates/reticulum.conf" /etc/reticulum/config
+            chmod 644 /etc/reticulum/config
+            echo -e "  ${GREEN}✓ RNS config deployed (share_instance=Yes)${NC}"
+        else
+            echo -e "  ${YELLOW}⚠ No config template found — rnsd will create default${NC}"
+        fi
+    else
+        # Existing config — validate share_instance is enabled
+        # Without this, rnsd runs but port 37428 never binds
+        if grep -q '^\s*share_instance\s*=\s*[Yy]es' /etc/reticulum/config 2>/dev/null || \
+           grep -q '^\s*share_instance\s*=\s*[Tt]rue' /etc/reticulum/config 2>/dev/null; then
+            echo -e "  Existing config preserved (share_instance=Yes)"
+        else
+            echo -e "  ${YELLOW}⚠ Existing config has share_instance disabled${NC}"
+            if grep -q '^\s*share_instance' /etc/reticulum/config 2>/dev/null; then
+                sed -i 's/^\(\s*\)share_instance\s*=.*/\1share_instance = Yes/' /etc/reticulum/config
+            elif grep -q '^\[reticulum\]' /etc/reticulum/config 2>/dev/null; then
+                sed -i '/^\[reticulum\]/a\  share_instance = Yes' /etc/reticulum/config
+            fi
+            echo -e "  ${GREEN}✓ Fixed: share_instance = Yes${NC}"
+        fi
+    fi
+
     # Create systemd service (deploy from template or create inline)
     echo "  Setting up rnsd systemd service..."
 
-    # Find rnsd binary
-    RNSD_BIN=$(command -v rnsd 2>/dev/null || echo "/usr/local/bin/rnsd")
+    # Find rnsd binary — prefer venv (has all dependencies)
+    if [[ -x "$VENV_DIR/bin/rnsd" ]]; then
+        RNSD_BIN="$VENV_DIR/bin/rnsd"
+    else
+        RNSD_BIN=$(command -v rnsd 2>/dev/null || echo "/usr/local/bin/rnsd")
+    fi
 
     # System-wide service (root) - based on templates/systemd/rnsd-user.service
     # but adapted for system-level (User=root, absolute paths)
@@ -1007,7 +1178,7 @@ if $INSTALL_RNS; then
 [Unit]
 Description=Reticulum Network Stack Daemon
 Documentation=https://reticulum.network
-After=network-online.target
+After=network-online.target meshtasticd.service
 Wants=network-online.target
 
 # Stop crash-looping after 5 failures in 60 seconds
@@ -1044,15 +1215,19 @@ RNSD_SERVICE
         echo -e "  ${GREEN}✓ User service templates deployed to ${USER_SYSTEMD_DIR}${NC}"
     fi
 
-    systemctl daemon-reload
-
-    # Check if Meshtastic_Interface.py plugin exists - if so, install meshtastic module
-    # This is required for the RNS-over-Meshtastic bridge to work (Issue #24)
-    if [[ -f "/etc/reticulum/interfaces/Meshtastic_Interface.py" ]]; then
-        echo "  Meshtastic_Interface.py detected, installing meshtastic module..."
-        pip3 install $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt
+    # Deploy Meshtastic_Interface.py from vendored template
+    if [[ -f "$INSTALL_DIR/templates/interfaces/Meshtastic_Interface.py" ]]; then
+        cp "$INSTALL_DIR/templates/interfaces/Meshtastic_Interface.py" /etc/reticulum/interfaces/
+        chmod 644 /etc/reticulum/interfaces/Meshtastic_Interface.py
+        echo -e "  ${GREEN}✓ Meshtastic_Interface.py deployed to /etc/reticulum/interfaces/${NC}"
+        pip3 install $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=45.0.7,<47' 'pyopenssl>=25.3.0'
         echo -e "  ${GREEN}✓ meshtastic module installed for rnsd${NC}"
     fi
+
+    systemctl daemon-reload
+    systemctl enable rnsd 2>/dev/null
+    systemctl start rnsd 2>/dev/null
+    echo -e "  ${GREEN}✓ rnsd enabled and started${NC}"
 
     echo -e "  ${GREEN}✓ Reticulum installed${NC}"
 else
@@ -1408,10 +1583,10 @@ echo -e "  ${GREEN}meshforge-status${NC}             - Quick system status (no s
 echo -e "  ${GREEN}meshforge-web${NC}                - Open radio web client (config)"
 echo -e "  ${GREEN}meshforge-map url${NC}            - Show NOC map URL (port 5000)"
 echo -e "  ${GREEN}meshforge-map status${NC}         - Check map server status"
-echo -e "  ${GREEN}sudo meshforge${NC}               - Launch interface wizard"
-echo -e "  ${GREEN}sudo meshforge-noc --start${NC}   - Start NOC services"
-echo -e "  ${GREEN}sudo meshforge-noc --status${NC}  - Check service status"
-echo -e "  ${GREEN}sudo meshforge-noc --stop${NC}    - Stop NOC services"
+echo -e "  ${GREEN}meshforge${NC}                    - Launch interface wizard"
+echo -e "  ${GREEN}meshforge-noc --start${NC}        - Start NOC services"
+echo -e "  ${GREEN}meshforge-noc --status${NC}       - Check service status"
+echo -e "  ${GREEN}meshforge-noc --stop${NC}         - Stop NOC services"
 echo ""
 echo -e "${CYAN}Systemd Services:${NC}"
 echo -e "  ${GREEN}sudo systemctl enable meshforge${NC}       - Enable NOC on boot"
@@ -1510,7 +1685,7 @@ if [[ "$DAEMON_TYPE" != "spi-pending" && "$DAEMON_TYPE" != "placeholder" ]] && [
         echo -e "${GREEN}Starting MeshForge NOC...${NC}"
         /usr/local/bin/meshforge-noc --start
         echo ""
-        echo -e "${GREEN}NOC is running. Launch interface with: sudo meshforge${NC}"
+        echo -e "${GREEN}NOC is running. Launch interface with: meshforge${NC}"
     fi
 fi
 

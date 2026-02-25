@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Import centralized path utility for sudo compatibility
 from utils.paths import get_real_user_home
-from utils.service_check import check_port
+from utils.service_check import check_port, start_service, stop_service
 
 
 class ServiceState(Enum):
@@ -78,7 +78,10 @@ class MeshChatService:
     # Installation hints
     INSTALL_URL = "https://github.com/liamcottle/reticulum-meshchat"
     INSTALL_HINT = (
-        "Install MeshChat:\n"
+        "Install MeshChat from TUI:\n"
+        "  Mesh Networks > RNS > MeshChat Client > Install MeshChat\n\n"
+        "Or manually:\n"
+        "  sudo apt install nodejs npm\n"
         "  git clone https://github.com/liamcottle/reticulum-meshchat\n"
         "  cd reticulum-meshchat\n"
         "  pip install -r requirements.txt\n"
@@ -316,17 +319,14 @@ class MeshChatService:
                     if check.returncode == 4:  # Unit not found
                         continue
 
-                    # Start service
-                    result = subprocess.run(
-                        ['sudo', 'systemctl', 'start', name],
-                        capture_output=True, text=True, timeout=30
-                    )
-                    if result.returncode == 0:
+                    # Start service via centralized helper
+                    ok, msg = start_service(name)
+                    if ok:
                         success = True
                         message = f"Started {name}"
                         break
                     else:
-                        message = result.stderr.strip() or "Start failed"
+                        message = msg
 
                 except subprocess.TimeoutExpired:
                     message = "Command timed out"
@@ -345,17 +345,13 @@ class MeshChatService:
             message = "No service found"
 
             for name in self.SERVICE_NAMES:
-                try:
-                    result = subprocess.run(
-                        ['sudo', 'systemctl', 'stop', name],
-                        capture_output=True, text=True, timeout=30
-                    )
-                    if result.returncode == 0:
-                        success = True
-                        message = f"Stopped {name}"
-                        break
-                except Exception as e:
-                    message = str(e)
+                ok, msg = stop_service(name)
+                if ok:
+                    success = True
+                    message = f"Stopped {name}"
+                    break
+                else:
+                    message = msg
 
             if callback:
                 callback(success, message)

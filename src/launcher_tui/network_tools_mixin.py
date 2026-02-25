@@ -16,6 +16,7 @@ import socket as sock
 import subprocess
 from pathlib import Path
 from backend import clear_screen
+from utils.service_check import check_udp_port
 
 logger = logging.getLogger(__name__)
 
@@ -208,21 +209,26 @@ class NetworkToolsMixin:
         # Port checks
         print("Port Checks:")
         ports = [
-            (4403, 'meshtasticd TCP API'),
-            (9443, 'meshtasticd Web Client'),
-            (37428, 'rnsd (RNS shared instance)'),
-            (1883, 'MQTT broker'),
+            (4403, 'tcp', 'meshtasticd TCP API'),
+            (9443, 'tcp', 'meshtasticd Web Client'),
+            (37428, 'udp', 'rnsd (RNS shared instance)'),
+            (1883, 'tcp', 'MQTT broker'),
         ]
 
-        for port, desc in ports:
+        for port, proto, desc in ports:
             try:
-                s = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
-                try:
-                    s.settimeout(1)
-                    result = s.connect_ex(('127.0.0.1', port))
-                finally:
-                    s.close()
-                if result == 0:
+                if proto == 'udp':
+                    is_open = check_udp_port(port)
+                else:
+                    s = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
+                    try:
+                        s.settimeout(1)
+                        result = s.connect_ex(('127.0.0.1', port))
+                    finally:
+                        s.close()
+                    is_open = (result == 0)
+
+                if is_open:
                     print(f"  \033[0;32m●\033[0m {port:<6} {desc}")
                 else:
                     print(f"  \033[2m○\033[0m {port:<6} {desc} (not listening)")

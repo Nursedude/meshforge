@@ -42,16 +42,14 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Union
 
-from utils.safe_import import safe_import
-
 logger = logging.getLogger(__name__)
 
-# Optional dependencies — module-level safe_import
-_version_mod, _HAS_VERSION = safe_import('__version__')
-_check_service, _HAS_SERVICE_CHECK = safe_import('utils.service_check', 'check_service')
-_MapDataCollector, _HAS_MAP_DATA = safe_import('utils.map_data_collector', 'MapDataCollector')
-_PersistentMessageQueue, _HAS_MESSAGE_QUEUE = safe_import('gateway.message_queue', 'PersistentMessageQueue')
-_get_local_subscriber, _HAS_MQTT = safe_import('monitoring.mqtt_subscriber', 'get_local_subscriber')
+# First-party imports
+import __version__ as version_mod
+from utils.service_check import check_service
+from utils.map_data_collector import MapDataCollector
+from gateway.message_queue import PersistentMessageQueue
+from monitoring.mqtt_subscriber import get_local_subscriber
 
 
 class InfluxDBExporter:
@@ -116,6 +114,7 @@ class InfluxDBExporter:
 
         # Background flush thread
         self._running = False
+        self._stop_event = threading.Event()
         self._flush_thread: Optional[threading.Thread] = None
 
         # Determine API version
@@ -315,7 +314,7 @@ class InfluxDBExporter:
         success = True
 
         # Version info
-        version = _version_mod.__version__ if _HAS_VERSION else "unknown"
+        version = version_mod.__version__
 
         self.write_point(
             "meshforge_info",
@@ -325,162 +324,154 @@ class InfluxDBExporter:
         )
 
         # Service health
-        if _HAS_SERVICE_CHECK:
-            for service in ["meshtasticd", "rnsd", "mosquitto"]:
-                try:
-                    status = _check_service(service)
-                    self.write_point(
-                        "meshforge_service_healthy",
-                        {
-                            "healthy": 1 if status.available else 0,
-                        },
-                        {"service": service},
-                        timestamp
-                    )
-                except Exception:
-                    pass
+        for service in ["meshtasticd", "rnsd", "mosquitto"]:
+            try:
+                status = check_service(service)
+                self.write_point(
+                    "meshforge_service_healthy",
+                    {
+                        "healthy": 1 if status.available else 0,
+                    },
+                    {"service": service},
+                    timestamp
+                )
+            except Exception:
+                pass
 
         # Node counts
-        if _HAS_MAP_DATA:
-            try:
-                collector = _MapDataCollector(enable_history=False)
-                geojson = collector.collect(max_age_seconds=60)
-                props = geojson.get("properties", {})
+        try:
+            collector = MapDataCollector(enable_history=False)
+            geojson = collector.collect(max_age_seconds=60)
+            props = geojson.get("properties", {})
 
-                self.write_point(
-                    "meshforge_nodes",
-                    {
-                        "total": props.get("total_nodes", 0),
-                        "with_gps": props.get("nodes_with_position", 0),
-                    },
-                    {},
-                    timestamp
-                )
+            self.write_point(
+                "meshforge_nodes",
+                {
+                    "total": props.get("total_nodes", 0),
+                    "with_gps": props.get("nodes_with_position", 0),
+                },
+                {},
+                timestamp
+            )
 
-                # Per-node metrics
-                for feature in geojson.get("features", []):
-                    node_props = feature.get("properties", {})
-                    node_id = node_props.get("id", "")
-                    if not node_id:
-                        continue
+            # Per-node metrics
+            for feature in geojson.get("features", []):
+                node_props = feature.get("properties", {})
+                node_id = node_props.get("id", "")
+                if not node_id:
+                    continue
 
-                    fields = {}
-                    if node_props.get("snr") is not None:
-                        fields["snr"] = float(node_props["snr"])
-                    if node_props.get("rssi") is not None:
-                        fields["rssi"] = int(node_props["rssi"])
-                    if node_props.get("battery") is not None:
-                        fields["battery"] = int(node_props["battery"])
+                fields = {}
+                if node_props.get("snr") is not None:
+                    fields["snr"] = float(node_props["snr"])
+                if node_props.get("rssi") is not None:
+                    fields["rssi"] = int(node_props["rssi"])
+                if node_props.get("battery") is not None:
+                    fields["battery"] = int(node_props["battery"])
 
-                    if fields:
-                        self.write_point(
-                            "meshforge_node",
-                            fields,
-                            {"node_id": node_id, "name": node_props.get("name", "")},
-                            timestamp
-                        )
-            except Exception as e:
-                logger.debug(f"Error collecting node metrics: {e}")
-        else:
-            logger.debug("MapDataCollector not available for InfluxDB export")
-
-        # Message queue stats
-        if _HAS_MESSAGE_QUEUE:
-            try:
-                queue = _PersistentMessageQueue()
-                stats = queue.get_stats()
-
-                self.write_point(
-                    "meshforge_messages",
-                    {
-                        "pending": stats.get("pending", 0),
-                        "delivered": stats.get("delivered", 0),
-                        "failed": stats.get("failed", 0),
-                        "retried": stats.get("retried", 0),
-                    },
-                    {},
-                    timestamp
-                )
-            except Exception as e:
-                logger.debug(f"Error collecting message metrics: {e}")
-
-        # Environment sensor metrics from MQTT subscriber
-        if _HAS_MQTT:
-            try:
-                subscriber = _get_local_subscriber()
-                if subscriber.is_connected():
-                    # MQTT stats
-                    mqtt_stats = subscriber.get_stats()
+                if fields:
                     self.write_point(
-                        "meshforge_mqtt",
-                        {
-                            "nodes_total": mqtt_stats.get("node_count", 0),
-                            "nodes_online": mqtt_stats.get("online_count", 0),
-                            "mesh_size_24h": mqtt_stats.get("mesh_size_24h", 0),
-                            "messages": mqtt_stats.get("message_count", 0),
-                        },
-                        {},
+                        "meshforge_node",
+                        fields,
+                        {"node_id": node_id, "name": node_props.get("name", "")},
                         timestamp
                     )
+        except Exception as e:
+            logger.debug(f"Error collecting node metrics: {e}")
 
-                    # Environment sensors per node
-                    for node in subscriber.get_nodes_with_environment_metrics():
-                        fields = {}
-                        if node.temperature is not None:
-                            fields["temperature"] = float(node.temperature)
-                        if node.humidity is not None:
-                            fields["humidity"] = float(node.humidity)
-                        if node.pressure is not None:
-                            fields["pressure"] = float(node.pressure)
-                        if node.gas_resistance is not None:
-                            fields["gas_resistance"] = float(node.gas_resistance)
-                        if fields:
-                            self.write_point(
-                                "meshforge_environment",
-                                fields,
-                                {"node_id": node.node_id, "name": node.long_name or node.short_name or ""},
-                                timestamp
-                            )
+        # Message queue stats
+        try:
+            queue = PersistentMessageQueue()
+            stats = queue.get_stats()
 
-                    # Air quality sensors per node
-                    for node in subscriber.get_nodes_with_air_quality():
-                        fields = {}
-                        if node.pm25_standard is not None:
-                            fields["pm25"] = int(node.pm25_standard)
-                        if node.pm10_standard is not None:
-                            fields["pm10"] = int(node.pm10_standard)
-                        if node.co2 is not None:
-                            fields["co2"] = int(node.co2)
-                        if node.iaq is not None:
-                            fields["iaq"] = int(node.iaq)
-                        if fields:
-                            self.write_point(
-                                "meshforge_air_quality",
-                                fields,
-                                {"node_id": node.node_id, "name": node.long_name or node.short_name or ""},
-                                timestamp
-                            )
+            self.write_point(
+                "meshforge_messages",
+                {
+                    "pending": stats.get("pending", 0),
+                    "delivered": stats.get("delivered", 0),
+                    "failed": stats.get("failed", 0),
+                    "retried": stats.get("retried", 0),
+                },
+                {},
+                timestamp
+            )
+        except Exception as e:
+            logger.debug(f"Error collecting message metrics: {e}")
 
-                    # Health metrics per node
-                    for node in subscriber.get_nodes():
-                        fields = {}
-                        if node.heart_bpm is not None:
-                            fields["heart_bpm"] = int(node.heart_bpm)
-                        if node.spo2 is not None:
-                            fields["spo2"] = int(node.spo2)
-                        if node.body_temperature is not None:
-                            fields["body_temperature"] = float(node.body_temperature)
-                        if fields:
-                            self.write_point(
-                                "meshforge_health",
-                                fields,
-                                {"node_id": node.node_id, "name": node.long_name or node.short_name or ""},
-                                timestamp
-                            )
-            except Exception as e:
-                logger.debug(f"Error collecting MQTT/environment metrics: {e}")
-        else:
-            logger.debug("MQTT subscriber not available for InfluxDB export")
+        # Environment sensor metrics from MQTT subscriber
+        try:
+            subscriber = get_local_subscriber()
+            if subscriber.is_connected():
+                # MQTT stats
+                mqtt_stats = subscriber.get_stats()
+                self.write_point(
+                    "meshforge_mqtt",
+                    {
+                        "nodes_total": mqtt_stats.get("node_count", 0),
+                        "nodes_online": mqtt_stats.get("online_count", 0),
+                        "mesh_size_24h": mqtt_stats.get("mesh_size_24h", 0),
+                        "messages": mqtt_stats.get("message_count", 0),
+                    },
+                    {},
+                    timestamp
+                )
+
+                # Environment sensors per node
+                for node in subscriber.get_nodes_with_environment_metrics():
+                    fields = {}
+                    if node.temperature is not None:
+                        fields["temperature"] = float(node.temperature)
+                    if node.humidity is not None:
+                        fields["humidity"] = float(node.humidity)
+                    if node.pressure is not None:
+                        fields["pressure"] = float(node.pressure)
+                    if node.gas_resistance is not None:
+                        fields["gas_resistance"] = float(node.gas_resistance)
+                    if fields:
+                        self.write_point(
+                            "meshforge_environment",
+                            fields,
+                            {"node_id": node.node_id, "name": node.long_name or node.short_name or ""},
+                            timestamp
+                        )
+
+                # Air quality sensors per node
+                for node in subscriber.get_nodes_with_air_quality():
+                    fields = {}
+                    if node.pm25_standard is not None:
+                        fields["pm25"] = int(node.pm25_standard)
+                    if node.pm10_standard is not None:
+                        fields["pm10"] = int(node.pm10_standard)
+                    if node.co2 is not None:
+                        fields["co2"] = int(node.co2)
+                    if node.iaq is not None:
+                        fields["iaq"] = int(node.iaq)
+                    if fields:
+                        self.write_point(
+                            "meshforge_air_quality",
+                            fields,
+                            {"node_id": node.node_id, "name": node.long_name or node.short_name or ""},
+                            timestamp
+                        )
+
+                # Health metrics per node
+                for node in subscriber.get_nodes():
+                    fields = {}
+                    if node.heart_bpm is not None:
+                        fields["heart_bpm"] = int(node.heart_bpm)
+                    if node.spo2 is not None:
+                        fields["spo2"] = int(node.spo2)
+                    if node.body_temperature is not None:
+                        fields["body_temperature"] = float(node.body_temperature)
+                    if fields:
+                        self.write_point(
+                            "meshforge_health",
+                            fields,
+                            {"node_id": node.node_id, "name": node.long_name or node.short_name or ""},
+                            timestamp
+                        )
+        except Exception as e:
+            logger.debug(f"Error collecting MQTT/environment metrics: {e}")
 
         # Flush remaining batch
         if not self._flush_batch():
@@ -502,13 +493,14 @@ class InfluxDBExporter:
         interval = interval or self._flush_interval
 
         def export_loop():
-            while self._running:
+            while self._running and not self._stop_event.is_set():
                 try:
                     self.write_metrics()
                 except Exception as e:
                     logger.debug(f"InfluxDB export error: {e}")
-                time.sleep(interval)
+                self._stop_event.wait(interval)
 
+        self._stop_event.clear()
         self._flush_thread = threading.Thread(target=export_loop, daemon=True)
         self._flush_thread.start()
         logger.info(f"InfluxDB exporter started (interval: {interval}s)")
@@ -516,6 +508,7 @@ class InfluxDBExporter:
     def stop(self) -> None:
         """Stop background export thread."""
         self._running = False
+        self._stop_event.set()
         if self._flush_thread:
             self._flush_thread.join(timeout=5)
             self._flush_thread = None
@@ -547,44 +540,42 @@ class InfluxDBExporter:
         timestamp = self._get_timestamp()
 
         # Build same metrics as write_metrics but return as string
-        version = _version_mod.__version__ if _HAS_VERSION else "unknown"
+        version = version_mod.__version__
 
         lines.append(self._format_line_protocol(
             "meshforge_info", {"value": 1}, {"version": version}, timestamp
         ))
 
         # Service health
-        if _HAS_SERVICE_CHECK:
-            for service in ["meshtasticd", "rnsd", "mosquitto"]:
-                try:
-                    status = _check_service(service)
-                    lines.append(self._format_line_protocol(
-                        "meshforge_service_healthy",
-                        {"healthy": 1 if status.available else 0},
-                        {"service": service},
-                        timestamp
-                    ))
-                except Exception:
-                    pass
-
-        # Node counts
-        if _HAS_MAP_DATA:
+        for service in ["meshtasticd", "rnsd", "mosquitto"]:
             try:
-                collector = _MapDataCollector(enable_history=False)
-                geojson = collector.collect(max_age_seconds=60)
-                props = geojson.get("properties", {})
-
+                status = check_service(service)
                 lines.append(self._format_line_protocol(
-                    "meshforge_nodes",
-                    {
-                        "total": props.get("total_nodes", 0),
-                        "with_gps": props.get("nodes_with_position", 0),
-                    },
-                    {},
+                    "meshforge_service_healthy",
+                    {"healthy": 1 if status.available else 0},
+                    {"service": service},
                     timestamp
                 ))
             except Exception:
                 pass
+
+        # Node counts
+        try:
+            collector = MapDataCollector(enable_history=False)
+            geojson = collector.collect(max_age_seconds=60)
+            props = geojson.get("properties", {})
+
+            lines.append(self._format_line_protocol(
+                "meshforge_nodes",
+                {
+                    "total": props.get("total_nodes", 0),
+                    "with_gps": props.get("nodes_with_position", 0),
+                },
+                {},
+                timestamp
+            ))
+        except Exception:
+            pass
 
         return "\n".join(lines)
 

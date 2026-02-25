@@ -8,7 +8,7 @@
 
 | Document | Description |
 |----------|-------------|
-| `dual_protocol_meshcore.md` | **Dual-Protocol Mesh: Meshtastic <> MeshCore bridge research & implementation plan (Alpha)** |
+| `dual_protocol_meshcore.md` | Dual-Protocol Mesh: Meshtastic <> MeshCore bridge research (Alpha) |
 | `meshcore_proxy_analysis.md` | MeshCore-Meshtastic-Proxy firmware analysis for reliability patterns |
 | `rns_comprehensive.md` | Complete Reticulum/RNS protocol documentation |
 | `rns_complete.md` | RNS configuration and setup guide |
@@ -19,33 +19,30 @@
 
 | Document | Description |
 |----------|-------------|
-| `meshchat_integration.md` | MeshChat HTTP API integration |
-| `hamclock_complete.md` | HamClock API and integration details |
-| `aredn_integration.md` | AREDN mesh network integration |
-| `meshing_around_api.md` | Meshing Around bot API |
-| `node_tracker_api.md` | Node tracking API documentation |
+| `xtoc_integration.md` | XTOC/XCOM tactical operations features, X1 protocol, integration roadmap |
+| `hamclock_complete.md` | HamClock/NOAA API and integration (NOAA primary, HamClock optional) |
+| `hamclock_decoupling.md` | HamClock decoupling session notes |
+| `aredn_integration.md` | AREDN mesh network integration research |
+| `meshforge_enhancement_todos.md` | Prioritized enhancement TODOs from proxy analysis |
 
 ### Meshtastic Technical Notes
 
 | Document | Description |
 |----------|-------------|
 | `meshtastic_js_api.md` | Meshtastic JavaScript API reference |
-| `meshtasticd_port_conflicts.md` | Port conflict troubleshooting |
-| `meshtastic_broken_pipe_bug.md` | Known CLI bug documentation |
 
 ### RF & Physical Layer Research
 
 | Document | Description |
 |----------|-------------|
-| `lora_physical_layer.md` | **LoRa PHY deep-dive: CSS modulation, demodulation, SNR limits, synchronization, capture effect, link budget** |
-| `rf_lora_phy_deep_dive.md` | **RF engine gap analysis: propagation models, environment modeling, concrete improvements with code** |
-| `site_planner.md` | RF site planning resources |
+| `lora_physical_layer.md` | LoRa PHY deep-dive: CSS modulation, SNR limits, link budget |
+| `semtech_official_reference.md` | Official Semtech LoRa reference data |
 
 ### Tools & Planning
 
 | Document | Description |
 |----------|-------------|
-| `maps_double_tap.md` | **Maps "Double Tap" — eye candy vision & task breakdown** |
+| `maps_double_tap.md` | Maps vision & task breakdown |
 | `gateway_setup_guide.md` | Gateway configuration guide |
 | `firmware_viability.md` | Firmware compatibility analysis |
 
@@ -53,14 +50,16 @@
 
 | Document | Description |
 |----------|-------------|
-| `nginx_reliability_patterns.md` | **NGINX patterns for MeshForge reliability (health checks, retry, metrics)** |
-| `tui_menu_redesign.md` | **TUI menu redesign - UI/UX research & implementation plan** |
-| `../foundations/tui_architecture.md` | **TUI code architecture - mixin pattern, DialogBackend, adding features** |
+| `nginx_reliability_patterns.md` | NGINX patterns for MeshForge reliability |
+| `local_mqtt_architecture.md` | Local MQTT bridging design |
 | `uconsole_portable_noc.md` | uConsole portable NOC design |
-| `event_driven_patterns.md` | Event-driven architecture patterns |
-| `meshforge_native_meshtastic.md` | Native Meshtastic protocol research |
-| `product_recommendations.md` | Hardware product recommendations |
+
+### Session Notes
+
+| Document | Description |
+|----------|-------------|
+| `session_rns_address_in_use.md` | RNS address-in-use troubleshooting session |
 
 ---
 
-*These documents support MeshForge development and are referenced by AI development partners.*
+*22 research documents. Updated 2026-02-22.*

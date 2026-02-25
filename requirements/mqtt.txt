@@ -1,0 +1,4 @@
+# MeshForge MQTT Dependencies (monitor, gateway, full profiles)
+
+# MQTT client for gateway bridge and monitoring
+paho-mqtt>=1.6.0

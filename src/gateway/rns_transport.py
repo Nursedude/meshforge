@@ -348,7 +348,11 @@ class RNSMeshtasticTransport:
     # ========================================
 
     def _connect(self) -> bool:
-        """Connect to Meshtastic interface"""
+        """Connect to Meshtastic interface.
+
+        For TCP connections, acquires the global connection lock to respect
+        meshtasticd's single-client constraint (Issue #17).
+        """
         if not (_HAS_MESHTASTIC and _HAS_PUBSUB):
             logger.error("Meshtastic library not available")
             return False
@@ -370,6 +374,17 @@ class RNSMeshtasticTransport:
                 else:
                     host = device
                     port = 4403
+
+                # Acquire global lock — meshtasticd only supports ONE TCP client
+                from utils.meshtastic_connection import (
+                    MESHTASTIC_CONNECTION_LOCK, wait_for_cooldown
+                )
+                if not MESHTASTIC_CONNECTION_LOCK.acquire(timeout=10):
+                    logger.error("TCP connection lock busy — another component owns it")
+                    return False
+                self._holds_tcp_lock = True
+                wait_for_cooldown()
+
                 self._interface = _meshtastic_tcp.TCPInterface(
                     hostname=host
                 )
@@ -409,7 +424,7 @@ class RNSMeshtasticTransport:
             return False
 
     def _disconnect(self):
-        """Disconnect from Meshtastic"""
+        """Disconnect from Meshtastic and release TCP connection lock."""
         if self._interface:
             try:
                 self._interface.close()
@@ -417,6 +432,15 @@ class RNSMeshtasticTransport:
                 logger.debug(f"Error closing interface: {e}")
             self._interface = None
         self._connected = False
+
+        # Release global TCP lock if we hold it (Issue #17)
+        if getattr(self, '_holds_tcp_lock', False):
+            try:
+                from utils.meshtastic_connection import MESHTASTIC_CONNECTION_LOCK
+                MESHTASTIC_CONNECTION_LOCK.release()
+            except (RuntimeError, ImportError):
+                pass
+            self._holds_tcp_lock = False
 
     def _generate_packet_id(self, packet: bytes) -> bytes:
         """Generate 4-byte packet ID using djb2 hash"""
@@ -466,14 +490,16 @@ class RNSMeshtasticTransport:
 
                 # Send each fragment with delay
                 for fragment in fragments:
-                    if not self._running:
+                    if not self._running or self._stop_event.is_set():
                         break
 
                     self._send_fragment(fragment, destination)
 
                     # Delay between fragments based on speed preset
                     if len(fragments) > 1:
-                        time.sleep(self._fragment_delay)
+                        self._stop_event.wait(self._fragment_delay)
+                        if self._stop_event.is_set():
+                            break
 
                 self.stats.packets_sent += 1
                 self.stats.bytes_sent += len(packet)

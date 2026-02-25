@@ -2,7 +2,7 @@
 
 This module provides:
 - Settings management (save/load JSON with defaults)
-- Async CLI command execution for GTK
+- Async CLI command execution
 - Common path utilities
 - Thread-safe operations
 
@@ -18,10 +18,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TypeVar, Union
 
 from utils.cli import find_meshtastic_cli
-from utils.safe_import import safe_import
-
-# gi.repository is an external dependency (PyGObject/GTK) - keep safe_import
-_GLib, _HAS_GLIB = safe_import('gi.repository', 'GLib')
 
 logger = logging.getLogger(__name__)
 
@@ -198,10 +194,7 @@ def run_cli_async(
     host: str = 'localhost',
     timeout: int = 30
 ) -> threading.Thread:
-    """Run meshtastic CLI command asynchronously with callback.
-
-    Designed for GTK applications where CLI commands should run in
-    background threads with results delivered via GLib.idle_add.
+    """Run CLI commands in background threads with callback.
 
     Args:
         args: Command arguments (without meshtastic prefix)
@@ -255,38 +248,6 @@ def run_cli_async(
     thread = threading.Thread(target=do_run, daemon=True)
     thread.start()
     return thread
-
-
-def run_cli_async_gtk(
-    args: List[str],
-    callback: Callable[[bool, str, str], None],
-    cli_path: Optional[str] = None,
-    host: str = 'localhost',
-    timeout: int = 30
-) -> threading.Thread:
-    """Run meshtastic CLI command asynchronously with GTK-safe callback.
-
-    Same as run_cli_async but wraps callback in GLib.idle_add for
-    thread-safe GTK UI updates.
-
-    Args:
-        args: Command arguments (without meshtastic prefix)
-        callback: Function called with (success, stdout, stderr)
-        cli_path: Optional explicit CLI path
-        host: Meshtastic host
-        timeout: Command timeout
-
-    Returns:
-        The started thread
-    """
-    if _HAS_GLIB:
-        def gtk_callback(success: bool, stdout: str, stderr: str):
-            _GLib.idle_add(callback, success, stdout, stderr)
-
-        return run_cli_async(args, gtk_callback, cli_path, host, timeout)
-    else:
-        # GTK not available, fall back to direct callback
-        return run_cli_async(args, callback, cli_path, host, timeout)
 
 
 def ensure_config_dir(subdir: Optional[str] = None) -> Path:

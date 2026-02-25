@@ -154,6 +154,7 @@ class LatencyMonitor:
         self._services: Dict[str, ServiceHealth] = {}
         self._interval = interval_sec
         self._running = False
+        self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
@@ -201,19 +202,16 @@ class LatencyMonitor:
     def stop(self):
         """Stop background monitoring."""
         self._running = False
+        self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=5)
             self._thread = None
 
     def _run(self):
         """Background probe loop."""
-        while self._running:
+        while self._running and not self._stop_event.is_set():
             self.probe_once()
-            # Sleep in small increments for responsive shutdown
-            for _ in range(int(self._interval * 10)):
-                if not self._running:
-                    break
-                time.sleep(0.1)
+            self._stop_event.wait(self._interval)
 
 
 # Module-level singleton for shared access

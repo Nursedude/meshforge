@@ -43,6 +43,7 @@ class MessageType(Enum):
     ACK = "ack"               # Delivery acknowledgment
     TRACEROUTE = "traceroute" # Path trace result
     NODEINFO = "nodeinfo"     # Node identity/capability info
+    TACTICAL = "tactical"     # Structured tactical message (X1 format)
     UNKNOWN = "unknown"       # Unclassified
 
 
@@ -115,6 +116,10 @@ class CanonicalMessage:
 
         # Extract text content
         text = decoded.get('text', '')
+
+        # Detect X1 tactical messages (override portnum-based type)
+        if msg_type == MessageType.TEXT and _detect_tactical_x1(text):
+            msg_type = MessageType.TACTICAL
         if not text:
             raw_payload = decoded.get('payload', b'')
             if isinstance(raw_payload, bytes):
@@ -256,12 +261,15 @@ class CanonicalMessage:
         if isinstance(title, bytes):
             title = title.decode('utf-8', errors='replace')
 
+        # Detect X1 tactical messages
+        msg_type = MessageType.TACTICAL if _detect_tactical_x1(content) else MessageType.TEXT
+
         return cls(
             source_network=Protocol.RNS.value,
             source_address=source_addr,
             destination_address=dest_addr,
             content=content,
-            message_type=MessageType.TEXT,
+            message_type=msg_type,
             is_broadcast=dest_addr is None,
             via_internet=False,
             origin=MessageOrigin.RADIO,
@@ -392,6 +400,11 @@ class CanonicalMessage:
 
 
 # --- Helper Functions ---
+
+def _detect_tactical_x1(text: str) -> bool:
+    """Check if message text is an X1 tactical message."""
+    return bool(text and text.startswith('X1.'))
+
 
 def _portnum_to_message_type(portnum: str) -> MessageType:
     """Map Meshtastic portnum to canonical MessageType."""

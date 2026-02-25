@@ -352,12 +352,10 @@ sudo python3 src/main.py
 ## 📚 Additional Resources
 
 - [Main README](README.md) - Full project documentation
-- [Standalone Verification](STANDALONE_VERIFICATION.md) - Verify standalone operation
-- [Debug Validation](DEBUG_VALIDATION.md) - Troubleshooting guide
 - [Meshtastic Docs](https://meshtastic.org/docs/) - Official Meshtastic documentation
 
 ---
 
 ## 🤝 Contributing
 
-Found an issue with one of the installation methods? Please [open an issue](https://github.com/Nursedude/Meshtasticd_interactive_UI/issues) or submit a pull request.
+Found an issue with one of the installation methods? Please [open an issue](https://github.com/Nursedude/meshforge/issues) or submit a pull request.

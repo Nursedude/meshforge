@@ -38,9 +38,8 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional, List
 from enum import Enum
 
-from utils.safe_import import safe_import
-
-_emit_service_status, _HAS_EVENT_BUS = safe_import('utils.event_bus', 'emit_service_status')
+from utils.event_bus import emit_service_status
+from utils.service_check import check_udp_port, check_rns_shared_instance
 
 logger = logging.getLogger(__name__)
 
@@ -408,34 +407,21 @@ class ActiveHealthProbe:
 
     def check_rns_port(self, port: int = 37428, host: str = "127.0.0.1") -> HealthResult:
         """
-        Probe RNS shared instance port.
+        Probe RNS shared instance availability.
 
-        Checks if the UDP port is bound (service is listening).
-        RNS uses UDP, so we can't do a TCP connect test.
+        Uses check_rns_shared_instance() which checks abstract Unix domain
+        sockets (Linux default), TCP, and UDP for reliable detection.
 
         Args:
-            port: RNS shared instance port (default: 37428)
+            port: RNS shared instance port for TCP/UDP fallback (default: 37428)
             host: Host to check (default: 127.0.0.1)
         """
-        sock = None
         try:
-            # Try to bind to the port - if it fails, port is in use (good!)
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(2)
-            sock.bind((host, port))
-            # If we successfully bound, port was NOT in use
-            return HealthResult(healthy=False, reason="port_not_bound")
-        except OSError as e:
-            # EADDRINUSE means the port is already bound (service running)
-            if e.errno in (98, 48, 10048):  # Linux, macOS, Windows
-                return HealthResult(healthy=True, reason="port_bound")
-            return HealthResult(healthy=False, reason=f"socket_error: {e}")
-        finally:
-            if sock:
-                try:
-                    sock.close()
-                except Exception:
-                    pass
+            if check_rns_shared_instance(port=port):
+                return HealthResult(healthy=True, reason="shared_instance_available")
+            return HealthResult(healthy=False, reason="shared_instance_unavailable")
+        except Exception as e:
+            return HealthResult(healthy=False, reason=f"check_error: {e}")
 
     def check_systemd_service(self, service_name: str) -> HealthResult:
         """
@@ -502,15 +488,12 @@ def _emit_state_change(service_name: str, new_state: HealthState) -> None:
     Emits a ServiceEvent whenever a service transitions between states,
     enabling the status bar and other subscribers to react without polling.
     """
-    if _HAS_EVENT_BUS:
-        available = new_state == HealthState.HEALTHY
-        _emit_service_status(
-            service_name=service_name,
-            available=available,
-            message=f"{service_name}: {new_state.value}",
-        )
-    else:
-        logger.debug("event_bus not available for health probe callback")
+    available = new_state == HealthState.HEALTHY
+    emit_service_status(
+        service_name=service_name,
+        available=available,
+        message=f"{service_name}: {new_state.value}",
+    )
 
 
 # Module-level singleton so all callers share one probe instance

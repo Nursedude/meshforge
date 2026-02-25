@@ -26,21 +26,21 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# --- Optional dependency imports via safe_import ---
+# --- Imports ---
 from utils.safe_import import safe_import
 
-get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
-SettingsManager, _HAS_SETTINGS = safe_import('utils.common', 'SettingsManager')
-_get_node_tracker, _HAS_NODE_TRACKER = safe_import('gateway.node_tracker', 'get_node_tracker')
-_get_http_client, _HAS_MESHTASTIC_HTTP = safe_import('utils.meshtastic_http', 'get_http_client')
-(_get_connection_manager, _safe_close_interface, _ConnectionMode,
- _reset_connection_manager, _HAS_MESHTASTIC_CONN) = safe_import(
-    'utils.meshtastic_connection',
-    'get_connection_manager', 'safe_close_interface',
-    'ConnectionMode', 'reset_connection_manager',
+from utils.paths import get_real_user_home
+from utils.common import SettingsManager
+from gateway.node_tracker import get_node_tracker
+from utils.meshtastic_http import get_http_client
+from utils.meshtastic_connection import (
+    get_connection_manager, safe_close_interface,
+    ConnectionMode, reset_connection_manager,
 )
-_get_local_subscriber, _HAS_MQTT = safe_import('monitoring.mqtt_subscriber', 'get_local_subscriber')
-_AREDNScanner, _AREDNClient, _HAS_AREDN = safe_import('utils.aredn', 'AREDNScanner', 'AREDNClient')
+from monitoring.mqtt_subscriber import get_local_subscriber
+from utils.aredn import AREDNScanner, AREDNClient
+
+# External/optional dependencies
 _RNS, _HAS_RNS = safe_import('RNS')
 _msgpack, _HAS_MSGPACK = safe_import('msgpack')
 
@@ -71,10 +71,8 @@ class MapDataCollector:
     def __init__(self, cache_dir: Optional[Path] = None, enable_history: bool = True):
         if cache_dir:
             self._cache_dir = cache_dir
-        elif _HAS_PATHS:
-            self._cache_dir = get_real_user_home() / ".local" / "share" / "meshforge"
         else:
-            self._cache_dir = Path("/tmp/meshforge")
+            self._cache_dir = get_real_user_home() / ".local" / "share" / "meshforge"
 
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._cache_file = self._cache_dir / "map_nodes.geojson"
@@ -82,20 +80,17 @@ class MapDataCollector:
         self._cached_geojson: Optional[Dict] = None
 
         # User-configurable cache age settings
-        if _HAS_SETTINGS:
-            self._settings = SettingsManager(
-                "map_settings",
-                defaults={
-                    "node_cache_max_age_hours": self.DEFAULT_NODE_CACHE_MAX_AGE_HOURS,
-                    "rns_cache_max_age_hours": self.DEFAULT_RNS_CACHE_MAX_AGE_HOURS,
-                    "online_status_threshold_minutes": self.DEFAULT_ONLINE_THRESHOLD_MINUTES,
-                    "meshtasticd_host": self.DEFAULT_MESHTASTICD_HOST,
-                    "meshtasticd_port": self.DEFAULT_MESHTASTICD_PORT,
-                    "aredn_node_ips": [],  # e.g. ["10.54.25.1", "10.1.0.1"]
-                }
-            )
-        else:
-            self._settings = None
+        self._settings = SettingsManager(
+            "map_settings",
+            defaults={
+                "node_cache_max_age_hours": self.DEFAULT_NODE_CACHE_MAX_AGE_HOURS,
+                "rns_cache_max_age_hours": self.DEFAULT_RNS_CACHE_MAX_AGE_HOURS,
+                "online_status_threshold_minutes": self.DEFAULT_ONLINE_THRESHOLD_MINUTES,
+                "meshtasticd_host": self.DEFAULT_MESHTASTICD_HOST,
+                "meshtasticd_port": self.DEFAULT_MESHTASTICD_PORT,
+                "aredn_node_ips": [],  # e.g. ["10.54.25.1", "10.1.0.1"]
+            }
+        )
 
         # Track nodes without GPS for reporting
         self._nodes_without_position: List[Dict] = []
@@ -364,12 +359,8 @@ class MapDataCollector:
         Returns:
             List of GeoJSON features for nodes with valid positions.
         """
-        if not _HAS_NODE_TRACKER:
-            logger.debug("UnifiedNodeTracker not available")
-            return []
-
         try:
-            tracker = _get_node_tracker()
+            tracker = get_node_tracker()
             geojson = tracker.to_geojson()
             features = geojson.get("features", [])
 
@@ -447,11 +438,8 @@ class MapDataCollector:
         needing the TCP connection lock. This is the preferred collection
         method because it doesn't conflict with the gateway bridge.
         """
-        if not _HAS_MESHTASTIC_HTTP:
-            return []
-
         try:
-            client = _get_http_client(host=host)
+            client = get_http_client(host=host)
             if not client.is_available:
                 logger.debug("meshtasticd HTTP API not available")
                 return []
@@ -524,15 +512,11 @@ class MapDataCollector:
         Returns list of GeoJSON features for nodes with valid positions.
         Also populates self._nodes_without_position for nodes lacking GPS.
         """
-        if not _HAS_MESHTASTIC_CONN:
-            logger.debug("meshtastic_connection module not available")
-            return []
-
         features = []
         no_position_nodes = []
         host = self.get_meshtasticd_host()
         port = self.get_meshtasticd_port()
-        manager = _get_connection_manager(host=host, port=port)
+        manager = get_connection_manager(host=host, port=port)
 
         # Don't block if someone else holds the connection
         if not manager.acquire_lock(timeout=5.0):
@@ -570,7 +554,7 @@ class MapDataCollector:
                         f"{len(no_position_nodes)} without GPS (total: {total_nodes})"
                     )
             finally:
-                _safe_close_interface(interface)
+                safe_close_interface(interface)
 
         except Exception as e:
             logger.debug(f"TCP interface collection error: {e}")
@@ -587,10 +571,6 @@ class MapDataCollector:
 
         Returns list of GeoJSON features for nodes with valid positions.
         """
-        if not _HAS_MESHTASTIC_CONN:
-            logger.debug("meshtastic_connection module not available")
-            return []
-
         # Check if USB device is available
         import glob
         usb_devices = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*')
@@ -603,8 +583,8 @@ class MapDataCollector:
 
         # Reset manager to ensure we get SERIAL mode
         # (in case a previous TCP connection left it in TCP mode)
-        _reset_connection_manager()
-        manager = _get_connection_manager(mode=_ConnectionMode.SERIAL)
+        reset_connection_manager()
+        manager = get_connection_manager(mode=ConnectionMode.SERIAL)
 
         # Don't block if someone else holds the connection
         if not manager.acquire_lock(timeout=5.0):
@@ -645,7 +625,7 @@ class MapDataCollector:
                         f"{len(no_position_nodes)} without GPS (total: {total_nodes})"
                     )
             finally:
-                _safe_close_interface(interface)
+                safe_close_interface(interface)
 
         except Exception as e:
             logger.debug(f"Direct radio collection error: {e}")
@@ -878,17 +858,16 @@ class MapDataCollector:
         then falls back to cached GeoJSON file.
         """
         # Try live subscriber first (has real-time sensor data)
-        if _HAS_MQTT:
-            try:
-                subscriber = _get_local_subscriber()
-                if subscriber.is_connected():
-                    geojson = subscriber.get_geojson()
-                    features = geojson.get("features", [])
-                    if features:
-                        logger.debug(f"MQTT live: {len(features)} nodes with position")
-                        return features
-            except Exception as e:
-                logger.debug(f"MQTT live collection error: {e}")
+        try:
+            subscriber = get_local_subscriber()
+            if subscriber.is_connected():
+                geojson = subscriber.get_geojson()
+                features = geojson.get("features", [])
+                if features:
+                    logger.debug(f"MQTT live: {len(features)} nodes with position")
+                    return features
+        except Exception as e:
+            logger.debug(f"MQTT live collection error: {e}")
 
         # Fallback: cached MQTT node file
         try:
@@ -910,16 +889,7 @@ class MapDataCollector:
         features = []
 
         # Check node_cache.json
-        if _HAS_PATHS:
-            cache_path = get_real_user_home() / ".config" / "meshforge" / "node_cache.json"
-        else:
-            sudo_user = os.environ.get('SUDO_USER', '')
-            # Path traversal protection (security)
-            if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-                cache_path = Path(f'/home/{sudo_user}/.config/meshforge/node_cache.json')
-            else:
-                # Avoid Path.home() which returns /root under sudo (MF001)
-                cache_path = Path('/tmp/meshforge/node_cache.json')
+        cache_path = get_real_user_home() / ".config" / "meshforge" / "node_cache.json"
 
         if cache_path.exists():
             try:
@@ -1006,10 +976,6 @@ class MapDataCollector:
         """
         features = []
 
-        if not _HAS_AREDN:
-            logger.debug("AREDN module not available")
-            return []
-
         # First try to connect to the local AREDN node
         local_node_ip = self._get_aredn_node_ip()
         if not local_node_ip:
@@ -1018,7 +984,7 @@ class MapDataCollector:
 
         try:
             # Get the local node info (may have location)
-            client = _AREDNClient(local_node_ip, timeout=5)
+            client = AREDNClient(local_node_ip, timeout=5)
             local_node = client.get_node_info()
 
             if local_node:
@@ -1030,7 +996,7 @@ class MapDataCollector:
                 for link in local_node.links:
                     if link.ip:
                         try:
-                            neighbor_client = _AREDNClient(link.ip, timeout=3)
+                            neighbor_client = AREDNClient(link.ip, timeout=3)
                             neighbor_node = neighbor_client.get_node_info()
                             if neighbor_node:
                                 neighbor_feature = self._aredn_node_to_feature(neighbor_node)
@@ -1151,17 +1117,14 @@ class MapDataCollector:
         """
         features = []
 
-        # Quick check if rnsd shared instance is running (port 37428)
+        # Quick check if rnsd shared instance is available
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
-            result = sock.connect_ex(('localhost', 37428))
-            sock.close()
-            if result != 0:
-                logger.debug("rnsd shared instance not available on port 37428")
+            from utils.service_check import check_rns_shared_instance
+            if not check_rns_shared_instance():
+                logger.debug("rnsd shared instance not available")
                 return []
-        except OSError:
-            return []
+        except ImportError:
+            pass  # Proceed without pre-check
 
         if not _HAS_RNS:
             logger.debug("RNS module not available for direct query")
@@ -1272,10 +1235,7 @@ class MapDataCollector:
                 logger.debug(f"RNS position cache load error: {e}")
 
         # Source 2: Node tracker cache (RNS entries)
-        if _HAS_PATHS:
-            cache_path = get_real_user_home() / ".config" / "meshforge" / "node_cache.json"
-        else:
-            cache_path = Path("/tmp/meshforge/node_cache.json")
+        cache_path = get_real_user_home() / ".config" / "meshforge" / "node_cache.json"
 
         if cache_path.exists():
             try:
@@ -1302,9 +1262,8 @@ class MapDataCollector:
     def _load_nomadnet_peers(self) -> List[Dict]:
         """Load known peers from NomadNet cache if available."""
         peers = []
-        if not _HAS_PATHS or not _HAS_MSGPACK:
-            if not _HAS_MSGPACK:
-                logger.debug("msgpack not available for NomadNet peer reading")
+        if not _HAS_MSGPACK:
+            logger.debug("msgpack not available for NomadNet peer reading")
             return peers
         try:
             nomadnet_dir = get_real_user_home() / '.nomadnetwork'

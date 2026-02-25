@@ -13,10 +13,7 @@ from rich.prompt import Prompt, Confirm, IntPrompt
 from rich.table import Table
 from rich.panel import Panel
 
-from utils.safe_import import safe_import
-
-# Meshtastic CLI finder (optional)
-_find_meshtastic_cli_fn, _HAS_CLI = safe_import('utils.cli', 'find_meshtastic_cli')
+from utils.cli import find_meshtastic_cli
 
 console = Console()
 
@@ -30,11 +27,7 @@ class RadioConfig:
 
     def _find_meshtastic_cli(self):
         """Find the meshtastic CLI executable - uses centralized utils.cli"""
-        if _HAS_CLI:
-            return _find_meshtastic_cli_fn()
-        else:
-            # Fallback if utils not available
-            return shutil.which('meshtastic')
+        return find_meshtastic_cli()
 
     def _run_cli(self, args, timeout=30):
         """Run meshtastic CLI command"""

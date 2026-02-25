@@ -37,6 +37,7 @@ Radio Control API (MeshForge-owned):
 """
 
 import json
+import ipaddress
 import logging
 import math
 import mimetypes
@@ -62,7 +63,7 @@ _SRTMProvider, _LOSAnalyzer, _HAS_TERRAIN = safe_import(
 _MessageQueue, _HAS_MSG_QUEUE = safe_import(
     'gateway.message_queue', 'MessageQueue'
 )
-_messaging_mod, _HAS_MESSAGING = safe_import('commands.messaging')
+from commands import messaging
 _get_listener_status, _HAS_MSG_LISTENER = safe_import(
     'utils.message_listener', 'get_listener_status'
 )
@@ -89,22 +90,22 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
     web_dir: Optional[str] = None
     # CORS: None = allow all, list = allow specific origins
     allowed_origins: Optional[List[str]] = None
-    # Meshtastic API proxy (set by MapServer when proxy is enabled)
-    api_proxy = None  # MeshtasticApiProxy instance
+    # Meshtastic API proxy (deprecated — always None, kept for graceful 503 responses)
+    api_proxy = None
+
+    # Default allowed origins when none explicitly configured
+    _DEFAULT_ORIGINS = ['http://localhost', 'https://localhost']
 
     def _send_cors_header(self):
         """Send appropriate CORS header based on configuration.
 
-        When allowed_origins is None: allow all origins (*)
+        When allowed_origins is None: restrict to localhost (secure default)
         When allowed_origins is a list: only allow those origins
         """
         origin = self.headers.get('Origin', '')
+        origins = self.allowed_origins if self.allowed_origins is not None else self._DEFAULT_ORIGINS
 
-        if self.allowed_origins is None:
-            # Allow all origins - useful for LAN/AREDN access
-            self.send_header('Access-Control-Allow-Origin', '*')
-        elif origin and any(origin.startswith(allowed) for allowed in self.allowed_origins):
-            # Origin matches allowed list
+        if origin and any(origin.startswith(allowed) for allowed in origins):
             self.send_header('Access-Control-Allow-Origin', origin)
         else:
             # Default fallback for localhost
@@ -195,8 +196,12 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
         elif self.path in ('/json/blink', '/json/blink/', '/mesh/json/blink', '/mesh/json/blink/'):
             self._proxy_toradio_json('/json/blink')
         elif self.path in ('/restart', '/restart/', '/mesh/restart', '/mesh/restart/'):
-            # Restrict device restart to localhost only
-            if self.client_address[0] not in ('127.0.0.1', '::1'):
+            # Restrict device restart to localhost only (handles IPv4, IPv6, mapped addresses)
+            try:
+                client_ip = ipaddress.ip_address(self.client_address[0])
+            except ValueError:
+                client_ip = None
+            if client_ip is None or not client_ip.is_loopback:
                 self.send_error(403, "Restart only allowed from localhost")
             else:
                 self._proxy_toradio_json('/restart')
@@ -226,18 +231,31 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
         self.send_header('Content-Length', '0')
         self.end_headers()
 
+    # Max body size for radio message POST (10 KB)
+    _MAX_MESSAGE_BODY = 10240
+    # Valid Meshtastic destination pattern: node IDs, channel prefixes, broadcast
+    _VALID_DESTINATION = re.compile(r'^[!~^]?[a-zA-Z0-9]+$')
+
     def _handle_send_message(self):
         """Handle POST /api/radio/message - send a message via radio."""
         try:
             content_length = int(self.headers.get('Content-Length', 0))
+            if content_length <= 0 or content_length > self._MAX_MESSAGE_BODY:
+                self._serve_json({"error": "Invalid or oversized payload"}, status=400)
+                return
+
             body = self.rfile.read(content_length).decode('utf-8')
             data = json.loads(body)
 
             text = data.get('text', '')
             destination = data.get('destination', '^all')
 
-            if not text:
-                self._serve_json({"error": "text is required"}, status=400)
+            if not text or len(text) > 500:
+                self._serve_json({"error": "text is required (max 500 chars)"}, status=400)
+                return
+
+            if not self._VALID_DESTINATION.match(destination):
+                self._serve_json({"error": "Invalid destination format"}, status=400)
                 return
 
             conn = self._get_radio_connection()
@@ -259,19 +277,15 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
                 })
             else:
                 self._serve_json({
-                    "error": "Send failed — check meshtasticd TCP connection (port 4403)",
-                    "detail": "The message could not be sent. Verify meshtasticd is running "
-                              "and TCP is enabled.",
+                    "error": "Send failed",
+                    "detail": "Verify meshtasticd is running and TCP is enabled.",
                 }, status=502)
 
         except json.JSONDecodeError:
             self._serve_json({"error": "Invalid JSON"}, status=400)
         except Exception as e:
             logger.warning(f"Radio message send error: {e}")
-            self._serve_json({
-                "error": f"Send error: {e}",
-                "detail": "Check meshtasticd logs: journalctl -u meshtasticd -f",
-            }, status=500)
+            self._serve_json({"error": "Send failed"}, status=500)
 
     def _serve_static_html(self):
         """Serve static HTML files with no-cache headers."""
@@ -726,32 +740,29 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
 
         messages = []
 
-        if not _HAS_MESSAGING:
-            logger.debug("Messaging module not available")
-        else:
-            try:
-                result = _messaging_mod.get_messages(limit=limit, network=network)
+        try:
+            result = messaging.get_messages(limit=limit, network=network)
 
-                if result.success and result.data:
-                    all_messages = result.data.get('messages', [])
+            if result.success and result.data:
+                all_messages = result.data.get('messages', [])
 
-                    # Filter by timestamp if 'since' is provided
-                    if since:
-                        try:
-                            since_dt = datetime.fromisoformat(since.replace('Z', '+00:00'))
-                            all_messages = [
-                                m for m in all_messages
-                                if m.get('timestamp') and
-                                datetime.fromisoformat(m['timestamp']) > since_dt
-                            ]
-                        except (ValueError, TypeError):
-                            pass  # Invalid timestamp, skip filtering
+                # Filter by timestamp if 'since' is provided
+                if since:
+                    try:
+                        since_dt = datetime.fromisoformat(since.replace('Z', '+00:00'))
+                        all_messages = [
+                            m for m in all_messages
+                            if m.get('timestamp') and
+                            datetime.fromisoformat(m['timestamp']) > since_dt
+                        ]
+                    except (ValueError, TypeError):
+                        pass  # Invalid timestamp, skip filtering
 
-                    # Filter to show only received messages (from_id != 'local')
-                    messages = [m for m in all_messages if m.get('from_id') != 'local']
+                # Filter to show only received messages (from_id != 'local')
+                messages = [m for m in all_messages if m.get('from_id') != 'local']
 
-            except Exception as e:
-                logger.debug(f"Error getting received messages: {e}")
+        except Exception as e:
+            logger.debug(f"Error getting received messages: {e}")
 
         self._serve_json({
             "messages": messages,
@@ -1024,14 +1035,13 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
 
         try:
             content_length = int(self.headers.get('Content-Length', 0))
+            if content_length <= 0:
+                self.send_error(411, "Length Required")
+                return
             if content_length > max_size:
                 self.send_error(413, "Payload too large")
                 return
-            if content_length > 0:
-                data = self.rfile.read(content_length)
-            else:
-                # No Content-Length: read with a cap
-                data = self.rfile.read(max_size)
+            data = self.rfile.read(content_length)
 
             if not data:
                 self.send_response(400)
@@ -1180,12 +1190,9 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
 
         # Prevent path traversal via symlinks
         try:
-            resolved = file_path.resolve()
-            if not str(resolved).startswith(str(web_dir.resolve())):
-                self.send_error(403, "Forbidden")
-                return
-        except (OSError, ValueError):
-            self.send_error(400, "Invalid path")
+            file_path.resolve().relative_to(web_dir.resolve())
+        except (ValueError, OSError):
+            self.send_error(403, "Forbidden")
             return
 
         # Read and serve the file

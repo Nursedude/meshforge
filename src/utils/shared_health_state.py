@@ -39,24 +39,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from utils.safe_import import safe_import
+from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)
-
-# Import centralized path utility for sudo compatibility
-_get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
-
-def get_real_user_home() -> Path:
-    """Get real user home, with fallback for sudo compatibility."""
-    if _HAS_PATHS:
-        return _get_real_user_home()
-    sudo_user = os.environ.get('SUDO_USER', '')
-    if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-        return Path(f'/home/{sudo_user}')
-    logname = os.environ.get('LOGNAME', '')
-    if logname and logname != 'root' and '/' not in logname and '..' not in logname:
-        return Path(f'/home/{logname}')
-    return Path('/root')
 
 
 class HealthState(Enum):

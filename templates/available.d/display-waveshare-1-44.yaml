@@ -1,0 +1,33 @@
+# Waveshare 1.44" LCD HAT (ST7735S) Display Configuration
+# Hardware: ST7735S SPI display with trackball input
+# Resolution: 128x128 pixels
+# Source: meshtastic/firmware bin/config.d
+#
+# Copy to: /etc/meshtasticd/config.d/display-waveshare-1-44.yaml
+#
+# IMPORTANT: Enable SPI first!
+#   sudo raspi-config nonint do_spi 0
+#   sudo reboot
+
+Display:
+  Panel: ST7735S
+  spidev: spidev0.0
+  DC: 25
+  Backlight: 24
+  Width: 128
+  Height: 128
+  Reset: 27
+  OffsetX: 2
+  OffsetY: 1
+  # CS: 8
+  # OffsetY: 31     # For 180-degree rotation
+  # OffsetRotate: 3
+
+Input:
+  TrackballUp: 6
+  TrackballDown: 19
+  TrackballLeft: 5
+  TrackballRight: 26
+  TrackballPress: 13
+  TrackballDirection: FALLING
+  # User: 21

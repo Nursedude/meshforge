@@ -803,11 +803,11 @@ class TopologyMixin:
                         )
                     if result.returncode != 0:
                         # Fallback to webbrowser module
-                        webbrowser.open(f"file://{output_path}")
+                        webbrowser.open(Path(output_path).as_uri())
                 except (subprocess.SubprocessError, OSError) as e:
                     logger.debug("xdg-open failed, trying webbrowser: %s", e)
                     try:
-                        webbrowser.open(f"file://{output_path}")
+                        webbrowser.open(Path(output_path).as_uri())
                     except OSError as e2:
                         logger.debug("webbrowser fallback also failed: %s", e2)
 
@@ -914,3 +914,74 @@ class TopologyMixin:
 
         except Exception as e:
             self.dialog.msgbox("Error", f"Export failed:\n{e}")
+
+    def _export_data_menu(self):
+        """Export data in various formats (GeoJSON, CSV, GraphML, D3.js)."""
+        while True:
+            choices = [
+                ("geojson", "GeoJSON             For mapping tools"),
+                ("csv", "CSV                 Spreadsheet format"),
+                ("graphml", "GraphML             For graph analysis"),
+                ("d3", "D3.js JSON          For web visualization"),
+                ("back", "Back"),
+            ]
+
+            choice = self.dialog.menu(
+                "Export Data",
+                "Export network data:",
+                choices
+            )
+
+            if choice is None or choice == "back":
+                break
+
+            dispatch = {
+                "geojson": ("GeoJSON Export", lambda: self._export_topology_data("geojson")),
+                "csv": ("CSV Export", lambda: self._export_topology_data("csv")),
+                "graphml": ("GraphML Export", lambda: self._export_topology_data("graphml")),
+                "d3": ("D3.js Export", lambda: self._export_topology_data("d3")),
+            }
+            entry = dispatch.get(choice)
+            if entry:
+                self._safe_call(*entry)
+
+    def _export_topology_data(self, format_type: str):
+        """Export topology data in specified format."""
+        try:
+            topology = self._get_topology()
+            if topology is None:
+                self.dialog.msgbox(
+                    "Export Unavailable",
+                    "Network topology not loaded.\n\n"
+                    "The gateway service may need to be running."
+                )
+                return
+
+            viz = _TopologyVisualizer.from_topology(topology)
+
+            if format_type == "geojson":
+                path, count = viz.export_geojson()
+                self.dialog.msgbox(
+                    "GeoJSON Export",
+                    f"Exported {count} features.\n\nFile: {path}"
+                )
+            elif format_type == "csv":
+                nodes_path, edges_path = viz.export_csv()
+                self.dialog.msgbox(
+                    "CSV Export",
+                    f"Exported CSV files:\n\nNodes: {nodes_path}\nEdges: {edges_path}"
+                )
+            elif format_type == "graphml":
+                path, count = viz.export_graphml()
+                self.dialog.msgbox(
+                    "GraphML Export",
+                    f"Exported {count} edges.\n\nFile: {path}"
+                )
+            elif format_type == "d3":
+                path, count = viz.export_d3_json()
+                self.dialog.msgbox(
+                    "D3.js Export",
+                    f"Exported {count} nodes + links.\n\nFile: {path}"
+                )
+        except Exception as e:
+            self.dialog.msgbox("Export Failed", f"Error: {e}")

@@ -31,10 +31,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
-from utils.safe_import import safe_import
-
-# Module-level safe imports
-_find_meshtastic_cli, _HAS_CLI_UTIL = safe_import('utils.cli', 'find_meshtastic_cli')
+from utils.cli import find_meshtastic_cli
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +85,7 @@ class MeshtasticCLI:
 
     def _find_cli(self) -> Optional[str]:
         """Find meshtastic CLI using centralized path resolver."""
-        if _HAS_CLI_UTIL:
-            return _find_meshtastic_cli()
-        return shutil.which('meshtastic')
+        return find_meshtastic_cli()
 
     def _build_base_args(self) -> List[str]:
         """Build base CLI arguments for connection."""
@@ -307,21 +302,70 @@ class MeshtasticCLI:
     # Radio Configuration
     # ─────────────────────────────────────────────────────────────
 
+    def set_with_verify(
+        self,
+        key: str,
+        value: str,
+        verify_section: Optional[str] = None,
+    ) -> CLIResult:
+        """Set a device config value and verify it took effect.
+
+        Sends --set, waits briefly for the device to process, then
+        reads back via --get to confirm the value was applied.
+
+        Args:
+            key: Full config key (e.g., 'lora.modem_preset')
+            value: Value to set
+            verify_section: Config section to read back (default: derived from key)
+
+        Returns:
+            CLIResult with '[verified]' or '[unverified]' appended to output
+        """
+        result = self.run(['--set', key, value])
+        if not result.success:
+            return result
+
+        # Allow device to process the AdminMessage
+        time.sleep(0.5)
+
+        # Read back to verify
+        section = verify_section or key.split('.')[0]
+        check = self.run(['--get', section], retries=1)
+        if check.success and value.lower() in check.output.lower():
+            result.output = (result.output or '') + "\n[verified]"
+            logger.debug("Verified %s = %s", key, value)
+        else:
+            result.output = (result.output or '') + "\n[unverified]"
+            logger.warning("Could not verify %s = %s", key, value)
+
+        return result
+
+    def configure(self, yaml_path: str) -> CLIResult:
+        """Apply a configuration YAML file via meshtastic --configure.
+
+        Args:
+            yaml_path: Path to YAML config file
+
+        Returns:
+            CLIResult from the configure command
+        """
+        return self.run(['--configure', yaml_path], timeout=60)
+
     def set_lora_region(self, region: str) -> CLIResult:
         """Set LoRa region (e.g., US, EU_868)."""
-        return self.run(['--set', 'lora.region', region])
+        return self.set_with_verify('lora.region', region)
 
     def set_lora_preset(self, preset: str) -> CLIResult:
         """Set LoRa modem preset (e.g., LONG_FAST, MEDIUM_SLOW)."""
-        return self.run(['--set', 'lora.modem_preset', preset])
+        return self.set_with_verify('lora.modem_preset', preset)
 
     def set_channel_num(self, channel_num: int) -> CLIResult:
         """Set LoRa frequency slot (channel_num)."""
-        return self.run(['--set', 'lora.channel_num', str(channel_num)])
+        return self.set_with_verify('lora.channel_num', str(channel_num))
 
     def set_hop_limit(self, hops: int) -> CLIResult:
         """Set hop limit for messages."""
-        return self.run(['--set', 'lora.hop_limit', str(hops)])
+        return self.set_with_verify('lora.hop_limit', str(hops))
 
     # ─────────────────────────────────────────────────────────────
     # MQTT Configuration

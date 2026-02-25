@@ -1,0 +1,29 @@
+# Adafruit RFM9x LoRa Radio Bonnet (Upstream Config)
+# Hardware: RF95 (SX1276/RFM95/RFM96)
+# Manufacturer: Adafruit
+# Source: meshtastic/firmware bin/config.d
+#
+# Note: This is the upstream meshtasticd naming convention.
+#       See also: adafruit-rfm9x.yaml (MeshForge naming)
+#
+# Copy to: /etc/meshtasticd/config.d/lora-Adafruit-RFM9x.yaml
+#
+# IMPORTANT: Enable SPI first!
+#   sudo raspi-config nonint do_spi 0
+#   sudo reboot
+
+Lora:
+  Module: RF95
+  Reset: 25
+  CS: 7
+  IRQ: 22
+  # Busy: 23
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

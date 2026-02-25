@@ -1,0 +1,31 @@
+# PiggyStick LR1121 SPI Configuration (CH341 USB-to-SPI)
+# Hardware: LR1121 via CH341 USB-to-SPI bridge
+# USB ID: 1A86:5512 (WCH CH341)
+# Source: meshtastic/firmware bin/config.d
+#
+# Copy to: /etc/meshtasticd/config.d/lora-piggystick-lr1121.yaml
+#
+# Ensure the ch341 kernel module is loaded:
+#   sudo modprobe ch341
+#   lsmod | grep ch341
+
+Lora:
+  Module: lr1121
+  CS: 0
+  IRQ: 6
+  Reset: 2
+  Busy: 4
+  spidev: ch341
+  DIO3_TCXO_VOLTAGE: 1.8
+  # USB_Serialnum: 12345678
+  USB_PID: 0x5512
+  USB_VID: 0x1A86
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

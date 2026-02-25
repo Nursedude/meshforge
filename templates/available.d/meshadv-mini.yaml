@@ -1,0 +1,38 @@
+# MeshAdv-Mini SPI Configuration
+# Hardware: SX1262/SX1268 LoRa/GPS Raspberry Pi HAT
+# Manufacturer: chrismyers2000
+# Power: +22dBm
+# Features: GPS (ATGM336H-5NR32), Temperature Sensor, PWM Fan, I2C/Qwiic
+# Compatible: Pi 2/3/4/5, Zero, Zero W, Zero 2 W
+#
+# Copy to: /etc/meshtasticd/config.d/meshadv-mini.yaml
+#
+# IMPORTANT: Enable SPI first!
+#   sudo raspi-config nonint do_spi 0
+#   sudo reboot
+
+Lora:
+  Module: sx1262
+  CS: 8
+  IRQ: 16
+  Busy: 20
+  Reset: 24
+  RXen: 12
+  DIO2_AS_RF_SWITCH: true
+  DIO3_TCXO_VOLTAGE: true
+
+GPS:
+  SerialPath: /dev/ttyS0
+  # PPSGpio: 17              # Uncomment for PPS timing
+
+I2C:
+  I2CDevice: /dev/i2c-1      # TMP102 temp sensor at 0x48
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

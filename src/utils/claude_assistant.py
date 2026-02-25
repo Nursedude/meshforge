@@ -45,8 +45,8 @@ from enum import Enum
 from utils.safe_import import safe_import
 
 _anthropic_mod, _HAS_ANTHROPIC = safe_import('anthropic')
-_get_latency_monitor, _HAS_LATENCY = safe_import('utils.latency_monitor', 'get_latency_monitor')
-_get_diag_engine, _HAS_DIAG_ENGINE = safe_import('utils.diagnostic_engine', 'get_diagnostic_engine')
+from utils.latency_monitor import get_latency_monitor
+from utils.diagnostic_engine import get_diagnostic_engine
 
 # Import standalone components
 from utils.diagnostic_engine import (
@@ -357,39 +357,37 @@ Always prioritize safety - never suggest actions that could damage hardware
                     parts.append(f"{len(events)} recent events")
 
         # Live service latency from NOC monitor
-        if _HAS_LATENCY:
-            try:
-                monitor = _get_latency_monitor(auto_start=False)
-                if monitor._services:
-                    svc_parts = []
-                    for svc in monitor._services.values():
-                        if svc.samples:
-                            svc_parts.append(
-                                f"{svc.name}:{svc.status}"
-                                f"({svc.avg_rtt_ms:.0f}ms)"
-                            )
-                    if svc_parts:
-                        parts.append(f"services=[{', '.join(svc_parts)}]")
+        try:
+            monitor = get_latency_monitor(auto_start=False)
+            if monitor._services:
+                svc_parts = []
+                for svc in monitor._services.values():
+                    if svc.samples:
+                        svc_parts.append(
+                            f"{svc.name}:{svc.status}"
+                            f"({svc.avg_rtt_ms:.0f}ms)"
+                        )
+                if svc_parts:
+                    parts.append(f"services=[{', '.join(svc_parts)}]")
 
-                    degraded = monitor.get_degraded()
-                    if degraded:
-                        parts.append(f"DEGRADED: {', '.join(degraded)}")
-            except Exception as e:
-                logger.debug(f"Failed to get latency context: {e}")
+                degraded = monitor.get_degraded()
+                if degraded:
+                    parts.append(f"DEGRADED: {', '.join(degraded)}")
+        except Exception as e:
+            logger.debug(f"Failed to get latency context: {e}")
 
         # Recent diagnostics
-        if _HAS_DIAG_ENGINE:
-            try:
-                engine = _get_diag_engine()
-                recent = engine.get_recent_diagnoses(limit=3)
-                if recent:
-                    diag_parts = [
-                        f"{d.symptom.category.name}:{d.symptom.message[:40]}"
-                        for d in recent
-                    ]
-                    parts.append(f"recent_diag=[{'; '.join(diag_parts)}]")
-            except Exception as e:
-                logger.debug(f"Failed to get diagnostic context: {e}")
+        try:
+            engine = get_diagnostic_engine()
+            recent = engine.get_recent_diagnoses(limit=3)
+            if recent:
+                diag_parts = [
+                    f"{d.symptom.category.name}:{d.symptom.message[:40]}"
+                    for d in recent
+                ]
+                parts.append(f"recent_diag=[{'; '.join(diag_parts)}]")
+        except Exception as e:
+            logger.debug(f"Failed to get diagnostic context: {e}")
 
         return ", ".join(parts)
 

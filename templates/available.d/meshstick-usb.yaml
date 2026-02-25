@@ -1,0 +1,25 @@
+# MeshStick USB Radio Configuration
+# Chipset: Native USB
+# USB ID: 1209:0000
+#
+# Official Meshtastic USB device.
+# Power: Standard USB
+#
+# Copy to: /etc/meshtasticd/config.d/meshstick-usb.yaml
+#
+# The device handles its own LoRa configuration.
+# Radio settings are configured via Meshtastic app/CLI:
+#   meshtastic --host localhost --set lora.region US
+#   meshtastic --host localhost --set lora.modem_preset LONG_FAST
+
+Serial:
+  Device: auto          # /dev/ttyACM0 typical
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

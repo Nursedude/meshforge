@@ -45,51 +45,194 @@ class HardwareMenuMixin:
                 self._safe_call(*entry)
 
     def _detect_hardware(self):
-        """Run hardware detection - terminal-native."""
+        """Run hardware detection with bus classification and radio health."""
         clear_screen()
         print("=== Hardware Detection ===\n")
 
-        # SPI
+        # Import classification helpers
+        try:
+            from commands.hardware import (
+                classify_spi_bus, classify_i2c_bus,
+                match_config_to_hardware, get_radio_health,
+            )
+            has_helpers = True
+        except ImportError:
+            has_helpers = False
+
+        GREEN = "\033[0;32m"
+        DIM = "\033[2m"
+        YELLOW = "\033[0;33m"
+        RESET = "\033[0m"
+
+        # --- SPI ---
         spi_devices = list(Path('/dev').glob('spidev*'))
         if spi_devices:
-            print(f"  \033[0;32m●\033[0m SPI: {', '.join(d.name for d in spi_devices)}")
+            spi_labels = []
+            for d in spi_devices:
+                label = d.name
+                if has_helpers:
+                    info = classify_spi_bus(d)
+                    if info.get('parent_name'):
+                        label += f" (via {info['parent_name']})"
+                    elif not info.get('is_native'):
+                        label += " (USB-bridged)"
+                spi_labels.append(label)
+            print(f"  {GREEN}●{RESET} SPI: {', '.join(spi_labels)}")
         else:
-            print(f"  \033[2m○\033[0m SPI: not enabled")
+            print(f"  {DIM}○{RESET} SPI: not enabled")
 
-        # I2C
+        # --- I2C ---
         i2c_devices = list(Path('/dev').glob('i2c-*'))
         if i2c_devices:
-            print(f"  \033[0;32m●\033[0m I2C: {', '.join(d.name for d in i2c_devices)}")
+            i2c_labels = []
+            for d in i2c_devices:
+                label = d.name
+                if has_helpers:
+                    info = classify_i2c_bus(d)
+                    if info.get('parent_name'):
+                        label += f" (via {info['parent_name']})"
+                    elif not info.get('is_native'):
+                        label += " (USB-bridged)"
+                i2c_labels.append(label)
+            print(f"  {GREEN}●{RESET} I2C: {', '.join(i2c_labels)}")
         else:
-            print(f"  \033[2m○\033[0m I2C: not enabled")
+            print(f"  {DIM}○{RESET} I2C: not enabled")
 
-        # Serial/USB
+        # --- Serial ---
         serial_ports = list(Path('/dev').glob('ttyUSB*')) + list(Path('/dev').glob('ttyACM*'))
         if serial_ports:
-            print(f"  \033[0;32m●\033[0m Serial: {', '.join(d.name for d in serial_ports)}")
+            print(f"  {GREEN}●{RESET} Serial: {', '.join(d.name for d in serial_ports)}")
         else:
-            print(f"  \033[2m○\033[0m Serial: no USB serial devices")
+            print(f"  {DIM}○{RESET} Serial: no USB serial devices")
 
-        # GPIO
+        # --- GPIO ---
         gpio_available = Path('/sys/class/gpio').exists()
-        print(f"  {'●' if gpio_available else '○'} GPIO: {'available' if gpio_available else 'not available'}")
+        marker = f"{GREEN}●{RESET}" if gpio_available else f"{DIM}○{RESET}"
+        print(f"  {marker} GPIO: {'available' if gpio_available else 'not available'}")
 
-        # USB devices
+        # --- USB Devices (filtered) ---
         print("\nUSB Devices:")
-        subprocess.run(['lsusb'], timeout=10)
+        try:
+            from config.hardware import HardwareDetector
+            has_detector = True
+        except ImportError:
+            has_detector = False
 
-        # meshtasticd config.d/
-        print("\nmeshtasticd config.d/:")
-        config_d = Path('/etc/meshtasticd/config.d')
-        if config_d.exists():
-            configs = list(config_d.glob('*.yaml'))
+        try:
+            result = subprocess.run(
+                ['lsusb'], capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                root_hub_count = 0
+                for line in result.stdout.strip().split('\n'):
+                    if not line.strip():
+                        continue
+                    if 'root hub' in line.lower():
+                        root_hub_count += 1
+                        continue
+                    # Try to identify known Meshtastic devices
+                    identified = False
+                    if has_detector:
+                        for vid_pid in HardwareDetector.KNOWN_USB_MODULES:
+                            vid, pid = vid_pid.split(':')
+                            if vid.lower() in line.lower() and pid.lower() in line.lower():
+                                devices = HardwareDetector.KNOWN_USB_MODULES[vid_pid]
+                                device_names = ', '.join(devices.get('common_devices', []))
+                                print(f"  {GREEN}●{RESET} {vid_pid} {devices['name']}"
+                                      f" → {device_names}")
+                                identified = True
+                                break
+                    if not identified:
+                        print(f"  {DIM}  {line.strip()}{RESET}")
+                if root_hub_count > 0:
+                    print(f"  {DIM}  ({root_hub_count} root hub(s) hidden){RESET}")
+        except Exception:
+            subprocess.run(['lsusb'], timeout=10)
+
+        # --- meshtasticd config correlation ---
+        print("\nmeshtasticd:")
+        if has_helpers:
+            config_info = match_config_to_hardware()
+            configs = config_info.get('configs', [])
             if configs:
-                for c in configs:
-                    print(f"  {c.name}")
+                match_marker = f"{GREEN}✓ matches hardware{RESET}" if config_info.get('config_match') else ""
+                print(f"  {GREEN}●{RESET} config.d/: {', '.join(configs)} {match_marker}")
             else:
-                print("  (empty)")
+                print(f"  {DIM}○{RESET} config.d/: (empty)")
+            for warning in config_info.get('warnings', []):
+                print(f"  {YELLOW}⚠ {warning}{RESET}")
         else:
-            print("  (not found)")
+            config_d = Path('/etc/meshtasticd/config.d')
+            if config_d.exists():
+                configs = list(config_d.glob('*.yaml'))
+                if configs:
+                    for c in configs:
+                        print(f"  {c.name}")
+                else:
+                    print("  (empty)")
+            else:
+                print("  (not found)")
+
+        # --- Service status ---
+        try:
+            from utils.service_check import check_service, check_port
+            svc = check_service('meshtasticd')
+            if svc.available:
+                print(f"  {GREEN}●{RESET} service: running (port 4403 OK)")
+            else:
+                print(f"  {DIM}○{RESET} service: {svc.message}")
+
+            if check_port(9443):
+                print(f"  {GREEN}●{RESET} webserver: localhost:9443 responding")
+            else:
+                print(f"  {DIM}○{RESET} webserver: localhost:9443 not responding")
+        except ImportError:
+            pass
+
+        # --- Radio Health ---
+        if has_helpers:
+            print("\nRadio Health:")
+            try:
+                radio = get_radio_health()
+                data = radio.data or {}
+
+                # Node counts
+                http_nodes = data.get('http_nodes')
+                cli_nodes = data.get('cli_node_count')
+                if http_nodes is not None or cli_nodes is not None:
+                    parts = []
+                    if cli_nodes is not None:
+                        parts.append(f"{cli_nodes} (CLI)")
+                    if http_nodes is not None:
+                        parts.append(f"{http_nodes} (HTTP API)")
+                    print(f"  {GREEN}●{RESET} Nodes: {' | '.join(parts)}")
+
+                # Airtime
+                report = data.get('report')
+                if report:
+                    ch_util = report.get('channel_utilization', 0)
+                    tx_util = report.get('tx_utilization', 0)
+                    print(f"  {GREEN}●{RESET} Channel util: {ch_util:.1f}%"
+                          f" | TX util: {tx_util:.1f}%")
+                    freq = report.get('frequency', 0)
+                    if freq > 0:
+                        print(f"  {GREEN}●{RESET} Frequency: {freq:.3f} MHz")
+
+                # SNR stats
+                snr_stats = data.get('snr_stats')
+                if snr_stats:
+                    print(f"  {GREEN}●{RESET} SNR range: {snr_stats['min']:.1f}"
+                          f" to {snr_stats['max']:.1f} dB"
+                          f" ({snr_stats['count']} nodes with data)")
+
+                # Warnings
+                for warning in data.get('warnings', []):
+                    print(f"  {YELLOW}⚠ {warning}{RESET}")
+
+                if not data.get('warnings') and (http_nodes or cli_nodes):
+                    print(f"  {GREEN}●{RESET} No issues detected")
+            except Exception as e:
+                print(f"  {DIM}  (radio health unavailable: {e}){RESET}")
 
         self._wait_for_enter()
 

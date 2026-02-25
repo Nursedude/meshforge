@@ -1,0 +1,26 @@
+# Elecrow RFM95 LoRa HAT SPI Configuration
+# Hardware: SX1276 (RFM95)
+# Manufacturer: Elecrow
+#
+# Note: SX1276 does NOT have a Busy pin.
+#
+# Copy to: /etc/meshtasticd/config.d/elecrow-rfm95.yaml
+#
+# IMPORTANT: Enable SPI first!
+#   sudo raspi-config nonint do_spi 0
+#   sudo reboot
+
+Lora:
+  Module: sx1276
+  CS: 25
+  IRQ: 5
+  Reset: 17
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

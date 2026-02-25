@@ -20,22 +20,12 @@ from utils.safe_import import safe_import
 _version_val, _HAS_VERSION = safe_import('__version__', '__version__')
 __version__ = _version_val if _HAS_VERSION else "0.5.0-beta"
 
-_get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
+from utils.paths import get_real_user_home
 
-if _HAS_PATHS:
-    get_real_user_home = _get_real_user_home
-else:
-    def get_real_user_home() -> Path:
-        """Fallback: resolve real user home under sudo."""
-        sudo_user = os.environ.get('SUDO_USER', '')
-        if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-            candidate = Path(f'/home/{sudo_user}')
-            return candidate
-        logname = os.environ.get('LOGNAME', '')
-        if logname and logname != 'root' and '/' not in logname and '..' not in logname:
-            candidate = Path(f'/home/{logname}')
-            return candidate
-        return Path('/root')
+# Deployment profiles
+load_or_detect_profile, get_profile_by_name, _HAS_PROFILES = safe_import(
+    'utils.deployment_profiles', 'load_or_detect_profile', 'get_profile_by_name'
+)
 
 # NOC orchestrator for service management
 ServiceOrchestrator, ServiceState, _HAS_ORCHESTRATOR = safe_import(
@@ -159,8 +149,12 @@ def print_banner():
 {Colors.NC}""")
 
 
-def show_startup_health():
-    """Show startup health summary."""
+def show_startup_health(profile=None):
+    """Show startup health summary.
+
+    Args:
+        profile: Optional deployment profile for context-aware health check.
+    """
     if not _HAS_HEALTH_CHECK:
         return
 
@@ -168,7 +162,7 @@ def show_startup_health():
     print()
 
     try:
-        health = run_health_check()
+        health = run_health_check(profile=profile)
         summary = print_health_summary(health, use_color=True)
         print(summary)
     except Exception as e:
@@ -436,15 +430,23 @@ def main():
                 print(f"\n{Colors.YELLOW}Verification completed with issues.{Colors.NC}")
                 sys.exit(2)
 
-    # Check root
-    if os.geteuid() != 0:
-        print(f"\n{Colors.RED}Error: This application requires root/sudo privileges{Colors.NC}")
-        print(f"Please run with: {Colors.CYAN}sudo python3 src/launcher.py{Colors.NC}")
-        sys.exit(1)
-
     # Direct interface flag (skip menu)
     if '--tui' in sys.argv:
         launch_interface('1')
+
+    # Load deployment profile (--profile <name> or auto-detect)
+    profile = None
+    if _HAS_PROFILES:
+        for i, arg in enumerate(sys.argv):
+            if arg == '--profile' and i + 1 < len(sys.argv):
+                profile = get_profile_by_name(sys.argv[i + 1])
+                if profile:
+                    print(f"{Colors.GREEN}Profile: {profile.display_name}{Colors.NC}")
+                else:
+                    print(f"{Colors.YELLOW}Unknown profile '{sys.argv[i + 1]}', auto-detecting...{Colors.NC}")
+                break
+        if profile is None:
+            profile = load_or_detect_profile()
 
     # Start NOC services if in local mode
     if '--no-services' not in sys.argv:
@@ -476,7 +478,7 @@ def main():
         subprocess.run(['clear'] if os.name == 'posix' else ['cls'], check=False, timeout=5)
 
         print_banner()
-        show_startup_health()
+        show_startup_health(profile=profile)
 
         env = detect_environment()
         print_environment_info(env)

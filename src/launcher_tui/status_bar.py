@@ -25,26 +25,24 @@ from typing import Dict, Optional, List
 
 logger = logging.getLogger(__name__)
 
-from utils.safe_import import safe_import
-
 # Import centralized service checking
-check_systemd_service, check_process_running, _HAS_SERVICE_CHECK = safe_import(
-    'utils.service_check', 'check_systemd_service', 'check_process_running'
-)
+from utils.service_check import check_systemd_service, check_process_running, check_udp_port, check_rns_shared_instance
 
 # Import startup checker for enhanced status
-StartupChecker, EnvironmentState, ServiceRunState, HAS_STARTUP_CHECKER = safe_import(
-    'startup_checks', 'StartupChecker', 'EnvironmentState', 'ServiceRunState'
-)
+from startup_checks import StartupChecker, EnvironmentState, ServiceRunState
+HAS_STARTUP_CHECKER = True
 
 # Space weather API
-_SpaceWeatherAPI, _HAS_SPACE_WEATHER = safe_import('utils.space_weather', 'SpaceWeatherAPI')
+from utils.space_weather import SpaceWeatherAPI
 
 # EventBus for push-based updates
-_event_bus, _HAS_EVENT_BUS = safe_import('utils.event_bus', 'event_bus')
+from utils.event_bus import event_bus
 
 # Node tracker for initial node count seeding
-_get_node_tracker, _HAS_NODE_TRACKER = safe_import('gateway.node_tracker', 'get_node_tracker')
+from gateway.node_tracker import get_node_tracker
+
+# RNS shared instance port (UDP) — rnsd must bind this to be functional
+_RNS_PORT = 37428
 
 # Cache TTL in seconds — how often to re-check service status
 STATUS_CACHE_TTL = 10.0
@@ -173,6 +171,9 @@ class StatusBar:
         """Check if a systemd service is active.
 
         Uses centralized service_check module when available.
+        For rnsd, also verifies the RNS shared instance is reachable —
+        systemd can report "active" while the service fails to bind its
+        socket (zombie).
 
         Args:
             service: Service unit name.
@@ -181,18 +182,15 @@ class StatusBar:
             Status symbol character.
         """
         try:
-            if _HAS_SERVICE_CHECK:
-                is_running, _ = check_systemd_service(service)
-                return SYM_RUNNING if is_running else SYM_STOPPED
-
-            # Fallback to direct systemctl call
-            result = subprocess.run(
-                ['systemctl', 'is-active', service],
-                capture_output=True, text=True, timeout=3
-            )
-            if result.stdout.strip() == 'active':
-                return SYM_RUNNING
-            return SYM_STOPPED
+            is_running, _ = check_systemd_service(service)
+            if not is_running:
+                return SYM_STOPPED
+            # rnsd zombie detection: systemd active but shared instance not available
+            if service == 'rnsd':
+                if not check_rns_shared_instance():
+                    logger.debug("rnsd active but shared instance not available")
+                    return SYM_STOPPED
+            return SYM_RUNNING
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             return SYM_UNKNOWN
 
@@ -202,16 +200,7 @@ class StatusBar:
         Uses centralized service_check module when available.
         """
         try:
-            if _HAS_SERVICE_CHECK:
-                self._bridge_running = check_process_running('rns_bridge')
-                return
-
-            # Fallback to direct pgrep call
-            result = subprocess.run(
-                ['pgrep', '-f', 'rns_bridge'],
-                capture_output=True, timeout=3
-            )
-            self._bridge_running = result.returncode == 0
+            self._bridge_running = check_process_running('rns_bridge')
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             self._bridge_running = None
 
@@ -222,13 +211,8 @@ class StatusBar:
         is already called infrequently (5-min TTL). Falls back gracefully
         if network is unavailable.
         """
-        if not _HAS_SPACE_WEATHER:
-            logger.debug("Space weather module not available")
-            self._space_weather = None
-            return
-
         try:
-            api = _SpaceWeatherAPI(timeout=5)  # Short timeout for TUI
+            api = SpaceWeatherAPI(timeout=5)  # Short timeout for TUI
             data = api.get_current_conditions()
 
             # Build compact status: "SFI:125 K:2"
@@ -332,14 +316,11 @@ class StatusBar:
         """
         if self._event_subscribed:
             return
-        if _HAS_EVENT_BUS:
-            _event_bus.subscribe('service', self._on_service_event)
-            _event_bus.subscribe('message', self._on_message_event)
-            _event_bus.subscribe('node', self._on_node_event)
-            self._event_subscribed = True
-            logger.debug("StatusBar subscribed to EventBus service+message+node events")
-        else:
-            logger.debug("EventBus not available — StatusBar will poll only")
+        event_bus.subscribe('service', self._on_service_event)
+        event_bus.subscribe('message', self._on_message_event)
+        event_bus.subscribe('node', self._on_node_event)
+        self._event_subscribed = True
+        logger.debug("StatusBar subscribed to EventBus service+message+node events")
 
     def _seed_node_count(self) -> None:
         """Pull initial node count from the node tracker singleton.
@@ -347,11 +328,8 @@ class StatusBar:
         Without this, the status bar shows no node count until a new
         'discovered' event arrives from the EventBus.
         """
-        if not _HAS_NODE_TRACKER:
-            logger.debug("Node tracker not available for initial count")
-            return
         try:
-            tracker = _get_node_tracker()
+            tracker = get_node_tracker()
             nodes = tracker.get_all_nodes()
             if nodes:
                 self._node_count = len(nodes)

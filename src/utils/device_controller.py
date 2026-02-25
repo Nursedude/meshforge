@@ -145,7 +145,12 @@ class MeshtasticBackend(ABC):
 
 
 class TCPBackend(MeshtasticBackend):
-    """TCP connection to meshtasticd daemon."""
+    """TCP connection to meshtasticd daemon.
+
+    Uses the global MESHTASTIC_CONNECTION_LOCK to respect meshtasticd's
+    single TCP client constraint (Issue #17). Direct TCPInterface creation
+    without the lock would contend with the gateway bridge and break :9443.
+    """
 
     def __init__(self, host: str = "localhost", port: int = 4403, timeout: float = 10.0):
         self.host = host
@@ -153,10 +158,22 @@ class TCPBackend(MeshtasticBackend):
         self.timeout = timeout
         self._interface = None
         self._connected = False
+        self._holds_lock = False
 
     def connect(self) -> bool:
         try:
             from meshtastic.tcp_interface import TCPInterface
+            from utils.meshtastic_connection import (
+                MESHTASTIC_CONNECTION_LOCK, wait_for_cooldown
+            )
+
+            # Acquire global lock — meshtasticd only supports ONE TCP client
+            if not MESHTASTIC_CONNECTION_LOCK.acquire(timeout=self.timeout):
+                logger.error("Connection lock busy — another component owns TCP")
+                return False
+            self._holds_lock = True
+
+            wait_for_cooldown()
             self._interface = TCPInterface(hostname=self.host, portNumber=self.port)
             self._connected = True
             logger.info(f"TCP connected to {self.host}:{self.port}")
@@ -164,7 +181,18 @@ class TCPBackend(MeshtasticBackend):
         except Exception as e:
             logger.error(f"TCP connection failed: {e}")
             self._connected = False
+            self._release_lock()
             return False
+
+    def _release_lock(self):
+        """Release the global connection lock if we hold it."""
+        if self._holds_lock:
+            try:
+                from utils.meshtastic_connection import MESHTASTIC_CONNECTION_LOCK
+                MESHTASTIC_CONNECTION_LOCK.release()
+            except (RuntimeError, ImportError):
+                pass
+            self._holds_lock = False
 
     def disconnect(self) -> None:
         if self._interface:
@@ -175,6 +203,7 @@ class TCPBackend(MeshtasticBackend):
             finally:
                 self._interface = None
                 self._connected = False
+                self._release_lock()
 
     def is_connected(self) -> bool:
         return self._connected and self._interface is not None

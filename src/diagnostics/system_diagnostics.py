@@ -8,12 +8,15 @@ Provides comprehensive system health checks including:
 - RF/LoRa diagnostics
 """
 
+import logging
 import os
 import socket
 import subprocess
 import time
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from rich.console import Console
 from rich.panel import Panel
@@ -185,8 +188,8 @@ class SystemDiagnostics:
                     idx = parts.index('via')
                     if idx + 1 < len(parts):
                         return parts[idx + 1]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Default gateway detection failed: %s", e)
         return None
 
     def _dns_resolve(self, hostname: str) -> bool:
@@ -275,8 +278,8 @@ class SystemDiagnostics:
                 lines = result.stdout.split('\n')
                 count = sum(1 for line in lines if '!' in line or 'Node' in line)
                 return max(count, 1)  # At least this node
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Mesh node count failed: %s", e)
         return None
 
     def _check_mesh_activity(self) -> bool:
@@ -288,8 +291,8 @@ class SystemDiagnostics:
             )
             if result.returncode == 0:
                 return 'received' in result.stdout.lower() or 'packet' in result.stdout.lower()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Mesh activity check failed: %s", e)
         return False
 
     def mqtt_connection_test(self):
@@ -454,8 +457,8 @@ class SystemDiagnostics:
                 total_delta = total2 - total
                 if total_delta > 0:
                     return (1 - idle_delta / total_delta) * 100
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("CPU usage calculation failed: %s", e)
         return 0.0
 
     def _get_cpu_temperature(self) -> Optional[float]:
@@ -477,8 +480,8 @@ class SystemDiagnostics:
                 temp_str = result.stdout.strip()
                 temp = float(temp_str.split('=')[1].replace("'C", ""))
                 return temp
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("CPU temperature read failed: %s", e)
         return None
 
     def _get_memory_info(self) -> tuple:
@@ -570,8 +573,8 @@ class SystemDiagnostics:
                     issues.append("Soft temp limit has occurred")
 
                 return ", ".join(issues) if issues else None
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Throttle status check failed: %s", e)
         return None
 
     def lora_diagnostics(self):
@@ -619,8 +622,8 @@ class SystemDiagnostics:
                 output = result.stdout.lower()
                 if 'ch340' in output or 'cp210' in output or 'ft232' in output:
                     return "USB Serial LoRa Module"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("USB LoRa device detection failed: %s", e)
 
         # Check SPI devices
         if Path('/dev/spidev0.0').exists():
@@ -699,8 +702,8 @@ class SystemDiagnostics:
                             if addr != '--' and addr != 'UU':
                                 devices.append(f"0x{addr}")
                 return ", ".join(devices) if devices else ""
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("I2C device detection failed: %s", e)
         return ""
 
     def _list_serial_ports(self) -> list:
@@ -820,8 +823,8 @@ class SystemDiagnostics:
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip().split('\n')
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Log error extraction failed: %s", e)
         return []
 
     def log_analysis(self):

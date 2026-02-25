@@ -1,0 +1,28 @@
+# Waveshare Raspberry Pi Pico to RPi Adapter SPI Configuration
+# Hardware: SX1262 via Pico-to-RPi adapter board
+# Manufacturer: Waveshare
+# Source: meshtastic/firmware bin/config.d
+#
+# Copy to: /etc/meshtasticd/config.d/lora-ws-raspberry-pi-pico-to-rpi-adapter.yaml
+#
+# IMPORTANT: Enable SPI first!
+#   sudo raspi-config nonint do_spi 0
+#   sudo reboot
+
+Lora:
+  Module: sx1262
+  DIO2_AS_RF_SWITCH: true
+  DIO3_TCXO_VOLTAGE: true
+  CS: 21
+  IRQ: 16
+  Busy: 20
+  Reset: 18
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

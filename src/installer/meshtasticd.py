@@ -16,13 +16,15 @@ from utils.system import (
     enable_service
 )
 from utils.logger import log, log_command, log_exception
-from utils.safe_import import safe_import
-
-# Module-level safe imports - SINGLE SOURCE OF TRUTH
-_check_service, _check_port, _ServiceState, _HAS_SERVICE_CHECK = safe_import(
-    'utils.service_check', 'check_service', 'check_port', 'ServiceState'
-)
-SERVICE_CHECK_AVAILABLE = _HAS_SERVICE_CHECK
+# Direct import for first-party module (Issue #5: safe_import is for external deps only)
+try:
+    from utils.service_check import check_service as _check_service
+    from utils.service_check import check_port as _check_port
+    from utils.service_check import ServiceState as _ServiceState
+    SERVICE_CHECK_AVAILABLE = True
+except ImportError:
+    _check_service = _check_port = _ServiceState = None
+    SERVICE_CHECK_AVAILABLE = False
 
 console = Console()
 
@@ -358,9 +360,8 @@ class MeshtasticdInstaller:
                 if status.fix_hint:
                     console.print(f"    [dim]Hint: {status.fix_hint}[/dim]")
         else:
-            # Fallback to direct systemctl check
-            result = run_command('systemctl is-active meshtasticd')
-            if result['success'] and 'active' in result['stdout']:
+            # Fallback to is_service_running() from utils.system
+            if is_service_running('meshtasticd'):
                 console.print("    [green]✓ meshtasticd service is running[/green]")
                 tests_passed += 1
             else:

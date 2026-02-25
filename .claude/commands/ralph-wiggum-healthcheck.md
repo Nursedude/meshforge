@@ -34,7 +34,7 @@ Look for:
 ```bash
 # Verify documented paths exist
 ls -la src/gateway/
-ls -la src/gtk_ui/panels/
+ls -la src/launcher_tui/
 ls -la tests/
 
 # Check for large files needing split
@@ -71,13 +71,38 @@ Flag files over 1,500 lines (run: `find src -name "*.py" -exec wc -l {} \; | sor
 
 | File | Lines | Status |
 |------|-------|--------|
-| launcher_tui/main.py | 2800+ | Consider splitting |
-| gtk_ui/panels/hamclock.py | 2600+ | Extract API client |
-| gtk_ui/panels/mesh_tools.py | 1900+ | Monitor |
-| gtk_ui/panels/tools.py | 1800+ | Monitor |
-| tui/app.py | 1700+ | Extract panes |
+| launcher_tui/main.py | 1507 | 33 mixins, borderline — monitor |
+| service_menu_mixin.py | 1575 | OpenHamClock/MQTT extraction candidates |
+| rns_bridge.py | 1570 | MeshCoreBridgeMixin + MessageRouter extracted |
+| knowledge_content.py | 1993 | Content file by design |
 
-*Note: rns.py, main_web.py have been successfully refactored.*
+*Note: GTK files (gtk_ui/, main_web.py) were removed in v0.5.x. TUI is the only interface.*
+
+### 8. Documentation Freshness Audit
+Audit `.claude/` markdown files for staleness and drift:
+
+```bash
+# Files not modified in 60+ days (potential staleness)
+find .claude -name "*.md" -mtime +60 -printf "%T+ %p\n" | sort
+
+# Check for stale technology references that shouldn't exist
+grep -r "gtk_ui\|GLib.idle_add\|main_web.py" .claude/ --include="*.md" -l
+
+# Version references — should all match src/__version__.py
+grep -rn "v0\.[0-4]\." .claude/ --include="*.md" | grep -v "archive\|timeline\|history\|postmortem\|article"
+
+# Archived session notes (moved to archive/ in dedup audit)
+# ls .claude/archive/session-notes/
+```
+
+Cross-check:
+- Every file listed in `INDEX.md` exists on disk
+- Every `.md` file in `.claude/` is listed in `INDEX.md`
+- No version references older than current version (except in historical/archive docs)
+- Session notes follow `YYYY-MM-DD-topic.md` naming convention
+- `TODO_PRIORITIES.md` priorities align with actual development activity
+
+Flag: Files with stale content, orphaned docs, version mismatches, naming violations.
 
 ---
 

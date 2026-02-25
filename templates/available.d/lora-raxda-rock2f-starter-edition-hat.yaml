@@ -1,0 +1,51 @@
+# Radxa Rock 2F Starter Edition HAT SPI Configuration
+# Hardware: SX1262 on Radxa Rock 2F (Armbian Linux)
+# Manufacturer: Mark Birss (Starter Edition HAT)
+# Source: meshtastic/firmware bin/config.d
+#
+# Copy to: /etc/meshtasticd/config.d/lora-raxda-rock2f-starter-edition-hat.yaml
+#
+# Note: Rock 2F uses multiple GPIO chips. Pin assignments
+#       specify physical pin, gpiochip, and line number.
+
+Lora:
+  Module: sx1262
+  DIO2_AS_RF_SWITCH: true
+  DIO3_TCXO_VOLTAGE: 1.8
+  spidev: spidev0.1
+  CS:                    # Physical pin 24
+    gpiochip: 4
+    line: 14
+  SCK:                   # Physical pin 23
+    gpiochip: 4
+    line: 12
+  MOSI:                  # Physical pin 19
+    gpiochip: 4
+    line: 10
+  MISO:                  # Physical pin 21
+    gpiochip: 4
+    line: 11
+  Busy:                  # Physical pin 7
+    gpiochip: 4
+    line: 6
+  IRQ:                   # Physical pin 15
+    gpiochip: 4
+    line: 22
+  Reset:                 # Physical pin 12
+    gpiochip: 1
+    line: 13
+  # RXen:               # Physical pin 11
+  #   gpiochip: 4
+  #   line: 23
+  # TXen:               # Physical pin 13
+  #   gpiochip: 4
+  #   line: 21
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

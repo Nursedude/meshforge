@@ -316,8 +316,8 @@ class TCPMonitor:
                 if self.on_error:
                     try:
                         self.on_error(e)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("on_error callback failed: %s", e)
 
             self._stop_event.wait(self.poll_interval)
 
@@ -343,8 +343,8 @@ class TCPMonitor:
                     if old_state != existing.state and self.on_connection_state_change:
                         try:
                             self.on_connection_state_change(existing, old_state)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning("on_connection_state_change callback failed: %s", e)
                 else:
                     # New connection
                     conn = TCPConnection(
@@ -364,8 +364,8 @@ class TCPMonitor:
                     if self.on_connection_added:
                         try:
                             self.on_connection_added(conn)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning("on_connection_added callback failed: %s", e)
 
             # Find removed connections
             removed_ids = set(self._connections.keys()) - current_ids
@@ -374,8 +374,8 @@ class TCPMonitor:
                 if self.on_connection_removed:
                     try:
                         self.on_connection_removed(conn)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("on_connection_removed callback failed: %s", e)
 
     def _get_tcp_connections(self) -> List[dict]:
         """Get current TCP connections from the system"""
@@ -609,8 +609,8 @@ class NetworkScanner:
         if self.on_device_found:
             try:
                 self.on_device_found(device)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("on_device_found callback failed: %s", e)
 
         return device
 
@@ -641,8 +641,8 @@ class NetworkScanner:
                 if self.on_progress:
                     try:
                         self.on_progress(completed[0], total)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("on_progress callback failed: %s", e)
 
         for ip in ip_addresses:
             if self._stop_event.is_set():
@@ -660,8 +660,8 @@ class NetworkScanner:
         if self.on_scan_complete:
             try:
                 self.on_scan_complete(devices)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("on_scan_complete callback failed: %s", e)
 
         return devices
 

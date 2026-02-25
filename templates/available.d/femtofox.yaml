@@ -1,0 +1,27 @@
+# FemtoFox LoRa Board SPI Configuration
+# Hardware: Compact SX1262 module
+# Manufacturer: FemtoFox
+#
+# Copy to: /etc/meshtasticd/config.d/femtofox.yaml
+#
+# IMPORTANT: Enable SPI first!
+#   sudo raspi-config nonint do_spi 0
+#   sudo reboot
+
+Lora:
+  Module: sx1262
+  CS: 8
+  IRQ: 16
+  Busy: 20
+  Reset: 24
+  DIO2_AS_RF_SWITCH: true
+  DIO3_TCXO_VOLTAGE: true
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

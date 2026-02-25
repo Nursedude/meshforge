@@ -446,12 +446,51 @@ def send_message(
             # Broadcast - lower hop to reduce congestion
             hop_limit = HOP_LIMIT_BROADCAST
 
-    # Note: meshtastic CLI doesn't have a direct --hop-limit flag for sendtext
-    # The hop limit is set at the device level via lora.hop_limit
-    # For per-message control, we'd need to use the Python API directly
-    # For now, log the intended hop limit for debugging
     logger.debug(f"Sending with intended hop_limit={hop_limit} (device setting applies)")
 
+    # Try HTTP protobuf first — no CLI subprocess, no TCP contention,
+    # no fromradio reads. This prevents "waiting for delivery" hangs on
+    # the meshtasticd web client at :9443.
+    try:
+        from gateway.meshtastic_protobuf_client import send_text_direct
+
+        dest_num = None
+        if dest:
+            try:
+                cleaned = dest.lstrip('!')
+                dest_num = int(cleaned, 16)
+            except ValueError:
+                try:
+                    dest_num = int(dest)
+                except ValueError:
+                    dest_num = None
+
+        if send_text_direct(
+            text=text,
+            destination=dest_num,
+            channel_index=channel_index,
+            want_ack=want_ack,
+            hop_limit=hop_limit,
+        ):
+            is_dm = dest and dest != '!ffffffff'
+            routing_note = (
+                'DM: uses next-hop routing (flood then direct)' if is_dm
+                else 'Broadcast: flooded to mesh'
+            )
+            return CommandResult.ok(
+                message="Message sent via HTTP protobuf",
+                data={
+                    'hop_limit_intended': hop_limit,
+                    'destination': dest,
+                    'channel': channel_index,
+                    'routing_note': routing_note,
+                    'tx_method': 'http_protobuf',
+                },
+            )
+    except Exception as e:
+        logger.debug(f"HTTP protobuf TX unavailable, falling back to CLI: {e}")
+
+    # Fallback: meshtastic CLI (creates TCP connection to 4403)
     # Add destination for DMs
     if dest:
         args.extend(["--dest", dest])
@@ -480,6 +519,7 @@ def send_message(
             'DM: uses next-hop routing (flood then direct)' if dest
             else 'Broadcast: flooded to mesh'
         )
+        result.data['tx_method'] = 'cli'
 
     return result
 

@@ -18,27 +18,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
-from utils.safe_import import safe_import
-
-_get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
+from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)
-
-
-def get_real_user_home() -> Path:
-    """Sudo-safe home directory resolution."""
-    if _HAS_PATHS:
-        return _get_real_user_home()
-    import os
-    sudo_user = os.environ.get('SUDO_USER', '')
-    if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-        candidate = Path(f'/home/{sudo_user}')
-        return candidate
-    logname = os.environ.get('LOGNAME', '')
-    if logname and logname != 'root' and '/' not in logname and '..' not in logname:
-        candidate = Path(f'/home/{logname}')
-        return candidate
-    return Path('/root')
 
 
 @dataclass

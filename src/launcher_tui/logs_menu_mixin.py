@@ -8,32 +8,15 @@ import os
 import subprocess
 from pathlib import Path
 from backend import clear_screen
-from utils.safe_import import safe_import
-
-# Module-level safe imports
-_get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
-
-
-def _fallback_get_real_user_home() -> Path:
-    """Fallback if utils.paths is unavailable."""
-    sudo_user = os.environ.get('SUDO_USER', '')
-    if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-        return Path(f'/home/{sudo_user}')
-    logname = os.environ.get('LOGNAME', '')
-    if logname and logname != 'root' and '/' not in logname and '..' not in logname:
-        return Path(f'/home/{logname}')
-    return Path('/root')
-
-
-def get_real_user_home() -> Path:
-    """Get real user home, using utils.paths if available."""
-    if _HAS_PATHS:
-        return _get_real_user_home()
-    return _fallback_get_real_user_home()
+from utils.paths import get_real_user_home
 
 
 class LogsMenuMixin:
     """Mixin providing log viewing functionality."""
+
+    # Systemd units MeshForge monitors — used to scope journalctl queries
+    # so we never surface unrelated OS errors (bluetooth, NFS, etc.)
+    MESH_UNITS = ['meshtasticd', 'rnsd', 'mosquitto', 'nomadnet']
 
     def _logs_menu(self):
         """Log viewer - all terminal-native."""
@@ -100,25 +83,25 @@ class LogsMenuMixin:
             pass
 
     def _view_live_all(self):
-        """View live log stream for all services."""
+        """View live log stream for all mesh services."""
         clear_screen()
-        print("=== All services live log (Ctrl+C to stop) ===\n")
+        print("=== Mesh services live log (Ctrl+C to stop) ===\n")
+        cmd = ['journalctl', '-f', '-n', '30', '--no-pager']
+        for unit in self.MESH_UNITS:
+            cmd.extend(['-u', unit])
         try:
-            subprocess.run(
-                ['journalctl', '-f', '-n', '30', '--no-pager'],
-                timeout=None
-            )
+            subprocess.run(cmd, timeout=None)
         except KeyboardInterrupt:
             pass
 
     def _view_error_logs(self):
-        """View error-level logs from the last hour."""
+        """View error-level logs from mesh services in the last hour."""
         clear_screen()
-        print("=== Errors (last hour, priority err+) ===\n")
-        subprocess.run(
-            ['journalctl', '-p', 'err', '--since', '1 hour ago', '--no-pager'],
-            timeout=30
-        )
+        print("=== Mesh Service Errors (last hour, priority err+) ===\n")
+        cmd = ['journalctl', '-p', 'err', '--since', '1 hour ago', '--no-pager']
+        for unit in self.MESH_UNITS:
+            cmd.extend(['-u', unit])
+        subprocess.run(cmd, timeout=30)
         self._wait_for_enter()
 
     def _view_meshtasticd_recent(self):
@@ -142,13 +125,13 @@ class LogsMenuMixin:
         self._wait_for_enter()
 
     def _view_boot_messages(self):
-        """View boot messages from this boot."""
+        """View mesh service boot messages from this boot."""
         clear_screen()
-        print("=== Boot messages (this boot) ===\n")
-        subprocess.run(
-            ['journalctl', '-b', '-n', '100', '--no-pager'],
-            timeout=15
-        )
+        print("=== Mesh Service Boot Messages (this boot) ===\n")
+        cmd = ['journalctl', '-b', '-n', '100', '--no-pager']
+        for unit in self.MESH_UNITS:
+            cmd.extend(['-u', unit])
+        subprocess.run(cmd, timeout=15)
         self._wait_for_enter()
 
     def _view_kernel_messages(self):

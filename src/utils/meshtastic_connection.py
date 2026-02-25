@@ -25,6 +25,7 @@ from enum import Enum
 from typing import Optional, List, Dict, Any
 
 from utils.safe_import import safe_import
+from utils.service_check import restart_service
 
 logger = logging.getLogger(__name__)
 
@@ -185,18 +186,15 @@ def clear_stale_connections(port: int = 4403) -> bool:
             f"restarting meshtasticd to clear"
         )
 
-        # Restart meshtasticd to clear the zombie — requires root (MeshForge runs as sudo)
-        restart = subprocess.run(
-            ['systemctl', 'restart', 'meshtasticd'],
-            capture_output=True, text=True, timeout=30
-        )
-        if restart.returncode == 0:
+        # Restart meshtasticd to clear the zombie — uses service_check helpers
+        success, msg = restart_service('meshtasticd')
+        if success:
             logger.info("meshtasticd restarted successfully, zombie connections cleared")
             # Give meshtasticd time to fully start and open its TCP port
             time.sleep(3)
             return True
         else:
-            logger.error(f"Failed to restart meshtasticd: {restart.stderr.strip()}")
+            logger.error("Failed to restart meshtasticd: %s", msg)
             return False
 
     except FileNotFoundError:

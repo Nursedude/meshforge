@@ -23,29 +23,16 @@ from typing import Optional, List, Dict, Tuple
 
 logger = logging.getLogger(__name__)
 
+from utils.paths import get_real_user_home
 from utils.safe_import import safe_import
 
-# Import path utilities
-get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
-if not _HAS_PATHS:
-    def get_real_user_home() -> Path:
-        sudo_user = os.environ.get('SUDO_USER', '')
-        if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-            candidate = Path(f'/home/{sudo_user}')
-            return candidate
-        logname = os.environ.get('LOGNAME', '')
-        if logname and logname != 'root' and '/' not in logname and '..' not in logname:
-            candidate = Path(f'/home/{logname}')
-            return candidate
-        return Path('/root')
-
 # Import service check
-check_service, apply_config_and_restart, _HAS_APPLY_RESTART = safe_import(
+check_service, apply_config_and_restart, _HAS_SERVICE_CHECK = safe_import(
     'utils.service_check', 'check_service', 'apply_config_and_restart'
 )
 
 # Import device scanner
-DeviceScanner, _HAS_DEVICE_SCANNER = safe_import('utils.device_scanner', 'DeviceScanner')
+from utils.device_scanner import DeviceScanner
 
 # Import startup checker for hardware detection
 StartupChecker, _HAS_STARTUP_CHECKER = safe_import('startup_checks', 'StartupChecker')
@@ -56,32 +43,34 @@ StartupChecker, _HAS_STARTUP_CHECKER = safe_import('startup_checks', 'StartupChe
 # =========================================================================
 
 # SPI HAT configurations with their config file names
+# Legacy fallback — used only when /etc/meshtasticd/available.d/ is empty.
+# Filenames must match actual templates in templates/available.d/.
 SPI_HARDWARE_CONFIGS = {
     'meshadv-mini': {
         'name': 'MeshAdv-Mini',
         'description': 'MeshAdv-Mini Pi HAT (recommended for Raspberry Pi)',
-        'config_file': 'lora-meshadv-mini.yaml',
+        'config_file': 'meshadv-mini.yaml',
         'requires_spi': True,
         'requires_overlay': 'spi0-0cs',
     },
     'waveshare-sx1262': {
         'name': 'Waveshare SX1262 HAT',
         'description': 'Waveshare SX1262 868/915M LoRa HAT',
-        'config_file': 'lora-waveshare-sx1262.yaml',
+        'config_file': 'waveshare-sx1262.yaml',
         'requires_spi': True,
         'requires_overlay': None,
     },
     'rak-hat': {
         'name': 'RAK WisLink HAT',
         'description': 'RAKwireless WisLink LoRa HAT',
-        'config_file': 'lora-rak-hat.yaml',
+        'config_file': 'rak-hat-spi.yaml',
         'requires_spi': True,
         'requires_overlay': None,
     },
     'ebyte-e22': {
         'name': 'Ebyte E22 Module',
         'description': 'Ebyte E22-900M/E22-400M LoRa Module',
-        'config_file': 'lora-ebyte-e22.yaml',
+        'config_file': 'ebyte-e22-900m30s.yaml',
         'requires_spi': True,
         'requires_overlay': None,
     },
@@ -122,6 +111,84 @@ class FirstRunMixin:
     """Mixin for first-run wizard in launcher TUI"""
 
     FIRST_RUN_FLAG = ".meshforge_setup_complete"
+
+    def _classify_templates(self, available_d: Path) -> Tuple[List[Path], List[Path]]:
+        """Classify available.d templates into USB and SPI categories.
+
+        Classification uses filename convention:
+          - USB: filename contains '-usb' or starts with 'usb-'
+          - SPI: everything else
+
+        Returns:
+            Tuple of (usb_templates, spi_templates), each a sorted list of Paths
+        """
+        usb_templates = []
+        spi_templates = []
+
+        if not available_d.exists():
+            return usb_templates, spi_templates
+
+        for tmpl in sorted(available_d.glob('*.yaml')):
+            name = tmpl.stem.lower()
+            if '-usb' in name or name.startswith('usb-'):
+                usb_templates.append(tmpl)
+            else:
+                spi_templates.append(tmpl)
+
+        return usb_templates, spi_templates
+
+    def _check_existing_configs(self, config_d: Path, config_type: str) -> bool:
+        """Check for existing configs in config.d and ask user if they want to change.
+
+        Args:
+            config_d: Path to /etc/meshtasticd/config.d
+            config_type: 'USB' or 'SPI HAT' for display purposes
+
+        Returns:
+            True if we should proceed with template selection,
+            False if user wants to keep existing config.
+        """
+        if not config_d.exists():
+            return True
+
+        existing_configs = list(config_d.glob('*.yaml'))
+        if not existing_configs:
+            return True
+
+        config_names = ", ".join(f.name for f in existing_configs)
+        change = self.dialog.yesno(
+            f"Existing {config_type} Config Found",
+            f"You already have hardware configured:\n\n"
+            f"  {config_names}\n\n"
+            f"Location: {config_d}\n\n"
+            "Do you want to change it?",
+            default_no=True
+        )
+
+        if not change:
+            self.dialog.msgbox(
+                "Keeping Existing Config",
+                f"Your current config will be kept:\n\n"
+                f"  {config_names}\n\n"
+                "You can change this later from:\n"
+                "  Configuration > meshtasticd Config > Hardware"
+            )
+            return False
+
+        return True
+
+    def _ensure_template_structure(self):
+        """Ensure /etc/meshtasticd directory structure and templates exist."""
+        try:
+            from core.meshtasticd_config import MeshtasticdConfig
+            config_mgr = MeshtasticdConfig()
+            config_mgr.ensure_structure()
+        except PermissionError:
+            logger.debug("Cannot auto-create templates (no root), using existing")
+        except ImportError:
+            logger.warning("core.meshtasticd_config not available, skipping template setup")
+        except (OSError, ValueError) as e:
+            logger.warning("Template auto-creation failed: %s", e)
 
     def _check_first_run(self) -> bool:
         """Check if this is a first run (no setup flag exists)"""
@@ -212,7 +279,17 @@ class FirstRunMixin:
             desc += "  Raspberry Pi detected (SPI can be enabled)\n"
 
         if usb_devices:
-            desc += f"  {len(usb_devices)} USB serial device(s) found\n"
+            # Show specific device names when possible
+            device_names = []
+            for dev in usb_devices:
+                name = dev.get('name', 'Unknown')
+                if name and name != 'Unknown':
+                    device_names.append(name)
+
+            if device_names:
+                desc += f"  USB detected: {', '.join(device_names[:3])}\n"
+            else:
+                desc += f"  {len(usb_devices)} USB serial device(s) found\n"
 
         desc += "\nSelect your connection type:"
 
@@ -267,48 +344,29 @@ class FirstRunMixin:
                 )
                 return
 
-        # Check for existing config in config.d
+        self._ensure_template_structure()
+
         config_d = Path('/etc/meshtasticd/config.d')
         available_d = Path('/etc/meshtasticd/available.d')
-        existing_configs = []
-        if config_d.exists():
-            existing_configs = [f for f in config_d.glob('lora-*.yaml')]
 
-        if existing_configs:
-            # Show existing config and ask if user wants to change
-            config_names = ", ".join(f.name for f in existing_configs)
-            change = self.dialog.yesno(
-                "Existing HAT Config Found",
-                f"You already have a HAT configured:\n\n"
-                f"  {config_names}\n\n"
-                f"Location: {config_d}\n\n"
-                "Do you want to change it?",
-                default_no=True
-            )
-            if not change:
-                self.dialog.msgbox(
-                    "Keeping Existing Config",
-                    f"Your current HAT config will be kept:\n\n"
-                    f"  {config_names}\n\n"
-                    "You can change this later from:\n"
-                    "  Configuration > meshtasticd Config > Hardware"
-                )
-                return
+        # Check for existing config (uses *.yaml, not broken lora-*.yaml)
+        if not self._check_existing_configs(config_d, 'SPI HAT'):
+            return
 
-        # Build choices from available.d (dynamic) + fallback to hardcoded
+        # Build choices from available.d SPI templates
         choices = []
+        _, spi_templates = self._classify_templates(available_d)
 
-        # First, use templates from available.d if it exists
-        if available_d.exists():
-            templates = sorted(available_d.glob('lora-*.yaml'))
-            if templates:
-                for tmpl in templates:
-                    # Mark if currently active
-                    is_active = config_d.exists() and (config_d / tmpl.name).exists()
-                    status = " [ACTIVE]" if is_active else ""
-                    # Create readable name from filename
-                    display_name = tmpl.stem.replace('lora-', '').replace('-', ' ').title()
-                    choices.append((tmpl.name, f"{display_name}{status}"))
+        if spi_templates:
+            active_configs = set()
+            if config_d.exists():
+                active_configs = {f.name for f in config_d.glob('*.yaml')}
+
+            for tmpl in spi_templates:
+                is_active = tmpl.name in active_configs
+                status = " [ACTIVE]" if is_active else ""
+                display_name = tmpl.stem.replace('-', ' ').title()
+                choices.append((tmpl.name, f"{display_name}{status}"))
 
         # If no templates found in available.d, fall back to hardcoded list
         if not choices:
@@ -358,11 +416,7 @@ class FirstRunMixin:
             shutil.copy2(src, dst)
 
             # Restart meshtasticd
-            if _HAS_APPLY_RESTART:
-                success, msg = apply_config_and_restart('meshtasticd')
-            else:
-                subprocess.run(['systemctl', 'daemon-reload'], timeout=30, check=False)
-                subprocess.run(['systemctl', 'restart', 'meshtasticd'], timeout=30, check=False)
+            apply_config_and_restart('meshtasticd')
 
             self.dialog.msgbox(
                 "Configuration Applied",
@@ -375,8 +429,141 @@ class FirstRunMixin:
         except Exception as e:
             self.dialog.msgbox("Error", f"Failed to apply config: {e}")
 
+    def _detect_usb_device_template(self) -> 'tuple[Optional[str], Optional[str]]':
+        """Auto-detect connected USB radio and match to a template.
+
+        Uses DeviceScanner to find USB devices, then matches vendor:product
+        IDs against HardwareDetector.USB_ID_TO_TEMPLATE.
+
+        Returns:
+            Tuple of (template_filename, device_name) or (None, None).
+        """
+        try:
+            from config.hardware import HardwareDetector
+        except ImportError:
+            logger.debug("config.hardware not available for USB auto-detect")
+            return None, None
+
+        try:
+            scanner = DeviceScanner()
+            results = scanner.scan_all()
+
+            # Check USB devices for known vendor:product IDs
+            for dev in results.get('usb_devices', []):
+                vid = getattr(dev, 'vendor_id', '')
+                pid = getattr(dev, 'product_id', '')
+                if vid and pid:
+                    usb_id = f"{vid}:{pid}"
+                    template = HardwareDetector.match_usb_to_template(usb_id)
+                    if template:
+                        device_name = HardwareDetector.get_device_name_for_usb_id(usb_id)
+                        if not device_name:
+                            device_name = getattr(dev, 'description', 'Unknown USB device')
+                        return template, device_name
+
+            # Fallback: check serial ports for USB IDs
+            for port in results.get('serial_ports', []):
+                vid = getattr(port, 'usb_vendor', '')
+                pid = getattr(port, 'usb_product', '')
+                if vid and pid:
+                    usb_id = f"{vid}:{pid}"
+                    template = HardwareDetector.match_usb_to_template(usb_id)
+                    if template:
+                        device_name = HardwareDetector.get_device_name_for_usb_id(usb_id)
+                        if not device_name:
+                            device_name = getattr(port, 'description', 'Unknown USB device')
+                        return template, device_name
+
+        except Exception as e:
+            logger.debug("USB auto-detect failed: %s", e)
+
+        return None, None
+
     def _wizard_step_usb_config(self):
-        """Configure USB serial connection."""
+        """Configure USB serial connection using templates from available.d.
+
+        Enhanced: auto-detects connected USB device and recommends the
+        matching template before falling back to the full template list.
+        """
+        self._ensure_template_structure()
+
+        config_d = Path('/etc/meshtasticd/config.d')
+        available_d = Path('/etc/meshtasticd/available.d')
+
+        # Check for existing configuration first
+        if not self._check_existing_configs(config_d, 'USB'):
+            return
+
+        # --- Auto-detect connected USB radio ---
+        matched_template, device_name = self._detect_usb_device_template()
+
+        if matched_template and available_d.exists():
+            src = available_d / matched_template
+            if src.exists():
+                apply_auto = self.dialog.yesno(
+                    "USB Radio Detected!",
+                    f"Detected: {device_name}\n"
+                    f"Recommended template: {matched_template}\n\n"
+                    f"Apply this configuration now?\n\n"
+                    f"(Select No to choose a different template)"
+                )
+                if apply_auto:
+                    self._apply_hardware_config_from_file(src, config_d)
+                    return
+                # User declined — fall through to full template list
+
+        # --- Full template list (original behavior) ---
+        usb_templates, _ = self._classify_templates(available_d)
+
+        if usb_templates:
+            # Build menu from USB templates
+            choices = []
+            active_configs = set()
+            if config_d.exists():
+                active_configs = {f.name for f in config_d.glob('*.yaml')}
+
+            for tmpl in usb_templates:
+                is_active = tmpl.name in active_configs
+                status = " [ACTIVE]" if is_active else ""
+                # Create readable name: "heltec-usb" -> "Heltec Usb"
+                display_name = tmpl.stem.replace('-', ' ').title()
+                # Mark recommended template if detected
+                recommend = " [DETECTED]" if tmpl.name == matched_template else ""
+                choices.append((tmpl.name, f"{display_name}{status}{recommend}"))
+
+            choices.append(("custom", "Custom USB Device (manual path)"))
+
+            desc = "Select your USB radio from meshtasticd templates:\n\n"
+            if matched_template:
+                desc += f"Detected device: {device_name}\n"
+            desc += f"Templates: {available_d}"
+
+            choice = self.dialog.menu(
+                "Step 2: Select USB Hardware",
+                desc,
+                choices
+            )
+
+            if choice is None:
+                return
+
+            if choice == "custom":
+                # Fall back to manual USB device selection
+                self._wizard_step_usb_manual()
+                return
+
+            # Apply template from available.d
+            src = available_d / choice
+            if src.exists():
+                self._apply_hardware_config_from_file(src, config_d)
+            else:
+                self.dialog.msgbox("Error", f"Template not found: {src}")
+        else:
+            # No templates available -- fall back to manual selection
+            self._wizard_step_usb_manual()
+
+    def _wizard_step_usb_manual(self):
+        """Fallback: manually select USB device when no templates available."""
         devices = self._find_usb_serial_devices()
 
         if not devices:
@@ -385,10 +572,10 @@ class FirstRunMixin:
                 "No USB serial devices detected.\n\n"
                 "Connect your Meshtastic device via USB and try again.\n\n"
                 "Supported devices:\n"
-                "  • T-Beam (CP2102 or CH340)\n"
-                "  • Heltec LoRa\n"
-                "  • RAK WisBlock\n"
-                "  • LilyGo T-Deck"
+                "  - T-Beam (CP2102 or CH340)\n"
+                "  - Heltec LoRa\n"
+                "  - RAK WisBlock\n"
+                "  - LilyGo T-Deck"
             )
             return
 
@@ -403,20 +590,28 @@ class FirstRunMixin:
         choices.append(("rescan", "Rescan        Detect devices again"))
 
         choice = self.dialog.menu(
-            "Step 2: Select USB Device",
-            "Select your Meshtastic device:\n(* = likely Meshtastic)",
+            "Select USB Device",
+            "No hardware templates found. Select device manually:\n"
+            "(* = likely Meshtastic)",
             choices
         )
 
         if choice == "rescan":
-            self._wizard_step_usb_config()
+            self._wizard_step_usb_manual()
             return
 
         if choice is None:
             return
 
-        # Create USB serial config
-        self._create_usb_config(choice)
+        # Use the generic USB template if available, else create minimal config
+        available_d = Path('/etc/meshtasticd/available.d')
+        generic_template = available_d / 'usb-serial-generic.yaml'
+        config_d = Path('/etc/meshtasticd/config.d')
+
+        if generic_template.exists():
+            self._apply_hardware_config_from_file(generic_template, config_d)
+        else:
+            self._create_usb_config(choice)
 
     def _wizard_step_network_config(self):
         """Configure network connection to remote meshtasticd."""
@@ -554,11 +749,7 @@ class FirstRunMixin:
             shutil.copy2(source, dest)
 
             # Restart meshtasticd
-            if _HAS_APPLY_RESTART:
-                success, msg = apply_config_and_restart('meshtasticd')
-            else:
-                subprocess.run(['systemctl', 'daemon-reload'], timeout=30, check=False)
-                subprocess.run(['systemctl', 'restart', 'meshtasticd'], timeout=30, check=False)
+            apply_config_and_restart('meshtasticd')
 
             self.dialog.msgbox(
                 "Configuration Applied",
@@ -580,26 +771,28 @@ class FirstRunMixin:
 
             config_content = f"""# USB Serial Configuration
 # Generated by MeshForge Setup Wizard
-
-Lora:
-  Module: sx1262  # Adjust if your device uses different chip
-  CS: 0
-  IRQ: 0
-  Busy: 0
-  Reset: 0
+#
+# The device handles its own LoRa configuration.
+# Radio settings are configured via Meshtastic app/CLI:
+#   meshtastic --host localhost --set lora.region US
+#   meshtastic --host localhost --set lora.modem_preset LONG_FAST
 
 Serial:
-  Enabled: true
   Device: {device_path}
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info
 """
             config_file.write_text(config_content)
 
             # Restart meshtasticd
-            if _HAS_APPLY_RESTART:
-                success, msg = apply_config_and_restart('meshtasticd')
-            else:
-                subprocess.run(['systemctl', 'daemon-reload'], timeout=30, check=False)
-                subprocess.run(['systemctl', 'restart', 'meshtasticd'], timeout=30, check=False)
+            apply_config_and_restart('meshtasticd')
 
             self.dialog.msgbox(
                 "USB Configured",
@@ -646,14 +839,6 @@ Serial:
                     )
                     lines = ["Hardware Detection\n", "=" * 40]
                     lines.append("\n✓ SPI Enabled (reboot required)")
-
-        if DeviceScanner is None:
-            if not spi_devices:
-                lines.append("\n✗ Device scanner not available")
-                lines.append("\nConnect a Meshtastic device via USB")
-                lines.append("or configure meshtasticd for HAT/SPI")
-            self.dialog.msgbox("Step 1: Hardware", "\n".join(lines))
-            return
 
         scanner = DeviceScanner()
         results = scanner.scan_all()

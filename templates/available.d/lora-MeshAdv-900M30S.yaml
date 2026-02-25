@@ -1,0 +1,33 @@
+# MeshAdv-Pi E22-900M30S SPI Configuration (1W High-Power)
+# Hardware: SX1262 (Ebyte E22-900M30S), +30dBm (1W)
+# Manufacturer: chrismyers2000
+# Source: meshtastic/firmware bin/config.d
+# Reference: https://github.com/chrismyers2000/MeshAdv-Pi-Hat
+#
+# Copy to: /etc/meshtasticd/config.d/lora-MeshAdv-900M30S.yaml
+#
+# IMPORTANT: Enable SPI first!
+#   sudo raspi-config nonint do_spi 0
+#   sudo reboot
+
+Lora:
+  Module: sx1262
+  CS: 21
+  IRQ: 16
+  Busy: 20
+  Reset: 18
+  TXen: 13
+  RXen: 12
+  DIO3_TCXO_VOLTAGE: true
+  # Only for E22-900M33S:
+  # Limit the output power to 8 dBm
+  # SX126X_MAX_POWER: 8
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

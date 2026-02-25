@@ -17,12 +17,12 @@ ServiceRunState, _HAS_STARTUP_CHECKS = safe_import('startup_checks', 'ServiceRun
 get_http_client, reset_http_client, _HAS_MESHTASTIC_HTTP = safe_import(
     'utils.meshtastic_http', 'get_http_client', 'reset_http_client'
 )
-MapDataCollector, _HAS_MAP_COLLECTOR = safe_import('utils.map_data_collector', 'MapDataCollector')
+from utils.map_data_collector import MapDataCollector
 generate_report, generate_and_save, _HAS_REPORT_GEN = safe_import(
     'utils.report_generator', 'generate_report', 'generate_and_save'
 )
-get_health_scorer, _HAS_HEALTH_SCORE = safe_import('utils.health_score', 'get_health_scorer')
-EASAlertsPlugin, _HAS_EAS = safe_import('plugins.eas_alerts', 'EASAlertsPlugin')
+from utils.health_score import get_health_scorer
+from plugins.eas_alerts import EASAlertsPlugin
 pub, _HAS_PUBSUB = safe_import('pubsub', 'pub')
 
 
@@ -220,27 +220,23 @@ class DashboardMixin:
 
         # Test 5: MapDataCollector
         print("[5/6] Testing MapDataCollector...")
-        if not _HAS_MAP_COLLECTOR:
-            results.append(("MapDataCollector", "SKIP", "Module not available"))
-            print("      \033[0;33mSKIP\033[0m - Module not available")
-        else:
-            try:
-                collector = MapDataCollector(enable_history=False)
-                geojson = collector.collect(max_age_seconds=30)
-                props = geojson.get('properties', {})
-                total = props.get('total_nodes', 0)
-                with_gps = props.get('nodes_with_position', 0)
-                sources = props.get('sources', {})
-                active_sources = [k for k, v in sources.items() if isinstance(v, (int, float)) and v > 0]
-                if total > 0:
-                    results.append(("MapDataCollector", "OK", f"{total} nodes ({with_gps} with GPS)"))
-                    print(f"      \033[0;32mOK\033[0m - {total} nodes, sources: {active_sources}")
-                else:
-                    results.append(("MapDataCollector", "WARN", "0 nodes returned"))
-                    print("      \033[0;33mWARN\033[0m - 0 nodes (check meshtasticd connection)")
-            except Exception as e:
-                results.append(("MapDataCollector", "FAIL", str(e)[:50]))
-                print(f"      \033[0;31mFAIL\033[0m - {e}")
+        try:
+            collector = MapDataCollector(enable_history=False)
+            geojson = collector.collect(max_age_seconds=30)
+            props = geojson.get('properties', {})
+            total = props.get('total_nodes', 0)
+            with_gps = props.get('nodes_with_position', 0)
+            sources = props.get('sources', {})
+            active_sources = [k for k, v in sources.items() if isinstance(v, (int, float)) and v > 0]
+            if total > 0:
+                results.append(("MapDataCollector", "OK", f"{total} nodes ({with_gps} with GPS)"))
+                print(f"      \033[0;32mOK\033[0m - {total} nodes, sources: {active_sources}")
+            else:
+                results.append(("MapDataCollector", "WARN", "0 nodes returned"))
+                print("      \033[0;33mWARN\033[0m - 0 nodes (check meshtasticd connection)")
+        except Exception as e:
+            results.append(("MapDataCollector", "FAIL", str(e)[:50]))
+            print(f"      \033[0;31mFAIL\033[0m - {e}")
 
         # Test 6: RNS path table
         print("[6/6] Testing RNS path table...")
@@ -357,12 +353,6 @@ class DashboardMixin:
         _sp.run(['clear'], check=False, timeout=5)
         print("=== Network Health Score ===\n")
 
-        if not _HAS_HEALTH_SCORE:
-            print("  Health score module not available.")
-            print("  File: src/utils/health_score.py")
-            self._wait_for_enter()
-            return
-
         scorer = get_health_scorer()
         snapshot = scorer.get_snapshot()
 
@@ -437,22 +427,21 @@ class DashboardMixin:
 
         # EAS / Weather alerts
         print()
-        if _HAS_EAS:
-            try:
-                plugin = EASAlertsPlugin()
-                eas_alerts = plugin.get_weather_alerts()
-                if eas_alerts:
-                    print(f"WEATHER ALERTS ({len(eas_alerts)}):")
-                    for alert in eas_alerts[:5]:
-                        severity = getattr(alert, 'severity', 'Unknown')
-                        headline = getattr(alert, 'headline', str(alert))
-                        if len(headline) > 65:
-                            headline = headline[:62] + "..."
-                        print(f"  \033[0;31m!\033[0m [{severity}] {headline}")
-                else:
-                    print("  Weather: No active alerts")
-            except Exception as e:
-                logger.debug("EAS alert check failed: %s", e)
+        try:
+            plugin = EASAlertsPlugin()
+            eas_alerts = plugin.get_weather_alerts()
+            if eas_alerts:
+                print(f"WEATHER ALERTS ({len(eas_alerts)}):")
+                for alert in eas_alerts[:5]:
+                    severity = getattr(alert, 'severity', 'Unknown')
+                    headline = getattr(alert, 'headline', str(alert))
+                    if len(headline) > 65:
+                        headline = headline[:62] + "..."
+                    print(f"  \033[0;31m!\033[0m [{severity}] {headline}")
+            else:
+                print("  Weather: No active alerts")
+        except Exception as e:
+            logger.debug("EAS alert check failed: %s", e)
 
         print()
         self._wait_for_enter()

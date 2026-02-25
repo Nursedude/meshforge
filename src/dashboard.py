@@ -19,14 +19,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import emoji as em
 from utils.safe_import import safe_import
 
-# Module-level safe imports
-_service, _hardware, _HAS_COMMANDS = safe_import('commands', 'service', 'hardware')
-COMMANDS_AVAILABLE = _HAS_COMMANDS
+# Module-level imports
+from commands import service, hardware
+COMMANDS_AVAILABLE = True
 
-_check_service, _ServiceState, _HAS_SERVICE_CHECK = safe_import(
-    'utils.service_check', 'check_service', 'ServiceState'
-)
-SERVICE_CHECK_AVAILABLE = _HAS_SERVICE_CHECK
+from utils.service_check import check_service, ServiceState
+SERVICE_CHECK_AVAILABLE = True
 
 _meshtastic, _HAS_MESHTASTIC = safe_import('meshtastic')
 
@@ -45,7 +43,7 @@ class StatusDashboard:
         """Get meshtasticd service status using commands layer"""
         if COMMANDS_AVAILABLE:
             try:
-                result = _service.check_status('meshtasticd')
+                result = service.check_status('meshtasticd')
                 status_data = result.data
 
                 # Check for misconfiguration (SPI HAT with USB placeholder)
@@ -71,16 +69,16 @@ class StatusDashboard:
             # Fallback to centralized service checker or direct subprocess call
             if SERVICE_CHECK_AVAILABLE:
                 try:
-                    status = _check_service('meshtasticd')
+                    status = check_service('meshtasticd')
                     # Map ServiceState to dashboard status format
-                    if status.state == _ServiceState.AVAILABLE:
+                    if status.state == ServiceState.AVAILABLE:
                         return {
                             'status': 'active',
                             'running': True,
                             'color': 'green',
                             'message': status.message
                         }
-                    elif status.state == _ServiceState.DEGRADED:
+                    elif status.state == ServiceState.DEGRADED:
                         # Check if it's a SPI HAT misconfiguration
                         if 'WRONG CONFIG' in status.message:
                             return {
@@ -168,7 +166,7 @@ class StatusDashboard:
         if meshtasticd_path:
             if COMMANDS_AVAILABLE:
                 try:
-                    result = _service.get_version('meshtasticd')
+                    result = service.get_version('meshtasticd')
                     if result.success:
                         return result.data.get('version', 'Native')
                 except Exception as e:

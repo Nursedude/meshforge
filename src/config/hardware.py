@@ -3,6 +3,7 @@
 import os
 import glob
 from pathlib import Path
+from typing import Optional
 from rich.console import Console
 
 from utils.system import run_command
@@ -29,6 +30,14 @@ class HardwareDetector:
             'meshtastic_compatible': True,
             'power_requirement': '900mA (peak)',
             'notes': 'MeshToad variant'
+        },
+        '1a86:5512': {
+            'name': 'CH341 USB-to-SPI/I2C',
+            'common_devices': ['MeshToad E22', 'Pinedio USB', 'MeshStick 1262', 'PiggyStick'],
+            'meshtastic_compatible': True,
+            'power_requirement': '900mA (peak)',
+            'notes': 'CH341 in SPI/I2C bridge mode (not serial). Creates virtual spidev/i2c buses.',
+            'connection_type': 'spi'
         },
         '10c4:ea60': {
             'name': 'CP2102 USB-Serial',
@@ -102,6 +111,60 @@ class HardwareDetector:
             'flash_method': 'esptool'
         }
     }
+
+    # USB vendor:product ID → meshtasticd template mapping
+    # Maps detected USB chipsets to the correct template in available.d/
+    USB_ID_TO_TEMPLATE = {
+        # Heltec ESP32-S3 variants
+        '303a:1001': 'heltec-usb.yaml',      # ESP32-S3 CDC (Heltec V3/V4)
+        '303a:4001': 'heltec-usb.yaml',      # ESP32-S3 JTAG
+        '303a:1002': 'heltec-usb.yaml',      # ESP32-S3 Native USB
+        # MeshStick
+        '1209:0000': 'meshstick-usb.yaml',   # Official Meshtastic USB device
+        # MeshToad / CH340 family
+        '1a86:7523': 'meshtoad-usb.yaml',    # CH340 (MeshToad, MeshTadpole)
+        '1a86:55d4': 'meshtoad-usb.yaml',    # CH341 alternate
+        '1a86:5512': 'lora-usb-meshtoad-e22.yaml',  # CH341 SPI/I2C bridge
+        '1a86:7522': 'meshtoad-usb.yaml',    # CH340K variant
+        # RAK4631 / nRF52840
+        '239a:8029': 'rak4631-usb.yaml',     # Adafruit nRF52840 (RAK4631)
+        '239a:0029': 'rak4631-usb.yaml',     # RAK4631 bootloader mode
+        '19d2:0016': 'rak4631-usb.yaml',     # RAK WisBlock USB
+        # Station G2 / CP2102
+        '10c4:ea60': 'station-g2-usb.yaml',  # CP2102 (Station G2)
+        # T-Beam S3 / CH9102
+        '1a86:55d3': 'tbeam-usb.yaml',       # CH9102 (T-Beam S3)
+        # Generic USB-serial fallback
+        '0403:6001': 'usb-serial-generic.yaml',  # FT232R
+        '0403:6015': 'usb-serial-generic.yaml',  # FT231X
+    }
+
+    @classmethod
+    def match_usb_to_template(cls, vendor_product_id: str) -> 'Optional[str]':
+        """Match a USB vendor:product ID to a meshtasticd template filename.
+
+        Args:
+            vendor_product_id: USB ID in 'vendor:product' format (e.g. '303a:1001')
+
+        Returns:
+            Template filename (e.g. 'heltec-usb.yaml') or None if no match.
+        """
+        return cls.USB_ID_TO_TEMPLATE.get(vendor_product_id.lower())
+
+    @classmethod
+    def get_device_name_for_usb_id(cls, vendor_product_id: str) -> 'Optional[str]':
+        """Get human-readable device name for a USB vendor:product ID.
+
+        Args:
+            vendor_product_id: USB ID in 'vendor:product' format (e.g. '303a:1001')
+
+        Returns:
+            Device name string (e.g. 'Heltec V3/V4') or None.
+        """
+        info = cls.KNOWN_USB_MODULES.get(vendor_product_id.lower())
+        if info:
+            return ', '.join(info.get('common_devices', [info['name']]))
+        return None
 
     # Known SPI LoRa HATs with detailed configuration
     KNOWN_SPI_HATS = {
@@ -352,6 +415,53 @@ class HardwareDetector:
         },
     }
 
+    # Mapping from KNOWN_SPI_HATS key → template filename in available.d/
+    HAT_KEY_TO_TEMPLATE = {
+        'MeshAdv-Mini': 'meshadv-mini.yaml',
+        'MeshAdv-Pi v1.1': 'meshadv-pi-v1.1.yaml',
+        'MeshAdv-Pi-Hat': 'meshadv-pi-hat.yaml',
+        'Adafruit RFM9x': 'adafruit-rfm9x.yaml',
+        'Waveshare SX126X': 'waveshare-sx1262.yaml',
+        'Elecrow LoRa RFM95': 'elecrow-rfm95.yaml',
+        'FemtoFox': 'femtofox.yaml',
+        'Ebyte E22-900M30S': 'ebyte-e22-900m30s.yaml',
+        'Ebyte E22-400M30S': 'ebyte-e22-400m30s.yaml',
+        'Seeed SenseCAP E5': 'seeed-sensecap.yaml',
+        'RAKwireless RAK2287': 'rak-hat-spi.yaml',
+    }
+
+    @classmethod
+    def match_eeprom_to_template(cls) -> Optional[str]:
+        """Match HAT EEPROM product string to a template filename.
+
+        Reads /proc/device-tree/hat/product (populated by RPi kernel
+        from HAT EEPROM at I2C address 0x50) and matches against
+        KNOWN_SPI_HATS keys.
+
+        Returns:
+            Template filename (e.g. 'meshadv-mini.yaml') or None.
+        """
+        try:
+            product_path = Path('/proc/device-tree/hat/product')
+            if not product_path.exists():
+                return None
+            product = product_path.read_text().strip('\x00').strip()
+            if not product:
+                return None
+
+            for hat_key in cls.KNOWN_SPI_HATS:
+                if hat_key.lower() in product.lower():
+                    template = cls.HAT_KEY_TO_TEMPLATE.get(hat_key)
+                    if template:
+                        log(
+                            f"EEPROM product '{product}' matched "
+                            f"HAT '{hat_key}' → template '{template}'"
+                        )
+                        return template
+            return None
+        except (OSError, PermissionError):
+            return None
+
     def __init__(self):
         self.detected_hardware = {}
 
@@ -391,7 +501,7 @@ class HardwareDetector:
                         }
 
                         # Check if it's likely a MeshToad
-                        if '1a86:7523' in vendor_product or '1a86:55d4' in vendor_product:
+                        if vendor_product in ('1a86:7523', '1a86:55d4', '1a86:5512'):
                             device_entry['likely_meshtoad'] = True
                             device_entry['recommended_config'] = 'MediumFast preset recommended for MtnMesh compatibility'
 

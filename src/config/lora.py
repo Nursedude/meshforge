@@ -4,10 +4,7 @@ from rich.console import Console
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
 
-from utils.safe_import import safe_import
-
-# Meshtastic CLI finder (optional)
-_find_meshtastic_cli, _HAS_CLI = safe_import('utils.cli', 'find_meshtastic_cli')
+from utils.cli import find_meshtastic_cli
 
 console = Console()
 
@@ -689,6 +686,11 @@ class LoRaConfigurator:
 
             if result.returncode == 0:
                 console.print(f"[green]Modem preset set to {preset_key}[/green]")
+                try:
+                    from utils.device_config_store import save_device_setting
+                    save_device_setting('lora', 'modem_preset', preset_key)
+                except Exception:
+                    pass  # Non-critical: persistence is best-effort here
                 return True
             else:
                 console.print(f"[yellow]Warning: {result.stderr or 'Could not set preset'}[/yellow]")
@@ -760,11 +762,7 @@ class LoRaConfigurator:
         """Find the meshtastic CLI executable - uses centralized utils.cli"""
         import os
 
-        if _HAS_CLI:
-            cli_path = _find_meshtastic_cli()
-        else:
-            import shutil
-            cli_path = shutil.which('meshtastic')
+        cli_path = find_meshtastic_cli()
 
         # Add directory to PATH for this session if found
         if cli_path:

@@ -9,11 +9,14 @@ Integrates with Meshtastic Site Planner for:
 Reference: https://meshtastic.org/docs/software/site-planner/
 """
 
+import logging
 import os
 import subprocess
 import webbrowser
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from rich.console import Console
 from rich.panel import Panel
@@ -370,8 +373,8 @@ class SitePlanner:
                     if 'latitude' in line.lower():
                         # Parse latitude/longitude
                         pass  # Would need actual parsing
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("GPSD location detection failed: %s", e)
         return None
 
     def _set_manual_location(self):
@@ -602,8 +605,8 @@ class SitePlanner:
                 if result.returncode == 0:
                     console.print(f"[green]Opened in browser[/green]")
                     return
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to open browser: %s", e)
 
         # No display or xdg-open failed - just show the URL
         console.print(f"\n[cyan]Open this URL in your browser:[/cyan]")

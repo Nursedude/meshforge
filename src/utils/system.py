@@ -20,12 +20,9 @@ from utils.safe_import import safe_import
 
 # Module-level safe imports
 distro, _HAS_DISTRO = safe_import('distro')
-check_service, check_systemd_service, ServiceState, _HAS_SERVICE_CHECK = safe_import(
-    'utils.service_check', 'check_service', 'check_systemd_service', 'ServiceState'
-)
+from utils.service_check import check_service, check_systemd_service, ServiceState
 _psutil, _HAS_PSUTIL = safe_import('psutil')
 _serial_list_ports, _HAS_SERIAL = safe_import('serial.tools.list_ports')
-GLib, _HAS_GLIB = safe_import('gi.repository', 'GLib')
 
 
 def check_root() -> bool:
@@ -250,11 +247,7 @@ def run_admin_command_async(
 
     def do_run():
         success, stdout, stderr = run_admin_command(cmd, use_gui, timeout)
-        # Use GLib.idle_add if available (GTK apps)
-        if _HAS_GLIB:
-            GLib.idle_add(callback, success, stdout, stderr)
-        else:
-            callback(success, stdout, stderr)
+        callback(success, stdout, stderr)
 
     thread = threading.Thread(target=do_run, daemon=True)
     thread.start()
@@ -277,7 +270,7 @@ def systemctl_admin(action: str, service: str, callback: Callable[[bool, str, st
         # Synchronous
         success, _, err = systemctl_admin('restart', 'meshtasticd')
 
-        # Async for GTK
+        # Async
         systemctl_admin('restart', 'meshtasticd', callback=on_done)
     """
     cmd = ['systemctl', action, service]
@@ -529,34 +522,34 @@ def get_service_status(service_name: str) -> str:
     Args:
         service_name: Name of the systemd service (validated, no shell chars)
     """
-    # Use centralized service checker if available
-    if _HAS_SERVICE_CHECK:
-        is_running, is_enabled = check_systemd_service(service_name)
-        if is_running:
-            return 'active'
-        elif is_running is False:
-            return 'inactive'
-        else:
-            return 'unknown'
+    is_running, is_enabled = check_systemd_service(service_name)
+    if is_running:
+        return 'active'
+    elif is_running is False:
+        return 'inactive'
     else:
-        # Fallback to direct systemctl call using list form to prevent command injection
-        result = run_command(['systemctl', 'is-active', service_name])
-        return result['stdout'].strip() if result['success'] else 'unknown'
+        return 'unknown'
 
 
 def is_service_running(service_name: str) -> bool:
-    """Check if a systemd service is running"""
-    # Use centralized service checker if available
-    if _HAS_SERVICE_CHECK:
-        is_running, is_enabled = check_systemd_service(service_name)
-        return is_running
-    else:
-        # Fallback to direct method
-        return get_service_status(service_name) == 'active'
+    """Check if a systemd service is running.
+
+    .. deprecated::
+        Prefer ``check_service()`` from ``utils.service_check`` (SINGLE SOURCE
+        OF TRUTH for service management). This wrapper is kept for installer
+        compatibility in minimal environments.
+    """
+    is_running, is_enabled = check_systemd_service(service_name)
+    return is_running
 
 
 def enable_service(service_name: str) -> bool:
-    """Enable and start a systemd service
+    """Enable and start a systemd service.
+
+    .. deprecated::
+        Prefer ``enable_service()`` / ``start_service()`` from
+        ``utils.service_check`` (SINGLE SOURCE OF TRUTH). This wrapper is
+        kept for installer compatibility in minimal environments.
 
     Args:
         service_name: Name of the systemd service (validated, no shell chars)
@@ -568,7 +561,12 @@ def enable_service(service_name: str) -> bool:
 
 
 def restart_service(service_name: str) -> bool:
-    """Restart a systemd service
+    """Restart a systemd service.
+
+    .. deprecated::
+        Prefer ``restart_service()`` from ``utils.service_check`` (SINGLE
+        SOURCE OF TRUTH). This wrapper is kept for installer compatibility
+        in minimal environments.
 
     Args:
         service_name: Name of the systemd service (validated, no shell chars)
@@ -795,15 +793,6 @@ def get_dependency_status() -> Dict[str, bool]:
         'rich': check_dependency('rich'),
         'pyserial': check_dependency('serial'),
     }
-
-    # GTK4 requires special handling
-    try:
-        import gi
-        gi.require_version('Gtk', '4.0')
-        from gi.repository import Gtk
-        deps['gtk4'] = True
-    except (ImportError, ValueError):
-        deps['gtk4'] = False
 
     return deps
 

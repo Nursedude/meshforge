@@ -7,36 +7,110 @@ Extracted from main.py to reduce file size.
 """
 
 import logging
+import os
+import re
 import subprocess
 import sys
+import tempfile
+import yaml
 from pathlib import Path
 from backend import clear_screen
 
 logger = logging.getLogger(__name__)
 
-from utils.safe_import import safe_import
-
-# Import centralized service checker - SINGLE SOURCE OF TRUTH
-check_service, check_systemd_service, ServiceState, apply_config_and_restart, _HAS_APPLY_RESTART = safe_import(
-    'utils.service_check', 'check_service', 'check_systemd_service', 'ServiceState', 'apply_config_and_restart'
+# Import centralized service checker - SINGLE SOURCE OF TRUTH (first-party)
+from utils.service_check import (
+    check_service, check_systemd_service, ServiceState,
+    apply_config_and_restart, _sudo_cmd,
 )
 
 # Hoist function-level imports to module level
-_get_cli, _HAS_MESHTASTIC_CLI = safe_import('core.meshtastic_cli', 'get_cli')
-_get_http_client, _HAS_HTTP_CLIENT = safe_import('utils.meshtastic_http', 'get_http_client')
-_get_active_profile, _HAS_BROKER_PROFILES = safe_import('utils.broker_profiles', 'get_active_profile')
+from core.meshtastic_cli import get_cli
+from utils.meshtastic_http import get_http_client
+from utils.broker_profiles import get_active_profile
+
+
+OVERLAY_PATH = Path('/etc/meshtasticd/config.d/meshforge-overrides.yaml')
+OVERLAY_HEADER = (
+    "# MeshForge configuration overrides\n"
+    "# These settings override /etc/meshtasticd/config.yaml\n"
+    "# To reset: sudo rm this file and restart meshtasticd\n"
+)
 
 
 class MeshtasticdConfigMixin:
     """Mixin providing meshtasticd configuration methods for the launcher."""
 
+    # LoRa module types supported by meshtasticd
+    LORA_MODULES = {
+        "sx1262": "SX1262 (Waveshare, Ebyte E22-900M, MeshAdv, etc.)",
+        "sx1268": "SX1268 (Ebyte E22-400M, etc.)",
+        "sx1280": "SX1280 (2.4 GHz)",
+        "RF95": "RF95/RFM95 (Elecrow, Adafruit RFM9x)",
+        "sim": "Simulation mode (no radio)",
+    }
+
+    def _read_overlay(self) -> dict:
+        """Load meshforge-overrides.yaml from config.d/ (or empty dict)."""
+        if OVERLAY_PATH.exists():
+            try:
+                data = yaml.safe_load(OVERLAY_PATH.read_text())
+                return data if isinstance(data, dict) else {}
+            except Exception as e:
+                logger.debug("Failed to read overlay: %s", e)
+        return {}
+
+    def _write_overlay(self, data: dict) -> bool:
+        """Write meshforge-overrides.yaml to config.d/. Never touches config.yaml.
+
+        Uses atomic write (tempfile + rename) to prevent corruption on
+        power loss or interruption.
+        """
+        try:
+            OVERLAY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            content = OVERLAY_HEADER + "\n" + yaml.dump(
+                data, default_flow_style=False, sort_keys=False
+            )
+            # Atomic write: temp file in same dir, then rename
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=str(OVERLAY_PATH.parent), suffix='.tmp'
+            )
+            try:
+                with os.fdopen(tmp_fd, 'w') as f:
+                    f.write(content)
+                os.rename(tmp_path, str(OVERLAY_PATH))
+            except BaseException:
+                os.unlink(tmp_path)
+                raise
+            return True
+        except PermissionError:
+            self.dialog.msgbox("Error", "Permission denied. Run with sudo.")
+            return False
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed to write overlay:\n{e}")
+            return False
+
+    def _ensure_meshtasticd_config(self):
+        """Auto-create /etc/meshtasticd structure and templates if missing."""
+        try:
+            from core.meshtasticd_config import MeshtasticdConfig
+            MeshtasticdConfig().ensure_structure()
+        except PermissionError:
+            logger.debug("Cannot auto-create meshtasticd config (no root)")
+        except Exception as e:
+            logger.debug("meshtasticd config auto-create failed: %s", e)
+
     def _meshtasticd_menu(self):
         """Meshtasticd configuration menu."""
+        # Auto-create config structure if missing
+        self._ensure_meshtasticd_config()
+
         while True:
             choices = [
                 ("web", "Web Client (Full Config)"),
                 ("status", "Service Status"),
                 ("owner", "Set Owner/Node Name"),
+                ("lora", "LoRa Module Config"),
                 ("presets", "Radio Presets (LoRa)"),
                 ("hardware", "Hardware Config"),
                 ("channels", "Channel Config"),
@@ -61,6 +135,7 @@ class MeshtasticdConfigMixin:
                 "web": ("Web Client", self._show_web_client_info),
                 "status": ("Service Status", self._meshtasticd_status),
                 "owner": ("Set Owner Name", self._set_owner_name),
+                "lora": ("LoRa Module Config", self._lora_module_menu),
                 "presets": ("Radio Presets", self._radio_presets_menu),
                 "hardware": ("Hardware Config", self._hardware_config_menu),
                 "channels": ("Channel Config", self._channel_config_menu),
@@ -123,23 +198,9 @@ class MeshtasticdConfigMixin:
 
         try:
             # ---- Service state (SINGLE SOURCE OF TRUTH: systemctl) ----
-            if check_service is not None and check_systemd_service is not None:
-                status = check_service('meshtasticd')
-                is_running = status.available
-                _, is_enabled = check_systemd_service('meshtasticd')
-            else:
-                # Fallback if service_check not available
-                result = subprocess.run(
-                    ['systemctl', 'status', 'meshtasticd'],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                is_running = "active (running)" in result.stdout
-                is_enabled = subprocess.run(
-                    ['systemctl', 'is-enabled', 'meshtasticd'],
-                    capture_output=True, text=True, timeout=5
-                ).returncode == 0
+            status = check_service('meshtasticd')
+            is_running = status.available
+            _, is_enabled = check_systemd_service('meshtasticd')
 
             # ---- Preset detection (separate from service state) ----
             preset_display = "Unknown (select via Radio Presets)"
@@ -161,20 +222,37 @@ class MeshtasticdConfigMixin:
             config_path = Path('/etc/meshtasticd/config.yaml')
             config_exists = config_path.exists()
 
+            # Auto-create if missing
+            if not config_exists:
+                self._ensure_meshtasticd_config()
+                config_exists = config_path.exists()
+
             config_d = Path('/etc/meshtasticd/config.d')
             active_configs = list(config_d.glob('*.yaml')) if config_d.exists() else []
 
-            # ---- Build display (service state and preset shown separately) ----
+            available_d = Path('/etc/meshtasticd/available.d')
+            available_count = len(list(available_d.glob('*.yaml'))) if available_d.exists() else 0
+
+            # ---- Build display (Issue #20 Phase 2: service state and
+            #      detection shown separately with actionable hints) ----
             text = "Meshtasticd Service Status:\n"
-            text += f"\nService: {'running' if is_running else 'stopped'}"
+            if is_running:
+                text += "\nService: RUNNING"
+            else:
+                text += "\nService: STOPPED"
+                if status.fix_hint:
+                    text += f"\n  Hint: {status.fix_hint}"
             text += f"\nBoot:    {'enabled' if is_enabled else 'not enabled (will not start on reboot)'}"
             text += f"\n\nPreset:  {preset_display}"
             if region_display:
                 text += f"\nRegion:  {region_display}"
             if detection_method:
                 text += f"\n  (detected via {detection_method})"
+            elif is_running and preset_display.startswith("Unknown"):
+                text += "\n  (CLI detection unavailable — select preset manually)"
             text += f"\n\nConfig File: {config_path}"
-            text += f"\nConfig Exists: {'Yes' if config_exists else 'No'}"
+            text += f"\nConfig Exists: {'Yes' if config_exists else 'No — run with sudo to create'}"
+            text += f"\nAvailable Templates: {available_count}"
             text += f"\n\nActive Hardware Configs: {len(active_configs)}"
 
             for cfg in active_configs[:5]:
@@ -182,6 +260,9 @@ class MeshtasticdConfigMixin:
 
             if len(active_configs) > 5:
                 text += f"\n  ... and {len(active_configs) - 5} more"
+
+            if not active_configs and available_count > 0:
+                text += "\n  (none — select hardware from Hardware Config)"
 
             self.dialog.msgbox("Meshtasticd Status", text)
 
@@ -274,8 +355,20 @@ Press Cancel to keep current values."""
                     self.dialog.msgbox("Error", f"Failed to set short name:\n{result.message}")
                     return
 
+            # Persist owner settings for restart survival
             if changes_made:
-                self.dialog.msgbox("Success", f"Owner settings updated:\n\n" + "\n".join(changes_made))
+                from utils.device_config_store import save_device_settings
+                owner_data = {}
+                if long_name:
+                    owner_data['long_name'] = long_name
+                if short_name:
+                    owner_data['short_name'] = short_name
+                save_device_settings({'owner': owner_data})
+
+                self.dialog.msgbox("Success",
+                    f"Owner settings updated:\n\n"
+                    + "\n".join(changes_made)
+                    + "\n\nSaved for restart persistence.")
             else:
                 self.dialog.msgbox("Info", "No changes made.")
 
@@ -390,63 +483,84 @@ Press Cancel to keep current values."""
 
         self.dialog.infobox("Applying", f"Applying {preset} preset...")
 
-        if _HAS_MESHTASTIC_CLI:
-            try:
-                cli = _get_cli()
+        try:
+            cli = get_cli()
 
-                # Apply modem preset
-                result = cli.set_lora_preset(preset)
-                if not result.success:
-                    self.dialog.msgbox("Error",
-                        f"Failed to set modem preset:\n{result.error}\n\n"
-                        "Ensure meshtastic CLI is installed and\n"
-                        "meshtasticd is running with region set.")
-                    return
+            # Apply modem preset (with verification)
+            result = cli.set_lora_preset(preset)
+            if not result.success:
+                self.dialog.msgbox("Error",
+                    f"Failed to set modem preset:\n{result.error}\n\n"
+                    "Ensure meshtastic CLI is installed and\n"
+                    "meshtasticd is running with region set.")
+                return
 
-                # Apply frequency slot
-                slot_result = cli.set_channel_num(freq_slot)
-                slot_msg = ""
-                if not slot_result.success:
-                    slot_msg = f"\nFrequency slot: FAILED ({slot_result.error})"
-                else:
-                    slot_msg = f"\nFrequency slot: {freq_slot}"
+            verified = '[verified]' in (result.output or '')
 
-                self.dialog.msgbox("Success",
-                    f"{preset} preset applied!\n\n"
-                    f"Modem preset: {preset}{slot_msg}\n\n"
-                    "Settings applied via meshtastic CLI.\n"
-                    "Device will reboot to apply changes.")
-            except Exception as e:
-                self.dialog.msgbox("Error", f"Failed to apply preset:\n{e}")
-        else:
-            # Fallback: direct subprocess call
-            try:
-                cli_path = self._get_meshtastic_cli()
-                result = subprocess.run(
-                    [cli_path, '--host', 'localhost:4403',
-                     '--set', 'lora.modem_preset', preset],
-                    capture_output=True, text=True, timeout=30
-                )
-                if result.returncode != 0:
-                    self.dialog.msgbox("Error",
-                        f"Failed to apply preset:\n{result.stderr or result.stdout}")
-                    return
+            # Apply frequency slot (with verification)
+            slot_result = cli.set_channel_num(freq_slot)
+            slot_msg = ""
+            if not slot_result.success:
+                slot_msg = f"\nFrequency slot: FAILED ({slot_result.error})"
+            else:
+                slot_msg = f"\nFrequency slot: {freq_slot}"
 
-                subprocess.run(
-                    [cli_path, '--host', 'localhost:4403',
-                     '--set', 'lora.channel_num', str(freq_slot)],
-                    capture_output=True, text=True, timeout=30
-                )
+            # Persist settings for restart survival
+            from utils.device_config_store import save_device_settings
+            save_device_settings({
+                'lora': {
+                    'modem_preset': preset,
+                    'channel_num': freq_slot,
+                }
+            })
 
-                self.dialog.msgbox("Success",
-                    f"{preset} preset applied!\n"
-                    f"Frequency slot: {freq_slot}")
+            verify_note = " (verified)" if verified else ""
+            self.dialog.msgbox("Success",
+                f"{preset} preset applied!{verify_note}\n\n"
+                f"Modem preset: {preset}{slot_msg}\n\n"
+                "Settings saved for restart persistence.\n"
+                "Will be re-applied if meshtasticd restarts.")
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed to apply preset:\n{e}")
 
-            except Exception as e:
-                self.dialog.msgbox("Error", f"Failed to apply preset:\n{e}")
+    def _classify_hardware_config(self, config_path: Path) -> str:
+        """Classify a hardware config as 'usb' or 'spi'.
+
+        Uses RADIO_TEMPLATES radio_type first, then falls back to
+        inspecting the YAML content for Serial: (USB) vs Lora:/Display: (SPI).
+        """
+        try:
+            from core.meshtasticd_config import RADIO_TEMPLATES, RadioType
+            template = RADIO_TEMPLATES.get(config_path.stem, {})
+            if template:
+                rtype = template.get("radio_type")
+                if rtype == RadioType.USB_SERIAL:
+                    return "usb"
+                return "spi"
+        except ImportError:
+            pass
+
+        # Fallback: inspect file content
+        try:
+            content = config_path.read_text(errors='replace')[:500]
+            if 'Serial:' in content and 'spidev' not in content.lower():
+                return "usb"
+        except Exception:
+            pass
+        return "spi"
 
     def _hardware_config_menu(self):
-        """Hardware configuration selection."""
+        """Hardware configuration selection with USB/SPI categorization."""
+        # Auto-create directory structure and templates if missing
+        try:
+            from core.meshtasticd_config import MeshtasticdConfig
+            config_mgr = MeshtasticdConfig()
+            config_mgr.ensure_structure()
+        except PermissionError:
+            logger.debug("Cannot auto-create templates (no root), using existing")
+        except Exception as e:
+            logger.debug("Template auto-creation failed: %s", e)
+
         available_dir = Path('/etc/meshtasticd/available.d')
         config_d = Path('/etc/meshtasticd/config.d')
 
@@ -454,13 +568,15 @@ Press Cancel to keep current values."""
             self.dialog.msgbox("Error",
                 "Hardware templates not found.\n\n"
                 f"Expected: {available_dir}\n\n"
-                "Run the installer to set up templates.")
+                "Run with sudo to auto-create, or run the installer.")
             return
 
         # List available hardware configs
         available = list(available_dir.glob('*.yaml'))
         if not available:
-            self.dialog.msgbox("Error", "No hardware templates found.")
+            self.dialog.msgbox("Error",
+                "No hardware templates found.\n\n"
+                "Run with sudo to auto-create, or run the installer.")
             return
 
         # Get currently active configs
@@ -468,26 +584,48 @@ Press Cancel to keep current values."""
         if config_d.exists():
             active = {f.name for f in config_d.glob('*.yaml')}
 
-        choices = []
+        # Classify configs into USB and SPI categories
+        usb_configs = []
+        spi_configs = []
         for cfg in sorted(available):
-            status = "[ACTIVE]" if cfg.name in active else ""
-            # Truncate name for display
-            name = cfg.stem[:25]
-            choices.append((cfg.name, f"{name} {status}"))
+            if self._classify_hardware_config(cfg) == "usb":
+                usb_configs.append(cfg)
+            else:
+                spi_configs.append(cfg)
+
+        # Build categorized menu choices
+        choices = []
+        choices.append(("--usb--", f"--- USB Radios ({len(usb_configs)}) ---"))
+        for cfg in usb_configs:
+            status = " [ACTIVE]" if cfg.name in active else ""
+            choices.append((cfg.name, f"  {cfg.stem}{status}"))
+
+        choices.append(("--spi--", f"--- SPI HATs ({len(spi_configs)}) ---"))
+        for cfg in spi_configs:
+            status = " [ACTIVE]" if cfg.name in active else ""
+            choices.append((cfg.name, f"  {cfg.stem}{status}"))
 
         choices.append(("view", "View Config Details"))
         choices.append(("back", "Back"))
 
+        # Build subtitle with active config info
+        active_names = [n.replace('.yaml', '') for n in active
+                        if n != 'meshforge-overrides.yaml']
+        active_display = ', '.join(active_names) if active_names else 'none'
+
         choice = self.dialog.menu(
             "Hardware Config",
-            "Select hardware configuration to activate:\n\n"
-            f"Templates: {available_dir}\n"
-            f"Active: {config_d}",
+            f"Total: {len(available)} templates | "
+            f"Active: {active_display}\n\n"
+            "Select hardware configuration to activate:",
             choices
         )
 
         if choice is None or choice == "back":
             return
+        elif choice in ("--usb--", "--spi--"):
+            # Category header selected — re-show menu
+            self._hardware_config_menu()
         elif choice == "view":
             self._view_hardware_config(available)
         else:
@@ -526,13 +664,7 @@ Press Cancel to keep current values."""
             shutil.copy(src, dst)
 
             # Restart service
-            if _HAS_APPLY_RESTART:
-                success, msg = apply_config_and_restart('meshtasticd')
-            else:
-                subprocess.run(['systemctl', 'daemon-reload'],
-                               capture_output=True, timeout=10)
-                subprocess.run(['systemctl', 'restart', 'meshtasticd'],
-                               capture_output=True, timeout=30)
+            apply_config_and_restart('meshtasticd')
 
             self.dialog.msgbox("Success",
                 f"Hardware config activated!\n\n"
@@ -602,16 +734,8 @@ Press Cancel to keep current values."""
         """Scan for phantom/incomplete nodes via HTTP API."""
         self.dialog.infobox("Scanning", "Fetching node list from meshtasticd...")
 
-        if not _HAS_HTTP_CLIENT:
-            self.dialog.msgbox(
-                "Module Not Available",
-                "HTTP client module not found.\n\n"
-                "Ensure src/utils/meshtastic_http.py exists."
-            )
-            return
-
         try:
-            client = _get_http_client()
+            client = get_http_client()
 
             if not client.is_available:
                 self.dialog.msgbox(
@@ -829,10 +953,13 @@ Press Cancel to keep current values."""
             self.dialog.msgbox("Error", f"Cannot read config:\n{e}")
             return
 
-        # Find current MaxNodes value
-        import re
+        # Find current MaxNodes value (check overlay first, then config.yaml)
+        overlay = self._read_overlay()
+        overlay_maxnodes = overlay.get('General', {}).get('MaxNodes')
+
         match = re.search(r'MaxNodes:\s*(\d+)', content)
-        current = int(match.group(1)) if match else None
+        base_value = int(match.group(1)) if match else None
+        current = overlay_maxnodes if overlay_maxnodes is not None else base_value
 
         if current is None:
             self.dialog.msgbox(
@@ -845,8 +972,9 @@ Press Cancel to keep current values."""
             )
             return
 
+        source = "overlay" if overlay_maxnodes is not None else "config.yaml"
         text = (
-            f"Current MaxNodes: {current}\n\n"
+            f"Current MaxNodes: {current} (from {source})\n\n"
             "MaxNodes limits how many nodes the device tracks.\n"
             "High values accumulate phantom MQTT nodes that\n"
             "can crash the web client.\n\n"
@@ -884,32 +1012,495 @@ Press Cancel to keep current values."""
             self.dialog.msgbox("No Change", f"MaxNodes remains at {current}.")
             return
 
-        # Update config.yaml
-        try:
-            new_content = re.sub(
-                r'(MaxNodes:\s*)\d+',
-                rf'\g<1>{new_int}',
-                content
+        # Write override to config.d/ overlay (never modify config.yaml)
+        overlay = self._read_overlay()
+        if 'General' not in overlay:
+            overlay['General'] = {}
+        overlay['General']['MaxNodes'] = new_int
+
+        if not self._write_overlay(overlay):
+            return
+
+        if self.dialog.yesno(
+            "Restart Service?",
+            f"MaxNodes override: {current} → {new_int}\n\n"
+            f"Saved to: {OVERLAY_PATH}\n"
+            "(config.yaml unchanged)\n\n"
+            "Restart meshtasticd to apply?",
+            default_no=False
+        ):
+            self._restart_meshtasticd()
+        else:
+            self.dialog.msgbox(
+                "Config Updated",
+                f"MaxNodes set to {new_int}.\n\n"
+                f"Overlay: {OVERLAY_PATH}\n"
+                "(config.yaml unchanged)\n\n"
+                "Restart meshtasticd to apply:\n"
+                "  sudo systemctl restart meshtasticd"
             )
-            config_path.write_text(new_content)
 
-            if self.dialog.yesno(
-                "Restart Service?",
-                f"MaxNodes updated: {current} → {new_int}\n\n"
-                "Restart meshtasticd to apply?",
-                default_no=False
-            ):
-                self._restart_meshtasticd()
+    # ------------------------------------------------------------------
+    # LoRa Module Configuration (writes to config.d/ overlay only)
+    # ------------------------------------------------------------------
+
+    def _lora_module_menu(self):
+        """Configure LoRa module type and SPI/GPIO settings.
+
+        All changes are saved to config.d/meshforge-overrides.yaml.
+        The package-provided config.yaml is NEVER modified.
+        """
+        while True:
+            # Read current effective settings
+            overlay = self._read_overlay()
+            lora_overlay = overlay.get('Lora', {})
+
+            # Also read config.yaml for display (read-only)
+            config_yaml = Path('/etc/meshtasticd/config.yaml')
+            base_lora = {}
+            if config_yaml.exists():
+                try:
+                    base = yaml.safe_load(config_yaml.read_text()) or {}
+                    base_lora = base.get('Lora', {})
+                except Exception as e:
+                    logger.debug("Failed to read config.yaml for display: %s", e)
+
+            # Effective = base merged with overlay
+            effective = {**base_lora, **lora_overlay}
+            current_module = effective.get('Module', 'auto')
+
+            status_lines = (
+                f"Current Module: {current_module}\n"
+                f"CS: {effective.get('CS', '-')}  "
+                f"IRQ: {effective.get('IRQ', '-')}  "
+                f"Busy: {effective.get('Busy', '-')}  "
+                f"Reset: {effective.get('Reset', '-')}\n"
+                f"DIO2 RF Switch: {effective.get('DIO2_AS_RF_SWITCH', '-')}  "
+                f"DIO3 TCXO: {effective.get('DIO3_TCXO_VOLTAGE', '-')}\n"
+            )
+
+            choices = [
+                ("module", "Set Module Type"),
+                ("pins", "Set GPIO Pins (CS, IRQ, Busy, Reset)"),
+                ("dio", "DIO2/DIO3 Settings"),
+                ("spi", "SPI Device & Speed"),
+                ("txrx", "TX/RX Enable Pins (PA/LNA)"),
+                ("gpiochip", "GPIO Chip (Pi 5)"),
+                ("preset", "Apply Hardware Preset"),
+                ("view", "View Current Overlay"),
+                ("clear", "Clear LoRa Overlay"),
+                ("back", "Back"),
+            ]
+
+            choice = self.dialog.menu(
+                "LoRa Module Config",
+                f"{status_lines}\n"
+                "Settings saved to config.d/ overlay.\n"
+                "config.yaml is never modified.",
+                choices
+            )
+
+            if choice is None or choice == "back":
+                break
+            elif choice == "module":
+                self._lora_set_module()
+            elif choice == "pins":
+                self._lora_set_pins()
+            elif choice == "dio":
+                self._lora_set_dio()
+            elif choice == "spi":
+                self._lora_set_spi()
+            elif choice == "txrx":
+                self._lora_set_txrx()
+            elif choice == "gpiochip":
+                self._lora_set_gpiochip()
+            elif choice == "preset":
+                self._lora_apply_preset()
+            elif choice == "view":
+                self._lora_view_overlay()
+            elif choice == "clear":
+                self._lora_clear_overlay()
+
+    def _lora_set_module(self):
+        """Select LoRa module type."""
+        choices = [
+            (mod, desc) for mod, desc in self.LORA_MODULES.items()
+        ]
+
+        choice = self.dialog.menu(
+            "LoRa Module Type",
+            "Select the LoRa radio chip type.\n\n"
+            "Match your hardware — SPI radios require\n"
+            "the correct module type to bind.",
+            choices
+        )
+
+        if choice is None:
+            return
+
+        overlay = self._read_overlay()
+        if 'Lora' not in overlay:
+            overlay['Lora'] = {}
+        overlay['Lora']['Module'] = choice
+
+        if self._write_overlay(overlay):
+            self._offer_restart(f"Module set to: {choice}")
+
+    def _lora_set_pins(self):
+        """Configure GPIO pins for SPI LoRa radio."""
+        overlay = self._read_overlay()
+        lora = overlay.get('Lora', {})
+
+        cs = self.dialog.inputbox(
+            "Chip Select (CS)", "GPIO pin for Chip Select:",
+            str(lora.get('CS', '21'))
+        )
+        if cs is None:
+            return
+
+        irq = self.dialog.inputbox(
+            "IRQ (DIO1)", "GPIO pin for Interrupt Request:",
+            str(lora.get('IRQ', '16'))
+        )
+        if irq is None:
+            return
+
+        busy = self.dialog.inputbox(
+            "Busy", "GPIO pin for Busy signal\n(leave empty for RF95):",
+            str(lora.get('Busy', '20'))
+        )
+        if busy is None:
+            return
+
+        reset = self.dialog.inputbox(
+            "Reset", "GPIO pin for Reset:",
+            str(lora.get('Reset', '18'))
+        )
+        if reset is None:
+            return
+
+        if 'Lora' not in overlay:
+            overlay['Lora'] = {}
+
+        try:
+            overlay['Lora']['CS'] = int(cs)
+            overlay['Lora']['IRQ'] = int(irq)
+            if busy and busy.strip():
+                overlay['Lora']['Busy'] = int(busy)
+            overlay['Lora']['Reset'] = int(reset)
+        except ValueError:
+            self.dialog.msgbox("Error", "GPIO pins must be integers.")
+            return
+
+        if self._write_overlay(overlay):
+            self._offer_restart("GPIO pins updated")
+
+    def _lora_set_dio(self):
+        """Configure DIO2 RF switch and DIO3 TCXO voltage."""
+        overlay = self._read_overlay()
+        lora = overlay.get('Lora', {})
+
+        dio2 = self.dialog.yesno(
+            "DIO2 as RF Switch",
+            "Enable DIO2 as RF switch?\n\n"
+            "Required for Ebyte E22 and some SX1262 modules.",
+            default_no=not lora.get('DIO2_AS_RF_SWITCH', False)
+        )
+
+        choices = [
+            ("false", "Disabled"),
+            ("true", "Enabled (auto voltage)"),
+            ("1.6", "1.6V"),
+            ("1.7", "1.7V"),
+            ("1.8", "1.8V (common)"),
+            ("2.2", "2.2V"),
+            ("2.4", "2.4V"),
+            ("2.7", "2.7V"),
+            ("3.0", "3.0V"),
+            ("3.3", "3.3V"),
+        ]
+
+        tcxo = self.dialog.menu(
+            "DIO3 TCXO Voltage",
+            "Set DIO3 TCXO voltage.\n\n"
+            "Required for Waveshare SX1262 and\n"
+            "modules with a TCXO oscillator.",
+            choices
+        )
+
+        if 'Lora' not in overlay:
+            overlay['Lora'] = {}
+
+        overlay['Lora']['DIO2_AS_RF_SWITCH'] = bool(dio2)
+
+        if tcxo and tcxo != "false":
+            if tcxo == "true":
+                overlay['Lora']['DIO3_TCXO_VOLTAGE'] = True
             else:
-                self.dialog.msgbox(
-                    "Config Updated",
-                    f"MaxNodes set to {new_int}.\n\n"
-                    "Restart meshtasticd to apply:\n"
-                    "  sudo systemctl restart meshtasticd"
-                )
+                try:
+                    overlay['Lora']['DIO3_TCXO_VOLTAGE'] = float(tcxo)
+                except ValueError:
+                    overlay['Lora']['DIO3_TCXO_VOLTAGE'] = True
+        else:
+            overlay['Lora'].pop('DIO3_TCXO_VOLTAGE', None)
 
-        except OSError as e:
-            self.dialog.msgbox("Error", f"Failed to update config:\n{e}")
+        if self._write_overlay(overlay):
+            self._offer_restart("DIO settings updated")
+
+    def _lora_set_spi(self):
+        """Configure SPI device and speed."""
+        overlay = self._read_overlay()
+        lora = overlay.get('Lora', {})
+
+        spidev = self.dialog.inputbox(
+            "SPI Device",
+            "SPI device path:\n\n"
+            "  spidev0.0 — Raspberry Pi native SPI\n"
+            "  ch341     — CH341 USB-to-SPI bridge",
+            str(lora.get('spidev', 'spidev0.0'))
+        )
+        if spidev is None:
+            return
+
+        # Validate spidev name
+        if not re.match(r'^(spidev\d+\.\d+|ch341)$', spidev):
+            self.dialog.msgbox(
+                "Invalid",
+                f"Invalid SPI device: {spidev}\n\n"
+                "Expected: spidev0.0, spidev0.1, ch341"
+            )
+            return
+
+        speed = self.dialog.inputbox(
+            "SPI Speed",
+            "SPI bus speed in Hz (default: 2000000):",
+            str(lora.get('spiSpeed', '2000000'))
+        )
+
+        if 'Lora' not in overlay:
+            overlay['Lora'] = {}
+        overlay['Lora']['spidev'] = spidev
+
+        if speed and speed.strip():
+            try:
+                overlay['Lora']['spiSpeed'] = int(speed)
+            except ValueError:
+                self.dialog.msgbox("Warning", f"Invalid SPI speed '{speed}' — using default.")
+
+        if self._write_overlay(overlay):
+            self._offer_restart("SPI settings updated")
+
+    def _lora_set_txrx(self):
+        """Configure TX/RX enable pins for external PA/LNA."""
+        overlay = self._read_overlay()
+        lora = overlay.get('Lora', {})
+
+        txen = self.dialog.inputbox(
+            "TX Enable Pin",
+            "GPIO pin for TX enable (PA control).\n"
+            "Leave empty if not used:",
+            str(lora.get('TXen', ''))
+        )
+
+        rxen = self.dialog.inputbox(
+            "RX Enable Pin",
+            "GPIO pin for RX enable (LNA control).\n"
+            "Leave empty if not used:",
+            str(lora.get('RXen', ''))
+        )
+
+        if 'Lora' not in overlay:
+            overlay['Lora'] = {}
+
+        if txen and txen.strip():
+            try:
+                overlay['Lora']['TXen'] = int(txen)
+            except ValueError:
+                pass
+        else:
+            overlay['Lora'].pop('TXen', None)
+
+        if rxen and rxen.strip():
+            try:
+                overlay['Lora']['RXen'] = int(rxen)
+            except ValueError:
+                pass
+        else:
+            overlay['Lora'].pop('RXen', None)
+
+        if self._write_overlay(overlay):
+            self._offer_restart("TX/RX pins updated")
+
+    def _lora_set_gpiochip(self):
+        """Set GPIO chip number (Raspberry Pi 5 uses gpiochip4)."""
+        overlay = self._read_overlay()
+        lora = overlay.get('Lora', {})
+
+        chip = self.dialog.inputbox(
+            "GPIO Chip",
+            "GPIO chip number:\n\n"
+            "  0 — Raspberry Pi 4 and earlier\n"
+            "  4 — Raspberry Pi 5 (GPIO header)",
+            str(lora.get('gpiochip', '0'))
+        )
+
+        if chip is None:
+            return
+
+        if 'Lora' not in overlay:
+            overlay['Lora'] = {}
+
+        try:
+            overlay['Lora']['gpiochip'] = int(chip)
+        except ValueError:
+            self.dialog.msgbox("Error", "GPIO chip must be an integer.")
+            return
+
+        if self._write_overlay(overlay):
+            self._offer_restart("GPIO chip updated")
+
+    def _lora_apply_preset(self):
+        """Apply a known hardware preset for common LoRa boards."""
+        presets = {
+            "meshadv-mini": {
+                "desc": "MeshAdv-Mini (SX1262, 22dBm)",
+                "config": {
+                    "Module": "sx1262", "CS": 8, "IRQ": 16,
+                    "Busy": 20, "Reset": 24,
+                    "DIO2_AS_RF_SWITCH": True,
+                    "DIO3_TCXO_VOLTAGE": True,
+                },
+            },
+            "meshadv-pi-hat": {
+                "desc": "MeshAdv-Pi HAT (SX1262, 1W, PA/LNA)",
+                "config": {
+                    "Module": "sx1262", "CS": 21, "IRQ": 16,
+                    "Busy": 20, "Reset": 18, "RXen": 12, "TXen": 13,
+                    "DIO2_AS_RF_SWITCH": True,
+                    "DIO3_TCXO_VOLTAGE": True,
+                },
+            },
+            "waveshare-sx1262": {
+                "desc": "Waveshare SX1262 HAT",
+                "config": {
+                    "Module": "sx1262", "CS": 21, "IRQ": 16,
+                    "Busy": 20, "Reset": 18,
+                    "DIO3_TCXO_VOLTAGE": 1.8,
+                },
+            },
+            "elecrow-rfm95": {
+                "desc": "Elecrow RFM95 (SX1276, no Busy pin)",
+                "config": {
+                    "Module": "RF95", "CS": 7, "IRQ": 25, "Reset": 22,
+                },
+            },
+            "ebyte-e22-900m30s": {
+                "desc": "Ebyte E22-900M30S (SX1262, 1W, 915MHz)",
+                "config": {
+                    "Module": "sx1262", "CS": 21, "IRQ": 16,
+                    "Busy": 20, "Reset": 18,
+                    "DIO2_AS_RF_SWITCH": True,
+                    "DIO3_TCXO_VOLTAGE": 1.8,
+                },
+            },
+            "meshtoad-spi": {
+                "desc": "MeshToad SPI (CH341 USB-SPI bridge)",
+                "config": {
+                    "Module": "sx1262", "spidev": "ch341",
+                    "CS": 0, "IRQ": 6, "Busy": 4, "Reset": 2,
+                    "DIO2_AS_RF_SWITCH": True,
+                    "DIO3_TCXO_VOLTAGE": True,
+                },
+            },
+        }
+
+        choices = [(key, p["desc"]) for key, p in presets.items()]
+
+        choice = self.dialog.menu(
+            "Hardware Preset",
+            "Select a hardware preset.\n\n"
+            "This sets Module, GPIO pins, and DIO\n"
+            "options for known hardware configurations.",
+            choices
+        )
+
+        if choice is None or choice not in presets:
+            return
+
+        preset = presets[choice]
+        detail = "\n".join(
+            f"  {k}: {v}" for k, v in preset["config"].items()
+        )
+
+        if not self.dialog.yesno(
+            "Apply Preset",
+            f"Apply preset: {preset['desc']}\n\n{detail}\n\n"
+            f"This writes to:\n  {OVERLAY_PATH}\n"
+            "(config.yaml is not modified)",
+            default_no=True
+        ):
+            return
+
+        overlay = self._read_overlay()
+        overlay['Lora'] = preset["config"]
+
+        if self._write_overlay(overlay):
+            self._offer_restart(f"Preset applied: {choice}")
+
+    def _lora_view_overlay(self):
+        """Show current meshforge-overrides.yaml content."""
+        if OVERLAY_PATH.exists():
+            try:
+                content = OVERLAY_PATH.read_text()
+            except Exception as e:
+                content = f"Error reading overlay: {e}"
+        else:
+            content = "(No overlay file — using defaults from config.yaml)"
+
+        self.dialog.msgbox(f"Overlay: {OVERLAY_PATH}", content)
+
+    def _lora_clear_overlay(self):
+        """Remove LoRa section from the overlay file."""
+        overlay = self._read_overlay()
+        if 'Lora' not in overlay:
+            self.dialog.msgbox("Info", "No LoRa overrides to clear.")
+            return
+
+        if not self.dialog.yesno(
+            "Clear LoRa Overlay",
+            "Remove all LoRa overrides?\n\n"
+            "meshtasticd will use config.yaml defaults\n"
+            "and any active hardware template in config.d/.",
+            default_no=True
+        ):
+            return
+
+        del overlay['Lora']
+
+        if overlay:
+            if not self._write_overlay(overlay):
+                return
+        else:
+            # No remaining overrides — remove the file
+            try:
+                OVERLAY_PATH.unlink()
+            except Exception as e:
+                self.dialog.msgbox("Error", f"Failed to remove overlay:\n{e}")
+                return
+
+        self._offer_restart("LoRa overlay cleared")
+
+    def _offer_restart(self, message: str):
+        """Offer to restart meshtasticd after a config change."""
+        if self.dialog.yesno(
+            "Restart Service?",
+            f"{message}\n\n"
+            f"Saved to: {OVERLAY_PATH}\n"
+            "(config.yaml unchanged)\n\n"
+            "Restart meshtasticd to apply?",
+            default_no=False
+        ):
+            self._restart_meshtasticd()
 
     def _edit_config_menu(self):
         """Edit config files directly."""
@@ -941,8 +1532,17 @@ Press Cancel to keep current values."""
     def _edit_file(self, path: str):
         """Edit a file with nano."""
         if not Path(path).exists():
-            self.dialog.msgbox("Error", f"File not found:\n{path}")
-            return
+            # Try to auto-create meshtasticd config structure
+            if '/etc/meshtasticd/' in path:
+                try:
+                    from core.meshtasticd_config import MeshtasticdConfig
+                    config_mgr = MeshtasticdConfig()
+                    config_mgr.ensure_structure()
+                except Exception as e:
+                    logger.debug("Auto-create config failed: %s", e)
+            if not Path(path).exists():
+                self.dialog.msgbox("Error", f"File not found:\n{path}")
+                return
 
         # Clear screen and run nano
         clear_screen()
@@ -1004,14 +1604,15 @@ Press Cancel to keep current values."""
             self._edit_file(choice)
 
     def _restart_meshtasticd(self):
-        """Restart meshtasticd service."""
+        """Restart meshtasticd service and re-apply saved device settings."""
         confirm = self.dialog.yesno(
             "Restart Service",
             "Restart meshtasticd?\n\n"
             "This will:\n"
             "1. Reload systemd daemon\n"
             "2. Restart meshtasticd service\n"
-            "3. Apply any config changes",
+            "3. Wait for TCP readiness\n"
+            "4. Re-apply saved device settings",
             default_no=True
         )
 
@@ -1021,28 +1622,56 @@ Press Cancel to keep current values."""
         try:
             self.dialog.infobox("Restarting", "Restarting meshtasticd...")
 
-            if _HAS_APPLY_RESTART:
-                success, msg = apply_config_and_restart('meshtasticd')
-                if success:
-                    self.dialog.msgbox("Success", "meshtasticd restarted successfully!")
-                else:
-                    self.dialog.msgbox("Error", f"Restart failed:\n{msg}")
+            success, msg = apply_config_and_restart('meshtasticd')
+            if not success:
+                self.dialog.msgbox("Error", f"Restart failed:\n{msg}")
+                return
+
+            # Check for saved device settings to re-apply
+            from utils.device_config_store import load_device_config, apply_saved_config
+            saved = load_device_config()
+
+            if not saved:
+                self.dialog.msgbox("Success", f"meshtasticd restarted.\n\n{msg}")
+                return
+
+            # Summarize what will be re-applied
+            sections = []
+            for section, values in saved.items():
+                items = [f"  {k}: {v}" for k, v in values.items()]
+                sections.append(f"{section}:\n" + "\n".join(items))
+            summary = "\n".join(sections)
+
+            reapply = self.dialog.yesno(
+                "Re-apply Settings?",
+                f"meshtasticd restarted.\n\n"
+                f"Saved device settings found:\n{summary}\n\n"
+                "Re-apply these settings now?\n"
+                "(Device config may have reverted to defaults)",
+                default_no=False
+            )
+
+            if not reapply:
+                self.dialog.msgbox("Info",
+                    "Settings NOT re-applied.\n\n"
+                    "You can re-apply manually via the\n"
+                    "Radio Presets or Owner Name menus.")
+                return
+
+            self.dialog.infobox("Applying", "Re-applying saved device settings...")
+
+            cli = get_cli()
+            all_ok, results = apply_saved_config(cli)
+
+            if all_ok:
+                self.dialog.msgbox("Success",
+                    "meshtasticd restarted and settings restored!\n\n"
+                    f"{results}")
             else:
-                subprocess.run(['systemctl', 'daemon-reload'],
-                               capture_output=True, timeout=10)
-
-                result = subprocess.run(
-                    ['systemctl', 'restart', 'meshtasticd'],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-
-                if result.returncode == 0:
-                    self.dialog.msgbox("Success", "meshtasticd restarted successfully!")
-                else:
-                    self.dialog.msgbox("Error",
-                        f"Restart failed:\n{result.stderr or result.stdout}")
+                self.dialog.msgbox("Partial Success",
+                    "Some settings could not be restored:\n\n"
+                    f"{results}\n\n"
+                    "Check the web UI at :9443 to verify.")
 
         except subprocess.TimeoutExpired:
             self.dialog.msgbox("Error", "Restart timed out")
@@ -1135,6 +1764,8 @@ Press Cancel to keep current values."""
             )
             if result.returncode == 0:
                 print(f"\nMQTT {'enabled' if enabled else 'disabled'} successfully.")
+                from utils.device_config_store import save_device_setting
+                save_device_setting('mqtt', 'enabled', enabled)
             else:
                 print("\nCommand failed.")
         except Exception as e:
@@ -1145,10 +1776,9 @@ Press Cancel to keep current values."""
         """Set MQTT broker address."""
         # Default to active broker profile's host if available
         default_broker = "mqtt.meshtastic.org"
-        if _HAS_BROKER_PROFILES:
-            active = _get_active_profile()
-            if active:
-                default_broker = active.host
+        active = get_active_profile()
+        if active:
+            default_broker = active.host
 
         broker = self.dialog.inputbox(
             "MQTT Broker",
@@ -1173,6 +1803,8 @@ Press Cancel to keep current values."""
             )
             if result.returncode == 0:
                 print(f"\nMQTT broker set to: {broker}")
+                from utils.device_config_store import save_device_setting
+                save_device_setting('mqtt', 'address', broker.strip())
             else:
                 print("\nCommand failed.")
         except Exception as e:
@@ -1213,6 +1845,14 @@ Press Cancel to keep current values."""
                 result = subprocess.run(cmd, timeout=15)
                 if result.returncode == 0:
                     print("\nMQTT credentials updated.")
+                    from utils.device_config_store import save_device_settings
+                    cred_data = {}
+                    if username:
+                        cred_data['username'] = username
+                    if password:
+                        cred_data['password'] = password
+                    if cred_data:
+                        save_device_settings({'mqtt': cred_data})
                 else:
                     print("\nCommand failed.")
             else:
@@ -1244,6 +1884,8 @@ Press Cancel to keep current values."""
             )
             if result.returncode == 0:
                 print(f"\nMQTT root topic set to: {topic}")
+                from utils.device_config_store import save_device_setting
+                save_device_setting('mqtt', 'root_topic', topic.strip())
             else:
                 print("\nCommand failed.")
         except Exception as e:

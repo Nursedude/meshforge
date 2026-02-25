@@ -24,7 +24,7 @@ from utils.safe_import import safe_import
 
 # Module-level safe imports
 _version_mod, _HAS_VERSION = safe_import('__version__', '__version__')
-_find_meshtastic_cli, _HAS_CLI = safe_import('utils.cli', 'find_meshtastic_cli')
+from utils.cli import find_meshtastic_cli
 
 # Cache for version checks to avoid hitting APIs too frequently
 _version_cache: Dict[str, Any] = {}
@@ -167,11 +167,7 @@ def get_meshtastic_cli_version() -> Optional[str]:
     """Get installed meshtastic CLI version"""
     try:
         # Find meshtastic CLI using centralized function
-        if _HAS_CLI:
-            cli_path = _find_meshtastic_cli()
-        else:
-            import shutil
-            cli_path = shutil.which('meshtastic')
+        cli_path = find_meshtastic_cli()
 
         if not cli_path:
             return None
@@ -213,11 +209,7 @@ def get_node_firmware_version() -> Optional[str]:
                     pass
 
         # Find CLI using centralized function
-        if _HAS_CLI:
-            cli_path = _find_meshtastic_cli()
-        else:
-            import shutil
-            cli_path = shutil.which('meshtastic')
+        cli_path = find_meshtastic_cli()
 
         if not cli_path:
             return None

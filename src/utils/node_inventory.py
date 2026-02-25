@@ -25,17 +25,14 @@ Persistence:
 
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from utils.safe_import import safe_import
+from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)
-
-_get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
 
 # Node is "online" if seen within this window
 ONLINE_TIMEOUT_SEC = 900  # 15 minutes
@@ -141,15 +138,7 @@ class NodeInventory:
 
     def _get_default_path(self) -> Path:
         """Get default persistence path."""
-        if _HAS_PATHS:
-            config_dir = _get_real_user_home() / ".config" / "meshforge"
-        else:
-            sudo_user = os.environ.get('SUDO_USER')
-            if sudo_user and sudo_user != 'root':
-                config_dir = Path(f'/home/{sudo_user}/.config/meshforge')
-            else:
-                # Avoid Path.home() which returns /root under sudo (MF001)
-                config_dir = Path('/tmp/meshforge')
+        config_dir = get_real_user_home() / ".config" / "meshforge"
         return config_dir / "node_inventory.json"
 
     def _load(self) -> None:

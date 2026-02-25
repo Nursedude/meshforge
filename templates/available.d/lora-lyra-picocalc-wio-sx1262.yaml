@@ -1,0 +1,49 @@
+# Lyra PicoCalc WIO SX1262 SPI Configuration
+# Hardware: SX1262 with custom gpiochip mapping
+# Source: meshtastic/firmware bin/config.d
+#
+# Copy to: /etc/meshtasticd/config.d/lora-lyra-picocalc-wio-sx1262.yaml
+#
+# Note: Uses spidev1.0 and multi-gpiochip GPIO mapping.
+
+Lora:
+  Module: sx1262
+  DIO2_AS_RF_SWITCH: true
+  DIO3_TCXO_VOLTAGE: true
+  SX126X_MAX_POWER: 22
+  spidev: spidev1.0
+  SPI_Speed: 2000000
+  MOSI:
+    gpiochip: 0
+    line: 12
+  MISO:
+    gpiochip: 0
+    line: 13
+  SCK:
+    gpiochip: 0
+    line: 11
+  CS:
+    gpiochip: 1
+    line: 9
+  IRQ:
+    gpiochip: 0
+    line: 1
+  Busy:
+    gpiochip: 0
+    line: 23
+  Reset:
+    gpiochip: 0
+    line: 22
+  RXen:
+    gpiochip: 0
+    line: 0
+  # TXen bridges to DIO2 on E22 module
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

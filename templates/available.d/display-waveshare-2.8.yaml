@@ -1,0 +1,28 @@
+# Waveshare 2.8" RPi LCD Display + Touchscreen Configuration
+# Hardware: ST7789 SPI display with XPT2046 resistive touch
+# Resolution: 240x320 pixels
+# Source: meshtastic/firmware bin/config.d
+#
+# Copy to: /etc/meshtasticd/config.d/display-waveshare-2.8.yaml
+#
+# IMPORTANT: Enable SPI first!
+#   sudo raspi-config nonint do_spi 0
+#   sudo reboot
+
+Display:
+  Panel: ST7789
+  CS: 8
+  DC: 22
+  Backlight: 18
+  Width: 240
+  Height: 320
+  Reset: 27
+  Rotate: true
+  Invert: true
+
+Touchscreen:
+  Module: XPT2046
+  CS: 7
+  IRQ: 17
+  # Note: Touchscreen MUST have a CS pin defined,
+  # even if Linux manages CS switching.

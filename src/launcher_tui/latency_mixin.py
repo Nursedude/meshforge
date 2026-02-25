@@ -7,12 +7,9 @@ Extracted as a mixin to keep main.py under 1,500 lines.
 
 import logging
 from backend import clear_screen
-from utils.safe_import import safe_import
+from utils.latency_monitor import get_latency_monitor
 
 logger = logging.getLogger(__name__)
-
-# Module-level safe imports
-_get_latency_monitor, _HAS_LATENCY = safe_import('utils.latency_monitor', 'get_latency_monitor')
 
 
 class LatencyMixin:
@@ -51,13 +48,7 @@ class LatencyMixin:
         clear_screen()
         print("=== Service Latency Status ===\n")
 
-        if not _HAS_LATENCY:
-            print("  Latency monitor module not available.")
-            print("  File: src/utils/latency_monitor.py")
-            self._wait_for_enter()
-            return
-
-        monitor = _get_latency_monitor(auto_start=False)
+        monitor = get_latency_monitor(auto_start=False)
         summary = monitor.get_summary()
 
         if not summary:
@@ -100,12 +91,7 @@ class LatencyMixin:
         clear_screen()
         print("=== Probing Services ===\n")
 
-        if not _HAS_LATENCY:
-            print("  Latency monitor module not available.")
-            self._wait_for_enter()
-            return
-
-        monitor = _get_latency_monitor(auto_start=False)
+        monitor = get_latency_monitor(auto_start=False)
         print("  Running probe cycle...\n")
         health = monitor.probe_once()
 
@@ -140,12 +126,7 @@ class LatencyMixin:
         clear_screen()
         print("=== Degraded / Down Services ===\n")
 
-        if not _HAS_LATENCY:
-            print("  Latency monitor module not available.")
-            self._wait_for_enter()
-            return
-
-        monitor = _get_latency_monitor(auto_start=False)
+        monitor = get_latency_monitor(auto_start=False)
         summary = monitor.get_summary()
 
         # Check if any data exists

@@ -2,24 +2,37 @@
 
 > **Purpose**: Document recurring issues and their proper fixes to prevent regression.
 > This serves as institutional memory for development.
+>
+> **Last audited**: 2026-02-24 — Security & QA sweep (v0.5.4-beta): GTK4 remnant removed from plugin_base.py, raw systemctl bypasses fixed in orchestrator + installer, safe_import violation fixed, main.py trimmed below 1500 via export extraction to topology_mixin, line counts refreshed, H1 fully resolved
 
 ---
 
-## Issue #1: Path.home() Returns /root with sudo
+## Health Check Reconciliation (2026-02-20)
 
-### Symptom
-User config files, logs, and settings created in `/root/.config/meshforge/` instead of `/home/<user>/.config/meshforge/` when MeshForge is run with sudo.
+The code review health check (2026-01-24) identified 5 critical (C1-C5) and 1 high (H1)
+issues. After auditing the current codebase, here is their status:
 
-### Root Cause
-`Path.home()` returns the current effective user's home directory. When running `sudo python3 src/launcher.py`, the effective user is root, so `Path.home()` returns `/root`.
+| ID | Issue | Status | Evidence |
+|----|-------|--------|----------|
+| C1 | LXMF Source None after partial RNS init | **MITIGATED** | Guard at `rns_bridge.py:579-580` returns False instead of crashing |
+| C2 | reconnect.py raises None on early interruption | **FIXED** | `reconnect.py:176-178` raises ConnectionError |
+| C3 | Unbounded node tracking dicts (memory leak) | **FIXED** | MAX_NODES caps + eviction in node_tracker.py and node_monitor.py |
+| C4 | Stats dict race conditions (24 racy increments) | **FIXED** | threading.Lock added across all affected files |
+| C5 | Atomic write uses deterministic temp path | **FIXED** | `paths.py` uses `tempfile.mkstemp()` for unique temp files |
+| H1 | Non-interruptible shutdown in daemon loops | **FIXED** (2026-02-20) | All daemon loops now use `_stop_event.wait()` instead of `time.sleep()` |
 
-### Impact
-- Settings don't persist between sessions
-- Logs go to wrong location
-- User sees "file not found" errors
-- Features appear "broken" when they work correctly in isolation
+**Key lesson**: File-scoped fixes applied between Jan 24 — Feb 20 resolved C2-C5 individually.
+H1 was fully resolved by Feb 20 — all daemon loops now use `_stop_event.wait()`. Remaining
+`time.sleep()` calls (49 files) are in bounded connection-wait loops, one-shot delays, and
+interactive pauses, which are acceptable patterns.
 
-### Proper Fix
+---
+
+## Issue #1: Path.home() Returns /root with sudo — RESOLVED (2026-02-20)
+
+### Status: **RESOLVED** — Zero `Path.home()` violations remain in codebase.
+
+### Rule
 **ALWAYS use `get_real_user_home()` from `utils/paths.py`** instead of `Path.home()`:
 
 ```python
@@ -32,62 +45,67 @@ from utils.paths import get_real_user_home
 config_file = get_real_user_home() / ".config" / "meshforge" / "settings.json"
 ```
 
-### Files with this pattern (50+ instances as of 2026-01-06)
-Many files still use `Path.home()`. Priority fixes completed:
-- [x] `utils/paths.py` - Core path utilities (FIXED 2026-01-06)
-- [x] `utils/common.py` - CONFIG_DIR, get_data_dir, get_cache_dir (FIXED 2026-01-06)
-- [x] `utils/logging_utils.py` - LOG_DIR (FIXED earlier)
-- [x] `gtk_ui/panels/hamclock.py` - Settings fallback (FIXED 2026-01-06)
+### Resolution (2026-02-20)
+- Fixed last 3 violations: `mqtt_bridge_handler.py`, `cli.py`, `rns_config.py`
+- Consolidated 20 `safe_import` fallback copies to direct imports (Issue #5)
+- Linter (`scripts/lint.py`) checks MF001
 
 ### Prevention
 - Use `from utils.paths import get_real_user_home, MeshForgePaths`
 - Grep for `Path.home()` before committing
-- Add to code review checklist
+- Linter enforces MF001
 
 ---
 
-## Issue #2: WebKit Disabled When Running as Root (MOOT — GTK removed) — ARCHIVED (GTK removed)
+## Archived GTK Issues (#2, #10, #11, #13, #14, #15)
 
-> Archived to `persistent_issues_archive.md`. Gtk removed
+GTK4 was removed in v0.5.x. These issues are no longer relevant.
+Historical details in `persistent_issues_archive.md`.
 
 ---
 
-## Issue #3: Services Not Started/Verified
+## Issue #3: Services Not Started/Verified — PARTIALLY RESOLVED (2026-02-20)
 
-### Symptom
-Features dependent on services (rnsd, meshtasticd, HamClock) fail silently because services aren't running.
+### Status: **Gateway pre-flight checks done.** 34+ secondary locations remain.
 
-### Root Cause
-Code assumes services are already running instead of checking and providing feedback.
+### Rule
+**Always call `check_service()` before connecting to services.**
 
-### Examples
-- RNS node tracker created but `.start()` never called
-- HamClock panel connects but doesn't verify service is running
-- Features fail with no actionable feedback
+**Advisory vs Blocking**:
+- **Advisory** (background daemons): Warn but continue — service may run outside systemd
+- **Blocking** (user-facing TUI menus): Show error + fix hint, don't proceed
 
-### Proper Fix
-1. **Use centralized `check_service()` utility** for pre-flight checks
-2. **Provide actionable error messages** with fix hints
-3. **Offer fix suggestions** (start service button, installation link)
-
-### Implementation Pattern (Recommended)
 ```python
-# Use the centralized service checker
-from utils.service_check import check_service, ServiceState
+# ADVISORY — for background daemon connections (gateway, bridges)
+status = check_service('meshtasticd')
+if not status.available:
+    logger.warning("meshtasticd service check: %s (attempting connection anyway)",
+                   status.message)
+    # Continue — TCP connect attempt is the definitive test
 
-# Before starting gateway/feature that requires services
-def _on_start(self, button):
-    status = check_service('meshtasticd')
-    if not status.available:
-        self._show_error(status.message, status.fix_hint)
-        return
-    # Proceed with operation...
-
-# Quick port check
-from utils.service_check import check_port
-if check_port(4403):  # meshtasticd port
-    connect_to_meshtasticd()
+# BLOCKING — for user-initiated TUI actions
+status = check_service('meshtasticd')
+if not status.available:
+    show_error(status.message)
+    show_fix(status.fix_hint)
+    return  # Don't proceed
 ```
+
+### Completed (2026-02-20)
+- `meshtastic_handler.py` — Advisory `check_service('meshtasticd')` before TCP connect
+- `mqtt_bridge_handler.py` — Advisory `check_service('mosquitto')` for localhost brokers
+- `rns_bridge.py` — Advisory `check_service('rnsd')` before RNS init
+- `meshtastic_connection.py` — Replaced raw `systemctl restart` with `restart_service()`
+
+**Note**: Gateway pre-flight checks are ADVISORY (warn + continue), not blocking.
+Services may run outside systemd (Docker, manual start). The actual connection
+attempt is the definitive test. Blocking checks caused "waiting for delivery"
+regression when mosquitto wasn't detectable via systemctl.
+
+### Remaining (34+ locations)
+- 8 files create `TCPInterface` without meshtasticd checks
+- 4 MQTT connections without mosquitto checks
+- 8 files with raw `subprocess.run(['systemctl', ...])` bypassing service_check
 
 ### Known Services (in `utils/service_check.py`)
 | Service | Port | systemd name |
@@ -96,16 +114,6 @@ if check_port(4403):  # meshtasticd port
 | rnsd | None | rnsd |
 | hamclock | 8080 | hamclock |
 | mosquitto | 1883 | mosquitto |
-
-### Legacy Pattern (for reference)
-```python
-def _on_connection_failed(self, error):
-    error_str = str(error).lower()
-    if 'connection refused' in error_str:
-        self.status_label.set_label("Connection refused - is service running?")
-    elif 'name or service not known' in error_str:
-        self.status_label.set_label("Host not found - check URL")
-```
 
 ---
 
@@ -134,32 +142,26 @@ logger.info(f"[Component] Connection failed: {error}")
 
 ---
 
-## Issue #5: Duplicate Utility Functions
+## Issue #5: Duplicate Utility Functions — RESOLVED (2026-02-20)
 
-### Symptom
-Same fix implemented multiple times in different files, then only some get updated.
+### Status: **RESOLVED** — All 20 `safe_import` fallback copies consolidated to direct imports.
 
-### Root Cause
-No single source of truth for common utilities.
-
-### Example
-`_get_real_user_home()` was defined in:
-- `utils/common.py`
-- `utils/logging_utils.py`
-- `utils/network_diagnostics.py`
-- `utils/paths.py`
-
-When one gets fixed, others remain broken.
-
-### Proper Fix
+### Rule
 **Single source of truth**: Define once in `utils/paths.py`, import everywhere else.
 
 ```python
-# In any file needing this utility:
+# CORRECT — first-party module, always available
 from utils.paths import get_real_user_home
 
-# NOT: def _get_real_user_home(): ...  # local copy
+# WRONG — safe_import is for EXTERNAL deps only
+_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
 ```
+
+### Resolution (2026-02-20)
+Consolidated 20 files from `safe_import('utils.paths', ...)` fallback patterns to direct `from utils.paths import get_real_user_home`. Net -220 lines removed.
+
+### Follow-up (2026-02-23)
+Review found `startup_checks.py` still used `safe_import('utils.service_check', ...)` with `_HAS_SERVICE_CHECK` guard — converted to direct import. The guard created a dead fallback path that would silently revert RNS socket detection to broken UDP-only behavior.
 
 ---
 
@@ -221,32 +223,45 @@ def test_rns(self): ...  # Now _HAS_RNS is True
 
 ---
 
----
-
 ## Issue #6: Large Files Exceeding Guidelines
 
 ### Symptom
 Files exceed the 1,500 line guideline from CLAUDE.md, making them difficult to navigate, test, and maintain.
 
-### Current Status (2026-02-06)
+### Current Status (2026-02-24, refreshed)
 
 **Python files over 1,500 lines:**
 
 | File | Lines | Status | Notes |
 |------|-------|--------|-------|
-| `src/utils/knowledge_content.py` | 1,688 | OK | Content file by design - no split needed |
-| `src/gateway/rns_bridge.py` | 1,614 | MONITOR | Down from 1,991; MeshtasticHandler extracted |
+| `src/utils/knowledge_content.py` | 1,993 | OK | Content file by design - no split needed |
+| `src/gateway/rns_bridge.py` | 1,599 | MONITOR | MeshCoreBridgeMixin + MessageRouter + gateway_cli extracted |
+| `src/utils/prometheus_exporter.py` | 1,521 | MONITOR | Grew after metrics_export split |
+| `src/utils/service_check.py` | 1,515 | MONITOR | Growing — watch for extraction candidates |
+| `src/launcher_tui/nomadnet_client_mixin.py` | 1,505 | MONITOR | Stable |
+| `src/commands/rns.py` | 1,505 | MONITOR | Stable |
+
+**Under threshold (previously tracked):**
+
+| File | Lines | Notes |
+|------|-------|-------|
+| `src/launcher_tui/rns_menu_mixin.py` | 1,498 | Grew slightly but still under 1,500 |
+| `src/launcher_tui/service_menu_mixin.py` | 1,487 | Dropped below threshold |
+| `src/utils/map_http_handler.py` | 1,475 | Under threshold |
+| `src/utils/map_data_collector.py` | 1,475 | Under threshold |
+| `src/launcher_tui/main.py` | 1,463 | Trimmed 2026-02-24: export functions → topology_mixin |
+| `src/utils/config_api.py` | 1,316 | Well under threshold |
 
 **Previously over threshold (NOW RESOLVED):**
 
 | File | Was | Now | Resolution |
 |------|-----|-----|------------|
 | `src/monitoring/traffic_inspector.py` | 2,194 | 442 | Extracted to packet_dissectors, traffic_models, traffic_storage |
-| `src/gateway/node_tracker.py` | 1,808 | 930 | Extracted to node_models.py |
-| `src/launcher_tui/main.py` | 1,799 | 1,433 | Extracted network_tools, web_client, data_path mixins; removed dead code |
+| `src/gateway/node_tracker.py` | 1,808 | 989 | Extracted to node_models.py |
+| `src/launcher_tui/main.py` | 1,799 | 1,489 | Extracted network_tools, web_client, data_path mixins; removed dead code |
 | `src/core/diagnostics/engine.py` | 1,767 | 709 | Extracted to models.py |
 | `src/utils/metrics_export.py` | 1,762 | 96 | Split to common/prometheus/influxdb modules |
-| `src/launcher_tui/rns_menu_mixin.py` | 1,524 | 1,210 | Extracted rns_sniffer_mixin.py |
+| `src/launcher_tui/rns_menu_mixin.py` | 1,524 | 1,496 | Extracted rns_sniffer_mixin + rns_config_mixin + rns_diagnostics_mixin |
 
 **GTK files removed from tracking (GTK deprecated):**
 - GTK4 interface was removed; TUI is now the only interface
@@ -255,22 +270,25 @@ Files exceed the 1,500 line guideline from CLAUDE.md, making them difficult to n
 
 | File | Lines | Action |
 |------|-------|--------|
-| `.claude/foundations/persistent_issues.md` | 1,451 | Growing - consider archiving resolved issues |
-| `.claude/dude_ai_university.md` | 1,206 | Consider splitting by topic |
-| `.claude/foundations/ai_development_practices.md` | 1,069 | Review for outdated content |
+| `.claude/dude_ai_university.md` | ~200 | Trimmed in dedup audit (2026-02-23) |
+| `.claude/foundations/persistent_issues.md` | 1,165 | Stable after archiving resolved issues |
 
-### Remaining Extraction (if rns_bridge.py grows)
+### Remaining Extraction Candidates
 
-1. **rns_bridge.py** (1,614 lines) - Only file still near threshold
+1. **rns_bridge.py** (1,599 lines) - Over threshold
    - Potential: Extract `meshtastic_handler.py` (Meshtastic connection/send/receive) ~400 lines
-   - Only split if file grows past 1,500 again
+   - Only split if file grows further
+2. **prometheus_exporter.py** (1,521 lines) - Over threshold after metrics_export split
+   - Monitor for now; split if it grows
+3. **service_check.py** (1,515 lines) - Growing, new to tracking
+   - Monitor for now
 
 ### Completed Extractions (2026-02-06)
 
 All previously tracked files are now under 1,500 lines:
 - traffic_inspector.py: 2,194 → 442 (split to 4 modules)
-- main.py: 1,799 → 1,433 (30 mixins extracted, dead code removed)
-- node_tracker.py: 1,808 → 930 (node_models.py extracted)
+- main.py: 1,799 → 1,489 (43 mixins extracted, dead code removed)
+- node_tracker.py: 1,808 → 989 (node_models.py extracted)
 - metrics_export.py: 1,762 → 96 (split to common/prometheus/influxdb)
 - engine.py: 1,767 → 709 (models.py extracted)
 - rns_menu_mixin.py: 1,524 → 1,210 (sniffer extracted)
@@ -286,8 +304,6 @@ rns.py (extracted config editor + mixins). Web UI and Rich CLI were deleted in c
 - Split files proactively at 1,000 lines
 - Use `wc -l src/**/*.py | sort -rn | head -10` to monitor
 - When adding to launcher_tui/main.py, **always check if a mixin exists or should be created**
-
----
 
 ---
 
@@ -313,9 +329,9 @@ Adding menu options that reference new scripts without creating the scripts firs
 ### Prevention
 Run this verification before committing launcher changes:
 ```bash
-# Check all referenced files exist (post-consolidation: 2 UIs only)
-for f in src/main_gtk.py src/launcher.py src/launcher_tui/main.py \
-         src/standalone.py src/monitor.py; do
+# Check all referenced files exist
+for f in src/launcher.py src/launcher_tui/main.py \
+         src/standalone.py; do
   [ -f "$f" ] && echo "OK: $f" || echo "MISSING: $f"
 done
 ```
@@ -348,31 +364,33 @@ grep -rn "0\.[0-9]\.[0-9]" src/*.py | grep -v __version__.py
 
 ---
 
-## Issue #9: Broad Exception Swallowing
+## Issue #9: Broad Exception Swallowing — MOSTLY RESOLVED (2026-02-20)
 
-### Symptom
-Real errors are hidden because `except Exception: pass` catches everything.
+### Status: **MOSTLY RESOLVED** — 28 of 30 instances fixed. 2 benign exceptions remain by design.
 
-### Example
+### Rule
 ```python
 # BAD - hides all errors
-try:
-    proc.communicate(input=str(percent), timeout=1)
 except Exception:
     pass
 
-# GOOD - specific exceptions with explanation
-try:
-    proc.communicate(input=str(percent), timeout=1)
-except (subprocess.TimeoutExpired, OSError):
-    # Gauge display timeout - non-critical, UI continues
-    pass
+# GOOD - log it
+except Exception as e:
+    logger.debug("Non-critical operation failed: %s", e)
 ```
 
-### Proper Fix
-1. **Use specific exception types**
-2. **Add comment explaining why silence is acceptable**
-3. **Log at DEBUG level if truly non-critical**
+### Resolution (2026-02-20)
+Fixed 28 silent `except Exception: pass` across 7 files:
+- `tcp_monitor.py` (7) — callback failures now logged as warnings
+- `system_diagnostics.py` (8) — converted to `logger.debug()`
+- `setup_wizard.py` (3) — converted to `logger.debug()`
+- `hardware_config.py` (2) — converted to logged warnings
+- `rns_sniffer.py` (2) — converted to `logger.debug()`
+- `site_planner.py` (2) — converted to `logger.debug()`
+
+### Remaining (by design)
+- `packet_dissectors.py` — benign decode try/except (no logger in file)
+- `pskreporter_subscriber.py` — cleanup exceptions inside outer try that already logs
 
 ### Prevention
 - Grep for `except.*:.*pass` before committing
@@ -380,65 +398,10 @@ except (subprocess.TimeoutExpired, OSError):
 
 ---
 
----
-
-## Issue #10: Lambda Closure Bug in Loops
-
-### Symptom
-Clicking different buttons (like Install buttons for different RNS components) always triggers the action for the **last** item in the loop, not the intended one.
-
-### Root Cause
-When creating lambdas inside a `for` loop, the loop variable is captured **by reference**, not by value:
-
-```python
-# WRONG - classic closure bug
-for component in self.COMPONENTS:
-    btn = Gtk.Button(label=component['name'])
-    btn.connect("clicked", lambda b: self._install(component))  # All buttons install last component!
-```
-
-By the time any button is clicked, `component` has the value from the last iteration.
-
-### Impact
-- Wrong component gets installed
-- Wrong action gets triggered
-- Debugging is confusing because logs show wrong item being processed
-
-### Proper Fix
-Use a **default argument** to capture the value at iteration time:
-
-```python
-# CORRECT - capture by value using default argument
-for component in self.COMPONENTS:
-    btn = Gtk.Button(label=component['name'])
-    btn.connect("clicked", lambda b, c=component: self._install(c))  # Each button gets its own copy
-```
-
-The `c=component` creates a new binding at each iteration, capturing the current value.
-
-### Files Fixed (2026-01-12)
-- [x] `src/gtk_ui/panels/rns.py:288` - Component install buttons
-- [x] `src/gtk_ui/panels/rns_mixins/components.py:107` - Component install buttons (mixin)
-
-### Prevention
-- Search for `lambda.*for.*in` or `connect.*lambda` patterns before committing
-- When using lambdas in loops, ALWAYS use default argument pattern
-- Code review should flag any `lambda b: self._method(loop_var)` inside loops
-
----
-
----
-
-## Issue #11: GTK4/Libadwaita Taskbar Icon Shows Generic — ARCHIVED (GTK removed)
-
-> Archived to `persistent_issues_archive.md`. Gtk removed
-
----
-
 ## Issue #12: RNS "Address Already in Use" When Connecting as Client
 
 ### Symptom
-GTK crashes or shows errors like:
+Application errors like:
 ```
 [Error] The interface "Default Interface" could not be created
 [Error] The contained exception was: [Errno 98] Address already in use
@@ -468,79 +431,34 @@ This allows connecting to rnsd without trying to bind ports.
 
 ---
 
-## Issue #13: Meshtastic CLI Auto-Detection Freezes GTK — ARCHIVED (GTK removed)
-
-> Archived to `persistent_issues_archive.md`. Gtk removed
-
----
-
-## Issue #14: GTK Panel Lifecycle - Missing Cleanup Methods — ARCHIVED (GTK removed)
-
-> Archived to `persistent_issues_archive.md`. Gtk removed
-
----
-
-## Issue #15: GTK Startup Performance - Thundering Herd — ARCHIVED (GTK removed)
-
-> Archived to `persistent_issues_archive.md`. Gtk removed
-
----
-
 ## Issue #16: Gateway Message Routing Reliability
 
 ### Symptom
-- Messages sent via GTK panel may not reach destination
-- Delivery confirmation unreliable
-- No clear feedback when gateway is disconnected
-- Users report "messages lost" intermittently
+- Messages may not reach destination
+- Delivery confirmation unreliable over LoRa
 
-### Root Cause (Documented 2026-01-16)
-The RNS-Meshtastic gateway bridge has connection and routing limitations:
-
-1. **Gateway connectivity**: Gateway must be running AND connected to both networks
-2. **No delivery guarantees**: Meshtastic uses best-effort delivery over LoRa
-3. **Node unreachability**: Target nodes may be offline or out of range
-4. **Queue overflow**: High message volume can overwhelm limited bandwidth
+### Root Cause
+Inherent to mesh networking: best-effort delivery, node unreachability, queue overflow.
 
 ### Current State
-- Message transmission IS implemented (commit `935d37e`)
+- Message transmission implemented via HTTP protobuf (v0.5.4)
 - Gateway bridge connects RNS and Meshtastic networks
-- Delivery status tracking exists but reliability varies
-- User testing confirms intermittent failures
+- Message queue persists to SQLite for retry
 
 ### Proper Fix
-**Accept reliability limitations** - This is inherent to mesh networking:
-
+**Accept reliability limitations** — document delivery as "best effort":
 ```python
-# Messaging panel should show clear status
-def _send_message(self):
-    result = messaging.send_message(dest, text)
-    if result.get("status") == "sent":
-        self._show_status("Sent (delivery not guaranteed)")
-    elif result.get("status") == "queued":
-        self._show_status("Queued - gateway not connected")
-    else:
-        self._show_status(f"Failed: {result.get('error')}")
+result = messaging.send_message(dest, text)
+if result.get("status") == "sent":
+    show_status("Sent (delivery not guaranteed)")
+elif result.get("status") == "queued":
+    show_status("Queued - gateway not connected")
 ```
 
 ### Files Involved
-- `src/commands/messaging.py` - Message sending logic
-- `src/gateway/rns_bridge.py` - RNS-Meshtastic bridge (lines 217-237)
-- `src/gateway/mesh_bridge.py` - Meshtastic packet handling
-- `src/gtk_ui/panels/messaging.py` - UI panel
-
-### Prevention
-- Document delivery as "best effort" in UI
-- Provide clear gateway status feedback
-- Implement retry logic for critical messages
-- Consider acknowledgment timeouts
-- Test with actual hardware under various conditions
-
-### Testing Gateway
-1. Connect Meshtastic node
-2. Start gateway bridge: `python3 -c "from gateway import start_gateway; start_gateway()"`
-3. Send test message from GTK panel
-4. Verify on target node/device
+- `src/commands/messaging.py` — Message sending logic
+- `src/gateway/rns_bridge.py` — RNS-Meshtastic bridge
+- `src/gateway/message_queue.py` — SQLite message queue
 
 ---
 
@@ -588,17 +506,34 @@ def _run(self):
 
 ### Files Changed
 - `src/utils/message_listener.py` - Check for existing persistent connection
-- `src/gtk_ui/panels/mesh_tools_nodemap.py` - Use existing gateway connection
-- `src/gtk_ui/panels/radio_config_simple.py` - Warning for config operations
+- `src/utils/meshtastic_connection.py` - Connection manager
 
-### External Interference
-**Meshtastic Web UI** on port 9443 can also cause connection spam:
-```bash
-netstat -tlnp | grep 9443  # Check if Web UI is running
-```
-User should disable Web UI if not needed, or accept that MeshForge will compete for the connection.
+### HTTP fromradio Contention Fix (2026-02-23)
+
+**Additional root cause**: The `/api/v1/fromradio` HTTP endpoint is also single-consumer.
+When the protobuf client calls `connect()`, it drains all fromradio packets (including
+delivery ACKs) during session setup, starving the meshtasticd web client at :9443 and
+causing "waiting for delivery" hangs. The meshtastic CLI fallback also competes via TCP.
+
+**Fix**: `send_text_direct()` — a stateless TX function that POSTs directly to
+`/api/v1/toradio` without ever reading from `/api/v1/fromradio`. meshtasticd fills
+in the source node number automatically, so no session handshake is needed for sending.
+
+All TX paths now use `send_text_direct()` as primary, with session-based send as fallback:
+- `mqtt_bridge_handler.py` — gateway MQTT bridge TX
+- `mesh_bridge.py` — preset bridge TX
+- `commands/meshtastic.py` — TUI/CLI message sending (before CLI subprocess fallback)
+
+### Files Changed
+- `src/gateway/meshtastic_protobuf_client.py` — Added `send_text_direct()` stateless TX
+- `src/gateway/mqtt_bridge_handler.py` — Stateless TX as primary path
+- `src/gateway/mesh_bridge.py` — Stateless TX as primary path
+- `src/commands/meshtastic.py` — HTTP protobuf before CLI subprocess
 
 ### Prevention
+- **NEVER read from `/api/v1/fromradio` during TX operations**
+- Use `send_text_direct()` for all message sending (write-only to toradio)
+- Reserve session-based `connect()` + `start_polling()` for config read operations only
 - Always use `get_connection_manager()` instead of creating `TCPInterface` directly
 - Check `has_persistent()` before creating connections
 - Use `acquire_persistent(owner="component_name")` for long-lived connections
@@ -693,16 +628,8 @@ def _load_known_rns_destinations(self, RNS):
 ```
 
 ### Timing Issue
-**path_table may be empty immediately after connect** - rnsd syncs data asynchronously:
-
-```python
-# Delayed check 5 seconds after connection
-GLib.timeout_add(5000, self._delayed_path_table_check)
-
-# Periodic check every 30 seconds in _rns_loop()
-if current_time - last_check >= 30:
-    self._check_path_table_for_new_nodes()
-```
+**path_table may be empty immediately after connect** - rnsd syncs data asynchronously.
+Use delayed checks (5s after connection) and periodic re-checks (30s intervals).
 
 ### Files Changed
 - `src/gateway/node_tracker.py` - path_table discovery + delayed/periodic checks
@@ -714,7 +641,7 @@ if current_time - last_check >= 30:
 
 ---
 
-*Last updated: 2026-01-23 - Removed stale Textual/Flask/Web UI references after UI consolidation*
+*Last updated: 2026-02-21 - Cleanup: consolidated archived stubs, removed GTK references, cleaned separators*
 
 ---
 
@@ -839,31 +766,41 @@ def _on_message(self, event):
 
 ### Implementation Priority
 
-| Component | Effort | Impact | Priority |
-|-----------|--------|--------|----------|
-| Service Detection Simplification | LOW | HIGH | 1 - Do first |
-| Status Display Separation | MEDIUM | HIGH | 2 |
-| RX Message Events | HIGH | MEDIUM | 3 - Requires event bus |
+| Component | Effort | Impact | Priority | Status (2026-02-20) |
+|-----------|--------|--------|----------|---------------------|
+| Service Detection Simplification | LOW | HIGH | 1 | **DONE** — systemctl trusted as SSOT for systemd services |
+| Status Display Separation | MEDIUM | HIGH | 2 | **DONE** — meshtasticd_config_mixin separates service state from CLI detection |
+| RX Message Events | HIGH | MEDIUM | 3 | **DONE** — event_bus wired to WebSocket server |
 
-### Files to Modify
+### Files Modified
 
-**Phase 1: Service Detection**
-- `src/utils/service_check.py` - Simplify to systemctl-only for systemd services
-- `src/gtk_ui/panels/rns_mixins/components.py` - Use simplified check
+**Phase 1: Service Detection** (completed earlier)
+- `src/utils/service_check.py` — Simplified to systemctl-only for systemd services
 
-**Phase 2: Status Display**
-- `src/gtk_ui/panels/rns_mixins/rnode.py` - Separate service/detection display
-- `src/utils/lora_presets.py` - Return service_status separately from preset
+**Phase 2: Status Display** (completed 2026-02-20)
+- `src/launcher_tui/meshtasticd_config_mixin.py` — Shows service state and CLI detection separately
+- Shows fix hints when stopped, "(CLI detection unavailable — select preset manually)" when detection fails
 
-**Phase 3: RX Messages**
-- `src/utils/event_bus.py` - NEW: Simple pub/sub event system
-- `src/gateway/rns_bridge.py` - Emit message events
-- `src/gtk_ui/panels/messaging.py` - Subscribe to message events
+**Phase 3: RX Messages** (completed 2026-02-20)
+- `src/utils/event_bus.py` — Thread-safe pub/sub with MessageEvent, ServiceEvent, NodeEvent
+- `src/gateway/rns_bridge.py` — Emits message events on RX
+- `src/utils/websocket_server.py` — Subscribes to event_bus, broadcasts to WebSocket clients
+- `src/launcher_tui/messaging_mixin.py` — TUI live feed subscribes to message events
+
+### RNS Socket Detection Enhancement (2026-02-22, PRs #920-922)
+RNS uses abstract Unix domain sockets (`\0rns/{instance_name}`), not UDP port 37428.
+All 20+ `check_udp_port(37428)` calls replaced with `check_rns_shared_instance()` which
+uses 3-tier detection: abstract Unix socket -> TCP -> UDP fallback. KNOWN_SERVICES rnsd
+`port_type` changed from `'udp'` to `'unix_socket'`. 18 unit tests added; consistency
+test prevents drift between `startup_checks.SERVICES_TO_CHECK` and `KNOWN_SERVICES`.
+
+Stale docstring in `status_bar.py` (said "UDP port 37428") and `safe_import` for
+first-party `utils.service_check` in `startup_checks.py` cleaned up 2026-02-23.
 
 ### Prevention
 - Don't add more detection fallback methods - simplify instead
-- Test with actual hardware in various states (running, stopped, misconfigured)
 - UI should always distinguish "service state" from "detection capability"
+- Use `check_rns_shared_instance()` for all rnsd reachability checks (never raw UDP)
 
 ---
 
@@ -1184,15 +1121,9 @@ The gateway diagnostic (`src/utils/gateway_diagnostic.py`) should be updated to:
 
 ---
 
-## Issue #25: rnsd PermissionError on /etc/reticulum/storage/ratchets — ARCHIVED (resolved)
+## Archived Resolved Issues (#25, #26, #28)
 
-> Archived to `persistent_issues_archive.md`. Resolved
-
----
-
-## Issue #26: ReticulumPaths Fallback Copies Cause Config Divergence — ARCHIVED (resolved)
-
-> Archived to `persistent_issues_archive.md`. Resolved
+Issues #25 (rnsd ratchets PermissionError), #26 (ReticulumPaths fallback copies), and #28 (API proxy fromradio) are resolved. Historical details in `persistent_issues_archive.md`.
 
 ---
 
@@ -1246,6 +1177,96 @@ RNS handles encrypted mesh-independent routing.
 
 ---
 
-## Issue #28: API Proxy Steals fromradio Packets from Native Web Client — ARCHIVED (resolved)
+## Issue #29: Regression Prevention System (2026-02-23)
 
-> Archived to `persistent_issues_archive.md`. Resolved
+### Status: **ACTIVE** — Automated guards preventing circular regressions.
+
+### Problem
+100+ hours spent in circular regressions across meshtasticd (:4403/:9443), rnsd,
+gateway bridge, and MQTT. Fix one service → break another → fix that → break the first.
+
+### Root Causes
+1. **TCP Connection Contention** (Issue #17): meshtasticd supports ONE TCP client.
+   Multiple components creating `TCPInterface()` directly caused connection thrashing.
+2. **fromradio Endpoint Draining**: Reading `/api/v1/fromradio` starved :9443 web client.
+3. **Config Drift**: Gateway and rnsd reading different config files silently.
+4. **No automated regression guards** to catch anti-patterns at code-change time.
+
+### Solution: 4-Layer Prevention
+
+#### Layer 1: Lint Rules (`scripts/lint.py`)
+| Rule | Severity | What It Catches |
+|------|----------|-----------------|
+| MF007 | ERROR | Direct `TCPInterface()` creation outside connection infrastructure |
+| MF008 | WARNING | Raw `systemctl` for service state decisions (use `service_check`) |
+| MF009 | ERROR | `RNS.Reticulum()` without `configdir=` (causes EADDRINUSE) |
+| MF010 | WARNING | `time.sleep()` in daemon loops (blocks clean shutdown) |
+
+#### Layer 2: Regression Guard Tests (`tests/test_regression_guards.py`)
+Codebase-scanning pytest tests that fail if anti-patterns reappear:
+- `TestTCPConnectionContract` — No new files creating TCPInterface directly
+- `TestFromradioContract` — TX paths use `send_text_direct()`
+- `TestServiceCheckContract` — Service state via `check_service()` only
+- `TestPathHomeContract` — No `Path.home()` violations
+- `TestNoShellTrue` — No `shell=True` in subprocess
+- `TestKnownServicesConsistency` — KNOWN_SERVICES stays correct
+
+#### Layer 3: Pre-Commit Hook (`.githooks/pre-commit`)
+Runs linter + regression guards before every commit.
+Setup: `git config core.hooksPath .githooks`
+
+#### Layer 4: TCPInterface Violations Fixed
+All direct `TCPInterface()` creation routed through connection manager or global lock:
+- `node_health_mixin.py` — TCP fallback removed (HTTP-only)
+- `favorites_mixin.py` — Uses `MeshtasticConnection` context manager
+- `config/device.py` — Uses `MeshtasticConnection` context manager
+- `device_controller.py` — Acquires `MESHTASTIC_CONNECTION_LOCK`
+- `mesh_bridge.py` — Acquires lock + deprecation warning
+- `rns_transport.py` — Acquires lock + releases on disconnect
+
+### How to Work With This System
+
+**Adding a new file that needs meshtasticd TCP:**
+```python
+# For short-lived reads:
+from utils.connection_manager import MeshtasticConnection
+with MeshtasticConnection() as conn:
+    if conn:
+        nodes = conn.nodes
+
+# For long-lived connections:
+from utils.meshtastic_connection import MESHTASTIC_CONNECTION_LOCK, wait_for_cooldown
+if MESHTASTIC_CONNECTION_LOCK.acquire(timeout=10):
+    wait_for_cooldown()
+    interface = TCPInterface(hostname='localhost')
+    # ... use interface ...
+    # Release lock on disconnect
+```
+
+**Adding a legitimate TCPInterface creation:**
+1. Add the filename to `ALLOWLISTED` in `TestTCPConnectionContract`
+2. Add the filename to `lock_aware_files` in lint.py MF007 rule
+3. Ensure the code acquires `MESHTASTIC_CONNECTION_LOCK` before creating
+
+**Updating ratchet counts:**
+When fixing a violation, update the expected count in the corresponding test class.
+The test will fail if the count goes DOWN without updating (forces tightening).
+
+---
+
+## #10 Map Control Panel Scrollbar Overlap (2026-02-25)
+
+**Symptom**: On the `:5000` map page, the right-side control panel's native browser scrollbar
+(~15-17px wide) obstructs filter checkboxes, buttons, and stat rows when content overflows.
+
+**Root cause**: `.panel-body` used `overflow-y: auto` without any scrollbar styling, so the
+browser rendered a full-width native scrollbar inside the panel, consuming content space.
+
+**Fix**: Added thin dark-themed scrollbar CSS to `web/node_map.html`:
+- `scrollbar-width: thin` + `scrollbar-color` (Firefox)
+- `::-webkit-scrollbar` at 6px width (Chrome/Safari/Edge)
+- `scrollbar-gutter: stable` to prevent layout shift
+- `padding-right: 4px` on `.panel-body` for content buffer
+- Applied to `.panel-body`, `.no-gps-list`, and `.sim-links-list`
+
+**Status**: **FIXED**

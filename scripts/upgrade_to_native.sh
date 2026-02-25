@@ -167,7 +167,7 @@ else
     cat > "$MESHTASTICD_CONFIG_DIR/config.yaml" << 'MAIN_CONFIG'
 ---
 Lora:
-  Module: auto
+  # Module: auto  # Disabled — select hardware via TUI or copy template to config.d/
 
 Logging:
   LogLevel: info

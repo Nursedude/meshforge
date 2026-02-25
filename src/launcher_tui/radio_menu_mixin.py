@@ -9,22 +9,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from backend import clear_screen
-from utils.safe_import import safe_import
-
-# Import centralized path utility
-_get_real_user_home_mod, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
-
-if _HAS_PATHS:
-    get_real_user_home = _get_real_user_home_mod
-else:
-    def get_real_user_home() -> Path:
-        sudo_user = os.environ.get('SUDO_USER', '')
-        if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-            return Path(f'/home/{sudo_user}')
-        logname = os.environ.get('LOGNAME', '')
-        if logname and logname != 'root' and '/' not in logname and '..' not in logname:
-            return Path(f'/home/{logname}')
-        return Path('/root')
+from utils.paths import get_real_user_home
 
 
 class RadioMenuMixin:

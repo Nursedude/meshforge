@@ -2,6 +2,7 @@
 
 > **Purpose**: Track features that exist in code but aren't accessible via TUI
 > **Created**: 2026-01-30
+> **Last verified**: 2026-02-21
 > **For**: Alpha release planning
 
 ---
@@ -26,13 +27,13 @@
 
 ### MEDIUM PRIORITY (Should have)
 
-#### 3. HamClock Space Weather
-- **Module**: `commands/hamclock.py`
-- **Functions**: `get_space_weather()`, `get_band_conditions()`, `get_voacap()`, `get_noaa_solar_data()`
+#### 3. Space Weather / Propagation Data
+- **Module**: `commands/propagation.py` (primary), `commands/hamclock.py` (legacy)
+- **Functions**: `get_space_weather()`, `get_enhanced_data()`, `configure_source()`
 - **Why Important**: RF propagation data for HAMs
-- **Suggested Location**: RF & SDR Tools or new HamClock submenu
+- **Suggested Location**: RF & SDR Tools or Propagation submenu
 - **Effort**: LOW (module ready)
-- **Note**: Only useful if HamClock service running
+- **Note**: NOAA SWPC is primary (always works). HamClock/OpenHamClock are optional enhancements.
 
 #### 4. RNode Configuration
 - **Module**: `commands/rnode.py`
@@ -144,14 +145,14 @@ def _message_history_menu(self):
 
 ## Tracking
 
-| Feature | PR | Session | Status |
-|---------|----|---------|---------|
-| Device Backup | | | Not started |
-| Message History | | | Not started |
-| HamClock Data | | | Not started |
-| RNode Config | | | Not started |
-| Advanced Diagnostics | | | Not started |
-| Network Health | | | Not started |
+| Feature | PR | Session | Status | Verified |
+|---------|----|---------|---------|----------|
+| Device Backup | | | Not started | 2026-02-21 |
+| Message History | | | Not started | 2026-02-21 |
+| Propagation Data | | | Not started | 2026-02-21 |
+| RNode Config | | | Not started | 2026-02-21 |
+| Advanced Diagnostics | | | Not started | 2026-02-21 |
+| Network Health | | | Not started | 2026-02-21 |
 
 ---
 

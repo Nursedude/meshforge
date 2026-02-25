@@ -24,17 +24,16 @@ FirmwareDownloader, FirmwareAsset, _HAS_DOWNLOADER = safe_import(
 EsptoolWrapper, FlashResult, FlashProgress, FlashStage, _HAS_ESPTOOL = safe_import(
     'utils.esptool_wrapper', 'EsptoolWrapper', 'FlashResult', 'FlashProgress', 'FlashStage'
 )
-DeviceScanner, _HAS_SCANNER = safe_import('utils.device_scanner', 'DeviceScanner')
-DeviceBackupManager, _HAS_BACKUP = safe_import('utils.device_backup', 'DeviceBackupManager')
+from utils.device_scanner import DeviceScanner
+from utils.device_backup import DeviceBackupManager
 _check_esptool_available, _HAS_ESPTOOL_CHECK = safe_import(
     'utils.esptool_wrapper', 'check_esptool_available'
 )
 
 # Log any missing components
-if not _HAS_DOWNLOADER or not _HAS_ESPTOOL or not _HAS_SCANNER or not _HAS_BACKUP:
+if not _HAS_DOWNLOADER or not _HAS_ESPTOOL:
     logger.warning("[Flasher] Some components not available: "
-                   f"downloader={_HAS_DOWNLOADER}, esptool={_HAS_ESPTOOL}, "
-                   f"scanner={_HAS_SCANNER}, backup={_HAS_BACKUP}")
+                   f"downloader={_HAS_DOWNLOADER}, esptool={_HAS_ESPTOOL}")
 
 
 class FlasherState(Enum):
@@ -392,17 +391,11 @@ def check_flash_capability() -> dict:
     else:
         result["errors"].append("esptool wrapper not available")
 
-    if _HAS_SCANNER and DeviceScanner:
-        DeviceScanner()
-        result["device_scanner"] = True
-    else:
-        result["errors"].append("Device scanner not available")
+    DeviceScanner()
+    result["device_scanner"] = True
 
-    if _HAS_BACKUP and DeviceBackupManager:
-        DeviceBackupManager()
-        result["backup_manager"] = True
-    else:
-        result["errors"].append("Backup manager not available")
+    DeviceBackupManager()
+    result["backup_manager"] = True
 
     result["available"] = result["esptool"] and result["device_scanner"]
 

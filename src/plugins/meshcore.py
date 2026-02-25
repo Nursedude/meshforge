@@ -37,8 +37,8 @@ _MeshCoreHandler, _HAS_HANDLER = safe_import(
 _detect_devices, _HAS_DETECT = safe_import(
     'gateway.meshcore_handler', 'detect_meshcore_devices'
 )
-_GatewayConfig, _HAS_CONFIG = safe_import('gateway.config', 'GatewayConfig')
-_MeshCoreConfig, _HAS_MC_CONFIG = safe_import('gateway.config', 'MeshCoreConfig')
+from gateway.config import GatewayConfig
+from gateway.config import MeshCoreConfig
 _BridgeHealthMonitor, _HAS_HEALTH = safe_import(
     'gateway.bridge_health', 'BridgeHealthMonitor'
 )
@@ -105,7 +105,7 @@ class MeshCorePlugin(ProtocolPlugin):
         Returns:
             True if handler started successfully.
         """
-        if not _HAS_HANDLER or not _HAS_CONFIG:
+        if not _HAS_HANDLER:
             logger.error("MeshCore handler or config not available")
             return False
 
@@ -116,7 +116,7 @@ class MeshCorePlugin(ProtocolPlugin):
         try:
             # Build gateway config from kwargs
             conn_type = kwargs.get("type", "serial")
-            mc_config = _MeshCoreConfig(
+            mc_config = MeshCoreConfig(
                 enabled=True,
                 device_path=kwargs.get("port", "/dev/ttyUSB1"),
                 baud_rate=kwargs.get("baud_rate", 115200),
@@ -129,7 +129,7 @@ class MeshCorePlugin(ProtocolPlugin):
                 ),
             )
 
-            gw_config = _GatewayConfig()
+            gw_config = GatewayConfig()
             gw_config.meshcore = mc_config
 
             # Create minimal supporting objects

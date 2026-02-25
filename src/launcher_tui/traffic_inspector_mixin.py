@@ -543,7 +543,7 @@ class TrafficInspectorMixin:
 
                 # Try to open in browser (only when display available)
                 try:
-                    webbrowser.open(f"file://{output_path}")
+                    webbrowser.open(Path(output_path).as_uri())
                 except Exception as e:
                     self.dialog.msgbox(
                         "Browser Error",

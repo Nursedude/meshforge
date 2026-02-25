@@ -34,7 +34,6 @@ Usage:
         controller.connect()
 """
 
-import copy
 import logging
 import time
 from dataclasses import dataclass
@@ -42,13 +41,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from utils.safe_import import safe_import
+from utils.common import SettingsManager
 
 logger = logging.getLogger(__name__)
-
-# Import SettingsManager for persistence
-_SettingsManager, _HAS_COMMON = safe_import('utils.common', 'SettingsManager')
-SettingsManager = _SettingsManager  # None if not available (fallback for testing)
 
 
 @dataclass
@@ -117,34 +112,22 @@ class DevicePersistence:
 
     def __init__(self):
         """Initialize device persistence (use get_instance() instead)."""
-        if SettingsManager is not None:
-            self._settings = SettingsManager(
-                "device_connection",
-                defaults=DEVICE_PERSISTENCE_DEFAULTS
-            )
-        else:
-            # Fallback for testing without full utils
-            self._settings = None
-            self._memory_store = copy.deepcopy(DEVICE_PERSISTENCE_DEFAULTS)
-            logger.warning("SettingsManager not available, using memory storage")
+        self._settings = SettingsManager(
+            "device_connection",
+            defaults=DEVICE_PERSISTENCE_DEFAULTS
+        )
 
     def _get(self, key: str, default: Any = None) -> Any:
         """Get a setting value."""
-        if self._settings:
-            return self._settings.get(key, default)
-        return self._memory_store.get(key, default)
+        return self._settings.get(key, default)
 
     def _set(self, key: str, value: Any) -> None:
         """Set a setting value."""
-        if self._settings:
-            self._settings.set(key, value)
-        else:
-            self._memory_store[key] = value
+        self._settings.set(key, value)
 
     def _save(self) -> None:
         """Save settings to disk."""
-        if self._settings:
-            self._settings.save()
+        self._settings.save()
 
     # --- Last Device API ---
 

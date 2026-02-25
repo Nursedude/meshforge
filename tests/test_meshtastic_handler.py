@@ -121,10 +121,16 @@ class TestConnect:
     """Tests for connection establishment."""
 
     @patch('gateway.meshtastic_handler._HAS_PUBSUB', True)
+    @patch('gateway.meshtastic_handler.check_service')
     @patch('gateway.meshtastic_handler.get_connection_manager')
     @patch('gateway.meshtastic_handler.pub', new_callable=MagicMock)
-    def test_connect_success(self, mock_pub, mock_get_cm, handler):
+    def test_connect_success(self, mock_pub, mock_get_cm, mock_check_service, handler):
         """Successful TCP connection via connection manager."""
+        # Pre-flight check passes
+        mock_status = MagicMock()
+        mock_status.available = True
+        mock_check_service.return_value = mock_status
+
         mock_cm = MagicMock()
         mock_cm.acquire_persistent.return_value = True
         mock_iface = MagicMock()
@@ -139,9 +145,14 @@ class TestConnect:
         assert handler.is_connected is True
 
     @patch('gateway.meshtastic_handler._HAS_PUBSUB', True)
+    @patch('gateway.meshtastic_handler.check_service')
     @patch('gateway.meshtastic_handler.get_connection_manager')
-    def test_connect_acquire_fails(self, mock_get_cm, handler):
+    def test_connect_acquire_fails(self, mock_get_cm, mock_check_service, handler):
         """Connection fails when persistent acquire returns False."""
+        mock_status = MagicMock()
+        mock_status.available = True
+        mock_check_service.return_value = mock_status
+
         mock_cm = MagicMock()
         mock_cm.acquire_persistent.return_value = False
         mock_get_cm.return_value = mock_cm
@@ -152,9 +163,14 @@ class TestConnect:
         assert handler.is_connected is False
 
     @patch('gateway.meshtastic_handler._HAS_PUBSUB', True)
+    @patch('gateway.meshtastic_handler.check_service')
     @patch('gateway.meshtastic_handler.get_connection_manager')
-    def test_connect_interface_none(self, mock_get_cm, handler):
+    def test_connect_interface_none(self, mock_get_cm, mock_check_service, handler):
         """Connection fails when interface is None."""
+        mock_status = MagicMock()
+        mock_status.available = True
+        mock_check_service.return_value = mock_status
+
         mock_cm = MagicMock()
         mock_cm.acquire_persistent.return_value = True
         mock_cm.get_interface.return_value = None
@@ -175,9 +191,14 @@ class TestConnect:
         assert handler.is_connected is True
 
     @patch('gateway.meshtastic_handler._HAS_PUBSUB', True)
+    @patch('gateway.meshtastic_handler.check_service')
     @patch('gateway.meshtastic_handler.get_connection_manager')
-    def test_connect_general_exception(self, mock_get_cm, handler):
+    def test_connect_general_exception(self, mock_get_cm, mock_check_service, handler):
         """General exception during connect returns False."""
+        mock_status = MagicMock()
+        mock_status.available = True
+        mock_check_service.return_value = mock_status
+
         mock_get_cm.side_effect = RuntimeError("boom")
         result = handler.connect()
 

@@ -14,8 +14,8 @@ import subprocess
 from backend import clear_screen
 from utils.safe_import import safe_import
 
-# Module-level safe imports — replaces scattered try/except ImportError blocks
-CallsignManager, _HAS_CALLSIGN = safe_import('amateur.callsign', 'CallsignManager')
+# Direct import — first-party module, always available
+from amateur.callsign import CallsignManager
 Part97Reference, ComplianceChecker, _HAS_COMPLIANCE = safe_import(
     'amateur.compliance', 'Part97Reference', 'ComplianceChecker'
 )
@@ -75,12 +75,6 @@ class AmateurRadioMixin:
         callsign = callsign.strip().upper()
         clear_screen()
         print(f"=== Callsign Lookup: {callsign} ===\n")
-
-        if not _HAS_CALLSIGN:
-            print("  Callsign module not available.")
-            print("  File: src/amateur/callsign.py")
-            self._wait_for_enter()
-            return
 
         print(f"Looking up {callsign}...\n")
 

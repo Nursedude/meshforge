@@ -1,0 +1,29 @@
+# Generic USB Serial Radio Configuration
+# For FTDI (FT232) and other USB-serial LoRa boards
+# USB ID: 0403:6001 (FTDI), or other serial adapters
+#
+# Use this template as a fallback when your specific device
+# is not listed in the other USB templates.
+# Power: Standard USB
+#
+# Copy to: /etc/meshtasticd/config.d/usb-serial-generic.yaml
+#
+# The device handles its own LoRa configuration.
+# Radio settings are configured via Meshtastic app/CLI:
+#   meshtastic --host localhost --set lora.region US
+#   meshtastic --host localhost --set lora.modem_preset LONG_FAST
+#
+# To find your device path:
+#   ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
+
+Serial:
+  Device: auto          # /dev/ttyUSB0 or /dev/ttyACM0
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

@@ -120,6 +120,53 @@ class TestServiceChecks:
         assert result in (SYM_UNKNOWN, SYM_STOPPED)
 
 
+class TestRnsdZombieDetection:
+    """Test rnsd zombie detection: systemd active but shared instance not available."""
+
+    def test_rnsd_zombie_shows_stopped(self):
+        """rnsd active in systemd but shared instance not available → stopped."""
+        bar = StatusBar(version="1.0")
+        with patch('status_bar.check_systemd_service', return_value=(True, True)):
+            with patch('status_bar.check_rns_shared_instance', return_value=False):
+                result = bar._check_systemd_active('rnsd')
+        assert result == SYM_STOPPED
+
+    def test_rnsd_healthy_shows_running(self):
+        """rnsd active in systemd and shared instance available → running."""
+        bar = StatusBar(version="1.0")
+        with patch('status_bar.check_systemd_service', return_value=(True, True)):
+            with patch('status_bar.check_rns_shared_instance', return_value=True):
+                result = bar._check_systemd_active('rnsd')
+        assert result == SYM_RUNNING
+
+    def test_rnsd_systemd_inactive_skips_instance_check(self):
+        """rnsd not active in systemd → stopped without shared instance check."""
+        bar = StatusBar(version="1.0")
+        with patch('status_bar.check_systemd_service', return_value=(False, False)):
+            with patch('status_bar.check_rns_shared_instance') as mock_rns:
+                result = bar._check_systemd_active('rnsd')
+        mock_rns.assert_not_called()
+        assert result == SYM_STOPPED
+
+    def test_meshtasticd_no_instance_check(self):
+        """meshtasticd should not trigger RNS shared instance check."""
+        bar = StatusBar(version="1.0")
+        with patch('status_bar.check_systemd_service', return_value=(True, True)):
+            with patch('status_bar.check_rns_shared_instance') as mock_rns:
+                result = bar._check_systemd_active('meshtasticd')
+        mock_rns.assert_not_called()
+        assert result == SYM_RUNNING
+
+    def test_instance_check_unavailable_falls_through(self):
+        """When check_rns_shared_instance raises OSError, exception is caught."""
+        bar = StatusBar(version="1.0")
+        with patch('status_bar.check_systemd_service', return_value=(True, True)):
+            with patch('status_bar.check_rns_shared_instance', side_effect=OSError("unavailable")):
+                result = bar._check_systemd_active('rnsd')
+        # OSError caught by the try/except → SYM_UNKNOWN
+        assert result in (SYM_UNKNOWN, SYM_STOPPED)
+
+
 class TestBridgeCheck:
     """Test bridge status checking."""
 
@@ -386,9 +433,8 @@ class TestSpaceWeather:
         MockAPI = MagicMock()
         MockAPI.return_value.get_current_conditions.return_value = mock_data
 
-        with patch('status_bar._SpaceWeatherAPI', MockAPI):
-            with patch('status_bar._HAS_SPACE_WEATHER', True):
-                bar._check_space_weather()
+        with patch('status_bar.SpaceWeatherAPI', MockAPI):
+            bar._check_space_weather()
 
         assert bar._space_weather == "SFI:145 K:3"
 
@@ -400,18 +446,17 @@ class TestSpaceWeather:
         MockAPI = MagicMock()
         MockAPI.return_value.get_current_conditions.side_effect = Exception("Network error")
 
-        with patch('status_bar._SpaceWeatherAPI', MockAPI):
-            with patch('status_bar._HAS_SPACE_WEATHER', True):
-                bar._check_space_weather()
+        with patch('status_bar.SpaceWeatherAPI', MockAPI):
+            bar._check_space_weather()
 
         # Should be cleared on failure
         assert bar._space_weather is None
 
     def test_space_weather_import_error(self):
-        """Missing space_weather module should not crash."""
+        """SpaceWeatherAPI raising should not crash."""
         bar = StatusBar(version="1.0")
 
-        with patch('status_bar._HAS_SPACE_WEATHER', False):
+        with patch('status_bar.SpaceWeatherAPI', side_effect=Exception("import error")):
             bar._check_space_weather()
             assert bar._space_weather is None
 
@@ -426,9 +471,8 @@ class TestSpaceWeather:
         MockAPI = MagicMock()
         MockAPI.return_value.get_current_conditions.return_value = mock_data
 
-        with patch('status_bar._SpaceWeatherAPI', MockAPI):
-            with patch('status_bar._HAS_SPACE_WEATHER', True):
-                bar._check_space_weather()
+        with patch('status_bar.SpaceWeatherAPI', MockAPI):
+            bar._check_space_weather()
 
         assert bar._space_weather == "SFI:120"
         assert "K:" not in bar._space_weather
@@ -566,9 +610,8 @@ class TestSeedNodeCount:
         mock_tracker = MagicMock()
         mock_tracker.get_all_nodes.return_value = [MagicMock()] * 5
 
-        with patch('status_bar._get_node_tracker', return_value=mock_tracker):
-            with patch('status_bar._HAS_NODE_TRACKER', True):
-                bar._seed_node_count()
+        with patch('status_bar.get_node_tracker', return_value=mock_tracker):
+            bar._seed_node_count()
 
         assert bar._node_count == 5
 
@@ -580,21 +623,131 @@ class TestSeedNodeCount:
         mock_tracker = MagicMock()
         mock_tracker.get_all_nodes.return_value = []
 
-        with patch('status_bar._get_node_tracker', return_value=mock_tracker):
-            with patch('status_bar._HAS_NODE_TRACKER', True):
-                bar._seed_node_count()
+        with patch('status_bar.get_node_tracker', return_value=mock_tracker):
+            bar._seed_node_count()
 
         assert bar._node_count is None
 
     def test_seed_import_failure(self):
-        """Missing node tracker should not crash."""
+        """get_node_tracker raising should not crash."""
         bar = StatusBar(version="1.0")
         bar._node_count = None
 
-        with patch('status_bar._HAS_NODE_TRACKER', False):
+        with patch('status_bar.get_node_tracker', side_effect=Exception("import error")):
             bar._seed_node_count()
 
         assert bar._node_count is None
+
+
+class TestStartupChecksZombieDetection:
+    """Test zombie detection in startup_checks.py status display."""
+
+    def test_zombie_rnsd_shows_up_plain(self):
+        """rnsd running + port not open → still shows 'UP' (zombie display removed)."""
+        from startup_checks import EnvironmentState, ServiceInfo, ServiceRunState
+
+        env = EnvironmentState()
+        env.services = {
+            'meshtasticd': ServiceInfo(name='meshtasticd', state=ServiceRunState.RUNNING,
+                                       port=4403, port_open=True),
+            'rnsd': ServiceInfo(name='rnsd', state=ServiceRunState.RUNNING,
+                                port=37428, port_open=False),
+        }
+        line = env.get_status_line(plain=True)
+        assert "meshtasticd: UP" in line
+        assert "rnsd: UP" in line
+        assert "no port" not in line
+
+    def test_healthy_rnsd_shows_up(self):
+        """rnsd running + port open → 'UP' in plain mode."""
+        from startup_checks import EnvironmentState, ServiceInfo, ServiceRunState
+
+        env = EnvironmentState()
+        env.services = {
+            'rnsd': ServiceInfo(name='rnsd', state=ServiceRunState.RUNNING,
+                                port=37428, port_open=True),
+        }
+        line = env.get_status_line(plain=True)
+        assert "rnsd: UP" in line
+        assert "no port" not in line
+
+    def test_no_port_service_not_affected(self):
+        """Service without port config is not affected by zombie check."""
+        from startup_checks import EnvironmentState, ServiceInfo, ServiceRunState
+
+        env = EnvironmentState()
+        env.services = {
+            'test_svc': ServiceInfo(name='test_svc', state=ServiceRunState.RUNNING,
+                                    port=None, port_open=False),
+        }
+        line = env.get_status_line(plain=True)
+        assert "test_svc: UP" in line
+        assert "no port" not in line
+
+    def test_all_services_running_false_when_zombie(self):
+        """all_services_running should be False when rnsd is a zombie."""
+        from startup_checks import EnvironmentState, ServiceInfo, ServiceRunState
+
+        env = EnvironmentState()
+        env.services = {
+            'meshtasticd': ServiceInfo(name='meshtasticd', state=ServiceRunState.RUNNING,
+                                       port=4403, port_open=True),
+            'rnsd': ServiceInfo(name='rnsd', state=ServiceRunState.RUNNING,
+                                port=37428, port_open=False),
+        }
+        assert env.all_services_running is False
+
+    def test_all_services_running_true_when_healthy(self):
+        """all_services_running should be True when all ports are bound."""
+        from startup_checks import EnvironmentState, ServiceInfo, ServiceRunState
+
+        env = EnvironmentState()
+        env.services = {
+            'meshtasticd': ServiceInfo(name='meshtasticd', state=ServiceRunState.RUNNING,
+                                       port=4403, port_open=True),
+            'rnsd': ServiceInfo(name='rnsd', state=ServiceRunState.RUNNING,
+                                port=37428, port_open=True),
+        }
+        assert env.all_services_running is True
+
+    def test_zombie_rnsd_green_in_ansi_mode(self):
+        """rnsd running shows green in ANSI mode (zombie display removed)."""
+        from startup_checks import EnvironmentState, ServiceInfo, ServiceRunState
+
+        env = EnvironmentState()
+        env.services = {
+            'rnsd': ServiceInfo(name='rnsd', state=ServiceRunState.RUNNING,
+                                port=37428, port_open=False),
+        }
+        line = env.get_status_line(plain=False)
+        assert '\033[32m' in line  # green for running
+        assert '\033[33m' not in line  # NOT yellow
+
+
+class TestEnhancedStatusLineZombie:
+    """Test zombie detection in enhanced status line."""
+
+    def test_enhanced_zombie_rnsd_shows_running(self):
+        """Enhanced status line shows running for rnsd (zombie display removed)."""
+        from startup_checks import EnvironmentState, ServiceInfo, ServiceRunState
+
+        bar = StatusBar(version="1.0")
+        env = EnvironmentState()
+        env.is_root = True
+        env.services = {
+            'meshtasticd': ServiceInfo(name='meshtasticd', state=ServiceRunState.RUNNING,
+                                       port=4403, port_open=True),
+            'rnsd': ServiceInfo(name='rnsd', state=ServiceRunState.RUNNING,
+                                port=37428, port_open=False),
+        }
+        env.conflicts = []
+
+        with patch.object(bar, 'get_environment', return_value=env):
+            with patch('status_bar.ServiceRunState', ServiceRunState):
+                line = bar.get_enhanced_status_line()
+
+        assert f"mesh:{SYM_RUNNING}" in line
+        assert f"rnsd:{SYM_RUNNING}" in line
 
 
 class TestEventDrivenServiceSkip:

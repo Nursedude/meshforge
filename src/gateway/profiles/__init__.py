@@ -34,8 +34,7 @@ _yaml_mod, YAML_AVAILABLE = safe_import('yaml')
 if YAML_AVAILABLE:
     yaml = _yaml_mod
 
-# Import CLI finder utility (optional - graceful fallback)
-_find_meshtastic_cli, _HAS_CLI = safe_import('utils.cli', 'find_meshtastic_cli')
+from utils.cli import find_meshtastic_cli
 
 logger = logging.getLogger(__name__)
 
@@ -248,11 +247,7 @@ class ProfileManager:
             }
 
         # Find meshtastic CLI
-        if _HAS_CLI:
-            cli_path = _find_meshtastic_cli()
-        else:
-            import shutil
-            cli_path = shutil.which('meshtastic')
+        cli_path = find_meshtastic_cli()
 
         if not cli_path:
             return {

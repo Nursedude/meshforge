@@ -21,11 +21,9 @@ from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
-from utils.safe_import import safe_import
+from utils.service_check import check_service
 
 logger = logging.getLogger(__name__)
-
-_check_service, _HAS_SERVICE_CHECK = safe_import('utils.service_check', 'check_service')
 
 
 @dataclass
@@ -139,10 +137,6 @@ def get_available_modes() -> List[QuickStartMode]:
 
     Returns all modes but marks which ones are ready vs need setup.
     """
-    # Use centralized service check
-    has_service_check = _HAS_SERVICE_CHECK
-    check_service = _check_service
-
     available = []
 
     for mode in QUICK_START_MODES:
@@ -158,15 +152,14 @@ def get_available_modes() -> List[QuickStartMode]:
         )
 
         # Check if required services are available
-        if has_service_check and check_service:
-            missing = []
-            for svc in mode.services_required:
-                status = check_service(svc)
-                if not status.available:
-                    missing.append(svc)
+        missing = []
+        for svc in mode.services_required:
+            status = check_service(svc)
+            if not status.available:
+                missing.append(svc)
 
-            if missing:
-                mode_copy.description += f" (needs: {', '.join(missing)})"
+        if missing:
+            mode_copy.description += f" (needs: {', '.join(missing)})"
 
         available.append(mode_copy)
 
@@ -269,13 +262,12 @@ def apply_mode(mode_id: str) -> Dict[str, Any]:
     services_to_start = mode.services_required.copy()
 
     # Check which optional services are available
-    if _HAS_SERVICE_CHECK:
-        for svc in mode.services_optional:
-            # Check if service is installed (even if not running)
-            status = _check_service(svc)
-            # Add if it's installed and would be useful
-            if status.state.value != "not_installed":
-                services_to_start.append(svc)
+    for svc in mode.services_optional:
+        # Check if service is installed (even if not running)
+        status = check_service(svc)
+        # Add if it's installed and would be useful
+        if status.state.value != "not_installed":
+            services_to_start.append(svc)
 
     return {
         'success': True,

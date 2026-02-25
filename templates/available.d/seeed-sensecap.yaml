@@ -1,0 +1,25 @@
+# Seeed SenseCAP E5 LoRa HAT SPI Configuration
+# Hardware: SX1262
+# Manufacturer: Seeed Studio
+#
+# Copy to: /etc/meshtasticd/config.d/seeed-sensecap.yaml
+#
+# IMPORTANT: Enable SPI first!
+#   sudo raspi-config nonint do_spi 0
+#   sudo reboot
+
+Lora:
+  Module: sx1262
+  CS: 8
+  IRQ: 25
+  Reset: 22
+  DIO2_AS_RF_SWITCH: true
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

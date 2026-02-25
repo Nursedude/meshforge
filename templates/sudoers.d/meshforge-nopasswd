@@ -1,0 +1,46 @@
+# MeshForge NOPASSWD sudoers rule — for turnkey appliance deployments
+#
+# Allows the meshforge user to run specific system commands without a
+# password prompt.  This is OPTIONAL and intended only for dedicated
+# mesh appliances (Raspberry Pi, etc.) where interactive password entry
+# is impractical.
+#
+# Install:
+#   sudo cp templates/sudoers.d/meshforge-nopasswd /etc/sudoers.d/meshforge
+#   sudo chmod 440 /etc/sudoers.d/meshforge
+#   sudo visudo -cf /etc/sudoers.d/meshforge   # validate syntax
+#
+# Replace %meshforge with a specific username if preferred:
+#   meshforge ALL=(ALL) NOPASSWD: ...
+
+# Service management (systemctl)
+%meshforge ALL=(ALL) NOPASSWD: /usr/bin/systemctl start meshtasticd, \
+                                /usr/bin/systemctl stop meshtasticd, \
+                                /usr/bin/systemctl restart meshtasticd, \
+                                /usr/bin/systemctl enable meshtasticd, \
+                                /usr/bin/systemctl disable meshtasticd, \
+                                /usr/bin/systemctl daemon-reload, \
+                                /usr/bin/systemctl start rnsd, \
+                                /usr/bin/systemctl stop rnsd, \
+                                /usr/bin/systemctl restart rnsd, \
+                                /usr/bin/systemctl enable rnsd, \
+                                /usr/bin/systemctl status *
+
+# File writes to system config directories
+%meshforge ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/meshtasticd/*, \
+                                /usr/bin/tee /etc/systemd/system/*, \
+                                /usr/bin/tee /etc/reticulum/*
+
+# Directory creation for config paths
+%meshforge ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /etc/meshtasticd/*, \
+                                /usr/bin/mkdir -p /etc/reticulum/*
+
+# Symlink management in config.d
+%meshforge ALL=(ALL) NOPASSWD: /usr/bin/ln -s /etc/meshtasticd/available.d/* /etc/meshtasticd/config.d/*, \
+                                /usr/bin/rm -f /etc/meshtasticd/config.d/*
+
+# Hardware configuration (Raspberry Pi)
+%meshforge ALL=(ALL) NOPASSWD: /usr/bin/raspi-config
+
+# Reboot
+%meshforge ALL=(ALL) NOPASSWD: /usr/sbin/reboot

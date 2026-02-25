@@ -26,29 +26,17 @@ from backend import clear_screen
 
 logger = logging.getLogger(__name__)
 
+from utils.paths import ReticulumPaths
+
 from utils.safe_import import safe_import
 
 # Import centralized service checking
-check_process_running, _HAS_SERVICE_CHECK = safe_import(
-    'utils.service_check', 'check_process_running'
+check_process_running, start_service, stop_service, apply_config_and_restart, _sudo_cmd, _HAS_SERVICE_CHECK = safe_import(
+    'utils.service_check', 'check_process_running', 'start_service', 'stop_service', 'apply_config_and_restart', '_sudo_cmd'
 )
 
-# Import for sudo-safe home directory - see persistent_issues.md Issue #1
-_get_real_user_home_mod, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
-
-if _HAS_PATHS:
-    get_real_user_home = _get_real_user_home_mod
-else:
-    def get_real_user_home():
-        sudo_user = os.environ.get('SUDO_USER', '')
-        if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-            candidate = Path(f'/home/{sudo_user}')
-            return candidate
-        logname = os.environ.get('LOGNAME', '')
-        if logname and logname != 'root' and '/' not in logname and '..' not in logname:
-            candidate = Path(f'/home/{logname}')
-            return candidate
-        return Path('/root')
+# Sudo-safe home directory — first-party, always available (MF001)
+from utils.paths import get_real_user_home
 
 
 class NomadNetClientMixin:
@@ -239,8 +227,10 @@ class NomadNetClientMixin:
                 else:
                     choices.append(("textui", "Launch Text UI (interactive)"))
                     choices.append(("daemon", "Start as Daemon (background)"))
+                choices.append(("logs", "View NomadNet Logs"))
                 choices.append(("config", "View NomadNet Config"))
                 choices.append(("edit", "Edit NomadNet Config"))
+                choices.append(("uninstall", "Disable NomadNet"))
             else:
                 choices.append(("install", "Install NomadNet"))
 
@@ -261,9 +251,11 @@ class NomadNetClientMixin:
                 "textui": ("Launch NomadNet TUI", self._launch_nomadnet_textui),
                 "daemon": ("Start NomadNet Daemon", self._launch_nomadnet_daemon),
                 "stop": ("Stop NomadNet", self._stop_nomadnet),
+                "logs": ("View NomadNet Logs", self._view_nomadnet_logs),
                 "config": ("View NomadNet Config", self._view_nomadnet_config),
                 "edit": ("Edit NomadNet Config", self._edit_nomadnet_config),
                 "install": ("Install NomadNet", self._install_nomadnet),
+                "uninstall": ("Disable NomadNet", self._uninstall_nomadnet),
             }
             entry = dispatch.get(choice)
             if entry:
@@ -390,6 +382,11 @@ class NomadNetClientMixin:
         if not nn_path:
             return
 
+        # LXMF exclusivity: stop MeshChat if running (one at a time)
+        if hasattr(self, '_ensure_lxmf_exclusive'):
+            if not self._ensure_lxmf_exclusive("nomadnet"):
+                return
+
         # Fix ownership of user directories if they were created by root
         # This is a common issue when MeshForge runs with sudo
         if not self._fix_user_directory_ownership():
@@ -478,31 +475,26 @@ class NomadNetClientMixin:
         error_hints = []
         if logfile.exists():
             try:
-                content = logfile.read_text()
-                last_lines = content.strip().split('\n')[-20:]
+                import collections
+                with open(logfile, 'r') as f:
+                    last_lines = list(
+                        collections.deque(f, maxlen=20)
+                    )
 
                 # Look for known error patterns
                 for line in last_lines:
                     if 'AuthenticationError' in line or 'digest sent was rejected' in line:
                         error_hints.append("RPC authentication failed between NomadNet and rnsd")
                         # Check if rnsd is running as root
-                        try:
-                            ps_result = subprocess.run(
-                                ['ps', '-o', 'user=', '-C', 'rnsd'],
-                                capture_output=True, text=True, timeout=5
-                            )
-                            rnsd_user = ps_result.stdout.strip()
-                            if rnsd_user == 'root':
-                                error_hints.append("rnsd is running as root - identities don't match")
-                                error_hints.append("Fix: sudo systemctl stop rnsd")
-                                error_hints.append("     Then run rnsd as your user, or reconfigure")
-                            elif rnsd_user and rnsd_user != sudo_user:
-                                error_hints.append(f"rnsd runs as '{rnsd_user}', you are '{sudo_user}'")
-                            else:
-                                error_hints.append("Check that rnsd uses the same ~/.reticulum/ identity")
-                        except (subprocess.SubprocessError, OSError) as e:
-                            logger.debug("rnsd user lookup failed: %s", e)
-                            error_hints.append("Ensure rnsd and NomadNet use the same RNS identity")
+                        rnsd_user = self._get_rnsd_user()
+                        if rnsd_user == 'root':
+                            error_hints.append("rnsd is running as root - identities don't match")
+                            error_hints.append("Fix: sudo systemctl stop rnsd")
+                            error_hints.append("     Then run rnsd as your user, or reconfigure")
+                        elif rnsd_user and rnsd_user != sudo_user:
+                            error_hints.append(f"rnsd runs as '{rnsd_user}', you are '{sudo_user}'")
+                        else:
+                            error_hints.append("Check that rnsd uses the same ~/.reticulum/ identity")
                         break
                     elif 'KeyError' in line and 'textui' in line.lower():
                         error_hints.append("Config missing [textui] section")
@@ -518,11 +510,48 @@ class NomadNetClientMixin:
                             error_hints.append("Permission denied accessing files")
                             error_hints.append(f"Check ownership: ls -la ~/.nomadnetwork/")
                         break
+                    elif 'meshtastic' in line.lower() and (
+                        'critical' in line.lower() or 'requires' in line.lower()
+                        or 'no module' in line.lower() or 'modulenotfounderror' in line.lower()
+                    ):
+                        error_hints.append("rnsd cannot load the meshtastic module")
+                        error_hints.append("The Meshtastic_Interface.py plugin requires meshtastic")
+                        error_hints.append(
+                            "Fix: sudo pip3 install --break-system-packages "
+                            "--ignore-installed meshtastic"
+                        )
+                        error_hints.append("Then: sudo systemctl restart rnsd")
+                        break
                     elif 'ModuleNotFoundError' in line or 'ImportError' in line:
                         error_hints.append("Missing Python dependencies")
                         error_hints.append("Try: pipx reinstall nomadnet")
                         break
             except (OSError, PermissionError):
+                pass
+
+        # If no NomadNet-specific error found, check rnsd journal for clues.
+        # NomadNet fails when rnsd is down due to meshtastic module issue.
+        if not error_hints:
+            try:
+                journal_r = subprocess.run(
+                    ['journalctl', '-u', 'rnsd', '-n', '20', '--no-pager', '-q'],
+                    capture_output=True, text=True, timeout=5
+                )
+                journal_text = journal_r.stdout.lower()
+                if 'meshtastic' in journal_text and (
+                    'critical' in journal_text or 'module' in journal_text
+                ):
+                    error_hints.append("rnsd crashed because the meshtastic module is missing")
+                    error_hints.append("NomadNet depends on rnsd for network access")
+                    error_hints.append(
+                        "Fix: sudo pip3 install --break-system-packages "
+                        "--ignore-installed meshtastic"
+                    )
+                    error_hints.append("Then: sudo systemctl restart rnsd")
+                elif 'status=255' in journal_text or 'exception' in journal_text:
+                    error_hints.append("rnsd is crashing (exit code 255)")
+                    error_hints.append("Check: sudo journalctl -u rnsd -n 30")
+            except (subprocess.SubprocessError, OSError):
                 pass
 
         if error_hints:
@@ -533,6 +562,107 @@ class NomadNetClientMixin:
             print("\nCheck logs for details:")
             print(f"  cat {logfile}")
             print("  journalctl --user -u nomadnet -n 50")
+
+    # ------------------------------------------------------------------
+    # Log viewer
+    # ------------------------------------------------------------------
+
+    def _view_nomadnet_logs(self):
+        """View NomadNet logfile (works in daemon and textui mode).
+
+        NomadNet writes to ~/.nomadnetwork/logfile independently of
+        stdout/stderr, so this works regardless of launch mode.
+        """
+        import collections
+
+        user_home = get_real_user_home()
+        logfile = user_home / '.nomadnetwork' / 'logfile'
+
+        if not logfile.exists():
+            self.dialog.msgbox(
+                "No Logs",
+                "NomadNet logfile not found yet.\n\n"
+                f"Expected at: {logfile}\n\n"
+                "Logs are created when NomadNet runs.",
+            )
+            return
+
+        clear_screen()
+
+        # Offer view options
+        choices = [
+            ("last50", "Last 50 lines"),
+            ("last200", "Last 200 lines"),
+            ("errors", "Errors only (last 200 lines)"),
+            ("follow", "Follow live (Ctrl+C to stop)"),
+            ("back", "Back"),
+        ]
+
+        choice = self.dialog.menu(
+            "NomadNet Logs",
+            f"Logfile: {logfile}",
+            choices,
+        )
+
+        if choice is None or choice == "back":
+            return
+
+        if choice == "follow":
+            clear_screen()
+            print(f"=== NomadNet log — {logfile} "
+                  f"(Ctrl+C to stop) ===\n")
+            try:
+                subprocess.run(
+                    ['tail', '-f', '-n', '30', str(logfile)],
+                    timeout=None
+                )
+            except KeyboardInterrupt:
+                pass
+            return
+
+        # Read the logfile tail
+        if choice == "last200":
+            maxlines = 200
+        else:
+            maxlines = 50  # last50 and errors both read 200
+
+        clear_screen()
+
+        try:
+            with open(logfile, 'r') as f:
+                lines = list(collections.deque(
+                    f, maxlen=max(maxlines, 200)
+                ))
+
+            if choice == "errors":
+                error_patterns = [
+                    'Error', 'Exception', 'CRITICAL',
+                    'WARNING', 'AuthenticationError',
+                    'PermissionError', 'Traceback',
+                ]
+                lines = [
+                    line for line in lines
+                    if any(p in line for p in error_patterns)
+                ]
+                print(f"=== NomadNet errors "
+                      f"({len(lines)} found) ===\n")
+            else:
+                lines = lines[-maxlines:]
+                print(f"=== NomadNet log (last "
+                      f"{len(lines)} lines) ===\n")
+
+            if lines:
+                for line in lines:
+                    print(line.rstrip())
+            else:
+                print("  (no matching lines)")
+
+        except PermissionError:
+            print(f"Cannot read {logfile} — permission denied")
+        except OSError as e:
+            print(f"Error reading logfile: {e}")
+
+        self._wait_for_enter()
 
     # ------------------------------------------------------------------
     # Launch daemon
@@ -551,6 +681,11 @@ class NomadNetClientMixin:
         if self._is_nomadnet_running():
             self.dialog.msgbox("Already Running", "NomadNet is already running.")
             return
+
+        # LXMF exclusivity: stop MeshChat if running (one at a time)
+        if hasattr(self, '_ensure_lxmf_exclusive'):
+            if not self._ensure_lxmf_exclusive("nomadnet"):
+                return
 
         # Fix ownership of user directories if they were created by root
         if not self._fix_user_directory_ownership():
@@ -659,6 +794,64 @@ class NomadNetClientMixin:
                 self.dialog.msgbox("Warning", "NomadNet may still be running.\nTry: sudo pkill -9 -f nomadnet")
         except Exception as e:
             self.dialog.msgbox("Error", f"Failed to stop NomadNet:\n{e}")
+
+    # ------------------------------------------------------------------
+    # Uninstall (stop + disable)
+    # ------------------------------------------------------------------
+
+    def _uninstall_nomadnet(self):
+        """Stop NomadNet and leave it disabled.
+
+        Does not remove files — just stops the process and shows how
+        to reinstall later if desired.
+        """
+        if not self.dialog.yesno(
+            "Disable NomadNet",
+            "Stop NomadNet and disable it?\n\n"
+            "This will:\n"
+            "  - Stop NomadNet if running\n"
+            "  - Leave files in place\n\n"
+            "Reinstall later with: pipx install nomadnet\n\n"
+            "Disable now?",
+        ):
+            return
+
+        clear_screen()
+        print("=== Disabling NomadNet ===\n")
+
+        # Stop running processes
+        if self._is_nomadnet_running():
+            print("Stopping NomadNet...")
+            try:
+                subprocess.run(
+                    ['pkill', '-f', 'bin/nomadnet'],
+                    capture_output=True, timeout=10,
+                )
+                time.sleep(2)
+            except (subprocess.SubprocessError, OSError):
+                pass
+
+            if self._is_nomadnet_running():
+                try:
+                    subprocess.run(
+                        ['pkill', '-9', '-f', 'bin/nomadnet'],
+                        capture_output=True, timeout=10,
+                    )
+                    time.sleep(1)
+                except (subprocess.SubprocessError, OSError):
+                    pass
+
+        if self._is_nomadnet_running():
+            print("NomadNet may still be running.")
+            print("Try: sudo pkill -9 -f nomadnet")
+        else:
+            print("NomadNet stopped.")
+
+        user_home = get_real_user_home()
+        print(f"\nConfig remains at: {user_home}/.nomadnetwork/")
+        print("Reinstall: pipx install nomadnet")
+
+        self._wait_for_enter()
 
     # ------------------------------------------------------------------
     # Config management
@@ -1084,15 +1277,8 @@ class NomadNetClientMixin:
                     return False
 
         # Check if rnsd is running and get its user
-        try:
-            result = subprocess.run(
-                ['ps', '-o', 'user=', '-C', 'rnsd'],
-                capture_output=True, text=True, timeout=5
-            )
-            rnsd_user = result.stdout.strip() if result.returncode == 0 else None
-        except (subprocess.SubprocessError, OSError) as e:
-            logger.debug("rnsd user detection failed: %s", e)
-            rnsd_user = None
+        # Uses shared helper from RNSDiagnosticsMixin (same MRO)
+        rnsd_user = self._get_rnsd_user()
 
         if not rnsd_user:
             # rnsd not running -- warn but allow proceeding
@@ -1168,7 +1354,7 @@ class NomadNetClientMixin:
                 # Just stop rnsd
                 self.dialog.infobox("Stopping rnsd", "Stopping rnsd service...")
                 try:
-                    subprocess.run(['systemctl', 'stop', 'rnsd'], capture_output=True, timeout=10)
+                    stop_service('rnsd')
                     subprocess.run(['pkill', '-f', 'rnsd'], capture_output=True, timeout=5)
                     time.sleep(1)
                     self.dialog.msgbox(
@@ -1212,7 +1398,7 @@ class NomadNetClientMixin:
             elif choice == "stop":
                 self.dialog.infobox("Stopping rnsd", "Stopping rnsd service...")
                 try:
-                    subprocess.run(['systemctl', 'stop', 'rnsd'], capture_output=True, timeout=10)
+                    stop_service('rnsd')
                     subprocess.run(['pkill', '-f', 'rnsd'], capture_output=True, timeout=5)
                     time.sleep(1)
                     self.dialog.msgbox(
@@ -1230,77 +1416,8 @@ class NomadNetClientMixin:
         # rnsd running as correct user (or no sudo context)
         return True
 
-    def _fix_rnsd_user(self, target_user: str) -> bool:
-        """Configure rnsd systemd service to run as the specified user.
-
-        Creates a systemd override to set User= directive, then restarts rnsd.
-        This is the proper fix for the identity mismatch problem.
-        """
-        override_dir = Path('/etc/systemd/system/rnsd.service.d')
-        override_file = override_dir / 'user.conf'
-
-        self.dialog.infobox("Configuring rnsd", f"Setting rnsd to run as {target_user}...")
-
-        try:
-            # Create override directory
-            override_dir.mkdir(parents=True, exist_ok=True)
-
-            # Write override config
-            override_content = f"""[Service]
-User={target_user}
-Group={target_user}
-"""
-            override_file.write_text(override_content)
-
-            # Reload systemd and restart rnsd
-            subprocess.run(['systemctl', 'daemon-reload'], capture_output=True, timeout=10)
-            subprocess.run(['systemctl', 'stop', 'rnsd'], capture_output=True, timeout=10)
-            subprocess.run(['pkill', '-f', 'rnsd'], capture_output=True, timeout=5)
-            time.sleep(1)
-            subprocess.run(['systemctl', 'start', 'rnsd'], capture_output=True, timeout=10)
-            time.sleep(2)
-
-            # Verify it's running as the right user now
-            result = subprocess.run(
-                ['ps', '-o', 'user=', '-C', 'rnsd'],
-                capture_output=True, text=True, timeout=5
-            )
-            new_user = result.stdout.strip()
-
-            if new_user == target_user:
-                self.dialog.msgbox(
-                    "rnsd Fixed",
-                    f"rnsd is now running as {target_user}.\n\n"
-                    f"Override created: {override_file}\n\n"
-                    "NomadNet will now be able to connect via RPC.",
-                )
-                return True
-            else:
-                self.dialog.msgbox(
-                    "Fix May Have Failed",
-                    f"rnsd is running as '{new_user}' (expected '{target_user}').\n\n"
-                    f"Check: systemctl status rnsd\n"
-                    f"       cat {override_file}",
-                )
-                return True  # Let them try anyway
-
-        except PermissionError:
-            self.dialog.msgbox(
-                "Permission Denied",
-                f"Cannot write to {override_dir}\n\n"
-                "MeshForge needs to run with sudo to fix this.",
-            )
-            return False
-        except Exception as e:
-            self.dialog.msgbox(
-                "Configuration Failed",
-                f"Could not configure rnsd: {e}\n\n"
-                "Manual fix:\n"
-                f"  sudo systemctl edit rnsd\n"
-                f"  Add: [Service]\n"
-                f"       User={target_user}",
-            )
-            return False
+    # _fix_rnsd_user() lives in RNSDiagnosticsMixin (rns_diagnostics_mixin.py)
+    # and is accessible via self through Python MRO.
 
     def _validate_nomadnet_config(self) -> bool:
         """Validate and repair NomadNet config if needed.
@@ -1366,7 +1483,6 @@ hide_guide = no
             # Fix ownership if running via sudo
             sudo_user = os.environ.get('SUDO_USER')
             if sudo_user and sudo_user != 'root':
-                import subprocess
                 subprocess.run(
                     ['chown', f'{sudo_user}:{sudo_user}', str(config_path)],
                     capture_output=True, timeout=10

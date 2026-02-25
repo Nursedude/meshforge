@@ -1,0 +1,26 @@
+# MeshAdv-Pi v1.1 SPI Configuration
+# Hardware: SX1262
+# Manufacturer: MeshAdv
+#
+# Copy to: /etc/meshtasticd/config.d/meshadv-pi-v1.1.yaml
+#
+# IMPORTANT: Enable SPI first!
+#   sudo raspi-config nonint do_spi 0
+#   sudo reboot
+
+Lora:
+  Module: sx1262
+  CS: 8
+  IRQ: 22
+  Busy: 23
+  Reset: 24
+  DIO2_AS_RF_SWITCH: true
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

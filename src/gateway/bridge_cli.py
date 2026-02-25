@@ -197,12 +197,15 @@ def main():
         bridge.register_message_callback(on_message)
 
     # Handle Ctrl+C
+    import threading
+    _stop_event = threading.Event()
     running = True
 
     def signal_handler(sig, frame):
         nonlocal running
         print("\n\nShutting down gateway...")
         running = False
+        _stop_event.set()
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -251,7 +254,9 @@ def main():
         # Main loop - print status every 30 seconds
         last_status = time.time()
         while running:
-            time.sleep(1)
+            _stop_event.wait(1)
+            if _stop_event.is_set():
+                break
 
             # Print status periodically
             if time.time() - last_status > 30:

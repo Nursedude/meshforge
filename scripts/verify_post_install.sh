@@ -98,6 +98,17 @@ check_skip() {
     log "  ${CYAN}[SKIP]${NC} $name - $reason"
 }
 
+check_info() {
+    local name="$1"
+    local detail="$2"
+    CHECKS_PASSED=$((CHECKS_PASSED + 1))
+    RESULTS+=("{\"check\":\"$name\",\"status\":\"info\",\"detail\":\"$detail\"}")
+    log "  ${CYAN}[INFO]${NC} $name"
+    if [[ -n "$detail" ]]; then
+        log "        ${CYAN}$detail${NC}"
+    fi
+}
+
 # ─────────────────────────────────────────────────────────────────
 # Header
 # ─────────────────────────────────────────────────────────────────
@@ -202,7 +213,7 @@ if [[ -f "$CONFIG_YAML" ]]; then
         MODULE=$(grep -A1 "Lora:" "$CONFIG_YAML" | grep "Module:" | awk '{print $2}' || echo "auto")
         check_pass "Lora section" "Module: ${MODULE:-auto}"
     else
-        check_warn "Lora section" "Missing from config.yaml" "Add: Lora:\\n  Module: auto"
+        check_warn "Lora section" "Missing from config.yaml" "Reinstall meshtasticd package or run MeshForge ensure_structure() to regenerate"
     fi
 
     # Check for WRONG content (radio parameters that shouldn't be here)
@@ -246,9 +257,12 @@ log ""
 # ─────────────────────────────────────────────────────────────────
 log "${BOLD}[4/6] Service Status${NC}"
 
+MESHTASTICD_RUNNING=false
+
 # Check meshtasticd service
 if systemctl is-active --quiet meshtasticd 2>/dev/null; then
     check_pass "meshtasticd service" "Running"
+    MESHTASTICD_RUNNING=true
 elif systemctl is-enabled --quiet meshtasticd 2>/dev/null; then
     check_warn "meshtasticd service" "Enabled but not running" "Start: sudo systemctl start meshtasticd"
 else
@@ -256,10 +270,28 @@ else
 fi
 
 # Check if port 4403 is listening (meshtasticd TCP)
+# Retry when service is running but port hasn't bound yet (startup race)
+PORT_4403_OK=false
 if ss -tlnp 2>/dev/null | grep -q ":4403 "; then
+    PORT_4403_OK=true
+elif $MESHTASTICD_RUNNING; then
+    for _attempt in 1 2 3 4 5; do
+        sleep 2
+        if ss -tlnp 2>/dev/null | grep -q ":4403 "; then
+            PORT_4403_OK=true
+            break
+        fi
+    done
+fi
+
+if $PORT_4403_OK; then
     check_pass "Port 4403 (TCP)" "meshtasticd TCP interface listening"
+elif $MESHTASTICD_RUNNING; then
+    check_warn "Port 4403 (TCP)" "Not listening yet" \
+        "Service is running but TCP port may need more startup time. Check: sudo journalctl -u meshtasticd -f"
 else
-    check_warn "Port 4403 (TCP)" "Not listening" "meshtasticd may not be running or configured"
+    check_warn "Port 4403 (TCP)" "Not listening" \
+        "meshtasticd is not running. Start: sudo systemctl start meshtasticd"
 fi
 
 # Web client is on port 9443 (HTTPS, checked in Section 6)
@@ -297,18 +329,56 @@ if [[ -e /dev/spidev0.0 ]] || [[ -e /dev/spidev0.1 ]]; then
     fi
 fi
 
-# Check for USB serial devices
+# Check for USB serial devices and identify them
+USB_DEVICE_FOUND=false
 for dev in /dev/ttyUSB* /dev/ttyACM*; do
     if [[ -e "$dev" ]]; then
         check_pass "USB serial device" "$dev"
         RADIO_FOUND=true
+        USB_DEVICE_FOUND=true
+
+        # Try to identify specific device via USB vendor:product ID
+        USB_VID=$(udevadm info --query=property "$dev" 2>/dev/null | grep '^ID_VENDOR_ID=' | cut -d= -f2)
+        USB_PID=$(udevadm info --query=property "$dev" 2>/dev/null | grep '^ID_MODEL_ID=' | cut -d= -f2)
+        if [[ -n "$USB_VID" && -n "$USB_PID" ]]; then
+            USB_ID="${USB_VID}:${USB_PID}"
+            case "$USB_ID" in
+                303a:1001|303a:4001|303a:1002)
+                    check_pass "USB radio identified" "Heltec V3/V4 (template: heltec-usb.yaml)" ;;
+                1209:0000)
+                    check_pass "USB radio identified" "MeshStick (template: meshstick-usb.yaml)" ;;
+                1a86:7523|1a86:55d4|1a86:7522)
+                    check_pass "USB radio identified" "MeshToad/CH340 (template: meshtoad-usb.yaml)" ;;
+                239a:8029|239a:0029|19d2:0016)
+                    check_pass "USB radio identified" "RAK4631 (template: rak4631-usb.yaml)" ;;
+                10c4:ea60)
+                    check_pass "USB radio identified" "Station G2/CP2102 (template: station-g2-usb.yaml)" ;;
+                1a86:55d3)
+                    check_pass "USB radio identified" "T-Beam S3/CH9102 (template: tbeam-usb.yaml)" ;;
+                0403:6001|0403:6015)
+                    check_pass "USB radio identified" "FTDI USB-Serial (template: usb-serial-generic.yaml)" ;;
+                *)
+                    check_warn "USB radio ID" "Unknown USB ID $USB_ID" \
+                        "Use generic template: usb-serial-generic.yaml" ;;
+            esac
+        fi
         break
     fi
 done
 
 if ! $RADIO_FOUND; then
-    check_warn "Radio hardware" "No SPI or USB radio detected" \
-        "Connect USB radio or enable SPI for HAT"
+    if $MESHTASTICD_RUNNING && [[ "$ACTIVE_COUNT" -gt 0 ]]; then
+        # Service is running with active config — hardware not visible but
+        # likely working (common in containers or when device managed by daemon)
+        check_info "Radio hardware" \
+            "No /dev device visible but meshtasticd is running with active config ($ACTIVE_NAME)"
+    else
+        check_warn "Radio hardware" "No SPI or USB radio detected" \
+            "Connect USB radio or enable SPI for HAT"
+        log "  Available USB templates: heltec-usb, meshstick-usb, meshtoad-usb,"
+        log "    rak4631-usb, station-g2-usb, tbeam-usb, usb-serial-generic"
+        log "  Select in TUI: Configuration > Hardware Config"
+    fi
 fi
 
 # Check udev rules
@@ -317,6 +387,28 @@ if [[ -f /etc/udev/rules.d/99-meshtastic.rules ]]; then
 else
     check_warn "udev rules" "Meshtastic udev rules not installed" \
         "May cause permission issues with USB radios"
+fi
+
+# Check ALSA udev rules for broken GOTO labels (RPi OS packaging bug)
+ALSA_RULES="/usr/lib/udev/rules.d/90-alsa-restore.rules"
+if [[ -f "$ALSA_RULES" ]]; then
+    BROKEN_GOTOS=""
+    while IFS= read -r goto_label; do
+        if ! grep -q "LABEL=\"$goto_label\"" "$ALSA_RULES"; then
+            BROKEN_GOTOS="${BROKEN_GOTOS:+$BROKEN_GOTOS, }$goto_label"
+        fi
+    done < <(grep -oP 'GOTO="\K[^"]+' "$ALSA_RULES" | sort -u)
+
+    if [[ -n "$BROKEN_GOTOS" ]]; then
+        if [[ -f /etc/udev/rules.d/90-alsa-restore.rules ]]; then
+            check_pass "ALSA udev rules" "Override exists in /etc/udev/rules.d/"
+        else
+            check_warn "ALSA udev rules" "Broken GOTO labels: $BROKEN_GOTOS" \
+                "Run installer or: sudo python3 -c \"from utils.udev_fix import fix_broken_udev_rules; print(fix_broken_udev_rules())\""
+        fi
+    else
+        check_pass "ALSA udev rules" "No broken GOTO labels"
+    fi
 fi
 
 log ""

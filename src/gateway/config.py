@@ -12,11 +12,9 @@ from typing import Optional, List, Dict, Any, Tuple
 import logging
 
 from utils.safe_import import safe_import
+from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)
-
-# Import centralized path utility for sudo compatibility
-_get_real_user_home, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
 
 # Import config drift validation (optional)
 _validate_gateway_rns_config, _HAS_CONFIG_DRIFT = safe_import(
@@ -75,7 +73,7 @@ def validate_bridge_mode(mode: str, field_name: str) -> Optional[ConfigValidatio
     """Validate bridge mode."""
     valid_modes = [
         "mqtt_bridge", "message_bridge", "rns_transport", "mesh_bridge",
-        "meshcore_bridge", "tri_bridge",
+        "meshcore_bridge", "meshcore_primary", "tri_bridge",
     ]
     if mode not in valid_modes:
         return ConfigValidationError(field_name, f"Invalid bridge mode '{mode}'. Valid: {valid_modes}")
@@ -139,22 +137,6 @@ def validate_speed_hop_combination(speed: int, hop_limit: int) -> Optional[Confi
         )
     return None
 
-def get_real_user_home() -> Path:
-    """Get real user home directory with sudo compatibility."""
-    if _HAS_PATHS:
-        return _get_real_user_home()
-    # Fallback for when utils.paths is not in Python path
-    sudo_user = os.environ.get('SUDO_USER', '')
-    if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-        candidate = Path(f'/home/{sudo_user}')
-        return candidate
-    logname = os.environ.get('LOGNAME', '')
-    if logname and logname != 'root' and '/' not in logname and '..' not in logname:
-        candidate = Path(f'/home/{logname}')
-        return candidate
-    return Path('/root')
-
-
 @dataclass
 class MeshtasticConfig:
     """Meshtastic connection configuration"""
@@ -163,6 +145,13 @@ class MeshtasticConfig:
     channel: int = 0  # Primary channel for gateway messages
     use_mqtt: bool = False
     mqtt_topic: str = ""
+    # MQTT connection settings (used when use_mqtt=True)
+    mqtt_broker: str = "localhost"
+    mqtt_port: int = 1883
+    mqtt_channel: str = "LongFast"
+    mqtt_region: str = "US"
+    # HTTP port for protobuf TX (meshtasticd web server)
+    http_port: int = 443
     # LoRa preset identifier (for documentation/display)
     # Values: LONG_FAST, LONG_SLOW, MEDIUM_FAST, MEDIUM_SLOW,
     #         SHORT_FAST, SHORT_SLOW, SHORT_TURBO
@@ -784,6 +773,41 @@ class GatewayConfig:
         return config
 
     @classmethod
+    def template_meshcore_primary(cls,
+                                  device_path: str = "/dev/ttyUSB0",
+                                  connection_type: str = "serial") -> 'GatewayConfig':
+        """
+        MeshCore as primary radio with RNS backhaul.
+
+        MeshForge manages the MeshCore companion radio directly.
+        Meshtastic is optional (bridge target if available).
+        RNS provides long-haul backhaul via LXMF.
+
+        Use case: MeshCore-primary mesh network with RNS backhaul
+        Requirements:
+            - MeshCore companion radio connected (USB serial or TCP)
+            - pip install meshcore (Python 3.10+)
+            - rnsd running (optional but recommended for backhaul)
+            - meshtasticd NOT required (optional secondary bridge)
+
+        Args:
+            device_path: Serial device path for companion radio
+            connection_type: Connection type (serial, tcp, ble)
+        """
+        config = cls()
+        config.enabled = True
+        config.bridge_mode = "meshcore_primary"
+        config.meshcore.enabled = True
+        config.meshcore.device_path = device_path
+        config.meshcore.connection_type = connection_type
+        config.meshcore.auto_fetch_messages = True
+        config.meshcore.bridge_channels = True
+        config.meshcore.bridge_dms = True
+        config.default_route = "bidirectional"
+        config.routing_rules = config.get_default_rules()
+        return config
+
+    @classmethod
     def template_basic_bridge(cls) -> 'GatewayConfig':
         """
         Basic message bridge between Meshtastic and RNS (LEGACY).
@@ -931,6 +955,7 @@ class GatewayConfig:
         """
         templates = {
             "mqtt_bridge": cls.template_mqtt_bridge,
+            "meshcore_primary": cls.template_meshcore_primary,
             "basic_bridge": cls.template_basic_bridge,
             "rns_over_mesh": cls.template_rns_over_mesh,
             "dual_preset_bridge": cls.template_dual_preset_bridge,

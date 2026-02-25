@@ -59,9 +59,28 @@ But `Path.home()` returns `/root` with sudo, breaking user config persistence.
 ### Implementation Strategy
 
 1. **Default to Viewer Mode** - Launch without sudo
-2. **Elevate for specific actions** - Use `pkexec` or `sudo` only when needed
+2. **Elevate for specific actions** - Use `_sudo_cmd()` / `_sudo_write()` only when needed
 3. **External services run independently** - meshtasticd, rnsd, hamclock as systemd
 4. **MeshForge connects to services** - Not embedded, just API clients
+
+### Privilege Elevation Helpers (`utils/service_check.py`)
+
+All privilege-elevated operations go through centralized helpers:
+
+| Helper | Purpose |
+|--------|---------|
+| `_sudo_cmd(cmd_list)` | Prefixes command with `sudo` when not root |
+| `_sudo_write(path, content)` | Writes to `/etc/` paths via `sudo tee` |
+| `start_service(name)` | `systemctl start` with elevation |
+| `stop_service(name)` | `systemctl stop` with elevation |
+| `apply_config_and_restart(name)` | `daemon-reload` + `restart` |
+| `enable_service(name)` | `daemon-reload` + `enable` |
+
+**NEVER** use raw `['sudo', 'systemctl', ...]` or bare `['systemctl', ...]` in subprocess calls.
+**NEVER** use `open('/etc/...', 'w')` directly — use `_sudo_write()` instead.
+
+For turnkey appliances, a NOPASSWD sudoers template is available at
+`templates/sudoers.d/meshforge-nopasswd`.
 
 ---
 
@@ -288,8 +307,12 @@ src/
 - [ ] Add timeout to all subprocess calls
 
 ### Phase 2: Privilege Separation
+- [x] Centralize all systemctl calls through `_sudo_cmd()` / service_check helpers
+- [x] Add `_sudo_write()` for elevated file writes to /etc/
+- [x] Add `start_service()` / `stop_service()` helpers
+- [x] Remove legacy bare `systemctl` calls from config modules and setup wizard
+- [x] Provide NOPASSWD sudoers template for turnkey appliances
 - [ ] Make viewer mode the default
-- [ ] Use pkexec for admin operations
 - [ ] Document which features need elevation
 
 ### Phase 3: Plugin Extraction
@@ -330,4 +353,4 @@ src/
 ---
 
 *Document maintained by: Dude AI (development partner)*
-*Last updated: 2026-01-06*
+*Last updated: 2026-02-18*

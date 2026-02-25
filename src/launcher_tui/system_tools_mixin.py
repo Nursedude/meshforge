@@ -20,29 +20,10 @@ from backend import clear_screen
 logger = logging.getLogger(__name__)
 
 # Import centralized service checker - SINGLE SOURCE OF TRUTH
-try:
-    from utils.service_check import check_service, check_port, ServiceState
-except ImportError:
-    check_service = None
-    check_port = None
-    ServiceState = None
+from utils.service_check import check_service, check_port, ServiceState, apply_config_and_restart
 
-# Import for sudo-safe home directory - see persistent_issues.md Issue #1
-try:
-    from utils.paths import get_real_user_home
-except ImportError:
-    # Fallback if utils not available
-    def get_real_user_home():
-        import os
-        sudo_user = os.environ.get('SUDO_USER', '')
-        if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-            candidate = Path(f'/home/{sudo_user}')
-            return candidate
-        logname = os.environ.get('LOGNAME', '')
-        if logname and logname != 'root' and '/' not in logname and '..' not in logname:
-            candidate = Path(f'/home/{logname}')
-            return candidate
-        return Path('/root')
+# Sudo-safe home directory — first-party, always available (MF001)
+from utils.paths import get_real_user_home
 
 
 class SystemToolsMixin:
@@ -1181,7 +1162,8 @@ class SystemToolsMixin:
                 )
                 if confirm:
                     print(f"\n=== Restarting {unit} ===\n")
-                    subprocess.run(['sudo', 'systemctl', 'restart', unit], timeout=30)
+                    success, msg = apply_config_and_restart(unit)
+                    print(msg)
                     subprocess.run(['systemctl', 'status', unit, '--no-pager'], timeout=10)
 
         print("\n" + "=" * 60)

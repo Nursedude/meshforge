@@ -52,7 +52,7 @@ Key paths:
 - Source: `src/`
 - Tests: `tests/`
 - Gateway: `src/gateway/`
-- GTK UI: `src/gtk_ui/`
+- TUI: `src/launcher_tui/`
 - Utils: `src/utils/`
 
 Security rules:

@@ -17,9 +17,15 @@ from rich import box
 
 from utils.safe_import import safe_import
 
-# Centralized service checker
-_check_service, _check_systemd_service, _ServiceState, _apply_config_and_restart, _HAS_SERVICE_CHECK = safe_import(
-    'utils.service_check', 'check_service', 'check_systemd_service', 'ServiceState', 'apply_config_and_restart'
+# Centralized service checker (first-party — direct import per CLAUDE.md)
+from utils.service_check import (
+    check_service as _check_service,
+    check_systemd_service as _check_systemd_service,
+    ServiceState as _ServiceState,
+    apply_config_and_restart as _apply_config_and_restart,
+    daemon_reload as _daemon_reload_fn,
+    _sudo_cmd,
+    _sudo_write,
 )
 
 # YAML support
@@ -285,24 +291,22 @@ class ConfigFileManager:
     def _daemon_reload(self):
         """Run systemctl daemon-reload"""
         console.print("[cyan]Running systemctl daemon-reload...[/cyan]")
-        try:
-            subprocess.run(["systemctl", "daemon-reload"], check=True, timeout=30)
+        success, msg = _daemon_reload_fn()
+        if success:
             console.print("[green]Daemon reloaded[/green]")
-            return True
-        except subprocess.CalledProcessError as e:
-            console.print(f"[red]Failed to reload daemon: {e}[/red]")
-            return False
+        else:
+            console.print(f"[red]Failed to reload daemon: {msg}[/red]")
+        return success
 
     def _restart_service(self):
         """Restart meshtasticd service"""
         console.print("[cyan]Restarting meshtasticd service...[/cyan]")
-        try:
-            subprocess.run(["systemctl", "restart", "meshtasticd"], check=True, timeout=30)
+        success, msg = _apply_config_and_restart('meshtasticd')
+        if success:
             console.print("[green]Service restarted[/green]")
-            return True
-        except subprocess.CalledProcessError as e:
-            console.print(f"[red]Failed to restart service: {e}[/red]")
-            return False
+        else:
+            console.print(f"[red]Failed to restart service: {msg}[/red]")
+        return success
 
     def _open_nano(self, file_path):
         """Open a file in nano editor"""
@@ -450,29 +454,14 @@ class ConfigFileManager:
             import time
             time.sleep(2)
 
-            # Use centralized service checker if available
-            if _HAS_SERVICE_CHECK:
-                status = _check_service('meshtasticd')
-                if status.available:
-                    console.print("[bold green]Service is running![/bold green]")
-                    console.print("\n[cyan]Check the web interface at:[/cyan]")
-                    console.print("  https://<your-ip>:9443")
-                else:
-                    console.print("[yellow]Service may not be running properly.[/yellow]")
-                    console.print("Check logs with: journalctl -u meshtasticd -f")
+            status = _check_service('meshtasticd')
+            if status.available:
+                console.print("[bold green]Service is running![/bold green]")
+                console.print("\n[cyan]Check the web interface at:[/cyan]")
+                console.print("  https://<your-ip>:9443")
             else:
-                # Fallback to direct systemctl call
-                result = subprocess.run(
-                    ["systemctl", "is-active", "meshtasticd"],
-                    capture_output=True, text=True, timeout=10
-                )
-                if result.stdout.strip() == "active":
-                    console.print("[bold green]Service is running![/bold green]")
-                    console.print("\n[cyan]Check the web interface at:[/cyan]")
-                    console.print("  https://<your-ip>:9443")
-                else:
-                    console.print("[yellow]Service may not be running properly.[/yellow]")
-                    console.print("Check logs with: journalctl -u meshtasticd -f")
+                console.print("[yellow]Service may not be running properly.[/yellow]")
+                console.print("Check logs with: journalctl -u meshtasticd -f")
 
         console.print("\n[bold green]Setup wizard complete![/bold green]")
         Prompt.ask("\n[dim]Press Enter to continue[/dim]")
@@ -640,25 +629,12 @@ class ConfigFileManager:
         # Check service
         console.print("\n[bold]Checking service status...[/bold]")
         try:
-            # Use centralized service checker if available
-            if _HAS_SERVICE_CHECK:
-                status = _check_service('meshtasticd')
-                if status.available:
-                    console.print("  [green]OK[/green] meshtasticd service is running")
-                else:
-                    info.append("meshtasticd service not running")
-                    console.print(f"  [yellow]~[/yellow] Service status: {status.state.value}")
+            status = _check_service('meshtasticd')
+            if status.available:
+                console.print("  [green]OK[/green] meshtasticd service is running")
             else:
-                # Fallback to direct systemctl call
-                result = subprocess.run(
-                    ["systemctl", "is-active", "meshtasticd"],
-                    capture_output=True, text=True, timeout=10
-                )
-                if result.stdout.strip() == "active":
-                    console.print("  [green]OK[/green] meshtasticd service is running")
-                else:
-                    info.append("meshtasticd service not running")
-                    console.print(f"  [yellow]~[/yellow] Service status: {result.stdout.strip()}")
+                info.append("meshtasticd service not running")
+                console.print(f"  [yellow]~[/yellow] Service status: {status.state.value}")
         except Exception as e:
             console.print(f"  [yellow]~[/yellow] Could not check service: {e}")
 
@@ -863,7 +839,13 @@ class ConfigFileManager:
             self._apply_changes()
 
     def _create_basic_config(self):
-        """Create a basic config.yaml with all required sections"""
+        """Create a basic config.yaml — only if it doesn't already exist.
+
+        NEVER overwrites the user's config.yaml (MaxNodes, etc.).
+        """
+        if self.MAIN_CONFIG.exists():
+            console.print(f"[yellow]{self.MAIN_CONFIG} already exists — not overwriting.[/yellow]")
+            return
         basic_config = """# Meshtasticd Configuration
 # See: https://meshtastic.org/docs/hardware/devices/linux-native-hardware/
 # Hardware-specific LoRa settings should be in config.d/*.yaml
@@ -899,11 +881,16 @@ Logging:
 #   I2CDevice: /dev/i2c-1
 """
         try:
-            self.CONFIG_BASE.mkdir(parents=True, exist_ok=True)
-            with open(self.MAIN_CONFIG, 'w') as f:
-                f.write(basic_config)
-            console.print(f"[green]Created: {self.MAIN_CONFIG}[/green]")
-            console.print("[dim]Template includes all required sections with comments.[/dim]")
+            subprocess.run(
+                _sudo_cmd(['mkdir', '-p', str(self.CONFIG_BASE)]),
+                check=True, timeout=10
+            )
+            success, msg = _sudo_write(str(self.MAIN_CONFIG), basic_config)
+            if success:
+                console.print(f"[green]Created: {self.MAIN_CONFIG}[/green]")
+                console.print("[dim]Template includes all required sections with comments.[/dim]")
+            else:
+                console.print(f"[red]Failed to create config: {msg}[/red]")
         except Exception as e:
             console.print(f"[red]Failed to create config: {e}[/red]")
 
@@ -1028,7 +1015,7 @@ Logging:
             console.print("\n[bold]Service status:[/bold]")
             try:
                 result = subprocess.run(
-                    ["systemctl", "status", "meshtasticd", "--no-pager", "-l"],
+                    _sudo_cmd(["systemctl", "status", "meshtasticd", "--no-pager", "-l"]),
                     capture_output=True, text=True, timeout=15
                 )
                 # Show just the relevant parts
@@ -1037,24 +1024,12 @@ Logging:
                     console.print(line)
 
                 # Check if running using centralized service checker
-                if _HAS_SERVICE_CHECK:
-                    status = _check_service('meshtasticd')
-                    if status.available:
-                        console.print("\n[bold green]Service is running![/bold green]")
-                    else:
-                        console.print(f"\n[yellow]Service status: {status.state.value}[/yellow]")
-                        console.print("[dim]Check logs with: journalctl -u meshtasticd -f[/dim]")
+                status = _check_service('meshtasticd')
+                if status.available:
+                    console.print("\n[bold green]Service is running![/bold green]")
                 else:
-                    # Fallback to direct systemctl call
-                    is_active = subprocess.run(
-                        ["systemctl", "is-active", "meshtasticd"],
-                        capture_output=True, text=True, timeout=10
-                    )
-                    if is_active.stdout.strip() == "active":
-                        console.print("\n[bold green]Service is running![/bold green]")
-                    else:
-                        console.print(f"\n[yellow]Service status: {is_active.stdout.strip()}[/yellow]")
-                        console.print("[dim]Check logs with: journalctl -u meshtasticd -f[/dim]")
+                    console.print(f"\n[yellow]Service status: {status.state.value}[/yellow]")
+                    console.print("[dim]Check logs with: journalctl -u meshtasticd -f[/dim]")
 
             except subprocess.TimeoutExpired:
                 console.print("[yellow]Timeout checking status[/yellow]")

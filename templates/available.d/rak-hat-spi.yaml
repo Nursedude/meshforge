@@ -1,0 +1,26 @@
+# RAK WisLink / RAK2287 SPI HAT Configuration
+# Hardware: SX1262
+# Manufacturer: RAKwireless
+#
+# Copy to: /etc/meshtasticd/config.d/rak-hat-spi.yaml
+#
+# IMPORTANT: Enable SPI first!
+#   sudo raspi-config nonint do_spi 0
+#   sudo reboot
+
+Lora:
+  Module: sx1262
+  CS: 8
+  IRQ: 25
+  Busy: 24
+  Reset: 17
+  DIO2_AS_RF_SWITCH: true
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

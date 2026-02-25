@@ -1,0 +1,26 @@
+# RAK4631 USB Radio Configuration
+# Chipset: nRF52840 + SX1262
+# USB ID: 239a:8029 (runtime), 239a:0029 (bootloader/UF2)
+#
+# Ultra-low power. Excellent for solar nodes. Gateway capable.
+# Flash method: UF2 (double-tap reset to enter bootloader)
+# Power: 100mA typical
+#
+# Copy to: /etc/meshtasticd/config.d/rak4631-usb.yaml
+#
+# The device handles its own LoRa configuration.
+# Radio settings are configured via Meshtastic app/CLI:
+#   meshtastic --host localhost --set lora.region US
+#   meshtastic --host localhost --set lora.modem_preset LONG_FAST
+
+Serial:
+  Device: auto          # /dev/ttyACM0 typical for nRF52840
+
+TCP:
+  Port: 4403
+
+Webserver:
+  Port: 443
+
+Logging:
+  LogLevel: info

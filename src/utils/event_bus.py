@@ -84,6 +84,17 @@ class NodeEvent:
     raw_data: Optional[Dict] = None
 
 
+@dataclass
+class TacticalEvent:
+    """Event representing a tactical message (SITREP, TASK, CHECKIN, etc.)."""
+    tactical_type: str  # "SITREP", "TASK", "CHECKIN", etc.
+    message_id: str
+    sender_id: str = ""
+    content: Optional[Dict] = None
+    encryption_mode: str = "C"  # "C" = CLEAR, "S" = SECURE
+    timestamp: datetime = field(default_factory=datetime.now)
+
+
 class EventBus:
     """
     Thread-safe event bus for pub/sub messaging.
@@ -291,6 +302,33 @@ def emit_node_update(
     event_bus.emit('node', event)
 
 
+def emit_tactical(
+    tactical_type: str,
+    message_id: str,
+    sender_id: str = "",
+    content: Optional[Dict] = None,
+    encryption_mode: str = "C",
+) -> None:
+    """
+    Emit a tactical message event.
+
+    Args:
+        tactical_type: Type name ('SITREP', 'TASK', 'CHECKIN', etc.)
+        message_id: Unique message ID (Crockford Base32)
+        sender_id: Sender node ID or callsign
+        content: Template-specific content dict
+        encryption_mode: 'C' (CLEAR) or 'S' (SECURE)
+    """
+    event = TacticalEvent(
+        tactical_type=tactical_type,
+        message_id=message_id,
+        sender_id=sender_id,
+        content=content,
+        encryption_mode=encryption_mode,
+    )
+    event_bus.emit('tactical', event)
+
+
 # Export public API
 __all__ = [
     'event_bus',
@@ -299,7 +337,9 @@ __all__ = [
     'MessageDirection',
     'ServiceEvent',
     'NodeEvent',
+    'TacticalEvent',
     'emit_message',
     'emit_service_status',
     'emit_node_update',
+    'emit_tactical',
 ]

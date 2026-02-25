@@ -23,18 +23,24 @@ from enum import Enum
 # Setup logging
 logger = logging.getLogger(__name__)
 
+# Service management — first-party, direct import per CLAUDE.md
+from utils.service_check import (
+    check_service as _check_service_central,
+    check_port as _check_port,
+    enable_service as _enable_service,
+    start_service as _start_service_fn,
+    ServiceState as _CentralServiceState,
+    _sudo_cmd,
+    _sudo_write,
+)
+
+from utils.paths import get_real_user_home, ReticulumPaths
 from utils.safe_import import safe_import
 
-# Module-level safe imports - SINGLE SOURCE OF TRUTH
-_check_service_central, _check_port, _enable_service, _CentralServiceState, _HAS_SERVICE_CHECK = safe_import(
-    'utils.service_check', 'check_service', 'check_port', 'enable_service', 'ServiceState'
+# Deployment profiles (optional)
+_list_profiles, _save_profile, _detect_profile, _get_profile_by_name, _HAS_PROFILES = safe_import(
+    'utils.deployment_profiles', 'list_profiles', 'save_profile', 'detect_profile', 'get_profile_by_name'
 )
-SERVICE_CHECK_AVAILABLE = _HAS_SERVICE_CHECK
-_HAS_ENABLE_SERVICE = _HAS_SERVICE_CHECK
-
-_get_real_user_home_mod, _HAS_PATHS = safe_import('utils.paths', 'get_real_user_home')
-
-_ReticulumPaths, _HAS_RETICULUM_PATHS = safe_import('utils.paths', 'ReticulumPaths')
 
 
 class WizardServiceState(Enum):
@@ -140,15 +146,7 @@ class SetupWizard:
 
     def _get_real_home(self) -> Path:
         """Get real user home even when running as sudo"""
-        if _HAS_PATHS:
-            return _get_real_user_home_mod()
-        sudo_user = os.environ.get('SUDO_USER', '')
-        if sudo_user and sudo_user != 'root' and '/' not in sudo_user and '..' not in sudo_user:
-            return Path(f"/home/{sudo_user}")
-        logname = os.environ.get('LOGNAME', '')
-        if logname and logname != 'root' and '/' not in logname and '..' not in logname:
-            return Path(f"/home/{logname}")
-        return Path('/root')
+        return get_real_user_home()
 
     def _setup_logging(self):
         """Setup file logging for the wizard"""
@@ -303,37 +301,20 @@ class SetupWizard:
         if svc.get('systemd'):
             status.systemd_unit = svc['systemd']
 
-            # Use centralized service checker if available
-            if SERVICE_CHECK_AVAILABLE:
-                try:
-                    central_status = _check_service_central(svc['name'])
-                    if central_status.available:
-                        status.state = WizardServiceState.RUNNING
-                        status.notes.append(f"Running ({central_status.detection_method})")
-                    elif central_status.state == _CentralServiceState.NOT_INSTALLED:
-                        # Keep NOT_INSTALLED state
-                        pass
-                    elif status.state == WizardServiceState.INSTALLED:
-                        status.state = WizardServiceState.STOPPED
-                        if central_status.fix_hint:
-                            status.notes.append(f"Fix: {central_status.fix_hint}")
-                except Exception as e:
-                    logger.debug(f"Centralized check failed for {svc['name']}: {e}")
-                    # Fall through to direct systemctl check
-            else:
-                # Fallback: direct systemctl check
-                try:
-                    result = subprocess.run(
-                        ['systemctl', 'is-active', svc['systemd']],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if result.stdout.strip() == 'active':
-                        status.state = WizardServiceState.RUNNING
-                        status.notes.append("Running as systemd service")
-                    elif status.state == WizardServiceState.INSTALLED:
-                        status.state = WizardServiceState.STOPPED
-                except Exception:
+            try:
+                central_status = _check_service_central(svc['name'])
+                if central_status.available:
+                    status.state = WizardServiceState.RUNNING
+                    status.notes.append(f"Running ({central_status.detection_method})")
+                elif central_status.state == _CentralServiceState.NOT_INSTALLED:
+                    # Keep NOT_INSTALLED state
                     pass
+                elif status.state == WizardServiceState.INSTALLED:
+                    status.state = WizardServiceState.STOPPED
+                    if central_status.fix_hint:
+                        status.notes.append(f"Fix: {central_status.fix_hint}")
+            except Exception as e:
+                logger.debug(f"Centralized check failed for {svc['name']}: {e}")
 
         # Check if running as process (fallback for non-systemd services)
         if status.state != WizardServiceState.RUNNING:
@@ -350,8 +331,8 @@ class SetupWizard:
                     if other_pids:
                         status.state = WizardServiceState.RUNNING
                         status.notes.append(f"Running as process (PID: {other_pids[0]})")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Process check for %s failed: %s", svc['name'], e)
 
         self._log(f"Service {svc['name']}: {status.state.value}")
         return status
@@ -398,8 +379,8 @@ class SetupWizard:
                         if 'pgrep' not in line and str(os.getpid()) not in line:
                             rns_processes.append(proc_name)
                             break
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("RNS process detection failed for %s: %s", proc_name, e)
 
         if len(rns_processes) > 1:
             conflicts.append(
@@ -428,8 +409,8 @@ class SetupWizard:
                             f"CONFLICT: Port {port} ({service}) has multiple bindings.\n"
                             "  This may cause connection issues."
                         )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Port conflict check failed for %d: %s", port, e)
 
         # Check for RNS shared instance config
         rns_status = self.service_status.get('rnsd')
@@ -438,10 +419,7 @@ class SetupWizard:
         if (rns_status and rns_status.state == WizardServiceState.RUNNING and
             nomad_status and nomad_status.state == WizardServiceState.RUNNING):
             # Both running - check if nomadnet is configured to use shared instance
-            if _HAS_RETICULUM_PATHS:
-                config_path = _ReticulumPaths.get_config_file()
-            else:
-                config_path = self._get_real_home() / ".reticulum" / "config"
+            config_path = ReticulumPaths.get_config_file()
             if config_path.exists():
                 try:
                     config_text = config_path.read_text()
@@ -469,6 +447,36 @@ class SetupWizard:
         if self.interactive:
             input("Press Enter to continue...")
 
+    def _select_deployment_profile(self):
+        """Ask user to select a deployment profile."""
+        if not _HAS_PROFILES:
+            self._log("Deployment profiles module not available, skipping")
+            return
+
+        self._print("\n=== Deployment Profile ===", "header")
+        self._print("Choose how you plan to use MeshForge:\n")
+
+        profiles = _list_profiles()
+        for i, p in enumerate(profiles, 1):
+            self._print(f"  {i}. {p.display_name:15s} {p.description}", "dim")
+        self._print(f"  a. Auto-detect       Let MeshForge detect your setup", "dim")
+
+        choices = [str(i) for i in range(1, len(profiles) + 1)] + ['a']
+        choice = self._ask("\nSelect profile", choices, 'a')
+
+        if choice == 'a':
+            profile = _detect_profile()
+            self._print(f"\nAuto-detected: {profile.display_name}", "success")
+        else:
+            idx = int(choice) - 1
+            profile = profiles[idx]
+            self._print(f"\nSelected: {profile.display_name}", "success")
+
+        _save_profile(profile)
+        self._record_decision("deployment", "Deployment profile?", profile.display_name,
+                              f"Saved as {profile.name.value}")
+        self._log(f"Deployment profile selected: {profile.display_name}")
+
     def run_interactive_setup(self):
         """Run the interactive setup wizard"""
         self._print("\n" + "="*60, "header")
@@ -477,6 +485,9 @@ class SetupWizard:
         self._print("\nThis wizard will detect installed services and guide you")
         self._print("through configuration options.\n")
         self._log("Starting interactive setup wizard")
+
+        # Step 1: Deployment profile selection
+        self._select_deployment_profile()
 
         # Detect services
         self.detect_services()
@@ -539,20 +550,15 @@ class SetupWizard:
     def _start_service(self, name: str):
         """Start a service"""
         self._print(f"Starting {name}...", "dim")
-        try:
-            # Try systemd first
-            result = subprocess.run(
-                ['systemctl', 'start', name],
-                capture_output=True, timeout=30
-            )
-            if result.returncode == 0:
-                self._print(f"  {name} started successfully", "success")
-                self._record_decision(name, "Start service", "attempted", "success")
-                return True
-        except Exception:
-            pass
 
-        # Try direct start
+        # Try systemd via centralized service management
+        success, msg = _start_service_fn(name)
+        if success:
+            self._print(f"  {name} started successfully", "success")
+            self._record_decision(name, "Start service", "attempted", "success")
+            return True
+
+        # Try direct start as fallback (for non-systemd services)
         try:
             subprocess.Popen(
                 [name],
@@ -596,31 +602,39 @@ class SetupWizard:
         """Create rnsd systemd service"""
         self._print("Creating rnsd systemd service...", "dim")
         try:
-            rnsd_path = shutil.which('rnsd') or '/usr/local/bin/rnsd'
+            # Prefer venv rnsd — it has all dependencies (meshtastic, etc.)
+            # System rnsd uses system Python which may lack required modules
+            venv_rnsd = Path('/opt/meshforge/venv/bin/rnsd')
+            rnsd_path = str(venv_rnsd) if venv_rnsd.exists() else (
+                shutil.which('rnsd') or '/usr/local/bin/rnsd'
+            )
             service_content = f'''[Unit]
 Description=Reticulum Network Stack Daemon
-After=network.target
+After=network-online.target
+Wants=network-online.target
+
+# Stop crash-looping after 5 failures in 60 seconds
+# (e.g., NomadNet holding port 37428)
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart={rnsd_path}
-Restart=always
+Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 '''
             service_path = '/etc/systemd/system/rnsd.service'
-            with open(service_path, 'w') as f:
-                f.write(service_content)
+            write_ok, write_msg = _sudo_write(service_path, service_content)
+            if not write_ok:
+                raise PermissionError(write_msg)
 
-            if _HAS_ENABLE_SERVICE:
-                success, msg = enable_service('rnsd')
-                if not success:
-                    raise RuntimeError(msg)
-            else:
-                subprocess.run(['systemctl', 'daemon-reload'], check=True, timeout=30)
-                subprocess.run(['systemctl', 'enable', 'rnsd'], check=True, timeout=30)
+            success, msg = _enable_service('rnsd')
+            if not success:
+                raise RuntimeError(msg)
 
             self._print("  rnsd service created and enabled", "success")
             self._record_decision("rnsd", "Create systemd service", "created", "success")

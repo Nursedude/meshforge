@@ -441,16 +441,16 @@ class RNSSniffer:
                 try:
                     packet_info.announce_identity = announced_identity.hash
                     packet_info.source_hash = announced_identity.hash
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Failed to extract announce identity hash: %s", e)
 
             # Get hop count from Transport path table
             try:
                 if RNS.Transport.has_path(dest_hash):
                     hops = RNS.Transport.hops_to(dest_hash)
                     packet_info.hops = hops if hops is not None else 0
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to get hop count for dest: %s", e)
 
             # Store packet
             self._store_packet(packet_info)

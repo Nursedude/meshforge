@@ -180,7 +180,7 @@ class TestConnectivityWarnings:
         mock_config = MagicMock()
         mock_config.success = True
         mock_config.data = {
-            'content': '[reticulum]\n[interfaces]\n  [[Auto]]\n    type = AutoInterface\n    enabled = yes\n',
+            'content': '[reticulum]\n  share_instance = Yes\n[interfaces]\n  [[Auto]]\n    type = AutoInterface\n    enabled = yes\n',
             'interfaces': [{'name': 'Auto', 'settings': {'enabled': 'yes'}}],
         }
 

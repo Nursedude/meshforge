@@ -589,63 +589,60 @@ class PluginManager:
 # Example plugin template
 EXAMPLE_PLUGIN_TEMPLATE = '''
 """
-Example MeshForge Plugin
+Example MeshForge Plugin (Tool type)
 
 manifest.json:
 {
     "id": "com.example.myplugin",
     "name": "My Plugin",
     "version": "1.0.0",
-    "description": "An example plugin",
+    "description": "An example tool plugin",
     "author": "Your Name",
-    "type": "panel",
+    "type": "tool",
     "entry_point": "main.py",
-    "min_meshforge_version": "1.0.0"
+    "min_meshforge_version": "0.5.0"
 }
 """
 
+import logging
 from meshforge.core.plugin_base import Plugin, PluginContext
-import gi
-gi.require_version('Gtk', '4.0')
-from gi.repository import Gtk
 
-
-class MyPluginPanel(Gtk.Box):
-    """Custom panel widget"""
-
-    def __init__(self):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-
-        label = Gtk.Label(label="Hello from My Plugin!")
-        self.append(label)
+logger = logging.getLogger(__name__)
 
 
 class MyPlugin(Plugin):
-    """Example plugin implementation"""
+    """Example tool plugin implementation.
+
+    Tool plugins add calculation/analysis capabilities to MeshForge
+    without requiring any specific UI framework.
+    """
 
     def activate(self, context: PluginContext) -> None:
-        """Called when plugin is activated"""
-        # Register our panel
-        context.register_panel(
-            panel_id="my_plugin_panel",
-            panel_class=MyPluginPanel,
-            title="My Plugin",
-            icon="extension-symbolic"
+        """Called when plugin is activated."""
+        # Register a tool
+        context.register_tool(
+            tool_id="my_tool",
+            tool_func=self._run_tool,
+            name="My Tool",
+            description="An example analysis tool"
         )
 
         # Subscribe to events
         context.subscribe("node_discovered", self._on_node_discovered)
 
-        # Show activation notification
-        context.notify("My Plugin", "Plugin activated successfully!")
+        logger.info("My Plugin activated")
 
     def deactivate(self) -> None:
-        """Called when plugin is deactivated"""
-        pass
+        """Called when plugin is deactivated."""
+        logger.info("My Plugin deactivated")
+
+    def _run_tool(self, **kwargs):
+        """Tool entry point - called when user invokes this tool."""
+        return {"status": "ok", "message": "Tool executed successfully"}
 
     def _on_node_discovered(self, node_data):
-        """Handle node discovery event"""
-        print(f"New node discovered: {node_data}")
+        """Handle node discovery event."""
+        logger.info("New node discovered: %s", node_data)
 '''
 
 

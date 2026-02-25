@@ -5,15 +5,15 @@
 </p>
 
 <p align="center">
-  <strong>Turnkey Mesh Network Operations Center</strong><br>
-  <em>Meshtastic + Reticulum + AREDN — One Box, One Interface</em>
+  <strong>Mesh Network Operations Center & Development Ecosystem</strong><br>
+  <em>Meshtastic + Reticulum + MeshCore + AREDN — Build. Test. Deploy. Monitor.</em>
 </p>
 
 <p align="center">
   <a href="https://github.com/Nursedude/meshforge"><img src="https://img.shields.io/badge/version-0.5.4--beta-blue.svg" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green.svg" alt="License"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.9+-yellow.svg" alt="Python"></a>
-  <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-1411%20passing-brightgreen.svg" alt="Tests"></a>
+  <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-1986%20passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 <p align="center">
@@ -26,7 +26,7 @@
 
 ## What is MeshForge?
 
-**MeshForge turns a Raspberry Pi into a mesh network operations center.**
+**MeshForge turns a Raspberry Pi into a mesh network operations center and development platform.**
 
 Plug in a LoRa radio, run the installer, and you get:
 - A **gateway** bridging Meshtastic and Reticulum via MQTT (zero interference)
@@ -36,6 +36,10 @@ Plug in a LoRa radio, run the installer, and you get:
 - **RF engineering tools** for site planning
 - **meshtastic CLI** integration for radio config (transient, no interference)
 - **AI diagnostics** that work offline
+
+Optional add-ons (install from TUI when you need them):
+- **MeshChat** — LXMF messaging with web UI (Reticulum users)
+- **NomadNet** — terminal-based LXMF client (Reticulum users)
 
 ### The Vision
 
@@ -57,6 +61,8 @@ sudo python3 src/launcher_tui/main.py
 
 ## Quick Start
 
+> **Already running MeshForge?** See [Upgrading](#upgrading-meshforge) for upgrade paths.
+
 ### Fresh Install
 
 ```bash
@@ -76,6 +82,54 @@ sudo bash scripts/install_noc.sh --skip-rns            # Don't install Reticulum
 sudo bash scripts/install_noc.sh --client-only         # MeshForge only (no daemons)
 sudo bash scripts/install_noc.sh --force-native        # Force SPI mode
 sudo bash scripts/install_noc.sh --force-python        # Force USB mode
+```
+
+### Alpha Install (MeshCore Integration)
+
+To install the alpha version with MeshCore support (3-way routing between
+Meshtastic, Reticulum, and MeshCore networks):
+
+```bash
+git clone https://github.com/Nursedude/meshforge.git
+cd meshforge
+git checkout alpha/meshcore-bridge
+sudo bash scripts/install_noc.sh
+```
+
+The alpha branch (`0.6.0-alpha`) includes:
+- **MeshCore handler** — companion radio detection and management
+- **3-way message routing** — Meshtastic ↔ RNS ↔ MeshCore bridge
+- **Canonical message format** — unified multi-protocol message representation
+- **MeshCore TUI menu** — device management from the terminal interface
+
+> **Note:** The `main` and `alpha/meshcore-bridge` branches have diverged into
+> parallel development tracks (~2,200 commits ahead, ~100 behind as of Feb 2026).
+> Main includes tactical ops (XTOC/ATAK interop), MQTT bridge enhancements, and
+> security hardening that alpha does not have. Alpha includes MeshCore 3-way routing
+> that main does not have. Convergence will require a dedicated reconciliation effort.
+> Report issues on the [alpha/meshcore-bridge](https://github.com/Nursedude/meshforge/issues) tracker.
+
+### Deployment Profiles
+
+MeshForge supports 6 deployment profiles. Install only the dependencies you need:
+
+| Profile | Services Needed | Install | Use Case |
+|---------|----------------|---------|----------|
+| `radio_maps` | meshtasticd | `pip install -r requirements/core.txt -r requirements/maps.txt` | Radio config + coverage maps |
+| `monitor` | (none) | `pip install -r requirements/core.txt -r requirements/mqtt.txt` | MQTT packet analysis |
+| `meshcore` | (none) | `pip install -r requirements/core.txt` + meshcore | MeshCore companion radio |
+| `meshchat` | meshtasticd, rnsd | `pip install -r requirements/core.txt -r requirements/rns.txt` + MeshChat | LXMF messaging with web UI |
+| `gateway` | meshtasticd, rnsd | `pip install -r requirements/core.txt -r requirements/rns.txt -r requirements/mqtt.txt` | Meshtastic <> RNS bridge |
+| `full` | meshtasticd, rnsd, mosquitto | `pip install -r requirements.txt` | Everything |
+
+```bash
+# Select profile at launch
+python3 src/launcher.py --profile gateway
+
+# Auto-detect (default): scans running services and installed packages
+python3 src/launcher.py
+
+# Profile is saved to ~/.config/meshforge/deployment.json
 ```
 
 ### Already Have meshtasticd?
@@ -120,7 +174,8 @@ headless operation. Navigation is keyboard-driven with max 10 items per menu lev
 ```
 Main Menu (MeshForge NOC)
 ├── 1. Dashboard             Service status, health, alerts, data path check
-├── 2. Mesh Networks         Meshtastic, RNS, AREDN, MQTT, Gateway, Favorites
+├── 2. Mesh Networks         Meshtastic, RNS, MeshCore, AREDN, MQTT, Gateway
+│       └── RNS submenu      NomadNet Client, MeshChat Client (install/manage)
 ├── 3. RF & SDR              Link budget, site planner, frequency slots, SDR
 ├── 4. Maps & Viz            Live NOC map, coverage, topology, traffic inspector
 ├── 5. Configuration         Radio, channels, RNS config, services, backup
@@ -140,148 +195,16 @@ Main Menu (MeshForge NOC)
 
 ---
 
-## Upgrading MeshForge
-
-### Decision Tree
-
-```
-Do you need to upgrade?
-  │
-  ├── Import errors, stale .pyc, major version bump, or something "feels off"
-  │   └── Clean Reinstall (recommended)
-  │
-  └── Small code change, update service files
-      └── Quick Update (update.sh)
-```
-
-### Clean Reinstall (Recommended)
-
-The safest upgrade path. Guarantees fresh code, correct dependencies, no stale files:
-
-```bash
-sudo bash /opt/meshforge/scripts/reinstall.sh
-```
-
-**What happens:**
-1. Backs up configs to `~/meshforge-backup-<timestamp>/`
-2. Stops MeshForge services
-3. Removes `/opt/meshforge` (source + venv only)
-4. Fresh `git clone` from GitHub
-5. Runs `install_noc.sh` to rebuild
-6. Restores your configs from backup
-
-**What is preserved (never touched):**
-
-| Preserved | Path | Why |
-|-----------|------|-----|
-| meshtasticd | apt package + `/etc/meshtasticd/config.yaml` | Separate package, your radio config |
-| Radio hardware configs | `/etc/meshtasticd/config.d/` | Backed up + restored |
-| Reticulum identity | `~/.reticulum/` | Your RNS address + keys |
-| MeshForge user settings | `~/.config/meshforge/` | Backed up + restored |
-| MQTT broker | mosquitto service + config | Separate service |
-| System packages | pip, apt installs | Not managed by MeshForge |
-
-No need to re-image your Pi. Your radio stays configured.
-
-**Reinstall flags:**
-```bash
-sudo bash scripts/reinstall.sh --no-confirm    # Skip confirmation prompt
-```
-
-### Quick Update
-
-For developers tracking the repo. Updates code, dependencies, and service files:
-
-```bash
-cd /opt/meshforge && sudo bash scripts/update.sh
-```
-
-**What happens:**
-1. Pulls latest code from GitHub
-2. Updates Python dependencies if `requirements.txt` changed
-3. Updates desktop integration
-4. Deploys updated systemd service files (rnsd crash-loop protection, startup ordering)
-5. Runs `systemctl daemon-reload`
-
-Or manually (code only — does NOT update service files):
-```bash
-cd /opt/meshforge && sudo git pull origin main
-```
-
-### Post-Upgrade Verification
-
-Run the built-in verification after any upgrade:
-
-```bash
-# Automated check (recommended)
-sudo bash scripts/install_noc.sh --verify-install
-
-# Manual checks
-python3 -c "from src.__version__ import __version__; print(__version__)"
-systemctl status meshtasticd rnsd
-sudo python3 src/launcher_tui/main.py
-```
-
-The `--verify-install` flag checks Python imports, service status, config
-file integrity, and radio hardware detection without modifying anything.
-
-### Troubleshooting Upgrades
-
-| Issue | Solution |
-|-------|----------|
-| Python import errors | `sudo bash scripts/reinstall.sh` (clean reinstall) |
-| `Local changes would be overwritten` | `git stash` before pull, or use clean reinstall |
-| Service won't start | `journalctl -u meshtasticd -n 50` |
-| Config file conflicts | Restore from `~/meshforge-backup-*` or regenerate via TUI |
-| `meshtastic` module not found | See "Python Library Conflicts" below |
-| Stale `.pyc` files | Clean reinstall handles this automatically |
-| Wrong bridge mode after upgrade | New installs default to `mqtt_bridge`; existing configs preserved |
-
-#### Python Library Conflicts
-
-On Raspberry Pi OS Bookworm+ (externally-managed Python), the `meshtastic`
-library may fail to install. If you see "externally-managed-environment" or
-module import failures:
-
-```bash
-# Force reinstall (use with caution on managed Python)
-pip install meshtastic --break-system-packages --ignore-installed
-
-# Alternative: virtual environment
-python3 -m venv ~/.meshforge-venv
-source ~/.meshforge-venv/bin/activate
-pip install meshtastic
-```
-
-The `--break-system-packages` flag bypasses PEP 668 protections. Only use
-this if you understand the implications for your system Python.
-
-MeshForge's diagnostics can detect this automatically:
-```bash
-# TUI: System → Diagnostics → Gateway Pre-flight
-# Or directly:
-sudo python3 src/launcher_tui/main.py  # Dashboard shows import warnings
-```
-
-### Version History
-
-See the full changelog in `src/__version__.py` or run:
-```bash
-python3 -c "from src.__version__ import show_version_history; show_version_history()"
-```
-
----
-
 ## What Works (v0.5.4-beta)
 
 | Category | Capabilities | Status |
 |----------|-------------|--------|
 | **TUI Interface** | Installer, service control, device config wizard, gateway config, diagnostics | Stable |
-| **TUI Reliability** | Defense-in-depth error handling — 16 mixin dispatch loops protected with `_safe_call` | Stable |
+| **TUI Reliability** | Defense-in-depth error handling — 47 mixin dispatch loops protected with `_safe_call` | Stable |
 | **Radio Management** | Install/configure meshtasticd, LoRa presets, channels, SPI/USB auto-detect | Stable |
 | **RF Engineering** | Link budget, Fresnel zone, path loss, site planning, space weather | Stable |
 | **AI Diagnostics** | Offline knowledge base (20+ topics), rule-based troubleshooting | Stable |
-| **NomadNet/RNS** | Config editor, interface templates, rnstatus/rnpath, identity create/manage, pre-flight checks | Stable |
+| **NomadNet/RNS** | Config editor, interface templates, rnstatus/rnpath, identity create/manage, shared instance detection (domain socket + TCP + UDP), pre-flight checks | Stable |
 | **Emergency Alerts** | NOAA/NWS weather, USGS volcano, FEMA iPAWS — accessible from Emergency Mode | Beta |
 | **Node Favorites** | Meshtastic 2.7+ favorites management, sync with device, filter by favorites | Beta |
 | **MQTT Monitoring** | Nodeless mesh observation, protobuf decode, telemetry tracking, congestion alerts | Beta |
@@ -296,21 +219,72 @@ python3 -c "from src.__version__ import show_version_history; show_version_histo
 | **AI PRO Mode** | Claude API integration, log analysis, predictive diagnostics | Beta (requires API key) |
 | **Protobuf HTTP Client** | Full device config via protobuf HTTP (8 device + 13 module configs, channels, traceroute, neighbor info) | Beta |
 | **Config API** | RESTful configuration management with NGINX reliability patterns | Beta |
-| **MeshCore** | Companion radio management, device detection, 3-way bridge classifier, TUI menu | Alpha |
+| **Network Topology** | D3.js force-directed graphs, path tracing, ASCII display, topology events | Beta |
+| **Node Health** | Predictive maintenance, battery forecasting, signal trending, latency probes | Beta |
+| **Link Quality** | Link scoring, degradation alerts, best/worst link identification | Beta |
+| **RNS Packet Sniffer** | Live RNS capture, announce tracking, destination filtering, path discovery | Beta |
+| **Device Backup** | Configuration backup/restore, versioned snapshots, scheduled backups | Beta |
+| **First-Run Wizard** | Hardware auto-detect templates, region selection, service verification | Stable |
+| **MeshChat** | Automated install, LXMF messaging, web UI (:8000), HTTP API, peer discovery, LXMF announce, systemd service | Beta |
+| **Messaging** | Broadcast/direct messaging, LXMF routing, message history | Beta |
+| **Amateur Radio** | Callsign management, Part 97 reference, ARES/RACES info | Beta |
+| **Webhooks** | Event routing, external system integration | Beta |
+| **Analytics** | Network usage statistics, traffic analysis, performance metrics | Beta |
+| **Service Discovery** | Auto-detect available services, port scanning | Beta |
+| **Latency Monitoring** | Service latency probing, response time tracking | Beta |
+| **Broker Profiles** | MQTT broker profile management, health monitoring | Beta |
+| **MeshCore** | Companion radio management, device detection, 3-way bridge routing, TUI menu | Alpha (`alpha/meshcore-bridge` branch) |
 | **uConsole AIO V2** | Hardware detection, GPIO power control, meshtasticd auto-config | Code Ready (hardware Q2 2026) |
 
 **Status key:** Stable = tested in the field | Beta = works but needs soak time | Alpha = architecture solid, needs testing | Code Ready = implemented, no hardware to validate
 
 ### Roadmap
 
+**Current Phase: Stability & Reliability (v0.5.x)**
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| MQTT bridge architecture | Done (v0.5.4) | Zero-interference gateway |
+| Defense-in-depth TUI | Done (v0.5.2) | 47 mixin `_safe_call` protection |
+| Gateway-essential test suite | Done (v0.5.3) | 1,986 tests across 60 files |
+| First-run setup wizard | Done (v0.5.1) | Hardware auto-detect templates |
+| Network topology visualization | Done | D3.js + ASCII modes |
+| Node health & predictive maintenance | Done | Battery forecasting, signal trending |
+| Tactical messaging (XTOC interop) | Done (v0.5.4) | 8 templates, X1 codec, KML/CoT/ATAK export |
+
+**Next Phase: Hardening & Hardware (v0.6.x - v0.8.x)**
+
 | Feature | Target | Status |
 |---------|--------|--------|
-| Historical playback (Live Map Phase 6) | Q2 2026 | Planned |
-| Packet decode (protobuf + RNS frames) | Q2 2026 | Planned |
-| SDR spectrum analysis (RTL-SDR) | Q2 2026 | Planned |
-| GPS tracking + GPX export | Q2 2026 | Planned |
-| NanoVNA antenna integration | Q2 2026 | Alpha |
-| Firmware flashing | Q3 2026 | Alpha (high risk) |
+| MeshCore 3-way bridge | v0.6.0 | Alpha (`alpha/meshcore-bridge`) |
+| Historical playback (Live Map) | v0.7.0 | Planned |
+| Packet decode (protobuf + RNS frames) | v0.7.0 | Planned |
+| SDR spectrum analysis (RTL-SDR) | v0.7.0 | Planned |
+| Hardware support matrix (RAK, Heltec, uConsole) | v0.8.0 | In progress |
+| GPS tracking + GPX export | v0.8.0 | Planned |
+
+**Future: Intelligence & v1.0 (v0.9.x+)**
+
+| Feature | Target | Status |
+|---------|--------|--------|
+| AI predictive analytics enhancement | v0.9.0 | Planned |
+| NanoVNA antenna integration | v0.9.0 | Alpha |
+| Firmware flashing | v1.0.0 | Alpha (high risk) |
+| v1.0 stable release | -- | See `.claude/plans/v1.0_roadmap.md` |
+
+**Future Alpha Candidates**
+
+Features under research that would require alpha-branch development before
+merging to stable main:
+
+| Feature | Risk | Notes |
+|---------|------|-------|
+| MeshCore merge to main | High | Branches diverged ~2,200 commits; needs dedicated reconciliation |
+| Full ATAK plugin bridge | Medium | Bidirectional CoT ↔ mesh relay, protocol complexity |
+| SDR spectrum analysis (RTL-SDR) | Medium | Hardware dependency, driver integration |
+| MANET/LAN bridging | Medium | New transport layer (XTOC-style IP mesh networking) |
+| Firmware flashing | High | Brick risk, device-specific, needs extensive testing |
+| Satellite tracking (TLE/SATCOM) | Low | Isolated feature, XTOC reference implementation exists |
 
 ### Known Limitations
 
@@ -348,6 +322,7 @@ graph TB
     subgraph External Services
         MESHTASTICD[meshtasticd<br>LoRa radio daemon]
         RNSD[rnsd<br>Reticulum transport]
+        MESHCHAT[MeshChat<br>LXMF messaging :8000]
         AREDN_NET[AREDN<br>IP mesh network]
         MQTT[MQTT Broker<br>Node telemetry]
         NOAA[NOAA SWPC<br>Space weather]
@@ -371,6 +346,7 @@ graph TB
 
     GATEWAY --> MQTT
     GATEWAY --> RNSD
+    MESHCHAT --> RNSD
     MONITOR --> MQTT
     MQTT --> MESHTASTICD
     TRAFFIC --> GATEWAY
@@ -387,6 +363,7 @@ graph TB
     style BROWSER fill:#2d5016,color:#fff
     style CLI fill:#2d5016,color:#fff
     style GATEWAY fill:#1a3a5c,color:#fff
+    style MESHCHAT fill:#1a5c3a,color:#fff
     style TRAFFIC fill:#3a1a5c,color:#fff
     style AI fill:#5c1a3a,color:#fff
     style UCONSOLE fill:#5c4a1a,color:#fff
@@ -448,6 +425,29 @@ sudo apt install mosquitto                     # MQTT broker
 - Gateway Bridge: `Mesh Networks → Gateway Config → Templates → mqtt_bridge`
 - MQTT Monitor: `Mesh Networks → MQTT Monitor → Configure → Use Local Broker`
 - MQTT Settings: `Gateway Config → MQTT Bridge Settings → Run Setup Guide`
+
+### MeshChat (LXMF Messaging)
+
+MeshChat provides LXMF encrypted messaging with a web UI at `http://127.0.0.1:8000`.
+MeshForge automates the full installation and manages MeshChat as a systemd service.
+
+**Install from TUI:**
+```
+Mesh Networks → RNS → MeshChat Client → Install MeshChat
+```
+
+The installer handles everything: Node.js/npm prerequisites, git clone, Python
+dependencies, frontend build, and systemd service creation. MeshChat connects
+to rnsd as a shared instance client for Meshtastic bridging.
+
+**LXMF app exclusivity:** MeshChat and NomadNet are both LXMF clients. Only one
+should run at a time to avoid port conflicts. MeshForge enforces this — starting
+one will offer to stop the other.
+
+**Data flow:**
+```
+Meshtastic Node → meshtasticd → MeshForge Gateway → LXMF → rnsd → MeshChat (:8000)
+```
 
 ### Design Principles
 
@@ -611,35 +611,50 @@ sudo python3 src/utils/map_data_service.py
 ```
 src/
 ├── launcher_tui/          # Terminal UI (primary interface)
-│   ├── main.py            # NOC dispatcher + menus (1,516 lines)
+│   ├── main.py            # NOC dispatcher + menus (1,482 lines)
 │   ├── backend.py         # whiptail/dialog abstraction
 │   ├── startup_checks.py  # Environment checks + conflict resolution
 │   ├── status_bar.py      # Service status bar
-│   └── *_mixin.py         # 45 feature modules (RF, channels, AI, MeshCore, system, etc.)
+│   ├── meshchat_client_mixin.py  # MeshChat install/manage/monitor (automated)
+│   ├── nomadnet_client_mixin.py # NomadNet install/launch/configure
+│   └── *_mixin.py         # 47 feature modules (RF, channels, AI, MeshCore, topology, emergency, etc.)
+├── commands/              # Command modules
+│   ├── propagation.py     # Space weather & HF propagation (NOAA primary)
+│   ├── rns.py             # RNS/Reticulum commands
+│   ├── meshtastic.py      # Meshtastic CLI integration
+│   ├── hamclock.py        # HamClock client (optional/legacy)
+│   └── ...                # gateway, hardware, messaging, diagnostics, service
+├── plugins/               # Protocol plugins
+│   ├── eas_alerts.py      # NOAA/NWS/FEMA emergency alerts
+│   ├── meshcore.py        # MeshCore plugin (alpha branch)
+│   ├── mqtt_bridge.py     # MQTT bridge plugin
+│   └── meshchat/          # MeshChat integration
 ├── gateway/               # Multi-mesh bridge
 │   ├── rns_bridge.py      # Meshtastic ↔ RNS transport
+│   ├── mqtt_bridge_handler.py # MQTT-based bridge (zero interference)
 │   ├── message_queue.py   # Persistent SQLite queue
 │   ├── node_tracker.py    # Unified node discovery
 │   ├── meshtastic_protobuf_client.py  # Protobuf-over-HTTP transport
-│   └── meshtastic_protobuf_ops.py     # Protobuf data classes + parsers
+│   └── ...                # circuit_breaker, reconnect, network_topology, templates
 ├── monitoring/            # Network monitoring
 │   ├── mqtt_subscriber.py # Nodeless MQTT node tracking
 │   ├── traffic_inspector.py # Packet capture + protocol analysis
-│   └── path_visualizer.py # Multi-hop path tracing
-├── utils/                 # Core utilities
+│   ├── rns_sniffer.py     # RNS packet capture + announce tracking
+│   ├── path_visualizer.py # Multi-hop path tracing
+│   └── ...                # node_monitor, tcp_monitor, packet_dissectors
+├── utils/                 # Core utilities (100+ modules)
 │   ├── rf.py              # RF calculations (well-tested)
 │   ├── coverage_map.py    # Folium map generator + tile cache
 │   ├── config_api.py      # RESTful configuration API
+│   ├── service_check.py   # Service management + RNS shared instance detection (single source of truth)
 │   ├── diagnostic_engine.py # Rule-based AI diagnostics
-│   ├── diagnostic_rules.py  # Diagnostic rule definitions
 │   ├── claude_assistant.py  # AI assistant (Standalone + PRO)
-│   ├── knowledge_base.py   # Core knowledge base class
-│   ├── knowledge_content.py # 20+ mesh networking topics
-│   ├── shared_health_state.py # Cross-component health tracking
-│   ├── metrics_export.py   # Prometheus/JSON metrics export
+│   ├── knowledge_base.py   # Core knowledge base + 20 topics
+│   ├── prometheus_exporter.py # Prometheus/Grafana metrics
 │   ├── uconsole.py        # uConsole AIO V2 hardware profile
 │   ├── aredn.py           # AREDN mesh client
-│   └── paths.py           # Sudo-safe path resolution
+│   ├── paths.py           # Sudo-safe path resolution
+│   └── ...                # metrics, webhooks, topology, device_backup, wifi_ap, etc.
 ├── standalone.py          # Zero-dependency RF tools
 └── __version__.py         # Version tracking
 
@@ -680,6 +695,12 @@ Auto-deploys a working config from `templates/reticulum.conf`:
 - Meshtastic Interface on `127.0.0.1:4403`
 - RNode LoRa (optional, for dedicated RNS radio)
 
+**Shared instance detection**: RNS uses abstract Unix domain sockets
+(`@rns/default`) on Linux by default — not TCP/UDP port 37428. MeshForge
+detects the shared instance via domain socket first, falling back to TCP
+then UDP for non-standard configurations. This ensures accurate health
+checks across status bar, diagnostics, repair wizard, and gateway pre-flight.
+
 ### Prometheus Metrics
 
 MeshForge exports metrics for monitoring with Prometheus and Grafana:
@@ -719,6 +740,7 @@ See `dashboards/README.md` and `docs/METRICS.md` for full setup instructions.
 | 1883 | mosquitto MQTT | mosquitto | Multi-consumer (optional) |
 | 5000 | MeshForge Map Server | **MeshForge** | Live NOC map + REST API (20 endpoints) |
 | 5001 | MeshForge WebSocket | **MeshForge** | Real-time message broadcast |
+| 8000 | MeshChat Web UI | MeshChat | LXMF messaging + HTTP API |
 | 8081 | MeshForge Config API | **MeshForge** | RESTful config management |
 | 9090 | Prometheus metrics | **MeshForge** | Prometheus + Grafana JSON API |
 | 9443 | meshtasticd Web UI | meshtasticd | Protobuf + JSON endpoints |
@@ -790,18 +812,28 @@ connection (port 4403):
 
 ### Test Coverage
 
-**1,411 tests passing** across 45 gateway-essential test files:
+**1,986 tests** across 60 test files:
 
 | Test File | Tests | Covers |
 |-----------|-------|--------|
-| `test_rns_bridge.py` | 136 | Core bridge: routing, circuit breaker, message processing, callbacks, lifecycle |
+| `test_rns_bridge.py` | 140 | Core bridge: routing, circuit breaker, message processing, callbacks, lifecycle |
 | `test_rns_transport.py` | 97 | Packet fragmentation, reassembly, transport stats, connection management |
-| `test_meshtastic_handler.py` | 147 | Meshtastic connection, message handling, node tracking |
-| `test_packet_dissectors.py` | 130 | Protocol analysis, packet tree, display filters |
+| `test_rns_status_parser.py` | 56 | RNS status output parsing, edge cases |
+| `test_meshtastic_protobuf.py` | 74 | Protobuf HTTP client, device config, channel management |
+| `test_meshtastic_handler.py` | 57 | Meshtastic connection, message handling, node tracking |
 | `test_message_queue.py` | 72 | Persistent SQLite queue, retry policy, dead letter, overflow shedding |
+| `test_node_tracker.py` | 68 | Unified node tracking, RNS + Meshtastic state management |
+| `test_status_bar.py` | 70 | TUI status bar rendering, health state display |
+| `test_mqtt_robustness.py` | 66 | MQTT reconnection, message loss recovery, broker failover |
+| `test_commands.py` | 61 | CLI command handlers, output parsing |
+| `test_bridge_health.py` | 55 | Gateway health monitoring, circuit breaker patterns |
 | `test_reconnect.py` | 45 | Exponential backoff, jitter, slow start recovery, thread safety |
+| `test_rf.py` | 107 | RF calculations: haversine, FSPL, Fresnel, link budget, signal classification |
+| `test_deployment_profiles.py` | 31 | Deployment profile system (radio_maps, monitor, gateway, meshcore, full) |
+| `test_startup_health.py` | 20 | Startup health checks, service verification |
+| `test_compliance.py` | 13 | HAM compliance validation, encryption modes |
 
-*Note: Test suite trimmed from 4,017 to 1,411 in v0.5.4 to focus on gateway-essential coverage. Non-gateway tests (RF tools, TUI mixins, monitoring, analytics, plugins) removed.*
+*Note: Test suite was trimmed from 4,017 to 1,411 in v0.5.4 to focus on gateway-essential coverage. Since then, tests have grown to 1,986 across 60 files as new features (topology, node health, MQTT robustness, protobuf client, tactical ops, RNS shared instance detection, RF engineering, deployment profiles) were added with test coverage.*
 
 ```bash
 python3 -m pytest tests/ -v            # Run all tests
@@ -836,6 +868,8 @@ print(f'Issues: {report.total_issues}, Files scanned: {report.total_files_scanne
 - Crash-loop protection: `StartLimitBurst=5` / `StartLimitIntervalSec=60` on rnsd
 - Startup ordering: meshforge.service `After=rnsd.service` ensures identity exists
 - Pre-flight `check_service()` before connecting to meshtasticd/rnsd
+- RNS shared instance detection via abstract Unix domain socket (`@rns/default`), with TCP/UDP fallback
+- RNS repair wizard pre-flight: validates `share_instance = Yes`, detects config drift, checks NomadNet conflicts
 - RNS identity pre-flight: startup checks verify `~/.reticulum/storage/identities` exists
 - Shared connection manager prevents TCP:4403 client contention
 - Exponential backoff reconnection (1s → 2s → 4s → ... → 30s max)
@@ -857,7 +891,13 @@ See [CLAUDE.md](CLAUDE.md) for details.
 
 ## Development
 
-Active development on `main`. Feature branches via `claude/` prefix, merged by PR.
+Active development on `main` (stable beta). MeshCore work on `alpha/meshcore-bridge` (experimental).
+Feature branches via `claude/` prefix, merged by PR.
+
+| Branch | Version | Purpose |
+|--------|---------|---------|
+| `main` | `0.5.4-beta` | Stable — gateway, TUI, monitoring, RF tools |
+| `alpha/meshcore-bridge` | `0.6.0-alpha` | MeshCore 3-way routing, companion radio support |
 
 ```bash
 git clone https://github.com/Nursedude/meshforge.git
@@ -880,6 +920,184 @@ Templates for multi-node setups:
 
 ---
 
+## Upgrading MeshForge
+
+### Decision Tree
+
+```
+Do you need to upgrade?
+  │
+  ├── Import errors, stale .pyc, major version bump, or something "feels off"
+  │   └── Clean Reinstall (recommended)
+  │
+  └── Small code change, update service files
+      └── Quick Update (update.sh)
+```
+
+### Clean Reinstall (Recommended)
+
+The safest upgrade path. Guarantees fresh code, correct dependencies, no stale files:
+
+```bash
+sudo bash /opt/meshforge/scripts/reinstall.sh
+```
+
+**What happens:**
+1. Backs up configs to `~/meshforge-backup-<timestamp>/`
+2. Stops MeshForge services
+3. Removes `/opt/meshforge` (source + venv only)
+4. Fresh `git clone` from GitHub
+5. Runs `install_noc.sh` to rebuild
+6. Restores your configs from backup
+
+**What is preserved (never touched):**
+
+| Preserved | Path | Why |
+|-----------|------|-----|
+| meshtasticd | apt package + `/etc/meshtasticd/config.yaml` | Separate package, your radio config |
+| Radio hardware configs | `/etc/meshtasticd/config.d/` | Backed up + restored |
+| Reticulum identity | `~/.reticulum/` | Your RNS address + keys |
+| MeshForge user settings | `~/.config/meshforge/` | Backed up + restored |
+| MQTT broker | mosquitto service + config | Separate service |
+| System packages | pip, apt installs | Not managed by MeshForge |
+
+No need to re-image your Pi. Your radio stays configured.
+
+**Reinstall flags:**
+```bash
+sudo bash scripts/reinstall.sh --no-confirm    # Skip confirmation prompt
+```
+
+### Quick Update
+
+For developers tracking the repo. Updates code, dependencies, and service files:
+
+```bash
+cd /opt/meshforge && sudo bash scripts/update.sh
+```
+
+**What happens:**
+1. Pulls latest code from GitHub
+2. Updates Python dependencies if `requirements.txt` changed
+3. Updates desktop integration
+4. Deploys updated systemd service files (rnsd crash-loop protection, startup ordering)
+5. Runs `systemctl daemon-reload`
+
+Or manually (code only — does NOT update service files):
+```bash
+cd /opt/meshforge && sudo git pull origin main
+```
+
+### Post-Upgrade Verification
+
+Run the built-in verification after any upgrade:
+
+```bash
+# Automated check (recommended)
+sudo bash scripts/install_noc.sh --verify-install
+
+# Manual checks
+python3 -c "from src.__version__ import __version__; print(__version__)"
+systemctl status meshtasticd rnsd
+sudo python3 src/launcher_tui/main.py
+```
+
+The `--verify-install` flag checks Python imports, service status, config
+file integrity, and radio hardware detection without modifying anything.
+
+### Troubleshooting Upgrades
+
+| Issue | Solution |
+|-------|----------|
+| Python import errors | `sudo bash scripts/reinstall.sh` (clean reinstall) |
+| `Local changes would be overwritten` | `git stash` before pull, or use clean reinstall |
+| Service won't start | `journalctl -u meshtasticd -n 50` |
+| Config file conflicts | Restore from `~/meshforge-backup-*` or regenerate via TUI |
+| `meshtastic` module not found | See "Python Library Conflicts" below |
+| Stale `.pyc` files | Clean reinstall handles this automatically |
+| Wrong bridge mode after upgrade | New installs default to `mqtt_bridge`; existing configs preserved |
+
+#### Python Library Conflicts
+
+On Raspberry Pi OS Bookworm+ (externally-managed Python), the `meshtastic`
+library may fail to install. If you see "externally-managed-environment" or
+module import failures:
+
+```bash
+# Force reinstall (use with caution on managed Python)
+pip install meshtastic --break-system-packages --ignore-installed
+
+# Alternative: virtual environment
+python3 -m venv ~/.meshforge-venv
+source ~/.meshforge-venv/bin/activate
+pip install meshtastic
+```
+
+The `--break-system-packages` flag bypasses PEP 668 protections. Only use
+this if you understand the implications for your system Python.
+
+MeshForge's diagnostics can detect this automatically:
+```bash
+# TUI: System → Diagnostics → Gateway Pre-flight
+# Or directly:
+sudo python3 src/launcher_tui/main.py  # Dashboard shows import warnings
+```
+
+### Version History
+
+See the full changelog in `src/__version__.py` or run:
+```bash
+python3 -c "from src.__version__ import show_version_history; show_version_history()"
+```
+
+---
+
+## Research & Technical Foundation
+
+MeshForge development is backed by 22 technical research documents covering
+protocol analysis, integration architecture, and RF engineering. These inform
+every major design decision in the codebase.
+
+### Multi-Protocol Bridging
+
+Deep analysis of bridging incompatible mesh ecosystems:
+- MeshCore ↔ Meshtastic dual-protocol bridge architecture (3-way routing design)
+- MeshCore reliability patterns: canonical packet format, MQTT origin filtering, lenient parsing
+- Gateway scenario analysis: multi-protocol deployment topologies and trade-offs
+
+### Tactical Operations & ATAK Interoperability
+
+Research into tactical messaging standards and the ATAK ecosystem:
+- [XTOC/XCOM](https://www.mkme.org/xtocapp/) integration analysis: X1 compact packet protocol,
+  structured message templates, offline-first tactical operations
+- ATAK ecosystem: [Meshtastic ATAK Plugin](https://github.com/meshtastic/ATAK-Plugin) (CoT XML,
+  PLI, GeoChat, fountain code file transfer), [Akita MeshTAK](https://github.com/AkitaEngineering/Akita-MeshTAK)
+  (SOS alerts, device health), real-world deployments (300+ personnel exercises, SAR operations)
+- **Implemented on main (v0.5.4):** 8 tactical templates (SITREP, TASK, CHECKIN, ZONE, RESOURCE,
+  MISSION, EVENT, ASSET), X1 codec for XTOC interop, transport-aware chunking, ham compliance
+  (CLEAR/SECURE modes), QR code transport, tactical map with KML/CoT export for ATAK/WinTAK
+
+### RF & Physical Layer
+
+- LoRa PHY deep-dive: CSS modulation, spreading factors, SNR limits, link budget calculations
+- Official Semtech LoRa reference data for engineering-grade RF planning
+
+### Protocol Documentation
+
+- Complete Reticulum/RNS protocol documentation, configuration guides, and integration patterns
+- Meshtastic JavaScript API reference
+- AREDN mesh network integration research
+
+### Architecture & Infrastructure
+
+- MQTT zero-interference bridging design (the foundation of v0.5.4's gateway)
+- NGINX reliability patterns applied to mesh networking APIs
+- uConsole AIO V2 portable NOC design for field operations
+
+Full research library: [`.claude/research/`](.claude/research/README.md)
+
+---
+
 ## Resources
 
 | Resource | Link | Relation |
@@ -887,10 +1105,11 @@ Templates for multi-node setups:
 | Development Blog | [nursedude.substack.com](https://nursedude.substack.com) | Project updates |
 | Meshtastic Docs | [meshtastic.org/docs](https://meshtastic.org/docs/) | Primary radio network |
 | Reticulum Network | [reticulum.network](https://reticulum.network/) | Bridge target (encrypted transport) |
+| MeshChat | [github.com/liamcottle/reticulum-meshchat](https://github.com/liamcottle/reticulum-meshchat) | LXMF messaging client (automated install) |
 | AREDN Mesh | [arednmesh.org](https://www.arednmesh.org/) | Monitoring integration |
 | RTL-SDR | [rtl-sdr.com](https://www.rtl-sdr.com/) | Spectrum analysis (planned) |
 | uConsole AIO V2 | [hackergadgets.com](https://hackergadgets.com/products/uconsole-aio-v2) | Field hardware (Q2 2026) |
-| MeshCore | [meshcore.co](https://meshcore.co/) | Future research |
+| MeshCore | [meshcore.co](https://meshcore.co/) | Active integration (`alpha/meshcore-bridge`) |
 
 ---
 

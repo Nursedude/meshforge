@@ -1110,6 +1110,175 @@ Common Issues:
         ],
     ))
 
+    # --- NomadNet / rnsd coexistence ---
+
+    kb._add_guide(TroubleshootingGuide(
+        problem="nomadnet_rnsd_coexistence",
+        description=(
+            "NomadNet and rnsd competing for shared instance "
+            "port 37428"
+        ),
+        prerequisites=["rnsd installed", "NomadNet installed"],
+        steps=[
+            TroubleshootingStep(
+                instruction="Check who owns port 37428",
+                command="sudo ss -ulnp | grep 37428",
+                expected_result="rnsd should own the port",
+                if_fail=(
+                    "If NomadNet owns it, startup order is wrong"
+                ),
+            ),
+            TroubleshootingStep(
+                instruction="Stop NomadNet",
+                command="pkill -f nomadnet",
+                expected_result="NomadNet processes terminated",
+            ),
+            TroubleshootingStep(
+                instruction="Restart rnsd so it claims the port",
+                command="sudo systemctl restart rnsd",
+                expected_result="Active: active (running)",
+                if_fail=(
+                    "Check journalctl -u rnsd for errors"
+                ),
+            ),
+            TroubleshootingStep(
+                instruction=(
+                    "Verify rnsd owns port 37428"
+                ),
+                command="sudo ss -ulnp | grep 37428",
+                expected_result="rnsd shown as port owner",
+                if_fail=(
+                    "Check share_instance = Yes in config"
+                ),
+            ),
+            TroubleshootingStep(
+                instruction=(
+                    "Start NomadNet (connects as client)"
+                ),
+                command="nomadnet --daemon",
+                expected_result=(
+                    "NomadNet connects to rnsd shared instance"
+                ),
+                if_fail=(
+                    "Check NomadNet logfile: "
+                    "~/.nomadnetwork/logfile"
+                ),
+            ),
+        ],
+        related_problems=[
+            "rnsd_not_starting", "rns_path_failure",
+        ],
+    ))
+
+    kb._add_guide(TroubleshootingGuide(
+        problem="rns_interface_rx_only",
+        description=(
+            "RNS interfaces show RX traffic but zero TX — "
+            "link establishment failing"
+        ),
+        prerequisites=[
+            "rnsd running",
+            "At least one interface enabled",
+        ],
+        steps=[
+            TroubleshootingStep(
+                instruction=(
+                    "Check interface TX/RX counters"
+                ),
+                command="rnstatus",
+                expected_result=(
+                    "Both TX and RX byte counts should be "
+                    "non-zero"
+                ),
+                if_fail=(
+                    "Interfaces with 0 TX cannot establish "
+                    "links"
+                ),
+            ),
+            TroubleshootingStep(
+                instruction=(
+                    "Check if shared instance port is "
+                    "listening"
+                ),
+                command="sudo ss -ulnp | grep 37428",
+                expected_result=(
+                    "rnsd bound to port 37428"
+                ),
+                if_fail=(
+                    "rnsd may not have finished initializing, "
+                    "or NomadNet may be holding the port"
+                ),
+            ),
+            TroubleshootingStep(
+                instruction=(
+                    "Check for blocking interfaces in config"
+                ),
+                expected_result=(
+                    "All enabled interfaces have dependencies "
+                    "met"
+                ),
+                if_fail=(
+                    "Disable the blocking interface or start "
+                    "its dependency"
+                ),
+            ),
+            TroubleshootingStep(
+                instruction=(
+                    "Restart rnsd to reinitialize interfaces"
+                ),
+                command="sudo systemctl restart rnsd",
+                expected_result=(
+                    "Active: active (running), then rnstatus "
+                    "shows TX > 0"
+                ),
+            ),
+        ],
+        related_problems=[
+            "nomadnet_rnsd_coexistence",
+            "rnsd_not_starting",
+        ],
+    ))
+
+    kb._add_entry(KnowledgeEntry(
+        topic=KnowledgeTopic.RETICULUM,
+        title="NomadNet and rnsd Coexistence",
+        content="""
+NomadNet and rnsd both create Reticulum instances. When both set
+share_instance = Yes, they compete for UDP port 37428.
+
+Correct startup order:
+1. rnsd starts first, binds port 37428 (shared instance)
+2. NomadNet starts second, detects rnsd and connects as client
+3. MeshForge gateway connects as another client
+
+If NomadNet starts first:
+- NomadNet binds port 37428
+- rnsd fails to bind, enters crash loop
+- MeshForge gateway may connect to NomadNet instead of rnsd
+- Some interfaces (Meshtastic_Interface) only available via rnsd
+
+Diagnosis:
+- sudo ss -ulnp | grep 37428 -- shows who owns the port
+- RX-only interfaces in rnstatus -- rnsd initialized but can't TX
+- NomadNet logfile: ~/.nomadnetwork/logfile
+
+Fix:
+- Stop NomadNet: pkill -f nomadnet
+- Restart rnsd: sudo systemctl restart rnsd
+- Wait for port 37428, then start NomadNet
+- For boot: set rnsd to start before NomadNet in systemd
+""",
+        keywords=[
+            "nomadnet", "rnsd", "coexistence", "port", "37428",
+            "shared instance", "conflict", "startup order",
+        ],
+        related_entries=[
+            "Reticulum Network Stack",
+            "RNS Transport and Routing",
+        ],
+        expertise_level="intermediate",
+    ))
+
 
 def load_aredn_knowledge(kb: "KnowledgeBase") -> None:
     """Load AREDN (Amateur Radio Emergency Data Network) knowledge."""

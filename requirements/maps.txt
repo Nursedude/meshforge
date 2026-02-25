@@ -1,0 +1,4 @@
+# MeshForge Maps Dependencies (radio_maps, gateway, full profiles)
+
+# Coverage map generation
+folium>=0.15.0
