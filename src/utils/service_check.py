@@ -91,6 +91,8 @@ __all__ = [
     'ServiceState',         # Status enum (AVAILABLE, DEGRADED, FAILED, etc.)
     # Configuration
     'KNOWN_SERVICES',       # Service configuration dict
+    # MeshCore
+    'check_meshcore_device',  # Check if MeshCore companion radio is connected
 ]
 
 
@@ -153,6 +155,13 @@ KNOWN_SERVICES = {
         'description': 'NomadNet mesh messaging client',
         'fix_hint': 'Start with: nomadnetwork (run as user, not root)',
     },
+    'meshcore': {
+        'port': None,  # MeshCore has no daemon — MeshForge connects directly
+        'systemd_name': None,
+        'is_systemd': False,  # No daemon process; managed by MeshForge gateway
+        'description': 'MeshCore companion radio (managed by MeshForge)',
+        'fix_hint': 'Connect MeshCore companion radio via USB. Install: pip install meshcore',
+    },
 }
 
 
@@ -209,6 +218,30 @@ def _detect_radio_hardware() -> dict:
 # These are kept for direct use but NOT used by check_service() for systemd
 # services (Issue #17: avoid conflicting detection methods)
 # =============================================================================
+
+
+def check_meshcore_device(device_path: str = "") -> bool:
+    """Check if a MeshCore companion radio device is available.
+
+    MeshCore has no daemon — this checks whether the serial device exists.
+    Does NOT verify the device is running MeshCore firmware.
+
+    Args:
+        device_path: Specific device to check (e.g., '/dev/ttyUSB0').
+                     If empty, scans for any USB serial device.
+
+    Returns:
+        True if device path exists or any USB serial device is found.
+    """
+    from pathlib import Path
+
+    if device_path and device_path != "auto":
+        return Path(device_path).exists()
+
+    # Scan for any USB serial device
+    usb_devices = list(Path("/dev").glob("ttyUSB*")) + \
+                  list(Path("/dev").glob("ttyACM*"))
+    return len(usb_devices) > 0
 
 
 def check_port(port: int, host: str = 'localhost', timeout: float = 2.0) -> bool:

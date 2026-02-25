@@ -103,6 +103,8 @@ from rnode_mixin import RNodeMixin
 from latency_mixin import LatencyMixin
 from dashboard_mixin import DashboardMixin
 from meshcore_mixin import MeshCoreMixin
+from radio_mode_mixin import RadioModeMixin
+from meshcore_config_mixin import MeshCoreConfigMixin
 from tactical_ops_mixin import TacticalOpsMixin
 
 
@@ -150,6 +152,8 @@ class MeshForgeLauncher(
     LatencyMixin,
     DashboardMixin,
     MeshCoreMixin,
+    RadioModeMixin,
+    MeshCoreConfigMixin,
     TacticalOpsMixin,
 ):
     """MeshForge launcher with raspi-config style interface."""
@@ -832,10 +836,12 @@ class MeshForgeLauncher(
         """Mesh Networks - Meshtastic, RNS, AREDN."""
         while True:
             choices = []
+            choices.append(("radio_mode", "Radio Mode          Select primary radio (Meshtastic/MeshCore)"))
             if self._feature_enabled("meshtastic"):
                 choices.append(("meshtastic", "Meshtastic          Radio, channels, CLI"))
             if self._feature_enabled("meshcore"):
-                choices.append(("meshcore", "MeshCore            Companion radio, config"))
+                choices.append(("meshcore", "MeshCore            Companion radio, status"))
+            choices.append(("mc_config", "MeshCore Config     /etc/meshcore/ management"))
             if self._feature_enabled("rns"):
                 choices.append(("rns", "RNS / Reticulum     Status, gateway, messaging"))
             if self._feature_enabled("gateway"):
@@ -860,8 +866,10 @@ class MeshForgeLauncher(
                 break
 
             dispatch = {
+                "radio_mode": ("Radio Mode", self._radio_mode_menu),
                 "meshtastic": ("Meshtastic Radio", self._radio_menu),
                 "meshcore": ("MeshCore Radio", self._meshcore_menu),
+                "mc_config": ("MeshCore Config", self._meshcore_config_menu),
                 "rns": ("RNS / Reticulum", self._rns_menu),
                 "gateway": ("Gateway Bridge", self._gateway_config_menu),
                 "aredn": ("AREDN Mesh", self._aredn_menu),
