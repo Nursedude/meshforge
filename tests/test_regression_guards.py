@@ -265,6 +265,46 @@ class TestNoShellTrue:
         )
 
 
+class TestEventBusThreadPool:
+    """Enforce: EventBus.emit() uses bounded ThreadPoolExecutor.
+
+    Thread-per-emit caused thread explosion over extended uptime — thousands
+    of short-lived threads created/destroyed, leading to GIL contention and
+    eventual RuntimeError: can't start new thread.
+    """
+
+    def test_emit_uses_thread_pool_not_thread_per_call(self):
+        """EventBus.emit() must not create threading.Thread per subscriber."""
+        import inspect
+        sys.path.insert(0, SRC_DIR)
+        try:
+            from utils.event_bus import EventBus
+            source = inspect.getsource(EventBus.emit)
+            assert 'threading.Thread(' not in source, (
+                "EventBus.emit() must not create Thread() per subscriber. "
+                "Use self._executor.submit() with ThreadPoolExecutor instead."
+            )
+            init_source = inspect.getsource(EventBus.__init__)
+            assert 'ThreadPoolExecutor' in init_source, (
+                "EventBus.__init__ must create a ThreadPoolExecutor "
+                "for bounded async callback dispatch."
+            )
+        finally:
+            sys.path.pop(0)
+
+    def test_eventbus_has_shutdown_method(self):
+        """EventBus must have a shutdown() method for cleanup."""
+        sys.path.insert(0, SRC_DIR)
+        try:
+            from utils.event_bus import EventBus
+            assert hasattr(EventBus, 'shutdown'), (
+                "EventBus must have a shutdown() method to release "
+                "thread pool resources during cleanup."
+            )
+        finally:
+            sys.path.pop(0)
+
+
 class TestKnownServicesConsistency:
     """Enforce: KNOWN_SERVICES stays in sync across the codebase."""
 

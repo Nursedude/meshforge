@@ -240,6 +240,10 @@ def print_menu(env, recommended):
     print(f"     {Colors.DIM}Real-time node and message monitoring{Colors.NC}")
     print()
 
+    print(f"  {Colors.BOLD}5{Colors.NC}. {Colors.YELLOW}Daemon Mode{Colors.NC}")
+    print(f"     {Colors.DIM}Headless: all services without TUI (for systemd/24x7){Colors.NC}")
+    print()
+
     # Options
     print(f"{Colors.BOLD}=== OPTIONS ==============================================={Colors.NC}\n")
 
@@ -280,6 +284,19 @@ def launch_interface(choice):
             print(f"\n{Colors.YELLOW}Monitor stopped.{Colors.NC}")
         except subprocess.TimeoutExpired:
             print(f"\n{Colors.YELLOW}Monitor timed out after 1hr.{Colors.NC}")
+
+    elif choice == "5":
+        # Daemon Mode
+        print(f"\n{Colors.GREEN}Starting Daemon Mode...{Colors.NC}")
+        print(f"{Colors.DIM}Press Ctrl+C to stop{Colors.NC}\n")
+        try:
+            from daemon import DaemonController
+            controller = DaemonController()
+            sys.exit(controller.start(foreground=True))
+        except KeyboardInterrupt:
+            print(f"\n{Colors.YELLOW}Daemon stopped.{Colors.NC}")
+        except ImportError as e:
+            print(f"{Colors.RED}Daemon module not available: {e}{Colors.NC}")
 
 
 def launch_gateway_bridge(src_dir):
@@ -430,6 +447,20 @@ def main():
                 print(f"\n{Colors.YELLOW}Verification completed with issues.{Colors.NC}")
                 sys.exit(2)
 
+    # Daemon mode flag (skip menu, run headless)
+    if '--daemon' in sys.argv:
+        from daemon import DaemonController
+        controller = DaemonController()
+        profile_name = None
+        for i, arg in enumerate(sys.argv):
+            if arg == '--profile' and i + 1 < len(sys.argv):
+                profile_name = sys.argv[i + 1]
+                break
+        sys.exit(controller.start(
+            profile_name=profile_name,
+            foreground=True,
+        ))
+
     # Direct interface flag (skip menu)
     if '--tui' in sys.argv:
         launch_interface('1')
@@ -510,7 +541,7 @@ def main():
             save_preferences(prefs)
             launch_interface('1')
 
-        elif choice in ['2', '3', '4']:
+        elif choice in ['2', '3', '4', '5']:
             launch_interface(choice)
 
         else:

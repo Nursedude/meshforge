@@ -379,6 +379,25 @@ class MeshForgeLauncher(
 
         return env
 
+    def _is_daemon_running(self) -> bool:
+        """Check if meshforged is running via PID file.
+
+        Used on TUI startup to avoid auto-starting services the
+        daemon already owns (Config API, health probe, etc.).
+        """
+        pid_file = Path("/run/meshforge/meshforged.pid")
+        if not pid_file.exists():
+            return False
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)  # Check if process exists (signal 0)
+            return True
+        except (ProcessLookupError, ValueError):
+            return False
+        except PermissionError:
+            # Process exists but owned by different user — daemon is running
+            return True
+
     def run(self):
         """Run the launcher."""
         if not self.dialog.available:
@@ -401,28 +420,26 @@ class MeshForgeLauncher(
         # Check for service misconfiguration (SPI HAT with USB config)
         self._check_service_misconfig()
 
-        # Auto-start map server if configured
-        self._maybe_auto_start_map()
-
-        # Auto-start MQTT subscriber and TelemetryPoller if configured
-        self._maybe_auto_start_mqtt_and_telemetry()
-
-        # Auto-start Config API Server on localhost
-        self._maybe_auto_start_config_api()
-
-        # Auto-lock port 9443 so meshtasticd web is only via MeshForge proxy
-        self._maybe_auto_lock_port()
-
-        # Start continuous health monitoring (Phase 1 — reliability)
-        # Background thread checks meshtasticd, rnsd, mosquitto every 30s.
-        # State changes push to EventBus → StatusBar updates automatically.
-        self._start_health_monitor()
+        # Detect if daemon is managing core services
+        self._daemon_active = self._is_daemon_running()
+        if self._daemon_active:
+            logger.info("Daemon detected — TUI running in tool-only mode")
+        else:
+            # Only auto-start services when daemon ISN'T running.
+            # If daemon owns these, starting them here would cause
+            # port conflicts (Config API :8081) or singleton clashes.
+            self._maybe_auto_start_map()
+            self._maybe_auto_start_mqtt_and_telemetry()
+            self._maybe_auto_start_config_api()
+            self._maybe_auto_lock_port()
+            self._start_health_monitor()
 
         try:
             self._run_main_menu()
         finally:
-            self._stop_health_monitor()
-            self._stop_config_api_server()
+            if not self._daemon_active:
+                self._stop_health_monitor()
+                self._stop_config_api_server()
 
     def _start_health_monitor(self) -> None:
         """Start the background health monitoring loop.
@@ -1018,6 +1035,7 @@ class MeshForgeLauncher(
                 ("logs", "Logs                View/follow logs"),
                 ("network", "Network Tools       Ping, ports, interfaces"),
                 ("diagnose", "Diagnostics         System health check"),
+                ("daemon", "Daemon Mode         Start/stop headless NOC"),
                 ("review", "Code Review         Auto-review codebase"),
                 ("status", "Quick Status        One-shot status display"),
                 ("shell", "Linux Shell         Drop to bash"),
@@ -1039,6 +1057,7 @@ class MeshForgeLauncher(
                 "logs": ("Log Viewer", self._logs_menu),
                 "network": ("Network Tools", self._network_menu),
                 "diagnose": ("Diagnostics", self._run_diagnostics),
+                "daemon": ("Daemon Mode", self._daemon_menu),
                 "review": ("Code Review", self._auto_review_menu),
                 "status": ("Quick Status", self._run_terminal_status),
                 "shell": ("Linux Shell", self._drop_to_shell),
@@ -1047,6 +1066,122 @@ class MeshForgeLauncher(
             entry = dispatch.get(choice)
             if entry:
                 self._safe_call(*entry)
+
+    def _daemon_menu(self):
+        """Daemon Mode - Start/stop headless NOC services."""
+        while True:
+            # Check if daemon is running
+            daemon_status = "unknown"
+            try:
+                status_file = get_real_user_home() / ".config" / "meshforge" / "daemon_status.json"
+                pid_file = Path("/run/meshforge/meshforged.pid")
+                if pid_file.exists():
+                    import signal as _sig
+                    pid = int(pid_file.read_text().strip())
+                    try:
+                        os.kill(pid, 0)
+                        daemon_status = f"running (PID {pid})"
+                    except ProcessLookupError:
+                        daemon_status = "stopped (stale PID)"
+                else:
+                    daemon_status = "stopped"
+            except Exception:
+                daemon_status = "unknown"
+
+            choices = [
+                ("status", f"Status              Daemon: {daemon_status}"),
+                ("start", "Start Daemon        Launch headless NOC"),
+                ("stop", "Stop Daemon         Stop headless NOC"),
+                ("back", "Back"),
+            ]
+
+            choice = self.dialog.menu(
+                "Daemon Mode",
+                "Headless NOC service manager:",
+                choices
+            )
+
+            if choice is None or choice == "back":
+                break
+
+            if choice == "status":
+                self._daemon_show_status()
+            elif choice == "start":
+                self._daemon_start()
+            elif choice == "stop":
+                self._daemon_stop()
+
+    def _daemon_show_status(self):
+        """Show daemon status in a dialog."""
+        try:
+            status_file = get_real_user_home() / ".config" / "meshforge" / "daemon_status.json"
+            if not status_file.exists():
+                self.dialog.msgbox("Daemon Status", "No status file found.\nDaemon may not be running.")
+                return
+
+            import json
+            with open(status_file, 'r') as f:
+                data = json.load(f)
+
+            daemon = data.get("daemon", {})
+            services = data.get("services", {})
+            uptime = daemon.get("uptime_seconds", 0)
+            hours = uptime // 3600
+            minutes = (uptime % 3600) // 60
+
+            lines = [
+                f"Status:  {daemon.get('status', '?')}",
+                f"PID:     {daemon.get('pid', '?')}",
+                f"Profile: {daemon.get('profile', '?')}",
+                f"Uptime:  {hours}h {minutes}m",
+                "",
+                "Services:",
+            ]
+
+            for name, svc in services.items():
+                alive = svc.get("alive", False)
+                marker = "*" if alive else "-"
+                lines.append(f"  {marker} {name}")
+
+            self.dialog.msgbox("Daemon Status", "\n".join(lines))
+
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Could not read daemon status:\n{e}")
+
+    def _daemon_start(self):
+        """Start the daemon via subprocess."""
+        if not self.dialog.yesno(
+            "Start Daemon",
+            "Start MeshForge daemon (headless mode)?\n\n"
+            "This will run gateway bridge, health monitoring,\n"
+            "and other configured services in the background."
+        ):
+            return
+
+        try:
+            daemon_script = self.src_dir / "daemon.py"
+            subprocess.Popen(
+                [sys.executable, str(daemon_script), "start", "--foreground"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            self.dialog.msgbox("Daemon Started", "Daemon launched in background.\nCheck status for details.")
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed to start daemon:\n{e}")
+
+    def _daemon_stop(self):
+        """Stop the daemon via subprocess."""
+        try:
+            daemon_script = self.src_dir / "daemon.py"
+            result = subprocess.run(
+                [sys.executable, str(daemon_script), "stop"],
+                capture_output=True, text=True, timeout=10
+            )
+            output = result.stdout.strip() or result.stderr.strip() or "Stop signal sent."
+            self.dialog.msgbox("Stop Daemon", output)
+        except Exception as e:
+            self.dialog.msgbox("Error", f"Failed to stop daemon:\n{e}")
 
     def _drop_to_shell(self):
         """Drop to a bash shell."""

@@ -30,6 +30,7 @@ Usage:
 
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
@@ -106,10 +107,11 @@ class EventBus:
     def __init__(self):
         self._subscribers: Dict[str, List[Callable]] = {}
         self._lock = threading.RLock()
-        self._worker_thread: Optional[threading.Thread] = None
-        self._event_queue: List[tuple] = []
-        self._queue_lock = threading.Lock()
-        self._running = False
+        # Bounded thread pool prevents thread-per-emit explosion.
+        # 4 workers is sufficient for health probe (3 services) + message events.
+        self._executor = ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="eventbus"
+        )
 
     def subscribe(self, event_type: str, callback: Callable) -> None:
         """
@@ -161,18 +163,15 @@ class EventBus:
 
         logger.debug(f"Emitting '{event_type}' to {len(subscribers)} subscribers")
 
-        # Call each subscriber in a separate thread
+        # Dispatch callbacks to bounded thread pool (max 4 workers).
+        # Previous implementation spawned a new Thread per subscriber per emit,
+        # causing thread explosion over extended uptime.
         for callback in subscribers:
             try:
-                # Use daemon thread so it doesn't block app shutdown
-                thread = threading.Thread(
-                    target=self._safe_call,
-                    args=(callback, event),
-                    daemon=True
-                )
-                thread.start()
-            except Exception as e:
-                logger.error(f"Error starting callback thread: {e}")
+                self._executor.submit(self._safe_call, callback, event)
+            except RuntimeError:
+                # Executor shut down during cleanup — safe to ignore
+                pass
 
     def emit_sync(self, event_type: str, event: Any) -> None:
         """
@@ -212,6 +211,14 @@ class EventBus:
         """Get the number of subscribers for an event type."""
         with self._lock:
             return len(self._subscribers.get(event_type, []))
+
+    def shutdown(self) -> None:
+        """Shut down the thread pool executor.
+
+        Call during daemon or TUI cleanup to release thread pool resources.
+        After shutdown, emit() calls are silently dropped (RuntimeError caught).
+        """
+        self._executor.shutdown(wait=False)
 
 
 # Global singleton instance

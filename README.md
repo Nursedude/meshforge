@@ -96,17 +96,24 @@ git checkout alpha/meshcore-bridge
 sudo bash scripts/install_noc.sh
 ```
 
-The alpha branch (`0.6.0-alpha`) includes:
-- **MeshCore handler** — companion radio detection and management
+The alpha branch (`0.6.0-alpha`, released 2026-02-25) includes:
+- **RadioMode abstraction** — select primary radio (Meshtastic / MeshCore / Dual)
+- **meshcore_primary bridge mode** — MeshCore as primary radio with RNS backhaul
+- **MeshCore config manager** — `/etc/meshcore/` config mirroring meshtasticd pattern
 - **3-way message routing** — Meshtastic ↔ RNS ↔ MeshCore bridge
 - **Canonical message format** — unified multi-protocol message representation
-- **MeshCore TUI menu** — device management from the terminal interface
+- **MeshCore TUI menus** — Radio Mode selection, MeshCore config, device management
+- **Gateway workflow registry** — transport registry for gateway bridge workflows
+- **AREDN topology visibility** — topology inspection from the gateway
+- **NanoVNA plugin** — antenna analysis, sweep storage, RF integration (proper plugin structure)
 
 > **Note:** The `main` and `alpha/meshcore-bridge` branches have diverged into
-> parallel development tracks (~2,200 commits ahead, ~100 behind as of Feb 2026).
-> Main includes tactical ops (XTOC/ATAK interop), MQTT bridge enhancements, and
-> security hardening that alpha does not have. Alpha includes MeshCore 3-way routing
-> that main does not have. Convergence will require a dedicated reconciliation effort.
+> parallel development tracks (2,260 commits ahead, 0 behind as of 2026-02-25).
+> Alpha now contains all of main (merge-base is current main HEAD) plus MeshCore
+> integration work. Main includes tactical ops (XTOC/ATAK interop), MQTT bridge
+> enhancements, and security hardening. Alpha adds RadioMode abstraction, MeshCore
+> 3-way routing, NanoVNA plugin, and AREDN topology. Convergence will require a
+> dedicated reconciliation effort.
 > Report issues on the [alpha/meshcore-bridge](https://github.com/Nursedude/meshforge/issues) tracker.
 
 ### Deployment Profiles
@@ -233,7 +240,8 @@ Main Menu (MeshForge NOC)
 | **Service Discovery** | Auto-detect available services, port scanning | Beta |
 | **Latency Monitoring** | Service latency probing, response time tracking | Beta |
 | **Broker Profiles** | MQTT broker profile management, health monitoring | Beta |
-| **MeshCore** | Companion radio management, device detection, 3-way bridge routing, TUI menu | Alpha (`alpha/meshcore-bridge` branch) |
+| **MeshCore** | RadioMode abstraction, meshcore_primary bridge mode, config manager, companion radio management, 3-way bridge routing, TUI menus (Radio Mode, MeshCore Config) | Alpha (`alpha/meshcore-bridge` branch) |
+| **NanoVNA** | Antenna analysis, S11/VSWR measurement, sweep storage, RF integration | Alpha (`alpha/meshcore-bridge` branch) |
 | **uConsole AIO V2** | Hardware detection, GPIO power control, meshtasticd auto-config | Code Ready (hardware Q2 2026) |
 
 **Status key:** Stable = tested in the field | Beta = works but needs soak time | Alpha = architecture solid, needs testing | Code Ready = implemented, no hardware to validate
@@ -256,7 +264,7 @@ Main Menu (MeshForge NOC)
 
 | Feature | Target | Status |
 |---------|--------|--------|
-| MeshCore 3-way bridge | v0.6.0 | Alpha (`alpha/meshcore-bridge`) |
+| MeshCore 3-way bridge + RadioMode | v0.6.0 | Alpha (`alpha/meshcore-bridge`, 2026-02-25) |
 | Historical playback (Live Map) | v0.7.0 | Planned |
 | Packet decode (protobuf + RNS frames) | v0.7.0 | Planned |
 | SDR spectrum analysis (RTL-SDR) | v0.7.0 | Planned |
@@ -268,7 +276,7 @@ Main Menu (MeshForge NOC)
 | Feature | Target | Status |
 |---------|--------|--------|
 | AI predictive analytics enhancement | v0.9.0 | Planned |
-| NanoVNA antenna integration | v0.9.0 | Alpha |
+| NanoVNA antenna integration | v0.6.0 | Alpha (`alpha/meshcore-bridge` — plugin with sweep store, RF integration) |
 | Firmware flashing | v1.0.0 | Alpha (high risk) |
 | v1.0 stable release | -- | See `.claude/plans/v1.0_roadmap.md` |
 
@@ -279,7 +287,7 @@ merging to stable main:
 
 | Feature | Risk | Notes |
 |---------|------|-------|
-| MeshCore merge to main | High | Branches diverged ~2,200 commits; needs dedicated reconciliation |
+| MeshCore merge to main | High | Alpha is 2,260 commits ahead (0 behind); merge-base is current main HEAD; needs dedicated reconciliation |
 | Full ATAK plugin bridge | Medium | Bidirectional CoT ↔ mesh relay, protocol complexity |
 | SDR spectrum analysis (RTL-SDR) | Medium | Hardware dependency, driver integration |
 | MANET/LAN bridging | Medium | New transport layer (XTOC-style IP mesh networking) |
@@ -897,7 +905,7 @@ Feature branches via `claude/` prefix, merged by PR.
 | Branch | Version | Purpose |
 |--------|---------|---------|
 | `main` | `0.5.4-beta` | Stable — gateway, TUI, monitoring, RF tools |
-| `alpha/meshcore-bridge` | `0.6.0-alpha` | MeshCore 3-way routing, companion radio support |
+| `alpha/meshcore-bridge` | `0.6.0-alpha` | MeshCore 3-way routing, RadioMode abstraction, NanoVNA plugin, AREDN topology |
 
 ```bash
 git clone https://github.com/Nursedude/meshforge.git

@@ -43,8 +43,16 @@ class ServiceMenuMixin:
         while True:
             # Check if bridge is already running
             bridge_running = self._is_bridge_running()
+            daemon_managed = getattr(self, '_daemon_active', False)
 
-            if bridge_running:
+            if daemon_managed and bridge_running:
+                choices = [
+                    ("status", "Bridge Status"),
+                    ("logs", "View Bridge Logs"),
+                    ("back", "Back"),
+                ]
+                subtitle = "Gateway bridge is RUNNING (managed by daemon)"
+            elif bridge_running:
                 choices = [
                     ("status", "Bridge Status"),
                     ("logs", "View Bridge Logs"),
