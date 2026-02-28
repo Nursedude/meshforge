@@ -3,7 +3,7 @@
 > **Purpose**: Document recurring issues and their proper fixes to prevent regression.
 > This serves as institutional memory for development.
 >
-> **Last audited**: 2026-02-24 — Security & QA sweep (v0.5.4-beta): GTK4 remnant removed from plugin_base.py, raw systemctl bypasses fixed in orchestrator + installer, safe_import violation fixed, main.py trimmed below 1500 via export extraction to topology_mixin, line counts refreshed, H1 fully resolved
+> **Last audited**: 2026-02-28 — Code quality review: oversized handlers (rns_diagnostics 2,261L, nomadnet 1,610L), TUI handler registry QA (PRs #980-995), 10 raw systemctl violations identified across 5 handler files, 2 missing method regressions from mixin migration (main.py:370, 623), security issue (0o777 on /etc/reticulum/storage)
 
 ---
 
@@ -99,9 +99,12 @@ Services may run outside systemd (Docker, manual start). The actual connection
 attempt is the definitive test. Blocking checks caused "waiting for delivery"
 regression when mosquitto wasn't detectable via systemctl.
 
-### Remaining (display-only — acceptable)
-- `system_tools_mixin.py` — `systemctl list-units/status` for display to user (not state decisions)
-- `service_menu_mixin.py` — `systemctl status` for display to user (not state decisions)
+### Remaining (2026-02-28 — 10 instances across 5 handler files)
+- `rns_diagnostics.py:806,1682,2110` — `systemctl is-active rnsd/meshtasticd` (should use `check_service()`)
+- `dashboard.py:99-111` — `systemctl is-active` for meshtasticd/rnsd/mosquitto (should use `check_service()`)
+- `ai_tools.py:199,452,483` — `systemctl is-active/is-enabled meshforge-map` (should use `check_service()`)
+- `broker.py:591-593` — Raw `systemctl` for mosquitto start/stop (should use `start_service()`/`stop_service()`)
+- `_lxmf_utils.py:107` — `systemctl stop` rnsd (should use `stop_service()`)
 
 ### Known Services (in `utils/service_check.py`)
 | Service | Port | systemd name |
@@ -224,29 +227,31 @@ def test_rns(self): ...  # Now _HAS_RNS is True
 ### Symptom
 Files exceed the 1,500 line guideline from CLAUDE.md, making them difficult to navigate, test, and maintain.
 
-### Current Status (2026-02-24, refreshed)
+### Current Status (2026-02-28, refreshed post-handler migration)
 
 **Python files over 1,500 lines:**
 
 | File | Lines | Status | Notes |
 |------|-------|--------|-------|
-| `src/utils/knowledge_content.py` | 1,993 | OK | Content file by design - no split needed |
+| `src/launcher_tui/handlers/rns_diagnostics.py` | 2,261 | ACTION | Tight coupling justification doesn't hold — clean extraction seams exist |
+| `src/utils/knowledge_content.py` | 1,993 | OK | Content file by design — no split needed |
+| `src/launcher_tui/handlers/nomadnet.py` | 1,610 | MONITOR | 7% over; duplication extraction likely brings under limit |
 | `src/gateway/rns_bridge.py` | 1,599 | MONITOR | MeshCoreBridgeMixin + MessageRouter + gateway_cli extracted |
+| `src/utils/map_data_collector.py` | 1,568 | MONITOR | Grew in PR #974 (map reliability fixes) |
+| `src/utils/map_http_handler.py` | 1,557 | MONITOR | Grew in PR #974 (weather cache, band conditions) |
 | `src/utils/prometheus_exporter.py` | 1,521 | MONITOR | Grew after metrics_export split |
 | `src/utils/service_check.py` | 1,515 | MONITOR | Growing — watch for extraction candidates |
-| `src/launcher_tui/nomadnet_client_mixin.py` | 1,505 | MONITOR | Stable |
 | `src/commands/rns.py` | 1,505 | MONITOR | Stable |
 
-**Under threshold (previously tracked):**
+**Under threshold (previously tracked — many mixins now deleted):**
 
 | File | Lines | Notes |
 |------|-------|-------|
-| `src/launcher_tui/rns_menu_mixin.py` | 1,498 | Grew slightly but still under 1,500 |
-| `src/launcher_tui/service_menu_mixin.py` | 1,487 | Dropped below threshold |
-| `src/utils/map_http_handler.py` | 1,475 | Under threshold |
-| `src/utils/map_data_collector.py` | 1,475 | Under threshold |
-| `src/launcher_tui/main.py` | 1,463 | Trimmed 2026-02-24: export functions → topology_mixin |
+| `src/launcher_tui/main.py` | 1,148 | Reduced 62% via handler registry migration (PRs #980-995) |
 | `src/utils/config_api.py` | 1,316 | Well under threshold |
+
+**Mixin files removed in handler migration (PRs #980-995):**
+All 49 `*_mixin.py` files deleted. Replaced by 59 handler modules in `src/launcher_tui/handlers/`.
 
 **Previously over threshold (NOW RESOLVED):**
 
