@@ -49,6 +49,7 @@ class NodeHealthHandler(BaseHandler):
                 ("latency", "Service Latency     TCP probe all services"),
                 ("battery", "Battery Forecast    Node battery projections"),
                 ("signal", "Signal Trends       SNR/RSSI analysis"),
+                ("alerts", "Health Alerts       Predicted failures"),
                 ("back", "Back"),
             ]
 
@@ -65,6 +66,7 @@ class NodeHealthHandler(BaseHandler):
                 "latency": ("Service Latency", self._service_latency_probe),
                 "battery": ("Battery Forecast", self._battery_forecast_display),
                 "signal": ("Signal Trends", self._signal_trending_display),
+                "alerts": ("Health Alerts", self._show_health_alerts),
             }
             entry = dispatch.get(choice)
             if entry:
@@ -360,3 +362,79 @@ class NodeHealthHandler(BaseHandler):
             logger.debug("meshtastic_http module not available")
 
         return nodes
+
+    def _show_health_alerts(self):
+        """Display predictive health alerts from node metrics."""
+        clear_screen()
+        print("=== Predictive Health Alerts ===\n")
+
+        try:
+            from monitoring.health_alerter import HealthAlerter
+        except ImportError:
+            print("  Health alerter module not available.")
+            print("  File: src/monitoring/health_alerter.py")
+            self.ctx.wait_for_enter()
+            return
+
+        print("Checking node health...\n")
+
+        # Gather node data from both telemetry and signal sources
+        nodes = []
+        telem = self._get_meshtastic_node_telemetry()
+        signals = self._get_meshtastic_node_signals()
+
+        # Merge telemetry and signal data into unified dicts
+        all_ids = set(list(telem.keys()) + list(signals.keys()))
+        for node_id in all_ids:
+            entry = {'id': node_id}
+            if node_id in telem:
+                t = telem[node_id]
+                entry['name'] = t.get('short_name', node_id[:12])
+                entry['battery'] = t.get('battery_level')
+            if node_id in signals:
+                s = signals[node_id]
+                entry.setdefault('name', s.get('short_name', node_id[:12]))
+                entry['snr'] = s.get('snr')
+            nodes.append(entry)
+
+        if not nodes:
+            print("  No node data available for health analysis.\n")
+            print("  Health alerts require telemetry or signal data from nodes.")
+            print("  Ensure meshtasticd is running and nodes are reporting.")
+            self.ctx.wait_for_enter()
+            return
+
+        alerter = HealthAlerter()
+        alerts = alerter.check_nodes(nodes)
+
+        if not alerts:
+            print("  \033[0;32mAll clear\033[0m — no health alerts at this time.\n")
+            print(f"  Checked {len(nodes)} node(s). No issues detected.")
+            self.ctx.wait_for_enter()
+            return
+
+        severity_colors = {
+            'critical': '\033[1;31m',
+            'warning': '\033[0;33m',
+            'info': '\033[0;36m',
+        }
+
+        print(f"  {len(alerts)} alert(s) found:\n")
+
+        for alert in alerts:
+            color = severity_colors.get(alert.severity, '')
+            reset = '\033[0m'
+            sev_label = alert.severity.upper()
+
+            line = f"  {color}[{sev_label:>8}]{reset} {alert.message}"
+            if alert.predicted_hours is not None:
+                if alert.predicted_hours < 1:
+                    line += f" (~{alert.predicted_hours * 60:.0f}min to failure)"
+                else:
+                    line += f" (~{alert.predicted_hours:.0f}h to failure)"
+            print(line)
+
+        print(f"\n  Alerts are suppressed for 1h after first firing.")
+        print(f"  Re-run to check for new conditions.")
+        print()
+        self.ctx.wait_for_enter()

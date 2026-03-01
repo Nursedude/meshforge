@@ -371,6 +371,30 @@ class NodeHistoryDB:
             finally:
                 conn.close()
 
+    def get_time_range(self) -> Dict[str, Any]:
+        """Get the time bounds of stored observations.
+
+        Optimized for UI time-slider initialization (avoids full stats query).
+
+        Returns:
+            Dict with oldest_ts, newest_ts, total_observations.
+            All values are None/0 if no data exists.
+        """
+        with self._lock:
+            conn = sqlite3.connect(str(self.db_path))
+            try:
+                row = conn.execute(
+                    "SELECT MIN(timestamp), MAX(timestamp), COUNT(*) "
+                    "FROM node_observations"
+                ).fetchone()
+                return {
+                    "oldest_ts": row[0],
+                    "newest_ts": row[1],
+                    "total_observations": row[2] or 0,
+                }
+            finally:
+                conn.close()
+
     def cleanup(self) -> int:
         """Remove observations older than retention period.
 

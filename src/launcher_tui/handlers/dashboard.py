@@ -41,6 +41,7 @@ class DashboardHandler(BaseHandler):
             ("nodes", "Node Count          Meshtastic + RNS nodes", None),
             ("score", "Health Score        Network health snapshot", None),
             ("datapath", "Data Path Check     Test all data sources", None),
+            ("msgflow", "Message Flow        Send/route/deliver tracking", None),
             ("reports", "Reports             Generate status report", None),
             ("alerts", "View Alerts         Current warnings", None),
         ]
@@ -52,6 +53,7 @@ class DashboardHandler(BaseHandler):
             "nodes": ("Node Count", self._show_node_counts),
             "score": ("Health Score", self._health_score_display),
             "datapath": ("Data Path Check", self._data_path_diagnostic),
+            "msgflow": ("Message Flow", self._show_message_flow),
             "reports": ("Reports", self._reports_menu),
             "alerts": ("View Alerts", self._show_alerts),
         }
@@ -471,6 +473,70 @@ class DashboardHandler(BaseHandler):
         print()
         self.ctx.wait_for_enter()
 
+    def _show_message_flow(self):
+        """Show recent message flow through the gateway bridge."""
+        clear_screen()
+        print("=== Message Flow ===\n")
+
+        try:
+            from gateway.gateway_cli import get_message_flow
+            data = get_message_flow(limit=20)
+        except ImportError:
+            print("  Gateway CLI not available")
+            self.ctx.wait_for_enter()
+            return
+
+        status = data.get('status', 'Unknown')
+        if status != 'OK':
+            print(f"  Bridge status: {status}\n")
+            self.ctx.wait_for_enter()
+            return
+
+        # Summary line
+        summary = data.get('summary', {})
+        total = summary.get('total_tracked', 0)
+        delivered = summary.get('delivered', 0)
+        failed = summary.get('failed', 0)
+        timeout = summary.get('timeout', 0)
+        print(f"  Total: {total}  |  Delivered: {delivered}"
+              f"  |  Failed: {failed}  |  Timeout: {timeout}\n")
+
+        # Recent events
+        recent = data.get('recent', [])
+        if not recent:
+            print("  No message flow events recorded yet.")
+            print("  Events appear when the gateway bridge routes messages.")
+        else:
+            from datetime import datetime
+            print(f"  {'Time':<12} {'State':<12} {'Route':<25} {'Preview'}")
+            print(f"  {'-'*10}   {'-'*10}   {'-'*23}   {'-'*30}")
+            for event in recent:
+                ts = event.get('timestamp', 0)
+                time_str = datetime.fromtimestamp(ts).strftime('%H:%M:%S') if ts else '??:??:??'
+                state = event.get('state', 'unknown')
+                src = event.get('source_network', '?')
+                dst = event.get('destination_network', '?')
+                route = f"{src[:10]}->{dst[:10]}"
+                preview = event.get('content_preview', '')
+                if len(preview) > 30:
+                    preview = preview[:27] + "..."
+
+                # Color code by state
+                state_colors = {
+                    'delivered': '\033[0;32m',  # green
+                    'sent': '\033[0;36m',       # cyan
+                    'failed': '\033[0;31m',     # red
+                    'timeout': '\033[0;33m',    # yellow
+                }
+                color = state_colors.get(state, '\033[0m')
+                reset = '\033[0m'
+
+                print(f"  [{time_str}] {color}{state:<10}{reset}   "
+                      f"{route:<23}   {preview}")
+
+        print()
+        self.ctx.wait_for_enter()
+
     def _show_alerts(self):
         """Show current alerts from environment state and EAS."""
         clear_screen()
@@ -503,6 +569,34 @@ class DashboardHandler(BaseHandler):
                 print("  Weather: No active alerts")
         except Exception as e:
             logger.debug("EAS alert check failed: %s", e)
+
+        # Predictive node health alerts
+        print()
+        try:
+            from monitoring.health_alerter import HealthAlerter
+            collector = MapDataCollector()
+            geojson = collector.collect()
+            features = geojson.get("features", []) if isinstance(geojson, dict) else []
+            if features:
+                alerter = HealthAlerter()
+                health_alerts = alerter.check_nodes(features)
+                if health_alerts:
+                    print(f"NODE HEALTH ALERTS ({len(health_alerts)}):")
+                    severity_colors = {
+                        "critical": "\033[0;31m",  # red
+                        "warning": "\033[0;33m",   # yellow
+                        "info": "\033[0;36m",      # cyan
+                    }
+                    for ha in health_alerts[:5]:
+                        color = severity_colors.get(ha.severity, "\033[0m")
+                        reset = "\033[0m"
+                        print(f"  {color}[{ha.severity.upper()}]{reset} {ha.message}")
+                else:
+                    print("  Node Health: All nodes healthy")
+            else:
+                print("  Node Health: No node data available")
+        except Exception as e:
+            logger.debug("Health alerter check failed: %s", e)
 
         print()
         self.ctx.wait_for_enter()

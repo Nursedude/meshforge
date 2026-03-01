@@ -1219,10 +1219,83 @@
                 touch-action: manipulation;
             }
         }
+        /* ============================================
+           History Playback Time-Slider
+           ============================================ */
+        #history-slider-bar {
+            display: none;
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+            background: rgba(10, 22, 34, 0.95);
+            border-top: 1px solid #2a3a4a;
+            padding: 8px 16px;
+            backdrop-filter: blur(8px);
+        }
+        #history-slider-bar .slider-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        #history-slider-bar .slider-btn {
+            background: #1a2a3a;
+            color: #e0e0e0;
+            border: 1px solid #2a3a4a;
+            border-radius: 4px;
+            padding: 4px 10px;
+            cursor: pointer;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+        #history-slider-bar .slider-btn:hover {
+            background: #2a3a4a;
+        }
+        #history-slider-bar .slider-btn.active {
+            background: #1565c0;
+            border-color: #42a5f5;
+        }
+        #history-slider-bar input[type="range"] {
+            flex: 1;
+            accent-color: #42a5f5;
+            height: 6px;
+        }
+        #history-slider-bar .time-display {
+            color: #90caf9;
+            font-size: 12px;
+            font-family: monospace;
+            min-width: 140px;
+            text-align: center;
+        }
+        #history-slider-bar .speed-select {
+            background: #1a2a3a;
+            color: #e0e0e0;
+            border: 1px solid #2a3a4a;
+            border-radius: 4px;
+            padding: 3px 6px;
+            font-size: 11px;
+        }
     </style>
 </head>
 <body>
     <div id="map"></div>
+
+    <!-- History Playback Slider -->
+    <div id="history-slider-bar">
+        <div class="slider-row">
+            <button class="slider-btn" id="history-play-btn" title="Play/Pause">&#9654;</button>
+            <input type="range" id="history-slider" min="0" max="1000" value="1000" step="1">
+            <span class="time-display" id="history-time-display">Live</span>
+            <select class="speed-select" id="history-speed" title="Playback speed">
+                <option value="1">1x</option>
+                <option value="2">2x</option>
+                <option value="5" selected>5x</option>
+                <option value="10">10x</option>
+            </select>
+            <button class="slider-btn" id="history-live-btn" title="Return to live view">LIVE</button>
+        </div>
+    </div>
 
     <!-- Phase 4: D3.js Topology View -->
     <div id="topology-view">
@@ -1330,6 +1403,7 @@
                 <label><input type="checkbox" id="filter-heatmap"> Signal heatmap</label>
                 <label><input type="checkbox" id="filter-clustering"> Cluster view</label>
                 <label><input type="checkbox" id="filter-messages"> Message flow</label>
+                <label><input type="checkbox" id="filter-history"> History playback</label>
             </div>
             <div class="filter-section" style="margin-top: 4px; padding-top: 4px; border-top: 1px solid #1a2a3a;">
                 <span style="font-size: 10px; color: #888; display: block; margin-bottom: 4px;">Node Role</span>
@@ -4854,6 +4928,183 @@
             showStatusCard(props, coords);
         }
     });
+    // ============================================
+    // History Playback — Time-Slider Controller
+    // ============================================
+    (function() {
+        const sliderBar = document.getElementById('history-slider-bar');
+        const slider = document.getElementById('history-slider');
+        const timeDisplay = document.getElementById('history-time-display');
+        const playBtn = document.getElementById('history-play-btn');
+        const liveBtn = document.getElementById('history-live-btn');
+        const speedSelect = document.getElementById('history-speed');
+        const historyCheckbox = document.getElementById('filter-history');
+
+        let historyMode = false;
+        let playing = false;
+        let playInterval = null;
+        let oldestTs = null;
+        let newestTs = null;
+        let currentSnapshotTs = null;
+
+        // Toggle history mode on/off
+        if (historyCheckbox) {
+            historyCheckbox.addEventListener('change', function() {
+                if (this.checked) {
+                    enterHistoryMode();
+                } else {
+                    exitHistoryMode();
+                }
+            });
+        }
+
+        async function enterHistoryMode() {
+            try {
+                const resp = await fetch('/api/nodes/timerange');
+                const data = await resp.json();
+                if (!data.oldest_ts || !data.newest_ts || data.total_observations < 2) {
+                    timeDisplay.textContent = 'No history data';
+                    sliderBar.style.display = 'block';
+                    return;
+                }
+                oldestTs = data.oldest_ts;
+                newestTs = data.newest_ts;
+                slider.min = Math.floor(oldestTs);
+                slider.max = Math.floor(newestTs);
+                slider.value = slider.max;
+                historyMode = true;
+                sliderBar.style.display = 'block';
+                currentSnapshotTs = newestTs;
+                updateTimeDisplay(newestTs);
+            } catch (e) {
+                console.error('Failed to load time range:', e);
+                timeDisplay.textContent = 'Error loading history';
+                sliderBar.style.display = 'block';
+            }
+        }
+
+        function exitHistoryMode() {
+            historyMode = false;
+            playing = false;
+            stopPlayback();
+            sliderBar.style.display = 'none';
+            if (historyCheckbox) historyCheckbox.checked = false;
+            // Refresh to live data
+            if (typeof refreshNodes === 'function') refreshNodes();
+        }
+
+        function updateTimeDisplay(ts) {
+            const d = new Date(ts * 1000);
+            const pad = n => String(n).padStart(2, '0');
+            timeDisplay.textContent =
+                `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ` +
+                `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+        }
+
+        async function loadSnapshot(ts) {
+            if (!historyMode) return;
+            currentSnapshotTs = ts;
+            updateTimeDisplay(ts);
+            try {
+                const resp = await fetch(`/api/nodes/snapshot?timestamp=${ts}&window=300`);
+                const data = await resp.json();
+                if (data.features && typeof nodeLayer !== 'undefined') {
+                    nodeLayer.clearLayers();
+                    const geojson = { type: 'FeatureCollection', features: data.features };
+                    L.geoJSON(geojson, {
+                        pointToLayer: function(feature, latlng) {
+                            const props = feature.properties || {};
+                            const isOnline = props.is_online !== false;
+                            const color = isOnline ? '#66bb6a' : '#ef5350';
+                            return L.circleMarker(latlng, {
+                                radius: 6,
+                                fillColor: color,
+                                color: '#fff',
+                                weight: 1,
+                                opacity: 0.8,
+                                fillOpacity: 0.8,
+                            });
+                        },
+                        onEachFeature: function(feature, layer) {
+                            const p = feature.properties || {};
+                            const name = p.name || p.id || 'Unknown';
+                            const snr = p.snr != null ? `${p.snr} dB` : 'N/A';
+                            const batt = p.battery != null ? `${p.battery}%` : 'N/A';
+                            const time = p.timestamp
+                                ? new Date(p.timestamp * 1000).toLocaleTimeString()
+                                : '';
+                            layer.bindPopup(
+                                `<b>${name}</b><br>` +
+                                `SNR: ${snr} | Battery: ${batt}<br>` +
+                                `Network: ${p.network || '?'}<br>` +
+                                `Observed: ${time}`
+                            );
+                        }
+                    }).addTo(nodeLayer);
+                }
+            } catch (e) {
+                console.error('Snapshot load error:', e);
+            }
+        }
+
+        // Slider input handler
+        slider.addEventListener('input', function() {
+            const ts = parseInt(this.value);
+            loadSnapshot(ts);
+        });
+
+        // Play/Pause
+        playBtn.addEventListener('click', function() {
+            if (!historyMode) return;
+            if (playing) {
+                stopPlayback();
+            } else {
+                startPlayback();
+            }
+        });
+
+        function startPlayback() {
+            playing = true;
+            playBtn.textContent = '\u23F8'; // pause symbol
+            playBtn.classList.add('active');
+            const speed = parseInt(speedSelect.value) || 5;
+            // Advance 5 minutes of history per tick (every 500ms)
+            const stepSeconds = 300 * speed;
+            playInterval = setInterval(() => {
+                let newVal = parseInt(slider.value) + stepSeconds;
+                if (newVal >= parseInt(slider.max)) {
+                    newVal = parseInt(slider.max);
+                    stopPlayback();
+                }
+                slider.value = newVal;
+                loadSnapshot(newVal);
+            }, 500);
+        }
+
+        function stopPlayback() {
+            playing = false;
+            playBtn.textContent = '\u25B6'; // play symbol
+            playBtn.classList.remove('active');
+            if (playInterval) {
+                clearInterval(playInterval);
+                playInterval = null;
+            }
+        }
+
+        // Live button — return to real-time
+        liveBtn.addEventListener('click', function() {
+            exitHistoryMode();
+        });
+
+        // Speed change during playback
+        speedSelect.addEventListener('change', function() {
+            if (playing) {
+                stopPlayback();
+                startPlayback();
+            }
+        });
+    })();
+
     </script>
 </body>
 </html>

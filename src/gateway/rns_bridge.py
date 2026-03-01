@@ -58,6 +58,8 @@ PersistentMessageQueue, MessagePriority, HAS_PERSISTENT_QUEUE = safe_import(
 
 from .message_routing import MessageRouter, CLASSIFIER_AVAILABLE
 from .meshcore_bridge_mixin import MeshCoreBridgeMixin
+from .message_lifecycle import MessageFlowTracker
+from .message_queue import MessageLifecycleState
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +176,9 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
 
         # LXMF delivery confirmation tracking
         self.delivery_tracker = DeliveryTracker()
+
+        # Message flow tracker (in-memory, for dashboard visibility)
+        self.flow_tracker = MessageFlowTracker()
 
         # Message queues (bounded to prevent memory exhaustion)
         self._mesh_to_rns_queue = Queue(maxsize=1000)
@@ -713,6 +718,7 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
             'node_stats': self.node_tracker.get_stats(),
             'subsystems': self.health.get_subsystem_states(),
             'bridge_status': self.bridge_status.value,
+            'message_flow': self.flow_tracker.get_summary(),
         }
 
     def send_to_meshtastic(self, message: str, destination: str = None, channel: int = 0) -> bool:
@@ -1561,6 +1567,12 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
         On send failure for non-broadcast messages, attempts to persist
         to the persistent queue for later retry.
         """
+        msg_id = getattr(msg, 'id', '') or msg.source_id or 'unknown'
+        self.flow_tracker.record_event(
+            msg_id, MessageLifecycleState.SENT,
+            source_network="meshtastic", destination_network="rns",
+            content_preview=msg.content,
+        )
         try:
             prefix = f"[Mesh:{msg.source_id[-4:]}] " if msg.source_id else "[Mesh] "
             content = prefix + msg.content
@@ -1574,6 +1586,11 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
                 with self._stats_lock:
                     self.stats['messages_mesh_to_rns'] += 1
                 self.health.record_message_sent("mesh_to_rns")
+                self.flow_tracker.record_event(
+                    msg_id, MessageLifecycleState.DELIVERED,
+                    source_network="meshtastic", destination_network="rns",
+                    content_preview=msg.content,
+                )
             else:
                 if msg.is_broadcast:
                     logger.debug(f"Mesh→RNS broadcast not sent (no propagation node): {content[:30]}...")
@@ -1583,6 +1600,12 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
                         self.stats['errors'] += 1
                     requeued = self._requeue_failed_message(msg, "rns")
                     self.health.record_message_failed("mesh_to_rns", requeued=requeued)
+                    self.flow_tracker.record_event(
+                        msg_id, MessageLifecycleState.FAILED,
+                        source_network="meshtastic", destination_network="rns",
+                        content_preview=msg.content,
+                        details="Send failed, requeued" if requeued else "Send failed",
+                    )
 
         except Exception as e:
             logger.error(f"Error bridging Mesh→RNS: {e}")
@@ -1591,6 +1614,11 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
             self.health.record_error("rns", e)
             self._requeue_failed_message(msg, "rns")
             self.health.record_message_failed("mesh_to_rns", requeued=True)
+            self.flow_tracker.record_event(
+                msg_id, MessageLifecycleState.FAILED,
+                source_network="meshtastic", destination_network="rns",
+                details=str(e),
+            )
 
     def _get_rns_destination(self, meshtastic_id: str) -> bytes:
         """Look up RNS destination hash for a Meshtastic node ID"""
@@ -1639,6 +1667,12 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
 
         On send failure, persists to persistent queue for later retry.
         """
+        msg_id = getattr(msg, 'id', '') or msg.source_id or 'unknown'
+        self.flow_tracker.record_event(
+            msg_id, MessageLifecycleState.SENT,
+            source_network="rns", destination_network="meshtastic",
+            content_preview=msg.content,
+        )
         try:
             prefix = f"[RNS:{msg.source_id[:4]}] "
             content = prefix + msg.content
@@ -1648,12 +1682,22 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
                 with self._stats_lock:
                     self.stats['messages_rns_to_mesh'] += 1
                 self.health.record_message_sent("rns_to_mesh")
+                self.flow_tracker.record_event(
+                    msg_id, MessageLifecycleState.DELIVERED,
+                    source_network="rns", destination_network="meshtastic",
+                    content_preview=msg.content,
+                )
             else:
                 logger.warning("Failed to bridge RNS→Mesh")
                 with self._stats_lock:
                     self.stats['errors'] += 1
                 requeued = self._requeue_failed_message(msg, "meshtastic")
                 self.health.record_message_failed("rns_to_mesh", requeued=requeued)
+                self.flow_tracker.record_event(
+                    msg_id, MessageLifecycleState.FAILED,
+                    source_network="rns", destination_network="meshtastic",
+                    details="Send failed, requeued" if requeued else "Send failed",
+                )
 
         except Exception as e:
             logger.error(f"Error bridging RNS→Mesh: {e}")
@@ -1662,6 +1706,11 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
             self.health.record_error("meshtastic", e)
             self._requeue_failed_message(msg, "meshtastic")
             self.health.record_message_failed("rns_to_mesh", requeued=True)
+            self.flow_tracker.record_event(
+                msg_id, MessageLifecycleState.FAILED,
+                source_network="rns", destination_network="meshtastic",
+                details=str(e),
+            )
 
     # _process_meshcore_to_bridge() and _process_bridge_to_meshcore()
     # inherited from MeshCoreBridgeMixin — see meshcore_bridge_mixin.py
