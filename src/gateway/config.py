@@ -73,7 +73,7 @@ def validate_bridge_mode(mode: str, field_name: str) -> Optional[ConfigValidatio
     """Validate bridge mode."""
     valid_modes = [
         "mqtt_bridge", "message_bridge", "rns_transport", "mesh_bridge",
-        "meshcore_bridge", "tri_bridge",
+        "meshcore_bridge", "meshcore_primary", "tri_bridge",
     ]
     if mode not in valid_modes:
         return ConfigValidationError(field_name, f"Invalid bridge mode '{mode}'. Valid: {valid_modes}")
@@ -277,6 +277,22 @@ class MeshCoreConfig:
 
 
 @dataclass
+class AREDNBackhaulConfig:
+    """AREDN backhaul topology visibility configuration.
+
+    When enabled, the gateway periodically scans the local AREDN router
+    for neighbor links and identifies remote MeshForge gateways reachable
+    via AREDN WiFi backbone, DtD links, or VPN tunnels.
+
+    Scope: Read-only visibility -- no routing changes.
+    """
+    enabled: bool = False
+    router_ip: str = ""              # Auto-detect if empty
+    auto_detect: bool = True
+    poll_interval_sec: int = 60
+
+
+@dataclass
 class RNSConfig:
     """Reticulum Network Stack configuration"""
     config_dir: str = ""  # Empty = default ~/.reticulum
@@ -400,6 +416,9 @@ class GatewayConfig:
 
     # MeshCore companion radio (used when bridge_mode="meshcore_bridge" or "tri_bridge")
     meshcore: MeshCoreConfig = field(default_factory=MeshCoreConfig)
+
+    # AREDN backhaul topology visibility (read-only, all modes)
+    aredn_backhaul: AREDNBackhaulConfig = field(default_factory=AREDNBackhaulConfig)
 
     # Routing (used when bridge_mode="message_bridge")
     routing_rules: List[RoutingRule] = field(default_factory=list)
@@ -773,6 +792,41 @@ class GatewayConfig:
         return config
 
     @classmethod
+    def template_meshcore_primary(cls,
+                                  device_path: str = "/dev/ttyUSB0",
+                                  connection_type: str = "serial") -> 'GatewayConfig':
+        """
+        MeshCore as primary radio with RNS backhaul.
+
+        MeshForge manages the MeshCore companion radio directly.
+        Meshtastic is optional (bridge target if available).
+        RNS provides long-haul backhaul via LXMF.
+
+        Use case: MeshCore-primary mesh network with RNS backhaul
+        Requirements:
+            - MeshCore companion radio connected (USB serial or TCP)
+            - pip install meshcore (Python 3.10+)
+            - rnsd running (optional but recommended for backhaul)
+            - meshtasticd NOT required (optional secondary bridge)
+
+        Args:
+            device_path: Serial device path for companion radio
+            connection_type: Connection type (serial, tcp, ble)
+        """
+        config = cls()
+        config.enabled = True
+        config.bridge_mode = "meshcore_primary"
+        config.meshcore.enabled = True
+        config.meshcore.device_path = device_path
+        config.meshcore.connection_type = connection_type
+        config.meshcore.auto_fetch_messages = True
+        config.meshcore.bridge_channels = True
+        config.meshcore.bridge_dms = True
+        config.default_route = "bidirectional"
+        config.routing_rules = config.get_default_rules()
+        return config
+
+    @classmethod
     def template_basic_bridge(cls) -> 'GatewayConfig':
         """
         Basic message bridge between Meshtastic and RNS (LEGACY).
@@ -920,6 +974,7 @@ class GatewayConfig:
         """
         templates = {
             "mqtt_bridge": cls.template_mqtt_bridge,
+            "meshcore_primary": cls.template_meshcore_primary,
             "basic_bridge": cls.template_basic_bridge,
             "rns_over_mesh": cls.template_rns_over_mesh,
             "dual_preset_bridge": cls.template_dual_preset_bridge,
