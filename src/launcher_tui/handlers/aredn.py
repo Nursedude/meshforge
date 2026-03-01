@@ -17,6 +17,10 @@ get_aredn_node, AREDNClient, AREDNScanner, _HAS_AREDN = safe_import(
     'utils.aredn', 'get_aredn_node', 'AREDNClient', 'AREDNScanner'
 )
 
+_is_gateway_running, _HAS_GW_STATUS = safe_import(
+    'gateway.gateway_cli', 'is_gateway_running'
+)
+
 
 class AREDNHandler(BaseHandler):
     """TUI handler for AREDN mesh network tools."""
@@ -39,6 +43,7 @@ class AREDNHandler(BaseHandler):
                 ("status", "Node Status"),
                 ("neighbors", "Neighbors & Links"),
                 ("services", "Advertised Services"),
+                ("routing", "Routing Influence     AREDN backhaul hints"),
                 ("map", "Show on Map"),
                 ("web", "Open AREDN Web UI"),
                 ("scan", "Scan Network"),
@@ -58,6 +63,7 @@ class AREDNHandler(BaseHandler):
                 "status": ("AREDN Status", self._aredn_node_status),
                 "neighbors": ("Neighbors & Links", self._aredn_neighbors),
                 "services": ("AREDN Services", self._aredn_services),
+                "routing": ("Routing Influence", self._aredn_routing_influence),
                 "map": ("Show on Map", self._aredn_map),
                 "web": ("AREDN Web UI", self._aredn_web),
                 "scan": ("Scan Network", self._aredn_scan),
@@ -65,6 +71,87 @@ class AREDNHandler(BaseHandler):
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
+
+    def _aredn_routing_influence(self):
+        """Show AREDN routing influence — which gateways have backhaul paths."""
+        clear_screen()
+        print("=== AREDN Routing Influence ===\n")
+
+        # Check if gateway bridge is running
+        if _HAS_GW_STATUS and not _is_gateway_running():
+            print("  Gateway bridge is not running.")
+            print("  Start the bridge to see AREDN routing influence.")
+            print("\n  AREDN routing hints are active when the bridge")
+            print("  has an AREDN overlay connected to a local router.")
+            self.ctx.wait_for_enter()
+            return
+
+        # Try to get routing info from the active bridge's router
+        try:
+            from gateway.gateway_cli import get_active_bridge
+            bridge = get_active_bridge()
+            if not bridge or not hasattr(bridge, '_router'):
+                print("  Bridge router not accessible.")
+                self.ctx.wait_for_enter()
+                return
+
+            info = bridge._router.get_aredn_routing_info()
+        except Exception as e:
+            logger.debug(f"AREDN routing info failed: {e}")
+            print("  Could not retrieve AREDN routing information.")
+            print(f"  Error: {e}")
+            self.ctx.wait_for_enter()
+            return
+
+        if not info.get("available"):
+            reason = info.get("reason", "AREDN overlay not configured")
+            print(f"  {reason}")
+            print("\n  To enable AREDN routing hints:")
+            print("  1. Configure aredn_backhaul in gateway.yaml")
+            print("  2. Set enabled: true")
+            print("  3. Restart the gateway bridge")
+            self.ctx.wait_for_enter()
+            return
+
+        connected = info.get("connected", False)
+        status_color = "\033[0;32m" if connected else "\033[0;31m"
+        print(f"  AREDN Overlay:  {status_color}{'Connected' if connected else 'Disconnected'}\033[0m")
+
+        gateways = info.get("gateways", {})
+        print(f"  Remote Gateways: {len(gateways)}\n")
+
+        if not gateways:
+            print("  No remote MeshForge gateways found via AREDN.")
+            print("  Routing hints activate when AREDN discovers peer gateways")
+            print("  running meshtasticd, rnsd, or meshforge.")
+        else:
+            print(f"  {'Gateway':<25} {'IP':<16} {'Quality':>8} {'Type':<8} {'Status'}")
+            print(f"  {'-'*70}")
+
+            for ip, hint in gateways.items():
+                name = hint.get("gateway_name", "") or ip
+                quality = hint.get("quality", 0)
+                link_type = hint.get("link_type", "?")
+                available = hint.get("available", False)
+
+                if quality > 0.7:
+                    q_color = "\033[0;32m"
+                elif quality > 0.5:
+                    q_color = "\033[0;33m"
+                else:
+                    q_color = "\033[0;31m"
+
+                status = "\033[0;32mActive\033[0m" if available else "\033[0;31mDown\033[0m"
+                print(f"  {name[:24]:<25} {ip:<16} {q_color}{quality:>6.0%}\033[0m   {link_type:<8} {status}")
+
+            print(f"\n  Messages to nodes reachable via these gateways will")
+            print(f"  be annotated with AREDN backhaul preference hints.")
+
+        if info.get("error"):
+            print(f"\n  \033[0;33mWarning:\033[0m {info['error']}")
+
+        print()
+        self.ctx.wait_for_enter()
 
     def _aredn_get_node_ip(self) -> str:
         import socket

@@ -394,6 +394,107 @@ class AnalyticsStore:
                 dist[s.link_quality] += 1
         return dist
 
+    def get_hourly_summary(self, hours: int = 24) -> List[Dict[str, Any]]:
+        """Get hourly aggregated network health summaries.
+
+        Groups network_health records by hour, returning avg/min/max
+        for each period.
+
+        Args:
+            hours: Number of hours to look back.
+
+        Returns:
+            List of dicts with hour, avg_snr, avg_rssi, avg_nodes, sample_count.
+        """
+        cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT
+                        strftime('%Y-%m-%d %H:00', timestamp) as hour,
+                        COUNT(*) as sample_count,
+                        AVG(online_nodes) as avg_online,
+                        AVG(offline_nodes) as avg_offline,
+                        AVG(avg_rssi_dbm) as avg_rssi,
+                        MIN(avg_rssi_dbm) as min_rssi,
+                        MAX(avg_rssi_dbm) as max_rssi,
+                        AVG(avg_snr_db) as avg_snr,
+                        MIN(avg_snr_db) as min_snr,
+                        MAX(avg_snr_db) as max_snr,
+                        AVG(packet_success_rate) as avg_packet_success
+                    FROM network_health
+                    WHERE timestamp > ?
+                    GROUP BY strftime('%Y-%m-%d %H', timestamp)
+                    ORDER BY hour DESC
+                """, (cutoff,))
+                rows = cursor.fetchall()
+                return [
+                    {
+                        "hour": row[0],
+                        "sample_count": row[1],
+                        "avg_online": round(row[2] or 0, 1),
+                        "avg_offline": round(row[3] or 0, 1),
+                        "avg_rssi": round(row[4] or 0, 1),
+                        "min_rssi": round(row[5] or 0, 1),
+                        "max_rssi": round(row[6] or 0, 1),
+                        "avg_snr": round(row[7] or 0, 1),
+                        "min_snr": round(row[8] or 0, 1),
+                        "max_snr": round(row[9] or 0, 1),
+                        "avg_packet_success": round(row[10] or 0, 3),
+                    }
+                    for row in rows
+                ]
+            finally:
+                conn.close()
+
+    def get_daily_summary(self, days: int = 7) -> List[Dict[str, Any]]:
+        """Get daily aggregated network health summaries.
+
+        Args:
+            days: Number of days to look back.
+
+        Returns:
+            List of dicts with date, averages, and sample counts.
+        """
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT
+                        strftime('%Y-%m-%d', timestamp) as day,
+                        COUNT(*) as sample_count,
+                        AVG(online_nodes) as avg_online,
+                        AVG(offline_nodes) as avg_offline,
+                        AVG(avg_rssi_dbm) as avg_rssi,
+                        AVG(avg_snr_db) as avg_snr,
+                        AVG(packet_success_rate) as avg_packet_success
+                    FROM network_health
+                    WHERE timestamp > ?
+                    GROUP BY strftime('%Y-%m-%d', timestamp)
+                    ORDER BY day DESC
+                """, (cutoff,))
+                rows = cursor.fetchall()
+                return [
+                    {
+                        "date": row[0],
+                        "sample_count": row[1],
+                        "avg_online": round(row[2] or 0, 1),
+                        "avg_offline": round(row[3] or 0, 1),
+                        "avg_rssi": round(row[4] or 0, 1),
+                        "avg_snr": round(row[5] or 0, 1),
+                        "avg_packet_success": round(row[6] or 0, 3),
+                    }
+                    for row in rows
+                ]
+            finally:
+                conn.close()
+
     def cleanup_old_data(self, days: int = 30):
         """Remove data older than specified days."""
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()
@@ -994,3 +1095,213 @@ def get_predictive_analyzer() -> PredictiveAnalyzer:
     except NameError:
         _predictive_analyzer = PredictiveAnalyzer(get_analytics_store())
         return _predictive_analyzer
+
+
+# =============================================================================
+# ANALYTICS COLLECTOR (Sprint C2: Data Pipeline)
+# =============================================================================
+
+
+class AnalyticsCollector:
+    """Periodic collector that feeds live data into the AnalyticsStore.
+
+    Bridges the gap between runtime data sources (SharedHealthState,
+    node tracker) and the SQLite analytics store that powers the
+    TUI analytics dashboard.
+
+    Uses _stop_event.wait() instead of time.sleep() per CLAUDE.md rules.
+
+    Usage:
+        collector = AnalyticsCollector(store, health_state, node_getter)
+        collector.start()
+        # ... later ...
+        collector.stop()
+    """
+
+    DEFAULT_INTERVAL_SEC = 300  # 5 minutes
+
+    def __init__(
+        self,
+        store: Optional[AnalyticsStore] = None,
+        health_state=None,
+        node_getter=None,
+        interval_sec: int = DEFAULT_INTERVAL_SEC,
+    ):
+        """
+        Args:
+            store: AnalyticsStore instance (default: singleton).
+            health_state: SharedHealthState instance for service metrics.
+            node_getter: Callable returning list of node dicts with SNR/RSSI.
+            interval_sec: Collection interval in seconds.
+        """
+        self.store = store or get_analytics_store()
+        self._health_state = health_state
+        self._node_getter = node_getter
+        self._interval = interval_sec
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._collection_count = 0
+
+    def start(self) -> None:
+        """Start the periodic collection loop."""
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._collection_loop,
+            daemon=True,
+            name="analytics-collector",
+        )
+        self._thread.start()
+        logger.info(f"Analytics collector started (interval={self._interval}s)")
+
+    def stop(self) -> None:
+        """Stop the collection loop."""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+            self._thread = None
+        logger.info(f"Analytics collector stopped ({self._collection_count} collections)")
+
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def _collection_loop(self) -> None:
+        """Main collection loop — runs in daemon thread."""
+        while not self._stop_event.is_set():
+            try:
+                self.collect_once()
+                self._collection_count += 1
+            except Exception as e:
+                logger.debug(f"Analytics collection error: {e}")
+
+            # Wait for next interval (interruptible via stop_event)
+            self._stop_event.wait(timeout=self._interval)
+
+    def collect_once(self) -> None:
+        """Run a single collection cycle. Can also be called manually."""
+        self._collect_network_health()
+        self._collect_link_budgets()
+
+    def _collect_network_health(self) -> None:
+        """Collect network health metrics from SharedHealthState."""
+        if not self._health_state:
+            return
+
+        try:
+            metrics_dict = self._health_state.get_metrics()
+        except Exception as e:
+            logger.debug(f"Health state metrics unavailable: {e}")
+            return
+
+        # Map SharedHealthState metrics to NetworkHealthMetrics
+        total = metrics_dict.get("total_services", 0)
+        healthy = metrics_dict.get("healthy_count", 0)
+        unhealthy = total - healthy
+
+        health = NetworkHealthMetrics(
+            timestamp=datetime.now().isoformat(),
+            online_nodes=healthy,
+            offline_nodes=unhealthy,
+            avg_rssi_dbm=0.0,
+            avg_snr_db=0.0,
+            avg_link_quality_pct=metrics_dict.get("avg_uptime_pct", 0.0),
+            packet_success_rate=metrics_dict.get("avg_uptime_pct", 0.0) / 100.0,
+            uptime_hours=0,
+        )
+
+        # Enrich with node-level signal data if available
+        if self._node_getter:
+            try:
+                nodes = self._node_getter()
+                if nodes:
+                    snr_values = []
+                    rssi_values = []
+                    online = 0
+                    offline = 0
+                    for node in nodes:
+                        if isinstance(node, dict):
+                            snr = node.get("snr")
+                            rssi = node.get("rssi")
+                            is_online = node.get("is_online", True)
+                        else:
+                            snr = getattr(node, "snr", None)
+                            rssi = getattr(node, "rssi", None)
+                            is_online = getattr(node, "is_online", True)
+
+                        if snr is not None:
+                            snr_values.append(float(snr))
+                        if rssi is not None:
+                            rssi_values.append(float(rssi))
+                        if is_online:
+                            online += 1
+                        else:
+                            offline += 1
+
+                    if snr_values:
+                        health.avg_snr_db = sum(snr_values) / len(snr_values)
+                    if rssi_values:
+                        health.avg_rssi_dbm = sum(rssi_values) / len(rssi_values)
+                    health.online_nodes = online
+                    health.offline_nodes = offline
+            except Exception as e:
+                logger.debug(f"Node data collection error: {e}")
+
+        self.store.record_network_health(health)
+
+    def _collect_link_budgets(self) -> None:
+        """Collect link budget samples from node signal data."""
+        if not self._node_getter:
+            return
+
+        try:
+            nodes = self._node_getter()
+        except Exception as e:
+            logger.debug(f"Node getter error: {e}")
+            return
+
+        if not nodes:
+            return
+
+        now = datetime.now().isoformat()
+
+        for node in nodes:
+            if isinstance(node, dict):
+                node_id = node.get("id", "")
+                snr = node.get("snr")
+                rssi = node.get("rssi")
+                is_online = node.get("is_online", True)
+            else:
+                node_id = getattr(node, "id", "")
+                snr = getattr(node, "snr", None)
+                rssi = getattr(node, "rssi", None)
+                is_online = getattr(node, "is_online", True)
+
+            if snr is None and rssi is None:
+                continue
+            if not node_id:
+                continue
+
+            # Classify link quality
+            snr_val = float(snr) if snr is not None else 0.0
+            if snr_val > 5:
+                quality = "excellent"
+            elif snr_val > 0:
+                quality = "good"
+            elif snr_val > -5:
+                quality = "fair"
+            else:
+                quality = "bad"
+
+            sample = LinkBudgetSample(
+                timestamp=now,
+                source_node="gateway",
+                dest_node=node_id[:16],
+                rssi_dbm=float(rssi) if rssi is not None else 0.0,
+                snr_db=snr_val,
+                distance_km=None,
+                packet_loss_pct=0.0 if is_online else 100.0,
+                link_quality=quality,
+            )
+            self.store.record_link_budget(sample)

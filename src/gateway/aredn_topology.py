@@ -1,13 +1,12 @@
 """
 AREDN Topology Overlay for MeshForge Gateway.
 
-Provides read-only visibility of AREDN backhaul topology:
+Provides AREDN backhaul topology awareness:
 - Discovers AREDN router on local network
 - Maps remote MeshForge gateways reachable via AREDN
 - Reports link quality for backhaul paths
 - Feeds node tracker with reachability information
-
-Scope: Visibility only — no routing changes in MessageRouter.
+- Provides routing hints to MessageRouter for AREDN-aware routing
 
 Usage:
     from gateway.aredn_topology import AREDNTopologyOverlay
@@ -15,6 +14,7 @@ Usage:
     overlay = AREDNTopologyOverlay(router_ip="10.10.0.1")
     links = overlay.discover_backhaul_links()
     reach = overlay.get_reachability("!abcd1234")
+    hint = overlay.get_routing_hint("!abcd1234")
 """
 
 import logging
@@ -341,3 +341,51 @@ class AREDNTopologyOverlay:
         """Get discovered remote gateways {ip: name}."""
         with self._lock:
             return dict(self._remote_gateways)
+
+    def get_routing_hint(self, node_id: str) -> Dict[str, Any]:
+        """Get AREDN routing hint for a node.
+
+        Returns a routing-friendly dict indicating whether AREDN backhaul
+        is available for a given node and how good the path is.
+
+        Args:
+            node_id: Mesh node identifier.
+
+        Returns:
+            Dict with keys: available, quality, router_ip, link_type, gateway_name.
+        """
+        reach = self.get_reachability(node_id)
+        gateway_name = ""
+        if reach.aredn_router_ip:
+            with self._lock:
+                gateway_name = self._remote_gateways.get(reach.aredn_router_ip, "")
+
+        return {
+            "available": reach.has_aredn_path,
+            "quality": reach.aredn_link_quality,
+            "router_ip": reach.aredn_router_ip,
+            "link_type": reach.aredn_link_type.value if reach.aredn_link_type else "unknown",
+            "gateway_name": gateway_name,
+        }
+
+    def get_all_routing_hints(self) -> Dict[str, Dict[str, Any]]:
+        """Get routing hints for all remote gateways.
+
+        Returns:
+            Dict mapping gateway IP to routing hint dict.
+        """
+        with self._lock:
+            gateways = dict(self._remote_gateways)
+            links = list(self._links)
+
+        hints = {}
+        for link in links:
+            if link.remote_aredn_ip in gateways:
+                hints[link.remote_aredn_ip] = {
+                    "available": link.is_healthy,
+                    "quality": link.link_quality,
+                    "router_ip": link.remote_aredn_ip,
+                    "link_type": link.link_type.value,
+                    "gateway_name": gateways.get(link.remote_aredn_ip, ""),
+                }
+        return hints
