@@ -8,6 +8,7 @@ Supports three bridge modes:
 - mesh_bridge: Bridges two Meshtastic networks with different LoRa presets
 """
 
+from .base_handler import BaseMessageHandler
 from .rns_bridge import RNSMeshtasticBridge
 from .node_tracker import UnifiedNodeTracker
 from .config import (
@@ -45,6 +46,8 @@ from .meshtastic_protobuf_ops import (
 )
 
 __all__ = [
+    # Base handler ABC
+    'BaseMessageHandler',
     # RNS-Meshtastic bridge
     'RNSMeshtasticBridge',
     'UnifiedNodeTracker',

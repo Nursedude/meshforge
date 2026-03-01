@@ -2,7 +2,7 @@
 Meshtastic Commands
 
 Provides unified interface for Meshtastic operations.
-Used by both GTK and CLI interfaces.
+Used by both TUI and CLI interfaces.
 """
 
 import subprocess

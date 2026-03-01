@@ -173,6 +173,7 @@ class NetworkDiagnostics:
         # NOTE: Health monitor DISABLED - was contributing to resource exhaustion
         # The monitor runs every 30 seconds and creates sockets for health checks
         self._monitor_running = False
+        self._monitor_stop = threading.Event()
         self._monitor_thread = None
         # self._monitor_thread = threading.Thread(target=self._health_monitor_loop, daemon=True)
         # self._monitor_thread.start()
@@ -388,7 +389,7 @@ class NetworkDiagnostics:
                 self._run_health_checks()
             except Exception as e:
                 logger.error(f"Health monitor error: {e}")
-            time.sleep(30)  # Check every 30 seconds
+            self._monitor_stop.wait(30)  # Check every 30 seconds
 
     def _run_health_checks(self):
         """Run all health checks."""
@@ -693,7 +694,8 @@ class NetworkDiagnostics:
     def shutdown(self):
         """Stop background monitoring."""
         self._monitor_running = False
-        if self._monitor_thread.is_alive():
+        self._monitor_stop.set()
+        if self._monitor_thread and self._monitor_thread.is_alive():
             self._monitor_thread.join(timeout=5)
 
 

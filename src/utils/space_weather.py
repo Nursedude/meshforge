@@ -519,7 +519,8 @@ def get_propagation_summary() -> str:
 
 if __name__ == "__main__":
     # Test the API
-    logging.basicConfig(level=logging.DEBUG)
+    from utils.logging_config import setup_logging
+    setup_logging(level=logging.DEBUG)
 
     print("Fetching space weather data from NOAA SWPC...")
     api = SpaceWeatherAPI()

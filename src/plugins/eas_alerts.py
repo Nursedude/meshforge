@@ -6,7 +6,7 @@ Integrates emergency alerts from multiple sources:
 - FEMA iPAWS Alerts (archived and live feed access)
 - USGS Volcano Alerts (volcanoes.usgs.gov)
 
-Broadcasts alerts to mesh network and provides GTK panel display.
+Broadcasts alerts to mesh network and provides TUI display.
 
 API Sources:
 - NOAA: https://api.weather.gov/alerts/active

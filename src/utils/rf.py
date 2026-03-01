@@ -574,7 +574,7 @@ class LinkBudgetResult:
     signal_quality: str  # EXCELLENT/GOOD/FAIR/BAD
 
     def summary(self) -> List[str]:
-        """Human-readable breakdown for TUI/GTK display."""
+        """Human-readable breakdown for TUI display."""
         lines = [
             f"TX Power:        {self.tx_power_dbm:+.1f} dBm",
             f"TX Cable Loss:   {self.tx_cable_loss_db:-.1f} dB",

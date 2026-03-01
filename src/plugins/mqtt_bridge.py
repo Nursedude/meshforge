@@ -292,6 +292,16 @@ class MQTTBridgePlugin(IntegrationPlugin):
             broker = self._config.get("broker", DEFAULT_MQTT_BROKER)
             port = self._config.get("port", DEFAULT_MQTT_PORT)
 
+            # Advisory pre-flight for localhost brokers (Issue #3)
+            if broker in ('localhost', '127.0.0.1', '::1'):
+                try:
+                    from utils.service_check import check_service
+                    broker_status = check_service('mosquitto')
+                    if not broker_status.available:
+                        logger.warning("mosquitto pre-flight: %s (attempting connection anyway)", broker_status.message)
+                except ImportError:
+                    pass
+
             # Handle broker:port format (like pdxlocations/connect)
             if ":" in broker:
                 broker, port_str = broker.rsplit(":", 1)

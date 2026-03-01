@@ -7,7 +7,7 @@ Checks:
 - MF002: shell=True in subprocess calls (security risk)
 - MF003: Bare except: clauses (should use except Exception:)
 - MF004: Missing timeout in subprocess calls
-- MF005: GLib.idle_add check for thread-safe UI updates
+- MF005: (removed — was GLib.idle_add check, GTK4 removed in v0.5.x)
 - MF006: safe_import for first-party modules (must use direct imports)
 - MF007: Direct TCPInterface creation (must use connection manager, Issue #17)
 - MF008: Raw systemctl for service state decisions (must use service_check, Issue #20)
@@ -210,23 +210,8 @@ class MeshForgeLinter:
                         "safe_import used for first-party module - use direct import instead"
                     ))
 
-        # MF005: GLib.idle_add check - UI updates from threads
-        # Only check for actual GTK widget methods, not generic list operations
-        gtk_ui_methods = ['set_text', 'set_label', 'set_markup', 'set_sensitive', 'set_visible',
-                          'set_fraction', 'set_value', 'show', 'hide', 'present']
-        has_ui_method = any(method in line for method in gtk_ui_methods)
-
-        if 'self.' in line and has_ui_method:
-            # Check if we're in a thread context (simplistic check)
-            func_start = content.rfind('def ', 0, content.find(line))
-            if func_start != -1:
-                func_block = content[func_start:content.find(line)]
-                if 'Thread' in func_block or 'threading' in func_block:
-                    if 'GLib.idle_add' not in line and 'idle_add' not in content[func_start:content.find(line) + len(line) + 200]:
-                        issues.append(LintIssue(
-                            filepath, lineno, Severity.INFO, "MF005",
-                            "UI update in thread context - ensure GLib.idle_add() is used"
-                        ))
+        # MF005: Removed — was GLib.idle_add check for GTK4 thread safety.
+        # GTK4 was removed in v0.5.x; TUI (whiptail/dialog) is the only interface.
 
         # MF007: Direct TCPInterface creation (bypasses connection manager)
         # meshtasticd supports ONE TCP client — direct creation causes thrashing (Issue #17)

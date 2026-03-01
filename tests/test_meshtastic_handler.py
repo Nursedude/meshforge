@@ -324,6 +324,48 @@ class TestSendText:
             assert result is True
             mock_cli.assert_called_once_with("Hello!", "!aabb", 0)
 
+    def test_send_text_truncates_long_message(self, handler):
+        """Messages exceeding 228 bytes are truncated with '...' marker."""
+        handler._connected = True
+        mock_iface = MagicMock()
+        handler._interface = mock_iface
+
+        long_msg = "A" * 300  # 300 bytes, exceeds 228
+        result = handler.send_text(long_msg)
+
+        assert result is True
+        sent_msg = mock_iface.sendText.call_args[0][0]
+        assert len(sent_msg.encode('utf-8')) <= 228
+        assert sent_msg.endswith('...')
+
+    def test_send_text_exact_boundary_not_truncated(self, handler):
+        """Messages exactly at 228 bytes pass through unmodified."""
+        handler._connected = True
+        mock_iface = MagicMock()
+        handler._interface = mock_iface
+
+        exact_msg = "B" * 228
+        result = handler.send_text(exact_msg)
+
+        assert result is True
+        sent_msg = mock_iface.sendText.call_args[0][0]
+        assert sent_msg == exact_msg
+
+    def test_send_text_unicode_truncation_safe(self, handler):
+        """UTF-8 multi-byte chars are not split during truncation."""
+        handler._connected = True
+        mock_iface = MagicMock()
+        handler._interface = mock_iface
+
+        # Each emoji is 4 bytes. 60 emojis = 240 bytes > 228
+        unicode_msg = "\U0001F600" * 60
+        result = handler.send_text(unicode_msg)
+
+        assert result is True
+        sent_msg = mock_iface.sendText.call_args[0][0]
+        sent_msg.encode('utf-8')  # Must be valid UTF-8 (no split chars)
+        assert len(sent_msg.encode('utf-8')) <= 228
+
 
 # ---------------------------------------------------------------------------
 # Queue send tests
@@ -382,6 +424,19 @@ class TestQueueSend:
 
         result = handler.queue_send({'message': 'test'})
         assert result is False
+
+    def test_queue_send_truncates_long_message(self, handler):
+        """Queue send also truncates long messages."""
+        handler._connected = True
+        mock_iface = MagicMock()
+        handler._interface = mock_iface
+
+        payload = {'message': 'C' * 300, 'destination': '!aabb', 'channel': 0}
+        result = handler.queue_send(payload)
+
+        assert result is True
+        sent_msg = mock_iface.sendText.call_args[0][0]
+        assert len(sent_msg.encode('utf-8')) <= 228
 
 
 # ---------------------------------------------------------------------------
@@ -538,7 +593,7 @@ class TestOnReceive:
         """Full queue drops message gracefully."""
         small_queue = Queue(maxsize=1)
         small_queue.put("filler")  # Fill the queue
-        handler._mesh_to_rns_queue = small_queue
+        handler._message_queue = small_queue
         handler._connected = True
 
         packet = {

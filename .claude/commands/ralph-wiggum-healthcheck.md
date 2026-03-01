@@ -21,7 +21,7 @@ Cross-reference these critical files:
 - `CLAUDE.md` - Main instructions
 - `.claude/foundations/persistent_issues.md` - Known gotchas
 - `.claude/foundations/domain_architecture.md` - Core vs plugin model
-- `.claude/TODO_PRIORITIES.md` - Current priorities
+- `.claude/plans/TODO_PRIORITIES.md` - Current priorities
 - `src/__version__.py` - Version and changelog
 
 Look for:
@@ -100,7 +100,7 @@ Cross-check:
 - Every `.md` file in `.claude/` is listed in `INDEX.md`
 - No version references older than current version (except in historical/archive docs)
 - Session notes follow `YYYY-MM-DD-topic.md` naming convention
-- `TODO_PRIORITIES.md` priorities align with actual development activity
+- `plans/TODO_PRIORITIES.md` priorities align with actual development activity
 
 Flag: Files with stale content, orphaned docs, version mismatches, naming violations.
 

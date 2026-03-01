@@ -331,3 +331,45 @@ class TestKnownServicesConsistency:
             )
         finally:
             sys.path.pop(0)
+
+
+class TestMessageLengthEnforcement:
+    """Enforce: Meshtastic-facing handlers must validate message length.
+
+    Meshtastic firmware silently truncates/drops oversized messages.
+    All TX paths must reference MAX_MESHTASTIC_MSG_LENGTH from utils.defaults.
+    """
+
+    HANDLER_FILES = [
+        'base_handler.py',
+        'meshtastic_handler.py',
+        'mqtt_bridge_handler.py',
+    ]
+
+    def test_handlers_reference_length_constant(self):
+        """Base handler or leaf handlers must reference the length limit.
+
+        MAX_MESHTASTIC_MSG_LENGTH must appear in base_handler.py (shared
+        _truncate_if_needed) or in the individual handler files.
+        """
+        found_in_base = False
+        base_path = os.path.join(SRC_DIR, 'gateway', 'base_handler.py')
+        if os.path.exists(base_path):
+            with open(base_path, 'r') as f:
+                if 'MAX_MESHTASTIC_MSG_LENGTH' in f.read():
+                    found_in_base = True
+
+        for filename in self.HANDLER_FILES:
+            filepath = os.path.join(SRC_DIR, 'gateway', filename)
+            if not os.path.exists(filepath):
+                continue
+            with open(filepath, 'r') as f:
+                content = f.read()
+            # Accept if the handler itself references the constant
+            # OR if the base handler (which it inherits) does
+            has_ref = 'MAX_MESHTASTIC_MSG_LENGTH' in content
+            inherits_base = 'BaseMessageHandler' in content
+            assert has_ref or (found_in_base and inherits_base), (
+                f"{filename} must reference MAX_MESHTASTIC_MSG_LENGTH "
+                f"or inherit from BaseMessageHandler which does"
+            )

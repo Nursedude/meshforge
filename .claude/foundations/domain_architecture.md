@@ -211,8 +211,8 @@ if not check_service_available('meshtasticd', 4403):
 
 HamClock is the model for how external tools integrate:
 
-### Current State (Panel)
-- 1,103 lines in `gtk_ui/panels/hamclock.py`
+### Current State (Panel) [HISTORICAL — GTK removed in v0.5.x, TUI is sole interface]
+- 1,103 lines in `gtk_ui/panels/hamclock.py` (removed)
 - Connects to HamClock HTTP API
 - Fetches space weather data
 - Controls systemd service
@@ -225,7 +225,7 @@ plugins/
 │   ├── __init__.py
 │   ├── plugin.py        # IntegrationPlugin subclass
 │   ├── api.py           # HTTP client for HamClock API
-│   ├── widgets.py       # GTK widgets for panel
+│   ├── widgets.py       # UI widgets (was GTK, now TUI)
 │   └── config.py        # Plugin settings
 ```
 
@@ -250,8 +250,8 @@ class HamClockPlugin(IntegrationPlugin):
         if not self._check_service_available():
             raise ServiceNotAvailable("HamClock not running")
 
-    def get_panel(self) -> Gtk.Widget:
-        """Return GTK widget for UI integration."""
+    def get_panel(self):  # Was Gtk.Widget, now TUI-based
+        """Return UI component for integration."""
         return HamClockPanel(...)
 
     def get_data(self) -> dict:
@@ -282,12 +282,9 @@ src/
 │   ├── mqtt/                # MQTT bridge
 │   └── meshing_around/      # Community features
 │
-├── ui/                      # User interfaces
-│   ├── gtk/                 # GTK4 desktop
-│   │   ├── app.py
-│   │   └── panels/
-│   ├── tui/                 # Textual terminal
-│   └── web/                 # Flask browser
+├── ui/                      # User interfaces [HISTORICAL — only TUI exists now]
+│   ├── tui/                 # Terminal UI (PRIMARY — sole interface since v0.5.x)
+│   └── web/                 # Flask browser (future)
 │
 ├── services/                # System service management
 │   └── manager.py           # Privilege-elevated operations

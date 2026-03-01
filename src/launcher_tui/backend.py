@@ -62,13 +62,21 @@ class DialogBackend:
     def available(self) -> bool:
         return self.backend is not None
 
-    def _run(self, args: List[str]) -> Tuple[int, str]:
+    def _run(self, args: List[str], timeout: Optional[int] = None) -> Tuple[int, str]:
         """
         Run dialog/whiptail command and return (returncode, output).
 
         whiptail uses stderr for returning selection.
         newt library opens /dev/tty directly for ncurses display.
         stderr is redirected to a temp file to capture the selection.
+
+        Args:
+            args: Command arguments for the dialog backend.
+            timeout: Optional subprocess timeout in seconds. Defaults to
+                None (no timeout). whiptail/dialog opens /dev/tty directly,
+                so when the terminal disconnects the process receives SIGHUP
+                and terminates naturally — no timeout needed for orphan
+                prevention.
         """
         import tempfile
 
@@ -96,12 +104,14 @@ class DialogBackend:
             # "screen roll" where old text bleeds through between dialogs.
             clear_screen()
 
-            # Run with stderr redirected to file to capture selection
-            # whiptail/dialog opens /dev/tty directly for ncurses display
+            # Run with stderr redirected to file to capture selection.
+            # No default timeout — whiptail opens /dev/tty so SIGHUP
+            # handles terminal disconnect. The old 3600s timeout caused
+            # the TUI to silently exit after 1 hour of idle.
             with open(tmp_path, 'w') as stderr_file:
-                # Interactive: user controls timing, but timeout prevents orphaned
-                # processes if terminal disconnects or dialog crashes
-                result = subprocess.run(cmd_parts, stderr=stderr_file, timeout=3600)
+                result = subprocess.run(
+                    cmd_parts, stderr=stderr_file, timeout=timeout,
+                )
 
             # Read the captured selection
             with open(tmp_path, 'r') as f:
@@ -109,8 +119,12 @@ class DialogBackend:
 
             return result.returncode, output
 
-        except Exception as e:
-            return 1, str(e)
+        except subprocess.TimeoutExpired:
+            logger.warning("Dialog subprocess timed out after %ss", timeout)
+            return 1, ""
+        except OSError as e:
+            logger.error("Dialog subprocess failed: %s", e)
+            return 1, ""
         finally:
             try:
                 os.unlink(tmp_path)

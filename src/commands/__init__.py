@@ -1,7 +1,7 @@
 """
 MeshForge Commands Layer
 
-Unified command interface for GTK and CLI.
+Unified command interface for TUI and CLI.
 All UI-independent operations go here.
 
 Usage:

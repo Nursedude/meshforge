@@ -1364,6 +1364,45 @@
                 </div>
             </div>
 
+            <!-- Space Weather Panel -->
+            <div class="weather-section" id="weather-section" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #2a3a4a;">
+                <div class="section-title" style="cursor: pointer;" onclick="toggleWeatherPanel()">
+                    Space Weather <span id="weather-toggle" style="float: right; font-size: 10px;">&#x25BC;</span>
+                </div>
+                <div id="weather-body">
+                    <div class="stat-row">
+                        <span class="label">SFI:</span>
+                        <span class="value" id="wx-sfi" title="Solar Flux Index (SFU)">--</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">Kp Index:</span>
+                        <span class="value" id="wx-kp" title="Planetary K-index (0-9)">--</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">A Index:</span>
+                        <span class="value" id="wx-a" title="Daily A-index">--</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">X-ray:</span>
+                        <span class="value" id="wx-xray" title="X-ray flux class">--</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">GeoMag:</span>
+                        <span class="value" id="wx-geomag" title="Geomagnetic storm level">--</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">Mesh Impact:</span>
+                        <span class="value" id="wx-mesh-impact" title="Impact on LoRa mesh operations">--</span>
+                    </div>
+                    <div id="wx-bands" style="margin-top: 6px; font-size: 10px; display: none;">
+                        <div style="color: #888; margin-bottom: 2px;">HF Band Conditions:</div>
+                        <div id="wx-band-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 2px;"></div>
+                    </div>
+                    <div id="wx-note" style="font-size: 10px; color: #888; margin-top: 4px;"></div>
+                    <div id="wx-updated" style="font-size: 9px; color: #555; margin-top: 2px;"></div>
+                </div>
+            </div>
+
             <div class="cache-section" id="cache-section">
                 <div class="stat-row">
                     <span class="label">Cached:</span>
@@ -2507,6 +2546,27 @@
             congestionHtml = `<div class="info-label">ChUtil</div><div class="info-value">${props.channel_utilization.toFixed(1)}%</div>`;
         }
 
+        // Format last_heard timestamp into human-readable age
+        let lastHeardText = props.last_seen || 'Unknown';
+        if (props.last_heard && props.last_heard > 0) {
+            const ageSec = Math.floor(Date.now() / 1000 - props.last_heard);
+            if (ageSec < 60) lastHeardText = ageSec + 's ago';
+            else if (ageSec < 3600) lastHeardText = Math.floor(ageSec / 60) + 'm ago';
+            else if (ageSec < 86400) lastHeardText = Math.floor(ageSec / 3600) + 'h ago';
+            else lastHeardText = Math.floor(ageSec / 86400) + 'd ago';
+        }
+
+        // Channel / encryption info
+        let channelHtml = '';
+        if (props.channel_name) {
+            channelHtml += `<div class="info-label">Channel</div><div class="info-value" style="font-size:11px">${props.channel_name}</div>`;
+        }
+        if (props.has_encryption === true) {
+            channelHtml += `<div class="info-label">Encryption</div><div class="info-value" style="color:#66bb6a">Encrypted</div>`;
+        } else if (props.has_encryption === false) {
+            channelHtml += `<div class="info-label">Encryption</div><div class="info-value" style="color:#ef5350">None</div>`;
+        }
+
         return `
             <div class="node-popup">
                 <h3>${props.name || props.id || 'Unknown'}</h3>
@@ -2519,8 +2579,9 @@
                     ${props.role ? `<div class="info-label">Role</div><div class="info-value">${props.role}</div>` : ''}
                     ${props.is_gateway ? `<div class="info-label">Type</div><div class="info-value status-gateway">Gateway</div>` : ''}
                     ${props.via_mqtt ? `<div class="info-label">Via</div><div class="info-value" style="color:#ab47bc">MQTT</div>` : ''}
-                    <div class="info-label">Last seen</div>
-                    <div class="info-value">${props.last_seen || 'Unknown'}</div>
+                    <div class="info-label">Last heard</div>
+                    <div class="info-value">${lastHeardText}</div>
+                    ${channelHtml}
                     ${hopHtml}
                     ${snrHtml}
                     ${batteryHtml}
@@ -4400,6 +4461,110 @@
     // for messaging, channel config, and device control.
 
     // ============================================
+    // Space Weather
+    // ============================================
+
+    function toggleWeatherPanel() {
+        const body = document.getElementById('weather-body');
+        const toggle = document.getElementById('weather-toggle');
+        if (body.style.display === 'none') {
+            body.style.display = 'block';
+            toggle.innerHTML = '&#x25BC;';
+        } else {
+            body.style.display = 'none';
+            toggle.innerHTML = '&#x25B6;';
+        }
+    }
+
+    async function refreshWeather() {
+        try {
+            const resp = await fetch('/api/weather');
+            if (!resp.ok) return;
+            const data = await resp.json();
+
+            if (data.error && !data.solar_flux) {
+                document.getElementById('wx-sfi').textContent = 'N/A';
+                document.getElementById('wx-note').textContent = data.error;
+                return;
+            }
+
+            // SFI with color coding
+            const sfiEl = document.getElementById('wx-sfi');
+            const sfi = data.solar_flux;
+            if (sfi !== null && sfi !== undefined) {
+                sfiEl.textContent = Math.round(sfi);
+                sfiEl.style.color = sfi >= 120 ? '#66bb6a' : sfi >= 80 ? '#ffa726' : '#ef5350';
+            }
+
+            // Kp with color coding
+            const kpEl = document.getElementById('wx-kp');
+            const kp = data.k_index;
+            if (kp !== null && kp !== undefined) {
+                kpEl.textContent = kp;
+                kpEl.style.color = kp <= 3 ? '#66bb6a' : kp <= 5 ? '#ffa726' : '#ef5350';
+            }
+
+            // A index
+            const aEl = document.getElementById('wx-a');
+            if (data.a_index !== null && data.a_index !== undefined) {
+                aEl.textContent = data.a_index;
+            }
+
+            // X-ray class
+            const xrayEl = document.getElementById('wx-xray');
+            if (data.xray_class) {
+                xrayEl.textContent = data.xray_class;
+                const cls = data.xray_class.charAt(0);
+                xrayEl.style.color = (cls === 'A' || cls === 'B') ? '#66bb6a' :
+                    cls === 'C' ? '#ffa726' : '#ef5350';
+            }
+
+            // Geomagnetic storm
+            const geoEl = document.getElementById('wx-geomag');
+            if (data.geomag_storm) {
+                geoEl.textContent = data.geomag_storm;
+                const storm = data.geomag_storm.toLowerCase();
+                geoEl.style.color = storm === 'quiet' ? '#66bb6a' :
+                    storm === 'active' ? '#ffa726' : '#ef5350';
+            }
+
+            // Mesh impact
+            const impactEl = document.getElementById('wx-mesh-impact');
+            const impact = data.mesh_impact;
+            if (impact) {
+                impactEl.textContent = impact.charAt(0).toUpperCase() + impact.slice(1);
+                impactEl.style.color = impact === 'nominal' ? '#66bb6a' :
+                    impact === 'elevated' ? '#ffa726' : '#ef5350';
+            }
+
+            // Band conditions grid
+            const bands = data.band_conditions;
+            if (bands && typeof bands === 'object') {
+                const grid = document.getElementById('wx-band-grid');
+                grid.innerHTML = '';
+                for (const [band, condition] of Object.entries(bands)) {
+                    const color = condition === 'good' || condition === 'excellent' ? '#66bb6a' :
+                        condition === 'fair' ? '#ffa726' : '#ef5350';
+                    grid.innerHTML += `<span style="color: ${color};">${band}: ${condition}</span>`;
+                }
+                document.getElementById('wx-bands').style.display = 'block';
+            }
+
+            // Notes and timestamp
+            if (data.mesh_impact_note) {
+                document.getElementById('wx-note').textContent = data.mesh_impact_note;
+            }
+            if (data.updated) {
+                const updated = new Date(data.updated);
+                document.getElementById('wx-updated').textContent = 'Updated: ' + updated.toLocaleTimeString();
+            }
+        } catch (e) {
+            // Silent fail — weather is supplementary
+            console.debug('Weather fetch failed:', e);
+        }
+    }
+
+    // ============================================
     // Initialization
     // ============================================
 
@@ -4415,6 +4580,10 @@
 
     // Periodic cache status update
     setInterval(updateCacheStatus, 60000);
+
+    // Space weather: fetch on load, refresh every 15 minutes
+    refreshWeather();
+    setInterval(refreshWeather, 900000);
 
     // Fallback: Poll for received messages if WebSocket is disconnected
     setInterval(() => {

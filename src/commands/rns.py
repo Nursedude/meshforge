@@ -631,7 +631,7 @@ def get_status() -> CommandResult:
     Get RNS daemon status.
 
     Uses centralized service_check.check_service() for consistency across
-    all MeshForge UIs (GTK, TUI, CLI).
+    all MeshForge UIs (TUI, CLI).
 
     Returns:
         CommandResult with daemon status

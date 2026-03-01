@@ -11,6 +11,8 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+pytest.importorskip("rich", reason="rich required for config.hardware module")
+
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 

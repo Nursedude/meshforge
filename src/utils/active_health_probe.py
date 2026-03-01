@@ -258,25 +258,40 @@ class ActiveHealthProbe:
                     logger.debug(f"Health callback error: {e}")
 
     def _probe_loop(self) -> None:
-        """Background thread that runs periodic health checks."""
+        """Background thread that runs periodic health checks.
+
+        The outer try/except acts as a watchdog — if the loop body
+        crashes due to an unexpected error (e.g., dict mutation during
+        iteration), we log it and continue rather than letting the
+        probe thread die silently.
+        """
         logger.info(
             f"Active health probe started (interval={self.interval}s, "
             f"fails={self.fails}, passes={self.passes})"
         )
+        loop_errors = 0
 
         while not self._stop_event.is_set():
-            services = list(self._checks.keys())
-            for service_name in services:
-                if self._stop_event.is_set():
-                    break
-                try:
-                    self._run_check(service_name)
-                except Exception as e:
-                    logger.debug(f"Health check error for {service_name}: {e}")
+            try:
+                services = list(self._checks.keys())
+                for service_name in services:
+                    if self._stop_event.is_set():
+                        break
+                    try:
+                        self._run_check(service_name)
+                    except Exception as e:
+                        logger.debug(f"Health check error for {service_name}: {e}")
 
-            # Wait for interval or until stop is signaled
-            # wait() returns True if event was set, False on timeout
-            self._stop_event.wait(self.interval)
+                # Wait for interval or until stop is signaled
+                # wait() returns True if event was set, False on timeout
+                self._stop_event.wait(self.interval)
+            except Exception as e:
+                loop_errors += 1
+                logger.warning(
+                    f"Health probe loop error #{loop_errors}: {e}"
+                )
+                # Back off briefly to avoid tight error loops
+                self._stop_event.wait(min(self.interval, 5))
 
         logger.info("Active health probe stopped")
 

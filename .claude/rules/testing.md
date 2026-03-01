@@ -22,7 +22,7 @@ python3 -m py_compile src/**/*.py
 ## Test Locations
 
 ```
-tests/                             # 1,986 tests across 60 files
+tests/                             # 2,547 tests across 70 files
 ├── conftest.py                    # Shared fixtures (mock_meshtastic, mock_rns, no_network)
 ├── test_rns_bridge.py             # Gateway bridge (140 tests)
 ├── test_rf.py                     # RF calculations (107 tests)
@@ -33,7 +33,7 @@ tests/                             # 1,986 tests across 60 files
 ├── test_node_tracker.py           # Node tracking (68 tests)
 ├── test_mqtt_robustness.py        # MQTT reliability (66 tests)
 ├── test_commands.py               # CLI commands (61 tests)
-├── ... (50 more test files)
+├── ... (59 more test files)
 └── test_regression_guards.py      # Architectural regression prevention (9 tests)
 ```
 
@@ -91,7 +91,7 @@ def test_get_real_user_home_with_sudo():
     assert result == Path("/home/testuser")
 ```
 
-### Testing GTK (avoid where possible)
+### Testing handlers (test logic separately from TUI)
 ```python
 # Prefer testing logic separately from UI
 def test_parse_node_data():
@@ -107,7 +107,7 @@ def test_parse_node_data():
 1. **RF calculations** - Always test (critical for HAMs)
 2. **Data parsing** - Test edge cases
 3. **Path utilities** - Test sudo compatibility
-4. **Business logic** - Test before GTK integration
+4. **Business logic** - Test before TUI handler integration
 
 ---
 

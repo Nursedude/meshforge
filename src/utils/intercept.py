@@ -186,13 +186,19 @@ class InterceptBridge:
             cmd = ["python3", str(app_file)]
 
             if background:
-                subprocess.Popen(
+                proc = subprocess.Popen(
                     cmd,
                     cwd=str(self._install_path),
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True
                 )
+                # Verify process started successfully
+                import time
+                time.sleep(1)
+                if proc.poll() is not None:
+                    logger.error(f"Intercept exited immediately: rc={proc.returncode}")
+                    return False
                 logger.info(f"Intercept launched at http://localhost:{self.WEB_PORT}")
             else:
                 subprocess.run(cmd, cwd=str(self._install_path), timeout=3600)
@@ -303,6 +309,10 @@ class InterceptBridge:
             import time
             time.sleep(duration)
             proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
             # Parse aircraft.json if available
             aircraft_file = Path("/run/dump1090-fa/aircraft.json")

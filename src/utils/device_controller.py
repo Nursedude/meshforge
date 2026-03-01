@@ -166,6 +166,12 @@ class TCPBackend(MeshtasticBackend):
             from utils.meshtastic_connection import (
                 MESHTASTIC_CONNECTION_LOCK, wait_for_cooldown
             )
+            from utils.service_check import check_service
+
+            # Advisory pre-flight: warn if meshtasticd not detected (Issue #3)
+            status = check_service('meshtasticd')
+            if not status.available:
+                logger.warning("meshtasticd pre-flight: %s (attempting connection anyway)", status.message)
 
             # Acquire global lock — meshtasticd only supports ONE TCP client
             if not MESHTASTIC_CONNECTION_LOCK.acquire(timeout=self.timeout):

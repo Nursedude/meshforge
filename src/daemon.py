@@ -279,6 +279,12 @@ class MapServerService(DaemonService):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            # Verify process started successfully
+            import time
+            time.sleep(1)
+            if self._process.poll() is not None:
+                logger.warning(f"Map server exited immediately: rc={self._process.returncode}")
+                return False
             return True
         except Exception as e:
             logger.error(f"Map server start failed: {e}")
@@ -972,7 +978,7 @@ class DaemonController:
                 json.dump(data, f, indent=2, default=str)
             tmp_path.replace(status_path)
         except OSError as e:
-            logger.debug(f"Status file write failed: {e}")
+            logger.warning(f"Status file write failed: {e}")
 
     def _print_status(self, data: dict, pid: int) -> None:
         """Print formatted status to terminal."""

@@ -226,7 +226,7 @@ def run_admin_command_async(
     timeout: int = 30
 ) -> None:
     """
-    Run an admin command asynchronously (for GTK/GUI apps).
+    Run an admin command asynchronously (for desktop apps).
 
     Args:
         cmd: Command and arguments as list

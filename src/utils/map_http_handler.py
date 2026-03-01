@@ -148,6 +148,8 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
             self._serve_websocket_status()
         elif self.path == '/api/network/topology' or self.path == '/api/network/topology/':
             self._serve_network_topology()
+        elif self.path == '/api/weather' or self.path == '/api/weather/':
+            self._serve_weather()
         # ─────────────────────────────────────────────────────────────
         # Meshtastic API Proxy - MeshForge owns the web client API
         # ─────────────────────────────────────────────────────────────
@@ -954,6 +956,86 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
             },
             "timestamp": datetime.now().isoformat()
         })
+
+    # ─────────────────────────────────────────────────────────────────
+    # Space Weather API
+    # ─────────────────────────────────────────────────────────────────
+
+    # Cache space weather data (refreshes every 15 minutes)
+    _weather_cache: Optional[Dict] = None
+    _weather_cache_time: float = 0
+    _WEATHER_CACHE_TTL = 900  # 15 minutes
+
+    def _serve_weather(self):
+        """Serve space weather and HF band conditions for map overlay.
+
+        Returns NOAA SWPC data: SFI, Kp, A-index, X-ray class,
+        geomagnetic storm level, and per-band HF conditions.
+
+        Cached for 15 minutes (space weather changes slowly).
+        """
+        now = time.time()
+
+        # Return cached data if still fresh
+        if (MapRequestHandler._weather_cache
+                and (now - MapRequestHandler._weather_cache_time) < self._WEATHER_CACHE_TTL):
+            self._serve_json(MapRequestHandler._weather_cache)
+            return
+
+        try:
+            from commands.propagation import get_space_weather, get_band_conditions
+
+            weather_result = get_space_weather()
+            band_result = get_band_conditions()
+
+            if weather_result.success:
+                data = weather_result.data or {}
+                # Merge band conditions if available
+                if band_result.success and band_result.data:
+                    data["band_conditions"] = band_result.data.get(
+                        "bands", data.get("band_conditions", {})
+                    )
+                    data["overall_condition"] = band_result.data.get("overall", "Unknown")
+
+                # Add mesh-relevant assessment
+                kp = data.get("k_index")
+                sfi = data.get("solar_flux")
+                if kp is not None and kp >= 5:
+                    data["mesh_impact"] = "degraded"
+                    data["mesh_impact_note"] = (
+                        f"Kp={kp} — Geomagnetic storm may cause "
+                        "increased noise on LoRa frequencies"
+                    )
+                elif sfi and sfi >= 200:
+                    data["mesh_impact"] = "elevated"
+                    data["mesh_impact_note"] = (
+                        f"SFI={int(sfi)} — High solar activity, "
+                        "monitor for interference"
+                    )
+                else:
+                    data["mesh_impact"] = "nominal"
+                    data["mesh_impact_note"] = "Conditions favorable for mesh operations"
+
+                data["cached_at"] = now
+
+                # Cache the result
+                MapRequestHandler._weather_cache = data
+                MapRequestHandler._weather_cache_time = now
+
+                self._serve_json(data)
+            else:
+                self._serve_json({
+                    "error": weather_result.error or "Space weather data unavailable",
+                    "mesh_impact": "unknown",
+                    "cached_at": now,
+                })
+        except Exception as e:
+            logger.warning(f"Space weather fetch failed: {e}")
+            self._serve_json({
+                "error": str(e),
+                "mesh_impact": "unknown",
+                "cached_at": now,
+            })
 
     # ─────────────────────────────────────────────────────────────────
     # Meshtastic API Proxy - MeshForge owns the web client

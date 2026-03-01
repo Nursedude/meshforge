@@ -146,6 +146,17 @@ class MQTTMeshInterface:
             logger.error("paho-mqtt not installed for MQTT bridge mode")
             return False
 
+        # Advisory pre-flight for localhost brokers (Issue #3)
+        broker = self._config.mqtt_broker
+        if broker in ('localhost', '127.0.0.1', '::1'):
+            try:
+                from utils.service_check import check_service
+                broker_status = check_service('mosquitto')
+                if not broker_status.available:
+                    logger.warning("mosquitto pre-flight: %s (attempting connection anyway)", broker_status.message)
+            except ImportError:
+                pass
+
         mqtt = _mqtt_mod
         try:
             client_id = f"meshforge-presetbridge-{self._name}-{int(time.time()) % 10000}"
@@ -250,7 +261,7 @@ class MQTTMeshInterface:
             self._message_callback(packet)
 
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            logger.debug(f"[{self._name}] Failed to parse MQTT JSON: {e}")
+            logger.warning(f"[{self._name}] Failed to parse MQTT JSON: {e}")
         except Exception as e:
             logger.error(f"[{self._name}] Error processing MQTT message: {e}")
 
@@ -281,7 +292,7 @@ class MQTTMeshInterface:
             ):
                 return True
         except Exception as e:
-            logger.debug(f"[{self._name}] Stateless TX failed: {e}")
+            logger.warning(f"[{self._name}] Stateless TX failed: {e}")
 
         # Fallback: session-based send (reads fromradio during connect)
         if not _HAS_PROTOBUF_CLIENT or not _HAS_PROTOBUF_CONFIG:
@@ -298,7 +309,7 @@ class MQTTMeshInterface:
 
             if not client.is_connected:
                 if not client.connect():
-                    logger.debug(f"[{self._name}] Protobuf client connect failed")
+                    logger.warning(f"[{self._name}] Protobuf client connect failed")
                     return False
 
             return client.send_text(
@@ -723,6 +734,12 @@ class MeshtasticPresetBridge:
             from utils.meshtastic_connection import (
                 MESHTASTIC_CONNECTION_LOCK, wait_for_cooldown
             )
+            from utils.service_check import check_service
+
+            # Advisory pre-flight: warn if meshtasticd not detected (Issue #3)
+            status = check_service('meshtasticd')
+            if not status.available:
+                logger.warning("meshtasticd pre-flight: %s (attempting connection anyway)", status.message)
 
             # Acquire global lock to prevent connection thrashing
             if not MESHTASTIC_CONNECTION_LOCK.acquire(timeout=10):

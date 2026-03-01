@@ -750,6 +750,7 @@ class StationIDTimer:
 
         self._last_id_time: Optional[datetime] = None
         self._running = False
+        self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._warned = False
 
@@ -790,6 +791,7 @@ class StationIDTimer:
             return
 
         self._running = True
+        self._stop_event.clear()
         self._thread = threading.Thread(target=self._timer_loop, daemon=True)
         self._thread.start()
         logger.info(f"Station ID timer started for {self.callsign}")
@@ -797,6 +799,7 @@ class StationIDTimer:
     def stop(self) -> None:
         """Stop the ID timer"""
         self._running = False
+        self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=2)
             self._thread = None
@@ -823,10 +826,10 @@ class StationIDTimer:
                     # Reset warning flag after ID is due
                     self._warned = False
 
-                time.sleep(1)
+                self._stop_event.wait(1)
             except Exception as e:
                 logger.error(f"Error in ID timer loop: {e}")
-                time.sleep(1)
+                self._stop_event.wait(1)
 
     def record_id(self) -> None:
         """Record that station ID was made"""

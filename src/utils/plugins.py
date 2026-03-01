@@ -28,7 +28,7 @@ Usage:
             print("Plugin deactivated!")
 
         def create_panel(self):
-            # Return GTK widget
+            # Return panel widget
             pass
 
     # Register with manager
@@ -126,7 +126,7 @@ class PanelPlugin(BasePlugin):
 
     @abstractmethod
     def create_panel(self) -> Any:
-        """Create and return the GTK panel widget."""
+        """Create and return the panel widget."""
         pass
 
     @abstractmethod

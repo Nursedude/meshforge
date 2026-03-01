@@ -20,11 +20,11 @@ Usage:
 
     # In UI panel (subscriber):
     def _on_message(event):
-        GLib.idle_add(self._add_to_message_list, event)
+        self._add_to_message_list(event)
 
     event_bus.subscribe('message', _on_message)
 
-    # Cleanup on panel destroy:
+    # Cleanup:
     event_bus.unsubscribe('message', _on_message)
 """
 
@@ -101,7 +101,6 @@ class EventBus:
     Thread-safe event bus for pub/sub messaging.
 
     Subscribers are called in a separate thread to avoid blocking the publisher.
-    For GTK UI updates, subscribers should use GLib.idle_add().
     """
 
     def __init__(self):
@@ -217,8 +216,14 @@ class EventBus:
 
         Call during daemon or TUI cleanup to release thread pool resources.
         After shutdown, emit() calls are silently dropped (RuntimeError caught).
+
+        Clears subscribers first to prevent new work from being queued,
+        then waits for in-flight callbacks with cancel_futures=True
+        (Python 3.9+) to drop queued-but-not-started work.
         """
-        self._executor.shutdown(wait=False)
+        with self._lock:
+            self._subscribers.clear()
+        self._executor.shutdown(wait=True, cancel_futures=True)
 
 
 # Global singleton instance

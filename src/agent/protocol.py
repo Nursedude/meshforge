@@ -306,6 +306,7 @@ class AgentProtocol:
 
         # Background threads
         self._running = threading.Event()
+        self._stop_event = threading.Event()
         self._receiver_thread: Optional[threading.Thread] = None
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._sender_thread: Optional[threading.Thread] = None
@@ -663,6 +664,7 @@ class AgentProtocol:
             timeout: Shutdown timeout
         """
         self._running.clear()
+        self._stop_event.set()
 
         # Unblock sender queue
         self._outgoing_queue.put(None)
@@ -702,7 +704,9 @@ class AgentProtocol:
     def _heartbeat_loop(self) -> None:
         """Background loop for heartbeat management."""
         while self._running.is_set():
-            time.sleep(self.HEARTBEAT_INTERVAL)
+            self._stop_event.wait(self.HEARTBEAT_INTERVAL)
+            if not self._running.is_set():
+                break
 
             if not self._state.connected:
                 continue

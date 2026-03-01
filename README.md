@@ -13,7 +13,7 @@
   <a href="https://github.com/Nursedude/meshforge"><img src="https://img.shields.io/badge/version-0.5.4--beta-blue.svg" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green.svg" alt="License"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.9+-yellow.svg" alt="Python"></a>
-  <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-1986%20passing-brightgreen.svg" alt="Tests"></a>
+  <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-2196%20passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 <p align="center">
@@ -168,9 +168,13 @@ cd /opt/meshforge && sudo bash scripts/update.sh
 cd /opt/meshforge && sudo git pull origin main
 ```
 
+**Upgrading from pre-v0.5.4?** The gateway now uses MQTT instead of TCP.
+Install mosquitto (`sudo apt install mosquitto`) and configure via
+`TUI → Gateway Config → MQTT Bridge Settings → Run Setup Guide`.
+
 After any upgrade, verify:
 ```bash
-sudo bash scripts/install_noc.sh --verify-install
+sudo bash scripts/verify_post_install.sh
 ```
 
 ### TUI Menu Structure
@@ -207,7 +211,7 @@ Main Menu (MeshForge NOC)
 | Category | Capabilities | Status |
 |----------|-------------|--------|
 | **TUI Interface** | Installer, service control, device config wizard, gateway config, diagnostics | Stable |
-| **TUI Reliability** | Defense-in-depth error handling — 47 mixin dispatch loops protected with `_safe_call` | Stable |
+| **TUI Reliability** | Defense-in-depth error handling — 49 mixin dispatch loops protected with `_safe_call`, 27 handlers migrated to command registry | Stable |
 | **Radio Management** | Install/configure meshtasticd, LoRa presets, channels, SPI/USB auto-detect | Stable |
 | **RF Engineering** | Link budget, Fresnel zone, path loss, site planning, space weather | Stable |
 | **AI Diagnostics** | Offline knowledge base (20+ topics), rule-based troubleshooting | Stable |
@@ -253,12 +257,17 @@ Main Menu (MeshForge NOC)
 | Feature | Status | Notes |
 |---------|--------|-------|
 | MQTT bridge architecture | Done (v0.5.4) | Zero-interference gateway |
-| Defense-in-depth TUI | Done (v0.5.2) | 47 mixin `_safe_call` protection |
-| Gateway-essential test suite | Done (v0.5.3) | 1,986 tests across 60 files |
+| Defense-in-depth TUI | Done (v0.5.2) | 46 mixin `_safe_call` protection |
+| Gateway-essential test suite | Done (v0.5.3) | 2,196 tests across 70 files |
 | First-run setup wizard | Done (v0.5.1) | Hardware auto-detect templates |
 | Network topology visualization | Done | D3.js + ASCII modes |
 | Node health & predictive maintenance | Done | Battery forecasting, signal trending |
 | Tactical messaging (XTOC interop) | Done (v0.5.4) | 8 templates, X1 codec, KML/CoT/ATAK export |
+| BaseMessageHandler ABC | Done (v0.5.4) | Shared constructor, truncation, status notification |
+| Logging consolidation | Done (v0.5.4) | 9 `basicConfig()` calls → canonical `setup_logging()` |
+| Handler registry migration | Done (v0.5.4) | 27 of 49 mixins migrated to plugin-based dispatch |
+| Service pre-flight expansion | Done (v0.5.4) | Advisory `check_service()` on all TCP/MQTT connections |
+| Error visibility hardening | Done (v0.5.4) | Connection failures upgraded DEBUG → WARNING |
 
 **Next Phase: Hardening & Hardware (v0.6.x - v0.8.x)**
 
@@ -301,6 +310,7 @@ merging to stable main:
 | **Live NOC Map** | Node trails require historical data | Enable MQTT subscriber for data collection |
 | **Grafana** | Dashboards require manual import | See `dashboards/README.md` for instructions |
 | **TCP:4403** | Only one client can connect | Gateway now uses MQTT (v0.5.4+), TCP free for CLI |
+| **Desktop Icon** | Taskbar may show terminal icon instead of MeshForge shaka | Install xterm (`sudo apt install xterm`) for proper WM_CLASS support. The `meshforge-terminal.sh` launcher prefers xterm for this reason. |
 
 *Goal: Complete network operations visibility with historical analysis.*
 
@@ -820,7 +830,7 @@ connection (port 4403):
 
 ### Test Coverage
 
-**1,986 tests** across 60 test files:
+**2,196 tests** across 70 test files:
 
 | Test File | Tests | Covers |
 |-----------|-------|--------|
@@ -841,7 +851,7 @@ connection (port 4403):
 | `test_startup_health.py` | 20 | Startup health checks, service verification |
 | `test_compliance.py` | 13 | HAM compliance validation, encryption modes |
 
-*Note: Test suite was trimmed from 4,017 to 1,411 in v0.5.4 to focus on gateway-essential coverage. Since then, tests have grown to 1,986 across 60 files as new features (topology, node health, MQTT robustness, protobuf client, tactical ops, RNS shared instance detection, RF engineering, deployment profiles) were added with test coverage.*
+*Note: Test suite was trimmed from 4,017 to 1,411 in v0.5.4 to focus on gateway-essential coverage. Since then, tests have grown to 2,196 across 70 files as new features (topology, node health, MQTT robustness, protobuf client, tactical ops, RNS shared instance detection, RF engineering, deployment profiles, handler registry, service pre-flight) were added with test coverage.*
 
 ```bash
 python3 -m pytest tests/ -v            # Run all tests
@@ -870,17 +880,26 @@ print(f'Issues: {report.total_issues}, Files scanned: {report.total_files_scanne
 | MF002 | No `shell=True` in subprocess calls | Active monitoring |
 | MF003 | No bare `except:` — specify exception types | Active monitoring |
 | MF004 | All subprocess calls need `timeout` parameter | Active monitoring |
+| MF005 | GLib.idle_add for thread-safe UI updates | Active monitoring |
+| MF006 | No `safe_import` for first-party modules — use direct imports | Active monitoring |
+| MF007 | No direct `TCPInterface()` — use connection manager | Active monitoring |
+| MF008 | No raw `systemctl` for service state — use `service_check` | Active monitoring |
+| MF009 | `RNS.Reticulum()` must include `configdir=` parameter | Active monitoring |
+| MF010 | No `time.sleep()` in daemon loops — use `_stop_event.wait()` | Active monitoring |
 
 **Reliability patterns** (inspired by [Raspberry Pi systemd best practices](https://www.thedigitalpictureframe.com/ultimate-guide-systemd-autostart-scripts-raspberry-pi/)):
 - Services use `Restart=on-failure` with `RestartSec=5` for auto-recovery
 - Crash-loop protection: `StartLimitBurst=5` / `StartLimitIntervalSec=60` on rnsd
 - Startup ordering: meshforge.service `After=rnsd.service` ensures identity exists
-- Pre-flight `check_service()` before connecting to meshtasticd/rnsd
+- Advisory pre-flight `check_service()` on all TCPInterface and MQTT connections (9 files hardened)
 - RNS shared instance detection via abstract Unix domain socket (`@rns/default`), with TCP/UDP fallback
 - RNS repair wizard pre-flight: validates `share_instance = Yes`, detects config drift, checks NomadNet conflicts
 - RNS identity pre-flight: startup checks verify `~/.reticulum/storage/identities` exists
 - Shared connection manager prevents TCP:4403 client contention
 - Exponential backoff reconnection (1s → 2s → 4s → ... → 30s max)
+- Canonical logging via `setup_logging()` — all 9 `basicConfig()` calls consolidated
+- Handler registry pattern: 27 TUI handlers migrated from mixin inheritance to plugin dispatch
+- Connection failure logs upgraded to WARNING level for visibility (cleanup errors stay DEBUG)
 
 ---
 
@@ -911,7 +930,7 @@ Feature branches via `claude/` prefix, merged by PR.
 git clone https://github.com/Nursedude/meshforge.git
 cd meshforge
 sudo bash scripts/install_noc.sh
-sudo bash scripts/install_noc.sh --verify-install  # Confirm everything works
+sudo python3 src/launcher.py --verify-install  # Confirm everything works
 ```
 
 For upgrade paths see [Upgrading MeshForge](#upgrading-meshforge).
@@ -1002,7 +1021,7 @@ Run the built-in verification after any upgrade:
 
 ```bash
 # Automated check (recommended)
-sudo bash scripts/install_noc.sh --verify-install
+sudo python3 src/launcher.py --verify-install
 
 # Manual checks
 python3 -c "from src.__version__ import __version__; print(__version__)"

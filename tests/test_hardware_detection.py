@@ -51,8 +51,8 @@ class TestCH341DeviceDatabases:
         assert DeviceType.SPI_BRIDGE.value == "USB-SPI/I2C Bridge"
 
     def test_ch341_5512_in_hardware_config(self):
-        """MeshToad E22 should be in hardware_config.py HARDWARE_DEVICES."""
-        from config.hardware_config import HARDWARE_DEVICES
+        """MeshToad E22 should be in hardware.py HARDWARE_DEVICES."""
+        from config.hardware import HARDWARE_DEVICES
         assert 'meshtoad-e22' in HARDWARE_DEVICES
         entry = HARDWARE_DEVICES['meshtoad-e22']
         assert entry.name == 'MeshToad E22'

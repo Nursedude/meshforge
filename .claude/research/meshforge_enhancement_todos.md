@@ -2,9 +2,9 @@
 
 **Generated**: 2026-02-02
 **Source**: MeshCore-Meshtastic-Proxy Analysis
-**Status**: Reference (actionable P0/P1 items tracked in `TODO_PRIORITIES.md`)
+**Status**: Reference (actionable P0/P1 items tracked in `plans/TODO_PRIORITIES.md`)
 
-> **Note (2026-02-21)**: This file contains detailed enhancement proposals with code examples from the MeshCore proxy analysis. Active work items have been promoted to `TODO_PRIORITIES.md`. Use this file as a reference for implementation details and patterns.
+> **Note (2026-02-21)**: This file contains detailed enhancement proposals with code examples from the MeshCore proxy analysis. Active work items have been promoted to `plans/TODO_PRIORITIES.md`. Use this file as a reference for implementation details and patterns.
 
 ---
 

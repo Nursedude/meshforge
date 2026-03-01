@@ -24,8 +24,8 @@ Quick navigation for AI assistants. Load only what you need.
 ### Active Development
 | File | Purpose |
 |------|---------|
-| `TODO_PRIORITIES.md` | Current task priorities & branch strategy |
-| `foundations/missing_features.md` | TUI features gap tracker |
+| `plans/TODO_PRIORITIES.md` | Current task priorities & branch strategy |
+| `plans/missing_features.md` | TUI features gap tracker |
 
 ### RNS/Gateway Research
 | File | Purpose |
@@ -72,12 +72,15 @@ Quick navigation for AI assistants. Load only what you need.
 | `research/uconsole_portable_noc.md` | Portable NOC design |
 
 ### Plans
-| File | Purpose |
-|------|---------|
-| `plans/v1.0_roadmap.md` | v1.0 definition & criteria |
-| `plans/strategic_improvements.md` | Strategic roadmap items |
-| `plans/noc_test_plan.md` | Lab infrastructure & testing |
-| `plans/qth_test_checklist.md` | Field testing checklist |
+| File | Purpose | Status |
+|------|---------|--------|
+| `plans/TODO_PRIORITIES.md` | **Current task priorities & branch strategy** | Active — start here |
+| `plans/v1.0_roadmap.md` | v1.0 definition, criteria & phased roadmap | Active |
+| `plans/strategic_improvements.md` | Tiered improvement roadmap (Sprints A-C done) | Active |
+| `plans/missing_features.md` | TUI features gap tracker (most now have mixins) | Needs QTH testing |
+| `plans/noc_test_plan.md` | Lab infrastructure & testing procedures | Reference |
+| `plans/qth_test_checklist.md` | Field testing checklist (updated for TUI) | Reference |
+| `plans/deferred-issues.md` | Deferred GitHub issues (1 of 3 completed) | Active |
 
 ### Knowledge & Context
 | File | Purpose |
@@ -90,9 +93,9 @@ Quick navigation for AI assistants. Load only what you need.
 - **archive/** - Historical documents (postmortems, articles, session notes, old audits). Not loaded by default.
 - **commands/** - Slash command definitions (6 files)
 - **export/** - Integration guides (1 file)
-- **foundations/** - Core principles (8 files)
+- **foundations/** - Core principles (7 files)
 - **hardware/** - Device-specific docs (1 file)
-- **plans/** - Implementation plans (4 files)
+- **plans/** - Implementation plans (7 files)
 - **research/** - Technical research (21 files)
 - **rules/** - Security & testing rules (2 files)
 - **skills/** - Custom skill definitions (1 dir)
@@ -107,4 +110,5 @@ Quick navigation for AI assistants. Load only what you need.
 **safe_import rules?** -> `foundations/persistent_issues.md#issue-5`
 
 ---
-*Updated: 2026-02-23. ~48 active files after dedup audit. ~30 files archived.*
+*Updated: 2026-02-27. ~48 active files after dedup audit. ~30 files archived.*
+*Plans organized: GTK refs removed, metrics synced, completed work marked.*

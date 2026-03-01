@@ -97,3 +97,20 @@ Never enable the API proxy by default. The gateway (TCP:4403) and
 web client (HTTP:9443) are separate channels and should coexist.
 
 ### Status: RESOLVED
+
+
+---
+
+## Health Check Reconciliation (2026-02-20) — Moved from persistent_issues.md
+
+The code review health check (2026-01-24) identified 5 critical (C1-C5) and 1 high (H1)
+issues. All resolved:
+
+| ID | Issue | Status | Evidence |
+|----|-------|--------|----------|
+| C1 | LXMF Source None after partial RNS init | **MITIGATED** | Guard at `rns_bridge.py:579-580` |
+| C2 | reconnect.py raises None on early interruption | **FIXED** | `reconnect.py:176-178` |
+| C3 | Unbounded node tracking dicts (memory leak) | **FIXED** | MAX_NODES caps + eviction |
+| C4 | Stats dict race conditions (24 racy increments) | **FIXED** | threading.Lock added |
+| C5 | Atomic write uses deterministic temp path | **FIXED** | `tempfile.mkstemp()` |
+| H1 | Non-interruptible shutdown in daemon loops | **FIXED** | `_stop_event.wait()` everywhere |

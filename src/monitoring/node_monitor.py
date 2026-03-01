@@ -213,6 +213,15 @@ class NodeMonitor:
                 self.on_error(e)
             return False
 
+        # Advisory pre-flight: warn if meshtasticd not detected (Issue #3)
+        try:
+            from utils.service_check import check_service
+            status = check_service('meshtasticd')
+            if not status.available:
+                logger.warning("meshtasticd pre-flight: %s (attempting connection anyway)", status.message)
+        except ImportError:
+            pass  # service_check not available in minimal installs
+
         try:
             # Wait for cooldown from previous connection
             wait_for_cooldown()

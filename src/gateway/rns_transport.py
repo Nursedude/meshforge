@@ -379,6 +379,13 @@ class RNSMeshtasticTransport:
                 from utils.meshtastic_connection import (
                     MESHTASTIC_CONNECTION_LOCK, wait_for_cooldown
                 )
+                from utils.service_check import check_service
+
+                # Advisory pre-flight: warn if meshtasticd not detected (Issue #3)
+                status = check_service('meshtasticd')
+                if not status.available:
+                    logger.warning("meshtasticd pre-flight: %s (attempting connection anyway)", status.message)
+
                 if not MESHTASTIC_CONNECTION_LOCK.acquire(timeout=10):
                     logger.error("TCP connection lock busy — another component owns it")
                     return False

@@ -560,12 +560,19 @@ class SetupWizard:
 
         # Try direct start as fallback (for non-systemd services)
         try:
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 [name],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True
             )
+            # Verify process started successfully
+            import time
+            time.sleep(1)
+            if proc.poll() is not None:
+                self._print(f"  {name} exited immediately (rc={proc.returncode})", "error")
+                self._record_decision(name, "Start service", "attempted", "failed: exited immediately")
+                return False
             self._print(f"  {name} started as background process", "success")
             self._record_decision(name, "Start service", "attempted", "success (process)")
             return True

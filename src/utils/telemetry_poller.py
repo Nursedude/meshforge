@@ -492,10 +492,8 @@ if __name__ == "__main__":
     # Test the poller
     import sys
 
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+    from utils.logging_config import setup_logging
+    setup_logging(level=logging.DEBUG)
 
     print("TelemetryPoller Test")
     print("=" * 50)

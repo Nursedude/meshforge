@@ -2,7 +2,7 @@
 Diagnostics Commands
 
 Provides unified interface for system and network diagnostics.
-Used by both GTK and CLI interfaces.
+Used by both TUI and CLI interfaces.
 """
 
 import subprocess

@@ -259,8 +259,8 @@ class TestMessageReceive:
             loop.run_until_complete(handler._on_contact_message(event))
 
             # Check message was queued
-            assert not handler._outbound_queue.empty()
-            msg = handler._outbound_queue.get_nowait()
+            assert not handler._message_queue.empty()
+            msg = handler._message_queue.get_nowait()
             assert isinstance(msg, CanonicalMessage)
             assert msg.content == 'Hello from MeshCore'
             assert msg.source_network == 'meshcore'
@@ -285,7 +285,7 @@ class TestMessageReceive:
             )
             loop.run_until_complete(handler._on_channel_message(event))
 
-            msg = handler._outbound_queue.get_nowait()
+            msg = handler._message_queue.get_nowait()
             assert msg.is_broadcast is True
         finally:
             loop.close()
@@ -310,7 +310,7 @@ class TestMessageReceive:
             )
             loop.run_until_complete(handler._on_contact_message(event))
 
-            assert handler._outbound_queue.empty()
+            assert handler._message_queue.empty()
         finally:
             loop.close()
 

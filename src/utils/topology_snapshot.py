@@ -230,6 +230,7 @@ class TopologySnapshotStore:
 
         # Background capture thread
         self._capture_running = False
+        self._capture_stop = threading.Event()
         self._capture_thread: Optional[threading.Thread] = None
         self._capture_interval = self.DEFAULT_SNAPSHOT_INTERVAL
 
@@ -786,6 +787,7 @@ class TopologySnapshotStore:
 
         self._capture_interval = interval_seconds or self.DEFAULT_SNAPSHOT_INTERVAL
         self._capture_running = True
+        self._capture_stop.clear()
 
         def capture_loop():
             while self._capture_running:
@@ -793,7 +795,7 @@ class TopologySnapshotStore:
                     self.capture_snapshot()
                 except Exception as e:
                     logger.debug(f"Periodic capture error: {e}")
-                time.sleep(self._capture_interval)
+                self._capture_stop.wait(self._capture_interval)
 
         self._capture_thread = threading.Thread(target=capture_loop, daemon=True)
         self._capture_thread.start()
@@ -802,6 +804,7 @@ class TopologySnapshotStore:
     def stop_periodic_capture(self) -> None:
         """Stop background capture thread."""
         self._capture_running = False
+        self._capture_stop.set()
         if self._capture_thread:
             self._capture_thread.join(timeout=5)
             self._capture_thread = None

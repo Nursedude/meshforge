@@ -40,6 +40,7 @@ from datetime import datetime
 from queue import Empty, Full, Queue
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
+from .base_handler import BaseMessageHandler
 from .canonical_message import CanonicalMessage, MessageType, Protocol
 from .config import GatewayConfig
 from .reconnect import ReconnectConfig, ReconnectStrategy
@@ -133,7 +134,7 @@ class MeshCoreSimulator:
         return True
 
 
-class MeshCoreHandler:
+class MeshCoreHandler(BaseMessageHandler):
     """
     Handles MeshCore companion radio connection and message processing.
 
@@ -166,21 +167,20 @@ class MeshCoreHandler:
         status_callback: Optional[Callable] = None,
         should_bridge: Optional[Callable] = None,
     ):
-        self.config = config
-        self.node_tracker = node_tracker
-        self.health = health
-        self._stop_event = stop_event
-        self.stats = stats
-        self._stats_lock = stats_lock
-        self._outbound_queue = message_queue
+        super().__init__(
+            config=config,
+            node_tracker=node_tracker,
+            health=health,
+            stop_event=stop_event,
+            stats=stats,
+            stats_lock=stats_lock,
+            message_queue=message_queue,
+            message_callback=message_callback,
+            status_callback=status_callback,
+            should_bridge=should_bridge,
+        )
 
-        # Callbacks
-        self._message_callback = message_callback
-        self._status_callback = status_callback
-        self._should_bridge = should_bridge
-
-        # Connection state
-        self._connected = False
+        # Connection state (handler-specific)
         self._meshcore = None  # meshcore_py MeshCore instance or simulator
         self._loop = None      # Dedicated asyncio event loop
         self._subscriptions = []
@@ -233,10 +233,10 @@ class MeshCoreHandler:
         }
         self._metrics_log_interval = 50  # Log summary every N poll cycles
 
-    @property
-    def is_connected(self) -> bool:
-        """Check if connected to MeshCore companion radio."""
-        return self._connected
+    def connect(self) -> bool:
+        """MeshCore connection is managed by run_loop() via async _connect()."""
+        logger.warning("MeshCoreHandler.connect() called directly; use run_loop()")
+        return False
 
     def run_loop(self) -> None:
         """
@@ -425,9 +425,9 @@ class MeshCoreHandler:
                 return
 
             # Queue for bridge
-            if self._outbound_queue is not None:
+            if self._message_queue is not None:
                 try:
-                    self._outbound_queue.put_nowait(msg)
+                    self._message_queue.put_nowait(msg)
                     with self._stats_lock:
                         self.stats.setdefault('meshcore_rx', 0)
                         self.stats['meshcore_rx'] += 1
@@ -476,9 +476,9 @@ class MeshCoreHandler:
                 logger.debug("MeshCore channel message blocked by routing rules")
                 return
 
-            if self._outbound_queue is not None:
+            if self._message_queue is not None:
                 try:
-                    self._outbound_queue.put_nowait(msg)
+                    self._message_queue.put_nowait(msg)
                     with self._stats_lock:
                         self.stats.setdefault('meshcore_rx', 0)
                         self.stats['meshcore_rx'] += 1
@@ -625,9 +625,9 @@ class MeshCoreHandler:
                     if self._should_bridge and not self._should_bridge(msg):
                         continue
 
-                    if self._outbound_queue is not None:
+                    if self._message_queue is not None:
                         try:
-                            self._outbound_queue.put_nowait(msg)
+                            self._message_queue.put_nowait(msg)
                             with self._stats_lock:
                                 self.stats.setdefault('meshcore_rx', 0)
                                 self.stats['meshcore_rx'] += 1
@@ -923,14 +923,6 @@ class MeshCoreHandler:
                 return
             remaining = end_time - time.monotonic()
             await asyncio.sleep(min(0.1, remaining))
-
-    def _notify_status(self, status: str) -> None:
-        """Notify status callback."""
-        if self._status_callback:
-            try:
-                self._status_callback(status)
-            except Exception as e:
-                logger.error(f"Status callback error: {e}")
 
     def test_connection(self) -> bool:
         """

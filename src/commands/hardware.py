@@ -2,7 +2,7 @@
 Hardware Commands
 
 Provides unified interface for hardware detection and configuration.
-Used by both GTK and CLI interfaces.
+Used by both TUI and CLI interfaces.
 """
 
 import subprocess

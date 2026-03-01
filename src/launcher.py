@@ -297,6 +297,7 @@ def launch_interface(choice):
             print(f"\n{Colors.YELLOW}Daemon stopped.{Colors.NC}")
         except ImportError as e:
             print(f"{Colors.RED}Daemon module not available: {e}{Colors.NC}")
+            print(f"{Colors.DIM}  Ensure src/daemon.py exists and dependencies are installed.{Colors.NC}")
 
 
 def launch_gateway_bridge(src_dir):
@@ -340,7 +341,13 @@ def launch_gateway_bridge(src_dir):
                 bridge.stop()
                 print(f"{Colors.GREEN}Bridge stopped.{Colors.NC}")
         else:
-            print(f"{Colors.RED}Failed to start bridge. Check logs for details.{Colors.NC}")
+            log_dir = get_real_user_home() / ".config" / "meshforge" / "logs"
+            print(f"{Colors.RED}Failed to start bridge.{Colors.NC}")
+            print(f"{Colors.DIM}  Logs: {log_dir}/")
+            print(f"  Common causes:")
+            print(f"    - rnsd not running (sudo systemctl start rnsd)")
+            print(f"    - meshtasticd not accessible on {config.meshtastic.host}:{config.meshtastic.port}")
+            print(f"    - Gateway config: ~/.config/meshforge/gateway.json{Colors.NC}")
 
     except Exception as e:
         print(f"{Colors.RED}Error starting bridge: {e}{Colors.NC}")
@@ -389,19 +396,46 @@ def start_noc_services():
 
 def main():
     """Main entry point"""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog='meshforge',
+        description='MeshForge NOC — Network Operations Center for Mesh Networks',
+        epilog='Config: ~/.config/meshforge/ | Docs: https://github.com/Nursedude/meshforge',
+    )
+    parser.add_argument('--status', action='store_true',
+                        help='Show service status and exit')
+    parser.add_argument('--verify-install', '--verify', action='store_true',
+                        dest='verify_install',
+                        help='Run post-install verification')
+    parser.add_argument('--daemon', action='store_true',
+                        help='Start in daemon mode (headless)')
+    parser.add_argument('--tui', action='store_true',
+                        help='Launch TUI directly (skip menu)')
+    parser.add_argument('--profile', type=str, metavar='NAME',
+                        help='Deployment profile (e.g., gateway, monitor, full)')
+    parser.add_argument('--no-services', action='store_true', dest='no_services',
+                        help='Skip NOC service startup')
+    parser.add_argument('--setup', action='store_true',
+                        help='Run first-time setup wizard')
+    parser.add_argument('--wizard', action='store_true',
+                        help='Reset auto-launch preference and show menu')
+    parser.add_argument('--version', action='version',
+                        version=f'MeshForge {__version__}')
+
+    args, extra_args = parser.parse_known_args()
+
     # Handle --status (no root needed, quick exit)
-    if '--status' in sys.argv:
+    if args.status:
         src_dir = Path(__file__).parent
         subprocess.run([sys.executable, str(src_dir / 'cli' / 'status.py')] +
-                       [a for a in sys.argv[1:] if a != '--status'], timeout=30)
+                       extra_args, timeout=30)
         sys.exit(0)
 
     # Handle --verify-install (comprehensive post-install verification)
-    if '--verify-install' in sys.argv or '--verify' in sys.argv:
+    if args.verify_install:
         script_path = Path(__file__).parent.parent / 'scripts' / 'verify_post_install.sh'
         if script_path.exists():
-            # Pass through any flags like --quiet or --json
-            extra_args = [a for a in sys.argv[1:] if a not in ('--verify-install', '--verify')]
             result = subprocess.run(
                 ['bash', str(script_path)] + extra_args,
                 timeout=120
@@ -448,43 +482,36 @@ def main():
                 sys.exit(2)
 
     # Daemon mode flag (skip menu, run headless)
-    if '--daemon' in sys.argv:
+    if args.daemon:
         from daemon import DaemonController
         controller = DaemonController()
-        profile_name = None
-        for i, arg in enumerate(sys.argv):
-            if arg == '--profile' and i + 1 < len(sys.argv):
-                profile_name = sys.argv[i + 1]
-                break
         sys.exit(controller.start(
-            profile_name=profile_name,
+            profile_name=args.profile,
             foreground=True,
         ))
 
     # Direct interface flag (skip menu)
-    if '--tui' in sys.argv:
+    if args.tui:
         launch_interface('1')
 
     # Load deployment profile (--profile <name> or auto-detect)
     profile = None
     if _HAS_PROFILES:
-        for i, arg in enumerate(sys.argv):
-            if arg == '--profile' and i + 1 < len(sys.argv):
-                profile = get_profile_by_name(sys.argv[i + 1])
-                if profile:
-                    print(f"{Colors.GREEN}Profile: {profile.display_name}{Colors.NC}")
-                else:
-                    print(f"{Colors.YELLOW}Unknown profile '{sys.argv[i + 1]}', auto-detecting...{Colors.NC}")
-                break
+        if args.profile:
+            profile = get_profile_by_name(args.profile)
+            if profile:
+                print(f"{Colors.GREEN}Profile: {profile.display_name}{Colors.NC}")
+            else:
+                print(f"{Colors.YELLOW}Unknown profile '{args.profile}', auto-detecting...{Colors.NC}")
         if profile is None:
             profile = load_or_detect_profile()
 
     # Start NOC services if in local mode
-    if '--no-services' not in sys.argv:
+    if not args.no_services:
         start_noc_services()
 
     # Check for first run
-    if '--setup' in sys.argv or check_first_run():
+    if args.setup or check_first_run():
         run_setup_wizard()
 
     # Load saved preferences
@@ -501,7 +528,7 @@ def main():
         launch_interface('1')
 
     # Check for --wizard flag
-    if '--wizard' in sys.argv:
+    if args.wizard:
         prefs['auto_launch'] = False
         save_preferences(prefs)
 

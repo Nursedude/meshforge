@@ -4,7 +4,7 @@ MeshForge Standalone Boot - Self-contained entry point
 
 This module provides a completely standalone entry point for MeshForge that:
 - Does NOT require root/sudo for basic functionality
-- Does NOT depend on GTK, Textual, or other UI frameworks
+- Does NOT depend on any UI frameworks
 - Gracefully degrades when dependencies are missing
 - Provides access to all tools without external services
 - Works in any Python 3.9+ environment

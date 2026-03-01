@@ -309,9 +309,19 @@ class MQTTNodelessSubscriber:
             if self._config.get("use_tls", True):
                 self._setup_tls()
 
-            # Connect with timeout to prevent hanging
+            # Advisory pre-flight for localhost brokers (Issue #3)
             broker = self._config.get("broker", DEFAULT_BROKER)
             port = self._config.get("port", DEFAULT_PORT_TLS)
+            if broker in ('localhost', '127.0.0.1', '::1'):
+                try:
+                    from utils.service_check import check_service
+                    broker_status = check_service('mosquitto')
+                    if not broker_status.available:
+                        logger.warning("mosquitto pre-flight: %s (attempting connection anyway)", broker_status.message)
+                except ImportError:
+                    pass
+
+            # Connect with timeout to prevent hanging
             connect_timeout = self._config.get("connect_timeout", 10)  # 10 second default
 
             logger.info(f"Connecting to MQTT broker {broker}:{port}")
@@ -479,7 +489,7 @@ class MQTTNodelessSubscriber:
             # Add jitter (0-25% of delay) to prevent thundering herd
             jitter = random.uniform(0, delay * 0.25)
             wait_time = delay + jitter
-            logger.info(f"Reconnecting in {wait_time:.1f}s...")
+            logger.debug(f"Reconnecting in {wait_time:.1f}s...")
             self._stop_event.wait(wait_time)
 
             if self._stop_event.is_set():

@@ -1,7 +1,10 @@
 """
-MeshChat TUI mixin, deployment profile, and diagnostics tests.
+MeshChat handler, deployment profile, and diagnostics tests.
 
 Tests MeshChat as a first-class LXMF client alongside NomadNet.
+
+Updated from mixin-based tests to handler-based tests after the
+mixin-to-registry migration (Batch 8).
 """
 
 import os
@@ -103,79 +106,71 @@ class TestMeshChatDeploymentProfile:
 
 
 # ============================================================================
-# MeshChat Mixin Tests
+# MeshChat Handler Tests (migrated from MeshChatClientMixin)
 # ============================================================================
 
-class TestMeshChatClientMixin:
-    """Test MeshChatClientMixin TUI methods."""
+def _make_handler():
+    """Create a MeshChatHandler with mocked TUIContext."""
+    from launcher_tui.handlers.meshchat import MeshChatHandler
+    handler = MeshChatHandler()
+    ctx = MagicMock()
+    ctx.dialog = MagicMock()
+    ctx.registry = MagicMock()
+    ctx.safe_call = lambda name, fn, *a, **kw: fn(*a, **kw)
+    ctx.wait_for_enter = MagicMock()
+    ctx.feature_enabled = lambda f: True
+    handler.ctx = ctx
+    return handler
 
-    def _make_mixin(self):
-        """Create a mixin instance with mocked dialog."""
-        from launcher_tui.meshchat_client_mixin import MeshChatClientMixin
 
-        class TestClass(MeshChatClientMixin):
-            def __init__(self):
-                self.dialog = MagicMock()
-                self._feature_flags = {}
+class TestMeshChatHandler:
+    """Test MeshChatHandler TUI methods."""
 
-            def _safe_call(self, name, method, *a, **kw):
-                return method(*a, **kw)
-
-            def _wait_for_enter(self, msg=""):
-                pass
-
-            def _feature_enabled(self, f):
-                return True
-
-            def _get_rnsd_user(self):
-                return None
-
-        return TestClass()
-
-    def test_mixin_creates(self):
-        """MeshChatClientMixin can be instantiated."""
-        mixin = self._make_mixin()
-        assert hasattr(mixin, '_meshchat_menu')
-        assert hasattr(mixin, '_meshchat_status')
-        assert hasattr(mixin, '_is_meshchat_installed')
-        assert hasattr(mixin, '_is_meshchat_running')
+    def test_handler_creates(self):
+        """MeshChatHandler can be instantiated with expected methods."""
+        handler = _make_handler()
+        assert hasattr(handler, '_meshchat_menu')
+        assert hasattr(handler, '_meshchat_status')
+        assert hasattr(handler, '_is_meshchat_installed')
+        assert hasattr(handler, '_is_meshchat_running')
 
     @patch('shutil.which', return_value=None)
     def test_not_installed_when_no_binary(self, mock_which):
         """Reports not installed when no meshchat binary found."""
-        mixin = self._make_mixin()
-        # Patch plugin import to fail
-        with patch('launcher_tui.meshchat_client_mixin._HAS_MESHCHAT_SERVICE', False):
-            result = mixin._is_meshchat_installed()
+        handler = _make_handler()
+        with patch('launcher_tui.handlers.meshchat._HAS_MESHCHAT_SERVICE', False):
+            result = handler._is_meshchat_installed()
             assert result is False
 
     @patch('shutil.which', return_value='/usr/bin/meshchat')
     def test_installed_when_binary_found(self, mock_which):
         """Reports installed when meshchat binary found."""
-        mixin = self._make_mixin()
-        result = mixin._is_meshchat_installed()
+        handler = _make_handler()
+        result = handler._is_meshchat_installed()
         assert result is True
 
     def test_check_rns_preflight_no_rnsd(self):
         """Preflight check warns when rnsd not running."""
-        mixin = self._make_mixin()
-        mixin.dialog.yesno.return_value = True
-        result = mixin._check_rns_for_meshchat()
+        handler = _make_handler()
+        handler.ctx.dialog.yesno.return_value = True
+        handler._get_rnsd_user = lambda: None
+        result = handler._check_rns_for_meshchat()
         assert result is True
-        mixin.dialog.yesno.assert_called_once()
+        handler.ctx.dialog.yesno.assert_called_once()
 
     def test_check_rns_preflight_cancelled(self):
         """Preflight check returns False when user cancels."""
-        mixin = self._make_mixin()
-        mixin.dialog.yesno.return_value = False
-        result = mixin._check_rns_for_meshchat()
+        handler = _make_handler()
+        handler.ctx.dialog.yesno.return_value = False
+        handler._get_rnsd_user = lambda: None
+        result = handler._check_rns_for_meshchat()
         assert result is False
 
     def test_check_rns_preflight_rnsd_running(self):
         """Preflight check passes when rnsd running as non-root."""
-        mixin = self._make_mixin()
-        mixin._get_rnsd_user = lambda: 'pi'
-        result = mixin._check_rns_for_meshchat()
+        handler = _make_handler()
+        handler._get_rnsd_user = lambda: 'pi'
+        result = handler._check_rns_for_meshchat()
         assert result is True
 
 
@@ -184,24 +179,26 @@ class TestMeshChatClientMixin:
 # ============================================================================
 
 class TestLXMFAppConflict:
-    """Test _check_lxmf_app_conflict() detects both NomadNet and MeshChat."""
+    """Test _check_lxmf_app_conflict() on RNSDiagnosticsHandler."""
 
-    def _make_diagnostics_mixin(self):
-        """Create a diagnostics mixin instance."""
-        from launcher_tui.rns_diagnostics_mixin import RNSDiagnosticsMixin
-
-        class TestClass(RNSDiagnosticsMixin):
-            def __init__(self):
-                self.dialog = MagicMock()
-
-        return TestClass()
+    def _make_diagnostics_handler(self):
+        """Create a RNSDiagnosticsHandler with mocked TUIContext."""
+        from launcher_tui.handlers.rns_diagnostics import RNSDiagnosticsHandler
+        handler = RNSDiagnosticsHandler()
+        ctx = MagicMock()
+        ctx.dialog = MagicMock()
+        ctx.registry = MagicMock()
+        ctx.safe_call = lambda name, fn, *a, **kw: fn(*a, **kw)
+        ctx.wait_for_enter = MagicMock()
+        handler.ctx = ctx
+        return handler
 
     @patch('subprocess.run')
     def test_detects_nomadnet(self, mock_run):
         """Detects NomadNet holding port."""
         mock_run.return_value = MagicMock(returncode=0, stdout="1234\n")
-        mixin = self._make_diagnostics_mixin()
-        result = mixin._check_lxmf_app_conflict()
+        handler = self._make_diagnostics_handler()
+        result = handler._check_lxmf_app_conflict()
         assert result == "NomadNet"
 
     @patch('subprocess.run')
@@ -218,16 +215,16 @@ class TestLXMFAppConflict:
             return mock
 
         mock_run.side_effect = side_effect
-        mixin = self._make_diagnostics_mixin()
-        result = mixin._check_lxmf_app_conflict()
+        handler = self._make_diagnostics_handler()
+        result = handler._check_lxmf_app_conflict()
         assert result == "MeshChat"
 
     @patch('subprocess.run')
     def test_no_conflict(self, mock_run):
         """Returns None when no LXMF app running."""
         mock_run.return_value = MagicMock(returncode=1, stdout="")
-        mixin = self._make_diagnostics_mixin()
-        result = mixin._check_lxmf_app_conflict()
+        handler = self._make_diagnostics_handler()
+        result = handler._check_lxmf_app_conflict()
         assert result is None
 
 
@@ -291,93 +288,70 @@ class TestMeshChatGatewayDiagnostic:
 
 
 # ============================================================================
-# Automated Installer Tests
+# Automated Installer Tests (migrated from MeshChatClientMixin)
 # ============================================================================
 
 class TestMeshChatInstaller:
-    """Test the automated MeshChat installation methods."""
-
-    def _make_mixin(self):
-        """Create a mixin instance with mocked dialog."""
-        from launcher_tui.meshchat_client_mixin import MeshChatClientMixin
-
-        class TestClass(MeshChatClientMixin):
-            def __init__(self):
-                self.dialog = MagicMock()
-                self._feature_flags = {}
-
-            def _safe_call(self, name, method, *a, **kw):
-                return method(*a, **kw)
-
-            def _wait_for_enter(self, msg=""):
-                pass
-
-            def _feature_enabled(self, f):
-                return True
-
-            def _get_rnsd_user(self):
-                return None
-
-        return TestClass()
+    """Test the automated MeshChat installation methods on MeshChatHandler."""
 
     def test_has_install_method(self):
-        """Mixin has automated _install_meshchat method."""
-        mixin = self._make_mixin()
-        assert hasattr(mixin, '_install_meshchat')
-        assert callable(mixin._install_meshchat)
+        """Handler has automated _install_meshchat method."""
+        handler = _make_handler()
+        assert hasattr(handler, '_install_meshchat')
+        assert callable(handler._install_meshchat)
 
     def test_has_uninstall_method(self):
-        """Mixin has _uninstall_meshchat method."""
-        mixin = self._make_mixin()
-        assert hasattr(mixin, '_uninstall_meshchat')
-        assert callable(mixin._uninstall_meshchat)
+        """Handler has _uninstall_meshchat method."""
+        handler = _make_handler()
+        assert hasattr(handler, '_uninstall_meshchat')
+        assert callable(handler._uninstall_meshchat)
 
     def test_has_lxmf_exclusive_method(self):
-        """Mixin has _ensure_lxmf_exclusive method."""
-        mixin = self._make_mixin()
-        assert hasattr(mixin, '_ensure_lxmf_exclusive')
-        assert callable(mixin._ensure_lxmf_exclusive)
+        """Handler has _ensure_lxmf_exclusive method."""
+        handler = _make_handler()
+        assert hasattr(handler, '_ensure_lxmf_exclusive')
+        assert callable(handler._ensure_lxmf_exclusive)
 
     def test_get_meshchat_install_dir(self):
         """Install dir is under user home, not /root."""
-        mixin = self._make_mixin()
-        with patch('launcher_tui.meshchat_client_mixin.get_real_user_home') as mock_home:
+        handler = _make_handler()
+        with patch('launcher_tui.handlers.meshchat.get_real_user_home') as mock_home:
             mock_home.return_value = __import__('pathlib').Path('/home/testuser')
-            result = mixin._get_meshchat_install_dir()
+            result = handler._get_meshchat_install_dir()
             assert str(result) == '/home/testuser/reticulum-meshchat'
 
     @patch('shutil.which', return_value='/usr/bin/meshchat')
     def test_install_skips_if_already_installed(self, mock_which):
         """Install shows 'already installed' if MeshChat is present."""
-        mixin = self._make_mixin()
-        mixin._install_meshchat()
-        mixin.dialog.msgbox.assert_called_once()
-        assert "Already Installed" in str(mixin.dialog.msgbox.call_args)
+        handler = _make_handler()
+        handler._install_meshchat()
+        handler.ctx.dialog.msgbox.assert_called_once()
+        assert "Already Installed" in str(handler.ctx.dialog.msgbox.call_args)
 
     def test_install_cancelled_by_user(self):
         """Install returns when user declines."""
-        mixin = self._make_mixin()
-        with patch.object(mixin, '_is_meshchat_installed', return_value=False):
-            mixin.dialog.yesno.return_value = False
-            mixin._install_meshchat()
+        handler = _make_handler()
+        with patch.object(handler, '_is_meshchat_installed', return_value=False):
+            handler.ctx.dialog.yesno.return_value = False
+            handler._install_meshchat()
             # Should not proceed to prerequisites
-            assert mixin.dialog.yesno.called
+            assert handler.ctx.dialog.yesno.called
 
     @patch('shutil.which')
     def test_install_prerequisites_checks_git_node_npm(self, mock_which):
         """Prerequisites checker verifies git, node, npm."""
-        mixin = self._make_mixin()
+        handler = _make_handler()
 
         # All tools available
         mock_which.return_value = '/usr/bin/git'
-        result = mixin._install_meshchat_prerequisites()
+        result = handler._install_meshchat_prerequisites()
         assert result is True
 
     @patch('shutil.which', return_value=None)
     @patch('subprocess.run')
     def test_install_prerequisites_installs_nodejs(self, mock_run, mock_which):
         """Prerequisites installs nodejs when not found."""
-        mixin = self._make_mixin()
+        handler = _make_handler()
 
         # First call: git not found, then found after install
         call_count = [0]
@@ -390,19 +364,19 @@ class TestMeshChatInstaller:
 
         mock_which.side_effect = which_side_effect
         mock_run.return_value = MagicMock(returncode=0)
-        result = mixin._install_meshchat_prerequisites()
+        result = handler._install_meshchat_prerequisites()
         assert mock_run.called
 
     @patch('subprocess.run')
     def test_install_clone_new_repo(self, mock_run):
         """Clone creates new repo when dir doesn't exist."""
-        mixin = self._make_mixin()
+        handler = _make_handler()
         mock_run.return_value = MagicMock(returncode=0)
 
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             install_dir = __import__('pathlib').Path(tmpdir) / 'reticulum-meshchat'
-            result = mixin._install_meshchat_clone(install_dir, None)
+            result = handler._install_meshchat_clone(install_dir, None)
             assert result is True
             # Verify git clone was called
             clone_call = mock_run.call_args_list[0]
@@ -412,27 +386,26 @@ class TestMeshChatInstaller:
     @patch('subprocess.run')
     def test_install_clone_pulls_existing(self, mock_run):
         """Clone pulls latest when dir already exists."""
-        mixin = self._make_mixin()
+        handler = _make_handler()
         mock_run.return_value = MagicMock(returncode=0, stderr='')
 
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             install_dir = __import__('pathlib').Path(tmpdir)
-            result = mixin._install_meshchat_clone(install_dir, None)
+            result = handler._install_meshchat_clone(install_dir, None)
             assert result is True
             pull_call = mock_run.call_args_list[0]
             assert 'pull' in pull_call[0][0]
 
     def test_install_service_creates_unit_file(self):
         """Service creation writes a valid systemd unit file."""
-        mixin = self._make_mixin()
+        handler = _make_handler()
 
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             install_dir = __import__('pathlib').Path(tmpdir)
-            service_path = install_dir / 'test.service'
 
-            with patch('launcher_tui.meshchat_client_mixin.get_real_user_home',
+            with patch('launcher_tui.handlers.meshchat.get_real_user_home',
                        return_value=__import__('pathlib').Path('/home/testuser')):
                 with patch('subprocess.run', return_value=MagicMock(returncode=0)):
                     with patch('builtins.open', create=True) as mock_open:
@@ -440,7 +413,7 @@ class TestMeshChatInstaller:
                         mock_open.return_value.__exit__ = MagicMock(return_value=False)
                         mock_open.return_value.write = MagicMock()
 
-                        result = mixin._install_meshchat_service(install_dir, 'testuser')
+                        result = handler._install_meshchat_service(install_dir, 'testuser')
                         # Verify write was called with unit file content
                         if mock_open.return_value.write.called:
                             content = mock_open.return_value.write.call_args[0][0]
@@ -450,13 +423,13 @@ class TestMeshChatInstaller:
 
     def test_meshchat_repo_url(self):
         """MESHCHAT_REPO constant points to correct URL."""
-        from launcher_tui.meshchat_client_mixin import MeshChatClientMixin
-        assert 'liamcottle/reticulum-meshchat' in MeshChatClientMixin.MESHCHAT_REPO
+        from launcher_tui.handlers.meshchat import MeshChatHandler
+        assert 'liamcottle/reticulum-meshchat' in MeshChatHandler.MESHCHAT_REPO
 
     def test_meshchat_service_name(self):
         """MESHCHAT_SERVICE_NAME is correct."""
-        from launcher_tui.meshchat_client_mixin import MeshChatClientMixin
-        assert MeshChatClientMixin.MESHCHAT_SERVICE_NAME == "reticulum-meshchat"
+        from launcher_tui.handlers.meshchat import MeshChatHandler
+        assert MeshChatHandler.MESHCHAT_SERVICE_NAME == "reticulum-meshchat"
 
 
 # ============================================================================
@@ -464,39 +437,23 @@ class TestMeshChatInstaller:
 # ============================================================================
 
 class TestMeshChatUninstall:
-    """Test MeshChat and NomadNet uninstall functionality."""
-
-    def _make_meshchat_mixin(self):
-        """Create MeshChat mixin for testing."""
-        from launcher_tui.meshchat_client_mixin import MeshChatClientMixin
-
-        class TestClass(MeshChatClientMixin):
-            def __init__(self):
-                self.dialog = MagicMock()
-
-            def _wait_for_enter(self, msg=""):
-                pass
-
-            def _is_meshchat_running(self):
-                return False
-
-        return TestClass()
+    """Test MeshChat uninstall functionality on MeshChatHandler."""
 
     def test_uninstall_cancelled(self):
         """Uninstall does nothing when user cancels."""
-        mixin = self._make_meshchat_mixin()
-        mixin.dialog.yesno.return_value = False
-        mixin._uninstall_meshchat()
+        handler = _make_handler()
+        handler.ctx.dialog.yesno.return_value = False
+        handler._uninstall_meshchat()
         # Should only call yesno (confirmation), nothing else
 
     @patch('subprocess.run')
     def test_uninstall_stops_and_disables(self, mock_run):
         """Uninstall calls systemctl stop and disable."""
-        mixin = self._make_meshchat_mixin()
-        mixin.dialog.yesno.return_value = True
+        handler = _make_handler()
+        handler.ctx.dialog.yesno.return_value = True
         mock_run.return_value = MagicMock(returncode=0)
 
-        mixin._uninstall_meshchat()
+        handler._uninstall_meshchat()
 
         # Verify systemctl calls
         calls = [str(c) for c in mock_run.call_args_list]
@@ -507,40 +464,29 @@ class TestMeshChatUninstall:
 
 
 # ============================================================================
-# LXMF Exclusive Toggle Tests
+# LXMF Exclusive Toggle Tests (migrated to _lxmf_utils.ensure_lxmf_exclusive)
 # ============================================================================
 
 class TestLXMFExclusiveToggle:
-    """Test _ensure_lxmf_exclusive() one-app-at-a-time enforcement."""
-
-    def _make_mixin(self):
-        """Create mixin for testing."""
-        from launcher_tui.meshchat_client_mixin import MeshChatClientMixin
-
-        class TestClass(MeshChatClientMixin):
-            def __init__(self):
-                self.dialog = MagicMock()
-
-            def _is_meshchat_running(self):
-                return False
-
-        return TestClass()
+    """Test ensure_lxmf_exclusive() one-app-at-a-time enforcement."""
 
     @patch('subprocess.run')
     def test_meshchat_start_no_conflict(self, mock_run):
         """Starting MeshChat succeeds when NomadNet not running."""
-        mixin = self._make_mixin()
+        from launcher_tui.handlers._lxmf_utils import ensure_lxmf_exclusive
+        mock_dialog = MagicMock()
         mock_run.return_value = MagicMock(returncode=1, stdout='')
 
-        with patch('launcher_tui.meshchat_client_mixin._HAS_SERVICE_CHECK', False):
-            result = mixin._ensure_lxmf_exclusive("meshchat")
+        with patch('launcher_tui.handlers._lxmf_utils._HAS_SERVICE_CHECK', False):
+            result = ensure_lxmf_exclusive(mock_dialog, "meshchat")
             assert result is True
 
     @patch('subprocess.run')
     def test_meshchat_start_stops_nomadnet(self, mock_run):
         """Starting MeshChat offers to stop NomadNet."""
-        mixin = self._make_mixin()
-        mixin.dialog.yesno.return_value = True
+        from launcher_tui.handlers._lxmf_utils import ensure_lxmf_exclusive
+        mock_dialog = MagicMock()
+        mock_dialog.yesno.return_value = True
 
         # First pgrep finds NomadNet, second pkill succeeds
         call_count = [0]
@@ -557,52 +503,62 @@ class TestLXMFExclusiveToggle:
 
         mock_run.side_effect = run_side_effect
 
-        with patch('launcher_tui.meshchat_client_mixin._HAS_SERVICE_CHECK', False):
-            result = mixin._ensure_lxmf_exclusive("meshchat")
+        with patch('launcher_tui.handlers._lxmf_utils._HAS_SERVICE_CHECK', False):
+            result = ensure_lxmf_exclusive(mock_dialog, "meshchat")
             assert result is True
-            mixin.dialog.yesno.assert_called_once()
+            mock_dialog.yesno.assert_called_once()
 
     @patch('subprocess.run')
     def test_meshchat_start_user_declines(self, mock_run):
         """User declines to stop NomadNet, MeshChat start cancelled."""
-        mixin = self._make_mixin()
-        mixin.dialog.yesno.return_value = False
+        from launcher_tui.handlers._lxmf_utils import ensure_lxmf_exclusive
+        mock_dialog = MagicMock()
+        mock_dialog.yesno.return_value = False
 
         mock_run.return_value = MagicMock(returncode=0, stdout="1234\n")
 
-        with patch('launcher_tui.meshchat_client_mixin._HAS_SERVICE_CHECK', False):
-            result = mixin._ensure_lxmf_exclusive("meshchat")
+        with patch('launcher_tui.handlers._lxmf_utils._HAS_SERVICE_CHECK', False):
+            result = ensure_lxmf_exclusive(mock_dialog, "meshchat")
             assert result is False
 
     @patch('subprocess.run')
     def test_nomadnet_start_stops_meshchat(self, mock_run):
         """Starting NomadNet offers to stop MeshChat."""
-        mixin = self._make_mixin()
-        mixin._is_meshchat_running = lambda: True
-        mixin.dialog.yesno.return_value = True
+        from launcher_tui.handlers._lxmf_utils import ensure_lxmf_exclusive
+        mock_dialog = MagicMock()
+        mock_dialog.yesno.return_value = True
         mock_run.return_value = MagicMock(returncode=0)
 
-        result = mixin._ensure_lxmf_exclusive("nomadnet")
+        result = ensure_lxmf_exclusive(
+            mock_dialog, "nomadnet",
+            is_meshchat_running_fn=lambda: True,
+        )
         assert result is True
-        mixin.dialog.yesno.assert_called_once()
-        assert "MeshChat" in str(mixin.dialog.yesno.call_args)
+        mock_dialog.yesno.assert_called_once()
+        assert "MeshChat" in str(mock_dialog.yesno.call_args)
 
     def test_nomadnet_start_no_conflict(self):
         """Starting NomadNet succeeds when MeshChat not running."""
-        mixin = self._make_mixin()
-        mixin._is_meshchat_running = lambda: False
+        from launcher_tui.handlers._lxmf_utils import ensure_lxmf_exclusive
+        mock_dialog = MagicMock()
 
-        result = mixin._ensure_lxmf_exclusive("nomadnet")
+        result = ensure_lxmf_exclusive(
+            mock_dialog, "nomadnet",
+            is_meshchat_running_fn=lambda: False,
+        )
         assert result is True
 
     @patch('subprocess.run')
     def test_nomadnet_start_user_declines(self, mock_run):
         """User declines to stop MeshChat, NomadNet start cancelled."""
-        mixin = self._make_mixin()
-        mixin._is_meshchat_running = lambda: True
-        mixin.dialog.yesno.return_value = False
+        from launcher_tui.handlers._lxmf_utils import ensure_lxmf_exclusive
+        mock_dialog = MagicMock()
+        mock_dialog.yesno.return_value = False
 
-        result = mixin._ensure_lxmf_exclusive("nomadnet")
+        result = ensure_lxmf_exclusive(
+            mock_dialog, "nomadnet",
+            is_meshchat_running_fn=lambda: True,
+        )
         assert result is False
 
 

@@ -1,54 +1,56 @@
 # MeshForge QTH Hardware Test Checklist
 
 > **Date**: 2026-01-17
+> **Updated**: 2026-02-27 — Rewritten for TUI (GTK removed in v0.5.x)
 > **Tester**: WH6GXZ
-> **Focus**: Messaging, GTK Reliability, Today's Sprint B/C Changes
+> **Focus**: Messaging, TUI Reliability, Predictive Analytics
 
 ---
 
 ## Pre-Test Setup
 
 ### Environment Verification
-- [ ] MeshForge version: `python3 -c "from src.__version__ import __version__; print(__version__)"` → 0.4.7-beta
-- [ ] All tests passing: `python3 -m pytest tests/ -v --tb=short` → 1297 passed
-- [ ] Branch: `git branch` → claude/code-review-healthcheck-4lctO
+- [ ] MeshForge version: `python3 -c "from src.__version__ import __version__; print(__version__)"` → 0.5.4-beta
+- [ ] All tests passing: `python3 -m pytest tests/ -v --tb=short` → ~1,986 passed
+- [ ] Branch: `git branch` → main (or feature branch)
 
 ### Services Running
 - [ ] meshtasticd: `systemctl status meshtasticd` or port 4403 open
 - [ ] rnsd: `systemctl status rnsd` or UDP port 37428 (check with `ss -ulnp | grep 37428`)
-- [ ] MeshForge GTK launches: `sudo python3 src/launcher.py --gtk`
+- [ ] MeshForge TUI launches: `sudo python3 src/launcher_tui/main.py`
 
 ---
 
-## Test 1: GTK Reliability (Sprint A Regression)
+## Test 1: TUI Reliability
 
-**Goal**: Verify today's changes didn't break existing functionality
+**Goal**: Verify TUI launches and operates correctly
 
 ### 1.1 Status Consistency (Single Source of Truth)
-- [ ] Open GTK Dashboard panel
+- [ ] Launch TUI: `sudo python3 src/launcher_tui/main.py`
+- [ ] Navigate to System/Service menu
 - [ ] Check rnsd status displayed
-- [ ] Open RNS panel
-- [ ] **VERIFY**: rnsd status matches between panels (no conflicting display)
+- [ ] Navigate to RNS menu
+- [ ] **VERIFY**: rnsd status consistent across menus
 - [ ] Stop rnsd: `sudo systemctl stop rnsd`
-- [ ] **VERIFY**: Both panels show "stopped" status
+- [ ] **VERIFY**: Status updates to "stopped" on next menu refresh
 - [ ] Start rnsd: `sudo systemctl start rnsd`
-- [ ] **VERIFY**: Both panels show "running" status
+- [ ] **VERIFY**: Status updates to "running"
 
-**Pass Criteria**: Status always agrees between panels
+**Pass Criteria**: Status always consistent via `service_check.py`
 
-### 1.2 GTK Startup Performance
-- [ ] Time startup: `time sudo python3 src/launcher.py --gtk`
-- [ ] **VERIFY**: UI responsive within 3 seconds
+### 1.2 TUI Startup Performance
+- [ ] Time startup: `time sudo python3 src/launcher_tui/main.py`
+- [ ] **VERIFY**: Menu appears within 3 seconds
 - [ ] **VERIFY**: No console errors/warnings during startup
-- [ ] Navigate between 5+ panels quickly
+- [ ] Navigate through 5+ submenus
 - [ ] **VERIFY**: No freezing, no lag
 
 **Pass Criteria**: <3s startup, smooth navigation
 
-### 1.3 Panel Cleanup (Issue #14)
-- [ ] Open GTK
-- [ ] Navigate to 5+ different panels
-- [ ] Close GTK window
+### 1.3 Clean Exit
+- [ ] Launch TUI
+- [ ] Navigate through several menus
+- [ ] Exit via Back/Quit
 - [ ] **VERIFY**: Clean shutdown (no errors in console)
 - [ ] **VERIFY**: No orphan processes: `ps aux | grep meshforge`
 
@@ -60,11 +62,11 @@
 
 **Goal**: Test message lifecycle tracking added today
 
-### 2.1 Message Send (GTK)
-- [ ] Open Messaging panel in GTK
+### 2.1 Message Send (TUI)
+- [ ] Navigate to Messaging menu in TUI
 - [ ] Enter destination node ID
 - [ ] Enter test message: "QTH test from WH6GXZ"
-- [ ] Click Send
+- [ ] Send message
 - [ ] **RECORD**: Message ID displayed?
 - [ ] **RECORD**: Status shown (queued/sent/delivered)?
 
@@ -124,12 +126,11 @@ print(forecast)
 - [ ] **RECORD**: Forecast output (may say "insufficient data")
 - [ ] **VERIFY**: No errors thrown
 
-### 3.4 Health Dashboard (New GTK Panel)
-- [ ] Open GTK
-- [ ] Navigate to Health Dashboard panel
-- [ ] **VERIFY**: Panel loads without error
+### 3.4 Health Dashboard (TUI)
+- [ ] Launch TUI
+- [ ] Navigate to Dashboard or Analytics menu
+- [ ] **VERIFY**: Menu loads without error
 - [ ] **VERIFY**: Shows service status for meshtasticd, rnsd
-- [ ] **VERIFY**: Refresh button works
 - [ ] **RECORD**: Forecast outlook displayed?
 
 **Pass Criteria**: Analytics infrastructure works, dashboard displays
@@ -142,19 +143,19 @@ print(forecast)
 - [ ] Device connected and powered
 - [ ] meshtasticd running: `systemctl status meshtasticd`
 - [ ] Port reachable: `nc -z localhost 4403 && echo "OK"`
-- [ ] GTK Hardware panel shows device info
+- [ ] TUI Hardware menu shows device info
 
 ### 4.2 RAK WisBlock (If Available)
 - [ ] Device connected
 - [ ] Detected: `lsusb | grep -i rak` or `dmesg | tail -20`
 - [ ] **RECORD**: USB VID:PID
-- [ ] MeshForge Hardware panel detects?
+- [ ] TUI Hardware menu detects?
 
 ### 4.3 Heltec LoRa (If Available)
 - [ ] Device connected
 - [ ] Detected: `lsusb | grep -i heltec` or CP2102 USB-serial
 - [ ] **RECORD**: Serial port `/dev/ttyUSB*` or `/dev/ttyACM*`
-- [ ] MeshForge Hardware panel detects?
+- [ ] TUI Hardware menu detects?
 
 ### 4.4 Sensors
 | Sensor | Detection Command | MeshForge Sees? |
@@ -171,7 +172,7 @@ print(forecast)
 ### 5.1 Gateway Status
 - [ ] Gateway bridge running? Check logs or status command
 - [ ] RNS connected? `rnstatus` shows local identity
-- [ ] Meshtastic connected? GTK shows node count
+- [ ] Meshtastic connected? TUI shows node count
 
 ### 5.2 Cross-Network Message (If Both Networks Available)
 - [ ] Send message from Meshtastic to RNS destination
@@ -187,9 +188,9 @@ print(forecast)
 
 | Test Area | Pass | Fail | Notes |
 |-----------|------|------|-------|
-| GTK Status Consistency | [ ] | [ ] | |
-| GTK Startup Performance | [ ] | [ ] | Time: ___s |
-| GTK Panel Cleanup | [ ] | [ ] | |
+| TUI Status Consistency | [ ] | [ ] | |
+| TUI Startup Performance | [ ] | [ ] | Time: ___s |
+| TUI Clean Exit | [ ] | [ ] | |
 | Message Send | [ ] | [ ] | |
 | Message Lifecycle DB | [ ] | [ ] | |
 | Message Trace API | [ ] | [ ] | |
@@ -216,7 +217,7 @@ print(forecast)
 ### Start MeshForge
 ```bash
 cd /home/user/meshforge
-sudo python3 src/launcher.py --gtk
+sudo python3 src/launcher_tui/main.py
 ```
 
 ### Run Tests

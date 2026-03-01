@@ -320,13 +320,6 @@ class ReviewPatterns:
             'recommendation': 'Add timeout parameter (e.g., timeout=10)',
             'auto_fixable': False,
         },
-        'glib_timeout_no_cleanup': {
-            'pattern': r'GLib\.timeout_add\s*\(',
-            'severity': Severity.MEDIUM,
-            'issue': 'Timer may leak without cleanup',
-            'recommendation': 'Track timer ID and remove in cleanup/unrealize',
-            'auto_fixable': False,
-        },
         'string_concat_loop': {
             'pattern': r'for\s+[^:]+:\s*[^=]+=\s*[^=]+\+\s*["\']',
             'severity': Severity.LOW,
@@ -540,28 +533,6 @@ class ReviewAgent:
             if 'timeout' in line:
                 return True
 
-        # GLib timer patterns - check for timer tracking
-        if pattern_name == 'glib_timeout_no_cleanup':
-            # Check if it's inside a schedule_timer method or tracked
-            if '_pending_timers' in line or '_schedule_timer' in line or '_timers' in line:
-                return True
-            # Check if the result is being assigned (timer_id = GLib.timeout_add...)
-            if 'timer_id' in line or 'source_id' in line:
-                return True
-            # Check if it's inside a helper function name
-            if 'schedule' in line.lower() or 'add_timer' in line.lower():
-                return True
-            # Check if result is being stored in a variable (e.g., retry_timer = GLib.timeout_add)
-            if '= GLib.timeout_add' in line or '= GLib.' in line:
-                return True
-            # Check if stored in self. attribute
-            if 'self.' in line and '=' in line and 'GLib.timeout' in line:
-                return True
-            # One-shot UI helper patterns (scroll, focus, etc.) - safe when returning False
-            ui_helper_patterns = ['scroll', 'focus', 'cursor', 'select', 'highlight']
-            if any(p in line.lower() for p in ui_helper_patterns):
-                return True
-
         # shell=True in comments explaining why NOT to use it
         if pattern_name == 'shell_true':
             if stripped.startswith('#') or 'no shell' in line.lower() or 'shell=false' in line.lower():
@@ -649,7 +620,7 @@ class ReviewAgent:
                 'addr[0]',           # Address tuple
                 'log_files[0]',      # Log file lists
                 'item[0]',           # Tuple/list items
-                'labels[0]',         # GTK label lists
+                'labels[0]',         # Label lists
                 'device_names[0]',   # Device name lists
                 'ports[0]',          # Port lists
                 'licenses[0]',       # License result lists
@@ -943,10 +914,6 @@ class ReviewAgent:
                         # Simple assignment patterns (var = value)
                         if re.match(r'^\w+\s*=\s*', next_stripped):
                             return True
-
-                    # Acceptable: calls GLib.idle_add (GTK UI update with fallback)
-                    if 'GLib.idle_add' in next_stripped:
-                        return True
 
                     # Acceptable: function call as fallback handling
                     # e.g., print_status(...), self.send_error(...), send_response(...)

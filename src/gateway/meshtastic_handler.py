@@ -20,6 +20,7 @@ from datetime import datetime
 from queue import Full
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
+from .base_handler import BaseMessageHandler
 from .config import GatewayConfig
 from .node_tracker import UnifiedNode
 from .reconnect import ReconnectStrategy
@@ -44,7 +45,7 @@ logger = logging.getLogger(__name__)
 pub, _HAS_PUBSUB = safe_import('pubsub', 'pub')
 
 
-class MeshtasticHandler:
+class MeshtasticHandler(BaseMessageHandler):
     """
     Handles Meshtastic connection and message processing.
 
@@ -79,21 +80,20 @@ class MeshtasticHandler:
         status_callback: Optional[Callable] = None,
         should_bridge: Optional[Callable] = None,
     ):
-        self.config = config
-        self.node_tracker = node_tracker
-        self.health = health
-        self._stop_event = stop_event
-        self.stats = stats
-        self._stats_lock = stats_lock
-        self._mesh_to_rns_queue = message_queue
+        super().__init__(
+            config=config,
+            node_tracker=node_tracker,
+            health=health,
+            stop_event=stop_event,
+            stats=stats,
+            stats_lock=stats_lock,
+            message_queue=message_queue,
+            message_callback=message_callback,
+            status_callback=status_callback,
+            should_bridge=should_bridge,
+        )
 
-        # Callbacks
-        self._message_callback = message_callback
-        self._status_callback = status_callback
-        self._should_bridge = should_bridge
-
-        # Connection state
-        self._connected = False
+        # Connection state (handler-specific)
         self._interface = None
         self._conn_manager = None
         self._pubsub_handler = None
@@ -103,11 +103,6 @@ class MeshtasticHandler:
 
         # Network topology reference (optional)
         self._network_topology = None
-
-    @property
-    def is_connected(self) -> bool:
-        """Check if connected to Meshtastic."""
-        return self._connected
 
     @property
     def interface(self):
@@ -254,8 +249,8 @@ class MeshtasticHandler:
             if self._pubsub_handler:
                 pub.unsubscribe(self._pubsub_handler, "meshtastic.receive")
                 self._pubsub_handler = None
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Pubsub unsubscribe during disconnect: {e}")
 
         # Release persistent connection through the manager
         if self._conn_manager:
@@ -279,6 +274,8 @@ class MeshtasticHandler:
         Returns:
             True if message sent successfully, False otherwise.
         """
+        message = self._truncate_if_needed(message)
+
         if not self._connected:
             logger.warning("Not connected to Meshtastic")
             return False
@@ -287,7 +284,7 @@ class MeshtasticHandler:
             if self._interface:
                 # For broadcasts, use ^all instead of None
                 dest = destination if destination else "^all"
-                logger.info(f"Sending to Meshtastic: dest={dest}, ch={channel}, msg={message[:50]}")
+                logger.debug(f"Sending to Meshtastic: dest={dest}, ch={channel}, msg={message[:50]}")
                 result = self._interface.sendText(
                     message,
                     destinationId=dest,
@@ -318,7 +315,7 @@ class MeshtasticHandler:
         Returns:
             True if sent successfully, False otherwise.
         """
-        message = payload.get('message', '')
+        message = self._truncate_if_needed(payload.get('message', ''))
         destination = payload.get('destination')
         channel = payload.get('channel', 0)
 
@@ -451,13 +448,13 @@ class MeshtasticHandler:
             logger.debug(f"Could not broadcast to WebSocket: {e}")
 
         # Queue for bridging if routing rules allow it (non-blocking to prevent deadlock)
-        if self._mesh_to_rns_queue is not None:
+        if self._message_queue is not None:
             # Check routing rules before queueing
             if self._should_bridge and not self._should_bridge(msg):
                 logger.debug(f"Message from {from_id} blocked by routing rules")
             else:
                 try:
-                    self._mesh_to_rns_queue.put_nowait(msg)
+                    self._message_queue.put_nowait(msg)
                 except Full:
                     logger.warning("Mesh→RNS queue full, dropping message")
                     with self._stats_lock:
@@ -626,10 +623,3 @@ class MeshtasticHandler:
             logger.error(f"CLI send failed: {e}")
             return False
 
-    def _notify_status(self, status: str) -> None:
-        """Notify status callback."""
-        if self._status_callback:
-            try:
-                self._status_callback(status)
-            except Exception as e:
-                logger.error(f"Status callback error: {e}")

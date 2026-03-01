@@ -16,8 +16,8 @@ MeshForge is a **Network Operations Center (NOC)** bridging Meshtastic and Retic
 
 - **main** is the production-ready line. All PRs targeting stable features merge here.
   Includes tactical ops (XTOC interop, ATAK/KML/CoT), MQTT bridge, security hardening.
-- **alpha/meshcore-bridge** has diverged significantly from main (~2,200 commits ahead,
-  ~100 behind as of 2026-02-22). Contains MeshCore 3-way routing and handler but lacks
+- **alpha/meshcore-bridge** has diverged significantly from main (~2,260 commits ahead,
+  0 behind as of 2026-02-25). Contains MeshCore 3-way routing and handler but lacks
   main's tactical module, contact mapping, and several utilities. These are parallel
   development tracks; convergence requires a dedicated reconciliation effort.
 - Feature branches use `claude/` prefix and merge via PR to the appropriate target branch.
@@ -55,13 +55,26 @@ git config core.hooksPath .githooks                    # Enable pre-commit hook
 
 ## Architecture Overview
 
+**TUI Pattern**: Handler Registry (Protocol + BaseHandler + TUIContext). Each menu action is a
+self-contained handler in `handlers/` dispatched by `handler_registry.py`. See
+`handler_protocol.py` for the Protocol definition and `TUIContext` shared state.
+
 ```
 src/
 ├── launcher_tui/      # Terminal UI — PRIMARY INTERFACE
-│   ├── main.py        # NOC dispatcher (whiptail/dialog)
-│   ├── meshcore_mixin.py    # MeshCore TUI menu (alpha branch)
-│   ├── rns_config_mixin.py  # RNS config editor (extracted)
-│   └── rns_diagnostics_mixin.py  # RNS diagnostics (extracted)
+│   ├── main.py        # NOC launcher + handler registration (1,168 lines)
+│   ├── handler_protocol.py  # CommandHandler Protocol + TUIContext + BaseHandler
+│   ├── handler_registry.py  # HandlerRegistry — register/lookup/dispatch
+│   ├── backend.py           # DialogBackend (whiptail/dialog abstraction)
+│   └── handlers/            # 58 self-contained command handlers
+│       ├── dashboard.py     # Main dashboard
+│       ├── gateway.py       # Gateway bridge control
+│       ├── propagation.py   # Space weather & HF propagation
+│       ├── rns_diagnostics.py  # RNS diagnostics & transport testing
+│       ├── service_menu.py  # Service management
+│       ├── mqtt.py          # MQTT monitoring & bridge
+│       ├── meshcore.py      # MeshCore TUI menu (alpha branch)
+│       └── ...              # 52 more handlers (rf_tools, settings, etc.)
 ├── commands/          # Command modules
 │   ├── propagation.py # Space weather & HF propagation (NOAA primary)
 │   ├── hamclock.py    # HamClock client (optional/legacy)
@@ -99,13 +112,14 @@ src/
 
 ## Deployment Profiles
 
-MeshForge supports 5 deployment scenarios. Dependencies don't block your choice.
+MeshForge supports 6 deployment profiles. Dependencies don't block your choice.
 
 | Profile | Services Needed | Install | Use Case |
 |---------|----------------|---------|----------|
 | `radio_maps` | meshtasticd | `pip install -r requirements/core.txt -r requirements/maps.txt` | Radio config + coverage maps |
 | `monitor` | (none) | `pip install -r requirements/core.txt -r requirements/mqtt.txt` | MQTT packet analysis |
 | `meshcore` | (none) | `pip install -r requirements/core.txt` + meshcore | MeshCore companion radio |
+| `meshchat` | meshtasticd, rnsd | `pip install -r requirements/core.txt -r requirements/rns.txt` + MeshChat | LXMF messaging with web UI |
 | `gateway` | meshtasticd, rnsd | `pip install -r requirements/core.txt -r requirements/rns.txt -r requirements/mqtt.txt` | Meshtastic <> RNS bridge |
 | `full` | meshtasticd, rnsd, mosquitto | `pip install -r requirements.txt` | Everything |
 
@@ -156,14 +170,14 @@ print(f'Issues: {report.total_issues}')
 
 ## Research Documents
 
-Deep documentation in `.claude/` (~48 active files after 2026-02-23 dedup audit):
+Deep documentation in `.claude/` (84 files, 853KB as of 2026-02-28 audit):
 - `foundations/meshforge_ecosystem.md` - **ECOSYSTEM: All 5 repos, boundaries, APIs** (canonical)
 - `dude_ai_university.md` - Project vision, self-healing principles, plugin & Dude AI architecture
 - `foundations/domain_architecture.md` - **ARCHITECTURE: Core vs Plugin model**
 - `foundations/ai_principles.md` - Human-centered design philosophy
 - `foundations/persistent_issues.md` - **CRITICAL: Known issues & fixes**
 - `INDEX.md` - Full documentation index with quick lookups
-- `research/README.md` - Index of 21 technical deep dives (RNS, AREDN, HamClock, RF, etc.)
+- `research/README.md` - Index of 22 technical deep dives (RNS, AREDN, HamClock, RF, etc.)
 
 ## Architecture Model
 

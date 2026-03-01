@@ -2,7 +2,7 @@
 Service Commands
 
 Provides unified interface for system service operations.
-Used by both GTK and CLI interfaces.
+Used by both TUI and CLI interfaces.
 
 Security: Service names are validated against a whitelist to prevent
 arbitrary systemctl commands. Binary names for version checks are also

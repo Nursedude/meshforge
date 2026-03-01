@@ -1477,6 +1477,7 @@ def start_metrics_server(port: int = 9090, exporter: PrometheusExporter = None) 
 def setup_textfile_exporter(
     output_dir: str = None,
     interval_seconds: int = 15,
+    stop_event: threading.Event = None,
 ) -> threading.Thread:
     """
     Start background thread that writes metrics to textfile for node_exporter.
@@ -1505,14 +1506,15 @@ def setup_textfile_exporter(
     metrics_file = output_path / "meshforge.prom"
 
     exporter = PrometheusExporter()
+    _stop = stop_event or threading.Event()
 
     def export_loop():
-        while True:
+        while not _stop.is_set():
             try:
                 exporter.write_to_file(str(metrics_file))
             except Exception as e:
                 logger.debug(f"Textfile export error: {e}")
-            time.sleep(interval_seconds)
+            _stop.wait(interval_seconds)
 
     thread = threading.Thread(target=export_loop, daemon=True)
     thread.start()

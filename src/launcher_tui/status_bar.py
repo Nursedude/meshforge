@@ -21,6 +21,8 @@ Enhanced in v0.4.8:
 import time
 import subprocess
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional, List
 
 logger = logging.getLogger(__name__)
@@ -89,6 +91,12 @@ class StatusBar:
         # Space weather (separate cache with longer TTL)
         self._space_weather: Optional[str] = None
         self._space_weather_time: float = 0.0
+        self._space_weather_fetching = False  # Guard against stacking fetch threads
+        # Single-worker executor for space weather fetches — prevents
+        # accumulation of dead Thread objects over extended uptime.
+        self._weather_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="statusbar-weather",
+        )
         # Enhanced startup checker (v0.4.8)
         self._startup_checker: Optional[StartupChecker] = None
         self._env_state: Optional[EnvironmentState] = None
@@ -100,6 +108,8 @@ class StatusBar:
         self._event_updated_services: set = set()
         # Unread message counter (Issue #17 Phase 3)
         self._unread_messages = 0
+        # Lock for counters modified from EventBus thread pool workers
+        self._counter_lock = threading.Lock()
         self._subscribe_to_events()
         self._seed_node_count()
 
@@ -124,9 +134,13 @@ class StatusBar:
             status = self._cache.get(service_name, SYM_UNKNOWN)
             parts.append(f"{short_name}:{status}")
 
-        # Node count if available
-        if self._node_count is not None:
-            parts.append(f"nodes:{self._node_count}")
+        # Node count if available (read under lock — written by EventBus workers)
+        with self._counter_lock:
+            node_count = self._node_count
+            unread = self._unread_messages
+
+        if node_count is not None:
+            parts.append(f"nodes:{node_count}")
 
         # Bridge status with subsystem detail
         if self._bridge_running is not None:
@@ -134,8 +148,8 @@ class StatusBar:
             parts.append(bridge_label)
 
         # Unread message count (Issue #17 Phase 3)
-        if self._unread_messages > 0:
-            parts.append(f"msg:{self._unread_messages}")
+        if unread > 0:
+            parts.append(f"msg:{unread}")
 
         # Space weather (compact format: SFI:125 K:2)
         if self._space_weather:
@@ -151,10 +165,11 @@ class StatusBar:
             self._check_services()
             self._check_bridge()
 
-        # Space weather has separate (longer) TTL
+        # Space weather has separate (longer) TTL — fetched in background
+        # thread to avoid blocking the TUI for up to 5s on slow networks.
         if now - self._space_weather_time >= SPACE_WEATHER_CACHE_TTL:
             self._space_weather_time = now
-            self._check_space_weather()
+            self._fetch_space_weather_async()
 
     def _check_services(self) -> None:
         """Check status of all monitored services.
@@ -204,15 +219,31 @@ class StatusBar:
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             self._bridge_running = None
 
-    def _check_space_weather(self) -> None:
-        """Fetch space weather from NOAA SWPC (non-blocking, cached).
+    def _fetch_space_weather_async(self) -> None:
+        """Submit space weather fetch to the reusable worker thread.
 
-        Uses a short timeout and runs in the calling thread since this
-        is already called infrequently (5-min TTL). Falls back gracefully
-        if network is unavailable.
+        Uses a single-thread executor instead of spawning a new Thread
+        each cycle. Prevents accumulation of dead Thread objects over
+        extended uptime (~288/day with the old approach).
+        """
+        if self._space_weather_fetching:
+            return  # Previous fetch still in-flight
+        self._space_weather_fetching = True
+        try:
+            self._weather_executor.submit(self._check_space_weather)
+        except RuntimeError:
+            # Executor shut down during cleanup — safe to ignore
+            self._space_weather_fetching = False
+
+    def _check_space_weather(self) -> None:
+        """Fetch space weather from NOAA SWPC.
+
+        Runs in a background thread (launched by _fetch_space_weather_async)
+        to avoid blocking the TUI. Falls back gracefully if network is
+        unavailable.
         """
         try:
-            api = SpaceWeatherAPI(timeout=5)  # Short timeout for TUI
+            api = SpaceWeatherAPI(timeout=3)
             data = api.get_current_conditions()
 
             # Build compact status: "SFI:125 K:2"
@@ -231,6 +262,8 @@ class StatusBar:
             # Network error or API failure - don't break status bar
             logger.debug(f"Space weather fetch failed: {e}")
             self._space_weather = None
+        finally:
+            self._space_weather_fetching = False
 
     def _format_bridge_status(self) -> str:
         """Format bridge status with subsystem detail.
@@ -374,29 +407,54 @@ class StatusBar:
 
         Increments the unread message counter shown in the status bar.
         Counter is reset when the user views messages.
+        Uses _counter_lock since this runs in an EventBus thread pool worker.
         """
         direction = getattr(event, 'direction', '')
         if direction == 'rx':
-            self._unread_messages += 1
-            logger.debug(f"StatusBar unread count: {self._unread_messages}")
+            with self._counter_lock:
+                self._unread_messages += 1
+                count = self._unread_messages
+            logger.debug(f"StatusBar unread count: {count}")
 
     def _on_node_event(self, event) -> None:
         """Handle a NodeEvent from the EventBus.
 
         Tracks node count for display in the status bar. Increments on
         'discovered'/'updated' events, decrements on 'lost' events.
+        Uses _counter_lock since this runs in an EventBus thread pool worker.
         """
         event_type = getattr(event, 'event_type', '')
         if event_type == 'discovered':
-            if self._node_count is None:
-                self._node_count = 1
-            else:
-                self._node_count += 1
-            logger.debug(f"StatusBar node count: {self._node_count}")
+            with self._counter_lock:
+                if self._node_count is None:
+                    self._node_count = 1
+                else:
+                    self._node_count += 1
+                count = self._node_count
+            logger.debug(f"StatusBar node count: {count}")
 
     def clear_unread(self) -> None:
         """Reset unread message counter (called when user views messages)."""
-        self._unread_messages = 0
+        with self._counter_lock:
+            self._unread_messages = 0
+
+    def cleanup(self) -> None:
+        """Unsubscribe from EventBus and release resources.
+
+        Must be called before event_bus.shutdown() during TUI exit
+        to prevent stale callbacks from firing into a dead status bar.
+        """
+        if self._event_subscribed:
+            event_bus.unsubscribe('service', self._on_service_event)
+            event_bus.unsubscribe('message', self._on_message_event)
+            event_bus.unsubscribe('node', self._on_node_event)
+            self._event_subscribed = False
+            logger.debug("StatusBar unsubscribed from EventBus")
+        # Shut down the weather fetch executor
+        try:
+            self._weather_executor.shutdown(wait=False)
+        except Exception:
+            pass
 
     # =========================================================================
     # Enhanced Status Methods (v0.4.8)

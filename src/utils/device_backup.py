@@ -452,7 +452,8 @@ def main():
 
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO)
+    from utils.logging_config import setup_logging
+    setup_logging(level=logging.INFO)
     manager = DeviceBackupManager()
 
     if args.command == "export":

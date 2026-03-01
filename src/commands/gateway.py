@@ -2,7 +2,7 @@
 Gateway Commands
 
 Provides unified interface for RNS-Meshtastic gateway operations.
-Used by both GTK and CLI interfaces.
+Used by both TUI and CLI interfaces.
 
 The gateway is a cornerstone of MeshForge - bridging Meshtastic
 and Reticulum (RNS) mesh networks.
@@ -28,7 +28,7 @@ _bridge_instance = None
 
 
 def set_bridge(bridge):
-    """Register an external bridge instance (e.g., from GTK UI)."""
+    """Register an external bridge instance (e.g., from TUI)."""
     global _bridge_instance
     _bridge_instance = bridge
     logger.info("Gateway bridge registered from external source")

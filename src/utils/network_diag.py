@@ -2,7 +2,7 @@
 Network Diagnostics Utilities
 
 Pure Python functions for network diagnostics.
-Used by GTK UI and TUI diagnostics.
+Used by TUI and CLI diagnostics.
 
 Functions:
 - parse_proc_net: Parse /proc/net/{tcp,udp} for connection info

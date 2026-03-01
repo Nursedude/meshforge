@@ -64,6 +64,11 @@ class MapDataCollector:
     DEFAULT_NODE_CACHE_MAX_AGE_HOURS = 48
     DEFAULT_RNS_CACHE_MAX_AGE_HOURS = 24  # Increased from 1 hour
     DEFAULT_ONLINE_THRESHOLD_MINUTES = 15
+    # Per-source online thresholds (minutes) — configurable via map_settings.json
+    DEFAULT_MESHTASTIC_THRESHOLD_MINUTES = 15
+    DEFAULT_MQTT_THRESHOLD_MINUTES = 15
+    DEFAULT_RNS_THRESHOLD_MINUTES = 30   # RNS announces less frequently
+    DEFAULT_AREDN_THRESHOLD_MINUTES = 60  # AREDN scans are infrequent
     # Meshtasticd connection defaults
     DEFAULT_MESHTASTICD_HOST = "localhost"
     DEFAULT_MESHTASTICD_PORT = 4403
@@ -89,6 +94,11 @@ class MapDataCollector:
                 "meshtasticd_host": self.DEFAULT_MESHTASTICD_HOST,
                 "meshtasticd_port": self.DEFAULT_MESHTASTICD_PORT,
                 "aredn_node_ips": [],  # e.g. ["10.54.25.1", "10.1.0.1"]
+                # Per-source online thresholds (minutes)
+                "meshtastic_threshold_minutes": self.DEFAULT_MESHTASTIC_THRESHOLD_MINUTES,
+                "mqtt_threshold_minutes": self.DEFAULT_MQTT_THRESHOLD_MINUTES,
+                "rns_threshold_minutes": self.DEFAULT_RNS_THRESHOLD_MINUTES,
+                "aredn_threshold_minutes": self.DEFAULT_AREDN_THRESHOLD_MINUTES,
             }
         )
 
@@ -190,6 +200,55 @@ class MapDataCollector:
             self._settings.set("online_status_threshold_minutes", minutes)
             self._settings.save()
             logger.info(f"Online status threshold set to {minutes} minutes")
+
+    def get_source_threshold_seconds(self, source: str) -> int:
+        """Get online threshold for a specific network source.
+
+        Per-source thresholds allow different timeout windows per network type:
+        - meshtastic: 15 min (frequent heartbeats)
+        - mqtt: 15 min (real-time broker)
+        - rns: 30 min (announces less frequently)
+        - aredn: 60 min (scans are infrequent)
+
+        Falls back to the global online_status_threshold_minutes setting.
+
+        Args:
+            source: Network source type ("meshtastic", "mqtt", "rns", "aredn")
+
+        Returns:
+            Threshold in seconds
+        """
+        key = f"{source}_threshold_minutes"
+        defaults = {
+            "meshtastic": self.DEFAULT_MESHTASTIC_THRESHOLD_MINUTES,
+            "mqtt": self.DEFAULT_MQTT_THRESHOLD_MINUTES,
+            "rns": self.DEFAULT_RNS_THRESHOLD_MINUTES,
+            "aredn": self.DEFAULT_AREDN_THRESHOLD_MINUTES,
+        }
+        default = defaults.get(source, self.DEFAULT_ONLINE_THRESHOLD_MINUTES)
+        if self._settings:
+            minutes = self._settings.get(key, default)
+        else:
+            minutes = default
+        return int(minutes * 60)
+
+    def _is_node_online(self, last_heard: float, source: str = "meshtastic") -> bool:
+        """Determine if a node is online based on last_heard timestamp.
+
+        Single source of truth for online status determination.
+        Uses per-source thresholds for accurate status across network types.
+
+        Args:
+            last_heard: Unix timestamp of last communication (0 or None = unknown)
+            source: Network source type for threshold lookup
+
+        Returns:
+            True if the node was heard within the source's threshold window
+        """
+        if not last_heard or last_heard <= 0:
+            return False
+        threshold = self.get_source_threshold_seconds(source)
+        return (time.time() - last_heard) < threshold
 
     def get_meshtasticd_host(self) -> str:
         """Get meshtasticd host setting."""
@@ -450,13 +509,11 @@ class MapDataCollector:
 
             features = []
             no_position_nodes = []
-            now = time.time()
-            online_threshold = self.get_online_threshold_seconds()
 
             for node in nodes:
                 if node.has_position:
                     last_heard = node.last_heard or 0
-                    is_online = (now - last_heard) < online_threshold if last_heard else False
+                    is_online = self._is_node_online(last_heard, source="meshtastic")
 
                     feature = {
                         "type": "Feature",
@@ -744,9 +801,9 @@ class MapDataCollector:
         else:
             formatted_id = str(node_id)
 
-        # All nodes in nodedb are considered online (matches other mesh maps)
+        # Determine online status from last_heard timestamp
         last_heard = data.get('lastHeard', 0)
-        is_online = True
+        is_online = self._is_node_online(last_heard, source="meshtastic")
 
         # Format last_seen
         if last_heard:
@@ -834,16 +891,18 @@ class MapDataCollector:
                         if self._is_valid_coordinate(lat, lon):
                             user = data.get('user', {})
                             device_metrics = data.get('deviceMetrics', {})
+                            cli_last_heard = data.get('lastHeard', 0)
                             feature = self._make_feature(
                                 node_id=data.get('num', data.get('id', 'unknown')),
                                 name=user.get('longName', ''),
                                 lat=lat, lon=lon,
                                 network='meshtastic',
-                                is_online=True,
+                                is_online=self._is_node_online(cli_last_heard, source="meshtastic"),
                                 snr=data.get('snr'),
                                 battery=device_metrics.get('batteryLevel'),
                                 hardware=user.get('hwModel', ''),
                                 role=user.get('role', ''),
+                                last_heard=cli_last_heard,
                             )
                             features.append(feature)
                 except (json.JSONDecodeError, ValueError, IndexError):
@@ -1083,8 +1142,10 @@ class MapDataCollector:
         if not node.has_location():
             return None
 
-        # Determine online status (if we got data, it's online)
-        is_online = True
+        # Determine online status from scan time — AREDN uses longer threshold
+        # If we just scanned it successfully, use current time as last_heard
+        aredn_last_heard = time.time()
+        is_online = self._is_node_online(aredn_last_heard, source="aredn")
 
         # Determine if this is a "gateway" type node
         # AREDN nodes with tunnels act as gateways
@@ -1102,6 +1163,7 @@ class MapDataCollector:
             is_online=is_online,
             is_gateway=is_gateway,
             hardware=node.model,
+            last_heard=aredn_last_heard,
             role=node.mesh_status or "AREDN",
             last_seen="online",
         )
@@ -1170,12 +1232,14 @@ class MapDataCollector:
                             name = (pos.get("name") if pos else None) or f"RNS:{hash_hex[:8]}"
 
                             if lat and lon:
+                                rns_last_heard = pos.get("last_heard", 0) if pos else 0
                                 feature = self._make_feature(
                                     node_id=node_id,
                                     name=name,
                                     lat=lat, lon=lon,
                                     network="rns",
-                                    is_online=True,
+                                    is_online=self._is_node_online(rns_last_heard, source="rns"),
+                                    last_heard=rns_last_heard,
                                 )
                                 features.append(feature)
 
@@ -1361,11 +1425,12 @@ class MapDataCollector:
         )
 
     def _make_feature(self, node_id: str, name: str, lat: float, lon: float,
-                      network: str = "meshtastic", is_online: bool = True,
+                      network: str = "meshtastic", is_online: bool = False,
                       snr: Optional[float] = None, battery: Optional[int] = None,
                       hardware: str = "", role: str = "",
                       is_gateway: bool = False, via_mqtt: bool = False,
                       is_local: bool = False, last_seen: str = "",
+                      last_heard: Optional[float] = None,
                       rssi: Optional[int] = None,
                       temperature: Optional[float] = None,
                       humidity: Optional[float] = None,
@@ -1374,7 +1439,9 @@ class MapDataCollector:
                       co2: Optional[int] = None,
                       iaq: Optional[int] = None,
                       channel_utilization: Optional[float] = None,
-                      air_util_tx: Optional[float] = None) -> Dict:
+                      air_util_tx: Optional[float] = None,
+                      channel_name: str = "",
+                      has_encryption: Optional[bool] = None) -> Dict:
         """Create a GeoJSON Feature for a node."""
         props = {
             "id": str(node_id),
@@ -1388,6 +1455,7 @@ class MapDataCollector:
             "rssi": rssi,
             "battery": battery,
             "last_seen": last_seen or ("online" if is_online else "unknown"),
+            "last_heard": last_heard or 0,
             "hardware": hardware,
             "role": role,
         }
@@ -1408,6 +1476,11 @@ class MapDataCollector:
             props["channel_utilization"] = channel_utilization
         if air_util_tx is not None:
             props["air_util_tx"] = air_util_tx
+        # Channel/encryption info (Phase 3)
+        if channel_name:
+            props["channel_name"] = channel_name
+        if has_encryption is not None:
+            props["has_encryption"] = has_encryption
         return {
             "type": "Feature",
             "geometry": {
@@ -1418,12 +1491,32 @@ class MapDataCollector:
         }
 
     def _merge_feature(self, existing: Dict, new: Dict) -> None:
-        """Merge new feature data into existing (prefer non-null values)."""
-        for key, value in new["properties"].items():
+        """Merge new feature data into existing.
+
+        - For is_online/last_heard: most recent last_heard wins (freshest data
+          determines online status). This prevents stale sources from overriding
+          accurate status.
+        - For other properties: prefer non-null values (fill gaps).
+        """
+        new_props = new["properties"]
+        ex_props = existing["properties"]
+
+        # Handle is_online via most-recent last_heard
+        new_lh = new_props.get("last_heard", 0) or 0
+        ex_lh = ex_props.get("last_heard", 0) or 0
+        if new_lh > ex_lh:
+            ex_props["last_heard"] = new_lh
+            if "is_online" in new_props:
+                ex_props["is_online"] = new_props["is_online"]
+
+        # Merge other properties (prefer non-null to fill gaps)
+        for key, value in new_props.items():
+            if key in ("is_online", "last_heard"):
+                continue  # Already handled above
             if value is not None and value != "" and value != "unknown":
-                existing_val = existing["properties"].get(key)
+                existing_val = ex_props.get(key)
                 if existing_val is None or existing_val == "" or existing_val == "unknown":
-                    existing["properties"][key] = value
+                    ex_props[key] = value
 
     def _load_cache(self) -> List[Dict]:
         """Load last-known node state from disk cache."""

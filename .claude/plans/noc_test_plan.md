@@ -2,8 +2,9 @@
 
 > **Operator**: WH6GXZ (Nursedude)
 > **Lab**: 8+ Raspberry Pis, 2x Mikrotik routers, cloud DDNS
-> **Date**: 2026-01-19
-> **Branch**: `claude/code-review-health-check-oiAAc`
+> **Created**: 2026-01-19
+> **Updated**: 2026-02-27 — Aligned with TUI-only interface (GTK removed in v0.5.x)
+> **Branch**: `main` (v0.5.4-beta)
 
 ---
 
@@ -66,7 +67,7 @@ sudo apt update && sudo apt upgrade -y
 # 2. Clone and run NOC installer
 git clone https://github.com/Nursedude/meshforge.git /tmp/meshforge
 cd /tmp/meshforge
-git checkout claude/code-review-health-check-oiAAc
+git checkout main
 sudo bash scripts/install_noc.sh
 ```
 
@@ -90,11 +91,11 @@ sudo bash scripts/install_noc.sh
   ```
 - [ ] **MeshForge launches:**
   ```bash
-  sudo meshforge
-  # Expected: Interface wizard appears
+  sudo python3 src/launcher_tui/main.py
+  # Expected: TUI menu appears (whiptail/dialog)
   ```
 - [ ] **Sees mesh network:**
-  - Launch GTK or TUI
+  - Navigate TUI menus
   - Check node count > 0
   - Pi #1 (CONTROL) visible in node list
 

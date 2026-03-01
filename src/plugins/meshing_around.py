@@ -108,6 +108,13 @@ class MeshingAroundPlugin(IntegrationPlugin):
                 stderr=subprocess.PIPE,
             )
 
+            # Verify bot started successfully
+            import time
+            time.sleep(1)
+            if self._process.poll() is not None:
+                logger.error(f"meshing-around exited immediately: rc={self._process.returncode}")
+                return False
+
             self._connected = True
             logger.info("Started meshing-around bot")
             return True

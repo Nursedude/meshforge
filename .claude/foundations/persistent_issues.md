@@ -3,28 +3,26 @@
 > **Purpose**: Document recurring issues and their proper fixes to prevent regression.
 > This serves as institutional memory for development.
 >
-> **Last audited**: 2026-02-24 — Security & QA sweep (v0.5.4-beta): GTK4 remnant removed from plugin_base.py, raw systemctl bypasses fixed in orchestrator + installer, safe_import violation fixed, main.py trimmed below 1500 via export extraction to topology_mixin, line counts refreshed, H1 fully resolved
+> **Last audited**: 2026-02-28 — Code quality review: Handler registry migration confirmed complete (49 mixins → 60 handlers + Protocol + TUIContext), 2 broken tests fixed, CLAUDE.md architecture tree updated, test counts refreshed (2,547 tests / 73 files)
 
 ---
 
-## Health Check Reconciliation (2026-02-20)
+## Health Check Reconciliation (2026-02-20) — ALL RESOLVED
 
-The code review health check (2026-01-24) identified 5 critical (C1-C5) and 1 high (H1)
-issues. After auditing the current codebase, here is their status:
+C1-C5 and H1 from the 2026-01-24 code review are all FIXED/MITIGATED.
+Full details moved to `persistent_issues_archive.md` (2026-02-26).
 
-| ID | Issue | Status | Evidence |
-|----|-------|--------|----------|
-| C1 | LXMF Source None after partial RNS init | **MITIGATED** | Guard at `rns_bridge.py:579-580` returns False instead of crashing |
-| C2 | reconnect.py raises None on early interruption | **FIXED** | `reconnect.py:176-178` raises ConnectionError |
-| C3 | Unbounded node tracking dicts (memory leak) | **FIXED** | MAX_NODES caps + eviction in node_tracker.py and node_monitor.py |
-| C4 | Stats dict race conditions (24 racy increments) | **FIXED** | threading.Lock added across all affected files |
-| C5 | Atomic write uses deterministic temp path | **FIXED** | `paths.py` uses `tempfile.mkstemp()` for unique temp files |
-| H1 | Non-interruptible shutdown in daemon loops | **FIXED** (2026-02-20) | All daemon loops now use `_stop_event.wait()` instead of `time.sleep()` |
+---
 
-**Key lesson**: File-scoped fixes applied between Jan 24 — Feb 20 resolved C2-C5 individually.
-H1 was fully resolved by Feb 20 — all daemon loops now use `_stop_event.wait()`. Remaining
-`time.sleep()` calls (49 files) are in bounded connection-wait loops, one-shot delays, and
-interactive pauses, which are acceptable patterns.
+## Handler Registry Migration — COMPLETE (2026-02-28)
+
+The 49-mixin inheritance chain on `MeshForgeLauncher` has been fully replaced with a
+handler registry pattern. See `handler_protocol.py` (Protocol + BaseHandler + TUIContext)
+and `handler_registry.py` (register/lookup/dispatch). Each handler is a self-contained
+class in `launcher_tui/handlers/` (60 files). `main.py` dropped from 1,947 to 1,148 lines.
+
+**Impact**: Resolves Feb 26 audit item #1 (Critical — mixin explosion). MRO is now trivial,
+state coupling eliminated, new handlers are straightforward to add.
 
 ---
 
@@ -64,9 +62,9 @@ Historical details in `persistent_issues_archive.md`.
 
 ---
 
-## Issue #3: Services Not Started/Verified — PARTIALLY RESOLVED (2026-02-20)
+## Issue #3: Services Not Started/Verified — MOSTLY RESOLVED (2026-02-27)
 
-### Status: **Gateway pre-flight checks done.** 34+ secondary locations remain.
+### Status: **Gateway + secondary pre-flight checks done.** Display-only systemctl calls remain (acceptable).
 
 ### Rule
 **Always call `check_service()` before connecting to services.**
@@ -97,15 +95,25 @@ if not status.available:
 - `rns_bridge.py` — Advisory `check_service('rnsd')` before RNS init
 - `meshtastic_connection.py` — Replaced raw `systemctl restart` with `restart_service()`
 
+### Completed (2026-02-27)
+- `device_controller.py` — Advisory meshtasticd pre-flight before TCPInterface
+- `connections.py` — Advisory meshtasticd pre-flight before TCPInterface
+- `rns_transport.py` — Advisory meshtasticd pre-flight before TCPInterface
+- `node_monitor.py` — Advisory meshtasticd pre-flight before TCPInterface
+- `mesh_bridge.py` — Advisory meshtasticd pre-flight (TCP) + mosquitto pre-flight (MQTT, localhost only)
+- `mqtt_bridge.py` (plugin) — Advisory mosquitto pre-flight for localhost brokers
+- `mqtt_subscriber.py` — Advisory mosquitto pre-flight for localhost brokers
+- `diagnose.py` — Converted `safe_import` to direct import, eliminated raw systemctl fallback
+- `handlers/metrics.py` — Replaced raw `systemctl is-active grafana-server` with `check_service()`
+
 **Note**: Gateway pre-flight checks are ADVISORY (warn + continue), not blocking.
 Services may run outside systemd (Docker, manual start). The actual connection
 attempt is the definitive test. Blocking checks caused "waiting for delivery"
 regression when mosquitto wasn't detectable via systemctl.
 
-### Remaining (34+ locations)
-- 8 files create `TCPInterface` without meshtasticd checks
-- 4 MQTT connections without mosquitto checks
-- 8 files with raw `subprocess.run(['systemctl', ...])` bypassing service_check
+### Remaining (display-only — acceptable)
+- `system_tools_mixin.py` — `systemctl list-units/status` for display to user (not state decisions)
+- `service_menu_mixin.py` — `systemctl status` for display to user (not state decisions)
 
 ### Known Services (in `utils/service_check.py`)
 | Service | Port | systemd name |
@@ -189,7 +197,7 @@ from utils.paths import MeshForgePaths, ReticulumPaths
 from utils.common import SettingsManager, CONFIG_DIR
 
 # Logging
-from utils.logging_utils import get_logger
+from utils.logging_config import get_logger
 
 # Service availability checks - use before service-dependent operations
 from utils.service_check import check_service, check_port, ServiceState

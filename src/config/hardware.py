@@ -1,15 +1,29 @@
-"""Hardware detection for LoRa modules and devices"""
+"""Hardware detection for LoRa modules and devices
+
+Single source of truth for:
+- USB module database (KNOWN_USB_MODULES, USB_ID_TO_TEMPLATE)
+- SPI HAT database (KNOWN_SPI_HATS, HAT_KEY_TO_TEMPLATE)
+- Hardware device configs (HARDWARE_DEVICES) for TUI selection
+- Hardware detection logic (HardwareDetector)
+"""
 
 import os
 import glob
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-from rich.console import Console
+try:
+    from rich.console import Console
+    console = Console()
+except ImportError:
+    # Fallback when rich is not installed (e.g., minimal test environments)
+    class _FallbackConsole:
+        def print(self, *args, **kwargs):
+            print(*args)
+    console = _FallbackConsole()
 
 from utils.system import run_command
 from utils.logger import log
-
-console = Console()
 
 
 class HardwareDetector:
@@ -666,3 +680,104 @@ class HardwareDetector:
             table.add_row(hw_type, details_str)
 
         console.print(table)
+
+
+# --- Hardware device configs for TUI selection ---
+# Used by meshtasticd_config_mixin and first_run_mixin for device setup.
+# yaml_file should match actual templates in /etc/meshtasticd/available.d/
+
+@dataclass
+class HardwareDevice:
+    """Hardware device configuration for TUI selection menus."""
+    name: str
+    description: str
+    yaml_file: str
+    requires_spi: bool = True
+    requires_serial: bool = False
+    requires_i2c: bool = False
+    spi_overlay: Optional[str] = None
+    notes: str = ""
+
+
+HARDWARE_DEVICES = {
+    # LoRa HATs - High Power
+    'meshadv-pi-hat': HardwareDevice(
+        name='MeshAdv-Pi-Hat (1W)',
+        description='High power SX1262 (E22-900M30S) - US 915MHz',
+        yaml_file='meshadv-pi-hat.yaml',
+        requires_spi=True,
+        spi_overlay='spi0-0cs',
+        notes='1W output, requires SPI. Template: meshadv-pi-hat.yaml'
+    ),
+    # LoRa HATs - Standard Power
+    'meshadv-mini': HardwareDevice(
+        name='MeshAdv-Mini',
+        description='SX1262/SX1268 HAT - 22dBm',
+        yaml_file='meshadv-mini.yaml',
+        requires_spi=True,
+        spi_overlay='spi0-0cs',
+        notes='Standard power. Template: meshadv-mini.yaml'
+    ),
+    'waveshare-sx1262': HardwareDevice(
+        name='Waveshare SX1262',
+        description='Waveshare LoRa HAT SX1262',
+        yaml_file='waveshare-sx1262.yaml',
+        requires_spi=True,
+        spi_overlay='spi0-0cs',
+        notes='Template: waveshare-sx1262.yaml'
+    ),
+    'adafruit-rfm9x': HardwareDevice(
+        name='Adafruit RFM9x',
+        description='Adafruit LoRa Radio Bonnet RFM95/96',
+        yaml_file='adafruit-rfm9x.yaml',
+        requires_spi=True,
+        spi_overlay='spi0-0cs',
+        notes='Template: adafruit-rfm9x.yaml'
+    ),
+    'meshtoad': HardwareDevice(
+        name='Meshtoad',
+        description='Meshtoad USB-to-SPI adapter (CH341)',
+        yaml_file='meshtoad.yaml',
+        requires_spi=True,
+        notes='Uses CH341 SPI. Template: meshtoad.yaml'
+    ),
+    'meshtoad-e22': HardwareDevice(
+        name='MeshToad E22',
+        description='MeshToad E22 USB-to-SPI adapter (CH341 + SX1262)',
+        yaml_file='lora-usb-meshtoad-e22.yaml',
+        requires_spi=True,
+        notes='CH341 SPI bridge (PID 0x5512). High-power E22 module.'
+    ),
+    # Waveshare displays
+    'display-waveshare-1.44': HardwareDevice(
+        name='Waveshare 1.44" LCD',
+        description='128x128 SPI LCD display (ST7735)',
+        yaml_file='display-waveshare-1-44.yaml',
+        requires_spi=True,
+        notes='Template: display-waveshare-1-44.yaml'
+    ),
+    'display-waveshare-2.8': HardwareDevice(
+        name='Waveshare 2.8" LCD',
+        description='320x240 SPI LCD display (ILI9341)',
+        yaml_file='display-waveshare-2.8.yaml',
+        requires_spi=True,
+        notes='Template: display-waveshare-2.8.yaml'
+    ),
+    # I2C devices
+    'i2c-oled-128x64': HardwareDevice(
+        name='I2C OLED 128x64',
+        description='SSD1306 I2C OLED display',
+        yaml_file='display-i2c-oled.yaml',
+        requires_spi=False,
+        requires_i2c=True,
+        notes='Common OLED display module'
+    ),
+    # USB Serial
+    'usb-serial': HardwareDevice(
+        name='USB Serial Radio',
+        description='USB-connected Meshtastic device',
+        yaml_file='usb-serial.yaml',
+        requires_spi=False,
+        notes='For T-Beam, T-Echo, etc. Template: usb-serial.yaml'
+    ),
+}

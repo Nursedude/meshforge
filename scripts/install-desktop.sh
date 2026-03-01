@@ -74,13 +74,13 @@ for size in "${ICON_SIZES[@]}"; do
     # Install SVG at all sizes (works on modern systems)
     if [ -f "$PROJECT_DIR/assets/meshforge-icon.svg" ]; then
         cp "$PROJECT_DIR/assets/meshforge-icon.svg" "$ICON_DIR/meshforge.svg"
-        # Also install with app_id name for GTK4/libadwaita taskbar
+        # Also install with app_id name for desktop taskbar
         cp "$PROJECT_DIR/assets/meshforge-icon.svg" "$ICON_DIR/org.meshforge.app.svg"
     fi
 done
 
-# Install scalable SVG (required for GTK4 taskbar icon)
-echo "Installing scalable icon for GTK4 taskbar..."
+# Install scalable SVG (required for desktop taskbar icon)
+echo "Installing scalable icon for desktop taskbar..."
 SCALABLE_DIR="/usr/share/icons/hicolor/scalable/apps"
 mkdir -p "$SCALABLE_DIR"
 if [ -f "$PROJECT_DIR/assets/meshforge-icon.svg" ]; then
@@ -112,7 +112,7 @@ INSTALLED_DESKTOP="/usr/share/applications/org.meshforge.app.desktop"
 # Remove old meshforge.desktop if it exists
 rm -f /usr/share/applications/meshforge.desktop 2>/dev/null || true
 
-# Copy desktop file (Icon=org.meshforge.app matches GTK4 app_id)
+# Copy desktop file (Icon=org.meshforge.app matches desktop app_id)
 cp "$DESKTOP_FILE" "$INSTALLED_DESKTOP"
 chmod 644 "$INSTALLED_DESKTOP"
 
@@ -145,13 +145,6 @@ chmod 755 /usr/local/bin/meshforge
 cp "$PROJECT_DIR/scripts/meshforge-terminal.sh" /usr/local/bin/meshforge-terminal
 chmod 755 /usr/local/bin/meshforge-terminal
 
-# Install VTE dependencies for better taskbar integration
-echo "Checking VTE dependencies for taskbar icon support..."
-if command -v apt-get &> /dev/null; then
-    apt-get install -y gir1.2-vte-2.91 libvte-2.91-gtk4-0 2>/dev/null && \
-        echo "  VTE installed - taskbar icon will work correctly" || \
-        echo "  VTE installation skipped (may need manual install for taskbar icon)"
-fi
 
 # Install polkit policy (for pkexec authentication)
 echo "Installing polkit policy..."

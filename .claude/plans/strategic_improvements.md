@@ -13,8 +13,8 @@ After deep analysis of the codebase, MeshForge has strong foundations:
 - Solid gateway bridging (Meshtastic ↔ RNS)
 - Comprehensive diagnostic engine with 25+ rules
 - Rich knowledge base (offline-capable)
-- Multi-UI architecture (GTK, TUI, Web, CLI)
-- Strong security practices and test coverage (1252 tests)
+- TUI-based interface (primary, whiptail/dialog)
+- Strong security practices and test coverage (~1,986 tests across 70 files)
 
 **Underutilized Assets**:
 - `analytics.py` - SQLite stores exist but not exposed in UIs
@@ -51,8 +51,7 @@ analytics.db (link_budget_history, network_health)
 **Files to Modify**:
 - `src/utils/analytics.py` - Add trend analysis methods
 - `src/utils/diagnostic_engine.py` - Add predictive rules
-- `src/gtk_ui/panels/diagnostics.py` - Display predictions
-- `src/tui/panes/dashboard.py` - Show health trends
+- TUI dashboard mixin - Show health trends
 
 **Why This Matters**: Turns MeshForge from reactive monitoring to proactive network management.
 
@@ -79,7 +78,7 @@ CREATED → QUEUED → SENT → RELAYED → DELIVERED → ACK
 **Files to Modify**:
 - `src/gateway/message_queue.py` - Add state machine
 - `src/commands/gateway.py` - Add trace command
-- New: `src/gtk_ui/panels/message_trace.py`
+- TUI messaging mixin - Display message trace
 
 **Why This Matters**: Engineers need to diagnose routing issues, not guess.
 
@@ -112,8 +111,7 @@ CREATED → QUEUED → SENT → RELAYED → DELIVERED → ACK
 ```
 
 **Files to Create**:
-- `src/gtk_ui/panels/health_dashboard.py`
-- `src/tui/panes/health.py`
+- TUI health dashboard mixin or handler
 
 **Why This Matters**: One view to rule them all — instant situational awareness.
 
@@ -168,7 +166,7 @@ def on_explain_clicked(self):
 
 **Files to Modify**:
 - `src/utils/claude_assistant.py` - Add context-aware methods
-- Various panels - Add "AI Assist" buttons
+- TUI mixins - Add "AI Assist" menu options
 
 **Why This Matters**: Leverages existing AI capability where users need it.
 
@@ -233,7 +231,7 @@ def on_explain_clicked(self):
 ### Sprint B: Analytics & Prediction (COMPLETED)
 - [x] Wire analytics.db into diagnostic engine
 - [x] Add trend analysis methods (PredictiveAnalyzer class)
-- [x] Create health dashboard panel (GTK)
+- [x] Create health dashboard (analytics mixin)
 - [x] Add predictive alerts (PREDICTIVE category)
 - [x] 27 new tests for predictive analytics
 
@@ -259,10 +257,10 @@ def on_explain_clicked(self):
 
 | Metric | Current | Target |
 |--------|---------|--------|
-| Test coverage | 1252 tests | 1400+ |
+| Test coverage | ~1,986 tests | 2,000+ |
 | Mean time to diagnose | Manual | <30 seconds |
 | False positive rate | ~5% | <1% |
-| UI panels with AI assist | 1 | 5+ |
+| TUI menus with AI assist | 1 | 5+ |
 
 ---
 
@@ -278,4 +276,5 @@ If the answer is unclear, don't build it.
 ---
 
 *Created: 2026-01-17*
-*MeshForge v0.4.7-beta*
+*Updated: 2026-02-27 — Removed GTK references (TUI is sole interface), updated metrics*
+*MeshForge v0.5.4-beta*

@@ -721,13 +721,10 @@ def main():
 
     args = parser.parse_args()
 
-    # Configure logging
+    # Configure logging — use canonical logging_config
+    from utils.logging_config import setup_logging
     log_level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s %(name)s [%(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
+    setup_logging(level=log_level)
 
     # Load or create configuration
     if args.config and Path(args.config).exists():

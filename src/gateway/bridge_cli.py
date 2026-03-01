@@ -25,13 +25,10 @@ from gateway import (
 )
 from utils.service_check import check_service, check_port
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    datefmt='%H:%M:%S'
-)
-logger = logging.getLogger('gateway.cli')
+# Setup logging — use canonical logging_config (avoids basicConfig conflicts)
+from utils.logging_config import setup_logging, get_logger
+setup_logging(level=logging.INFO)
+logger = get_logger('gateway.cli')
 
 # Metrics server instance (auto-started with gateway)
 _metrics_server = None

@@ -859,7 +859,32 @@ Both networks displayed with distinct markers:
 
 ---
 
+## Integration Patterns & References
+
+> Consolidated from rns_integration.md (2026-02-26)
+
+### Primary Reference: RNS_Over_Meshtastic_Gateway
+- **URL**: https://github.com/landandair/RNS_Over_Meshtastic
+- **Key Files**: `Meshtastic_Interface.py` (core), `install.py`, `supervisor.py`
+- **Patterns adopted**: LoRa speed presets, cross-platform serial detection, packet fragmentation (564-byte RNS → 200-byte Meshtastic fragments)
+
+### Meshtastic API Endpoints
+| Endpoint | Method | Function |
+|----------|--------|----------|
+| `/api/v1/fromradio` | GET | Receive protobuf (ESP32 native) |
+| `/api/v1/toradio` | POST | Send protobuf (ESP32 native) |
+| `/api/mesh/send_message` | POST | Send messages (meshttpd REST) |
+| `/api/mesh/nodes` | GET | List nodes (meshttpd REST) |
+
+### RNS Ecosystem References
+- RNS Docs: https://reticulum.network/
+- LXMF: https://github.com/markqvist/lxmf
+- NomadNet: https://github.com/markqvist/nomadnet
+- Meshtastic HTTP API: https://meshtastic.org/docs/development/device/http-api/
+
+---
+
 *Created: 2026-01-03*
-*Updated: 2026-01-03*
+*Updated: 2026-02-26 (consolidated rns_integration.md)*
 *Status: Active Research*
-*Version: 1.1*
+*Version: 1.2*
