@@ -71,6 +71,12 @@ _get_listener_status, _HAS_MSG_LISTENER = safe_import(
 _get_websocket_server, _is_websocket_available, _HAS_WS_SERVER = safe_import(
     'utils.websocket_server', 'get_websocket_server', 'is_websocket_available'
 )
+_get_node_tracker, _HAS_NODE_TRACKER = safe_import(
+    'gateway.node_tracker', 'get_node_tracker'
+)
+_LinkQualityScorer, _HAS_LINK_QUALITY = safe_import(
+    'utils.link_quality', 'LinkQualityScorer'
+)
 
 # Default path where meshtasticd installs its web client files.
 # MeshForge serves these directly from disk instead of proxying HTML.
@@ -969,6 +975,49 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
                         "type": "gateway",
                         "distance_km": round(dist, 2)
                     })
+
+        # Add real RNS transport edges from NetworkTopology
+        if _HAS_NODE_TRACKER and _HAS_LINK_QUALITY:
+            try:
+                tracker = _get_node_tracker()
+                topo = tracker.get_topology()
+                if topo:
+                    scorer = _LinkQualityScorer()
+                    for edge in topo.get("edges", []):
+                        if not edge.get("is_active", False):
+                            continue
+                        src_id = edge.get("source_id", "")
+                        dst_id = edge.get("dest_id", "")
+                        # Both endpoints must have coordinates
+                        if src_id not in node_map or dst_id not in node_map:
+                            continue
+                        src_n = node_map[src_id]
+                        dst_n = node_map[dst_id]
+                        dist = self._haversine(
+                            src_n["lat"], src_n["lon"],
+                            dst_n["lat"], dst_n["lon"]
+                        )
+                        score = scorer.score(
+                            snr=edge.get("snr"),
+                            rssi=edge.get("rssi"),
+                            hops=edge.get("hops", 1),
+                            announce_count=edge.get("announce_count"),
+                        )
+                        links.append({
+                            "source": src_id,
+                            "target": dst_id,
+                            "type": "rns_transport",
+                            "snr": edge.get("snr"),
+                            "rssi": edge.get("rssi"),
+                            "hops": edge.get("hops", 0),
+                            "link_quality_score": round(score.score, 1),
+                            "link_quality_label": score.quality.value,
+                            "link_quality_color": score.get_color(),
+                            "announce_count": edge.get("announce_count", 0),
+                            "distance_km": round(dist, 2),
+                        })
+            except Exception as e:
+                logger.debug(f"RNS topology enrichment: {e}")
 
         self._serve_json({
             "nodes": nodes,

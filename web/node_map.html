@@ -1401,6 +1401,7 @@
                 <label><input type="checkbox" id="filter-links" checked> Link lines</label>
                 <label><input type="checkbox" id="filter-link-anim" checked> Animate links</label>
                 <label><input type="checkbox" id="filter-heatmap"> Signal heatmap</label>
+                <label><input type="checkbox" id="filter-rns-links" checked> RNS link quality</label>
                 <label><input type="checkbox" id="filter-clustering"> Cluster view</label>
                 <label><input type="checkbox" id="filter-messages"> Message flow</label>
                 <label><input type="checkbox" id="filter-history"> History playback</label>
@@ -1645,6 +1646,11 @@
             <div class="legend-shape" style="width: 60px;"><svg viewBox="0 0 60 8"><defs><linearGradient id="hg" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#1a237e"/><stop offset="35%" stop-color="#5c6bc0"/><stop offset="50%" stop-color="#ffa726"/><stop offset="80%" stop-color="#66bb6a"/><stop offset="100%" stop-color="#00e676"/></linearGradient></defs><rect width="60" height="8" rx="2" fill="url(#hg)"/></svg></div>
             <span style="font-size: 10px;">Weak → Strong</span>
         </div>
+        <div class="legend-title" id="rns-link-legend" style="margin-top: 10px; padding-top: 8px; border-top: 1px solid #2a3a4a; display: none;">RNS Link Quality</div>
+        <div class="legend-item rns-link-legend-item" style="display: none;">
+            <div class="legend-shape" style="width: 60px;"><svg viewBox="0 0 60 8"><defs><linearGradient id="rlg" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#ef4444"/><stop offset="25%" stop-color="#f97316"/><stop offset="50%" stop-color="#eab308"/><stop offset="75%" stop-color="#84cc16"/><stop offset="100%" stop-color="#22c55e"/></linearGradient></defs><rect width="60" height="8" rx="2" fill="url(#rlg)"/></svg></div>
+            <span style="font-size: 10px;">Bad → Excellent</span>
+        </div>
     </div>
 
     <!-- Phase 5: GPS Location Button -->
@@ -1782,6 +1788,7 @@
     const messageFlowLayer = L.layerGroup().addTo(map);
     const trailsLayer = L.layerGroup().addTo(map);  // Node movement trails
     let heatmapLayer = null; // Lazy initialized when needed
+    const rnsLinkLayer = L.layerGroup().addTo(map);  // RNS link quality overlay
     let activeTrailNodeId = null; // Currently displayed trail
 
     // Phase 4: Network-specific layers for filtering
@@ -2885,6 +2892,9 @@
         // Update signal strength heatmap
         updateSignalHeatmap(state.currentGeoJSON.features);
 
+        // Update RNS link quality overlay
+        updateRnsLinks();
+
         // Update stats
         document.getElementById('stat-total').textContent = total;
         document.getElementById('stat-meshtastic').textContent = meshtastic;
@@ -3074,6 +3084,103 @@
         }
 
         return { color, weight, opacity, dashArray, className };
+    }
+
+    // ============================================
+    // RNS Link Quality Overlay
+    // ============================================
+
+    // Cache for topology data (refreshed on each update cycle)
+    let rnsTopologyCache = null;
+    let rnsTopoCacheTime = 0;
+
+    function updateRnsLinks() {
+        rnsLinkLayer.clearLayers();
+        const showRnsLinks = document.getElementById('filter-rns-links').checked;
+
+        // Toggle legend visibility
+        const legendEl = document.getElementById('rns-link-legend');
+        if (legendEl) legendEl.style.display = showRnsLinks ? 'block' : 'none';
+        document.querySelectorAll('.rns-link-legend-item').forEach(el => {
+            el.style.display = showRnsLinks ? 'flex' : 'none';
+        });
+
+        if (!showRnsLinks) return;
+
+        // Use cached topology if fresh (< 10 seconds)
+        const now = Date.now();
+        if (rnsTopologyCache && (now - rnsTopoCacheTime) < 10000) {
+            drawRnsLinksFromData(rnsTopologyCache);
+            return;
+        }
+
+        fetch('/api/network/topology')
+            .then(r => r.ok ? r.json() : null)
+            .then(data => {
+                if (!data) return;
+                rnsTopologyCache = data;
+                rnsTopoCacheTime = Date.now();
+                drawRnsLinksFromData(data);
+            })
+            .catch(err => console.debug('RNS links fetch:', err));
+    }
+
+    function drawRnsLinksFromData(data) {
+        if (!data || !data.links) return;
+
+        // Build coordinate lookup from topology nodes
+        const nodeCoords = {};
+        (data.nodes || []).forEach(n => {
+            if (n.lat && n.lon) nodeCoords[n.id] = [n.lat, n.lon];
+        });
+
+        const rnsLinks = data.links.filter(l => l.type === 'rns_transport');
+        if (rnsLinks.length === 0) return;
+
+        for (const link of rnsLinks) {
+            const src = nodeCoords[link.source];
+            const dst = nodeCoords[link.target];
+            if (!src || !dst) continue;
+
+            const color = link.link_quality_color || '#6b7280';
+            const weight = link.hops <= 1 ? 3 : 2;
+
+            // Main polyline
+            const line = L.polyline([src, dst], {
+                color: color,
+                weight: weight,
+                opacity: 0.75,
+                dashArray: link.hops > 2 ? '6 4' : null,
+                lineCap: 'round',
+                lineJoin: 'round',
+                interactive: true
+            });
+
+            // Tooltip with link details
+            let tip = `<b>RNS Transport Link</b><br>`;
+            tip += `Quality: <span style="color:${color}">${link.link_quality_label || 'unknown'}</span>`;
+            tip += ` (${link.link_quality_score || 0}/100)<br>`;
+            if (link.snr != null) tip += `SNR: ${link.snr.toFixed(1)} dB<br>`;
+            if (link.rssi != null) tip += `RSSI: ${link.rssi} dBm<br>`;
+            tip += `Hops: ${link.hops}<br>`;
+            if (link.distance_km) tip += `Distance: ${link.distance_km} km<br>`;
+            if (link.announce_count) tip += `Announces: ${link.announce_count}`;
+            line.bindTooltip(tip, { sticky: true, className: 'leaflet-popup-content-wrapper' });
+
+            rnsLinkLayer.addLayer(line);
+
+            // Glow effect for excellent links
+            if (link.link_quality_score >= 80) {
+                const glow = L.polyline([src, dst], {
+                    color: color,
+                    weight: weight + 3,
+                    opacity: 0.15,
+                    lineCap: 'round',
+                    interactive: false
+                });
+                rnsLinkLayer.addLayer(glow);
+            }
+        }
     }
 
     // ============================================
@@ -3701,7 +3808,8 @@
     });
 
     ['filter-meshtastic', 'filter-rns', 'filter-aredn', 'filter-online-only',
-     'filter-coverage', 'filter-links', 'filter-link-anim', 'filter-heatmap'].forEach(id => {
+     'filter-coverage', 'filter-links', 'filter-link-anim', 'filter-heatmap',
+     'filter-rns-links'].forEach(id => {
         document.getElementById(id).addEventListener('change', () => {
             // Reset markers to force rebuild with new settings
             if (id === 'filter-coverage') {
