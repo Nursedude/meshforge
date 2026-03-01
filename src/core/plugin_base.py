@@ -230,7 +230,7 @@ class PluginContext:
 
         Args:
             panel_id: Unique identifier for the panel
-            panel_class: Widget class for the panel
+            panel_class: GTK widget class for the panel
             title: Display title in sidebar
             icon: Icon name for sidebar
         """

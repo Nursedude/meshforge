@@ -1492,6 +1492,5 @@ def print_status():
 
 
 if __name__ == "__main__":
-    from utils.logging_config import setup_logging
-    setup_logging(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO)
     print_status()

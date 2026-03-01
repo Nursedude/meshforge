@@ -2,7 +2,7 @@
 Unified Diagnostic Engine for MeshForge
 
 This is the single source of truth for ALL diagnostics.
-CLI, TUI, and Web all consume this engine.
+CLI, GTK, Web, and TUI all consume this engine.
 
 Design Principles:
 1. Singleton pattern - one engine per process

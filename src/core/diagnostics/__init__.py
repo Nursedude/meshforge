@@ -2,7 +2,7 @@
 Unified Diagnostic Engine for MeshForge
 
 This module provides a single source of truth for ALL diagnostics.
-CLI, TUI, and Web all consume this engine.
+CLI, GTK, and Web all consume this engine.
 
 Usage:
     from core.diagnostics import DiagnosticEngine, CheckCategory

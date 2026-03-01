@@ -1181,8 +1181,10 @@ def main():
     """CLI entry point for orchestrator."""
     import argparse
 
-    from utils.logging_config import setup_logging
-    setup_logging(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s | %(name)s | %(levelname)s | %(message)s'
+    )
 
     parser = argparse.ArgumentParser(description='MeshForge Service Orchestrator')
     parser.add_argument('--start', action='store_true', help='Start all services')

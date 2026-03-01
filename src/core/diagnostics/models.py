@@ -2,7 +2,7 @@
 Unified Diagnostic Data Models
 
 These data structures are used across ALL diagnostic implementations:
-- CLI, TUI, Web all use the same models
+- CLI, GTK, Web all use the same models
 - JSON serialization built-in for API/storage
 - Thread-safe by design (immutable dataclasses)
 """
