@@ -38,6 +38,8 @@ class AnalyticsHandler(BaseHandler):
             choices = [
                 ("trends", "Link Trends         Link budget over time"),
                 ("health", "Health History       Network health timeline"),
+                ("hourly", "Hourly Summary      Aggregated by hour"),
+                ("daily", "Daily Summary       Aggregated by day"),
                 ("forecast", "Forecast            24h network forecast"),
                 ("alerts", "Predictive Alerts   Predicted issues"),
                 ("coverage", "Coverage Stats      Area & spacing analysis"),
@@ -57,6 +59,8 @@ class AnalyticsHandler(BaseHandler):
             dispatch = {
                 "trends": ("Link Trends", self._show_link_trends),
                 "health": ("Health History", self._show_health_history),
+                "hourly": ("Hourly Summary", self._show_hourly_summary),
+                "daily": ("Daily Summary", self._show_daily_summary),
                 "forecast": ("Network Forecast", self._show_network_forecast),
                 "alerts": ("Predictive Alerts", self._show_predictive_alerts),
                 "coverage": ("Coverage Stats", self._show_coverage_stats),
@@ -133,6 +137,69 @@ class AnalyticsHandler(BaseHandler):
         if len(history) > 15:
             print(f"\n  (showing 15 of {len(history)} — oldest omitted)")
 
+        print()
+        self.ctx.wait_for_enter()
+
+    def _show_hourly_summary(self):
+        """Show hourly aggregated network health."""
+        clear_screen()
+        print("=== Hourly Summary (24h) ===\n")
+
+        if not _HAS_ANALYTICS:
+            print("  Analytics module not available.")
+            self.ctx.wait_for_enter()
+            return
+
+        store = get_analytics_store()
+        summary = store.get_hourly_summary(hours=24)
+
+        if not summary:
+            print("  No data available for hourly summary.")
+            print("  The analytics collector populates data when the gateway runs.")
+            self.ctx.wait_for_enter()
+            return
+
+        print(f"  {'Hour':<18} {'Samples':>7} {'Online':>7} {'SNR':>7} {'RSSI':>7} {'Pkt %':>6}")
+        print(f"  {'-'*56}")
+
+        for row in summary[:24]:
+            hour = row["hour"][-5:] if row["hour"] else "?"
+            print(f"  {row['hour']:<18} {row['sample_count']:>7} "
+                  f"{row['avg_online']:>6.0f} {row['avg_snr']:>6.1f} "
+                  f"{row['avg_rssi']:>6.0f} {row['avg_packet_success'] * 100:>5.0f}%")
+
+        print(f"\n  {len(summary)} hour(s) with data")
+        print()
+        self.ctx.wait_for_enter()
+
+    def _show_daily_summary(self):
+        """Show daily aggregated network health."""
+        clear_screen()
+        print("=== Daily Summary (7d) ===\n")
+
+        if not _HAS_ANALYTICS:
+            print("  Analytics module not available.")
+            self.ctx.wait_for_enter()
+            return
+
+        store = get_analytics_store()
+        summary = store.get_daily_summary(days=7)
+
+        if not summary:
+            print("  No data available for daily summary.")
+            print("  The analytics collector populates data when the gateway runs.")
+            self.ctx.wait_for_enter()
+            return
+
+        print(f"  {'Date':<12} {'Samples':>8} {'Avg Online':>10} {'Avg SNR':>8} {'Avg RSSI':>9} {'Pkt %':>6}")
+        print(f"  {'-'*56}")
+
+        for row in summary:
+            print(f"  {row['date']:<12} {row['sample_count']:>8} "
+                  f"{row['avg_online']:>9.0f} {row['avg_snr']:>7.1f} "
+                  f"{row['avg_rssi']:>8.0f} {row['avg_packet_success'] * 100:>5.0f}%")
+
+        print(f"\n  {len(summary)} day(s) with data")
         print()
         self.ctx.wait_for_enter()
 

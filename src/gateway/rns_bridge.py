@@ -61,6 +61,14 @@ from .meshcore_bridge_mixin import MeshCoreBridgeMixin
 from .message_lifecycle import MessageFlowTracker
 from .message_queue import MessageLifecycleState
 
+# Analytics collector for populating the analytics store
+AnalyticsCollector, HAS_ANALYTICS_COLLECTOR = safe_import(
+    'utils.analytics', 'AnalyticsCollector'
+)
+SharedHealthState, HAS_HEALTH_STATE = safe_import(
+    'utils.shared_health_state', 'SharedHealthState'
+)
+
 logger = logging.getLogger(__name__)
 
 # Import centralized path utility - SINGLE SOURCE OF TRUTH for all paths
@@ -248,7 +256,7 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
             )
             logger.info("Circuit breaker initialized for destination tracking")
 
-        # AREDN topology overlay (visibility only)
+        # AREDN topology overlay — provides backhaul-aware routing hints
         self._aredn_overlay = None
         self._aredn_thread = None
         aredn_cfg = getattr(self.config, 'aredn_backhaul', None)
@@ -259,7 +267,9 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
                     auto_detect=aredn_cfg.auto_detect,
                     poll_interval_sec=aredn_cfg.poll_interval_sec,
                 )
-                logger.info("AREDN topology overlay initialized")
+                # Wire overlay into router for AREDN-aware routing hints
+                self._router._aredn_overlay = self._aredn_overlay
+                logger.info("AREDN topology overlay initialized (routing hints enabled)")
             except Exception as e:
                 logger.warning(f"Failed to initialize AREDN overlay: {e}")
 
@@ -618,6 +628,30 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
             self._aredn_thread.start()
             logger.info("AREDN topology polling started")
 
+        # Start analytics collector for populating the analytics dashboard
+        self._analytics_collector = None
+        if HAS_ANALYTICS_COLLECTOR:
+            try:
+                node_getter = None
+                if hasattr(self, 'node_tracker') and self.node_tracker:
+                    node_getter = lambda: self.node_tracker.get_all_nodes()
+
+                health_state = None
+                if HAS_HEALTH_STATE:
+                    try:
+                        health_state = SharedHealthState()
+                    except Exception:
+                        pass
+
+                self._analytics_collector = AnalyticsCollector(
+                    health_state=health_state,
+                    node_getter=node_getter,
+                )
+                self._analytics_collector.start()
+                logger.info("Analytics collector started")
+            except Exception as e:
+                logger.debug(f"Analytics collector init failed: {e}")
+
         logger.info("Bridge started")
         self._notify_status("started")
         return True
@@ -651,6 +685,10 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
                         self._aredn_thread]:
             if thread and thread.is_alive():
                 thread.join(timeout=5)
+
+        # Stop analytics collector
+        if hasattr(self, '_analytics_collector') and self._analytics_collector:
+            self._analytics_collector.stop()
 
         # Stop WebSocket server
         self._stop_websocket_server()

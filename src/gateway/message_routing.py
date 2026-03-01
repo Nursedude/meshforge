@@ -67,16 +67,18 @@ class MessageRouter:
     # Maximum input length for regex matching to bound execution time
     _REGEX_INPUT_LIMIT = 512
 
-    def __init__(self, config, stats: dict, stats_lock):
+    def __init__(self, config, stats: dict, stats_lock, aredn_overlay=None):
         """
         Args:
             config: GatewayConfig instance with routing_rules and settings.
             stats: Shared stats dict (bridge owns it, router updates 'bounced').
             stats_lock: Threading lock for stats updates.
+            aredn_overlay: Optional AREDNTopologyOverlay for backhaul-aware routing.
         """
         self.config = config
         self.stats = stats
         self._stats_lock = stats_lock
+        self._aredn_overlay = aredn_overlay
 
         # Pre-compile routing rule regexes to avoid re-compilation per message
         # and catch invalid patterns at startup rather than at runtime
@@ -286,6 +288,7 @@ class MessageRouter:
         For directed messages, returns based on routing rules and direction.
 
         Filters out MeshCore when message originated via internet (MQTT).
+        Annotates AREDN backhaul hints on the message when overlay is available.
 
         Args:
             msg: BridgedMessage or CanonicalMessage
@@ -317,7 +320,52 @@ class MessageRouter:
             elif self.config.default_route in ('bidirectional', 'all_to_all'):
                 destinations.append(dest)
 
+        # Annotate AREDN backhaul hints when overlay is available
+        if self._aredn_overlay and destinations:
+            self._annotate_aredn_hints(msg, destinations)
+
         return destinations
+
+    def _annotate_aredn_hints(self, msg, destinations: List[str]) -> None:
+        """Annotate message metadata with AREDN backhaul routing hints.
+
+        When AREDN backhaul is available with quality > 50%, adds a routing
+        hint to the message metadata suggesting the AREDN path for long-haul
+        delivery (higher bandwidth than LoRa).
+
+        Args:
+            msg: Message being routed (metadata dict will be updated).
+            destinations: List of destination networks.
+        """
+        dest_id = (getattr(msg, 'destination_address', '') or
+                   getattr(msg, 'destination_id', ''))
+        if not dest_id:
+            return
+
+        try:
+            hint = self._aredn_overlay.get_routing_hint(dest_id)
+        except Exception as e:
+            logger.debug(f"AREDN routing hint lookup failed: {e}")
+            return
+
+        if hint.get("available") and hint.get("quality", 0) > 0.5:
+            # Annotate message metadata with AREDN preference
+            metadata = getattr(msg, 'metadata', None)
+            if metadata is None:
+                return
+            if isinstance(metadata, dict):
+                metadata['aredn_hint'] = {
+                    'preferred': True,
+                    'quality': hint['quality'],
+                    'router_ip': hint['router_ip'],
+                    'link_type': hint['link_type'],
+                    'gateway_name': hint.get('gateway_name', ''),
+                }
+                logger.debug(
+                    f"AREDN routing hint: {dest_id[:8]}... reachable via "
+                    f"{hint['router_ip']} (quality={hint['quality']:.0%}, "
+                    f"type={hint['link_type']})"
+                )
 
     def _has_matching_rule(self, source: str, dest: str) -> bool:
         """Check if any enabled routing rule matches source→dest direction."""
@@ -335,6 +383,27 @@ class MessageRouter:
             if rule.direction == direction:
                 return True
         return False
+
+    def get_aredn_routing_info(self) -> Dict[str, Any]:
+        """Get AREDN routing status for diagnostic display.
+
+        Returns:
+            Dict with overlay status and gateway routing hints.
+        """
+        if not self._aredn_overlay:
+            return {"available": False, "reason": "No AREDN overlay configured"}
+
+        try:
+            hints = self._aredn_overlay.get_all_routing_hints()
+            connected = self._aredn_overlay.is_connected
+            return {
+                "available": True,
+                "connected": connected,
+                "gateways": hints,
+                "gateway_count": len(hints),
+            }
+        except Exception as e:
+            return {"available": True, "connected": False, "error": str(e)}
 
     def get_routing_stats(self) -> Dict[str, Any]:
         """Get routing classifier statistics."""
