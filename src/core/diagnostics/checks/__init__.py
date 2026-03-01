@@ -67,6 +67,14 @@ from .system import (
     check_cpu_load,
 )
 
+# MeshCore checks
+from .meshcore import (
+    check_meshcore_installed,
+    check_meshcore_config,
+    check_meshcore_device,
+    check_meshcore_bridge_status,
+)
+
 # HAM radio checks
 from .ham_radio import (
     check_callsign,
@@ -106,6 +114,11 @@ __all__ = [
     'check_memory',
     'check_disk_space',
     'check_cpu_load',
+    # MeshCore
+    'check_meshcore_installed',
+    'check_meshcore_config',
+    'check_meshcore_device',
+    'check_meshcore_bridge_status',
     # HAM Radio
     'check_callsign',
 ]

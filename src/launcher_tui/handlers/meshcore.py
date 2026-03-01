@@ -24,6 +24,16 @@ _get_node_tracker, _HAS_NODE_TRACKER = safe_import(
 _is_gateway_running, _get_gateway_stats, _HAS_GW_CLI = safe_import(
     'gateway.gateway_cli', 'is_gateway_running', 'get_gateway_stats'
 )
+_test_meshcore_connection, _send_meshcore_message, _get_meshcore_status, _HAS_MC_OPS = safe_import(
+    'gateway.gateway_cli',
+    'test_meshcore_connection', 'send_meshcore_message', 'get_meshcore_status'
+)
+_DiagnosticEngine, _HAS_DIAG_ENGINE = safe_import(
+    'core.diagnostics.engine', 'DiagnosticEngine'
+)
+_CheckCategory, _HAS_CHECK_CATEGORY = safe_import(
+    'core.diagnostics.models', 'CheckCategory'
+)
 
 
 class MeshCoreHandler(BaseHandler):
@@ -48,11 +58,15 @@ class MeshCoreHandler(BaseHandler):
 
             choices = [
                 ("status", "Connection Status   MeshCore radio state"),
+                ("test", "Test Connection     Probe MeshCore device"),
                 ("detect", "Detect Devices      Scan for serial devices"),
                 ("config", "Configure           Connection settings"),
                 ("enable", "Enable/Disable      Toggle MeshCore in gateway"),
                 ("nodes", "View Nodes          MeshCore network nodes"),
+                ("send", "Send Message        Send via MeshCore bridge"),
                 ("stats", "Statistics          Message & connection stats"),
+                ("live", "Live Monitor        Auto-refresh bridge stats"),
+                ("diag", "Run Diagnostics     MeshCore health checks"),
                 ("back", "Back"),
             ]
 
@@ -67,11 +81,15 @@ class MeshCoreHandler(BaseHandler):
 
             dispatch = {
                 "status": ("MeshCore Status", self._meshcore_status),
+                "test": ("Test Connection", self._meshcore_test_connection),
                 "detect": ("Detect Devices", self._meshcore_detect),
                 "config": ("MeshCore Config", self._meshcore_configure),
                 "enable": ("Enable/Disable", self._meshcore_toggle),
                 "nodes": ("MeshCore Nodes", self._meshcore_nodes),
+                "send": ("Send Message", self._meshcore_send_message),
                 "stats": ("MeshCore Stats", self._meshcore_stats),
+                "live": ("Live Monitor", self._meshcore_live_monitor),
+                "diag": ("MeshCore Diagnostics", self._meshcore_run_diagnostics),
             }
             entry = dispatch.get(choice)
             if entry:
@@ -461,5 +479,205 @@ class MeshCoreHandler(BaseHandler):
             h, rem = divmod(int(uptime), 3600)
             m, s = divmod(rem, 60)
             print(f"\n  Uptime: {h}h {m}m {s}s")
+
+        self.ctx.wait_for_enter()
+
+    # ------------------------------------------------------------------
+    # B1: Live operations (wired to gateway_cli APIs)
+    # ------------------------------------------------------------------
+
+    def _meshcore_test_connection(self):
+        """Test MeshCore device connectivity without starting the bridge."""
+        clear_screen()
+        print("=== MeshCore Connection Test ===\n")
+
+        if not _HAS_MC_OPS:
+            print("  Gateway CLI module not available.")
+            self.ctx.wait_for_enter()
+            return
+
+        print("  Testing device connection...\n")
+        result = _test_meshcore_connection()
+
+        conn = result.get('connection_type', 'unknown')
+        print(f"  Connection Type:  {conn}")
+
+        if result.get('reachable'):
+            print(f"  Status:           REACHABLE")
+            print(f"  Detail:           {result.get('detail', '')}")
+        else:
+            print(f"  Status:           UNREACHABLE")
+            error = result.get('error', 'Unknown error')
+            print(f"  Error:            {error}")
+
+            if 'not found' in str(error).lower():
+                print("\n  Suggestions:")
+                print("  - Check USB cable connection")
+                print("  - Verify device path in MeshCore config")
+                print("  - Run 'Detect Devices' to scan for serial ports")
+            elif 'refused' in str(error).lower():
+                print("\n  Suggestions:")
+                print("  - Check that the radio firmware supports TCP")
+                print("  - Verify host and port in MeshCore config")
+
+        self.ctx.wait_for_enter()
+
+    def _meshcore_send_message(self):
+        """Send a text message through MeshCore via the running bridge."""
+        if not _HAS_MC_OPS:
+            self.ctx.dialog.msgbox(
+                "Module Missing",
+                "Gateway CLI module not available."
+            )
+            return
+
+        if not _HAS_GW_CLI or not _is_gateway_running():
+            self.ctx.dialog.msgbox(
+                "Bridge Not Running",
+                "The gateway bridge must be running to send messages.\n\n"
+                "Start the bridge from the Gateway menu first."
+            )
+            return
+
+        # Get message text
+        text = self.ctx.dialog.inputbox(
+            "Send MeshCore Message",
+            "Enter message text:",
+            ""
+        )
+        if not text:
+            return
+
+        # Optional destination
+        dest = self.ctx.dialog.inputbox(
+            "Destination",
+            "Enter destination node ID (leave empty for broadcast):",
+            ""
+        )
+        if dest == "":
+            dest = None
+
+        self.ctx.dialog.infobox("Sending", "Sending message via MeshCore...")
+
+        result = _send_meshcore_message(text, destination=dest)
+
+        if result.get('sent'):
+            target = dest or "broadcast"
+            self.ctx.dialog.msgbox(
+                "Message Sent",
+                f"Message sent to {target} via MeshCore.\n\n"
+                f"Text: {text[:80]}"
+            )
+        else:
+            error = result.get('error', 'Unknown error')
+            self.ctx.dialog.msgbox(
+                "Send Failed",
+                f"Failed to send message:\n\n{error}"
+            )
+
+    def _meshcore_live_monitor(self):
+        """Auto-refreshing MeshCore bridge statistics display."""
+        import threading
+
+        if not _HAS_GW_CLI:
+            self.ctx.dialog.msgbox("Error", "Gateway CLI module not available.")
+            return
+
+        clear_screen()
+        print("=== MeshCore Live Monitor ===")
+        print("  (Press Ctrl+C to return)\n")
+
+        _stop_event = threading.Event()
+
+        try:
+            while not _stop_event.is_set():
+                stats = _get_gateway_stats() if _is_gateway_running() else {}
+                mc_status = _get_meshcore_status() if _HAS_MC_OPS else {}
+
+                # Move cursor to line 4 for refresh (keep header)
+                print("\033[4;1H\033[J", end="")  # ANSI: move to row 4, clear below
+
+                if not stats.get('running', False):
+                    print("  Bridge:       NOT RUNNING")
+                    print("\n  Start the gateway bridge to see live stats.")
+                else:
+                    connected = mc_status.get('connected', False)
+                    print(f"  Bridge:       RUNNING")
+                    print(f"  MeshCore:     {'CONNECTED' if connected else 'DISCONNECTED'}")
+                    print(f"  Device:       {mc_status.get('device', 'N/A')}")
+                    print(f"  Nodes:        {mc_status.get('nodes_discovered', 0)}")
+
+                    inner = stats.get('statistics', stats)
+                    print(f"\n  Messages RX:  {inner.get('meshcore_rx', mc_status.get('rx', 0))}")
+                    print(f"  Messages TX:  {inner.get('meshcore_tx', mc_status.get('tx', 0))}")
+
+                    mesh_ok = stats.get('meshtastic_connected', False)
+                    rns_ok = stats.get('rns_connected', False)
+                    print(f"\n  Meshtastic:   {'OK' if mesh_ok else 'DOWN'}")
+                    print(f"  RNS:          {'OK' if rns_ok else 'DOWN'}")
+
+                    errors = inner.get('errors', 0)
+                    if errors:
+                        print(f"\n  Errors:       {errors}")
+
+                    uptime = stats.get('uptime_seconds')
+                    if uptime:
+                        h, rem = divmod(int(uptime), 3600)
+                        m, s = divmod(rem, 60)
+                        print(f"  Uptime:       {h}h {m}m {s}s")
+
+                print(f"\n  Last refresh: {__import__('datetime').datetime.now().strftime('%H:%M:%S')}")
+
+                _stop_event.wait(2)
+        except KeyboardInterrupt:
+            _stop_event.set()
+
+    def _meshcore_run_diagnostics(self):
+        """Run MeshCore diagnostic checks and display results."""
+        clear_screen()
+        print("=== MeshCore Diagnostics ===\n")
+
+        if not _HAS_DIAG_ENGINE or not _HAS_CHECK_CATEGORY:
+            print("  Diagnostic engine not available.")
+            self.ctx.wait_for_enter()
+            return
+
+        print("  Running checks...\n")
+
+        try:
+            engine = _DiagnosticEngine.get_instance()
+            results = engine.run_category(_CheckCategory.MESHCORE)
+        except Exception as e:
+            print(f"  Error running diagnostics: {e}")
+            self.ctx.wait_for_enter()
+            return
+
+        if not results:
+            print("  No MeshCore checks available.")
+            self.ctx.wait_for_enter()
+            return
+
+        # Status symbols
+        symbols = {
+            'pass': '[PASS]',
+            'fail': '[FAIL]',
+            'warn': '[WARN]',
+            'skip': '[SKIP]',
+        }
+
+        passed = 0
+        failed = 0
+        for r in results:
+            sym = symbols.get(r.status.value, '[????]')
+            print(f"  {sym}  {r.name:<25s} {r.message}")
+            if r.fix_hint:
+                print(f"          Fix: {r.fix_hint}")
+            if r.status.value == 'pass':
+                passed += 1
+            elif r.status.value == 'fail':
+                failed += 1
+
+        print(f"\n  Summary: {passed} passed, {failed} failed, "
+              f"{len(results) - passed - failed} warnings/skipped")
 
         self.ctx.wait_for_enter()
