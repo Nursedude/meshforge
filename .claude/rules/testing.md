@@ -22,18 +22,21 @@ python3 -m py_compile src/**/*.py
 ## Test Locations
 
 ```
-tests/                             # 2,547 tests across 70 files
+tests/                             # 2,696 tests across 75 files
 ├── conftest.py                    # Shared fixtures (mock_meshtastic, mock_rns, no_network)
 ├── test_rns_bridge.py             # Gateway bridge (140 tests)
 ├── test_rf.py                     # RF calculations (107 tests)
 ├── test_rns_transport.py          # RNS transport (97 tests)
+├── test_canonical_message.py      # Multi-protocol message format (77 tests)
+├── test_meshcore_handler.py       # MeshCore protocol handler (75 tests)
 ├── test_meshtastic_protobuf.py    # Protobuf client (74 tests)
 ├── test_message_queue.py          # SQLite queue (72 tests)
 ├── test_status_bar.py             # TUI status bar (70 tests)
 ├── test_node_tracker.py           # Node tracking (68 tests)
 ├── test_mqtt_robustness.py        # MQTT reliability (66 tests)
 ├── test_commands.py               # CLI commands (61 tests)
-├── ... (59 more test files)
+├── test_tribridge_integration.py  # 3-way routing integration (41 tests)
+├── ... (61 more test files)
 └── test_regression_guards.py      # Architectural regression prevention (9 tests)
 ```
 

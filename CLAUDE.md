@@ -16,10 +16,10 @@ MeshForge is a **Network Operations Center (NOC)** bridging Meshtastic and Retic
 
 - **main** is the production-ready line. All PRs targeting stable features merge here.
   Includes tactical ops (XTOC interop, ATAK/KML/CoT), MQTT bridge, security hardening.
-- **alpha/meshcore-bridge** has diverged significantly from main (~2,260 commits ahead,
-  0 behind as of 2026-02-25). Contains MeshCore 3-way routing and handler but lacks
-  main's tactical module, contact mapping, and several utilities. These are parallel
-  development tracks; convergence requires a dedicated reconciliation effort.
+- **alpha/meshcore-bridge** was rebuilt from main's codebase (2026-03-01) with all
+  MeshCore features layered on top. Contains core/ infrastructure (RadioMode, edition,
+  diagnostics, orchestrator), 3-way routing (Meshtastic/MeshCore/RNS), MeshCore handler,
+  canonical message format, and full plugin/TUI integration. 2,696 tests across 75 files.
 - Feature branches use `claude/` prefix and merge via PR to the appropriate target branch.
 
 ## Development Principles
@@ -61,20 +61,27 @@ self-contained handler in `handlers/` dispatched by `handler_registry.py`. See
 
 ```
 src/
+├── core/              # Core infrastructure (alpha)
+│   ├── radio_mode.py        # RadioMode abstraction (MESHTASTIC/MESHCORE/DUAL)
+│   ├── meshcore_config.py   # /etc/meshcore/ config manager
+│   ├── edition.py           # Edition detection & feature gating (PRO/Amateur/IO)
+│   ├── plugin_base.py       # Plugin architecture (manifest, lifecycle, context)
+│   ├── orchestrator.py      # Service orchestrator (meshtasticd/rnsd)
+│   └── diagnostics/         # Diagnostic engine + 8 check modules
 ├── launcher_tui/      # Terminal UI — PRIMARY INTERFACE
 │   ├── main.py        # NOC launcher + handler registration (1,168 lines)
 │   ├── handler_protocol.py  # CommandHandler Protocol + TUIContext + BaseHandler
 │   ├── handler_registry.py  # HandlerRegistry — register/lookup/dispatch
 │   ├── backend.py           # DialogBackend (whiptail/dialog abstraction)
-│   └── handlers/            # 58 self-contained command handlers
+│   └── handlers/            # 62 self-contained command handlers
 │       ├── dashboard.py     # Main dashboard
 │       ├── gateway.py       # Gateway bridge control
 │       ├── propagation.py   # Space weather & HF propagation
 │       ├── rns_diagnostics.py  # RNS diagnostics & transport testing
 │       ├── service_menu.py  # Service management
 │       ├── mqtt.py          # MQTT monitoring & bridge
-│       ├── meshcore.py      # MeshCore TUI menu (alpha branch)
-│       └── ...              # 52 more handlers (rf_tools, settings, etc.)
+│       ├── meshcore.py           # MeshCore companion radio management
+│       └── ...              # 56 more handlers (rf_tools, settings, etc.)
 ├── commands/          # Command modules
 │   ├── propagation.py # Space weather & HF propagation (NOAA primary)
 │   ├── hamclock.py    # HamClock client (optional/legacy)
@@ -82,10 +89,10 @@ src/
 ├── gateway/           # RNS-Meshtastic bridge
 │   ├── rns_bridge.py  # Main gateway bridge
 │   ├── gateway_cli.py # Headless CLI helpers (extracted)
-│   ├── meshcore_handler.py    # MeshCore protocol handler (alpha branch)
-│   ├── canonical_message.py   # Multi-protocol message format (alpha branch)
-│   ├── meshcore_bridge_mixin.py # MeshCore bridge mixin (alpha branch)
-│   ├── message_routing.py     # 3-way routing classifier (alpha branch)
+│   ├── meshcore_handler.py    # MeshCore protocol handler
+│   ├── canonical_message.py   # Multi-protocol message format
+│   ├── meshcore_bridge_mixin.py # MeshCore bridge mixin
+│   ├── message_routing.py     # 3-way routing classifier
 │   └── message_queue.py # Persistent message queue (SQLite)
 ├── monitoring/        # Network monitoring
 │   ├── mqtt_subscriber.py # Nodeless MQTT monitoring
@@ -93,7 +100,7 @@ src/
 │   ├── traffic_inspector.py # Packet capture & analysis
 │   └── packet_dissectors.py # Protocol-specific packet parsing
 ├── plugins/           # Protocol plugins
-│   └── meshcore.py    # MeshCore plugin (alpha branch)
+│   └── meshcore.py    # MeshCore plugin
 ├── utils/             # RF tools, common utilities
 │   ├── rf.py          # RF calculations (tested)
 │   ├── rf_fast.pyx    # Cython optimization
