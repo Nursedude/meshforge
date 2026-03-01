@@ -140,6 +140,42 @@ def is_gateway_running() -> bool:
     return _active_bridge is not None and _active_bridge._running
 
 
+def get_message_flow(limit: int = 20) -> Dict:
+    """Get recent message flow events from the bridge lifecycle tracker.
+
+    Args:
+        limit: Maximum number of recent events to return.
+
+    Returns:
+        Dict with 'recent' (list of flow records) and 'summary' (aggregate counts).
+    """
+    global _active_bridge
+
+    if _active_bridge is None or not _active_bridge._running:
+        return {
+            'recent': [],
+            'summary': {'total_tracked': 0, 'by_state': {},
+                        'sent': 0, 'delivered': 0, 'failed': 0, 'timeout': 0},
+            'status': 'Bridge not running',
+        }
+
+    try:
+        tracker = _active_bridge.flow_tracker
+        return {
+            'recent': tracker.get_recent(limit=limit),
+            'summary': tracker.get_summary(),
+            'status': 'OK',
+        }
+    except Exception as e:
+        logger.error(f"Error getting message flow: {e}")
+        return {
+            'recent': [],
+            'summary': {'total_tracked': 0, 'by_state': {},
+                        'sent': 0, 'delivered': 0, 'failed': 0, 'timeout': 0},
+            'status': f'Error: {e}',
+        }
+
+
 def test_meshcore_connection() -> Dict:
     """
     Test MeshCore device availability without starting the bridge.

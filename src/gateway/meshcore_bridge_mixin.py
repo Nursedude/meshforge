@@ -10,6 +10,7 @@ import logging
 from typing import Optional
 
 from .bridge_health import SubsystemState, MessageOrigin
+from .message_queue import MessageLifecycleState
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,8 @@ class MeshCoreBridgeMixin:
         MeshCore messages arrive as CanonicalMessage or BridgedMessage.
         Routes to Meshtastic and/or RNS based on routing rules.
         """
+        msg_id = (getattr(msg, 'id', '') or getattr(msg, 'source_id', '')
+                  or getattr(msg, 'source_address', '') or 'unknown')
         try:
             # Extract content — handle both CanonicalMessage and BridgedMessage
             if hasattr(msg, 'source_address'):
@@ -78,6 +81,11 @@ class MeshCoreBridgeMixin:
             # Route to Meshtastic
             mesh_state = self.health.get_subsystem_state("meshtastic")
             if mesh_state not in (SubsystemState.DISCONNECTED, SubsystemState.DISABLED):
+                self.flow_tracker.record_event(
+                    msg_id, MessageLifecycleState.SENT,
+                    source_network="meshcore", destination_network="meshtastic",
+                    content_preview=content,
+                )
                 if self.send_to_meshtastic(bridged_content,
                                            channel=self.config.meshtastic.channel):
                     logger.info(f"Bridge MC→Mesh: {bridged_content[:50]}...")
@@ -85,15 +93,30 @@ class MeshCoreBridgeMixin:
                         self.stats.setdefault('messages_meshcore_to_mesh', 0)
                         self.stats['messages_meshcore_to_mesh'] += 1
                     self.health.record_message_sent("meshcore_to_mesh")
+                    self.flow_tracker.record_event(
+                        msg_id, MessageLifecycleState.DELIVERED,
+                        source_network="meshcore", destination_network="meshtastic",
+                        content_preview=content,
+                    )
                 else:
                     logger.warning("Failed to bridge MC→Mesh")
                     with self._stats_lock:
                         self.stats['errors'] += 1
                     self.health.record_message_failed("meshcore_to_mesh", requeued=False)
+                    self.flow_tracker.record_event(
+                        msg_id, MessageLifecycleState.FAILED,
+                        source_network="meshcore", destination_network="meshtastic",
+                        details="Send failed",
+                    )
 
             # Route to RNS (only if not via internet — MeshCore is pure radio)
             rns_state = self.health.get_subsystem_state("rns")
             if rns_state not in (SubsystemState.DISCONNECTED, SubsystemState.DISABLED):
+                self.flow_tracker.record_event(
+                    msg_id, MessageLifecycleState.SENT,
+                    source_network="meshcore", destination_network="rns",
+                    content_preview=content,
+                )
                 # RNS broadcast requires propagation node, send if available
                 if self.send_to_rns(bridged_content):
                     logger.info(f"Bridge MC→RNS: {bridged_content[:50]}...")
@@ -101,6 +124,11 @@ class MeshCoreBridgeMixin:
                         self.stats.setdefault('messages_meshcore_to_rns', 0)
                         self.stats['messages_meshcore_to_rns'] += 1
                     self.health.record_message_sent("meshcore_to_rns")
+                    self.flow_tracker.record_event(
+                        msg_id, MessageLifecycleState.DELIVERED,
+                        source_network="meshcore", destination_network="rns",
+                        content_preview=content,
+                    )
                 else:
                     logger.debug("MC→RNS: not sent (no RNS propagation)")
 
@@ -108,6 +136,10 @@ class MeshCoreBridgeMixin:
             logger.error(f"Error bridging MeshCore→Bridge: {e}")
             with self._stats_lock:
                 self.stats['errors'] += 1
+            self.flow_tracker.record_event(
+                msg_id, MessageLifecycleState.FAILED,
+                source_network="meshcore", details=str(e),
+            )
 
     def _process_bridge_to_meshcore(self, msg) -> None:
         """Process message from other networks → MeshCore.
@@ -115,6 +147,8 @@ class MeshCoreBridgeMixin:
         Handles text truncation to MeshCore's ~160 byte limit.
         Filters internet-originated messages (MeshCore is pure radio).
         """
+        msg_id = (getattr(msg, 'id', '') or getattr(msg, 'source_id', '')
+                  or getattr(msg, 'source_address', '') or 'unknown')
         try:
             # Check internet origin filter — MeshCore is pure radio
             if hasattr(msg, 'via_internet') and msg.via_internet:
@@ -143,6 +177,11 @@ class MeshCoreBridgeMixin:
                 from .canonical_message import _truncate_utf8
                 bridged_content = _truncate_utf8(bridged_content, 160)
 
+            self.flow_tracker.record_event(
+                msg_id, MessageLifecycleState.SENT,
+                source_network=src_net, destination_network="meshcore",
+                content_preview=content,
+            )
             if self.send_to_meshcore(bridged_content):
                 direction = f"{src_net[:4]}_to_meshcore"
                 logger.info(f"Bridge {net_prefix}→MC: {bridged_content[:50]}...")
@@ -153,6 +192,11 @@ class MeshCoreBridgeMixin:
                 self.health.record_message_sent(f"mesh_to_meshcore"
                                                 if src_net == "meshtastic"
                                                 else "rns_to_meshcore")
+                self.flow_tracker.record_event(
+                    msg_id, MessageLifecycleState.DELIVERED,
+                    source_network=src_net, destination_network="meshcore",
+                    content_preview=content,
+                )
             else:
                 logger.warning(f"Failed to bridge {net_prefix}→MC")
                 with self._stats_lock:
@@ -162,8 +206,17 @@ class MeshCoreBridgeMixin:
                     f"mesh_to_meshcore" if src_net == "meshtastic" else "rns_to_meshcore",
                     requeued=requeued,
                 )
+                self.flow_tracker.record_event(
+                    msg_id, MessageLifecycleState.FAILED,
+                    source_network=src_net, destination_network="meshcore",
+                    details="Send failed, requeued" if requeued else "Send failed",
+                )
 
         except Exception as e:
             logger.error(f"Error bridging →MeshCore: {e}")
             with self._stats_lock:
                 self.stats['errors'] += 1
+            self.flow_tracker.record_event(
+                msg_id, MessageLifecycleState.FAILED,
+                destination_network="meshcore", details=str(e),
+            )

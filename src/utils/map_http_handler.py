@@ -10,6 +10,7 @@ Endpoints:
 - GET /api/nodes/history  -> node history stats + unique nodes (24h)
 - GET /api/nodes/trajectory/<id> -> trajectory GeoJSON for a node
 - GET /api/nodes/snapshot -> historical network snapshot for playback
+- GET /api/nodes/timerange -> time bounds of history data for slider UI
 - GET /api/messages/queue -> pending OUTBOUND messages from gateway queue
 - GET /api/messages/received -> RECEIVED inbound messages from mesh
 - GET /api/messages/rx-status -> MessageListener status (RX enabled?)
@@ -135,6 +136,8 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
             path_only = urlparse(self.path).path
             parts = path_only.split('/api/los/', 1)[1].rstrip('/').split('/')
             self._serve_los(parts)
+        elif self.path == '/api/nodes/timerange' or self.path == '/api/nodes/timerange/':
+            self._serve_timerange()
         elif self.path.startswith('/api/nodes/snapshot'):
             # Historical snapshot: /api/nodes/snapshot?timestamp=<unix_ts>&window=300
             self._serve_snapshot()
@@ -545,6 +548,28 @@ class MapRequestHandler(SimpleHTTPRequestHandler):
             self._serve_json({"error": f"Invalid parameters: {e}"})
         except Exception as e:
             logger.error(f"Coverage endpoint error: {e}")
+            self._serve_json({"error": str(e)})
+
+    def _serve_timerange(self):
+        """Serve the time range of available history data.
+
+        URL: /api/nodes/timerange
+        Returns: {oldest_ts, newest_ts, total_observations}
+        """
+        try:
+            if not self.collector or not self.collector._history:
+                self._serve_json({
+                    "oldest_ts": None,
+                    "newest_ts": None,
+                    "total_observations": 0,
+                })
+                return
+
+            history = self.collector._history
+            time_range = history.get_time_range()
+            self._serve_json(time_range)
+        except Exception as e:
+            logger.error(f"Error serving timerange: {e}")
             self._serve_json({"error": str(e)})
 
     def _serve_snapshot(self):
