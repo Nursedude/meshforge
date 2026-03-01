@@ -9,6 +9,7 @@ and legacy regex-based routing logic.
 
 import re
 import logging
+import time
 from typing import List, Optional, Dict, Any
 
 from utils.safe_import import safe_import
@@ -349,6 +350,86 @@ class MessageRouter:
         if self._last_classification:
             return self._last_classification.to_dict()
         return None
+
+    def drain_bounced(self, max_items: int = 10) -> List[Dict[str, Any]]:
+        """Drain bounced messages from the classifier's bouncer queue.
+
+        Returns items with enough metadata for the bridge loop to persist
+        them to the SQLite queue or discard. Items are cleared from the
+        bouncer after retrieval.
+
+        Args:
+            max_items: Maximum number of items to drain per call.
+
+        Returns:
+            List of dicts with keys: input_id, category, confidence,
+            reason, metadata, bounced.
+        """
+        if not self._classifier or not hasattr(self._classifier, 'bouncer'):
+            return []
+
+        queue = self._classifier.bouncer.get_queue()
+        if not queue:
+            return []
+
+        items = queue[:max_items]
+        results = []
+        for item in items:
+            results.append({
+                'input_id': getattr(item, 'input_id', ''),
+                'category': getattr(item, 'category', 'unknown'),
+                'confidence': getattr(item, 'confidence', 0.0),
+                'reason': getattr(item, 'bounce_reason', ''),
+                'metadata': getattr(item, 'metadata', None) or {},
+                'bounced': True,
+            })
+
+        # Clear drained items — if we took all, just clear; otherwise rebuild
+        if len(items) >= len(queue):
+            self._classifier.bouncer.clear_queue()
+        else:
+            self._classifier.bouncer._queue = queue[max_items:]
+
+        logger.debug(f"Drained {len(results)} bounced messages from queue")
+        return results
+
+    def clear_expired_bounced(self, max_age_seconds: float = 3600.0) -> int:
+        """Remove bounced messages older than max_age from the queue.
+
+        Prevents unbounded queue growth when messages are never reviewed.
+
+        Args:
+            max_age_seconds: Maximum age before expiry (default 1 hour).
+
+        Returns:
+            Number of items cleared.
+        """
+        if not self._classifier or not hasattr(self._classifier, 'bouncer'):
+            return 0
+
+        queue = self._classifier.bouncer.get_queue()
+        if not queue:
+            return 0
+
+        now = time.time()
+        kept = []
+        expired_count = 0
+        for item in queue:
+            ts = getattr(item, 'timestamp', None)
+            if ts is None:
+                # No timestamp — keep it (can't determine age)
+                kept.append(item)
+                continue
+            if isinstance(ts, (int, float)) and (now - ts) > max_age_seconds:
+                expired_count += 1
+            else:
+                kept.append(item)
+
+        if expired_count > 0:
+            self._classifier.bouncer._queue = kept
+            logger.debug(f"Cleared {expired_count} expired bounced messages")
+
+        return expired_count
 
     def fix_routing(self, msg_id: str, correct_category: str) -> bool:
         """

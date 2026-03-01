@@ -136,7 +136,8 @@ class MeshCoreHandler(BaseHandler):
 
         try:
             import meshcore as _mc_check  # noqa: F401
-            print(f"\n  meshcore_py:      Installed")
+            version = getattr(_mc_check, '__version__', 'unknown')
+            print(f"\n  meshcore_py:      Installed (v{version})")
         except ImportError:
             print(f"\n  meshcore_py:      NOT installed")
             print(f"  Install:          pip install meshcore")

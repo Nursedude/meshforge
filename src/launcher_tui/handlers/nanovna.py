@@ -1,12 +1,14 @@
 """
-NanoVNA Mixin - NanoVNA antenna analyzer menu handlers.
+NanoVNA Handler -- NanoVNA antenna analyzer tools.
 
-Extracted as a mixin per CLAUDE.md guidelines.
+Converted from nanovna_mixin.py as part of the mixin-to-registry migration.
 """
 
 import logging
 import time
+
 from backend import clear_screen
+from handler_protocol import BaseHandler
 from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
@@ -27,8 +29,20 @@ swr_to_mismatch_loss_db, antenna_efficiency_from_swr, sweep_summary_for_band, BA
 )
 
 
-class NanoVNAMixin:
-    """Mixin providing NanoVNA antenna analyzer menu functionality."""
+class NanoVNAHandler(BaseHandler):
+    """TUI handler for NanoVNA antenna analyzer tools."""
+
+    handler_id = "nanovna"
+    menu_section = "rf_sdr"
+
+    def menu_items(self):
+        return [
+            ("nanovna", "NanoVNA             Antenna analyzer tools", None),
+        ]
+
+    def execute(self, action):
+        if action == "nanovna":
+            self._nanovna_menu()
 
     def _nanovna_menu(self):
         """NanoVNA antenna analyzer tools."""
@@ -42,7 +56,7 @@ class NanoVNAMixin:
                 ("back", "Back"),
             ]
 
-            choice = self.dialog.menu(
+            choice = self.ctx.dialog.menu(
                 "NanoVNA Analyzer",
                 "Antenna analysis tools (requires NanoVNA connected via USB):",
                 choices,
@@ -60,7 +74,7 @@ class NanoVNAMixin:
             }
             entry = dispatch.get(choice)
             if entry:
-                self._safe_call(*entry)
+                self.ctx.safe_call(*entry)
 
     def _nanovna_check_available(self) -> bool:
         """Check if NanoVNA functionality is available."""
@@ -68,7 +82,7 @@ class NanoVNAMixin:
             print("NanoVNA support not available.\n")
             print("Install: pip install pynanovna")
             print("  or:    pip install pyserial")
-            self._wait_for_enter()
+            self.ctx.wait_for_enter()
             return False
         return True
 
@@ -103,7 +117,7 @@ class NanoVNAMixin:
             print("  - User has permission for serial ports")
             print("    (try: sudo usermod -a -G dialout $USER)")
 
-        self._wait_for_enter()
+        self.ctx.wait_for_enter()
 
     def _nanovna_sweep(self):
         """Run a frequency sweep with configurable parameters."""
@@ -114,7 +128,7 @@ class NanoVNAMixin:
             return
 
         # Get sweep parameters via dialog
-        start_mhz = self.dialog.inputbox(
+        start_mhz = self.ctx.dialog.inputbox(
             "Start Frequency",
             "Enter start frequency in MHz:",
             "906",
@@ -122,7 +136,7 @@ class NanoVNAMixin:
         if start_mhz is None:
             return
 
-        stop_mhz = self.dialog.inputbox(
+        stop_mhz = self.ctx.dialog.inputbox(
             "Stop Frequency",
             "Enter stop frequency in MHz:",
             "924",
@@ -130,7 +144,7 @@ class NanoVNAMixin:
         if stop_mhz is None:
             return
 
-        points = self.dialog.inputbox(
+        points = self.ctx.dialog.inputbox(
             "Sweep Points",
             "Number of measurement points (11-401):",
             "101",
@@ -143,11 +157,11 @@ class NanoVNAMixin:
             stop = float(stop_mhz)
             num_points = int(points)
         except ValueError:
-            self.dialog.msgbox("Error", "Invalid numeric input.")
+            self.ctx.dialog.msgbox("Error", "Invalid numeric input.")
             return
 
         if start >= stop:
-            self.dialog.msgbox("Error", "Start frequency must be less than stop frequency.")
+            self.ctx.dialog.msgbox("Error", "Start frequency must be less than stop frequency.")
             return
 
         num_points = max(11, min(401, num_points))
@@ -158,7 +172,7 @@ class NanoVNAMixin:
         device = NanoVNADevice()
         if not device.connect():
             print("Failed to connect to NanoVNA.")
-            self._wait_for_enter()
+            self.ctx.wait_for_enter()
             return
 
         try:
@@ -172,16 +186,16 @@ class NanoVNAMixin:
 
         if not result.points:
             print("Sweep returned no data.")
-            self._wait_for_enter()
+            self.ctx.wait_for_enter()
             return
 
         # Display results
         self._nanovna_display_sweep(result)
 
         # Offer to save
-        save = self.dialog.yesno("Save Sweep", "Save this sweep to history?")
+        save = self.ctx.dialog.yesno("Save Sweep", "Save this sweep to history?")
         if save and _ok2:
-            label = self.dialog.inputbox(
+            label = self.ctx.dialog.inputbox(
                 "Label",
                 "Enter a label for this sweep (optional):",
                 "",
@@ -192,9 +206,9 @@ class NanoVNAMixin:
                 print(f"\nSaved as sweep #{sweep_id}")
             except Exception as e:
                 print(f"\nSave failed: {e}")
-            self._wait_for_enter()
+            self.ctx.wait_for_enter()
 
-    def _nanovna_display_sweep(self, result: SweepResult):
+    def _nanovna_display_sweep(self, result):
         """Display sweep results as formatted text."""
         min_swr_val, min_swr_freq = result.min_swr
 
@@ -244,7 +258,7 @@ class NanoVNAMixin:
             ("custom", "Custom Frequency"),
         ]
 
-        choice = self.dialog.menu(
+        choice = self.ctx.dialog.menu(
             "Quick SWR",
             "Select frequency for SWR measurement:",
             choices,
@@ -254,7 +268,7 @@ class NanoVNAMixin:
             return
 
         if choice == "custom":
-            freq_str = self.dialog.inputbox(
+            freq_str = self.ctx.dialog.inputbox(
                 "Frequency",
                 "Enter frequency in MHz:",
                 "915",
@@ -264,7 +278,7 @@ class NanoVNAMixin:
             try:
                 freq_mhz = float(freq_str)
             except ValueError:
-                self.dialog.msgbox("Error", "Invalid frequency.")
+                self.ctx.dialog.msgbox("Error", "Invalid frequency.")
                 return
         else:
             freq_mhz = float(choice)
@@ -275,7 +289,7 @@ class NanoVNAMixin:
         device = NanoVNADevice()
         if not device.connect():
             print("Failed to connect to NanoVNA.")
-            self._wait_for_enter()
+            self.ctx.wait_for_enter()
             return
 
         try:
@@ -304,7 +318,7 @@ class NanoVNAMixin:
         else:
             print("  Measurement failed. Check device connection.")
 
-        self._wait_for_enter()
+        self.ctx.wait_for_enter()
 
     def _nanovna_history(self):
         """Browse saved sweep history."""
@@ -313,7 +327,7 @@ class NanoVNAMixin:
 
         if not _ok2:
             print("Sweep storage not available.")
-            self._wait_for_enter()
+            self.ctx.wait_for_enter()
             return
 
         try:
@@ -321,12 +335,12 @@ class NanoVNAMixin:
             sweeps = store.list_sweeps(limit=20)
         except Exception as e:
             print(f"Error loading history: {e}")
-            self._wait_for_enter()
+            self.ctx.wait_for_enter()
             return
 
         if not sweeps:
             print("No saved sweeps.")
-            self._wait_for_enter()
+            self.ctx.wait_for_enter()
             return
 
         choices = []
@@ -336,7 +350,7 @@ class NanoVNAMixin:
             desc = f"{ts} {s.start_mhz:.0f}-{s.stop_mhz:.0f}MHz SWR:{s.min_swr:.2f}{label}"
             choices.append((str(s.id), desc))
 
-        choice = self.dialog.menu(
+        choice = self.ctx.dialog.menu(
             "Sweep History",
             f"{len(sweeps)} saved sweep(s):",
             choices,
@@ -353,7 +367,7 @@ class NanoVNAMixin:
             if meta and meta.label:
                 print(f"Label: {meta.label}\n")
             self._nanovna_display_sweep(result)
-            self._wait_for_enter()
+            self.ctx.wait_for_enter()
 
     def _nanovna_export(self):
         """Export sweep data to CSV."""
@@ -362,7 +376,7 @@ class NanoVNAMixin:
 
         if not _ok2:
             print("Sweep storage not available.")
-            self._wait_for_enter()
+            self.ctx.wait_for_enter()
             return
 
         try:
@@ -370,12 +384,12 @@ class NanoVNAMixin:
             sweeps = store.list_sweeps(limit=20)
         except Exception as e:
             print(f"Error: {e}")
-            self._wait_for_enter()
+            self.ctx.wait_for_enter()
             return
 
         if not sweeps:
             print("No saved sweeps to export.")
-            self._wait_for_enter()
+            self.ctx.wait_for_enter()
             return
 
         choices = []
@@ -385,7 +399,7 @@ class NanoVNAMixin:
             desc = f"{ts} {s.start_mhz:.0f}-{s.stop_mhz:.0f}MHz{label}"
             choices.append((str(s.id), desc))
 
-        choice = self.dialog.menu(
+        choice = self.ctx.dialog.menu(
             "Export Sweep",
             "Select sweep to export:",
             choices,
@@ -398,16 +412,12 @@ class NanoVNAMixin:
         csv_data = store.export_csv(sweep_id)
         if not csv_data:
             print("No data to export.")
-            self._wait_for_enter()
+            self.ctx.wait_for_enter()
             return
 
-        # Write to file
-        try:
-            from utils.paths import get_real_user_home
-            home = get_real_user_home()
-        except ImportError:
-            from pathlib import Path
-            home = Path.home()
+        # Write to file (MF001: always use get_real_user_home, never Path.home)
+        from utils.paths import get_real_user_home
+        home = get_real_user_home()
 
         export_dir = home / ".config" / "meshforge" / "exports"
         export_dir.mkdir(parents=True, exist_ok=True)
@@ -418,4 +428,4 @@ class NanoVNAMixin:
         print(f"Exported to: {export_path}")
         print(f"Data points: {csv_data.count(chr(10))}")
 
-        self._wait_for_enter()
+        self.ctx.wait_for_enter()
