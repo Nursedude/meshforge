@@ -600,3 +600,185 @@ class TestStats:
             assert handler.stats.get('meshcore_acks', 0) >= 1
         finally:
             loop.close()
+
+
+# =============================================================================
+# Poll Rate Limiting
+# =============================================================================
+
+class TestPollRateLimit:
+    """Test channel poll interval enforcement."""
+
+    def test_zero_interval_clamped(self, mock_config, mock_health, mock_node_tracker):
+        """Poll interval of 0 is clamped to minimum."""
+        mock_config.meshcore.channel_poll_interval_sec = 0
+        h = MeshCoreHandler(
+            config=mock_config, node_tracker=mock_node_tracker,
+            health=mock_health, stop_event=threading.Event(),
+            stats={}, stats_lock=threading.Lock(),
+            message_queue=Queue(),
+        )
+        assert h._channel_poll_interval >= 1.0
+
+    def test_negative_interval_clamped(self, mock_config, mock_health, mock_node_tracker):
+        """Negative poll interval is clamped to minimum."""
+        mock_config.meshcore.channel_poll_interval_sec = -5
+        h = MeshCoreHandler(
+            config=mock_config, node_tracker=mock_node_tracker,
+            health=mock_health, stop_event=threading.Event(),
+            stats={}, stats_lock=threading.Lock(),
+            message_queue=Queue(),
+        )
+        assert h._channel_poll_interval >= 1.0
+
+    def test_valid_interval_preserved(self, mock_config, mock_health, mock_node_tracker):
+        """Valid poll interval is preserved as-is."""
+        mock_config.meshcore.channel_poll_interval_sec = 10
+        h = MeshCoreHandler(
+            config=mock_config, node_tracker=mock_node_tracker,
+            health=mock_health, stop_event=threading.Event(),
+            stats={}, stats_lock=threading.Lock(),
+            message_queue=Queue(),
+        )
+        assert h._channel_poll_interval == 10.0
+
+    def test_fractional_interval_above_min(self, mock_config, mock_health, mock_node_tracker):
+        """Poll interval of 0.5 is clamped to 1.0."""
+        mock_config.meshcore.channel_poll_interval_sec = 0.5
+        h = MeshCoreHandler(
+            config=mock_config, node_tracker=mock_node_tracker,
+            health=mock_health, stop_event=threading.Event(),
+            stats={}, stats_lock=threading.Lock(),
+            message_queue=Queue(),
+        )
+        assert h._channel_poll_interval == 1.0
+
+
+# =============================================================================
+# Contact Resolution Fallback
+# =============================================================================
+
+class TestContactFallback:
+    """Test contact resolution with retry and no silent broadcast."""
+
+    def test_send_to_known_contact_succeeds(self, handler):
+        """Sending to a known simulated contact succeeds."""
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(handler._connect())
+            assert handler.is_connected
+            # SimNode-Alpha exists in simulator contacts
+            result = loop.run_until_complete(
+                handler._send_message("test", destination="SimNode-Alpha")
+            )
+            assert result is True
+        finally:
+            loop.close()
+
+    def test_contact_not_found_returns_false(self, handler):
+        """Sending to unknown contact returns False (no silent broadcast)."""
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(handler._connect())
+            result = loop.run_until_complete(
+                handler._send_message("secret msg", destination="nonexistent_node")
+            )
+            assert result is False
+        finally:
+            loop.close()
+
+    def test_contact_miss_stat_tracked(self, handler):
+        """Failed contact lookup increments meshcore_contact_miss."""
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(handler._connect())
+            loop.run_until_complete(
+                handler._send_message("test", destination="nobody")
+            )
+            assert handler.stats.get('meshcore_contact_miss', 0) >= 1
+        finally:
+            loop.close()
+
+    def test_broadcast_still_works(self, handler):
+        """Channel broadcast (no destination) still works."""
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(handler._connect())
+            result = loop.run_until_complete(
+                handler._send_message("hello channel")
+            )
+            assert result is True
+        finally:
+            loop.close()
+
+
+# =============================================================================
+# Version Check
+# =============================================================================
+
+class TestVersionCheck:
+    """Test meshcore_py version compatibility checking."""
+
+    def test_no_meshcore_returns_false(self, handler):
+        """Returns False when meshcore is not installed."""
+        with patch('gateway.meshcore_handler._HAS_MESHCORE', False):
+            assert handler._check_meshcore_version() is False
+
+    def test_no_version_attribute(self, handler):
+        """Returns True (with warning) when version is unknown."""
+        with patch('gateway.meshcore_handler._HAS_MESHCORE', True), \
+             patch('gateway.meshcore_handler._meshcore_mod', SimpleNamespace()):
+            assert handler._check_meshcore_version() is True
+
+    def test_compatible_version(self, handler):
+        """Returns True for compatible version."""
+        mock_mod = SimpleNamespace(__version__='0.5.2')
+        with patch('gateway.meshcore_handler._HAS_MESHCORE', True), \
+             patch('gateway.meshcore_handler._meshcore_mod', mock_mod):
+            assert handler._check_meshcore_version() is True
+
+    def test_too_old_version(self, handler):
+        """Returns False for version below minimum."""
+        mock_mod = SimpleNamespace(__version__='0.2.0')
+        with patch('gateway.meshcore_handler._HAS_MESHCORE', True), \
+             patch('gateway.meshcore_handler._meshcore_mod', mock_mod):
+            assert handler._check_meshcore_version() is False
+
+    def test_malformed_version_passes(self, handler):
+        """Malformed version string doesn't block."""
+        mock_mod = SimpleNamespace(__version__='bad.version')
+        with patch('gateway.meshcore_handler._HAS_MESHCORE', True), \
+             patch('gateway.meshcore_handler._meshcore_mod', mock_mod):
+            assert handler._check_meshcore_version() is True
+
+
+# =============================================================================
+# Reconnect Strategy
+# =============================================================================
+
+class TestReconnectStrategy:
+    """Test reconnection strategy integration."""
+
+    def test_reconnect_config_defaults(self, handler):
+        """Verify reconnect strategy has sensible defaults."""
+        assert handler._reconnect.config.initial_delay == 2.0
+        assert handler._reconnect.config.max_delay == 60.0
+        assert handler._reconnect.config.max_attempts == 10
+
+    def test_reconnect_backoff_increases(self, handler):
+        """Backoff delay increases with each failure."""
+        delays = []
+        for _ in range(4):
+            delays.append(handler._reconnect.get_delay())
+            handler._reconnect.record_failure()
+        # Each delay should increase
+        for i in range(1, len(delays)):
+            assert delays[i] > delays[i - 1]
+
+    def test_reconnect_success_resets(self, handler):
+        """Successful connection resets backoff."""
+        handler._reconnect.record_failure()
+        handler._reconnect.record_failure()
+        assert handler._reconnect.attempts == 2
+        handler._reconnect.record_success()
+        assert handler._reconnect.attempts == 0

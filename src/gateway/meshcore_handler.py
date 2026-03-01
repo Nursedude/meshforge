@@ -55,6 +55,12 @@ logger = logging.getLogger(__name__)
 # meshcore_py is an optional external dependency
 _meshcore_mod, _HAS_MESHCORE = safe_import('meshcore')
 
+# Minimum poll interval to prevent radio overload (seconds)
+MIN_CHANNEL_POLL_INTERVAL = 1.0
+
+# Minimum supported meshcore_py version
+MESHCORE_MIN_VERSION = (0, 3, 0)
+
 
 def detect_meshcore_devices() -> List[str]:
     """
@@ -208,10 +214,16 @@ class MeshCoreHandler(BaseMessageHandler):
 
         # Channel message polling fallback (for meshcore_py #1232 bug)
         self._last_channel_poll = 0.0
-        self._channel_poll_interval = (
+        raw_interval = (
             getattr(meshcore_config, 'channel_poll_interval_sec', 5)
             if meshcore_config else 5
         )
+        self._channel_poll_interval = max(MIN_CHANNEL_POLL_INTERVAL, float(raw_interval))
+        if raw_interval < MIN_CHANNEL_POLL_INTERVAL:
+            logger.warning(
+                f"MeshCore channel_poll_interval_sec={raw_interval} clamped to "
+                f"{MIN_CHANNEL_POLL_INTERVAL}s minimum to prevent radio overload"
+            )
 
         # Dual-path tracking: event subscription + polling reconciliation
         # Messages seen via event subscription (content_hash -> timestamp)
@@ -316,6 +328,35 @@ class MeshCoreHandler(BaseMessageHandler):
                 delay = self._reconnect.get_delay()
                 await self._async_wait(delay)
 
+    def _check_meshcore_version(self) -> bool:
+        """Check meshcore_py version compatibility.
+
+        Returns:
+            True if version is compatible or unknown, False if too old.
+        """
+        if not _HAS_MESHCORE:
+            return False
+
+        version_str = getattr(_meshcore_mod, '__version__', None)
+        if not version_str:
+            logger.warning("meshcore_py version unknown — cannot verify compatibility")
+            return True  # Allow but warn
+
+        try:
+            parts = tuple(int(x) for x in version_str.split('.')[:3])
+            if parts < MESHCORE_MIN_VERSION:
+                min_str = '.'.join(str(x) for x in MESHCORE_MIN_VERSION)
+                logger.error(
+                    f"meshcore_py {version_str} is below minimum {min_str}. "
+                    f"Upgrade: pip install --upgrade meshcore"
+                )
+                return False
+            logger.debug(f"meshcore_py version {version_str} OK")
+            return True
+        except (ValueError, IndexError) as e:
+            logger.warning(f"Could not parse meshcore_py version '{version_str}': {e}")
+            return True  # Don't block on parse failure
+
     async def _connect(self) -> None:
         """Connect to MeshCore companion radio or start simulator."""
         try:
@@ -330,6 +371,9 @@ class MeshCoreHandler(BaseMessageHandler):
             # Real connection via meshcore_py
             if not _HAS_MESHCORE:
                 logger.error("meshcore_py not installed (pip install meshcore)")
+                return
+
+            if not self._check_meshcore_version():
                 return
 
             meshcore_config = getattr(self.config, 'meshcore', None)
@@ -734,6 +778,30 @@ class MeshCoreHandler(BaseMessageHandler):
         except Exception as e:
             logger.error(f"Error processing outbound MeshCore message: {e}")
 
+    async def _resolve_contact(self, destination: str) -> Optional[Any]:
+        """Resolve a destination address to a MeshCore contact.
+
+        Handles both the meshcore_py commands interface and the
+        simulator's direct method interface.
+
+        Args:
+            destination: Address to match (pubkey prefix or name).
+
+        Returns:
+            Contact object if found, None otherwise.
+        """
+        try:
+            if hasattr(self._meshcore, 'commands'):
+                contacts = await self._meshcore.commands.get_contacts()
+            elif hasattr(self._meshcore, 'get_contacts'):
+                contacts = await self._meshcore.get_contacts()
+            else:
+                return None
+            return self._find_contact(contacts, destination)
+        except Exception as e:
+            logger.debug(f"Contact resolution failed: {e}")
+            return None
+
     async def _send_message(self, text: str, destination: Optional[str] = None) -> bool:
         """
         Send a text message to the MeshCore network.
@@ -750,21 +818,33 @@ class MeshCoreHandler(BaseMessageHandler):
 
         try:
             if destination:
-                # Direct message — need to resolve contact
-                if hasattr(self._meshcore, 'commands'):
-                    contacts = await self._meshcore.commands.get_contacts()
-                    contact = self._find_contact(contacts, destination)
-                    if contact:
+                # Direct message — resolve contact with one retry
+                contact = await self._resolve_contact(destination)
+                if not contact:
+                    logger.info(
+                        f"MeshCore contact not found for {destination}, "
+                        f"retrying after brief delay"
+                    )
+                    await asyncio.sleep(2.0)
+                    contact = await self._resolve_contact(destination)
+
+                if contact:
+                    if hasattr(self._meshcore, 'commands'):
                         await self._meshcore.commands.send_msg(contact, text)
-                        return True
-                    else:
-                        logger.warning(
-                            f"MeshCore contact not found for {destination}, "
-                            f"sending as channel broadcast"
-                        )
-                # Fall through to broadcast
-                await self._meshcore.commands.send_channel_txt_msg(text)
-                return True
+                    elif hasattr(self._meshcore, 'send_msg'):
+                        await self._meshcore.send_msg(contact, text)
+                    return True
+
+                # Contact still not found — do NOT silently broadcast a
+                # directed message (data-leakage risk). Track the miss.
+                logger.warning(
+                    f"MeshCore contact not found for {destination} after retry, "
+                    f"message not sent (would leak as broadcast)"
+                )
+                with self._stats_lock:
+                    self.stats.setdefault('meshcore_contact_miss', 0)
+                    self.stats['meshcore_contact_miss'] += 1
+                return False
             else:
                 # Channel broadcast
                 if hasattr(self._meshcore, 'commands'):
@@ -776,8 +856,16 @@ class MeshCoreHandler(BaseMessageHandler):
                     return False
                 return True
 
+        except (ConnectionError, OSError) as e:
+            logger.error(f"MeshCore send failed (connection): {e}")
+            if self.health:
+                self.health.record_error("meshcore", str(e))
+            return False
+        except asyncio.TimeoutError:
+            logger.error("MeshCore send timed out")
+            return False
         except Exception as e:
-            logger.error(f"Failed to send MeshCore message: {e}")
+            logger.error(f"MeshCore send failed ({type(e).__name__}): {e}")
             return False
 
     def _find_contact(self, contacts: List[Any], address: str) -> Optional[Any]:

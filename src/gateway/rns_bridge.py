@@ -1115,6 +1115,8 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
                     self.delivery_tracker.check_timeouts()
                     # Drain persistent queue when subsystems are back
                     self._drain_persistent_queue()
+                    # Clean expired bounced messages from routing classifier
+                    self._cleanup_bounced_messages()
 
             except Exception as e:
                 logger.error(f"Bridge loop error: {e}")
@@ -1164,6 +1166,21 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
             self._persistent_queue.process_once(batch_size=5)
         except Exception as e:
             logger.warning(f"Persistent queue drain error: {e}")
+
+    def _cleanup_bounced_messages(self) -> None:
+        """Clean expired bounced messages from the routing classifier queue.
+
+        Prevents unbounded queue growth when low-confidence messages
+        are never manually reviewed. Called periodically from _bridge_loop.
+        """
+        if not hasattr(self, '_router') or not self._router:
+            return
+        try:
+            cleared = self._router.clear_expired_bounced(max_age_seconds=3600.0)
+            if cleared:
+                logger.debug(f"Cleared {cleared} expired bounced messages")
+        except Exception as e:
+            logger.debug(f"Bouncer cleanup skipped: {e}")
 
     @staticmethod
     @contextmanager
