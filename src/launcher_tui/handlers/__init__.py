@@ -82,6 +82,8 @@ def get_all_handlers() -> List[Type]:
     from handlers.settings import SettingsHandler
     from handlers.meshcore import MeshCoreHandler
     from handlers.updates import UpdatesHandler
+    from handlers.radio_mode_config import RadioModeConfigHandler
+    from handlers.meshcore_config import MeshCoreConfigHandler
     handlers.extend([
         ChannelConfigHandler,
         GatewayHandler,
@@ -89,6 +91,8 @@ def get_all_handlers() -> List[Type]:
         SettingsHandler,
         MeshCoreHandler,
         UpdatesHandler,
+        RadioModeConfigHandler,
+        MeshCoreConfigHandler,
     ])
 
     # Batch 4 — dashboard, quick actions, emergency mode
