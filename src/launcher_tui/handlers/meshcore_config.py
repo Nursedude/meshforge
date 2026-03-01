@@ -1,19 +1,22 @@
 """
-MeshCore Config Mixin — /etc/meshcore/ configuration management in the TUI.
+MeshCore Config Handler — /etc/meshcore/ configuration management in the TUI.
 
-Mirrors the meshtasticd_config_mixin pattern for MeshCore companion radios.
+Converted from meshcore_config_mixin.py as part of the mixin-to-registry migration.
 Manages the /etc/meshcore/ directory structure, connection templates, and
 device detection.
-
-Uses core.meshcore_config for the actual config management.
 """
 
 import logging
+import os
+import subprocess
+
 from backend import clear_screen
+from handler_protocol import BaseHandler
 
 logger = logging.getLogger(__name__)
 
-# First-party imports
+# First-party imports — meshcore_config is part of core/ but depends on
+# optional packages for full functionality
 try:
     from core.meshcore_config import (
         MeshcoreConfig, get_meshcore_config, setup_meshcore,
@@ -30,13 +33,30 @@ except ImportError:
     _HAS_DEVICE_CHECK = False
 
 
-class MeshCoreConfigMixin:
-    """TUI mixin for MeshCore /etc/meshcore/ configuration management."""
+def _check_device_access(device_path: str) -> bool:
+    """Check if a device path is readable."""
+    return os.access(device_path, os.R_OK)
+
+
+class MeshCoreConfigHandler(BaseHandler):
+    """TUI handler for MeshCore /etc/meshcore/ configuration management."""
+
+    handler_id = "meshcore_config"
+    menu_section = "configuration"
+
+    def menu_items(self):
+        return [
+            ("meshcore_config", "MeshCore Config     /etc/meshcore/ management", "meshcore"),
+        ]
+
+    def execute(self, action):
+        if action == "meshcore_config":
+            self._meshcore_config_menu()
 
     def _meshcore_config_menu(self):
         """MeshCore Config — manage /etc/meshcore/ directory structure."""
         if not _HAS_MC_CONFIG:
-            self.dialog.msgbox(
+            self.ctx.dialog.msgbox(
                 "MeshCore Config",
                 "MeshCore configuration module not available.\n\n"
                 "This feature requires core.meshcore_config."
@@ -60,7 +80,7 @@ class MeshCoreConfigMixin:
                 ("back", "Back"),
             ]
 
-            choice = self.dialog.menu(
+            choice = self.ctx.dialog.menu(
                 "MeshCore Config",
                 subtitle,
                 choices
@@ -80,7 +100,7 @@ class MeshCoreConfigMixin:
             }
             entry = dispatch.get(choice)
             if entry:
-                self._safe_call(*entry)
+                self.ctx.safe_call(*entry)
 
     def _mc_config_status_line(self, status: dict) -> str:
         """Build status line for MeshCore config menu subtitle."""
@@ -144,11 +164,13 @@ class MeshCoreConfigMixin:
                 "  (requires Python 3.10+)",
             ])
 
-        self.dialog.msgbox("MeshCore Config Status", "\n".join(lines), height=25, width=60)
+        self.ctx.dialog.msgbox(
+            "MeshCore Config Status", "\n".join(lines), height=25, width=60
+        )
 
     def _mc_config_setup(self):
         """Create /etc/meshcore/ directory structure."""
-        confirm = self.dialog.yesno(
+        confirm = self.ctx.dialog.yesno(
             "Setup MeshCore Config",
             "This will create the MeshCore configuration directory:\n\n"
             "  /etc/meshcore/\n"
@@ -165,14 +187,14 @@ class MeshCoreConfigMixin:
         if success:
             config = get_meshcore_config()
             available = config.list_available()
-            self.dialog.msgbox(
+            self.ctx.dialog.msgbox(
                 "Setup Complete",
                 f"MeshCore config structure created.\n\n"
                 f"Templates deployed: {len(available)}\n\n"
                 "Next: Enable a connection config and connect your radio."
             )
         else:
-            self.dialog.msgbox(
+            self.ctx.dialog.msgbox(
                 "Setup Failed",
                 "Failed to create config structure.\n\n"
                 "Make sure you are running with sudo."
@@ -186,17 +208,20 @@ class MeshCoreConfigMixin:
         if devices:
             lines = ["DETECTED SERIAL DEVICES:", ""]
             for dev in devices:
-                # Check if accessible
-                accessible = "accessible" if _check_device_access(dev) else "no permission"
+                accessible = (
+                    "accessible" if _check_device_access(dev) else "no permission"
+                )
                 lines.append(f"  {dev}  ({accessible})")
             lines.extend([
                 "",
                 "Note: These are serial devices that COULD be MeshCore radios.",
                 "Verify by checking device firmware.",
             ])
-            self.dialog.msgbox("Device Detection", "\n".join(lines), height=15, width=60)
+            self.ctx.dialog.msgbox(
+                "Device Detection", "\n".join(lines), height=15, width=60
+            )
         else:
-            self.dialog.msgbox(
+            self.ctx.dialog.msgbox(
                 "Device Detection",
                 "No USB serial devices found.\n\n"
                 "Connect a MeshCore companion radio via USB and try again.\n\n"
@@ -213,7 +238,7 @@ class MeshCoreConfigMixin:
         available = config.list_available()
 
         if not available:
-            self.dialog.msgbox(
+            self.ctx.dialog.msgbox(
                 "Templates",
                 "No templates found.\n\n"
                 "Run 'Setup' to create the config directory structure."
@@ -225,7 +250,9 @@ class MeshCoreConfigMixin:
             status = "[ENABLED]" if cfg.enabled else ""
             lines.append(f"  {cfg.name:<25} {cfg.description} {status}")
 
-        self.dialog.msgbox("MeshCore Templates", "\n".join(lines), height=15, width=70)
+        self.ctx.dialog.msgbox(
+            "MeshCore Templates", "\n".join(lines), height=15, width=70
+        )
 
     def _mc_config_enable(self):
         """Enable a MeshCore connection configuration."""
@@ -234,7 +261,7 @@ class MeshCoreConfigMixin:
         disabled = [c for c in available if not c.enabled]
 
         if not disabled:
-            self.dialog.msgbox(
+            self.ctx.dialog.msgbox(
                 "Enable Config",
                 "All configurations are already enabled, or none available.\n\n"
                 "Run 'Setup' if no configs exist."
@@ -246,7 +273,7 @@ class MeshCoreConfigMixin:
             for c in disabled
         ]
 
-        choice = self.dialog.menu(
+        choice = self.ctx.dialog.menu(
             "Enable Config",
             "Select a configuration to enable:",
             choices
@@ -255,9 +282,9 @@ class MeshCoreConfigMixin:
         if choice:
             success = config.enable(choice)
             if success:
-                self.dialog.msgbox("Config Enabled", f"Enabled: {choice}")
+                self.ctx.dialog.msgbox("Config Enabled", f"Enabled: {choice}")
             else:
-                self.dialog.msgbox("Error", f"Failed to enable: {choice}")
+                self.ctx.dialog.msgbox("Error", f"Failed to enable: {choice}")
 
     def _mc_config_disable(self):
         """Disable a MeshCore connection configuration."""
@@ -265,7 +292,9 @@ class MeshCoreConfigMixin:
         enabled = config.list_enabled()
 
         if not enabled:
-            self.dialog.msgbox("Disable Config", "No configs are currently enabled.")
+            self.ctx.dialog.msgbox(
+                "Disable Config", "No configs are currently enabled."
+            )
             return
 
         choices = [
@@ -273,7 +302,7 @@ class MeshCoreConfigMixin:
             for c in enabled
         ]
 
-        choice = self.dialog.menu(
+        choice = self.ctx.dialog.menu(
             "Disable Config",
             "Select a configuration to disable:",
             choices
@@ -282,17 +311,15 @@ class MeshCoreConfigMixin:
         if choice:
             success = config.disable(choice)
             if success:
-                self.dialog.msgbox("Config Disabled", f"Disabled: {choice}")
+                self.ctx.dialog.msgbox("Config Disabled", f"Disabled: {choice}")
             else:
-                self.dialog.msgbox("Error", f"Failed to disable: {choice}")
+                self.ctx.dialog.msgbox("Error", f"Failed to disable: {choice}")
 
     def _mc_config_edit(self):
         """Edit MeshCore config files with nano."""
-        import subprocess
-
         config = get_meshcore_config()
         if not config.main_config.exists():
-            self.dialog.msgbox(
+            self.ctx.dialog.msgbox(
                 "Edit Config",
                 "Config directory not set up.\n\n"
                 "Run 'Setup' first to create the config structure."
@@ -308,7 +335,7 @@ class MeshCoreConfigMixin:
         for cfg_file in sorted(config.config_d_dir.glob("*.yaml")):
             files.append((str(cfg_file), f"config.d/{cfg_file.name}"))
 
-        choice = self.dialog.menu(
+        choice = self.ctx.dialog.menu(
             "Edit Config File",
             "Select a file to edit:",
             files
@@ -323,12 +350,6 @@ class MeshCoreConfigMixin:
                     timeout=300,
                 )
             except FileNotFoundError:
-                self.dialog.msgbox("Error", "nano editor not found.")
+                self.ctx.dialog.msgbox("Error", "nano editor not found.")
             except subprocess.TimeoutExpired:
                 pass
-
-
-def _check_device_access(device_path: str) -> bool:
-    """Check if a device path is readable."""
-    import os
-    return os.access(device_path, os.R_OK)

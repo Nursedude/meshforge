@@ -1,42 +1,41 @@
 """
-Radio Mode Mixin — Primary radio selection in the TUI.
+Radio Mode Config Handler — Primary radio selection in the TUI.
 
+Converted from radio_mode_mixin.py as part of the mixin-to-registry migration.
 Allows the user to select which LoRa radio firmware is primary:
   - Meshtastic (default, current behavior)
   - MeshCore (companion radio managed directly by MeshForge)
   - Dual (both radios active, gateway bridges all networks)
-
-Uses core.radio_mode for persistence and detection.
 """
 
 import logging
-from backend import clear_screen
+import os
+
+from handler_protocol import BaseHandler
+from core.radio_mode import (
+    RadioMode, get_radio_mode, set_radio_mode, get_default_bridge_mode
+)
 
 logger = logging.getLogger(__name__)
 
-# Import radio mode module — first-party, always available
-try:
-    from core.radio_mode import (
-        RadioMode, get_radio_mode, set_radio_mode, get_default_bridge_mode
-    )
-    _HAS_RADIO_MODE = True
-except ImportError:
-    _HAS_RADIO_MODE = False
 
+class RadioModeConfigHandler(BaseHandler):
+    """TUI handler for primary radio mode selection."""
 
-class RadioModeMixin:
-    """TUI mixin for primary radio mode selection."""
+    handler_id = "radio_mode_config"
+    menu_section = "configuration"
+
+    def menu_items(self):
+        return [
+            ("radio_mode_config", "Radio Mode          Primary radio selection", "meshcore"),
+        ]
+
+    def execute(self, action):
+        if action == "radio_mode_config":
+            self._radio_mode_menu()
 
     def _radio_mode_menu(self):
         """Radio Mode — select primary LoRa radio."""
-        if not _HAS_RADIO_MODE:
-            self.dialog.msgbox(
-                "Radio Mode",
-                "Radio mode module not available.\n\n"
-                "This feature requires core.radio_mode."
-            )
-            return
-
         while True:
             current = get_radio_mode()
             bridge_mode = get_default_bridge_mode(current)
@@ -54,7 +53,7 @@ class RadioModeMixin:
                 ("back", "Back"),
             ]
 
-            choice = self.dialog.menu(
+            choice = self.ctx.dialog.menu(
                 "Radio Mode",
                 subtitle,
                 choices
@@ -64,26 +63,25 @@ class RadioModeMixin:
                 break
 
             if choice == "info":
-                self._safe_call("Radio Mode Info", self._radio_mode_info)
+                self.ctx.safe_call("Radio Mode Info", self._radio_mode_info)
             elif choice in ("meshtastic", "meshcore", "dual"):
-                self._safe_call(
+                self.ctx.safe_call(
                     "Set Radio Mode",
                     self._radio_mode_set,
                     RadioMode(choice)
                 )
 
-    def _radio_mode_set(self, mode: 'RadioMode'):
+    def _radio_mode_set(self, mode: RadioMode):
         """Set the primary radio mode."""
         current = get_radio_mode()
         if mode == current:
-            self.dialog.msgbox(
+            self.ctx.dialog.msgbox(
                 "Radio Mode",
                 f"Already set to {mode.value.upper()}.\n\n"
                 "No changes needed."
             )
             return
 
-        # Confirm the change
         mode_descriptions = {
             RadioMode.MESHTASTIC: (
                 "Meshtastic will be the primary radio.\n\n"
@@ -109,7 +107,7 @@ class RadioModeMixin:
         }
 
         desc = mode_descriptions.get(mode, "")
-        confirm = self.dialog.yesno(
+        confirm = self.ctx.dialog.yesno(
             f"Switch to {mode.value.upper()}?",
             f"{desc}\n\n"
             f"Change from {current.value.upper()} to {mode.value.upper()}?\n\n"
@@ -119,23 +117,21 @@ class RadioModeMixin:
         if not confirm:
             return
 
-        # Try admin config first (if running as root), then user config
-        import os
         is_root = os.geteuid() == 0
         success = set_radio_mode(mode, admin=is_root)
 
         if success:
             bridge_mode = get_default_bridge_mode(mode)
-            self.dialog.msgbox(
+            self.ctx.dialog.msgbox(
                 "Radio Mode Updated",
                 f"Primary radio set to: {mode.value.upper()}\n"
                 f"Default bridge mode: {bridge_mode}\n\n"
                 "Restart the gateway bridge for changes to take effect."
             )
         else:
-            self.dialog.msgbox(
+            self.ctx.dialog.msgbox(
                 "Error",
-                f"Failed to save radio mode.\n\n"
+                "Failed to save radio mode.\n\n"
                 "Check file permissions and try again."
             )
 
@@ -167,10 +163,8 @@ class RadioModeMixin:
             "  3. TUI menu layout and status display\n"
             "  4. Which radio is required vs optional"
         )
-        self.dialog.msgbox("Radio Modes", info, height=30, width=65)
+        self.ctx.dialog.msgbox("Radio Modes", info, height=30, width=65)
 
-    def _get_radio_mode_label(self) -> str:
+    def get_radio_mode_label(self) -> str:
         """Get short label for current radio mode (for status bar)."""
-        if not _HAS_RADIO_MODE:
-            return "meshtastic"
         return get_radio_mode().value

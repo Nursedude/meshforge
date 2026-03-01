@@ -47,6 +47,9 @@ from utils.service_check import (
     ServiceState as _CheckState,
 )
 
+# RadioMode awareness — adjust service requirements based on primary radio
+from core.radio_mode import RadioMode, get_radio_mode, get_default_bridge_mode
+
 # Setup logging
 logger = logging.getLogger(__name__)
 
@@ -155,6 +158,10 @@ class ServiceOrchestrator:
 
         # Adjust meshtasticd service based on daemon type
         self._configure_meshtasticd()
+
+        # Adjust service requirements based on RadioMode
+        self._radio_mode = get_radio_mode()
+        self._configure_for_radio_mode()
 
     def _load_config(self):
         """Load NOC configuration from /etc/meshforge/noc.yaml."""
@@ -289,6 +296,39 @@ class ServiceOrchestrator:
             )
             logger.info("Configured for Python meshtastic CLI (USB radio)")
 
+    def _configure_for_radio_mode(self):
+        """Adjust service requirements based on RadioMode.
+
+        - MESHTASTIC: default, no changes (meshtasticd required)
+        - MESHCORE: meshtasticd optional (MeshCore runs in-process)
+        - DUAL: both meshtasticd and rnsd required
+        """
+        if self._radio_mode == RadioMode.MESHCORE:
+            # MeshCore is primary — meshtasticd is not required but can still run
+            if 'meshtasticd' in self.SERVICES:
+                svc = self.SERVICES['meshtasticd']
+                self.SERVICES['meshtasticd'] = ServiceConfig(
+                    name=svc.name,
+                    systemd_name=svc.systemd_name,
+                    check_binary=svc.check_binary,
+                    check_port=svc.check_port,
+                    check_command=svc.check_command,
+                    startup_delay=svc.startup_delay,
+                    required=False,
+                    install_command=svc.install_command,
+                    dependencies=svc.dependencies,
+                )
+            logger.info("RadioMode MESHCORE: meshtasticd marked optional")
+        elif self._radio_mode == RadioMode.DUAL:
+            logger.info("RadioMode DUAL: both meshtasticd and rnsd required")
+        else:
+            logger.info(f"RadioMode {self._radio_mode.value}: default service config")
+
+    @property
+    def radio_mode(self) -> RadioMode:
+        """Current radio mode for this orchestrator instance."""
+        return self._radio_mode
+
     def _check_meshtasticd_config(self) -> bool:
         """Check that meshtasticd has a radio config in config.d/.
 
@@ -419,6 +459,8 @@ class ServiceOrchestrator:
             'config_file': str(self._config_path),
             'config_exists': self._config_path.exists() if self._config_path else False,
             'mode': self.config['mode'],
+            'radio_mode': self._radio_mode.value,
+            'bridge_mode': get_default_bridge_mode(self._radio_mode),
             'radio_type': self.config['radio'].get('type', 'unknown'),
             'daemon_type': self.config['radio'].get('daemon', 'python'),
             'device': self.config['radio'].get('device', ''),
@@ -555,6 +597,16 @@ class ServiceOrchestrator:
                 name=service_name,
                 state=ServiceState.NOT_NEEDED,
                 message="USB-direct mode: no daemon needed (use meshtastic CLI directly)"
+            )
+
+        # MESHCORE mode: meshtasticd is optional (MeshCore is primary radio)
+        if (self._radio_mode == RadioMode.MESHCORE
+                and service_name == 'meshtasticd'
+                and not self.is_installed(service_name)):
+            return ServiceStatus(
+                name=service_name,
+                state=ServiceState.NOT_NEEDED,
+                message="MESHCORE mode: meshtasticd optional (MeshCore is primary)"
             )
 
         if not self.is_installed(service_name):
@@ -1206,6 +1258,8 @@ def main():
         print(f"  Config File:        {config_info['config_file']}")
         print(f"  Config Exists:      {config_info['config_exists']}")
         print(f"  NOC Mode:           {config_info['mode']}")
+        print(f"  Radio Mode:         {config_info['radio_mode']}")
+        print(f"  Bridge Mode:        {config_info['bridge_mode']}")
         print(f"  Radio Type:         {config_info['radio_type']}")
         print(f"  Daemon Type:        {config_info['daemon_type']}")
         if config_info['device']:
@@ -1244,7 +1298,12 @@ def main():
     if args.status:
         print("\n═══ MeshForge NOC Status ═══\n")
         config_info = orch.get_config_info()
-        print(f"  Mode: {config_info['mode']} | Radio: {config_info['radio_type']} | Daemon: {config_info['daemon_type']}\n")
+        print(
+            f"  Mode: {config_info['mode']} | "
+            f"Radio: {config_info['radio_mode']} | "
+            f"Bridge: {config_info['bridge_mode']} | "
+            f"Daemon: {config_info['daemon_type']}\n"
+        )
 
         statuses = orch.get_all_status()
         for name, status in statuses.items():
