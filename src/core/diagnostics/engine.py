@@ -56,6 +56,11 @@ from .checks import (
     check_meshtastic_cli,
     check_meshtastic_connection,
     find_serial_devices,
+    # MeshCore
+    check_meshcore_installed,
+    check_meshcore_config,
+    check_meshcore_device,
+    check_meshcore_bridge_status,
     # Serial
     check_serial_ports,
     check_dialout_group,
@@ -97,7 +102,7 @@ class DiagnosticEngine:
     Central diagnostic engine for MeshForge.
 
     Thread-safe singleton that provides:
-    - Comprehensive system checks (9 categories)
+    - Comprehensive system checks (10 categories)
     - Real-time callbacks for GUI/Web updates
     - Persistent event logging
     - Health monitoring
@@ -257,6 +262,7 @@ class DiagnosticEngine:
             CheckCategory.NETWORK: self._run_network_checks,
             CheckCategory.RNS: self._run_rns_checks,
             CheckCategory.MESHTASTIC: self._run_meshtastic_checks,
+            CheckCategory.MESHCORE: self._run_meshcore_checks,
             CheckCategory.SERIAL: self._run_serial_checks,
             CheckCategory.HARDWARE: self._run_hardware_checks,
             CheckCategory.SYSTEM: self._run_system_checks,
@@ -311,6 +317,16 @@ class DiagnosticEngine:
         results.append(check_meshtastic_cli())
         results.append(check_meshtastic_connection())
         self._update_subsystem_health('meshtastic', results)
+        return results
+
+    def _run_meshcore_checks(self) -> List[CheckResult]:
+        """Check MeshCore companion radio subsystem."""
+        results = []
+        results.append(check_meshcore_installed())
+        results.append(check_meshcore_config())
+        results.append(check_meshcore_device())
+        results.append(check_meshcore_bridge_status())
+        self._update_subsystem_health('meshcore', results)
         return results
 
     def _run_serial_checks(self) -> List[CheckResult]:

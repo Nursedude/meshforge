@@ -13,7 +13,9 @@ Usage:
 """
 
 import logging
-from typing import Optional
+import os
+import socket
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -136,3 +138,144 @@ def is_gateway_running() -> bool:
     """Check if gateway bridge is currently running."""
     global _active_bridge
     return _active_bridge is not None and _active_bridge._running
+
+
+def test_meshcore_connection() -> Dict:
+    """
+    Test MeshCore device availability without starting the bridge.
+
+    Reads connection settings from gateway config and probes the device.
+
+    Returns:
+        Dict with 'reachable' (bool), 'connection_type', 'detail', 'error'
+    """
+    result = {
+        'reachable': False,
+        'connection_type': 'unknown',
+        'detail': '',
+        'error': None,
+    }
+
+    try:
+        from .config import GatewayConfig
+        config = GatewayConfig.load()
+    except Exception as e:
+        result['error'] = f"Config load failed: {e}"
+        return result
+
+    mc = getattr(config, 'meshcore', None)
+    if mc is None or not mc.enabled:
+        result['error'] = "MeshCore not configured or disabled"
+        return result
+
+    result['connection_type'] = mc.connection_type
+
+    if mc.connection_type == "serial":
+        device = mc.device_path
+        if os.path.exists(device):
+            result['reachable'] = True
+            result['detail'] = f"Serial device present: {device}"
+        else:
+            result['error'] = f"Serial device not found: {device}"
+
+    elif mc.connection_type == "tcp":
+        host = mc.tcp_host or "localhost"
+        port = mc.tcp_port
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(3)
+            conn_result = sock.connect_ex((host, port))
+            sock.close()
+            if conn_result == 0:
+                result['reachable'] = True
+                result['detail'] = f"TCP connection OK: {host}:{port}"
+            else:
+                result['error'] = f"TCP connection refused: {host}:{port}"
+        except Exception as e:
+            result['error'] = f"TCP error: {e}"
+
+    elif mc.connection_type == "ble":
+        result['error'] = "BLE transport not yet supported"
+
+    else:
+        result['error'] = f"Unknown connection type: {mc.connection_type}"
+
+    return result
+
+
+def send_meshcore_message(text: str, destination: str = None) -> Dict:
+    """
+    Send a text message via MeshCore through the running bridge.
+
+    Args:
+        text: Message text to send
+        destination: Optional destination node ID (broadcast if None)
+
+    Returns:
+        Dict with 'sent' (bool), 'error' (str or None)
+    """
+    global _active_bridge
+
+    if _active_bridge is None or not _active_bridge._running:
+        return {'sent': False, 'error': "Gateway bridge not running"}
+
+    mc_handler = getattr(_active_bridge, '_meshcore_handler', None)
+    if mc_handler is None:
+        return {'sent': False, 'error': "MeshCore handler not active"}
+
+    try:
+        ok = mc_handler.send_text(text, destination=destination)
+        if ok:
+            return {'sent': True, 'error': None}
+        else:
+            return {'sent': False, 'error': "send_text returned False"}
+    except Exception as e:
+        logger.error(f"Error sending MeshCore message: {e}")
+        return {'sent': False, 'error': str(e)}
+
+
+def get_meshcore_status() -> Dict:
+    """
+    Get detailed MeshCore subsystem status from the running bridge.
+
+    Returns:
+        Dict with connection state, device info, node count, and metrics.
+    """
+    global _active_bridge
+
+    result = {
+        'active': False,
+        'connected': False,
+        'device': None,
+        'nodes_discovered': 0,
+        'rx': 0,
+        'tx': 0,
+    }
+
+    if _active_bridge is None or not _active_bridge._running:
+        return result
+
+    mc_handler = getattr(_active_bridge, '_meshcore_handler', None)
+    if mc_handler is None:
+        return result
+
+    result['active'] = True
+
+    try:
+        result['connected'] = getattr(mc_handler, 'is_connected', False)
+        result['device'] = getattr(mc_handler, '_device_path', None) or \
+            getattr(mc_handler, '_tcp_host', None)
+    except Exception:
+        pass
+
+    # Pull stats from gateway stats
+    try:
+        stats = get_gateway_stats()
+        inner = stats.get('statistics', stats)
+        result['rx'] = inner.get('meshcore_rx', 0)
+        result['tx'] = inner.get('meshcore_tx', 0)
+        result['nodes_discovered'] = inner.get('meshcore_nodes', 0)
+    except Exception:
+        pass
+
+    return result

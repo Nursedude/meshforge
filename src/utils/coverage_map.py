@@ -482,6 +482,35 @@ class MapNode:
     role: str = ""
 
 
+def _compute_heatmap_weight(node: MapNode, weight_by: str) -> float:
+    """
+    Compute heatmap intensity weight for a node based on the weighting mode.
+
+    Args:
+        node: MapNode with optional snr/rssi fields
+        weight_by: "density", "snr", or "rssi"
+
+    Returns:
+        Float weight in [0.0, 1.0]
+    """
+    if weight_by == "snr":
+        if node.snr is not None:
+            # Normalize SNR: -20 dB (worst) → 0.0, +10 dB (best) → 1.0
+            return max(0.0, min(1.0, (node.snr + 20.0) / 30.0))
+        # No SNR data — use presence-based fallback
+        return 0.5 if node.is_online else 0.1
+
+    elif weight_by == "rssi":
+        if node.rssi is not None:
+            # Normalize RSSI: -137 dBm (worst) → 0.0, -70 dBm (best) → 1.0
+            return max(0.0, min(1.0, (node.rssi + 137.0) / 67.0))
+        return 0.5 if node.is_online else 0.1
+
+    else:
+        # density mode — original behavior
+        return 1.0 if node.is_online else 0.3
+
+
 class CoverageMapGenerator:
     """
     Interactive coverage map generator using Folium.
@@ -489,7 +518,7 @@ class CoverageMapGenerator:
     Features:
     - Node markers with popup info
     - Coverage radius estimation
-    - Heatmaps for signal density
+    - Heatmaps for signal density and signal quality
     - Multiple tile layers (OSM, satellite, terrain)
     - Export to standalone HTML
     """
@@ -564,6 +593,8 @@ class CoverageMapGenerator:
         self._coverage_radius = self.PRESET_RANGES.get(lora_preset, 5000)
         self._offline = offline
         self._custom_markers = custom_markers
+        self._map = None  # Folium map object, set by generate()
+        self._rns_edges: List[Dict] = []  # RNS link quality edges
 
     @classmethod
     def get_icon_for_role(cls, role: str) -> Dict[str, str]:
@@ -811,6 +842,7 @@ class CoverageMapGenerator:
             zoom_start=10,
             tiles=tile_layer
         )
+        self._map = m
 
         # Add tile layers
         folium.TileLayer('OpenStreetMap', name='Street').add_to(m)
@@ -939,6 +971,10 @@ class CoverageMapGenerator:
         gateway_group.add_to(m)
         coverage_group.add_to(m)
         links_group.add_to(m)
+
+        # Add RNS link quality layer if edges were set
+        if self._rns_edges:
+            self.add_rns_link_quality_layer(self._rns_edges)
 
         # Add layer control
         folium.LayerControl().add_to(m)
@@ -1155,19 +1191,20 @@ class CoverageMapGenerator:
         logger.info(f"Fallback coverage map saved to: {output_path}")
         return output_path
 
-    def generate_heatmap(self, output_path: str = None, radius: int = 25) -> str:
+    def generate_heatmap(self, output_path: str = None, radius: int = 25,
+                         weight_by: str = "density") -> str:
         """
-        Generate a heatmap showing node density.
+        Generate a heatmap showing node density or signal quality.
 
         Args:
             output_path: Output file path
             radius: Heatmap point radius
+            weight_by: Weighting mode — "density" (original), "snr", or "rssi"
 
         Returns:
             Path to generated HTML file
         """
         if not _HAS_FOLIUM or not _HAS_FOLIUM_PLUGINS:
-            # Heatmap requires Folium - no fallback available
             logger.warning("Folium not installed, heatmap unavailable")
             return ""
 
@@ -1182,23 +1219,141 @@ class CoverageMapGenerator:
         center = self.get_center()
         m = folium.Map(location=center, zoom_start=10)
 
-        # Prepare heatmap data
-        heat_data = [
-            [n.latitude, n.longitude, 1.0 if n.is_online else 0.3]
-            for n in self._nodes
-            if n.latitude and n.longitude
-        ]
+        heat_data = []
+        for n in self._nodes:
+            if not n.latitude or not n.longitude:
+                continue
+            weight = _compute_heatmap_weight(n, weight_by)
+            heat_data.append([n.latitude, n.longitude, weight])
+
+        # Select gradient based on weighting mode
+        if weight_by in ("snr", "rssi"):
+            gradient = {
+                0.2: '#3b82f6',   # Blue (weak)
+                0.4: '#06b6d4',   # Cyan
+                0.6: '#22c55e',   # Green (good)
+                0.8: '#eab308',   # Yellow
+                1.0: '#ef4444',   # Red (strong)
+            }
+        else:
+            gradient = {0.4: 'blue', 0.65: 'lime', 1: 'red'}
 
         if heat_data:
             HeatMap(
                 heat_data,
                 radius=radius,
                 blur=15,
-                gradient={0.4: 'blue', 0.65: 'lime', 1: 'red'}
+                gradient=gradient,
             ).add_to(m)
 
         folium.LayerControl().add_to(m)
         m.save(output_path)
 
-        logger.info(f"Heatmap saved to: {output_path}")
+        logger.info(f"Heatmap ({weight_by}) saved to: {output_path}")
         return output_path
+
+    # ── RNS Link Quality Layer ──
+
+    def set_rns_edges(self, edges: List[Dict]) -> None:
+        """
+        Set RNS topology edges for link quality overlay.
+
+        Call before generate() to include the layer automatically,
+        or call add_rns_link_quality_layer() directly on a stored map.
+
+        Args:
+            edges: List of edge dicts from NetworkTopology.to_dict()['edges']
+        """
+        self._rns_edges = edges or []
+
+    def add_rns_link_quality_layer(self, edges: List[Dict]) -> None:
+        """
+        Add a Folium FeatureGroup showing RNS link quality as colored polylines.
+
+        Each edge is drawn between its source and destination nodes (if both
+        have coordinates), color-coded by SNR quality:
+            green (#22c55e) — excellent (SNR > 5 dB)
+            yellow (#eab308) — good (0 to 5 dB)
+            orange (#f97316) — fair (-10 to 0 dB)
+            red (#ef4444)    — bad (< -10 dB)
+            gray (#6b7280)   — unknown (no SNR data)
+
+        Args:
+            edges: List of edge dicts, each with at minimum:
+                source_id, dest_id, and optionally snr, rssi, hops, is_active
+        """
+        if not _HAS_FOLIUM or self._map is None:
+            return
+
+        folium = _folium
+
+        # Build lookup: node_id -> (lat, lon)
+        node_coords = {}
+        for n in self._nodes:
+            if n.latitude and n.longitude:
+                node_coords[n.id] = (n.latitude, n.longitude)
+
+        if not node_coords or not edges:
+            return
+
+        fg = folium.FeatureGroup(name='RNS Link Quality', show=True)
+
+        for edge in edges:
+            src_id = edge.get('source_id', '')
+            dst_id = edge.get('dest_id', '')
+
+            src_coords = node_coords.get(src_id)
+            dst_coords = node_coords.get(dst_id)
+            if not src_coords or not dst_coords:
+                continue
+
+            snr = edge.get('snr')
+            rssi = edge.get('rssi')
+            hops = edge.get('hops', 0)
+            is_active = edge.get('is_active', True)
+
+            # Color by SNR quality
+            color, quality = _snr_to_link_color(snr)
+
+            # Line weight: active=3, inactive=1
+            weight = 3 if is_active else 1
+            dash_array = None if is_active else '5, 10'
+
+            # Build tooltip
+            tooltip_parts = [f"{src_id} \u2192 {dst_id}", f"Quality: {quality}"]
+            if snr is not None:
+                tooltip_parts.append(f"SNR: {snr:.1f} dB")
+            if rssi is not None:
+                tooltip_parts.append(f"RSSI: {rssi} dBm")
+            if hops:
+                tooltip_parts.append(f"Hops: {hops}")
+            tooltip_text = '<br>'.join(tooltip_parts)
+
+            folium.PolyLine(
+                locations=[src_coords, dst_coords],
+                color=color,
+                weight=weight,
+                opacity=0.8,
+                dash_array=dash_array,
+                tooltip=tooltip_text,
+            ).add_to(fg)
+
+        fg.add_to(self._map)
+
+
+def _snr_to_link_color(snr: float = None) -> tuple:
+    """
+    Map SNR value to a color and quality label for link visualization.
+
+    Returns:
+        (color_hex, quality_label) tuple
+    """
+    if snr is None:
+        return '#6b7280', 'Unknown'
+    if snr > 5:
+        return '#22c55e', 'Excellent'
+    if snr > 0:
+        return '#eab308', 'Good'
+    if snr > -10:
+        return '#f97316', 'Fair'
+    return '#ef4444', 'Bad'

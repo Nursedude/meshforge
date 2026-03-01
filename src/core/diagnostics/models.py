@@ -46,6 +46,7 @@ class CheckCategory(Enum):
     NETWORK = "network"         # internet, DNS, gateway, MQTT, ports
     RNS = "rns"                 # installed, config, daemon, port, interface
     MESHTASTIC = "meshtastic"   # library, CLI, TCP, web UI
+    MESHCORE = "meshcore"       # library, device, config, bridge status
     SERIAL = "serial"           # ports, permissions, devices
     HARDWARE = "hardware"       # SPI, I2C, GPIO, LoRa, temp, SDR
     SYSTEM = "system"           # Python, packages, memory, disk, CPU

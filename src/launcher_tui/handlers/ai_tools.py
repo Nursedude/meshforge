@@ -65,7 +65,7 @@ class AIToolsHandler(BaseHandler):
         return [
             ("livemap",   "Live NOC Map        Real-time browser view", None),
             ("coverage",  "Coverage Map        Generate coverage map",  None),
-            ("heatmap",   "Heatmap             Node density heatmap",   None),
+            ("heatmap",   "Heatmap             Signal quality / density", None),
             ("tiles",     "Offline Tiles       Cache map tiles",        None),
             ("ai",        "AI Diagnostics      Knowledge base, assistant", None),
         ]
@@ -923,6 +923,22 @@ class AIToolsHandler(BaseHandler):
                     self.ctx.dialog.msgbox("Error", f"Failed to load file: {e}")
                     return
 
+            # Overlay RNS link quality if topology is available
+            try:
+                from utils.safe_import import safe_import as _si
+                _get_topo, _has_topo = _si(
+                    'gateway.network_topology', 'get_network_topology'
+                )
+                if _has_topo:
+                    topo = _get_topo()
+                    topo_dict = topo.to_dict()
+                    edges = topo_dict.get('edges', [])
+                    if edges:
+                        generator.set_rns_edges(edges)
+                        logger.debug("Added %d RNS edges to map", len(edges))
+            except Exception:
+                pass  # Topology unavailable — skip gracefully
+
             # Generate map
             output_dir = get_real_user_home() / ".local" / "share" / "meshforge"
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -1022,9 +1038,7 @@ class AIToolsHandler(BaseHandler):
     # =========================================================================
 
     def _generate_heatmap(self):
-        """Generate a node density heatmap and open in browser."""
-        self.ctx.dialog.infobox("Generating", "Creating node density heatmap...")
-
+        """Generate a heatmap weighted by density or signal quality."""
         if not _HAS_COVERAGE_MAP:
             self.ctx.dialog.msgbox(
                 "Error",
@@ -1037,6 +1051,23 @@ class AIToolsHandler(BaseHandler):
         if not _HAS_MAP_SERVICE:
             self.ctx.dialog.msgbox("Error", "MapDataCollector not available.")
             return
+
+        # Let user choose weighting mode
+        weight_choice = self.ctx.dialog.menu(
+            "Heatmap Type",
+            "Select heatmap weighting:",
+            [
+                ("snr", "Signal Quality (SNR)  Weight by signal-to-noise ratio"),
+                ("rssi", "Signal Strength (RSSI) Weight by received power level"),
+                ("density", "Node Density          Online/offline presence only"),
+            ]
+        )
+        if weight_choice is None:
+            return
+
+        label = {"snr": "SNR signal quality", "rssi": "RSSI signal strength",
+                 "density": "node density"}.get(weight_choice, weight_choice)
+        self.ctx.dialog.infobox("Generating", f"Creating {label} heatmap...")
 
         try:
             from utils.paths import get_real_user_home
@@ -1062,7 +1093,9 @@ class AIToolsHandler(BaseHandler):
             output_dir.mkdir(parents=True, exist_ok=True)
             output_file = str(output_dir / "coverage_heatmap.html")
 
-            result_path = generator.generate_heatmap(output_path=output_file)
+            result_path = generator.generate_heatmap(
+                output_path=output_file, weight_by=weight_choice
+            )
 
             if not result_path:
                 self.ctx.dialog.msgbox(
@@ -1075,7 +1108,7 @@ class AIToolsHandler(BaseHandler):
 
             self.ctx.dialog.msgbox(
                 "Heatmap Generated",
-                f"Node density heatmap saved to:\n{result_path}\n\n"
+                f"{label.title()} heatmap saved to:\n{result_path}\n\n"
                 "Opening in browser..."
             )
             self._open_in_browser(result_path)
