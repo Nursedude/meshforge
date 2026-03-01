@@ -46,6 +46,11 @@ CircuitBreakerRegistry, HAS_CIRCUIT_BREAKER = safe_import(
     '.circuit_breaker', 'CircuitBreakerRegistry', package=__package__
 )
 
+# AREDN topology overlay (optional - visibility only)
+AREDNTopologyOverlay, HAS_AREDN_TOPOLOGY = safe_import(
+    '.aredn_topology', 'AREDNTopologyOverlay', package=__package__
+)
+
 # Import persistent message queue for reliable delivery
 PersistentMessageQueue, MessagePriority, HAS_PERSISTENT_QUEUE = safe_import(
     '.message_queue', 'PersistentMessageQueue', 'MessagePriority', package=__package__
@@ -238,12 +243,67 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
             )
             logger.info("Circuit breaker initialized for destination tracking")
 
+        # AREDN topology overlay (visibility only)
+        self._aredn_overlay = None
+        self._aredn_thread = None
+        aredn_cfg = getattr(self.config, 'aredn_backhaul', None)
+        if HAS_AREDN_TOPOLOGY and aredn_cfg and aredn_cfg.enabled:
+            try:
+                self._aredn_overlay = AREDNTopologyOverlay(
+                    router_ip=aredn_cfg.router_ip,
+                    auto_detect=aredn_cfg.auto_detect,
+                    poll_interval_sec=aredn_cfg.poll_interval_sec,
+                )
+                logger.info("AREDN topology overlay initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize AREDN overlay: {e}")
+
         # MQTT filtering configuration
         self._filter_mqtt_messages = False  # Set True to drop MQTT-originated messages
 
         # Initialize Meshtastic handler based on bridge mode
-        # MQTT bridge (recommended): zero interference with web client
-        # TCP bridge (legacy): holds persistent connection, blocks web client
+        # ── MeshCore handler (initialize FIRST when meshcore_primary) ──
+        # In meshcore_primary mode, MeshCore is the primary radio and
+        # Meshtastic is optional. In other modes, MeshCore is secondary.
+        meshcore_config = getattr(self.config, 'meshcore', None)
+        is_meshcore_primary = self.config.bridge_mode == "meshcore_primary"
+
+        if is_meshcore_primary:
+            # MeshCore-primary: initialize MeshCore handler first
+            if HAS_MESHCORE and meshcore_config:
+                logger.info("MeshCore-primary mode: initializing MeshCore handler")
+                # Force-enable meshcore config in meshcore_primary mode
+                meshcore_config.enabled = True
+                self._meshcore_handler = MeshCoreHandler(
+                    config=self.config,
+                    node_tracker=self.node_tracker,
+                    health=self.health,
+                    stop_event=self._stop_event,
+                    stats=self.stats,
+                    stats_lock=self._stats_lock,
+                    message_queue=self._meshcore_to_bridge_queue,
+                    message_callback=self._notify_message,
+                    status_callback=lambda status: self._notify_status(status),
+                    should_bridge=self._router.should_bridge,
+                )
+                if self._persistent_queue:
+                    self._persistent_queue.register_sender(
+                        "meshcore", self._meshcore_handler.queue_send
+                    )
+                self.health.set_subsystem_enabled("meshcore", True)
+                logger.info("MeshCore handler initialized (primary radio)")
+            else:
+                raise ImportError(
+                    "MeshCore-primary mode requires meshcore_py library. "
+                    "Install with: pip install meshcore"
+                )
+
+        # ── Meshtastic handler ──
+        # In meshcore_primary mode, Meshtastic is OPTIONAL (graceful degradation).
+        # In all other modes, Meshtastic is required.
+        meshtastic_required = not is_meshcore_primary
+        meshtastic_available = False
+
         if self.config.bridge_mode == "mqtt_bridge" and HAS_MQTT_BRIDGE:
             logger.info("Using MQTT bridge handler (zero-interference mode)")
             self._mesh_handler = MQTTBridgeHandler(
@@ -258,6 +318,39 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
                 status_callback=lambda status: self._notify_status(status),
                 should_bridge=self._router.should_bridge,
             )
+            meshtastic_available = True
+        elif is_meshcore_primary and (HAS_MQTT_BRIDGE or HAS_MESHTASTIC_LIB):
+            # In meshcore_primary mode, try to set up Meshtastic as optional bridge
+            if HAS_MQTT_BRIDGE:
+                logger.info("MeshCore-primary: Meshtastic available via MQTT (optional bridge)")
+                self._mesh_handler = MQTTBridgeHandler(
+                    config=self.config,
+                    node_tracker=self.node_tracker,
+                    health=self.health,
+                    stop_event=self._stop_event,
+                    stats=self.stats,
+                    stats_lock=self._stats_lock,
+                    message_queue=self._mesh_to_rns_queue,
+                    message_callback=self._notify_message,
+                    status_callback=lambda status: self._notify_status(status),
+                    should_bridge=self._router.should_bridge,
+                )
+                meshtastic_available = True
+            elif HAS_MESHTASTIC_LIB:
+                logger.info("MeshCore-primary: Meshtastic available via TCP (optional bridge)")
+                self._mesh_handler = MeshtasticHandler(
+                    config=self.config,
+                    node_tracker=self.node_tracker,
+                    health=self.health,
+                    stop_event=self._stop_event,
+                    stats=self.stats,
+                    stats_lock=self._stats_lock,
+                    message_queue=self._mesh_to_rns_queue,
+                    message_callback=self._notify_message,
+                    status_callback=lambda status: self._notify_status(status),
+                    should_bridge=self._router.should_bridge,
+                )
+                meshtastic_available = True
         elif HAS_MESHTASTIC_LIB:
             if self.config.bridge_mode == "mqtt_bridge" and not HAS_MQTT_BRIDGE:
                 logger.warning("MQTT bridge requested but paho-mqtt not available, "
@@ -275,46 +368,48 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
                 status_callback=lambda status: self._notify_status(status),
                 should_bridge=self._router.should_bridge,
             )
-        else:
+            meshtastic_available = True
+        elif meshtastic_required:
             raise ImportError(
                 "No Meshtastic handler available. Install paho-mqtt for MQTT bridge "
                 "(recommended) or meshtastic Python library for legacy TCP bridge."
             )
 
+        if is_meshcore_primary and not meshtastic_available:
+            logger.info("MeshCore-primary: running without Meshtastic (MeshCore + RNS only)")
+
         # Register Meshtastic sender now that handler exists
-        if self._persistent_queue:
+        if self._mesh_handler and self._persistent_queue:
             self._persistent_queue.register_sender(
                 "meshtastic", self._mesh_handler.queue_send
             )
 
-        # Initialize MeshCore handler if configured and available
-        meshcore_config = getattr(self.config, 'meshcore', None)
-        if HAS_MESHCORE and meshcore_config and meshcore_config.enabled:
-            logger.info("Initializing MeshCore handler")
-            self._meshcore_handler = MeshCoreHandler(
-                config=self.config,
-                node_tracker=self.node_tracker,
-                health=self.health,
-                stop_event=self._stop_event,
-                stats=self.stats,
-                stats_lock=self._stats_lock,
-                message_queue=self._meshcore_to_bridge_queue,
-                message_callback=self._notify_message,
-                status_callback=lambda status: self._notify_status(status),
-                should_bridge=self._router.should_bridge,
-            )
-            # Register MeshCore sender with persistent queue
-            if self._persistent_queue:
-                self._persistent_queue.register_sender(
-                    "meshcore", self._meshcore_handler.queue_send
+        # ── MeshCore handler (secondary mode — when NOT meshcore_primary) ──
+        if not is_meshcore_primary:
+            if HAS_MESHCORE and meshcore_config and meshcore_config.enabled:
+                logger.info("Initializing MeshCore handler (secondary)")
+                self._meshcore_handler = MeshCoreHandler(
+                    config=self.config,
+                    node_tracker=self.node_tracker,
+                    health=self.health,
+                    stop_event=self._stop_event,
+                    stats=self.stats,
+                    stats_lock=self._stats_lock,
+                    message_queue=self._meshcore_to_bridge_queue,
+                    message_callback=self._notify_message,
+                    status_callback=lambda status: self._notify_status(status),
+                    should_bridge=self._router.should_bridge,
                 )
-            # Tell health monitor that MeshCore is enabled
-            self.health.set_subsystem_enabled("meshcore", True)
-            logger.info("MeshCore handler initialized")
-        else:
-            if meshcore_config and meshcore_config.enabled and not HAS_MESHCORE:
-                logger.warning("MeshCore enabled in config but meshcore_handler not available")
-            self.health.set_subsystem_enabled("meshcore", False)
+                if self._persistent_queue:
+                    self._persistent_queue.register_sender(
+                        "meshcore", self._meshcore_handler.queue_send
+                    )
+                self.health.set_subsystem_enabled("meshcore", True)
+                logger.info("MeshCore handler initialized")
+            else:
+                if meshcore_config and meshcore_config.enabled and not HAS_MESHCORE:
+                    logger.warning("MeshCore enabled in config but meshcore_handler not available")
+                self.health.set_subsystem_enabled("meshcore", False)
 
     @property
     def is_running(self) -> bool:
@@ -445,19 +540,37 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
 
         # Start network threads
         if self.config.enabled:
-            self._mesh_thread = threading.Thread(
-                target=self._meshtastic_loop,
-                daemon=True,
-                name="MeshtasticBridge"
-            )
-            self._mesh_thread.start()
+            is_meshcore_primary = self.config.bridge_mode == "meshcore_primary"
 
+            # In meshcore_primary mode, start MeshCore FIRST (it's the primary radio)
+            if is_meshcore_primary and self._meshcore_handler:
+                self._meshcore_thread = threading.Thread(
+                    target=self._meshcore_loop,
+                    daemon=True,
+                    name="MeshCoreBridge"
+                )
+                self._meshcore_thread.start()
+                logger.info("MeshCore handler thread started (primary radio)")
+
+            # Start RNS (backhaul — always started when enabled)
             self._rns_thread = threading.Thread(
                 target=self._rns_loop,
                 daemon=True,
                 name="RNSBridge"
             )
             self._rns_thread.start()
+
+            # Start Meshtastic (optional in meshcore_primary mode)
+            if self._mesh_handler:
+                self._mesh_thread = threading.Thread(
+                    target=self._meshtastic_loop,
+                    daemon=True,
+                    name="MeshtasticBridge"
+                )
+                self._mesh_thread.start()
+            elif is_meshcore_primary:
+                logger.info("MeshCore-primary: Meshtastic handler not available, "
+                          "running MeshCore + RNS only")
 
             self._bridge_thread = threading.Thread(
                 target=self._bridge_loop,
@@ -466,15 +579,15 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
             )
             self._bridge_thread.start()
 
-        # Start MeshCore handler thread if initialized
-        if self._meshcore_handler:
+        # Start MeshCore handler thread (secondary mode — non-meshcore_primary)
+        if self._meshcore_handler and self.config.bridge_mode != "meshcore_primary":
             self._meshcore_thread = threading.Thread(
                 target=self._meshcore_loop,
                 daemon=True,
                 name="MeshCoreBridge"
             )
             self._meshcore_thread.start()
-            logger.info("MeshCore handler thread started")
+            logger.info("MeshCore handler thread started (secondary)")
 
         # Start persistent queue processing
         if self._persistent_queue:
@@ -489,6 +602,16 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
                 logger.info("RNS packet sniffer started for traffic capture")
             except Exception as e:
                 logger.warning(f"Could not start RNS sniffer: {e}")
+
+        # Start AREDN topology polling (visibility only)
+        if self._aredn_overlay:
+            self._aredn_thread = threading.Thread(
+                target=self._aredn_poll_loop,
+                daemon=True,
+                name="AREDNTopology",
+            )
+            self._aredn_thread.start()
+            logger.info("AREDN topology polling started")
 
         logger.info("Bridge started")
         self._notify_status("started")
@@ -519,7 +642,8 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
 
         # Wait for threads
         for thread in [self._mesh_thread, self._rns_thread,
-                        self._bridge_thread, self._meshcore_thread]:
+                        self._bridge_thread, self._meshcore_thread,
+                        self._aredn_thread]:
             if thread and thread.is_alive():
                 thread.join(timeout=5)
 
@@ -536,6 +660,34 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
 
         logger.info("Bridge stopped")
         self._notify_status("stopped")
+
+    def _aredn_poll_loop(self):
+        """Periodically scan AREDN topology and update node reachability."""
+        overlay = self._aredn_overlay
+        aredn_cfg = getattr(self.config, 'aredn_backhaul', None)
+        try:
+            interval = int(aredn_cfg.poll_interval_sec) if aredn_cfg else 60
+        except (TypeError, ValueError):
+            interval = 60
+
+        while self._running:
+            try:
+                links = overlay.discover_backhaul_links()
+                if links:
+                    # Build reachability map for all tracked nodes
+                    nodes = self.node_tracker.get_all_nodes()
+                    reach_map = {}
+                    for node in nodes:
+                        reach = overlay.get_reachability(node.id)
+                        reach_map[node.id] = reach
+                    self.node_tracker.update_aredn_topology(reach_map)
+                    logger.debug(f"AREDN scan: {len(links)} links, "
+                                 f"{len(overlay.get_remote_gateways())} remote gateways")
+            except Exception as e:
+                logger.warning(f"AREDN poll error: {e}")
+
+            if self._stop_event.wait(interval):
+                break
 
     def get_status(self) -> dict:
         """Get current bridge status including subsystem states."""
@@ -805,9 +957,15 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
     # ========================================
 
     def _meshtastic_loop(self):
-        """Main loop for Meshtastic connection - delegates to handler."""
+        """Main loop for Meshtastic connection - delegates to handler.
+
+        In meshcore_primary mode, this may not be started if no Meshtastic
+        handler is available (graceful degradation).
+        """
         if self._mesh_handler:
             self._mesh_handler.run_loop()
+        else:
+            logger.debug("Meshtastic loop skipped: no handler available")
 
     # _meshcore_loop() inherited from MeshCoreBridgeMixin
 

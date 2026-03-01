@@ -909,6 +909,55 @@ else:
         return results
 
 
+def antenna_efficiency_from_swr(swr: float) -> float:
+    """Estimate antenna radiation efficiency from SWR.
+
+    Returns the fraction (0.0-1.0) of power that is actually radiated
+    vs reflected back to the transmitter. Used by NanoVNA plugin to
+    bridge measured SWR into link budget calculations.
+
+    Args:
+        swr: Standing Wave Ratio (must be >= 1.0).
+
+    Returns:
+        Efficiency factor (1.0 = perfect match, 0.0 = total reflection).
+
+    Example:
+        >>> antenna_efficiency_from_swr(1.0)
+        1.0
+        >>> round(antenna_efficiency_from_swr(2.0), 4)
+        0.8889
+    """
+    if swr <= 1.0:
+        return 1.0
+    gamma = (swr - 1) / (swr + 1)
+    return 1.0 - gamma ** 2
+
+
+def swr_to_mismatch_loss_db(swr: float) -> float:
+    """Convert SWR to mismatch loss in dB.
+
+    Represents power lost due to impedance mismatch, useful for
+    adjusting link_budget() calculations with measured antenna data.
+
+    Args:
+        swr: Standing Wave Ratio (must be >= 1.0).
+
+    Returns:
+        Mismatch loss in dB (0.0 for perfect match, higher = worse).
+
+    Example:
+        >>> swr_to_mismatch_loss_db(1.0)
+        0.0
+        >>> round(swr_to_mismatch_loss_db(2.0), 4)
+        0.5118
+    """
+    if swr <= 1.0:
+        return 0.0
+    gamma = (swr - 1) / (swr + 1)
+    return -10 * math.log10(1.0 - gamma ** 2)
+
+
 def is_fast_available() -> bool:
     """Check if Cython-optimized RF functions are available."""
     return _USE_FAST

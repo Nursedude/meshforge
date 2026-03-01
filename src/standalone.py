@@ -39,6 +39,26 @@ _rich_mod, _HAS_RICH = safe_import('rich')
 _meshtastic_mod, _HAS_MESHTASTIC = safe_import('meshtastic')
 _serial_list_ports, _HAS_SERIAL = safe_import('serial.tools.list_ports')
 
+# NanoVNA plugin
+(
+    NanoVNADevice, SweepPoint, SweepResult,
+    format_swr, format_impedance,
+    HAS_NANOVNA, _HAS_NANOVNA_MOD,
+) = safe_import(
+    'plugins.nanovna.nanovna_device',
+    'NanoVNADevice', 'SweepPoint', 'SweepResult',
+    'format_swr', 'format_impedance', 'HAS_NANOVNA',
+)
+
+(
+    swr_to_mismatch_loss_db, antenna_efficiency_from_swr,
+    sweep_summary_for_band, BANDS, _HAS_RF_INTEG,
+) = safe_import(
+    'plugins.nanovna.rf_integration',
+    'swr_to_mismatch_loss_db', 'antenna_efficiency_from_swr',
+    'sweep_summary_for_band', 'BANDS',
+)
+
 (
     haversine_distance, fresnel_radius,
     free_space_path_loss, earth_bulge,
@@ -424,6 +444,118 @@ class StandaloneTools:
                 print("  Cleared all nodes")
 
     @staticmethod
+    def nanovna_tools():
+        """NanoVNA antenna analyzer tools."""
+        print("\n═══ NanoVNA Antenna Analyzer ═══\n")
+
+        if not _HAS_NANOVNA_MOD or not HAS_NANOVNA:
+            print("NanoVNA support not available.")
+            print("Install: pip install pynanovna")
+            print("  or:    pip install pyserial\n")
+            return
+
+        while True:
+            print("1. Scan for NanoVNA devices")
+            print("2. Quick SWR check")
+            print("3. Full frequency sweep")
+            print("0. Back")
+
+            try:
+                choice = input("\nSelect [0]: ").strip() or "0"
+            except (KeyboardInterrupt, EOFError):
+                break
+
+            if choice == "0":
+                break
+
+            elif choice == "1":
+                print("\nScanning for NanoVNA devices...")
+                devices = NanoVNADevice.find_devices()
+                if devices:
+                    print(f"Found {len(devices)} device(s):")
+                    for d in devices:
+                        print(f"  {d}")
+                else:
+                    print("No NanoVNA devices found.")
+                print()
+
+            elif choice == "2":
+                try:
+                    freq_str = input("  Frequency (MHz) [915]: ").strip() or "915"
+                    freq_mhz = float(freq_str)
+                except ValueError:
+                    print("Invalid frequency\n")
+                    continue
+
+                print(f"\nMeasuring SWR at {freq_mhz:.1f} MHz...")
+                device = NanoVNADevice()
+                if not device.connect():
+                    print("Failed to connect to NanoVNA.\n")
+                    continue
+
+                try:
+                    swr = device.quick_swr(int(freq_mhz * 1e6))
+                finally:
+                    device.disconnect()
+
+                if swr is not None:
+                    print(f"  Frequency: {freq_mhz:.3f} MHz")
+                    print(f"  SWR:       {format_swr(swr)}")
+                    if _HAS_RF_INTEG:
+                        loss = swr_to_mismatch_loss_db(swr)
+                        eff = antenna_efficiency_from_swr(swr)
+                        print(f"  Mismatch Loss: {loss:.2f} dB")
+                        print(f"  Efficiency:    {eff*100:.1f}%")
+                else:
+                    print("  Measurement failed.")
+                print()
+
+            elif choice == "3":
+                try:
+                    start = float(input("  Start MHz [906]: ").strip() or "906")
+                    stop = float(input("  Stop MHz [924]: ").strip() or "924")
+                    points = int(input("  Points [101]: ").strip() or "101")
+                except ValueError:
+                    print("Invalid input\n")
+                    continue
+
+                print(f"\nSweeping {start:.1f}-{stop:.1f} MHz ({points} points)...")
+                device = NanoVNADevice()
+                if not device.connect():
+                    print("Failed to connect to NanoVNA.\n")
+                    continue
+
+                try:
+                    result = device.sweep(
+                        start_hz=int(start * 1e6),
+                        stop_hz=int(stop * 1e6),
+                        points=points,
+                    )
+                finally:
+                    device.disconnect()
+
+                if result.points:
+                    min_swr_val, min_swr_freq = result.min_swr
+                    print(f"\n  Points: {len(result.points)}")
+                    print(f"  Best SWR: {format_swr(min_swr_val)} at {min_swr_freq:.3f} MHz")
+
+                    best = min(result.points, key=lambda p: p.swr)
+                    print(f"  Impedance: {format_impedance(best.impedance)} ohm")
+                    print(f"  Return Loss: {best.return_loss_db:.1f} dB")
+
+                    # Table
+                    print(f"\n  {'Freq (MHz)':>10}  {'SWR':>8}  {'RL (dB)':>8}  {'Impedance':>18}")
+                    print(f"  {'-'*50}")
+                    step = max(1, len(result.points) // 20)
+                    for i in range(0, len(result.points), step):
+                        p = result.points[i]
+                        z_str = format_impedance(p.impedance)
+                        print(f"  {p.frequency_mhz:>10.3f}  {format_swr(p.swr):>8}  {p.return_loss_db:>8.1f}  {z_str:>18}")
+                else:
+                    print("  Sweep returned no data.")
+                print()
+
+    @staticmethod
     def device_scanner():
         """Scan for USB/Serial devices - Pure Python"""
         print("\n═══ Device Scanner ═══\n")
@@ -510,6 +642,7 @@ def main_menu(deps: DependencyStatus):
         print("  2. Frequency Calculator - Channel slot, region settings")
         print("  3. Network Simulator    - Topology planning, link quality")
         print("  4. Device Scanner       - USB, Serial, SPI, I2C devices")
+        print("  5. NanoVNA Analyzer     - SWR, impedance, frequency sweep")
         print("---------------------------------------------------------")
         print("  t. Launcher TUI         [raspi-config style]")
         print("---------------------------------------------------------")
@@ -534,6 +667,8 @@ def main_menu(deps: DependencyStatus):
             tools.network_simulator()
         elif choice == '4':
             tools.device_scanner()
+        elif choice == '5':
+            tools.nanovna_tools()
         elif choice == 'd':
             deps.print_status()
         elif choice == 't':
@@ -580,6 +715,7 @@ Examples:
             'freq': tools.frequency_calculator,
             'sim': tools.network_simulator,
             'scan': tools.device_scanner,
+            'nanovna': tools.nanovna_tools,
         }
         if args.tool in tool_map:
             print_banner()
