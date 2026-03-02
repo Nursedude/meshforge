@@ -61,70 +61,63 @@ class GatewayHandler(BaseHandler):
                 )
                 return
 
-        while True:
+        def _gw_choices():
             status = "ENABLED" if config.enabled else "DISABLED"
             mode = config.bridge_mode
-
-            choices = [
+            items = [
                 ("status", f"Status              {status}"),
                 ("mode", f"Bridge Mode         {mode}"),
                 ("enable", "Enable Gateway" if not config.enabled else "Disable Gateway"),
             ]
-
             if config.bridge_mode == "mqtt_bridge":
-                choices.append(("mqtt_bridge", "MQTT Bridge Settings"))
+                items.append(("mqtt_bridge", "MQTT Bridge Settings"))
             else:
-                choices.append(("meshtastic", "Meshtastic Settings"))
-
-            choices.extend([
+                items.append(("meshtastic", "Meshtastic Settings"))
+            items.extend([
                 ("rns", "RNS Settings"),
                 ("routing", "Routing Rules"),
                 ("telemetry", "Telemetry Settings"),
                 ("templates", "Load Template"),
                 ("validate", "Validate Config"),
                 ("save", "Save Configuration"),
-                ("back", "Back"),
             ])
+            return items
 
-            choice = self.ctx.dialog.menu(
-                "Gateway Configuration",
-                f"RNS <-> Meshtastic Bridge Setup\n\n"
-                f"Config: ~/.config/meshforge/gateway.json",
-                choices
-            )
+        dispatch = {
+            "enable": ("Toggle Gateway", self._toggle_gateway_enabled, config),
+            "save": ("Save Configuration", self._save_gateway_config, config),
+            "status": ("Gateway Status", self._show_gateway_status, config),
+            "mode": ("Bridge Mode", self._set_bridge_mode, config),
+            "meshtastic": ("Meshtastic Settings", self._config_meshtastic, config),
+            "mqtt_bridge": ("MQTT Bridge Settings", self._config_mqtt_bridge, config),
+            "rns": ("RNS Settings", self._config_rns, config),
+            "routing": ("Routing Rules", self._config_routing, config),
+            "telemetry": ("Telemetry Settings", self._config_telemetry, config),
+            "templates": ("Load Template", self._load_template, config),
+            "validate": ("Validate Config", self._validate_gateway_config, config),
+        }
+        self.run_menu_loop(
+            "Gateway Configuration",
+            "RNS <-> Meshtastic Bridge Setup\n\n"
+            "Config: ~/.config/meshforge/gateway.json",
+            _gw_choices, dispatch,
+        )
 
-            if choice is None or choice == "back":
-                break
+    def _toggle_gateway_enabled(self, config):
+        """Toggle gateway enabled state."""
+        config.enabled = not config.enabled
+        self.ctx.dialog.msgbox(
+            "Gateway " + ("Enabled" if config.enabled else "Disabled"),
+            f"Gateway is now {'enabled' if config.enabled else 'disabled'}.\n\n"
+            "Save configuration to persist."
+        )
 
-            if choice == "enable":
-                config.enabled = not config.enabled
-                self.ctx.dialog.msgbox(
-                    "Gateway " + ("Enabled" if config.enabled else "Disabled"),
-                    f"Gateway is now {'enabled' if config.enabled else 'disabled'}.\n\n"
-                    "Save configuration to persist."
-                )
-                continue
-            elif choice == "save":
-                if config.save():
-                    self.ctx.dialog.msgbox("Saved", "Gateway configuration saved.")
-                else:
-                    self.ctx.dialog.msgbox("Error", "Failed to save configuration.")
-                continue
-
-            dispatch = {
-                "status": ("Gateway Status", self._show_gateway_status),
-                "mode": ("Bridge Mode", self._set_bridge_mode),
-                "meshtastic": ("Meshtastic Settings", self._config_meshtastic),
-                "mqtt_bridge": ("MQTT Bridge Settings", self._config_mqtt_bridge),
-                "rns": ("RNS Settings", self._config_rns),
-                "routing": ("Routing Rules", self._config_routing),
-                "telemetry": ("Telemetry Settings", self._config_telemetry),
-                "templates": ("Load Template", self._load_template),
-                "validate": ("Validate Config", self._validate_gateway_config),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(entry[0], entry[1], config)
+    def _save_gateway_config(self, config):
+        """Save gateway configuration to disk."""
+        if config.save():
+            self.ctx.dialog.msgbox("Saved", "Gateway configuration saved.")
+        else:
+            self.ctx.dialog.msgbox("Error", "Failed to save configuration.")
 
     def _show_gateway_status(self, config):
         """Show detailed gateway status."""

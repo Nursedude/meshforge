@@ -83,51 +83,40 @@ class TrafficInspectorHandler(BaseHandler):
             )
             return
 
-        while True:
-            # Check capture status
+        def _inspector_choices():
             capturing = is_capture_running() if is_capture_running else False
-            capture_status = "CAPTURING" if capturing else "STOPPED"
             capture_action = "Stop Capture" if capturing else "Start Capture"
+            return [
+                ("capture", f"{capture_action}        - {'Stop' if capturing else 'Start'} packet capture"),
+                ("1", "View Live Traffic      - Real-time packet stream"),
+                ("2", "Packet List            - Browse captured packets"),
+                ("3", "Apply Filter           - Wireshark-style filtering"),
+                ("4", "Packet Details         - Deep packet inspection"),
+                ("5", "Path Visualization     - Multi-hop path view"),
+                ("6", "Traffic Statistics     - Analyze traffic patterns"),
+                ("7", "View Traffic Log       - Read log file"),
+                ("8", "Filter Reference       - Available filter fields"),
+                ("9", "Export Data            - Export captures/paths"),
+                ("0", "Clear Capture          - Clear captured data"),
+            ]
 
-            choice = self.ctx.dialog.menu(
-                "Traffic Inspector",
-                f"Wireshark-grade mesh traffic visibility\n"
-                f"Capture: {capture_status}",
-                choices=[
-                    ("capture", f"{capture_action}        - {'Stop' if capturing else 'Start'} packet capture"),
-                    ("1", "View Live Traffic      - Real-time packet stream"),
-                    ("2", "Packet List            - Browse captured packets"),
-                    ("3", "Apply Filter           - Wireshark-style filtering"),
-                    ("4", "Packet Details         - Deep packet inspection"),
-                    ("5", "Path Visualization     - Multi-hop path view"),
-                    ("6", "Traffic Statistics     - Analyze traffic patterns"),
-                    ("7", "View Traffic Log       - Read log file"),
-                    ("8", "Filter Reference       - Available filter fields"),
-                    ("9", "Export Data            - Export captures/paths"),
-                    ("0", "Clear Capture          - Clear captured data"),
-                ],
-                height=20, width=68
-            )
-
-            if not choice:
-                return
-
-            dispatch = {
-                "capture": ("Toggle Capture", self._toggle_capture),
-                "1": ("Live Traffic", self._traffic_live_view),
-                "2": ("Packet List", self._traffic_packet_list),
-                "3": ("Apply Filter", self._traffic_apply_filter),
-                "4": ("Packet Details", self._traffic_packet_detail),
-                "5": ("Path Visualization", self._traffic_path_visualization),
-                "6": ("Traffic Statistics", self._traffic_statistics),
-                "7": ("Traffic Log", self._traffic_view_log),
-                "8": ("Filter Reference", self._traffic_filter_reference),
-                "9": ("Export Data", self._traffic_export),
-                "0": ("Clear Capture", self._traffic_clear),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "capture": ("Toggle Capture", self._toggle_capture),
+            "1": ("Live Traffic", self._traffic_live_view),
+            "2": ("Packet List", self._traffic_packet_list),
+            "3": ("Apply Filter", self._traffic_apply_filter),
+            "4": ("Packet Details", self._traffic_packet_detail),
+            "5": ("Path Visualization", self._traffic_path_visualization),
+            "6": ("Traffic Statistics", self._traffic_statistics),
+            "7": ("Traffic Log", self._traffic_view_log),
+            "8": ("Filter Reference", self._traffic_filter_reference),
+            "9": ("Export Data", self._traffic_export),
+            "0": ("Clear Capture", self._traffic_clear),
+        }
+        self.run_menu_loop(
+            "Traffic Inspector", "Wireshark-grade mesh traffic visibility:",
+            _inspector_choices, dispatch,
+        )
 
     def _toggle_capture(self) -> None:
         """Start or stop packet capture."""
@@ -439,31 +428,19 @@ class TrafficInspectorHandler(BaseHandler):
 
         from monitoring.path_visualizer import PathVisualizer
 
-        while True:
-            choice = self.ctx.dialog.menu(
-                "Path Visualization",
-                "Multi-hop message path tracing",
-                choices=[
-                    ("1", "View Recent Paths    - ASCII path display"),
-                    ("2", "Generate HTML View   - Interactive browser view"),
-                    ("3", "Trace Message Path   - Trace specific message"),
-                    ("4", "Path Statistics      - Aggregate path metrics"),
-                ],
-                height=12, width=60
-            )
-
-            if not choice:
-                return
-
-            dispatch = {
-                "1": ("ASCII Path View", self._path_ascii_view),
-                "2": ("HTML Path View", self._path_html_view),
-                "3": ("Trace Message Path", self._path_trace_message),
-                "4": ("Path Statistics", self._path_statistics),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("1", "View Recent Paths    - ASCII path display"),
+            ("2", "Generate HTML View   - Interactive browser view"),
+            ("3", "Trace Message Path   - Trace specific message"),
+            ("4", "Path Statistics      - Aggregate path metrics"),
+        ]
+        dispatch = {
+            "1": ("ASCII Path View", self._path_ascii_view),
+            "2": ("HTML Path View", self._path_html_view),
+            "3": ("Trace Message Path", self._path_trace_message),
+            "4": ("Path Statistics", self._path_statistics),
+        }
+        self.run_menu_loop("Path Visualization", "Multi-hop message path tracing:", choices, dispatch)
 
     def _path_ascii_view(self) -> None:
         """Show ASCII path visualization."""

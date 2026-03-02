@@ -157,62 +157,41 @@ class MeshChatHandler(BaseHandler):
 
     def _meshchat_menu(self):
         """MeshChat LXMF client -- install, manage, monitor."""
-        while True:
+        def _meshchat_choices():
             running = self._is_meshchat_running()
             installed = self._is_meshchat_installed()
-
-            if not installed:
-                subtitle = "MeshChat is NOT INSTALLED"
-            elif running:
-                subtitle = "MeshChat is RUNNING (http://127.0.0.1:8000)"
-            else:
-                subtitle = "MeshChat is installed (not running)"
-
-            choices = [
-                ("status", "MeshChat Status"),
-            ]
-
+            items = [("status", "MeshChat Status")]
             if installed:
                 if running:
-                    choices.append(("stop", "Stop MeshChat"))
-                    choices.append(("peers", "View LXMF Peers"))
-                    choices.append(("messages", "Recent Messages"))
-                    choices.append(("announce", "Send LXMF Announce"))
-                    choices.append(("web", "Web UI (show URL)"))
+                    items.append(("stop", "Stop MeshChat"))
+                    items.append(("peers", "View LXMF Peers"))
+                    items.append(("messages", "Recent Messages"))
+                    items.append(("announce", "Send LXMF Announce"))
+                    items.append(("web", "Web UI (show URL)"))
                 else:
-                    choices.append(("start", "Start MeshChat"))
-                choices.append(("logs", "View Logs"))
-                choices.append(("uninstall", "Disable MeshChat"))
+                    items.append(("start", "Start MeshChat"))
+                items.append(("logs", "View Logs"))
+                items.append(("uninstall", "Disable MeshChat"))
             else:
-                choices.append(("install", "Install MeshChat"))
+                items.append(("install", "Install MeshChat"))
+            return items
 
-            choices.append(("back", "Back"))
-
-            choice = self.ctx.dialog.menu(
-                "MeshChat Client",
-                f"LXMF messaging with HTTP API & web UI:\n\n"
-                f"{subtitle}",
-                choices,
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "status": ("MeshChat Status", self._meshchat_status),
-                "start": ("Start MeshChat", self._launch_meshchat),
-                "stop": ("Stop MeshChat", self._stop_meshchat),
-                "peers": ("View LXMF Peers", self._meshchat_peers),
-                "messages": ("Recent Messages", self._meshchat_messages),
-                "announce": ("Send LXMF Announce", self._meshchat_announce),
-                "web": ("MeshChat Web UI", self._meshchat_web_ui),
-                "logs": ("View MeshChat Logs", self._meshchat_logs),
-                "install": ("Install MeshChat", self._install_meshchat),
-                "uninstall": ("Disable MeshChat", self._uninstall_meshchat),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "status": ("MeshChat Status", self._meshchat_status),
+            "start": ("Start MeshChat", self._launch_meshchat),
+            "stop": ("Stop MeshChat", self._stop_meshchat),
+            "peers": ("View LXMF Peers", self._meshchat_peers),
+            "messages": ("Recent Messages", self._meshchat_messages),
+            "announce": ("Send LXMF Announce", self._meshchat_announce),
+            "web": ("MeshChat Web UI", self._meshchat_web_ui),
+            "logs": ("View MeshChat Logs", self._meshchat_logs),
+            "install": ("Install MeshChat", self._install_meshchat),
+            "uninstall": ("Disable MeshChat", self._uninstall_meshchat),
+        }
+        self.run_menu_loop(
+            "MeshChat Client", "LXMF messaging with HTTP API & web UI:",
+            _meshchat_choices, dispatch,
+        )
 
     # ------------------------------------------------------------------
     # Status

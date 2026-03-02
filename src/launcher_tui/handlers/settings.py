@@ -32,33 +32,19 @@ class SettingsHandler(BaseHandler):
 
     def _settings_menu(self):
         """Settings menu - connection, sources, logging, profile."""
-        while True:
-            choices = [
-                ("connection", "Meshtastic Connection   TCP, serial, remote"),
-                ("propagation", "Propagation Sources     NOAA, HamClock, PSK"),
-                ("loglevel", "Log Level               Adjust verbosity"),
-                ("profile", "Deployment Profile      Select feature set"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "MeshForge Settings",
-                "Application configuration:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "connection": ("Connection Settings", self._configure_connection),
-                "propagation": ("Propagation Sources", self._configure_propagation_sources),
-                "loglevel": ("Log Level", self._configure_log_level),
-                "profile": ("Deployment Profile", self._configure_deployment_profile),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("connection", "Meshtastic Connection   TCP, serial, remote"),
+            ("propagation", "Propagation Sources     NOAA, HamClock, PSK"),
+            ("loglevel", "Log Level               Adjust verbosity"),
+            ("profile", "Deployment Profile      Select feature set"),
+        ]
+        dispatch = {
+            "connection": ("Connection Settings", self._configure_connection),
+            "propagation": ("Propagation Sources", self._configure_propagation_sources),
+            "loglevel": ("Log Level", self._configure_log_level),
+            "profile": ("Deployment Profile", self._configure_deployment_profile),
+        }
+        self.run_menu_loop("MeshForge Settings", "Application configuration:", choices, dispatch)
 
     def _configure_log_level(self):
         """Configure application log verbosity."""

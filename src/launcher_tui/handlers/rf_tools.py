@@ -49,30 +49,16 @@ class RFToolsHandler(BaseHandler):
             ("fresnel", "Fresnel Zone"),
             ("power", "EIRP Calculator"),
             ("antenna", "Antenna Comparison"),
-            ("back", "Back"),
         ]
-
-        while True:
-            choice = self.ctx.dialog.menu(
-                "RF Tools",
-                "Radio frequency calculations:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "freq": ("Frequency Slots", self._calc_frequency_slot),
-                "fspl": ("FSPL Calculator", self._calc_fspl),
-                "link": ("Link Budget", self._calc_link_budget),
-                "fresnel": ("Fresnel Zone", self._calc_fresnel),
-                "power": ("EIRP Calculator", self._calc_eirp),
-                "antenna": ("Antenna Comparison", self._antenna_comparison),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "freq": ("Frequency Slots", self._calc_frequency_slot),
+            "fspl": ("FSPL Calculator", self._calc_fspl),
+            "link": ("Link Budget", self._calc_link_budget),
+            "fresnel": ("Fresnel Zone", self._calc_fresnel),
+            "power": ("EIRP Calculator", self._calc_eirp),
+            "antenna": ("Antenna Comparison", self._antenna_comparison),
+        }
+        self.run_menu_loop("RF Tools", "Radio frequency calculations:", choices, dispatch)
 
     def _calc_frequency_slot(self):
         """Meshtastic Frequency Slot Calculator."""
@@ -417,29 +403,17 @@ Note: Check local regulations."""
             )
             return
 
-        while True:
-            choices = [
-                ("compare", "Compare All         Side-by-side comparison"),
-                ("coverage", "Coverage Estimate   Range with specific antenna"),
-                ("specs", "Antenna Specs       Detailed specifications"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Antenna Analysis",
-                "Compare antenna types for Meshtastic deployments:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            if choice == "compare":
-                self.ctx.safe_call("Antenna Compare", self._antenna_compare_all)
-            elif choice == "coverage":
-                self.ctx.safe_call("Coverage Estimate", self._antenna_coverage_estimate)
-            elif choice == "specs":
-                self.ctx.safe_call("Antenna Specs", self._antenna_specs_display)
+        choices = [
+            ("compare", "Compare All         Side-by-side comparison"),
+            ("coverage", "Coverage Estimate   Range with specific antenna"),
+            ("specs", "Antenna Specs       Detailed specifications"),
+        ]
+        dispatch = {
+            "compare": ("Antenna Compare", self._antenna_compare_all),
+            "coverage": ("Coverage Estimate", self._antenna_coverage_estimate),
+            "specs": ("Antenna Specs", self._antenna_specs_display),
+        }
+        self.run_menu_loop("Antenna Analysis", "Compare antenna types for Meshtastic deployments:", choices, dispatch)
 
     def _antenna_compare_all(self):
         """Show side-by-side antenna comparison table."""

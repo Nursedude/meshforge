@@ -192,7 +192,7 @@ class MQTTHandler(BaseHandler):
 
     def _mqtt_menu(self):
         """MQTT monitoring menu — nodeless mesh observation."""
-        while True:
+        def _mqtt_choices():
             try:
                 status = self._get_mqtt_status()
             except Exception as e:
@@ -204,21 +204,18 @@ class MQTTHandler(BaseHandler):
                 logger.debug("MQTT config load failed: %s", e)
                 config = {}
             broker = config.get('broker', 'mqtt.meshtastic.org')
-
             if broker in ("localhost", "127.0.0.1"):
                 mode = "Private"
             elif broker == "mqtt.meshtastic.org":
                 mode = "Public"
             else:
                 mode = "Custom"
-
             try:
                 ws_status = self._get_ws_bridge_status()
             except Exception as e:
                 logger.debug("WebSocket bridge status check failed: %s", e)
                 ws_status = "Unknown"
-
-            choices = [
+            items = [
                 ("status", f"Status              {status}"),
                 ("start", "Start Subscriber    Connect to MQTT broker"),
                 ("stop", "Stop Subscriber     Disconnect from broker"),
@@ -229,44 +226,23 @@ class MQTTHandler(BaseHandler):
                 ("telemetry", "Request Telemetry   Poll silent 2.7+ nodes"),
                 ("export", "Export Data         Save nodes to file"),
             ]
-
             if _HAS_WS_BRIDGE:
-                choices.append(("websocket", f"WebSocket Bridge    {ws_status}"))
+                items.append(("websocket", f"WebSocket Bridge    {ws_status}"))
+            return items
 
-            choices.append(("back", "Back"))
-
-            subtitle = f"MQTT Broker: {mode} ({broker})\n"
-            if mode == "Private":
-                subtitle += "MeshForge private broker (multi-consumer)"
-            elif mode == "Public":
-                subtitle += "Nodeless monitoring without local radio"
-            else:
-                subtitle += f"Custom broker: {broker}"
-
-            choice = self.ctx.dialog.menu(
-                "MQTT Monitoring",
-                subtitle,
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "status": ("MQTT Status", self._show_mqtt_status),
-                "start": ("Start MQTT Subscriber", self._start_mqtt_subscriber),
-                "stop": ("Stop MQTT Subscriber", self._stop_mqtt_subscriber),
-                "broker": ("Broker Manager", self._dispatch_broker),
-                "config": ("MQTT Configuration", self._configure_mqtt),
-                "nodes": ("MQTT Nodes", self._show_mqtt_nodes),
-                "stats": ("MQTT Statistics", self._show_mqtt_stats),
-                "telemetry": ("Telemetry Requests", self._request_telemetry_menu),
-                "export": ("Export MQTT Data", self._export_mqtt_data),
-                "websocket": ("WebSocket Bridge", self._toggle_ws_bridge),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "status": ("MQTT Status", self._show_mqtt_status),
+            "start": ("Start MQTT Subscriber", self._start_mqtt_subscriber),
+            "stop": ("Stop MQTT Subscriber", self._stop_mqtt_subscriber),
+            "broker": ("Broker Manager", self._dispatch_broker),
+            "config": ("MQTT Configuration", self._configure_mqtt),
+            "nodes": ("MQTT Nodes", self._show_mqtt_nodes),
+            "stats": ("MQTT Statistics", self._show_mqtt_stats),
+            "telemetry": ("Telemetry Requests", self._request_telemetry_menu),
+            "export": ("Export MQTT Data", self._export_mqtt_data),
+            "websocket": ("WebSocket Bridge", self._toggle_ws_bridge),
+        }
+        self.run_menu_loop("MQTT Monitoring", "MQTT mesh monitoring:", _mqtt_choices, dispatch)
 
     def _dispatch_broker(self):
         """Dispatch to BrokerHandler's broker menu."""

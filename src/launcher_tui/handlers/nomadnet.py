@@ -91,60 +91,39 @@ class NomadNetHandler(BaseHandler):
 
     def _nomadnet_menu(self):
         """NomadNet RNS client -- install, configure, launch."""
-        while True:
+        def _nomadnet_choices():
             running = self._is_nomadnet_running()
             installed = self._is_nomadnet_installed()
-
-            if not installed:
-                subtitle = "NomadNet is NOT INSTALLED"
-            elif running:
-                subtitle = "NomadNet is RUNNING"
-            else:
-                subtitle = "NomadNet is installed (not running)"
-
-            choices = [
-                ("status", "NomadNet Status"),
-            ]
-
+            items = [("status", "NomadNet Status")]
             if installed:
                 if running:
-                    choices.append(("stop", "Stop NomadNet"))
+                    items.append(("stop", "Stop NomadNet"))
                 else:
-                    choices.append(("textui", "Launch Text UI (interactive)"))
-                    choices.append(("daemon", "Start as Daemon (background)"))
-                choices.append(("logs", "View NomadNet Logs"))
-                choices.append(("config", "View NomadNet Config"))
-                choices.append(("edit", "Edit NomadNet Config"))
-                choices.append(("uninstall", "Disable NomadNet"))
+                    items.append(("textui", "Launch Text UI (interactive)"))
+                    items.append(("daemon", "Start as Daemon (background)"))
+                items.append(("logs", "View NomadNet Logs"))
+                items.append(("config", "View NomadNet Config"))
+                items.append(("edit", "Edit NomadNet Config"))
+                items.append(("uninstall", "Disable NomadNet"))
             else:
-                choices.append(("install", "Install NomadNet"))
+                items.append(("install", "Install NomadNet"))
+            return items
 
-            choices.append(("back", "Back"))
-
-            choice = self.ctx.dialog.menu(
-                "NomadNet Client",
-                f"RNS client with page browser & LXMF messaging:\n\n"
-                f"{subtitle}",
-                choices,
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "status": ("NomadNet Status", self._nomadnet_status),
-                "textui": ("Launch NomadNet TUI", self._launch_nomadnet_textui),
-                "daemon": ("Start NomadNet Daemon", self._launch_nomadnet_daemon),
-                "stop": ("Stop NomadNet", self._stop_nomadnet),
-                "logs": ("View NomadNet Logs", self._view_nomadnet_logs),
-                "config": ("View NomadNet Config", self._view_nomadnet_config),
-                "edit": ("Edit NomadNet Config", self._edit_nomadnet_config),
-                "install": ("Install NomadNet", self._install_nomadnet),
-                "uninstall": ("Disable NomadNet", self._uninstall_nomadnet),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "status": ("NomadNet Status", self._nomadnet_status),
+            "textui": ("Launch NomadNet TUI", self._launch_nomadnet_textui),
+            "daemon": ("Start NomadNet Daemon", self._launch_nomadnet_daemon),
+            "stop": ("Stop NomadNet", self._stop_nomadnet),
+            "logs": ("View NomadNet Logs", self._view_nomadnet_logs),
+            "config": ("View NomadNet Config", self._view_nomadnet_config),
+            "edit": ("Edit NomadNet Config", self._edit_nomadnet_config),
+            "install": ("Install NomadNet", self._install_nomadnet),
+            "uninstall": ("Disable NomadNet", self._uninstall_nomadnet),
+        }
+        self.run_menu_loop(
+            "NomadNet Client", "RNS client with page browser & LXMF messaging:",
+            _nomadnet_choices, dispatch,
+        )
 
     # ------------------------------------------------------------------
     # Launch text UI (core orchestrator — stays in main file)

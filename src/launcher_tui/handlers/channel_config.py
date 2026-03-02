@@ -65,39 +65,25 @@ class ChannelConfigHandler(BaseHandler):
         if not self._ensure_meshtastic_connection():
             return
 
-        while True:
-            choices = [
-                ("list", "View All Channels"),
-                ("edit", "Edit Channel"),
-                ("add", "Add/Enable Channel"),
-                ("disable", "Disable Channel"),
-                ("primary", "Quick: Set Primary Name"),
-                ("gateway", "Quick: Gateway Channel (Slot 8)"),
-                ("psk", "Generate New PSK"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Channel Config",
-                "Configure all 8 mesh channels:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "list": ("View Channels", self._view_all_channels),
-                "edit": ("Edit Channel", self._edit_channel_menu),
-                "add": ("Add Channel", self._add_channel),
-                "disable": ("Disable Channel", self._disable_channel),
-                "primary": ("Set Primary Channel", self._set_primary_channel),
-                "gateway": ("Gateway Channel", self._set_gateway_channel),
-                "psk": ("Generate PSK", self._generate_psk),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("list", "View All Channels"),
+            ("edit", "Edit Channel"),
+            ("add", "Add/Enable Channel"),
+            ("disable", "Disable Channel"),
+            ("primary", "Quick: Set Primary Name"),
+            ("gateway", "Quick: Gateway Channel (Slot 8)"),
+            ("psk", "Generate New PSK"),
+        ]
+        dispatch = {
+            "list": ("View Channels", self._view_all_channels),
+            "edit": ("Edit Channel", self._edit_channel_menu),
+            "add": ("Add Channel", self._add_channel),
+            "disable": ("Disable Channel", self._disable_channel),
+            "primary": ("Set Primary Channel", self._set_primary_channel),
+            "gateway": ("Gateway Channel", self._set_gateway_channel),
+            "psk": ("Generate PSK", self._generate_psk),
+        }
+        self.run_menu_loop("Channel Config", "Configure all 8 mesh channels:", choices, dispatch)
 
     def _view_all_channels(self):
         """View all 8 channels with their configuration."""

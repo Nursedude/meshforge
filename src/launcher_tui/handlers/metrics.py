@@ -59,26 +59,19 @@ class MetricsHandler(BaseHandler):
             ("prometheus", "Prometheus Server"),
             ("grafana", "Grafana Dashboards"),
             ("cleanup", "Database Maintenance"),
-            ("back", "Back"),
         ]
-        while True:
-            choice = self.ctx.dialog.menu("Historical Metrics", "Network metrics and trend analysis:", choices)
-            if choice is None or choice == "back":
-                break
-            dispatch = {
-                "stats": ("Metrics Stats", self._metrics_stats),
-                "trends": ("Metric Trends", self._metrics_trends),
-                "node": ("Node Summary", self._metrics_node_summary),
-                "edge": ("Edge Summary", self._metrics_edge_summary),
-                "recent": ("Recent Changes", self._metrics_recent),
-                "export": ("Export Metrics", self._metrics_export),
-                "prometheus": ("Prometheus Server", self._metrics_prometheus),
-                "grafana": ("Grafana Dashboards", self._grafana_menu),
-                "cleanup": ("Database Maintenance", self._metrics_cleanup),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "stats": ("Metrics Stats", self._metrics_stats),
+            "trends": ("Metric Trends", self._metrics_trends),
+            "node": ("Node Summary", self._metrics_node_summary),
+            "edge": ("Edge Summary", self._metrics_edge_summary),
+            "recent": ("Recent Changes", self._metrics_recent),
+            "export": ("Export Metrics", self._metrics_export),
+            "prometheus": ("Prometheus Server", self._metrics_prometheus),
+            "grafana": ("Grafana Dashboards", self._grafana_menu),
+            "cleanup": ("Database Maintenance", self._metrics_cleanup),
+        }
+        self.run_menu_loop("Historical Metrics", "Network metrics and trend analysis:", choices, dispatch)
 
     def _metrics_stats(self):
         history = self._get_metrics_history()
@@ -282,29 +275,25 @@ class MetricsHandler(BaseHandler):
             self.ctx.dialog.msgbox("Error", f"Export failed:\n{e}")
 
     def _metrics_prometheus(self):
-        while True:
+        def _prom_choices():
             server_running = self._prometheus_server is not None
             port = self._prometheus_port
-            status = f"[RUNNING on port {port}]" if server_running else "[STOPPED]"
-            choices = []
+            items = []
             if server_running:
-                choices.extend([("stop", "Stop Server"), ("test", "Test Endpoint")])
+                items.extend([("stop", "Stop Server"), ("test", "Test Endpoint")])
             else:
-                choices.extend([("start", "Start Server"), ("port", f"Set Port (current: {port})")])
-            choices.extend([("curl", "Show curl Command"), ("back", "Back")])
-            choice = self.ctx.dialog.menu("Prometheus Server", f"Prometheus metrics exporter:\n{status}", choices)
-            if choice is None or choice == "back":
-                break
-            if choice == "start":
-                self._prometheus_start()
-            elif choice == "stop":
-                self._prometheus_stop()
-            elif choice == "test":
-                self._prometheus_test()
-            elif choice == "port":
-                self._prometheus_set_port()
-            elif choice == "curl":
-                self._prometheus_show_curl()
+                items.extend([("start", "Start Server"), ("port", f"Set Port (current: {port})")])
+            items.append(("curl", "Show curl Command"))
+            return items
+
+        dispatch = {
+            "start": ("Start Server", self._prometheus_start),
+            "stop": ("Stop Server", self._prometheus_stop),
+            "test": ("Test Endpoint", self._prometheus_test),
+            "port": ("Set Port", self._prometheus_set_port),
+            "curl": ("Show curl", self._prometheus_show_curl),
+        }
+        self.run_menu_loop("Prometheus Server", "Prometheus metrics exporter:", _prom_choices, dispatch)
 
     def _prometheus_start(self):
         if not _HAS_METRICS_EXPORT:
@@ -416,25 +405,19 @@ class MetricsHandler(BaseHandler):
         else:
             status_lines.append("Grafana: NOT RUNNING")
         status_lines.append(f"Dashboards available: {len(dashboard_files)}")
-        while True:
-            choices = [
-                ("status", "Grafana Status"), ("open", "Open Grafana (browser)"),
-                ("dashboards", "View Dashboard Files"), ("install", "Install Grafana"),
-                ("import", "Import Dashboard Instructions"), ("back", "Back"),
-            ]
-            choice = self.ctx.dialog.menu("Grafana Dashboards", "\n".join(status_lines), choices)
-            if choice is None or choice == "back":
-                break
-            if choice == "status":
-                self._grafana_status()
-            elif choice == "open":
-                self._grafana_open(grafana_url)
-            elif choice == "dashboards":
-                self._grafana_list_dashboards(dashboard_files)
-            elif choice == "install":
-                self._grafana_install()
-            elif choice == "import":
-                self._grafana_import_instructions(dashboard_files)
+        choices = [
+            ("status", "Grafana Status"), ("open", "Open Grafana (browser)"),
+            ("dashboards", "View Dashboard Files"), ("install", "Install Grafana"),
+            ("import", "Import Dashboard Instructions"),
+        ]
+        dispatch = {
+            "status": ("Grafana Status", self._grafana_status),
+            "open": ("Open Grafana", self._grafana_open, grafana_url),
+            "dashboards": ("View Dashboards", self._grafana_list_dashboards, dashboard_files),
+            "install": ("Install Grafana", self._grafana_install),
+            "import": ("Import Instructions", self._grafana_import_instructions, dashboard_files),
+        }
+        self.run_menu_loop("Grafana Dashboards", "\n".join(status_lines), choices, dispatch)
 
     def _grafana_status(self):
         import shutil

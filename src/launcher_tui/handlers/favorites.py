@@ -39,31 +39,14 @@ class FavoritesHandler(BaseHandler):
             ("all_nodes", "All Nodes (toggle favorites)"),
             ("toggle", "Toggle Favorite by ID"),
             ("sync", "Sync Favorites from Device"),
-            ("back", "Back"),
         ]
-
-        while True:
-            fav_count = self._get_favorites_count()
-            title = f"Favorites ({fav_count})" if fav_count else "Favorites"
-
-            choice = self.ctx.dialog.menu(
-                title,
-                "Manage node favorites (BaseUI 2.7+):",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "list": ("View Favorites", self._show_favorites_list),
-                "all_nodes": ("All Nodes", self._show_all_nodes_with_favorites),
-                "toggle": ("Toggle Favorite", self._toggle_favorite_by_id),
-                "sync": ("Sync Favorites", self._sync_favorites_from_device),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "list": ("View Favorites", self._show_favorites_list),
+            "all_nodes": ("All Nodes", self._show_all_nodes_with_favorites),
+            "toggle": ("Toggle Favorite", self._toggle_favorite_by_id),
+            "sync": ("Sync Favorites", self._sync_favorites_from_device),
+        }
+        self.run_menu_loop("Favorites", "Manage node favorites (BaseUI 2.7+):", choices, dispatch)
 
     def _get_favorites_count(self) -> int:
         try:
