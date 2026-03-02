@@ -83,13 +83,12 @@ class TacticalOpsHandler(BaseHandler):
 
     def _tactical_ops_menu(self):
         """Tactical Operations — structured messages, map, QR, ATAK."""
-        while True:
+        def _build_choices():
             settings = self._get_tactical_settings()
             mode_badge = get_compliance_badge(
                 EncryptionMode(settings['encryption_mode'])
             )
-
-            choices = [
+            return [
                 ("sitrep", "Send SITREP       Situation report"),
                 ("task", "Send TASK         Work assignment"),
                 ("checkin", "Check-In          Position report"),
@@ -100,33 +99,25 @@ class TacticalOpsHandler(BaseHandler):
                 ("export", "Export            KML/CoT for ATAK"),
                 ("timeline", "Timeline          View event log"),
                 ("mode", f"Mode {mode_badge:10s}  CLEAR/SECURE setting"),
-                ("back", "Back"),
             ]
 
-            choice = self.ctx.dialog.menu(
-                "Tactical Operations",
-                f"Structured messaging {mode_badge}:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "sitrep": ("Send SITREP", self._tactical_send_sitrep),
-                "task": ("Send TASK", self._tactical_send_task),
-                "checkin": ("Check-In", self._tactical_checkin),
-                "zone": ("Mark Zone", self._tactical_mark_zone),
-                "resource": ("Resource", self._tactical_send_resource),
-                "qr": ("QR Code", self._tactical_qr_generate),
-                "map": ("Tactical Map", self._tactical_map_view),
-                "export": ("Export", self._tactical_export),
-                "timeline": ("Timeline", self._tactical_timeline_view),
-                "mode": ("Compliance Mode", self._tactical_compliance_mode),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "sitrep": ("Send SITREP", self._tactical_send_sitrep),
+            "task": ("Send TASK", self._tactical_send_task),
+            "checkin": ("Check-In", self._tactical_checkin),
+            "zone": ("Mark Zone", self._tactical_mark_zone),
+            "resource": ("Resource", self._tactical_send_resource),
+            "qr": ("QR Code", self._tactical_qr_generate),
+            "map": ("Tactical Map", self._tactical_map_view),
+            "export": ("Export", self._tactical_export),
+            "timeline": ("Timeline", self._tactical_timeline_view),
+            "mode": ("Compliance Mode", self._tactical_compliance_mode),
+        }
+        self.run_menu_loop(
+            "Tactical Operations",
+            "Structured tactical messaging:",
+            _build_choices, dispatch,
+        )
 
     def _tactical_send_sitrep(self):
         """Send a SITREP (Situation Report)."""

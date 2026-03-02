@@ -67,25 +67,17 @@ class QuickActionsHandler(BaseHandler):
 
     def _quick_actions_menu(self):
         """Display quick actions menu with single-key shortcuts."""
-        while True:
-            choices = [(tag, desc) for tag, desc, _ in QUICK_ACTIONS]
-            choices.append(('b', 'Back to main menu'))
-
-            choice = self.ctx.dialog.menu(
-                "Quick Actions",
-                "Single-key shortcuts (press letter to select):",
-                choices
-            )
-
-            if choice is None or choice == 'b':
-                break
-
-            for tag, desc, method_name in QUICK_ACTIONS:
-                if choice == tag:
-                    method = getattr(self, method_name, None)
-                    if method:
-                        self.ctx.safe_call(desc, method)
-                    break
+        choices = [(tag, desc) for tag, desc, _ in QUICK_ACTIONS]
+        dispatch = {
+            tag: (desc, getattr(self, method_name))
+            for tag, desc, method_name in QUICK_ACTIONS
+            if hasattr(self, method_name)
+        }
+        self.run_menu_loop(
+            "Quick Actions",
+            "Single-key shortcuts (press letter to select):",
+            choices, dispatch,
+        )
 
     def _qa_service_status(self):
         """Quick: show all service statuses."""
