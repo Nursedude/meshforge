@@ -109,37 +109,26 @@ class WebClientHandler(BaseHandler):
             ):
                 return
 
-        while True:
-            choices = [
-                ("open", "Open in Browser      Launch in default browser"),
-                ("url", "Show URLs            Copy to access from other devices"),
-                ("ssl", "SSL Certificate      Fix warnings / generate cert"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Meshtastic Web Client",
-                "Web Client available at port 5000/mesh/\n"
-                "Served by MeshForge (multiplexed API proxy)\n\n"
-                "Full radio configuration via browser:\n"
-                "  Config, Channels, Device, Position, Messaging\n\n"
-                "Requires a graphical browser (JavaScript).\n"
-                "Use Show URLs to access from another device.",
-                choices,
-                height=20, width=65
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "open": ("Launch Browser", lambda: self._launch_web_client_browser(localhost_url)),
-                "url": ("Show URLs", lambda: self._show_web_client_urls(local_ip)),
-                "ssl": ("SSL Help", lambda: self._show_ssl_certificate_help(local_ip)),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("open", "Open in Browser      Launch in default browser"),
+            ("url", "Show URLs            Copy to access from other devices"),
+            ("ssl", "SSL Certificate      Fix warnings / generate cert"),
+        ]
+        dispatch = {
+            "open": ("Launch Browser", self._launch_web_client_browser, localhost_url),
+            "url": ("Show URLs", self._show_web_client_urls, local_ip),
+            "ssl": ("SSL Help", self._show_ssl_certificate_help, local_ip),
+        }
+        self.run_menu_loop(
+            "Meshtastic Web Client",
+            "Web Client available at port 5000/mesh/\n"
+            "Served by MeshForge (multiplexed API proxy)\n\n"
+            "Full radio configuration via browser:\n"
+            "  Config, Channels, Device, Position, Messaging\n\n"
+            "Requires a graphical browser (JavaScript).\n"
+            "Use Show URLs to access from another device.",
+            choices, dispatch,
+        )
 
     def _launch_web_client_browser(self, url: str):
         """Launch meshtasticd web client in browser."""

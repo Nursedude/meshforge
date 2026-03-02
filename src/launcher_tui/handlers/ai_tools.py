@@ -102,29 +102,15 @@ class AIToolsHandler(BaseHandler):
             ("diagnose", "Intelligent Diagnostics"),
             ("knowledge", "Knowledge Base Query"),
             ("assistant", "Claude Assistant"),
-            ("back", "Back"),
         ]
-
-        while True:
-            choice = self.ctx.dialog.menu(
-                "Maps & Coverage",
-                "Network mapping and analysis tools:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "livemap": ("Live Network Map", self._open_live_map),
-                "diagnose": ("Intelligent Diagnostics", self._intelligent_diagnostics),
-                "knowledge": ("Knowledge Base Query", self._knowledge_base_query),
-                "assistant": ("Claude Assistant", self._claude_assistant),
-                "coverage": ("Coverage Map", self._generate_coverage_map),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "livemap": ("Live Network Map", self._open_live_map),
+            "diagnose": ("Intelligent Diagnostics", self._intelligent_diagnostics),
+            "knowledge": ("Knowledge Base Query", self._knowledge_base_query),
+            "assistant": ("Claude Assistant", self._claude_assistant),
+            "coverage": ("Coverage Map", self._generate_coverage_map),
+        }
+        self.run_menu_loop("Maps & Coverage", "Network mapping and analysis tools:", choices, dispatch)
 
     # =========================================================================
     # Map auto-start (LifecycleHandler)
@@ -238,8 +224,7 @@ class AIToolsHandler(BaseHandler):
 
     def _open_live_map(self):
         """Open the live network map with real node data."""
-        while True:
-            # Check current auto-open setting (refresh each loop)
+        def _map_choices():
             auto_enabled = False
             settings_file = self._get_map_settings_file()
             if settings_file.exists():
@@ -248,32 +233,19 @@ class AIToolsHandler(BaseHandler):
                         auto_enabled = json.load(f).get("auto_open_map", False)
                 except (json.JSONDecodeError, OSError):
                     pass
-
             auto_label = "ON" if auto_enabled else "OFF"
-            choices = [
+            return [
                 ("browser", "Open map in browser (snapshot)"),
                 ("server", "Start map server (live updates)"),
                 ("autostart", f"Auto-open on launch [{auto_label}]"),
-                ("back", "Back"),
             ]
 
-            choice = self.ctx.dialog.menu(
-                "Live Network Map",
-                "Select map mode:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "browser": ("Browser Map Snapshot", self._open_live_map_browser),
-                "server": ("Map Server", self._start_map_server),
-                "autostart": ("Toggle Auto-open", self._toggle_auto_map),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "browser": ("Browser Map Snapshot", self._open_live_map_browser),
+            "server": ("Map Server", self._start_map_server),
+            "autostart": ("Toggle Auto-open", self._toggle_auto_map),
+        }
+        self.run_menu_loop("Live Network Map", "Select map mode:", _map_choices, dispatch)
 
     def _open_live_map_browser(self):
         """Generate browser snapshot of the live map with current node data."""
@@ -544,46 +516,31 @@ class AIToolsHandler(BaseHandler):
 
     def _intelligent_diagnostics(self):
         """Run intelligent diagnostics with symptom analysis."""
-        # Common symptoms to diagnose
-        symptom_choices = [
+        choices = [
             ("connection", "Connection refused to meshtasticd"),
             ("no_nodes", "No nodes visible in mesh"),
             ("weak_signal", "Weak signal / low SNR"),
             ("timeout", "Message timeouts"),
             ("service", "Service not starting"),
             ("custom", "Describe custom symptom"),
-            ("back", "Back"),
         ]
+        dispatch = {
+            "connection": ("Diagnose Connection", self._run_diagnosis, "Connection refused to meshtasticd on port 4403"),
+            "no_nodes": ("Diagnose No Nodes", self._run_diagnosis, "No nodes visible in mesh network"),
+            "weak_signal": ("Diagnose Weak Signal", self._run_diagnosis, "Weak signal with low SNR values"),
+            "timeout": ("Diagnose Timeouts", self._run_diagnosis, "Message timeouts when sending"),
+            "service": ("Diagnose Service", self._run_diagnosis, "Service meshtasticd failed to start"),
+            "custom": ("Custom Symptom", self._diagnose_custom),
+        }
+        self.run_menu_loop("Intelligent Diagnostics", "Select a symptom to diagnose:", choices, dispatch)
 
-        while True:
-            choice = self.ctx.dialog.menu(
-                "Intelligent Diagnostics",
-                "Select a symptom to diagnose:",
-                symptom_choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            symptom_text = None
-            if choice == "custom":
-                symptom_text = self.ctx.dialog.inputbox(
-                    "Custom Symptom",
-                    "Describe the issue you're experiencing:"
-                )
-                if not symptom_text:
-                    continue
-            else:
-                # Map choice to symptom text
-                symptom_map = {
-                    "connection": "Connection refused to meshtasticd on port 4403",
-                    "no_nodes": "No nodes visible in mesh network",
-                    "weak_signal": "Weak signal with low SNR values",
-                    "timeout": "Message timeouts when sending",
-                    "service": "Service meshtasticd failed to start",
-                }
-                symptom_text = symptom_map.get(choice, choice)
-
+    def _diagnose_custom(self):
+        """Prompt for a custom symptom and run diagnosis."""
+        symptom_text = self.ctx.dialog.inputbox(
+            "Custom Symptom",
+            "Describe the issue you're experiencing:"
+        )
+        if symptom_text:
             self._run_diagnosis(symptom_text)
 
     def _run_diagnosis(self, symptom: str):
@@ -653,8 +610,7 @@ class AIToolsHandler(BaseHandler):
 
     def _knowledge_base_query(self):
         """Query the knowledge base for mesh networking concepts."""
-        # Common topics
-        topic_choices = [
+        choices = [
             ("snr", "What is SNR?"),
             ("rssi", "What is RSSI?"),
             ("lora", "How does LoRa work?"),
@@ -663,39 +619,26 @@ class AIToolsHandler(BaseHandler):
             ("antenna", "Antenna selection"),
             ("range", "Improving range"),
             ("custom", "Custom query"),
-            ("back", "Back"),
         ]
+        dispatch = {
+            "snr": ("Knowledge: SNR", self._query_knowledge, "What is SNR?"),
+            "rssi": ("Knowledge: RSSI", self._query_knowledge, "What is RSSI?"),
+            "lora": ("Knowledge: LoRa", self._query_knowledge, "How does LoRa modulation work?"),
+            "meshtastic": ("Knowledge: Meshtastic", self._query_knowledge, "What is Meshtastic and how does it work?"),
+            "reticulum": ("Knowledge: Reticulum", self._query_knowledge, "What is Reticulum Network Stack?"),
+            "antenna": ("Knowledge: Antenna", self._query_knowledge, "How do I choose the right antenna?"),
+            "range": ("Knowledge: Range", self._query_knowledge, "How can I improve my mesh range?"),
+            "custom": ("Custom Query", self._knowledge_custom_query),
+        }
+        self.run_menu_loop("Knowledge Base", "Select a topic or enter custom query:", choices, dispatch)
 
-        while True:
-            choice = self.ctx.dialog.menu(
-                "Knowledge Base",
-                "Select a topic or enter custom query:",
-                topic_choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            query = None
-            if choice == "custom":
-                query = self.ctx.dialog.inputbox(
-                    "Knowledge Query",
-                    "Enter your question about mesh networking:"
-                )
-                if not query:
-                    continue
-            else:
-                query_map = {
-                    "snr": "What is SNR?",
-                    "rssi": "What is RSSI?",
-                    "lora": "How does LoRa modulation work?",
-                    "meshtastic": "What is Meshtastic and how does it work?",
-                    "reticulum": "What is Reticulum Network Stack?",
-                    "antenna": "How do I choose the right antenna?",
-                    "range": "How can I improve my mesh range?",
-                }
-                query = query_map.get(choice, choice)
-
+    def _knowledge_custom_query(self):
+        """Prompt for a custom knowledge base query."""
+        query = self.ctx.dialog.inputbox(
+            "Knowledge Query",
+            "Enter your question about mesh networking:"
+        )
+        if query:
             self._query_knowledge(query)
 
     def _query_knowledge(self, query: str):
@@ -1149,33 +1092,19 @@ class AIToolsHandler(BaseHandler):
 
     def _tile_cache_menu(self):
         """Manage offline tile cache for maps."""
-        while True:
-            choices = [
-                ("stats", "Cache Stats         View tile cache status"),
-                ("download", "Download Region     Cache tiles for area"),
-                ("estimate", "Estimate Size       Preview download size"),
-                ("clear", "Clear Expired       Remove old tiles"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Offline Tile Cache",
-                "Manage cached map tiles for offline use:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "stats": ("Cache Stats", self._tile_cache_stats),
-                "download": ("Download Region", self._tile_cache_download),
-                "estimate": ("Estimate Size", self._tile_cache_estimate),
-                "clear": ("Clear Expired", self._tile_cache_clear),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("stats", "Cache Stats         View tile cache status"),
+            ("download", "Download Region     Cache tiles for area"),
+            ("estimate", "Estimate Size       Preview download size"),
+            ("clear", "Clear Expired       Remove old tiles"),
+        ]
+        dispatch = {
+            "stats": ("Cache Stats", self._tile_cache_stats),
+            "download": ("Download Region", self._tile_cache_download),
+            "estimate": ("Estimate Size", self._tile_cache_estimate),
+            "clear": ("Clear Expired", self._tile_cache_clear),
+        }
+        self.run_menu_loop("Offline Tile Cache", "Manage cached map tiles for offline use:", choices, dispatch)
 
     def _tile_cache_stats(self):
         """Display tile cache statistics."""

@@ -53,24 +53,17 @@ class SDRHandler(BaseHandler):
             ("survey", "Signal Strength Survey"),
             ("interference", "Interference Detection"),
             ("settings", "SDR Settings"),
-            ("back", "Back"),
         ]
-        while True:
-            choice = self.ctx.dialog.menu("RF Awareness (SDR)", "LoRa band monitoring with Airspy SDR:", choices)
-            if choice is None or choice == "back":
-                break
-            dispatch = {
-                "status": ("RF Status", self._rf_status),
-                "spectrum": ("Spectrum Snapshot", self._rf_spectrum_snapshot),
-                "waterfall": ("Waterfall Display", self._rf_waterfall),
-                "utilization": ("Channel Utilization", self._rf_utilization),
-                "survey": ("Signal Survey", self._rf_survey),
-                "interference": ("Interference Detection", self._rf_interference),
-                "settings": ("SDR Settings", self._rf_settings),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "status": ("RF Status", self._rf_status),
+            "spectrum": ("Spectrum Snapshot", self._rf_spectrum_snapshot),
+            "waterfall": ("Waterfall Display", self._rf_waterfall),
+            "utilization": ("Channel Utilization", self._rf_utilization),
+            "survey": ("Signal Survey", self._rf_survey),
+            "interference": ("Interference Detection", self._rf_interference),
+            "settings": ("SDR Settings", self._rf_settings),
+        }
+        self.run_menu_loop("RF Awareness (SDR)", "LoRa band monitoring with Airspy SDR:", choices, dispatch)
 
     def _rf_status(self):
         rf = self._get_rf_awareness()

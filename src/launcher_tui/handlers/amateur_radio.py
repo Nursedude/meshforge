@@ -38,37 +38,23 @@ class AmateurRadioHandler(BaseHandler):
 
     def _amateur_radio_menu(self):
         """Amateur radio tools submenu."""
-        while True:
-            choices = [
-                ("callsign", "Callsign Lookup     FCC database query"),
-                ("bands", "Band Plan           Part 97 frequencies"),
-                ("compliance", "Compliance Check    Verify operation legality"),
-                ("ares", "ARES/RACES          Emergency comms tools"),
-                ("ics213", "ICS-213 Message     Formal traffic message"),
-                ("netchecklist", "Net Checklist       Net control checklist"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Amateur Radio Tools",
-                "Licensed operator utilities (WH6GXZ):",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "callsign": ("Callsign Lookup", self._callsign_lookup),
-                "bands": ("Band Plan", self._band_plan_display),
-                "compliance": ("Compliance Check", self._compliance_check),
-                "ares": ("ARES/RACES Tools", self._ares_races_menu),
-                "ics213": ("ICS-213 Message", self._ics213_compose),
-                "netchecklist": ("Net Checklist", self._net_checklist),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("callsign", "Callsign Lookup     FCC database query"),
+            ("bands", "Band Plan           Part 97 frequencies"),
+            ("compliance", "Compliance Check    Verify operation legality"),
+            ("ares", "ARES/RACES          Emergency comms tools"),
+            ("ics213", "ICS-213 Message     Formal traffic message"),
+            ("netchecklist", "Net Checklist       Net control checklist"),
+        ]
+        dispatch = {
+            "callsign": ("Callsign Lookup", self._callsign_lookup),
+            "bands": ("Band Plan", self._band_plan_display),
+            "compliance": ("Compliance Check", self._compliance_check),
+            "ares": ("ARES/RACES Tools", self._ares_races_menu),
+            "ics213": ("ICS-213 Message", self._ics213_compose),
+            "netchecklist": ("Net Checklist", self._net_checklist),
+        }
+        self.run_menu_loop("Amateur Radio Tools", "Licensed operator utilities (WH6GXZ):", choices, dispatch)
 
     def _callsign_lookup(self):
         """Look up a callsign in the FCC database."""
@@ -228,31 +214,17 @@ class AmateurRadioHandler(BaseHandler):
 
     def _ares_races_menu(self):
         """ARES/RACES emergency communications tools."""
-        while True:
-            choices = [
-                ("netchecklist", "Net Checklist       Net control ops"),
-                ("ics213", "ICS-213 Message     Formal traffic"),
-                ("status", "Net Status          Current net info"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "ARES/RACES Tools",
-                "Emergency communications:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "netchecklist": ("Net Checklist", self._net_checklist),
-                "ics213": ("ICS-213 Message", self._ics213_compose),
-                "status": ("Net Status", self._ares_net_status),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("netchecklist", "Net Checklist       Net control ops"),
+            ("ics213", "ICS-213 Message     Formal traffic"),
+            ("status", "Net Status          Current net info"),
+        ]
+        dispatch = {
+            "netchecklist": ("Net Checklist", self._net_checklist),
+            "ics213": ("ICS-213 Message", self._ics213_compose),
+            "status": ("Net Status", self._ares_net_status),
+        }
+        self.run_menu_loop("ARES/RACES Tools", "Emergency communications:", choices, dispatch)
 
     def _ics213_compose(self):
         """Compose an ICS-213 formal traffic message."""

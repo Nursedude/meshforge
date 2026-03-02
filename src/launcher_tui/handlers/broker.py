@@ -62,52 +62,41 @@ class BrokerHandler(BaseHandler):
             )
             return
 
-        while True:
+        def _broker_choices():
             profiles = ensure_default_profiles()
             active = get_active_profile(profiles)
             active_name = active.display_name if active else "None"
-
             installed, _ = check_mosquitto_installed()
             running, _ = check_mosquitto_running()
-
             mosquitto_status = "Not installed"
             if installed and running:
                 mosquitto_status = "Running"
             elif installed:
                 mosquitto_status = "Installed (stopped)"
-
-            choices = [
+            return [
                 ("profiles", f"Broker Profiles     Active: {active_name[:20]}"),
                 ("private", "Setup Private Broker  MeshForge mosquitto"),
                 ("public", "Use Public Broker     mqtt.meshtastic.org"),
                 ("custom", "Add Custom Broker     Your own server"),
                 ("mosquitto", f"Mosquitto Service    {mosquitto_status}"),
                 ("radio", "Radio MQTT Setup      Configure device uplink"),
-                ("back", "Back"),
             ]
 
-            choice = self.ctx.dialog.menu(
-                "MQTT Broker Manager",
-                "Manage MQTT broker for Meshtastic <-> RNS bridging.\n\n"
-                "A private broker enables MeshForge as the central\n"
-                "message hub between mesh networks.",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "profiles": ("Broker Profiles", self._broker_profiles_menu),
-                "private": ("Private Broker Setup", self._setup_private_broker),
-                "public": ("Public Broker Setup", self._setup_public_broker),
-                "custom": ("Custom Broker Setup", self._setup_custom_broker),
-                "mosquitto": ("Mosquitto Service", self._mosquitto_service_menu),
-                "radio": ("Radio MQTT Setup", self._radio_mqtt_setup),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "profiles": ("Broker Profiles", self._broker_profiles_menu),
+            "private": ("Private Broker Setup", self._setup_private_broker),
+            "public": ("Public Broker Setup", self._setup_public_broker),
+            "custom": ("Custom Broker Setup", self._setup_custom_broker),
+            "mosquitto": ("Mosquitto Service", self._mosquitto_service_menu),
+            "radio": ("Radio MQTT Setup", self._radio_mqtt_setup),
+        }
+        self.run_menu_loop(
+            "MQTT Broker Manager",
+            "Manage MQTT broker for Meshtastic <-> RNS bridging.\n\n"
+            "A private broker enables MeshForge as the central\n"
+            "message hub between mesh networks.",
+            _broker_choices, dispatch,
+        )
 
     def _broker_profiles_menu(self):
         """View and manage broker profiles."""

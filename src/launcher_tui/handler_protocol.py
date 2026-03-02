@@ -308,7 +308,9 @@ class BaseHandler:
         title: str,
         subtitle: str,
         choices,
-        dispatch: dict,
+        dispatch: dict = None,
+        *,
+        default_handler=None,
     ) -> None:
         """Run a standard submenu loop with dispatch dict.
 
@@ -321,7 +323,11 @@ class BaseHandler:
             subtitle: Dialog subtitle.
             choices: List of (tag, description) tuples (without "back"),
                 or a callable returning the same (for dynamic menus).
-            dispatch: Dict mapping tag -> (display_name, callable).
+            dispatch: Dict mapping tag -> (display_name, callable, *args).
+                Optional when default_handler is provided.
+            default_handler: Fallback callable invoked as
+                default_handler(choice) for any tag not in dispatch.
+                Useful when all choices route to a single function.
         """
         while True:
             items = choices() if callable(choices) else choices
@@ -332,6 +338,8 @@ class BaseHandler:
             if choice is None or choice == "back":
                 break
 
-            entry = dispatch.get(choice)
+            entry = dispatch.get(choice) if dispatch else None
             if entry:
                 self.ctx.safe_call(*entry)
+            elif default_handler:
+                self.ctx.safe_call(f"{title}: {choice}", default_handler, choice)

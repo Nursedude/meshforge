@@ -61,52 +61,37 @@ class ServiceMenuHandler(BaseHandler):
 
     def _run_bridge(self):
         """Gateway bridge start/stop/status menu."""
-        while True:
+        def _bridge_choices():
             bridge_running = self._is_bridge_running()
             daemon_managed = self.ctx.daemon_active
-
             if daemon_managed and bridge_running:
-                choices = [
+                return [
                     ("status", "Bridge Status"),
                     ("logs", "View Bridge Logs"),
-                    ("back", "Back"),
                 ]
-                subtitle = "Gateway bridge is RUNNING (managed by daemon)"
             elif bridge_running:
-                choices = [
+                return [
                     ("status", "Bridge Status"),
                     ("logs", "View Bridge Logs"),
                     ("stop", "Stop Bridge"),
-                    ("back", "Back"),
                 ]
-                subtitle = "Gateway bridge is RUNNING (background)"
             else:
-                choices = [
+                return [
                     ("start", "Start Bridge (background)"),
                     ("start-fg", "Start Bridge (foreground, live logs)"),
-                    ("back", "Back"),
                 ]
-                subtitle = "Gateway bridge is STOPPED"
 
-            choice = self.ctx.dialog.menu(
-                "Gateway Bridge",
-                f"RNS <-> Meshtastic bridge:\n\n{subtitle}",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "start": ("Start Bridge (bg)", self._start_bridge_background),
-                "start-fg": ("Start Bridge (fg)", self._start_bridge_foreground),
-                "status": ("Bridge Status", self._show_bridge_status),
-                "stop": ("Stop Bridge", self._stop_bridge),
-                "logs": ("Bridge Logs", self._show_bridge_logs),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "start": ("Start Bridge (bg)", self._start_bridge_background),
+            "start-fg": ("Start Bridge (fg)", self._start_bridge_foreground),
+            "status": ("Bridge Status", self._show_bridge_status),
+            "stop": ("Stop Bridge", self._stop_bridge),
+            "logs": ("Bridge Logs", self._show_bridge_logs),
+        }
+        self.run_menu_loop(
+            "Gateway Bridge", "RNS <-> Meshtastic bridge:",
+            _bridge_choices, dispatch,
+        )
 
     def _is_bridge_running(self) -> bool:
         """Check if the gateway bridge process is running."""
@@ -382,45 +367,31 @@ class ServiceMenuHandler(BaseHandler):
 
     def _service_menu(self):
         """Service management menu."""
-        while True:
-            choices = [
-                ("status", "Service Status (all)"),
-                ("meshtasticd", "Manage meshtasticd"),
-                ("rnsd", "Manage rnsd"),
-                ("restart-mesh", "Restart meshtasticd"),
-                ("start-rns", "Start rnsd"),
-                ("restart-rns", "Restart rnsd"),
-                ("install", "Install meshtasticd"),
-                ("mqtt-setup", "MQTT Setup           Install & configure broker"),
-                ("openhamclock", "OpenHamClock Docker  Start/stop/status"),
-                ("lock-9443", "Lock Port 9443       Restrict to localhost"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Service Management",
-                "Start/stop/restart services:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "install": ("Install meshtasticd", self._install_native_meshtasticd),
-                "mqtt-setup": ("MQTT Setup", self._mqtt_setup_wizard),
-                "openhamclock": ("OpenHamClock Docker", self._manage_openhamclock_docker),
-                "status": ("Service Status", self._show_all_service_status),
-                "restart-mesh": ("Restart meshtasticd", self._restart_meshtasticd_service),
-                "start-rns": ("Start rnsd", self._start_rnsd_service),
-                "restart-rns": ("Restart rnsd", self._restart_rnsd_service),
-                "meshtasticd": ("Manage meshtasticd", lambda: self._manage_service("meshtasticd")),
-                "rnsd": ("Manage rnsd", lambda: self._manage_service("rnsd")),
-                "lock-9443": ("Port 9443 Lockdown", self._manage_port_lockdown),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("status", "Service Status (all)"),
+            ("meshtasticd", "Manage meshtasticd"),
+            ("rnsd", "Manage rnsd"),
+            ("restart-mesh", "Restart meshtasticd"),
+            ("start-rns", "Start rnsd"),
+            ("restart-rns", "Restart rnsd"),
+            ("install", "Install meshtasticd"),
+            ("mqtt-setup", "MQTT Setup           Install & configure broker"),
+            ("openhamclock", "OpenHamClock Docker  Start/stop/status"),
+            ("lock-9443", "Lock Port 9443       Restrict to localhost"),
+        ]
+        dispatch = {
+            "install": ("Install meshtasticd", self._install_native_meshtasticd),
+            "mqtt-setup": ("MQTT Setup", self._mqtt_setup_wizard),
+            "openhamclock": ("OpenHamClock Docker", self._manage_openhamclock_docker),
+            "status": ("Service Status", self._show_all_service_status),
+            "restart-mesh": ("Restart meshtasticd", self._restart_meshtasticd_service),
+            "start-rns": ("Start rnsd", self._start_rnsd_service),
+            "restart-rns": ("Restart rnsd", self._restart_rnsd_service),
+            "meshtasticd": ("Manage meshtasticd", self._manage_service, "meshtasticd"),
+            "rnsd": ("Manage rnsd", self._manage_service, "rnsd"),
+            "lock-9443": ("Port 9443 Lockdown", self._manage_port_lockdown),
+        }
+        self.run_menu_loop("Service Management", "Start/stop/restart services:", choices, dispatch)
 
     def _show_all_service_status(self):
         """Show status of all mesh services."""
@@ -496,69 +467,70 @@ class ServiceMenuHandler(BaseHandler):
 
     def _manage_port_lockdown(self):
         """Lock/unlock external access to meshtasticd port 9443."""
-        while True:
-            locked = check_port_locked(9443)
-            status_str = "\033[0;32mLOCKED\033[0m (localhost only)" if locked else "\033[0;31mOPEN\033[0m (external access allowed)"
+        choices = [
+            ("lock", "Lock Port 9443       Block external access"),
+            ("unlock", "Unlock Port 9443     Allow external access"),
+            ("persist", "Save Rules           Survive reboot"),
+            ("status", "Check Status         Current lock state"),
+        ]
+        dispatch = {
+            "lock": ("Lock Port 9443", self._port_lockdown_lock),
+            "unlock": ("Unlock Port 9443", self._port_lockdown_unlock),
+            "persist": ("Save Rules", self._port_lockdown_persist),
+            "status": ("Check Status", self._port_lockdown_status),
+        }
+        self.run_menu_loop(
+            "Port 9443 Lockdown",
+            "MeshForge proxies meshtasticd at :5000/mesh/\n"
+            "Locking port 9443 forces traffic through MeshForge.",
+            choices, dispatch,
+        )
 
-            choices = [
-                ("lock", "Lock Port 9443       Block external access"),
-                ("unlock", "Unlock Port 9443     Allow external access"),
-                ("persist", "Save Rules           Survive reboot"),
-                ("status", "Check Status         Current lock state"),
-                ("back", "Back"),
-            ]
+    def _port_lockdown_lock(self):
+        """Lock port 9443 to block external access."""
+        clear_screen()
+        success, msg = lock_port_external(9443)
+        if success:
+            print(f"\033[0;32m✓\033[0m {msg}")
+            print("\nTo survive reboot, select 'Save Rules' from the menu.")
+        else:
+            print(f"\033[0;31m✗\033[0m {msg}")
+        self.ctx.wait_for_enter()
 
-            choice = self.ctx.dialog.menu(
-                "Port 9443 Lockdown",
-                f"Current: {status_str}\n\n"
-                "MeshForge proxies meshtasticd at :5000/mesh/\n"
-                "Locking port 9443 forces traffic through MeshForge.",
-                choices
-            )
+    def _port_lockdown_unlock(self):
+        """Unlock port 9443 to allow external access."""
+        clear_screen()
+        success, msg = unlock_port_external(9443)
+        if success:
+            print(f"\033[0;32m✓\033[0m {msg}")
+        else:
+            print(f"\033[0;31m✗\033[0m {msg}")
+        self.ctx.wait_for_enter()
 
-            if choice is None or choice == "back":
-                break
+    def _port_lockdown_persist(self):
+        """Save iptables rules for reboot persistence."""
+        clear_screen()
+        print("Saving iptables rules for reboot persistence...\n")
+        success, msg = persist_iptables()
+        if success:
+            print(f"\033[0;32m✓\033[0m {msg}")
+        else:
+            print(f"\033[0;31m✗\033[0m {msg}")
+        self.ctx.wait_for_enter()
 
-            if choice == "lock":
-                clear_screen()
-                success, msg = lock_port_external(9443)
-                if success:
-                    print(f"\033[0;32m✓\033[0m {msg}")
-                    print("\nTo survive reboot, select 'Save Rules' from the menu.")
-                else:
-                    print(f"\033[0;31m✗\033[0m {msg}")
-                self.ctx.wait_for_enter()
-
-            elif choice == "unlock":
-                clear_screen()
-                success, msg = unlock_port_external(9443)
-                if success:
-                    print(f"\033[0;32m✓\033[0m {msg}")
-                else:
-                    print(f"\033[0;31m✗\033[0m {msg}")
-                self.ctx.wait_for_enter()
-
-            elif choice == "persist":
-                clear_screen()
-                print("Saving iptables rules for reboot persistence...\n")
-                success, msg = persist_iptables()
-                if success:
-                    print(f"\033[0;32m✓\033[0m {msg}")
-                else:
-                    print(f"\033[0;31m✗\033[0m {msg}")
-                self.ctx.wait_for_enter()
-
-            elif choice == "status":
-                clear_screen()
-                print("=== Port 9443 Status ===\n")
-                if locked:
-                    print("  \033[0;32m●\033[0m Port 9443: LOCKED (localhost only)")
-                else:
-                    print("  \033[0;31m●\033[0m Port 9443: OPEN (external access allowed)")
-                print()
-                print("  Lock blocks external access via iptables.")
-                print("  MeshForge proxies at :5000/mesh/ with filtering.")
-                self.ctx.wait_for_enter()
+    def _port_lockdown_status(self):
+        """Check current port 9443 lock state."""
+        clear_screen()
+        print("=== Port 9443 Status ===\n")
+        locked = check_port_locked(9443)
+        if locked:
+            print("  \033[0;32m●\033[0m Port 9443: LOCKED (localhost only)")
+        else:
+            print("  \033[0;31m●\033[0m Port 9443: OPEN (external access allowed)")
+        print()
+        print("  Lock blocks external access via iptables.")
+        print("  MeshForge proxies at :5000/mesh/ with filtering.")
+        self.ctx.wait_for_enter()
 
     def _restart_meshtasticd_service(self):
         """Restart the meshtasticd service."""
@@ -772,20 +744,11 @@ WantedBy=multi-user.target
             ("stop", "Stop Service"),
             ("restart", "Restart Service"),
             ("logs", "View Logs"),
-            ("back", "Back"),
         ]
-
-        while True:
-            choice = self.ctx.dialog.menu(
-                f"Manage {service_name}",
-                f"Select action for {service_name}:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            self._service_action(service_name, choice)
+        self.run_menu_loop(
+            f"Manage {service_name}", f"Select action for {service_name}:",
+            choices, default_handler=lambda choice: self._service_action(service_name, choice),
+        )
 
     def _has_systemd_unit(self, service_name: str) -> bool:
         """Check if a service has a systemd unit file."""
@@ -979,40 +942,31 @@ WantedBy=multi-user.target
             )
             return
 
-        while True:
+        def _hamclock_choices():
             running = self._is_openhamclock_running()
             status_str = "Running" if running else "Stopped"
-
-            choices = [
+            return [
                 ("status", f"Status: {status_str}"),
                 ("start", "Start OpenHamClock"),
                 ("stop", "Stop OpenHamClock"),
                 ("logs", "View Logs"),
                 ("configure", "Configure in MeshForge"),
-                ("back", "Back"),
             ]
 
-            choice = self.ctx.dialog.menu(
-                "OpenHamClock (Docker)",
-                "Manage OpenHamClock container.\n"
-                "Community replacement for HamClock.\n"
-                "https://github.com/accius/openhamclock",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "status": ("OpenHamClock Status", self._openhamclock_docker_status),
-                "start": ("Start OpenHamClock", self._start_openhamclock_docker),
-                "stop": ("Stop OpenHamClock", self._stop_openhamclock_docker),
-                "logs": ("OpenHamClock Logs", self._openhamclock_docker_logs),
-                "configure": ("Configure OpenHamClock", self._configure_openhamclock_via_settings),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "status": ("OpenHamClock Status", self._openhamclock_docker_status),
+            "start": ("Start OpenHamClock", self._start_openhamclock_docker),
+            "stop": ("Stop OpenHamClock", self._stop_openhamclock_docker),
+            "logs": ("OpenHamClock Logs", self._openhamclock_docker_logs),
+            "configure": ("Configure OpenHamClock", self._configure_openhamclock_via_settings),
+        }
+        self.run_menu_loop(
+            "OpenHamClock (Docker)",
+            "Manage OpenHamClock container.\n"
+            "Community replacement for HamClock.\n"
+            "https://github.com/accius/openhamclock",
+            _hamclock_choices, dispatch,
+        )
 
     def _configure_openhamclock_via_settings(self):
         """Delegate OpenHamClock configuration to SettingsHandler."""

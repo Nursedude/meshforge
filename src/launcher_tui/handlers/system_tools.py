@@ -53,43 +53,29 @@ class SystemToolsHandler(BaseHandler):
 
     def _system_tools_menu(self):
         """Full Linux diagnostic tools menu - like being on the terminal."""
-        while True:
-            choices = [
-                ("monitor", "Interactive Monitoring (top/htop/btop)"),
-                ("process", "Process Management"),
-                ("network", "Network Diagnostics"),
-                ("hardware", "Hardware Information"),
-                ("performance", "Performance & Memory"),
-                ("storage", "Storage & Disk"),
-                ("services", "Service Management"),
-                ("logs", "Advanced Log Analysis"),
-                ("shell", "Drop to Shell"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "System Tools",
-                "Full Linux diagnostic capabilities:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "monitor": ("Interactive Monitoring", self._interactive_monitoring_menu),
-                "process": ("Process Management", self._process_tools_menu),
-                "network": ("Network Diagnostics", self._network_diagnostics_menu),
-                "hardware": ("Hardware Information", self._hardware_info_menu),
-                "performance": ("Performance Tools", self._performance_tools_menu),
-                "storage": ("Storage Tools", self._storage_tools_menu),
-                "services": ("Service Management", self._service_management_menu),
-                "logs": ("Advanced Log Analysis", self._advanced_logs_menu),
-                "shell": ("Drop to Shell", self._drop_to_shell),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("monitor", "Interactive Monitoring (top/htop/btop)"),
+            ("process", "Process Management"),
+            ("network", "Network Diagnostics"),
+            ("hardware", "Hardware Information"),
+            ("performance", "Performance & Memory"),
+            ("storage", "Storage & Disk"),
+            ("services", "Service Management"),
+            ("logs", "Advanced Log Analysis"),
+            ("shell", "Drop to Shell"),
+        ]
+        dispatch = {
+            "monitor": ("Interactive Monitoring", self._interactive_monitoring_menu),
+            "process": ("Process Management", self._process_tools_menu),
+            "network": ("Network Diagnostics", self._network_diagnostics_menu),
+            "hardware": ("Hardware Information", self._hardware_info_menu),
+            "performance": ("Performance Tools", self._performance_tools_menu),
+            "storage": ("Storage Tools", self._storage_tools_menu),
+            "services": ("Service Management", self._service_management_menu),
+            "logs": ("Advanced Log Analysis", self._advanced_logs_menu),
+            "shell": ("Drop to Shell", self._drop_to_shell),
+        }
+        self.run_menu_loop("System Tools", "Full Linux diagnostic capabilities:", choices, dispatch)
 
     # =========================================================================
     # Interactive Monitoring (top, htop, btop)
@@ -97,43 +83,29 @@ class SystemToolsHandler(BaseHandler):
 
     def _interactive_monitoring_menu(self):
         """Interactive system monitoring tools."""
-        # Detect available tools
-        has_htop = shutil.which('htop') is not None
-        has_btop = shutil.which('btop') is not None
-        has_glances = shutil.which('glances') is not None
-        has_nmon = shutil.which('nmon') is not None
-
-        while True:
-            choices = []
-
-            # Prefer btop > htop > top
-            if has_btop:
-                choices.append(("btop", "btop (Best - Resource Monitor)"))
-            if has_htop:
-                choices.append(("htop", "htop (Interactive Process Viewer)"))
-            choices.append(("top", "top (Classic Process Viewer)"))
-
-            if has_glances:
-                choices.append(("glances", "glances (System Overview)"))
-            if has_nmon:
-                choices.append(("nmon", "nmon (Performance Monitor)"))
-
-            choices.extend([
+        def _monitoring_choices():
+            items = []
+            if shutil.which('btop'):
+                items.append(("btop", "btop (Best - Resource Monitor)"))
+            if shutil.which('htop'):
+                items.append(("htop", "htop (Interactive Process Viewer)"))
+            items.append(("top", "top (Classic Process Viewer)"))
+            if shutil.which('glances'):
+                items.append(("glances", "glances (System Overview)"))
+            if shutil.which('nmon'):
+                items.append(("nmon", "nmon (Performance Monitor)"))
+            items.extend([
                 ("watch_ps", "watch ps (Auto-refresh processes)"),
                 ("iotop", "iotop (I/O by Process)"),
-                ("back", "Back"),
             ])
+            return items
 
-            choice = self.ctx.dialog.menu(
-                "Interactive Monitoring",
-                "Real-time system monitoring (Ctrl+C to exit):",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            self.ctx.safe_call(f"Monitor: {choice}", self._run_interactive_tool, choice)
+        self.run_menu_loop(
+            "Interactive Monitoring",
+            "Real-time system monitoring (Ctrl+C to exit):",
+            _monitoring_choices,
+            default_handler=self._run_interactive_tool,
+        )
 
     def _run_interactive_tool(self, tool: str):
         """Run an interactive monitoring tool."""
@@ -181,29 +153,20 @@ class SystemToolsHandler(BaseHandler):
 
     def _process_tools_menu(self):
         """Process management tools."""
-        while True:
-            choices = [
-                ("ps_all", "ps aux (All Processes)"),
-                ("ps_tree", "pstree (Process Tree)"),
-                ("ps_mem", "ps (Sorted by Memory)"),
-                ("ps_cpu", "ps (Sorted by CPU)"),
-                ("ps_mesh", "Mesh-Related Processes"),
-                ("lsof", "lsof (Open Files)"),
-                ("lsof_net", "lsof -i (Network Connections)"),
-                ("fuser", "fuser (Who's Using a Port)"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Process Management",
-                "View and manage processes:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            self.ctx.safe_call(f"Process: {choice}", self._run_process_command, choice)
+        choices = [
+            ("ps_all", "ps aux (All Processes)"),
+            ("ps_tree", "pstree (Process Tree)"),
+            ("ps_mem", "ps (Sorted by Memory)"),
+            ("ps_cpu", "ps (Sorted by CPU)"),
+            ("ps_mesh", "Mesh-Related Processes"),
+            ("lsof", "lsof (Open Files)"),
+            ("lsof_net", "lsof -i (Network Connections)"),
+            ("fuser", "fuser (Who's Using a Port)"),
+        ]
+        self.run_menu_loop(
+            "Process Management", "View and manage processes:",
+            choices, default_handler=self._run_process_command,
+        )
 
     def _run_process_command(self, cmd_type: str):
         """Run process-related command."""
@@ -355,36 +318,27 @@ class SystemToolsHandler(BaseHandler):
 
     def _network_diagnostics_menu(self):
         """Comprehensive network diagnostics."""
-        while True:
-            choices = [
-                ("tcp_monitor", "TCP Monitor (Meshtasticd Connections)"),
-                ("network_scan", "Discover Meshtasticd Devices"),
-                ("ss", "ss -tuln (Listening Ports)"),
-                ("ss_all", "ss -tunap (All Connections)"),
-                ("netstat", "netstat -an (Legacy - All)"),
-                ("ip_addr", "ip addr (IP Addresses)"),
-                ("ip_route", "ip route (Routing Table)"),
-                ("ip_link", "ip link (Interface Status)"),
-                ("arp", "arp -a (ARP Table)"),
-                ("dns", "DNS Lookup"),
-                ("traceroute", "Traceroute"),
-                ("ping", "Ping Test"),
-                ("iptables", "iptables -L (Firewall Rules)"),
-                ("nft", "nft list ruleset (nftables)"),
-                ("wifi", "WiFi Status (iwconfig/iw)"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Network Diagnostics",
-                "Network troubleshooting tools:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            self.ctx.safe_call(f"Network: {choice}", self._run_network_command, choice)
+        choices = [
+            ("tcp_monitor", "TCP Monitor (Meshtasticd Connections)"),
+            ("network_scan", "Discover Meshtasticd Devices"),
+            ("ss", "ss -tuln (Listening Ports)"),
+            ("ss_all", "ss -tunap (All Connections)"),
+            ("netstat", "netstat -an (Legacy - All)"),
+            ("ip_addr", "ip addr (IP Addresses)"),
+            ("ip_route", "ip route (Routing Table)"),
+            ("ip_link", "ip link (Interface Status)"),
+            ("arp", "arp -a (ARP Table)"),
+            ("dns", "DNS Lookup"),
+            ("traceroute", "Traceroute"),
+            ("ping", "Ping Test"),
+            ("iptables", "iptables -L (Firewall Rules)"),
+            ("nft", "nft list ruleset (nftables)"),
+            ("wifi", "WiFi Status (iwconfig/iw)"),
+        ]
+        self.run_menu_loop(
+            "Network Diagnostics", "Network troubleshooting tools:",
+            choices, default_handler=self._run_network_command,
+        )
 
     def _run_network_command(self, cmd_type: str):
         """Run network diagnostic command."""
@@ -750,33 +704,24 @@ class SystemToolsHandler(BaseHandler):
 
     def _hardware_info_menu(self):
         """Hardware information tools."""
-        while True:
-            choices = [
-                ("lscpu", "lscpu (CPU Info)"),
-                ("lsmem", "lsmem (Memory Layout)"),
-                ("lsusb", "lsusb (USB Devices)"),
-                ("lsusb_v", "lsusb -v (USB Verbose)"),
-                ("lspci", "lspci (PCI Devices)"),
-                ("lsblk", "lsblk (Block Devices)"),
-                ("lshw", "lshw (Full Hardware Summary)"),
-                ("dmidecode", "dmidecode (BIOS/System Info)"),
-                ("sensors", "sensors (Temperature/Voltage)"),
-                ("gpio", "GPIO Status (Pi/SBC)"),
-                ("spi_i2c", "SPI/I2C Status"),
-                ("uname", "uname -a (Kernel Info)"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Hardware Information",
-                "System hardware details:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            self.ctx.safe_call(f"Hardware: {choice}", self._run_hardware_command, choice)
+        choices = [
+            ("lscpu", "lscpu (CPU Info)"),
+            ("lsmem", "lsmem (Memory Layout)"),
+            ("lsusb", "lsusb (USB Devices)"),
+            ("lsusb_v", "lsusb -v (USB Verbose)"),
+            ("lspci", "lspci (PCI Devices)"),
+            ("lsblk", "lsblk (Block Devices)"),
+            ("lshw", "lshw (Full Hardware Summary)"),
+            ("dmidecode", "dmidecode (BIOS/System Info)"),
+            ("sensors", "sensors (Temperature/Voltage)"),
+            ("gpio", "GPIO Status (Pi/SBC)"),
+            ("spi_i2c", "SPI/I2C Status"),
+            ("uname", "uname -a (Kernel Info)"),
+        ]
+        self.run_menu_loop(
+            "Hardware Information", "System hardware details:",
+            choices, default_handler=self._run_hardware_command,
+        )
 
     def _run_hardware_command(self, cmd_type: str):
         """Run hardware info command."""
@@ -888,29 +833,20 @@ class SystemToolsHandler(BaseHandler):
 
     def _performance_tools_menu(self):
         """Performance monitoring tools."""
-        while True:
-            choices = [
-                ("free", "free -h (Memory Usage)"),
-                ("vmstat", "vmstat (Virtual Memory Stats)"),
-                ("vmstat_live", "vmstat 1 (Live - 1s interval)"),
-                ("iostat", "iostat (I/O Statistics)"),
-                ("mpstat", "mpstat (CPU per Core)"),
-                ("uptime", "uptime (Load Average)"),
-                ("sar", "sar (System Activity)"),
-                ("stress", "Stress Test (careful!)"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Performance Tools",
-                "System performance analysis:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            self.ctx.safe_call(f"Performance: {choice}", self._run_performance_command, choice)
+        choices = [
+            ("free", "free -h (Memory Usage)"),
+            ("vmstat", "vmstat (Virtual Memory Stats)"),
+            ("vmstat_live", "vmstat 1 (Live - 1s interval)"),
+            ("iostat", "iostat (I/O Statistics)"),
+            ("mpstat", "mpstat (CPU per Core)"),
+            ("uptime", "uptime (Load Average)"),
+            ("sar", "sar (System Activity)"),
+            ("stress", "Stress Test (careful!)"),
+        ]
+        self.run_menu_loop(
+            "Performance Tools", "System performance analysis:",
+            choices, default_handler=self._run_performance_command,
+        )
 
     def _run_performance_command(self, cmd_type: str):
         """Run performance monitoring command."""
@@ -1004,29 +940,20 @@ class SystemToolsHandler(BaseHandler):
 
     def _storage_tools_menu(self):
         """Storage and disk tools."""
-        while True:
-            choices = [
-                ("df", "df -h (Disk Free Space)"),
-                ("du_home", "du (Home Directory Usage)"),
-                ("du_etc", "du /etc/meshtasticd (Config Size)"),
-                ("mount", "mount (Mounted Filesystems)"),
-                ("findmnt", "findmnt (Mount Tree)"),
-                ("fdisk", "fdisk -l (Partition Table)"),
-                ("smartctl", "smartctl (Disk Health)"),
-                ("ncdu", "ncdu (Interactive Disk Usage)"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Storage Tools",
-                "Disk and storage analysis:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            self.ctx.safe_call(f"Storage: {choice}", self._run_storage_command, choice)
+        choices = [
+            ("df", "df -h (Disk Free Space)"),
+            ("du_home", "du (Home Directory Usage)"),
+            ("du_etc", "du /etc/meshtasticd (Config Size)"),
+            ("mount", "mount (Mounted Filesystems)"),
+            ("findmnt", "findmnt (Mount Tree)"),
+            ("fdisk", "fdisk -l (Partition Table)"),
+            ("smartctl", "smartctl (Disk Health)"),
+            ("ncdu", "ncdu (Interactive Disk Usage)"),
+        ]
+        self.run_menu_loop(
+            "Storage Tools", "Disk and storage analysis:",
+            choices, default_handler=self._run_storage_command,
+        )
 
     def _run_storage_command(self, cmd_type: str):
         """Run storage command."""
@@ -1094,29 +1021,20 @@ class SystemToolsHandler(BaseHandler):
 
     def _service_management_menu(self):
         """SystemD service management."""
-        while True:
-            choices = [
-                ("status_all", "All Services Status"),
-                ("status_mesh", "Mesh Services Status"),
-                ("failed", "Failed Services"),
-                ("timers", "System Timers"),
-                ("recent", "Recently Changed"),
-                ("analyze", "Boot Time Analysis"),
-                ("logs_unit", "Logs for Specific Unit"),
-                ("restart", "Restart a Service"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Service Management",
-                "SystemD service control:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            self.ctx.safe_call(f"Service: {choice}", self._run_service_command, choice)
+        choices = [
+            ("status_all", "All Services Status"),
+            ("status_mesh", "Mesh Services Status"),
+            ("failed", "Failed Services"),
+            ("timers", "System Timers"),
+            ("recent", "Recently Changed"),
+            ("analyze", "Boot Time Analysis"),
+            ("logs_unit", "Logs for Specific Unit"),
+            ("restart", "Restart a Service"),
+        ]
+        self.run_menu_loop(
+            "Service Management", "SystemD service control:",
+            choices, default_handler=self._run_service_command,
+        )
 
     def _run_service_command(self, cmd_type: str):
         """Run service management command."""
@@ -1193,29 +1111,20 @@ class SystemToolsHandler(BaseHandler):
 
     def _advanced_logs_menu(self):
         """Advanced log analysis tools."""
-        while True:
-            choices = [
-                ("journal_size", "Journal Disk Usage"),
-                ("journal_boots", "Previous Boots"),
-                ("priority", "Filter by Priority"),
-                ("since", "Logs Since Time"),
-                ("grep_logs", "Search Logs (grep)"),
-                ("export", "Export Logs to File"),
-                ("rotate", "Rotate Logs Now"),
-                ("clear_journal", "Clear Old Journals"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Advanced Log Analysis",
-                "Deep log inspection:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            self.ctx.safe_call(f"Logs: {choice}", self._run_advanced_log_command, choice)
+        choices = [
+            ("journal_size", "Journal Disk Usage"),
+            ("journal_boots", "Previous Boots"),
+            ("priority", "Filter by Priority"),
+            ("since", "Logs Since Time"),
+            ("grep_logs", "Search Logs (grep)"),
+            ("export", "Export Logs to File"),
+            ("rotate", "Rotate Logs Now"),
+            ("clear_journal", "Clear Old Journals"),
+        ]
+        self.run_menu_loop(
+            "Advanced Log Analysis", "Deep log inspection:",
+            choices, default_handler=self._run_advanced_log_command,
+        )
 
     def _run_advanced_log_command(self, cmd_type: str):
         """Run advanced log command."""

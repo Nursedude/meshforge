@@ -53,47 +53,34 @@ class MeshCoreHandler(BaseHandler):
 
     def _meshcore_menu(self):
         """MeshCore companion radio setup and monitoring."""
-        while True:
-            status_line = self._meshcore_status_line()
-
-            choices = [
-                ("status", "Connection Status   MeshCore radio state"),
-                ("test", "Test Connection     Probe MeshCore device"),
-                ("detect", "Detect Devices      Scan for serial devices"),
-                ("config", "Configure           Connection settings"),
-                ("enable", "Enable/Disable      Toggle MeshCore in gateway"),
-                ("nodes", "View Nodes          MeshCore network nodes"),
-                ("send", "Send Message        Send via MeshCore bridge"),
-                ("stats", "Statistics          Message & connection stats"),
-                ("live", "Live Monitor        Auto-refresh bridge stats"),
-                ("diag", "Run Diagnostics     MeshCore health checks"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "MeshCore Radio",
-                status_line,
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "status": ("MeshCore Status", self._meshcore_status),
-                "test": ("Test Connection", self._meshcore_test_connection),
-                "detect": ("Detect Devices", self._meshcore_detect),
-                "config": ("MeshCore Config", self._meshcore_configure),
-                "enable": ("Enable/Disable", self._meshcore_toggle),
-                "nodes": ("MeshCore Nodes", self._meshcore_nodes),
-                "send": ("Send Message", self._meshcore_send_message),
-                "stats": ("MeshCore Stats", self._meshcore_stats),
-                "live": ("Live Monitor", self._meshcore_live_monitor),
-                "diag": ("MeshCore Diagnostics", self._meshcore_run_diagnostics),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("status", "Connection Status   MeshCore radio state"),
+            ("test", "Test Connection     Probe MeshCore device"),
+            ("detect", "Detect Devices      Scan for serial devices"),
+            ("config", "Configure           Connection settings"),
+            ("enable", "Enable/Disable      Toggle MeshCore in gateway"),
+            ("nodes", "View Nodes          MeshCore network nodes"),
+            ("send", "Send Message        Send via MeshCore bridge"),
+            ("stats", "Statistics          Message & connection stats"),
+            ("live", "Live Monitor        Auto-refresh bridge stats"),
+            ("diag", "Run Diagnostics     MeshCore health checks"),
+        ]
+        dispatch = {
+            "status": ("MeshCore Status", self._meshcore_status),
+            "test": ("Test Connection", self._meshcore_test_connection),
+            "detect": ("Detect Devices", self._meshcore_detect),
+            "config": ("MeshCore Config", self._meshcore_configure),
+            "enable": ("Enable/Disable", self._meshcore_toggle),
+            "nodes": ("MeshCore Nodes", self._meshcore_nodes),
+            "send": ("Send Message", self._meshcore_send_message),
+            "stats": ("MeshCore Stats", self._meshcore_stats),
+            "live": ("Live Monitor", self._meshcore_live_monitor),
+            "diag": ("MeshCore Diagnostics", self._meshcore_run_diagnostics),
+        }
+        self.run_menu_loop(
+            "MeshCore Radio", "MeshCore companion radio management:",
+            choices, dispatch,
+        )
 
     def _meshcore_status_line(self) -> str:
         """Build status line for MeshCore menu subtitle."""

@@ -75,32 +75,18 @@ class TopologyHandler(BaseHandler):
             ("ascii", "ASCII Topology View"),
             ("browser", "Open in Browser (D3.js Graph)"),
             ("export", "Export Topology Data"),
-            ("back", "Back"),
         ]
-
-        while True:
-            choice = self.ctx.dialog.menu(
-                "Network Topology",
-                "Analyze mesh network topology:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "stats": ("Topology Statistics", self._show_topology_stats),
-                "nodes": ("View Nodes", self._show_topology_nodes),
-                "edges": ("View Links/Edges", self._show_topology_edges),
-                "events": ("Topology Events", self._show_topology_events),
-                "trace": ("Trace Path", self._trace_path),
-                "ascii": ("ASCII Topology", self._show_ascii_topology),
-                "browser": ("Browser Topology", self._open_topology_browser),
-                "export": ("Export Topology", self._export_topology),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "stats": ("Topology Statistics", self._show_topology_stats),
+            "nodes": ("View Nodes", self._show_topology_nodes),
+            "edges": ("View Links/Edges", self._show_topology_edges),
+            "events": ("Topology Events", self._show_topology_events),
+            "trace": ("Trace Path", self._trace_path),
+            "ascii": ("ASCII Topology", self._show_ascii_topology),
+            "browser": ("Browser Topology", self._open_topology_browser),
+            "export": ("Export Topology", self._export_topology),
+        }
+        self.run_menu_loop("Network Topology", "Analyze mesh network topology:", choices, dispatch)
 
     def _show_topology_stats(self):
         """Display topology statistics."""
@@ -952,33 +938,19 @@ class TopologyHandler(BaseHandler):
 
     def _export_data_menu(self):
         """Export data in various formats (GeoJSON, CSV, GraphML, D3.js)."""
-        while True:
-            choices = [
-                ("geojson", "GeoJSON             For mapping tools"),
-                ("csv", "CSV                 Spreadsheet format"),
-                ("graphml", "GraphML             For graph analysis"),
-                ("d3", "D3.js JSON          For web visualization"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Export Data",
-                "Export network data:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "geojson": ("GeoJSON Export", lambda: self._export_topology_data("geojson")),
-                "csv": ("CSV Export", lambda: self._export_topology_data("csv")),
-                "graphml": ("GraphML Export", lambda: self._export_topology_data("graphml")),
-                "d3": ("D3.js Export", lambda: self._export_topology_data("d3")),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("geojson", "GeoJSON             For mapping tools"),
+            ("csv", "CSV                 Spreadsheet format"),
+            ("graphml", "GraphML             For graph analysis"),
+            ("d3", "D3.js JSON          For web visualization"),
+        ]
+        dispatch = {
+            "geojson": ("GeoJSON Export", self._export_topology_data, "geojson"),
+            "csv": ("CSV Export", self._export_topology_data, "csv"),
+            "graphml": ("GraphML Export", self._export_topology_data, "graphml"),
+            "d3": ("D3.js Export", self._export_topology_data, "d3"),
+        }
+        self.run_menu_loop("Export Data", "Export network data:", choices, dispatch)
 
     def _export_topology_data(self, format_type: str):
         """Export topology data in specified format."""

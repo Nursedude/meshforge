@@ -361,26 +361,15 @@ class DashboardHandler(BaseHandler):
 
     def _reports_menu(self):
         """Network status reports: generate, view, save."""
-        while True:
-            choices = [
-                ("generate", "Generate & View     Full status report"),
-                ("save", "Generate & Save     Save to file"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Reports",
-                "Network status report generation:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            if choice == "generate":
-                self.ctx.safe_call("Generate Report", self._generate_and_view_report)
-            elif choice == "save":
-                self.ctx.safe_call("Save Report", self._generate_and_save_report)
+        choices = [
+            ("generate", "Generate & View     Full status report"),
+            ("save", "Generate & Save     Save to file"),
+        ]
+        dispatch = {
+            "generate": ("Generate Report", self._generate_and_view_report),
+            "save": ("Save Report", self._generate_and_save_report),
+        }
+        self.run_menu_loop("Reports", "Network status report generation:", choices, dispatch)
 
     def _generate_and_view_report(self):
         """Generate a full status report and display it."""
