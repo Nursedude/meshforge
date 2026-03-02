@@ -12,12 +12,11 @@ Falls back to basic terminal menu if neither available.
 
 import os
 import sys
-import shutil
 import subprocess
 import logging
 import traceback
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -37,20 +36,15 @@ from __version__ import __version__
 
 # Import optional modules at module level
 from utils.active_health_probe import get_health_probe
-from utils.service_check import lock_port_external
 # TopologyVisualizer is in handlers/topology.py
 
-# Import centralized path utility - SINGLE SOURCE OF TRUTH for all paths
-# See: utils/paths.py (ReticulumPaths, get_real_user_home)
-# NO FALLBACK: stale fallback copies caused config divergence bugs (Issue #25+)
-from utils.paths import get_real_user_home
-
 # Import dialog backend directly (not through package namespace)
-from backend import DialogBackend, clear_screen
+from backend import DialogBackend
 
 # Import startup checks and conflict resolution (v0.4.8)
 from startup_checks import (
-    StartupChecker, EnvironmentState, ServiceRunState,
+    StartupChecker, EnvironmentState,
+    detect_environment, is_daemon_running, auto_lock_port,
     check_root_without_sudo_user, check_service_misconfig,
     check_startup_updates,
 )
@@ -70,7 +64,7 @@ class MeshForgeLauncher:
     def __init__(self, profile=None):
         self.dialog = DialogBackend()
         self.src_dir = Path(__file__).parent.parent  # src/ directory
-        self.env = self._detect_environment()
+        self.env = detect_environment()
         self._setup_status_bar()
         self._meshtastic_path = None  # Cached CLI path
         self._bridge_log_path = None  # Path to active bridge log file
@@ -99,11 +93,6 @@ class MeshForgeLauncher:
         for handler_cls in get_all_handlers():
             self._registry.register(handler_cls())
 
-    def _feature_enabled(self, feature: str) -> bool:
-        """Check if a feature is enabled — delegates to TUIContext."""
-        return self._tui_context.feature_enabled(feature)
-
-
     def _setup_status_bar(self) -> None:
         """Initialize and attach the status bar to the dialog backend."""
         try:
@@ -114,65 +103,12 @@ class MeshForgeLauncher:
             logger.debug(f"Status bar initialization skipped: {e}")
             self._status_bar = None
 
-    def _get_error_log_path(self) -> Path:
-        """Get the path to the TUI error log file — delegates to TUIContext."""
-        return self._tui_context.get_error_log_path()
-
-    def _log_error(self, context: str, exc: Exception) -> None:
-        """Log error with traceback — delegates to TUIContext."""
-        self._tui_context.log_error(context, exc)
-
-    def _safe_call(self, method_name: str, method, *args, **kwargs):
-        """Safely call a method with exception handling — delegates to TUIContext."""
-        return self._tui_context.safe_call(method_name, method, *args, **kwargs)
-
-    def _detect_environment(self) -> dict:
-        """Detect the current environment."""
-        env = {
-            'has_display': False,
-            'display_type': None,
-            'is_ssh': False,
-            'is_root': os.geteuid() == 0,
-        }
-
-        # Check for display
-        display = os.environ.get('DISPLAY')
-        wayland = os.environ.get('WAYLAND_DISPLAY')
-        if display or wayland:
-            env['has_display'] = True
-            env['display_type'] = 'Wayland' if wayland else 'X11'
-
-        # Check for SSH
-        if os.environ.get('SSH_CLIENT') or os.environ.get('SSH_TTY'):
-            env['is_ssh'] = True
-
-        return env
-
-    def _is_daemon_running(self) -> bool:
-        """Check if meshforged is running via PID file.
-
-        Used on TUI startup to avoid auto-starting services the
-        daemon already owns (Config API, health probe, etc.).
-        """
-        pid_file = Path("/run/meshforge/meshforged.pid")
-        if not pid_file.exists():
-            return False
-        try:
-            pid = int(pid_file.read_text().strip())
-            os.kill(pid, 0)  # Check if process exists (signal 0)
-            return True
-        except (ProcessLookupError, ValueError):
-            return False
-        except PermissionError:
-            # Process exists but owned by different user — daemon is running
-            return True
-
     def run(self):
         """Run the launcher."""
         if not self.dialog.available:
-            # Fallback to basic launcher
-            print("whiptail/dialog not available, using basic launcher...")
-            self._run_basic_launcher()
+            print("Error: whiptail or dialog is required for the TUI.")
+            print("Install with: sudo apt-get install whiptail")
+            print("Or try the standalone RF tools: python3 src/standalone.py")
             return
 
         # Check for root without SUDO_USER (causes RNS auth issues)
@@ -191,7 +127,7 @@ class MeshForgeLauncher:
         check_service_misconfig(self.dialog)
 
         # Detect if daemon is managing core services
-        self._daemon_active = self._is_daemon_running()
+        self._daemon_active = is_daemon_running()
         self._tui_context.daemon_active = self._daemon_active
         if self._daemon_active:
             logger.info("Daemon detected — TUI running in tool-only mode")
@@ -200,7 +136,7 @@ class MeshForgeLauncher:
             # If daemon owns these, starting them here would cause
             # port conflicts (Config API :8081) or singleton clashes.
             self._registry.startup_all()  # AITools, MQTT, ConfigAPI, etc.
-            self._maybe_auto_lock_port()
+            auto_lock_port()
             self._start_health_monitor()
 
         # Non-blocking update check — sets _updates_available for status hint
@@ -278,22 +214,6 @@ class MeshForgeLauncher:
 
         return True
 
-    def _maybe_auto_lock_port(self):
-        """Auto-lock port 9443 on startup so meshtasticd web is MeshForge-only.
-
-        Silent operation - logs result but no dialogs on failure.
-        """
-        try:
-            success, msg = lock_port_external(9443)
-            if success:
-                logger.info("Startup port lock: %s", msg)
-            else:
-                logger.warning("Startup port lock failed: %s", msg)
-        except Exception as e:
-            logger.debug("Auto port lock error: %s", e)
-
-    _MAX_DIALOG_RETRIES = 3
-
     def _run_main_menu(self):
         """Display the main NOC menu.
 
@@ -303,10 +223,10 @@ class MeshForgeLauncher:
         - 2-tap max for common operations
 
         Includes retry logic: consecutive dialog failures (None returns)
-        are retried up to _MAX_DIALOG_RETRIES times before exiting.
-        This prevents transient dialog subprocess failures from killing
-        the TUI.
+        are retried up to 3 times before exiting. This prevents transient
+        dialog subprocess failures from killing the TUI.
         """
+        max_retries = 3
         consecutive_failures = 0
 
         while True:
@@ -319,12 +239,12 @@ class MeshForgeLauncher:
                 ("2", "Mesh Networks       Meshtastic, RNS, AREDN"),
                 ("3", "RF & SDR            Calculators, SDR monitoring"),
             ]
-            if self._feature_enabled("maps"):
+            if self._tui_context.feature_enabled("maps"):
                 choices.append(("4", "Maps & Viz          Coverage maps, topology"))
             choices.append(("5", "Configuration       Radio, services, settings"))
             choices.append(("6", "System              Hardware, logs, Linux tools"))
             # Quick Access
-            if self._feature_enabled("tactical"):
+            if self._tui_context.feature_enabled("tactical"):
                 choices.append(("t", "Tactical Ops        SITREP, zones, QR, ATAK"))
             choices.extend([
                 ("q", "Quick Actions       Common shortcuts"),
@@ -347,7 +267,7 @@ class MeshForgeLauncher:
                 # Dialog returned None — could be user pressing Escape
                 # or the dialog subprocess dying unexpectedly.
                 consecutive_failures += 1
-                if consecutive_failures >= self._MAX_DIALOG_RETRIES:
+                if consecutive_failures >= max_retries:
                     logger.error(
                         "Main menu dialog failed %d consecutive times, exiting",
                         consecutive_failures,
@@ -355,17 +275,13 @@ class MeshForgeLauncher:
                     break
                 logger.warning(
                     "Main menu returned None (attempt %d/%d), retrying",
-                    consecutive_failures, self._MAX_DIALOG_RETRIES,
+                    consecutive_failures, max_retries,
                 )
                 continue
 
             # Successful interaction resets the failure counter
             consecutive_failures = 0
-            self._handle_main_choice(choice)
-
-    def _handle_main_choice(self, choice: str):
-        """Handle main menu selection — delegates to registry."""
-        self._registry.handle_main_choice(choice)
+            self._registry.handle_main_choice(choice)
 
 def main():
     """Main entry point."""

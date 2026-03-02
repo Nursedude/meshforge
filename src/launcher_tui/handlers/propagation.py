@@ -26,41 +26,31 @@ class PropagationHandler(BaseHandler):
 
     def _propagation_menu(self):
         """Space Weather & Propagation submenu."""
-        while True:
-            choices = [
-                ("summary", "Propagation Summary   Quick overview"),
-                ("weather", "Space Weather         SFI, Kp, A-index"),
-                ("bands", "Band Conditions       HF band assessment"),
-                ("alerts", "NOAA Alerts           Active warnings"),
-                ("dx", "DX Spots              Telnet DX cluster"),
-                ("ionosonde", "Ionosonde Data        foF2 & MUF"),
-                ("voacap", "VOACAP Prediction     Point-to-point HF"),
-                ("sources", "Configure Sources     Data source setup"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Space Weather & Propagation",
-                "HF propagation and space weather tools:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "summary": ("Propagation Summary", self._show_propagation_summary),
-                "weather": ("Space Weather", self._show_space_weather),
-                "bands": ("Band Conditions", self._show_band_conditions),
-                "alerts": ("NOAA Alerts", self._show_noaa_alerts),
-                "dx": ("DX Spots", self._show_dx_spots),
-                "ionosonde": ("Ionosonde Data", self._show_ionosonde),
-                "voacap": ("VOACAP Prediction", self._show_voacap),
-                "sources": ("Configure Sources", self._configure_prop_sources),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("summary", "Propagation Summary   Quick overview"),
+            ("weather", "Space Weather         SFI, Kp, A-index"),
+            ("bands", "Band Conditions       HF band assessment"),
+            ("alerts", "NOAA Alerts           Active warnings"),
+            ("dx", "DX Spots              Telnet DX cluster"),
+            ("ionosonde", "Ionosonde Data        foF2 & MUF"),
+            ("voacap", "VOACAP Prediction     Point-to-point HF"),
+            ("sources", "Configure Sources     Data source setup"),
+        ]
+        dispatch = {
+            "summary": ("Propagation Summary", self._show_propagation_summary),
+            "weather": ("Space Weather", self._show_space_weather),
+            "bands": ("Band Conditions", self._show_band_conditions),
+            "alerts": ("NOAA Alerts", self._show_noaa_alerts),
+            "dx": ("DX Spots", self._show_dx_spots),
+            "ionosonde": ("Ionosonde Data", self._show_ionosonde),
+            "voacap": ("VOACAP Prediction", self._show_voacap),
+            "sources": ("Configure Sources", self._configure_prop_sources),
+        }
+        self.run_menu_loop(
+            "Space Weather & Propagation",
+            "HF propagation and space weather tools:",
+            choices, dispatch,
+        )
 
     def _show_propagation_summary(self):
         result = propagation.get_propagation_summary()

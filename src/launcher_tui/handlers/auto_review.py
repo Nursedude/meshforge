@@ -34,35 +34,25 @@ class AutoReviewHandler(BaseHandler):
 
     def _auto_review_menu(self):
         """Code review system — run automated code analysis."""
-        while True:
-            choices = [
-                ("full", "Full Review         Run all review agents"),
-                ("security", "Security Review     Command injection, creds"),
-                ("redundancy", "Redundancy Review   Duplicate code, imports"),
-                ("performance", "Performance Review  Timeouts, loops, memory"),
-                ("reliability", "Reliability Review  Error handling, TODOs"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Code Review",
-                "Automated code analysis agents:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "full": ("Full Review", lambda: self._run_auto_review("ALL")),
-                "security": ("Security Review", lambda: self._run_auto_review("SECURITY")),
-                "redundancy": ("Redundancy Review", lambda: self._run_auto_review("REDUNDANCY")),
-                "performance": ("Performance Review", lambda: self._run_auto_review("PERFORMANCE")),
-                "reliability": ("Reliability Review", lambda: self._run_auto_review("RELIABILITY")),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("full", "Full Review         Run all review agents"),
+            ("security", "Security Review     Command injection, creds"),
+            ("redundancy", "Redundancy Review   Duplicate code, imports"),
+            ("performance", "Performance Review  Timeouts, loops, memory"),
+            ("reliability", "Reliability Review  Error handling, TODOs"),
+        ]
+        dispatch = {
+            "full": ("Full Review", lambda: self._run_auto_review("ALL")),
+            "security": ("Security Review", lambda: self._run_auto_review("SECURITY")),
+            "redundancy": ("Redundancy Review", lambda: self._run_auto_review("REDUNDANCY")),
+            "performance": ("Performance Review", lambda: self._run_auto_review("PERFORMANCE")),
+            "reliability": ("Reliability Review", lambda: self._run_auto_review("RELIABILITY")),
+        }
+        self.run_menu_loop(
+            "Code Review",
+            "Automated code analysis agents:",
+            choices, dispatch,
+        )
 
     def _run_auto_review(self, scope_name: str):
         """Execute an auto-review with the specified scope."""

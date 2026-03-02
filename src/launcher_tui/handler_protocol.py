@@ -302,3 +302,36 @@ class BaseHandler:
         raise NotImplementedError(
             f"{type(self).__name__}.execute() not implemented for action={action!r}"
         )
+
+    def run_menu_loop(
+        self,
+        title: str,
+        subtitle: str,
+        choices,
+        dispatch: dict,
+    ) -> None:
+        """Run a standard submenu loop with dispatch dict.
+
+        Eliminates the repetitive while/menu/break/dispatch boilerplate
+        found in 51+ handlers. Handles "back" item, None/escape, and
+        wraps dispatch calls in safe_call().
+
+        Args:
+            title: Dialog title.
+            subtitle: Dialog subtitle.
+            choices: List of (tag, description) tuples (without "back"),
+                or a callable returning the same (for dynamic menus).
+            dispatch: Dict mapping tag -> (display_name, callable).
+        """
+        while True:
+            items = choices() if callable(choices) else choices
+            full_choices = list(items) + [("back", "Back")]
+
+            choice = self.ctx.dialog.menu(title, subtitle, full_choices)
+
+            if choice is None or choice == "back":
+                break
+
+            entry = dispatch.get(choice)
+            if entry:
+                self.ctx.safe_call(*entry)

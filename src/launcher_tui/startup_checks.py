@@ -631,6 +631,67 @@ class StartupChecker:
         return None
 
 
+def detect_environment() -> dict:
+    """Detect the current runtime environment.
+
+    Returns:
+        Dict with keys: has_display, display_type, is_ssh, is_root.
+    """
+    env = {
+        'has_display': False,
+        'display_type': None,
+        'is_ssh': False,
+        'is_root': os.geteuid() == 0,
+    }
+
+    display = os.environ.get('DISPLAY')
+    wayland = os.environ.get('WAYLAND_DISPLAY')
+    if display or wayland:
+        env['has_display'] = True
+        env['display_type'] = 'Wayland' if wayland else 'X11'
+
+    if os.environ.get('SSH_CLIENT') or os.environ.get('SSH_TTY'):
+        env['is_ssh'] = True
+
+    return env
+
+
+def is_daemon_running() -> bool:
+    """Check if meshforged is running via PID file.
+
+    Used on TUI startup to avoid auto-starting services the
+    daemon already owns (Config API, health probe, etc.).
+    """
+    pid_file = Path("/run/meshforge/meshforged.pid")
+    if not pid_file.exists():
+        return False
+    try:
+        pid = int(pid_file.read_text().strip())
+        os.kill(pid, 0)  # Check if process exists (signal 0)
+        return True
+    except (ProcessLookupError, ValueError):
+        return False
+    except PermissionError:
+        # Process exists but owned by different user — daemon is running
+        return True
+
+
+def auto_lock_port() -> None:
+    """Auto-lock port 9443 on startup so meshtasticd web is MeshForge-only.
+
+    Silent operation — logs result but no dialogs on failure.
+    """
+    try:
+        from utils.service_check import lock_port_external
+        success, msg = lock_port_external(9443)
+        if success:
+            logger.info("Startup port lock: %s", msg)
+        else:
+            logger.warning("Startup port lock failed: %s", msg)
+    except Exception as e:
+        logger.debug("Auto port lock error: %s", e)
+
+
 def check_root_without_sudo_user(dialog) -> None:
     """Warn if running as root without SUDO_USER set.
 
