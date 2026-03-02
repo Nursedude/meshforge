@@ -631,6 +631,146 @@ class StartupChecker:
         return None
 
 
+def check_root_without_sudo_user(dialog) -> None:
+    """Warn if running as root without SUDO_USER set.
+
+    Without SUDO_USER, RNS applications (NomadNet, rnstatus) will run
+    as root while rnsd runs as the regular user, causing RPC auth failures.
+
+    Args:
+        dialog: DialogBackend instance for showing warnings.
+    """
+    if os.getuid() != 0:
+        return
+
+    sudo_user = os.environ.get('SUDO_USER', '')
+    if sudo_user and sudo_user != 'root':
+        return
+
+    # We're root without SUDO_USER — check if rnsd runs as a non-root user
+    rnsd_user = None
+    try:
+        result = subprocess.run(
+            ['ps', '-o', 'user=', '-C', 'rnsd'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            rnsd_user = result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        logger.debug(f"Could not check rnsd user: {e}")
+
+    if rnsd_user and rnsd_user != 'root':
+        dialog.msgbox(
+            "Root Context Warning",
+            f"MeshForge is running as root, but rnsd runs as '{rnsd_user}'.\n\n"
+            f"This mismatch will cause RNS apps (NomadNet) to fail\n"
+            f"with RPC authentication errors.\n\n"
+            f"Recommended: Exit and run as your regular user:\n"
+            f"  exit\n"
+            f"  meshforge   (without sudo)\n\n"
+            f"Or preserve SUDO_USER:\n"
+            f"  sudo -E meshforge\n\n"
+            f"MeshForge will try to work around this, but some\n"
+            f"features may not work correctly.",
+        )
+
+
+def check_service_misconfig(dialog) -> None:
+    """Check for service misconfiguration (SPI HAT with USB config) and offer to fix.
+
+    Args:
+        dialog: DialogBackend instance for user interaction.
+    """
+    config_d = Path('/etc/meshtasticd/config.d')
+    if not config_d.exists():
+        return
+
+    active_configs = list(config_d.glob('*.yaml'))
+    usb_config = config_d / 'usb-serial.yaml'
+
+    spi_config_names = ['meshadv', 'waveshare', 'rak-hat', 'meshtoad', 'sx126', 'sx127', 'lora']
+    has_spi_config = any(
+        any(name in cfg.name.lower() for name in spi_config_names)
+        for cfg in active_configs
+    )
+
+    # SPI config AND usb-serial.yaml both active — conflict
+    if has_spi_config and usb_config.exists():
+        spi_configs = [c.name for c in active_configs if any(n in c.name.lower() for n in spi_config_names)]
+
+        msg = "CONFLICTING CONFIGURATIONS!\n\n"
+        msg += "Both SPI HAT and USB configs are active:\n\n"
+        msg += f"  SPI: {', '.join(spi_configs)}\n"
+        msg += f"  USB: usb-serial.yaml (WRONG)\n\n"
+        msg += "Remove the USB config?"
+
+        if dialog.yesno("Config Conflict", msg):
+            try:
+                from utils.service_check import apply_config_and_restart
+                usb_config.unlink()
+                apply_config_and_restart('meshtasticd')
+                dialog.msgbox(
+                    "Fixed",
+                    "Removed usb-serial.yaml\n"
+                    "Restarted meshtasticd\n\n"
+                    "Check: systemctl status meshtasticd"
+                )
+            except Exception as e:
+                dialog.msgbox("Error", f"Failed:\n{e}")
+        return
+
+    # SPI hardware present but USB config active (wrong)
+    spi_devices = list(Path('/dev').glob('spidev*'))
+    if not spi_devices:
+        return
+    if not usb_config.exists():
+        return
+
+    result = subprocess.run(['which', 'meshtasticd'], capture_output=True, timeout=5)
+    has_native = result.returncode == 0
+
+    msg = "CONFIGURATION MISMATCH!\n\n"
+    msg += "SPI HAT detected but USB config active.\n\n"
+    msg += f"SPI: {', '.join(d.name for d in spi_devices)}\n"
+    msg += "Config: usb-serial.yaml (WRONG)\n"
+    if not has_native:
+        msg += "Native meshtasticd: NOT INSTALLED\n"
+    msg += "\nFix this now?"
+
+    if dialog.yesno("Service Misconfiguration", msg):
+        # Delegate to service_menu handler's _fix_spi_config if available
+        try:
+            from handlers.service_menu import ServiceMenuHandler
+            handler = ServiceMenuHandler()
+            handler._fix_spi_config(has_native)
+        except Exception as e:
+            logger.warning("Could not delegate SPI fix: %s", e)
+            dialog.msgbox("Error", f"Could not auto-fix SPI config:\n{e}")
+
+
+def check_startup_updates() -> int:
+    """Non-blocking startup update check.
+
+    Returns:
+        Number of updates available (0 if none or check failed).
+    """
+    try:
+        from utils.safe_import import safe_import
+        check_fn, _, has_checker = safe_import(
+            'updates.version_checker', 'check_all_versions', 'VersionInfo'
+        )
+        if not has_checker:
+            return 0
+        versions = check_fn()
+        count = sum(1 for v in versions.values() if v.update_available)
+        if count > 0:
+            logger.info("Startup update check: %d update(s) available", count)
+        return count
+    except Exception as e:
+        logger.debug("Startup update check failed (non-blocking): %s", e)
+        return 0
+
+
 def resolve_conflict(conflict: PortConflict, action: str = 'stop') -> bool:
     """
     Attempt to resolve a port conflict.

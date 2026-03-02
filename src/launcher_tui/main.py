@@ -45,15 +45,15 @@ from utils.service_check import lock_port_external
 # NO FALLBACK: stale fallback copies caused config divergence bugs (Issue #25+)
 from utils.paths import get_real_user_home
 
-# Import centralized service checker - SINGLE SOURCE OF TRUTH for service status
-# See: utils/service_check.py and .claude/foundations/install_reliability_triage.md
-from utils.service_check import check_service, check_port, apply_config_and_restart, ServiceState
-
 # Import dialog backend directly (not through package namespace)
 from backend import DialogBackend, clear_screen
 
 # Import startup checks and conflict resolution (v0.4.8)
-from startup_checks import StartupChecker, EnvironmentState, ServiceRunState
+from startup_checks import (
+    StartupChecker, EnvironmentState, ServiceRunState,
+    check_root_without_sudo_user, check_service_misconfig,
+    check_startup_updates,
+)
 from conflict_resolver import check_and_resolve_conflicts
 
 # Mixins removed — all functionality now in handler registry (Batch 9)
@@ -176,7 +176,7 @@ class MeshForgeLauncher:
             return
 
         # Check for root without SUDO_USER (causes RNS auth issues)
-        self._check_root_without_sudo_user()
+        check_root_without_sudo_user(self.dialog)
 
         # Run startup environment checks (v0.4.8)
         if not self._run_startup_checks():
@@ -188,7 +188,7 @@ class MeshForgeLauncher:
             first_run_handler.on_startup()
 
         # Check for service misconfiguration (SPI HAT with USB config)
-        self._check_service_misconfig()
+        check_service_misconfig(self.dialog)
 
         # Detect if daemon is managing core services
         self._daemon_active = self._is_daemon_running()
@@ -204,7 +204,7 @@ class MeshForgeLauncher:
             self._start_health_monitor()
 
         # Non-blocking update check — sets _updates_available for status hint
-        self._check_startup_updates()
+        self._tui_context._updates_available = check_startup_updates()
 
         try:
             self._run_main_menu()
@@ -234,30 +234,6 @@ class MeshForgeLauncher:
         if probe:
             probe.stop(timeout=3)
             logger.info("Health monitor stopped")
-
-    def _check_startup_updates(self) -> None:
-        """Non-blocking startup update check.
-
-        Queries the version checker for available updates and stores
-        the count in self._updates_available. This is displayed in the
-        main menu status hint. Completely best-effort — failures are
-        silently ignored so the TUI always starts.
-        """
-        self._updates_available = 0
-        try:
-            from utils.safe_import import safe_import
-            check_fn, _, has_checker = safe_import(
-                'updates.version_checker', 'check_all_versions', 'VersionInfo'
-            )
-            if not has_checker:
-                return
-            versions = check_fn()
-            count = sum(1 for v in versions.values() if v.update_available)
-            if count > 0:
-                self._updates_available = count
-                logger.info("Startup update check: %d update(s) available", count)
-        except Exception as e:
-            logger.debug("Startup update check failed (non-blocking): %s", e)
 
     def _run_startup_checks(self) -> bool:
         """
@@ -302,131 +278,6 @@ class MeshForgeLauncher:
 
         return True
 
-    def _check_root_without_sudo_user(self):
-        """
-        Warn if running as root without SUDO_USER set.
-
-        This is a common issue on fresh installs where the user follows
-        'sudo meshforge' guidance but the environment doesn't preserve
-        SUDO_USER (e.g., after 'su -' or direct root login).
-
-        Without SUDO_USER, RNS applications (NomadNet, rnstatus) will run
-        as root while rnsd runs as the regular user, causing RPC auth failures.
-        """
-        # Only check if we're actually root
-        if os.getuid() != 0:
-            return
-
-        sudo_user = os.environ.get('SUDO_USER', '')
-
-        # SUDO_USER is set and not root - we're fine
-        if sudo_user and sudo_user != 'root':
-            return
-
-        # We're root without SUDO_USER - this can cause issues
-        # Check if rnsd is running as a non-root user (the problematic case)
-        rnsd_user = None
-        try:
-            result = subprocess.run(
-                ['ps', '-o', 'user=', '-C', 'rnsd'],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.returncode == 0:
-                rnsd_user = result.stdout.strip()
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
-            # ps command failed - non-critical, skip user mismatch check
-            logger.debug(f"Could not check rnsd user: {e}")
-
-        # If rnsd is running as a regular user, warn about the mismatch
-        if rnsd_user and rnsd_user != 'root':
-            self.dialog.msgbox(
-                "Root Context Warning",
-                f"MeshForge is running as root, but rnsd runs as '{rnsd_user}'.\n\n"
-                f"This mismatch will cause RNS apps (NomadNet) to fail\n"
-                f"with RPC authentication errors.\n\n"
-                f"Recommended: Exit and run as your regular user:\n"
-                f"  exit\n"
-                f"  meshforge   (without sudo)\n\n"
-                f"Or preserve SUDO_USER:\n"
-                f"  sudo -E meshforge\n\n"
-                f"MeshForge will try to work around this, but some\n"
-                f"features may not work correctly.",
-            )
-        elif not rnsd_user:
-            # rnsd not running yet - just a general warning
-            # Only show this once per session using a flag
-            if not hasattr(self, '_root_warning_shown'):
-                self._root_warning_shown = True
-                # Less alarming message since rnsd isn't running yet
-                # The NomadNet menu will handle specific issues when they arise
-
-    def _check_service_misconfig(self):
-        """Check for service misconfiguration and offer to fix."""
-        config_d = Path('/etc/meshtasticd/config.d')
-        if not config_d.exists():
-            return
-
-        # Check what configs are active
-        active_configs = list(config_d.glob('*.yaml'))
-        usb_config = config_d / 'usb-serial.yaml'
-
-        # Check for SPI configs
-        spi_config_names = ['meshadv', 'waveshare', 'rak-hat', 'meshtoad', 'sx126', 'sx127', 'lora']
-        has_spi_config = any(
-            any(name in cfg.name.lower() for name in spi_config_names)
-            for cfg in active_configs
-        )
-
-        # If SPI config exists AND usb-serial.yaml also exists, that's wrong
-        if has_spi_config and usb_config.exists():
-            spi_configs = [c.name for c in active_configs if any(n in c.name.lower() for n in spi_config_names)]
-
-            msg = "CONFLICTING CONFIGURATIONS!\n\n"
-            msg += "Both SPI HAT and USB configs are active:\n\n"
-            msg += f"  SPI: {', '.join(spi_configs)}\n"
-            msg += f"  USB: usb-serial.yaml (WRONG)\n\n"
-            msg += "Remove the USB config?"
-
-            if self.dialog.yesno("Config Conflict", msg):
-                try:
-                    usb_config.unlink()
-                    apply_config_and_restart('meshtasticd')
-                    self.dialog.msgbox(
-                        "Fixed",
-                        "Removed usb-serial.yaml\n"
-                        "Restarted meshtasticd\n\n"
-                        "Check: systemctl status meshtasticd"
-                    )
-                except Exception as e:
-                    self.dialog.msgbox("Error", f"Failed:\n{e}")
-            return
-
-        # Check: SPI hardware present but USB config active (wrong)
-        spi_devices = list(Path('/dev').glob('spidev*'))
-
-        has_spi = len(spi_devices) > 0
-
-        # Only skip if no SPI hardware at all
-        if not has_spi:
-            return
-
-        if not usb_config.exists():
-            return
-
-        result = subprocess.run(['which', 'meshtasticd'], capture_output=True, timeout=5)
-        has_native = result.returncode == 0
-
-        msg = "CONFIGURATION MISMATCH!\n\n"
-        msg += "SPI HAT detected but USB config active.\n\n"
-        msg += f"SPI: {', '.join(d.name for d in spi_devices)}\n"
-        msg += "Config: usb-serial.yaml (WRONG)\n"
-        if not has_native:
-            msg += "Native meshtasticd: NOT INSTALLED\n"
-        msg += "\nFix this now?"
-
-        if self.dialog.yesno("Service Misconfiguration", msg):
-            self._fix_spi_config(has_native)
-
     def _maybe_auto_lock_port(self):
         """Auto-lock port 9443 on startup so meshtasticd web is MeshForge-only.
 
@@ -460,7 +311,7 @@ class MeshForgeLauncher:
 
         while True:
             # Build status hint for menu subtitle
-            status_hint = self._get_menu_status_hint()
+            status_hint = self._tui_context.get_menu_status_hint()
 
             choices = [
                 # Primary Operations (numbered for quick access)
@@ -511,26 +362,6 @@ class MeshForgeLauncher:
             # Successful interaction resets the failure counter
             consecutive_failures = 0
             self._handle_main_choice(choice)
-
-    def _get_menu_status_hint(self) -> str:
-        """Generate status hint for main menu subtitle.
-
-        Uses plain text indicators (UP/FAIL/--) since whiptail/dialog
-        don't render ANSI color escape codes.
-        Appends update count if updates were detected at startup.
-        """
-        hint = ""
-        if self._env_state:
-            hint = self._env_state.get_status_line(plain=True)
-        else:
-            hint = "Network Operations Center"
-
-        # Append update notification if available
-        update_count = getattr(self, '_updates_available', 0)
-        if update_count > 0:
-            hint += f"  |  {update_count} update(s) available"
-
-        return hint
 
     def _handle_main_choice(self, choice: str):
         """Handle main menu selection — delegates to registry."""
