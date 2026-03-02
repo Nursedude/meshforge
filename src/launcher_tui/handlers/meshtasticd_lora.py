@@ -53,7 +53,7 @@ class MeshtasticdLoRaHandler(BaseHandler):
 
     def _lora_module_menu(self):
         """Configure LoRa module type and SPI/GPIO settings."""
-        while True:
+        def _build_choices():
             overlay = read_overlay()
             lora_overlay = overlay.get('Lora', {})
 
@@ -68,20 +68,14 @@ class MeshtasticdLoRaHandler(BaseHandler):
 
             effective = {**base_lora, **lora_overlay}
             current_module = effective.get('Module', 'auto')
+            cs = effective.get('CS', '-')
+            irq = effective.get('IRQ', '-')
+            busy = effective.get('Busy', '-')
+            reset = effective.get('Reset', '-')
 
-            status_lines = (
-                f"Current Module: {current_module}\n"
-                f"CS: {effective.get('CS', '-')}  "
-                f"IRQ: {effective.get('IRQ', '-')}  "
-                f"Busy: {effective.get('Busy', '-')}  "
-                f"Reset: {effective.get('Reset', '-')}\n"
-                f"DIO2 RF Switch: {effective.get('DIO2_AS_RF_SWITCH', '-')}  "
-                f"DIO3 TCXO: {effective.get('DIO3_TCXO_VOLTAGE', '-')}\n"
-            )
-
-            choices = [
-                ("module", "Set Module Type"),
-                ("pins", "Set GPIO Pins (CS, IRQ, Busy, Reset)"),
+            return [
+                ("module", f"Set Module Type     [{current_module}]"),
+                ("pins", f"Set GPIO Pins       CS:{cs} IRQ:{irq} Busy:{busy} Rst:{reset}"),
                 ("dio", "DIO2/DIO3 Settings"),
                 ("spi", "SPI Device & Speed"),
                 ("txrx", "TX/RX Enable Pins (PA/LNA)"),
@@ -89,34 +83,25 @@ class MeshtasticdLoRaHandler(BaseHandler):
                 ("preset", "Apply Hardware Preset"),
                 ("view", "View Current Overlay"),
                 ("clear", "Clear LoRa Overlay"),
-                ("back", "Back"),
             ]
 
-            choice = self.ctx.dialog.menu(
-                "LoRa Module Config",
-                f"{status_lines}\n"
-                "Settings saved to config.d/ overlay.\n"
-                "config.yaml is never modified.",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "module": ("Set Module", self._lora_set_module),
-                "pins": ("Set GPIO Pins", self._lora_set_pins),
-                "dio": ("DIO Settings", self._lora_set_dio),
-                "spi": ("SPI Settings", self._lora_set_spi),
-                "txrx": ("TX/RX Pins", self._lora_set_txrx),
-                "gpiochip": ("GPIO Chip", self._lora_set_gpiochip),
-                "preset": ("Hardware Preset", self._lora_apply_preset),
-                "view": ("View Overlay", self._lora_view_overlay),
-                "clear": ("Clear Overlay", self._lora_clear_overlay),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "module": ("Set Module", self._lora_set_module),
+            "pins": ("Set GPIO Pins", self._lora_set_pins),
+            "dio": ("DIO Settings", self._lora_set_dio),
+            "spi": ("SPI Settings", self._lora_set_spi),
+            "txrx": ("TX/RX Pins", self._lora_set_txrx),
+            "gpiochip": ("GPIO Chip", self._lora_set_gpiochip),
+            "preset": ("Hardware Preset", self._lora_apply_preset),
+            "view": ("View Overlay", self._lora_view_overlay),
+            "clear": ("Clear Overlay", self._lora_clear_overlay),
+        }
+        self.run_menu_loop(
+            "LoRa Module Config",
+            "Settings saved to config.d/ overlay.\n"
+            "config.yaml is never modified.",
+            _build_choices, dispatch,
+        )
 
     def _lora_set_module(self):
         """Select LoRa module type."""

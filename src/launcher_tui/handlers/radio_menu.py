@@ -31,14 +31,11 @@ class RadioMenuHandler(BaseHandler):
 
     def _radio_menu(self):
         """Radio tools using meshtastic CLI directly."""
-        while True:
+        def _build_choices():
             cli_path = self.ctx.get_meshtastic_cli()
             has_cli = cli_path != 'meshtastic'
-
             cli_works = False
-            cli_location = ""
             if has_cli:
-                cli_location = cli_path
                 try:
                     result = subprocess.run(
                         [cli_path, '--version'],
@@ -48,11 +45,11 @@ class RadioMenuHandler(BaseHandler):
                 except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError):
                     cli_works = False
 
-            choices = []
+            items = []
             if not cli_works:
-                choices.append(("install-cli", "** Install meshtastic CLI **"))
-            choices.extend([
-                ("info", "Radio Info (meshtastic --info)"),
+                items.append(("install-cli", "** Install meshtastic CLI **"))
+            items.extend([
+                ("info", f"Radio Info          {'[CLI: ' + cli_path + ']' if cli_works else '[no CLI]'}"),
                 ("nodes", "Node List (meshtastic --nodes)"),
                 ("favorites", "Favorites (BaseUI 2.7+)"),
                 ("channels", "Channel Info"),
@@ -63,66 +60,43 @@ class RadioMenuHandler(BaseHandler):
                 ("set-name", "Set Node Name"),
                 ("reboot", "Reboot Radio"),
                 ("reinstall-cli", "Reinstall/Update CLI"),
-                ("back", "Back"),
             ])
+            return items
 
-            if cli_works:
-                status = f"\n[CLI: {cli_location}]"
-            elif has_cli:
-                status = f"\n[CLI found but not working: {cli_location}]"
-            else:
-                status = "\n[CLI not installed]"
+        dispatch = {
+            "install-cli": ("Install CLI", self._install_meshtastic_cli),
+            "reinstall-cli": ("Install CLI", self._install_meshtastic_cli),
+            "info": ("Radio Info", self._radio_info),
+            "nodes": ("Node List", self._radio_nodes),
+            "favorites": ("Favorites", self._favorites_submenu),
+            "channels": ("Channel Info", self._radio_channels),
+            "send": ("Send Message", self._radio_send_message),
+            "position": ("Position", self._radio_position_menu),
+            "set-region": ("Set Region", self._radio_set_region),
+            "set-txpower": ("Set TX Power", self._radio_set_tx_power),
+            "set-name": ("Set Node Name", self._radio_set_name),
+            "reboot": ("Reboot Radio", self._radio_reboot),
+        }
+        self.run_menu_loop(
+            "Radio Tools",
+            "Meshtastic radio control (terminal-native):",
+            _build_choices, dispatch,
+        )
 
-            choice = self.ctx.dialog.menu(
-                "Radio Tools",
-                f"Meshtastic radio control (terminal-native):{status}",
-                choices
-            )
+    def _radio_info(self):
+        """Show radio info via meshtastic CLI."""
+        cli = self.ctx.get_meshtastic_cli()
+        self._radio_run([cli, '--host', 'localhost', '--info'], "Radio Info")
 
-            if choice is None or choice == "back":
-                break
+    def _radio_nodes(self):
+        """Show node list via meshtastic CLI."""
+        cli = self.ctx.get_meshtastic_cli()
+        self._radio_run([cli, '--host', 'localhost', '--nodes'], "Node List")
 
-            if choice in ("install-cli", "reinstall-cli"):
-                self.ctx.safe_call("Install CLI", self._install_meshtastic_cli)
-                continue
-
-            if choice == "favorites":
-                # Delegate to FavoritesHandler
-                self.ctx.safe_call("Favorites", self._favorites_submenu)
-                continue
-
-            dispatch = {
-                "position": ("Position", self._radio_position_menu),
-                "send": ("Send Message", self._radio_send_message),
-                "set-region": ("Set Region", self._radio_set_region),
-                "set-txpower": ("Set TX Power", self._radio_set_tx_power),
-                "set-name": ("Set Node Name", self._radio_set_name),
-                "reboot": ("Reboot Radio", self._radio_reboot),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
-                continue
-
-            # CLI commands that build args dynamically
-            try:
-                cli = self.ctx.get_meshtastic_cli()
-                conn_args = ['--host', 'localhost']
-                if choice == "info":
-                    self._radio_run([cli] + conn_args + ['--info'], "Radio Info")
-                elif choice == "nodes":
-                    self._radio_run([cli] + conn_args + ['--nodes'], "Node List")
-                elif choice == "channels":
-                    self._radio_run([cli] + conn_args + ['--ch-index', '0', '--ch-getall'], "Channels")
-            except KeyboardInterrupt:
-                pass
-            except Exception as e:
-                self.ctx.dialog.msgbox(
-                    "Radio Error",
-                    f"Operation failed:\n{type(e).__name__}: {e}\n\n"
-                    f"Check that meshtasticd is running:\n"
-                    f"  sudo systemctl status meshtasticd"
-                )
+    def _radio_channels(self):
+        """Show channel info via meshtastic CLI."""
+        cli = self.ctx.get_meshtastic_cli()
+        self._radio_run([cli, '--host', 'localhost', '--ch-index', '0', '--ch-getall'], "Channels")
 
     def _favorites_submenu(self):
         """Delegate to FavoritesHandler."""

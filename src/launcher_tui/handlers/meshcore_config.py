@@ -63,44 +63,34 @@ class MeshCoreConfigHandler(BaseHandler):
             )
             return
 
-        while True:
+        def _build_choices():
             config = get_meshcore_config()
             status = config.get_status()
-
-            subtitle = self._mc_config_status_line(status)
-
-            choices = [
-                ("status", "Status              Configuration status"),
+            status_line = self._mc_config_status_line(status)
+            return [
+                ("status", f"Status              {status_line}"),
                 ("setup", "Setup               Create config directory structure"),
                 ("detect", "Detect Devices      Scan for companion radios"),
                 ("templates", "Templates           View available configs"),
                 ("enable", "Enable Config       Activate a connection config"),
                 ("disable", "Disable Config      Deactivate a connection config"),
                 ("edit", "Edit Config         Edit config files (nano)"),
-                ("back", "Back"),
             ]
 
-            choice = self.ctx.dialog.menu(
-                "MeshCore Config",
-                subtitle,
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "status": ("MC Config Status", self._mc_config_status),
-                "setup": ("MC Config Setup", self._mc_config_setup),
-                "detect": ("MC Detect Devices", self._mc_config_detect),
-                "templates": ("MC Templates", self._mc_config_templates),
-                "enable": ("MC Enable Config", self._mc_config_enable),
-                "disable": ("MC Disable Config", self._mc_config_disable),
-                "edit": ("MC Edit Config", self._mc_config_edit),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "status": ("MC Config Status", self._mc_config_status),
+            "setup": ("MC Config Setup", self._mc_config_setup),
+            "detect": ("MC Detect Devices", self._mc_config_detect),
+            "templates": ("MC Templates", self._mc_config_templates),
+            "enable": ("MC Enable Config", self._mc_config_enable),
+            "disable": ("MC Disable Config", self._mc_config_disable),
+            "edit": ("MC Edit Config", self._mc_config_edit),
+        }
+        self.run_menu_loop(
+            "MeshCore Config",
+            "MeshCore /etc/meshcore/ configuration:",
+            _build_choices, dispatch,
+        )
 
     def _mc_config_status_line(self, status: dict) -> str:
         """Build status line for MeshCore config menu subtitle."""

@@ -46,57 +46,60 @@ class ConfigAPIHandler(BaseHandler):
 
     def _config_api_menu(self):
         """Config API Server start/stop/status menu."""
-        while True:
+        def _build_choices():
             running = self._server and self._server.is_running
             status = "RUNNING on 127.0.0.1:8081" if running else "STOPPED"
-
-            choices = [
-                ("status", f"Status              {status}"),
-            ]
+            items = [("status", f"Status              {status}")]
             if running:
-                choices.append(("stop", "Stop Config API Server"))
+                items.append(("stop", "Stop Config API Server"))
             else:
-                choices.append(("start", "Start Config API Server"))
-            choices.append(("back", "Back"))
+                items.append(("start", "Start Config API Server"))
+            return items
 
-            choice = self.ctx.dialog.menu(
-                "Config API Server",
-                "RESTful configuration API for dynamic reconfiguration.\n\n"
-                f"Status: {status}",
-                choices
+        dispatch = {
+            "status": ("Config API Status", self._config_api_show_status),
+            "start": ("Start Config API", self._config_api_start),
+            "stop": ("Stop Config API", self._config_api_stop),
+        }
+        self.run_menu_loop(
+            "Config API Server",
+            "RESTful configuration API for dynamic reconfiguration.",
+            _build_choices, dispatch,
+        )
+
+    def _config_api_show_status(self):
+        """Show Config API Server status details."""
+        if self._server and self._server.is_running:
+            self.ctx.dialog.msgbox(
+                "Config API Status",
+                "Config API Server is RUNNING\n\n"
+                "  Endpoint: http://127.0.0.1:8081/config\n"
+                "  GET /config/<path> - Read config value\n"
+                "  PUT /config/<path> - Set config value\n"
+                "  DELETE /config/<path> - Remove value\n"
+                "  GET /config/_paths - List all paths\n"
+                "  GET /config/_audit - Audit log"
+            )
+        else:
+            self.ctx.dialog.msgbox(
+                "Config API Status",
+                "Config API Server is STOPPED\n\n"
+                "Start it to enable dynamic reconfiguration\n"
+                "via RESTful API."
             )
 
-            if choice is None or choice == "back":
-                break
+    def _config_api_start(self):
+        """Start the Config API Server."""
+        self._maybe_auto_start()
+        if self._server and self._server.is_running:
+            self.ctx.dialog.msgbox("Started", "Config API Server started on 127.0.0.1:8081")
+        else:
+            self.ctx.dialog.msgbox("Error", "Failed to start Config API Server.\nCheck logs for details.")
 
-            if choice == "status":
-                if running:
-                    self.ctx.dialog.msgbox(
-                        "Config API Status",
-                        "Config API Server is RUNNING\n\n"
-                        "  Endpoint: http://127.0.0.1:8081/config\n"
-                        "  GET /config/<path> - Read config value\n"
-                        "  PUT /config/<path> - Set config value\n"
-                        "  DELETE /config/<path> - Remove value\n"
-                        "  GET /config/_paths - List all paths\n"
-                        "  GET /config/_audit - Audit log"
-                    )
-                else:
-                    self.ctx.dialog.msgbox(
-                        "Config API Status",
-                        "Config API Server is STOPPED\n\n"
-                        "Start it to enable dynamic reconfiguration\n"
-                        "via RESTful API."
-                    )
-            elif choice == "start":
-                self._maybe_auto_start()
-                if self._server and self._server.is_running:
-                    self.ctx.dialog.msgbox("Started", "Config API Server started on 127.0.0.1:8081")
-                else:
-                    self.ctx.dialog.msgbox("Error", "Failed to start Config API Server.\nCheck logs for details.")
-            elif choice == "stop":
-                self._stop_server()
-                self.ctx.dialog.msgbox("Stopped", "Config API Server stopped.")
+    def _config_api_stop(self):
+        """Stop the Config API Server."""
+        self._stop_server()
+        self.ctx.dialog.msgbox("Stopped", "Config API Server stopped.")
 
     # -- Lifecycle helpers --
 

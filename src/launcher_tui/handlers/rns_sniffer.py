@@ -44,60 +44,49 @@ class RNSSnifferHandler(BaseHandler):
             )
             return
 
-        while True:
+        def _build_choices():
             sniffer = _get_rns_sniffer()
             capturing = sniffer._running if sniffer else False
             stats = sniffer.get_stats() if sniffer else {}
-
-            capture_status = "CAPTURING" if capturing else "STOPPED"
             capture_action = "Stop Capture" if capturing else "Start Capture"
-
             packets = stats.get("packets_captured", 0)
             announces = stats.get("announces_seen", 0)
             paths = stats.get("paths_discovered", 0)
+            return [
+                ("capture", f"{capture_action}        Pkts:{packets} Ann:{announces} Paths:{paths}"),
+                ("1", "View Live Traffic      - Recent RNS packets"),
+                ("2", "View Path Table        - Discovered routes"),
+                ("3", "View Announces         - Node discoveries"),
+                ("4", "Filter by Destination  - Search by hash"),
+                ("5", "Probe Destination      - Request path + capture"),
+                ("6", "View Links             - Active RNS links"),
+                ("7", "Traffic Statistics     - Packet stats"),
+                ("8", "Test Known Node        - Test 17a4dcfd..."),
+                ("0", "Clear Capture          - Clear captured data"),
+            ]
 
-            choice = self.ctx.dialog.menu(
-                "RNS Traffic Sniffer",
-                f"Wireshark-grade RNS packet visibility\n"
-                f"Status: {capture_status} | Packets: {packets} | "
-                f"Announces: {announces} | Paths: {paths}",
-                choices=[
-                    ("capture", f"{capture_action}        - {'Stop' if capturing else 'Start'} RNS capture"),
-                    ("1", "View Live Traffic      - Recent RNS packets"),
-                    ("2", "View Path Table        - Discovered routes"),
-                    ("3", "View Announces         - Node discoveries"),
-                    ("4", "Filter by Destination  - Search by hash"),
-                    ("5", "Probe Destination      - Request path + capture"),
-                    ("6", "View Links             - Active RNS links"),
-                    ("7", "Traffic Statistics     - Packet stats"),
-                    ("8", "Test Known Node        - Test 17a4dcfd..."),
-                    ("0", "Clear Capture          - Clear captured data"),
-                ],
-                height=20, width=70
-            )
+        dispatch = {
+            "capture": ("Toggle Capture", self._rns_sniffer_toggle_capture),
+            "1": ("Live Traffic", self._rns_sniffer_live_traffic),
+            "2": ("Path Table", self._rns_sniffer_path_table),
+            "3": ("Announces", self._rns_sniffer_announces),
+            "4": ("Filter by Destination", self._rns_sniffer_filter_destination),
+            "5": ("Probe Destination", self._rns_sniffer_probe_destination),
+            "6": ("View Links", self._rns_sniffer_links),
+            "7": ("Traffic Statistics", self._rns_sniffer_statistics),
+            "8": ("Test Known Node", self._rns_sniffer_test_known_node),
+            "0": ("Clear Capture", self._rns_sniffer_clear),
+        }
+        self.run_menu_loop(
+            "RNS Traffic Sniffer",
+            "Wireshark-grade RNS packet visibility:",
+            _build_choices, dispatch,
+        )
 
-            if not choice:
-                return
-
-            dispatch = {
-                "capture": ("Toggle Capture", self._rns_sniffer_toggle_capture, sniffer, capturing),
-                "1": ("Live Traffic", self._rns_sniffer_live_traffic, sniffer),
-                "2": ("Path Table", self._rns_sniffer_path_table, sniffer),
-                "3": ("Announces", self._rns_sniffer_announces, sniffer),
-                "4": ("Filter by Destination", self._rns_sniffer_filter_destination, sniffer),
-                "5": ("Probe Destination", self._rns_sniffer_probe_destination, sniffer),
-                "6": ("View Links", self._rns_sniffer_links, sniffer),
-                "7": ("Traffic Statistics", self._rns_sniffer_statistics, sniffer),
-                "8": ("Test Known Node", self._rns_sniffer_test_known_node, sniffer),
-                "0": ("Clear Capture", self._rns_sniffer_clear, sniffer),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                name, method, *args = entry
-                self.ctx.safe_call(name, method, *args)
-
-    def _rns_sniffer_toggle_capture(self, sniffer, capturing):
+    def _rns_sniffer_toggle_capture(self):
         """Toggle RNS packet capture."""
+        sniffer = _get_rns_sniffer()
+        capturing = sniffer._running if sniffer else False
         if capturing:
             _stop_rns_capture()
             self.ctx.dialog.msgbox(
@@ -124,8 +113,9 @@ class RNSSnifferHandler(BaseHandler):
                     height=10, width=50
                 )
 
-    def _rns_sniffer_live_traffic(self, sniffer):
+    def _rns_sniffer_live_traffic(self):
         """View live RNS traffic."""
+        sniffer = _get_rns_sniffer()
         if not sniffer:
             return
 
@@ -163,8 +153,9 @@ class RNSSnifferHandler(BaseHandler):
             height=30, width=75
         )
 
-    def _rns_sniffer_path_table(self, sniffer):
+    def _rns_sniffer_path_table(self):
         """View discovered RNS paths."""
+        sniffer = _get_rns_sniffer()
         if not sniffer:
             return
 
@@ -198,8 +189,9 @@ class RNSSnifferHandler(BaseHandler):
             height=32, width=75
         )
 
-    def _rns_sniffer_announces(self, sniffer):
+    def _rns_sniffer_announces(self):
         """View RNS announce packets."""
+        sniffer = _get_rns_sniffer()
         if not sniffer:
             return
 
@@ -236,8 +228,9 @@ class RNSSnifferHandler(BaseHandler):
             height=32, width=75
         )
 
-    def _rns_sniffer_filter_destination(self, sniffer):
+    def _rns_sniffer_filter_destination(self):
         """Filter packets by destination hash."""
+        sniffer = _get_rns_sniffer()
         if not sniffer:
             return
 
@@ -281,8 +274,9 @@ class RNSSnifferHandler(BaseHandler):
             height=28, width=75
         )
 
-    def _rns_sniffer_probe_destination(self, sniffer):
+    def _rns_sniffer_probe_destination(self):
         """Probe a destination and capture the traffic."""
+        sniffer = _get_rns_sniffer()
         if not sniffer:
             return
 
@@ -331,8 +325,9 @@ class RNSSnifferHandler(BaseHandler):
                 height=8, width=45
             )
 
-    def _rns_sniffer_links(self, sniffer):
+    def _rns_sniffer_links(self):
         """View active RNS links."""
+        sniffer = _get_rns_sniffer()
         if not sniffer:
             return
 
@@ -366,8 +361,9 @@ class RNSSnifferHandler(BaseHandler):
             height=24, width=75
         )
 
-    def _rns_sniffer_statistics(self, sniffer):
+    def _rns_sniffer_statistics(self):
         """View RNS traffic statistics."""
+        sniffer = _get_rns_sniffer()
         if not sniffer:
             return
 
@@ -391,7 +387,7 @@ class RNSSnifferHandler(BaseHandler):
             f"  Links Tracked:    {stats.get('link_count', 0)}",
             f"  Active Links:     {stats.get('active_links', 0)}",
             "",
-            "Links Established: {stats.get('links_established', 0)}",
+            f"Links Established:  {stats.get('links_established', 0)}",
         ]
 
         self.ctx.dialog.msgbox(
@@ -400,8 +396,9 @@ class RNSSnifferHandler(BaseHandler):
             height=24, width=55
         )
 
-    def _rns_sniffer_test_known_node(self, sniffer):
+    def _rns_sniffer_test_known_node(self):
         """Test connectivity to the known working RNS node."""
+        sniffer = _get_rns_sniffer()
         if not sniffer:
             return
 
@@ -467,8 +464,9 @@ class RNSSnifferHandler(BaseHandler):
                     height=6, width=50
                 )
 
-    def _rns_sniffer_clear(self, sniffer):
+    def _rns_sniffer_clear(self):
         """Clear captured RNS packets."""
+        sniffer = _get_rns_sniffer()
         if not sniffer:
             return
 

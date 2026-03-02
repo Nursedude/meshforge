@@ -36,40 +36,27 @@ class RadioModeConfigHandler(BaseHandler):
 
     def _radio_mode_menu(self):
         """Radio Mode — select primary LoRa radio."""
-        while True:
+        def _build_choices():
             current = get_radio_mode()
             bridge_mode = get_default_bridge_mode(current)
-
-            subtitle = (
-                f"Current: {current.value.upper()}\n"
-                f"Bridge mode: {bridge_mode}"
-            )
-
-            choices = [
+            return [
+                ("info", f"About Radio Modes   [Current: {current.value.upper()}, Bridge: {bridge_mode}]"),
                 ("meshtastic", "Meshtastic       Standard mesh (meshtasticd)"),
                 ("meshcore", "MeshCore          Lightweight multi-hop (companion radio)"),
                 ("dual", "Dual Radio        Both radios active"),
-                ("info", "About Radio Modes"),
-                ("back", "Back"),
             ]
 
-            choice = self.ctx.dialog.menu(
-                "Radio Mode",
-                subtitle,
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            if choice == "info":
-                self.ctx.safe_call("Radio Mode Info", self._radio_mode_info)
-            elif choice in ("meshtastic", "meshcore", "dual"):
-                self.ctx.safe_call(
-                    "Set Radio Mode",
-                    self._radio_mode_set,
-                    RadioMode(choice)
-                )
+        dispatch = {
+            "info": ("Radio Mode Info", self._radio_mode_info),
+            "meshtastic": ("Set Radio Mode", lambda: self._radio_mode_set(RadioMode.MESHTASTIC)),
+            "meshcore": ("Set Radio Mode", lambda: self._radio_mode_set(RadioMode.MESHCORE)),
+            "dual": ("Set Radio Mode", lambda: self._radio_mode_set(RadioMode.DUAL)),
+        }
+        self.run_menu_loop(
+            "Radio Mode",
+            "Select primary LoRa radio firmware:",
+            _build_choices, dispatch,
+        )
 
     def _radio_mode_set(self, mode: RadioMode):
         """Set the primary radio mode."""
