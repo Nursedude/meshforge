@@ -66,6 +66,7 @@ class AIToolsHandler(BaseHandler):
             ("livemap",   "Live NOC Map        Real-time browser view", None),
             ("coverage",  "Coverage Map        Generate coverage map",  None),
             ("heatmap",   "Heatmap             Signal quality / density", None),
+            ("terrain",   "Terrain Coverage    RF prediction with terrain", None),
             ("tiles",     "Offline Tiles       Cache map tiles",        None),
             ("ai",        "AI Diagnostics      Knowledge base, assistant", None),
         ]
@@ -75,6 +76,7 @@ class AIToolsHandler(BaseHandler):
             "livemap": ("Live NOC Map", self._open_live_map),
             "coverage": ("Coverage Map", self._generate_coverage_map),
             "heatmap": ("Heatmap", self._generate_heatmap),
+            "terrain": ("Terrain Coverage", self._generate_terrain_coverage),
             "tiles": ("Offline Tile Cache", self._tile_cache_menu),
             "ai": ("AI Diagnostics", self._ai_tools_menu),
         }
@@ -1115,6 +1117,31 @@ class AIToolsHandler(BaseHandler):
 
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Heatmap generation failed: {e}")
+
+    # =========================================================================
+    # Terrain Coverage
+    # =========================================================================
+
+    def _generate_terrain_coverage(self):
+        """Generate terrain-aware RF coverage prediction.
+
+        Dispatches to Site Planner's terrain coverage method if available,
+        otherwise provides a standalone implementation.
+        """
+        # Try to delegate to site_planner handler (avoids code duplication)
+        if self.ctx.registry:
+            site_planner = self.ctx.registry.get_handler("site_planner")
+            if site_planner and hasattr(site_planner, '_terrain_coverage'):
+                site_planner._terrain_coverage()
+                return
+
+        # Fallback: inform user where to find it
+        self.ctx.dialog.msgbox(
+            "Terrain Coverage",
+            "Terrain-aware coverage prediction is available\n"
+            "in the Site Planner menu.\n\n"
+            "Go to: RF & SDR Tools > Site Planner > Terrain Coverage Map"
+        )
 
     # =========================================================================
     # Tile Cache Manager

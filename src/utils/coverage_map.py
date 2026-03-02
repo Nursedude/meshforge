@@ -42,6 +42,11 @@ from utils.paths import get_real_user_home
 _folium, _HAS_FOLIUM = safe_import('folium')
 _folium_plugins, _HAS_FOLIUM_PLUGINS = safe_import('folium.plugins')
 
+# Optional: Terrain analysis
+_LOSAnalyzer, _SRTMProvider, _FlatTerrainProvider, _HAS_TERRAIN = safe_import(
+    'utils.terrain', 'LOSAnalyzer', 'SRTMProvider', 'FlatTerrainProvider'
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -595,6 +600,7 @@ class CoverageMapGenerator:
         self._custom_markers = custom_markers
         self._map = None  # Folium map object, set by generate()
         self._rns_edges: List[Dict] = []  # RNS link quality edges
+        self._terrain_coverage: List[Dict] = []  # Terrain coverage grid points
 
     @classmethod
     def get_icon_for_role(cls, role: str) -> Dict[str, str]:
@@ -976,6 +982,10 @@ class CoverageMapGenerator:
         if self._rns_edges:
             self.add_rns_link_quality_layer(self._rns_edges)
 
+        # Add terrain coverage layer if data was set
+        if self._terrain_coverage:
+            self.add_terrain_coverage_layer(self._terrain_coverage)
+
         # Add layer control
         folium.LayerControl().add_to(m)
 
@@ -1339,6 +1349,172 @@ class CoverageMapGenerator:
             ).add_to(fg)
 
         fg.add_to(self._map)
+
+    # ── Terrain Coverage Layer ──
+
+    def set_terrain_coverage(self, coverage_points: List[Dict]) -> None:
+        """Set terrain coverage data for overlay.
+
+        Call before generate() to include the layer automatically.
+
+        Args:
+            coverage_points: List of dicts from LOSAnalyzer.coverage_grid()
+                with lat, lon, is_clear, total_loss_db, terrain_loss_db,
+                fresnel_clearance_pct, distance_m, bearing keys.
+        """
+        self._terrain_coverage = coverage_points or []
+
+    def add_terrain_coverage_layer(self, points: List[Dict]) -> None:
+        """Add terrain coverage overlay as colored circles on the Folium map.
+
+        Each point is colored by total path loss and LOS clearance:
+            green  -- clear LOS, low loss (< 120 dB)
+            yellow -- clear, moderate loss (120-140 dB)
+            orange -- clear, high loss (140-160 dB)
+            red    -- obstructed or very high loss (> 160 dB)
+
+        Args:
+            points: Coverage grid results from LOSAnalyzer.coverage_grid()
+        """
+        if not _HAS_FOLIUM or self._map is None:
+            return
+
+        folium = _folium
+        fg = folium.FeatureGroup(name='Terrain Coverage', show=True)
+
+        for pt in points:
+            lat = pt.get('lat', 0)
+            lon = pt.get('lon', 0)
+            is_clear = pt.get('is_clear', False)
+            total_loss = pt.get('total_loss_db', 999)
+            terrain_loss = pt.get('terrain_loss_db', 0)
+            fresnel_pct = pt.get('fresnel_clearance_pct', 0)
+            distance_m = pt.get('distance_m', 0)
+
+            color, quality = _loss_to_coverage_color(is_clear, total_loss)
+
+            tooltip = (
+                f"Loss: {total_loss:.0f} dB | "
+                f"Terrain: {terrain_loss:.0f} dB | "
+                f"Fresnel: {fresnel_pct:.0f}% | "
+                f"Dist: {distance_m / 1000:.1f} km | "
+                f"{quality}"
+            )
+
+            folium.CircleMarker(
+                location=[lat, lon],
+                radius=6,
+                color=color,
+                fill=True,
+                fill_color=color,
+                fill_opacity=0.6,
+                weight=1,
+                tooltip=tooltip,
+            ).add_to(fg)
+
+        fg.add_to(self._map)
+
+    def generate_terrain_coverage(self, center_lat: float, center_lon: float,
+                                   antenna_height: float = 10.0,
+                                   radius_km: float = 5.0,
+                                   freq_mhz: float = 915.0,
+                                   resolution: int = 24,
+                                   output_path: str = None) -> str:
+        """Generate a terrain-aware coverage map for a single node.
+
+        Uses SRTM elevation data and LOS analysis to predict RF coverage
+        in a radial pattern around the node.
+
+        Args:
+            center_lat, center_lon: Node position (decimal degrees).
+            antenna_height: Antenna height above ground (meters).
+            radius_km: Analysis radius in kilometers.
+            freq_mhz: Operating frequency in MHz.
+            resolution: Number of radial steps per bearing direction.
+            output_path: Output HTML file path.
+
+        Returns:
+            Path to generated HTML file, or empty string on failure.
+        """
+        if not _HAS_TERRAIN:
+            logger.warning("Terrain module not available for coverage prediction")
+            return ""
+        if not _HAS_FOLIUM:
+            logger.warning("Folium not installed, terrain coverage map unavailable")
+            return ""
+
+        if output_path is None:
+            cache_dir = get_real_user_home() / ".cache" / "meshforge"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            output_path = str(cache_dir / "terrain_coverage.html")
+
+        folium = _folium
+
+        # Initialize terrain analysis
+        try:
+            provider = _SRTMProvider(auto_download=True)
+        except Exception as e:
+            logger.warning(f"SRTM provider init failed, using flat terrain: {e}")
+            provider = _FlatTerrainProvider()
+
+        analyzer = _LOSAnalyzer(provider, profile_points=50)
+        points = analyzer.coverage_grid(
+            center_lat, center_lon, antenna_height,
+            radius_km=radius_km, freq_mhz=freq_mhz,
+            resolution=min(resolution, 48)
+        )
+
+        # Build Folium map
+        m = folium.Map(location=[center_lat, center_lon], zoom_start=12)
+        folium.TileLayer('OpenStreetMap', name='Street').add_to(m)
+        folium.TileLayer(
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+            attr='Esri', name='Terrain'
+        ).add_to(m)
+        self._map = m
+
+        # Center node marker
+        folium.Marker(
+            location=[center_lat, center_lon],
+            popup=(
+                f"Node @ {center_lat:.4f}, {center_lon:.4f}<br>"
+                f"Height: {antenna_height}m<br>"
+                f"Freq: {freq_mhz} MHz"
+            ),
+            icon=folium.Icon(color='red', icon='tower-broadcast', prefix='fa'),
+        ).add_to(m)
+
+        # Add coverage overlay
+        self.add_terrain_coverage_layer(points)
+
+        folium.LayerControl().add_to(m)
+        m.save(output_path)
+
+        # Compute summary stats
+        clear = sum(1 for p in points if p.get('is_clear', False))
+        total = len(points)
+        logger.info(
+            f"Terrain coverage map saved to: {output_path} "
+            f"({clear}/{total} points clear)"
+        )
+        return output_path
+
+
+def _loss_to_coverage_color(is_clear: bool, total_loss_db: float) -> tuple:
+    """Map LOS clearance and total loss to a color and label.
+
+    Returns:
+        (color_hex, quality_label) tuple
+    """
+    if not is_clear:
+        return '#ef4444', 'Obstructed'
+    if total_loss_db < 120:
+        return '#22c55e', 'Excellent'
+    if total_loss_db < 140:
+        return '#eab308', 'Good'
+    if total_loss_db < 160:
+        return '#f97316', 'Marginal'
+    return '#ef4444', 'Poor'
 
 
 def _snr_to_link_color(snr: float = None) -> tuple:
