@@ -33,23 +33,16 @@ class LinkQualityHandler(BaseHandler):
             ("overview", "Quality Overview"), ("best", "Best Links"),
             ("worst", "Worst Links"), ("alerts", "Quality Alerts"),
             ("score", "Score Single Link"), ("trends", "Quality Trends"),
-            ("back", "Back"),
         ]
-        while True:
-            choice = self.ctx.dialog.menu("Link Quality Analysis", "Analyze mesh network link quality:", choices)
-            if choice is None or choice == "back":
-                break
-            dispatch = {
-                "overview": ("Quality Overview", self._show_quality_overview),
-                "best": ("Best Links", self._show_best_links),
-                "worst": ("Worst Links", self._show_worst_links),
-                "alerts": ("Quality Alerts", self._show_quality_alerts),
-                "score": ("Score Link", self._score_link_interactive),
-                "trends": ("Quality Trends", self._show_quality_trends),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "overview": ("Quality Overview", self._show_quality_overview),
+            "best": ("Best Links", self._show_best_links),
+            "worst": ("Worst Links", self._show_worst_links),
+            "alerts": ("Quality Alerts", self._show_quality_alerts),
+            "score": ("Score Link", self._score_link_interactive),
+            "trends": ("Quality Trends", self._show_quality_trends),
+        }
+        self.run_menu_loop("Link Quality Analysis", "Analyze mesh network link quality:", choices, dispatch)
 
     def _get_topology_scores(self):
         try:

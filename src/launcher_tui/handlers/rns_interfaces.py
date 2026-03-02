@@ -35,45 +35,35 @@ class RNSInterfacesHandler(BaseHandler):
 
     def _rns_interfaces_menu(self):
         """Manage RNS interfaces (add / remove / enable / disable)."""
-        while True:
-            choices = [
-                ("list", "List Configured Interfaces"),
-                ("add", "Add Interface from Template"),
-                ("enable", "Enable Interface"),
-                ("disable", "Disable Interface"),
-                ("remove", "Remove Interface"),
-                ("plugin", "Install Meshtastic Plugin"),
-                ("back", "Back"),
-            ]
+        choices = [
+            ("list", "List Configured Interfaces"),
+            ("add", "Add Interface from Template"),
+            ("enable", "Enable Interface"),
+            ("disable", "Disable Interface"),
+            ("remove", "Remove Interface"),
+            ("plugin", "Install Meshtastic Plugin"),
+        ]
+        dispatch = {
+            "list": ("List Interfaces", self._rns_list_interfaces),
+            "add": ("Add Interface", self._rns_add_interface),
+            "enable": ("Enable Interface", lambda: self._rns_toggle_interface(enable=True)),
+            "disable": ("Disable Interface", lambda: self._rns_toggle_interface(enable=False)),
+            "remove": ("Remove Interface", self._rns_remove_interface),
+            "plugin": ("Install Meshtastic Plugin", self._install_meshtastic_plugin),
+        }
+        self.run_menu_loop(
+            "RNS Interfaces",
+            "Manage Reticulum network interfaces:",
+            choices, dispatch,
+        )
 
-            choice = self.ctx.dialog.menu(
-                "RNS Interfaces",
-                "Manage Reticulum network interfaces:",
-                choices,
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            if choice == "plugin":
-                # Cross-handler call to config handler for plugin install
-                config_handler = self.ctx.registry.get_handler("rns_config") if self.ctx.registry else None
-                if config_handler:
-                    self.ctx.safe_call("Install Meshtastic Plugin", config_handler._install_meshtastic_interface_plugin)
-                else:
-                    self.ctx.dialog.msgbox("Error", "RNS config handler not available.")
-                continue
-
-            dispatch = {
-                "list": ("List Interfaces", self._rns_list_interfaces),
-                "add": ("Add Interface", self._rns_add_interface),
-                "enable": ("Enable Interface", lambda: self._rns_toggle_interface(enable=True)),
-                "disable": ("Disable Interface", lambda: self._rns_toggle_interface(enable=False)),
-                "remove": ("Remove Interface", self._rns_remove_interface),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+    def _install_meshtastic_plugin(self):
+        """Cross-handler call to RNS config handler for plugin install."""
+        config_handler = self.ctx.registry.get_handler("rns_config") if self.ctx.registry else None
+        if config_handler:
+            config_handler._install_meshtastic_interface_plugin()
+        else:
+            self.ctx.dialog.msgbox("Error", "RNS config handler not available.")
 
     # ------------------------------------------------------------------
     # List interfaces

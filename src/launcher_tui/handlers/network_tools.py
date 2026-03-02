@@ -32,56 +32,51 @@ class NetworkToolsHandler(BaseHandler):
             self._network_menu()
 
     def _network_menu(self):
-        while True:
-            choices = [
-                ("status", "Quick Network Status"),
-                ("ports", "Listening Ports (ss -tlnp)"),
-                ("ifaces", "Network Interfaces (ip addr)"),
-                ("conns", "Active Connections (ss -tunp)"),
-                ("routes", "Routing Table (ip route)"),
-                ("ping", "Ping Test"),
-                ("dns", "DNS Lookup"),
-                ("discover", "Meshtastic Device Discovery"),
-                ("back", "Back"),
-            ]
-            choice = self.ctx.dialog.menu("Network & Ports", "Network diagnostics (terminal-native):", choices)
-            if choice is None or choice == "back":
-                break
-            dispatch = {
-                "status": ("Network Status", self._run_terminal_network),
-                "ping": ("Ping Test", self._ping_test),
-                "dns": ("DNS Lookup", self._dns_lookup),
-                "discover": ("Device Discovery", self._meshtastic_discovery),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
-                continue
-            try:
-                if choice == "ports":
-                    clear_screen()
-                    print("=== Listening Ports ===\n")
-                    subprocess.run(['ss', '-tlnp'], timeout=10)
-                    self.ctx.wait_for_enter()
-                elif choice == "ifaces":
-                    clear_screen()
-                    print("=== Network Interfaces ===\n")
-                    subprocess.run(['ip', '-c', 'addr'], timeout=10)
-                    self.ctx.wait_for_enter()
-                elif choice == "conns":
-                    clear_screen()
-                    print("=== Active Connections ===\n")
-                    subprocess.run(['ss', '-tunp'], timeout=10)
-                    self.ctx.wait_for_enter()
-                elif choice == "routes":
-                    clear_screen()
-                    print("=== Routing Table ===\n")
-                    subprocess.run(['ip', 'route'], timeout=10)
-                    self.ctx.wait_for_enter()
-            except KeyboardInterrupt:
-                pass
-            except Exception as e:
-                self.ctx.dialog.msgbox("Network Tools Error", f"Operation failed:\n{type(e).__name__}: {e}")
+        choices = [
+            ("status", "Quick Network Status"),
+            ("ports", "Listening Ports (ss -tlnp)"),
+            ("ifaces", "Network Interfaces (ip addr)"),
+            ("conns", "Active Connections (ss -tunp)"),
+            ("routes", "Routing Table (ip route)"),
+            ("ping", "Ping Test"),
+            ("dns", "DNS Lookup"),
+            ("discover", "Meshtastic Device Discovery"),
+        ]
+        dispatch = {
+            "status": ("Network Status", self._run_terminal_network),
+            "ports": ("Listening Ports", self._show_listening_ports),
+            "ifaces": ("Network Interfaces", self._show_network_interfaces),
+            "conns": ("Active Connections", self._show_active_connections),
+            "routes": ("Routing Table", self._show_routing_table),
+            "ping": ("Ping Test", self._ping_test),
+            "dns": ("DNS Lookup", self._dns_lookup),
+            "discover": ("Device Discovery", self._meshtastic_discovery),
+        }
+        self.run_menu_loop("Network & Ports", "Network diagnostics (terminal-native):", choices, dispatch)
+
+    def _show_listening_ports(self):
+        clear_screen()
+        print("=== Listening Ports ===\n")
+        subprocess.run(['ss', '-tlnp'], timeout=10)
+        self.ctx.wait_for_enter()
+
+    def _show_network_interfaces(self):
+        clear_screen()
+        print("=== Network Interfaces ===\n")
+        subprocess.run(['ip', '-c', 'addr'], timeout=10)
+        self.ctx.wait_for_enter()
+
+    def _show_active_connections(self):
+        clear_screen()
+        print("=== Active Connections ===\n")
+        subprocess.run(['ss', '-tunp'], timeout=10)
+        self.ctx.wait_for_enter()
+
+    def _show_routing_table(self):
+        clear_screen()
+        print("=== Routing Table ===\n")
+        subprocess.run(['ip', 'route'], timeout=10)
+        self.ctx.wait_for_enter()
 
     def _ping_test(self):
         host = self.ctx.dialog.inputbox("Ping Test", "Enter host to ping:", "8.8.8.8")

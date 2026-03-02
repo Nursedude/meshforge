@@ -40,43 +40,29 @@ class MessagingHandler(BaseHandler):
             self._messaging_menu()
 
     def _messaging_menu(self):
-        while True:
-            choices = [
-                ("send", "Send Message        Send to node or broadcast"),
-                ("live", "Live Feed           Real-time message stream"),
-                ("messages", "View Messages       Recent message history"),
-                ("convos", "Conversations       Message threads by node"),
-                ("stats", "Statistics          Message counts & rates"),
-                ("rx", "RX Control          Start/stop listener"),
-                ("diagnose", "Diagnose            Check messaging health"),
-                ("routing", "Routing Info        Hop limits & device role"),
-                ("cleanup", "Cleanup             Purge old messages"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Messaging",
-                "Mesh network messaging:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "send": ("Send Message", self._messaging_send),
-                "live": ("Live Feed", self._messaging_live_feed),
-                "messages": ("View Messages", self._messaging_view),
-                "convos": ("Conversations", self._messaging_conversations),
-                "stats": ("Statistics", self._messaging_stats),
-                "rx": ("RX Control", self._messaging_rx_control),
-                "diagnose": ("Diagnose", self._messaging_diagnose),
-                "routing": ("Routing Info", self._messaging_routing),
-                "cleanup": ("Cleanup", self._messaging_cleanup),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("send", "Send Message        Send to node or broadcast"),
+            ("live", "Live Feed           Real-time message stream"),
+            ("messages", "View Messages       Recent message history"),
+            ("convos", "Conversations       Message threads by node"),
+            ("stats", "Statistics          Message counts & rates"),
+            ("rx", "RX Control          Start/stop listener"),
+            ("diagnose", "Diagnose            Check messaging health"),
+            ("routing", "Routing Info        Hop limits & device role"),
+            ("cleanup", "Cleanup             Purge old messages"),
+        ]
+        dispatch = {
+            "send": ("Send Message", self._messaging_send),
+            "live": ("Live Feed", self._messaging_live_feed),
+            "messages": ("View Messages", self._messaging_view),
+            "convos": ("Conversations", self._messaging_conversations),
+            "stats": ("Statistics", self._messaging_stats),
+            "rx": ("RX Control", self._messaging_rx_control),
+            "diagnose": ("Diagnose", self._messaging_diagnose),
+            "routing": ("Routing Info", self._messaging_routing),
+            "cleanup": ("Cleanup", self._messaging_cleanup),
+        }
+        self.run_menu_loop("Messaging", "Mesh network messaging:", choices, dispatch)
 
     def _messaging_live_feed(self):
         import threading

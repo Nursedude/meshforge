@@ -38,39 +38,25 @@ class AREDNHandler(BaseHandler):
             self._aredn_menu()
 
     def _aredn_menu(self):
-        while True:
-            choices = [
-                ("status", "Node Status"),
-                ("neighbors", "Neighbors & Links"),
-                ("services", "Advertised Services"),
-                ("routing", "Routing Influence     AREDN backhaul hints"),
-                ("map", "Show on Map"),
-                ("web", "Open AREDN Web UI"),
-                ("scan", "Scan Network"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "AREDN Mesh",
-                "AREDN mesh network tools:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "status": ("AREDN Status", self._aredn_node_status),
-                "neighbors": ("Neighbors & Links", self._aredn_neighbors),
-                "services": ("AREDN Services", self._aredn_services),
-                "routing": ("Routing Influence", self._aredn_routing_influence),
-                "map": ("Show on Map", self._aredn_map),
-                "web": ("AREDN Web UI", self._aredn_web),
-                "scan": ("Scan Network", self._aredn_scan),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("status", "Node Status"),
+            ("neighbors", "Neighbors & Links"),
+            ("services", "Advertised Services"),
+            ("routing", "Routing Influence     AREDN backhaul hints"),
+            ("map", "Show on Map"),
+            ("web", "Open AREDN Web UI"),
+            ("scan", "Scan Network"),
+        ]
+        dispatch = {
+            "status": ("AREDN Status", self._aredn_node_status),
+            "neighbors": ("Neighbors & Links", self._aredn_neighbors),
+            "services": ("AREDN Services", self._aredn_services),
+            "routing": ("Routing Influence", self._aredn_routing_influence),
+            "map": ("Show on Map", self._aredn_map),
+            "web": ("AREDN Web UI", self._aredn_web),
+            "scan": ("Scan Network", self._aredn_scan),
+        }
+        self.run_menu_loop("AREDN Mesh", "AREDN mesh network tools:", choices, dispatch)
 
     def _aredn_routing_influence(self):
         """Show AREDN routing influence — which gateways have backhaul paths."""

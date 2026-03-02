@@ -50,36 +50,29 @@ class SitePlannerHandler(BaseHandler):
             self._site_planner_menu()
 
     def _site_planner_menu(self):
-        while True:
-            choices = [
-                ("link", "Link Budget Calculator"),
-                ("range", "Range Estimator"),
-                ("presets", "LoRa Preset Comparison"),
-                ("fresnel", "Fresnel Zone Calculator"),
-                ("los", "Line-of-Sight Check"),
-                ("terrain", "Terrain Coverage Map"),
-                ("antenna", "Antenna Guidelines"),
-                ("freq", "Frequency Reference"),
-                ("tools", "External Planning Tools"),
-                ("back", "Back"),
-            ]
-            choice = self.ctx.dialog.menu("Site Planner", "RF coverage and link planning:", choices)
-            if choice is None or choice == "back":
-                break
-            dispatch = {
-                "link": ("Link Budget", self._calc_link_budget),
-                "range": ("Range Estimator", self._estimate_range),
-                "presets": ("Preset Comparison", self._compare_presets),
-                "fresnel": ("Fresnel Zone", self._calc_fresnel),
-                "los": ("Line-of-Sight Check", self._los_check),
-                "terrain": ("Terrain Coverage Map", self._terrain_coverage),
-                "antenna": ("Antenna Guidelines", self._antenna_guidelines),
-                "freq": ("Frequency Reference", self._frequency_reference),
-                "tools": ("External Tools", self._external_tools),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("link", "Link Budget Calculator"),
+            ("range", "Range Estimator"),
+            ("presets", "LoRa Preset Comparison"),
+            ("fresnel", "Fresnel Zone Calculator"),
+            ("los", "Line-of-Sight Check"),
+            ("terrain", "Terrain Coverage Map"),
+            ("antenna", "Antenna Guidelines"),
+            ("freq", "Frequency Reference"),
+            ("tools", "External Planning Tools"),
+        ]
+        dispatch = {
+            "link": ("Link Budget", self._calc_link_budget),
+            "range": ("Range Estimator", self._estimate_range),
+            "presets": ("Preset Comparison", self._compare_presets),
+            "fresnel": ("Fresnel Zone", self._calc_fresnel),
+            "los": ("Line-of-Sight Check", self._los_check),
+            "terrain": ("Terrain Coverage Map", self._terrain_coverage),
+            "antenna": ("Antenna Guidelines", self._antenna_guidelines),
+            "freq": ("Frequency Reference", self._frequency_reference),
+            "tools": ("External Tools", self._external_tools),
+        }
+        self.run_menu_loop("Site Planner", "RF coverage and link planning:", choices, dispatch)
 
     def _select_environment(self):
         choice = self.ctx.dialog.menu("Environment", "Select deployment environment:", _ENV_CHOICES)

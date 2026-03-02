@@ -31,25 +31,24 @@ class RebootHandler(BaseHandler):
         """Safe reboot/shutdown options."""
         from utils.service_check import _sudo_cmd
 
-        while True:
-            choices = [
-                ("reboot", "Reboot              Restart system"),
-                ("shutdown", "Shutdown            Power off"),
-                ("back", "Back"),
-            ]
+        def _do_reboot():
+            if self.ctx.dialog.yesno("Confirm Reboot", "Reboot the system now?"):
+                subprocess.run(_sudo_cmd(['systemctl', 'reboot']), timeout=30)
 
-            choice = self.ctx.dialog.menu(
-                "Reboot / Shutdown",
-                "System power options:",
-                choices
-            )
+        def _do_shutdown():
+            if self.ctx.dialog.yesno("Confirm Shutdown", "Shutdown the system now?"):
+                subprocess.run(_sudo_cmd(['systemctl', 'poweroff']), timeout=30)
 
-            if choice is None or choice == "back":
-                break
-
-            if choice == "reboot":
-                if self.ctx.dialog.yesno("Confirm Reboot", "Reboot the system now?"):
-                    subprocess.run(_sudo_cmd(['systemctl', 'reboot']), timeout=30)
-            elif choice == "shutdown":
-                if self.ctx.dialog.yesno("Confirm Shutdown", "Shutdown the system now?"):
-                    subprocess.run(_sudo_cmd(['systemctl', 'poweroff']), timeout=30)
+        choices = [
+            ("reboot", "Reboot              Restart system"),
+            ("shutdown", "Shutdown            Power off"),
+        ]
+        dispatch = {
+            "reboot": ("Reboot", _do_reboot),
+            "shutdown": ("Shutdown", _do_shutdown),
+        }
+        self.run_menu_loop(
+            "Reboot / Shutdown",
+            "System power options:",
+            choices, dispatch,
+        )

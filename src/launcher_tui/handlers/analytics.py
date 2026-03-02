@@ -34,41 +34,31 @@ class AnalyticsHandler(BaseHandler):
 
     def _analytics_menu(self):
         """Analytics — coverage trends, link budget, predictions."""
-        while True:
-            choices = [
-                ("trends", "Link Trends         Link budget over time"),
-                ("health", "Health History       Network health timeline"),
-                ("hourly", "Hourly Summary      Aggregated by hour"),
-                ("daily", "Daily Summary       Aggregated by day"),
-                ("forecast", "Forecast            24h network forecast"),
-                ("alerts", "Predictive Alerts   Predicted issues"),
-                ("coverage", "Coverage Stats      Area & spacing analysis"),
-                ("cleanup", "Cleanup Old Data    Purge records > 30d"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Analytics",
-                "Historical analysis and predictions:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "trends": ("Link Trends", self._show_link_trends),
-                "health": ("Health History", self._show_health_history),
-                "hourly": ("Hourly Summary", self._show_hourly_summary),
-                "daily": ("Daily Summary", self._show_daily_summary),
-                "forecast": ("Network Forecast", self._show_network_forecast),
-                "alerts": ("Predictive Alerts", self._show_predictive_alerts),
-                "coverage": ("Coverage Stats", self._show_coverage_stats),
-                "cleanup": ("Cleanup Old Data", self._analytics_cleanup),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("trends", "Link Trends         Link budget over time"),
+            ("health", "Health History       Network health timeline"),
+            ("hourly", "Hourly Summary      Aggregated by hour"),
+            ("daily", "Daily Summary       Aggregated by day"),
+            ("forecast", "Forecast            24h network forecast"),
+            ("alerts", "Predictive Alerts   Predicted issues"),
+            ("coverage", "Coverage Stats      Area & spacing analysis"),
+            ("cleanup", "Cleanup Old Data    Purge records > 30d"),
+        ]
+        dispatch = {
+            "trends": ("Link Trends", self._show_link_trends),
+            "health": ("Health History", self._show_health_history),
+            "hourly": ("Hourly Summary", self._show_hourly_summary),
+            "daily": ("Daily Summary", self._show_daily_summary),
+            "forecast": ("Network Forecast", self._show_network_forecast),
+            "alerts": ("Predictive Alerts", self._show_predictive_alerts),
+            "coverage": ("Coverage Stats", self._show_coverage_stats),
+            "cleanup": ("Cleanup Old Data", self._analytics_cleanup),
+        }
+        self.run_menu_loop(
+            "Analytics",
+            "Historical analysis and predictions:",
+            choices, dispatch,
+        )
 
     def _show_link_trends(self):
         """Show link budget trends over time."""

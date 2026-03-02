@@ -26,33 +26,23 @@ class BackupHandler(BaseHandler):
             self._device_backup_menu()
 
     def _device_backup_menu(self):
-        while True:
-            choices = [
-                ("create", "Create Backup       Backup current device"),
-                ("list", "List Backups        View saved backups"),
-                ("restore", "Restore Backup      Restore from backup"),
-                ("delete", "Delete Backup       Remove old backups"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Device Backup",
-                "Backup and restore Meshtastic configurations:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "create": ("Create Backup", self._create_device_backup),
-                "list": ("List Backups", self._list_device_backups),
-                "restore": ("Restore Backup", self._restore_device_backup),
-                "delete": ("Delete Backup", self._delete_device_backup),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("create", "Create Backup       Backup current device"),
+            ("list", "List Backups        View saved backups"),
+            ("restore", "Restore Backup      Restore from backup"),
+            ("delete", "Delete Backup       Remove old backups"),
+        ]
+        dispatch = {
+            "create": ("Create Backup", self._create_device_backup),
+            "list": ("List Backups", self._list_device_backups),
+            "restore": ("Restore Backup", self._restore_device_backup),
+            "delete": ("Delete Backup", self._delete_device_backup),
+        }
+        self.run_menu_loop(
+            "Device Backup",
+            "Backup and restore Meshtastic configurations:",
+            choices, dispatch,
+        )
 
     def _create_device_backup(self):
         conn_choices = [

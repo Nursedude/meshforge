@@ -46,35 +46,25 @@ class NanoVNAHandler(BaseHandler):
 
     def _nanovna_menu(self):
         """NanoVNA antenna analyzer tools."""
-        while True:
-            choices = [
-                ("sweep", "Run Frequency Sweep"),
-                ("quick_swr", "Quick SWR Check"),
-                ("scan", "Scan for Devices"),
-                ("history", "Sweep History"),
-                ("export", "Export Sweep Data"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "NanoVNA Analyzer",
-                "Antenna analysis tools (requires NanoVNA connected via USB):",
-                choices,
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "sweep": ("Frequency Sweep", self._nanovna_sweep),
-                "quick_swr": ("Quick SWR", self._nanovna_quick_swr),
-                "scan": ("Scan Devices", self._nanovna_scan),
-                "history": ("Sweep History", self._nanovna_history),
-                "export": ("Export Data", self._nanovna_export),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("sweep", "Run Frequency Sweep"),
+            ("quick_swr", "Quick SWR Check"),
+            ("scan", "Scan for Devices"),
+            ("history", "Sweep History"),
+            ("export", "Export Sweep Data"),
+        ]
+        dispatch = {
+            "sweep": ("Frequency Sweep", self._nanovna_sweep),
+            "quick_swr": ("Quick SWR", self._nanovna_quick_swr),
+            "scan": ("Scan Devices", self._nanovna_scan),
+            "history": ("Sweep History", self._nanovna_history),
+            "export": ("Export Data", self._nanovna_export),
+        }
+        self.run_menu_loop(
+            "NanoVNA Analyzer",
+            "Antenna analysis tools (requires NanoVNA connected via USB):",
+            choices, dispatch,
+        )
 
     def _nanovna_check_available(self) -> bool:
         """Check if NanoVNA functionality is available."""
