@@ -11,7 +11,6 @@ Falls back to basic terminal menu if neither available.
 """
 
 import os
-import re
 import sys
 import shutil
 import subprocess
@@ -37,7 +36,6 @@ if str(_launcher_dir) not in sys.path:
 from __version__ import __version__
 
 # Import optional modules at module level
-from utils.cli import find_meshtastic_cli
 from utils.active_health_probe import get_health_probe
 from utils.service_check import lock_port_external
 # TopologyVisualizer is in handlers/topology.py
@@ -45,7 +43,7 @@ from utils.service_check import lock_port_external
 # Import centralized path utility - SINGLE SOURCE OF TRUTH for all paths
 # See: utils/paths.py (ReticulumPaths, get_real_user_home)
 # NO FALLBACK: stale fallback copies caused config divergence bugs (Issue #25+)
-from utils.paths import get_real_user_home, ReticulumPaths
+from utils.paths import get_real_user_home
 
 # Import centralized service checker - SINGLE SOURCE OF TRUTH for service status
 # See: utils/service_check.py and .claude/foundations/install_reliability_triage.md
@@ -102,13 +100,8 @@ class MeshForgeLauncher:
             self._registry.register(handler_cls())
 
     def _feature_enabled(self, feature: str) -> bool:
-        """Check if a feature is enabled in the current deployment profile.
-
-        When no profile is set, all features are enabled (backward compatible).
-        """
-        if not self._feature_flags:
-            return True
-        return self._feature_flags.get(feature, True)
+        """Check if a feature is enabled — delegates to TUIContext."""
+        return self._tui_context.feature_enabled(feature)
 
     def _build_section_menu(self, section, legacy_items, ordering=None):
         """Build menu choices by merging registry + legacy items.
@@ -146,51 +139,6 @@ class MeshForgeLauncher:
         result.append(("back", "Back"))
         return result
 
-    @staticmethod
-    def _wait_for_enter(msg: str = "\nPress Enter to continue...") -> None:
-        """Wait for user to press Enter, handling Ctrl+C gracefully.
-
-        Clears the screen (including scrollback) after input so that
-        print() output doesn't bleed through when whiptail/dialog redraws.
-        """
-        try:
-            input(msg)
-        except (KeyboardInterrupt, EOFError):
-            pass  # Clean exit on ^C
-        # Clear screen + scrollback before returning to dialog menu.
-        # Without this, old print output stays in scrollback and causes
-        # "screen roll" — visible flash of terminal text behind the dialog.
-        clear_screen()
-
-    def _get_meshtastic_cli(self) -> str:
-        """Find the meshtastic CLI binary path, with caching."""
-        if self._meshtastic_path is None:
-            self._meshtastic_path = find_meshtastic_cli() or 'meshtastic'
-        return self._meshtastic_path
-
-    @staticmethod
-    def _validate_hostname(host: str) -> bool:
-        """Validate hostname or IP address for use in network commands.
-
-        Prevents flag injection (args starting with '-') and restricts
-        to safe characters. Used before passing user input to ping,
-        DNS lookup, or other network tools.
-        """
-        if not host or len(host) > 253:
-            return False
-        if host.startswith('-'):
-            return False
-        # Allow hostnames, IPv4, IPv6 — alphanumeric, dots, hyphens, colons
-        return bool(re.match(r'^[a-zA-Z0-9.\-:]+$', host))
-
-    @staticmethod
-    def _validate_port(port_str: str) -> bool:
-        """Validate a network port number string."""
-        try:
-            port = int(port_str)
-            return 1 <= port <= 65535
-        except (ValueError, TypeError):
-            return False
 
     def _setup_status_bar(self) -> None:
         """Initialize and attach the status bar to the dialog backend."""
@@ -203,123 +151,16 @@ class MeshForgeLauncher:
             self._status_bar = None
 
     def _get_error_log_path(self) -> Path:
-        """Get the path to the TUI error log file."""
-        try:
-            log_dir = get_real_user_home() / ".cache" / "meshforge" / "logs"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            return log_dir / "tui_errors.log"
-        except Exception as e:
-            logger.debug(f"Cannot create log directory, using /tmp fallback: {e}")
-            return Path("/tmp/meshforge_tui_errors.log")
+        """Get the path to the TUI error log file — delegates to TUIContext."""
+        return self._tui_context.get_error_log_path()
 
     def _log_error(self, context: str, exc: Exception) -> None:
-        """Write error details to the TUI error log file.
-
-        This preserves full tracebacks for debugging while keeping
-        the TUI display clean for the user.
-
-        Rotates the log when it exceeds 1 MB to prevent unbounded
-        disk growth on resource-constrained systems (e.g. Pi).
-        """
-        try:
-            import datetime
-            log_path = self._get_error_log_path()
-
-            # Rotate if log exceeds 1 MB
-            _MAX_LOG_BYTES = 1_048_576
-            try:
-                if log_path.exists() and log_path.stat().st_size > _MAX_LOG_BYTES:
-                    rotated = log_path.with_suffix('.log.1')
-                    if rotated.exists():
-                        rotated.unlink()
-                    log_path.rename(rotated)
-            except OSError:
-                pass  # Rotation failure is non-critical
-
-            with open(log_path, 'a') as f:
-                f.write(f"\n{'='*60}\n")
-                f.write(f"[{datetime.datetime.now().isoformat()}] {context}\n")
-                f.write(f"Exception: {type(exc).__name__}: {exc}\n")
-                f.write(traceback.format_exc())
-                f.write(f"{'='*60}\n")
-        except Exception:
-            pass  # Logging failure must never compound the original error
+        """Log error with traceback — delegates to TUIContext."""
+        self._tui_context.log_error(context, exc)
 
     def _safe_call(self, method_name: str, method, *args, **kwargs):
-        """Safely call a mixin method with exception handling.
-
-        If the method raises an exception:
-        1. Logs full traceback to the error log file
-        2. Shows a user-friendly error dialog with the error summary
-        3. Returns to the calling menu instead of crashing
-
-        Args:
-            method_name: Human-readable name for error messages
-            method: The callable to invoke
-            *args, **kwargs: Passed through to the method
-        """
-        try:
-            return method(*args, **kwargs)
-        except KeyboardInterrupt:
-            # Let Ctrl+C propagate - user wants to exit
-            raise
-        except ImportError as e:
-            module = str(e).replace("No module named ", "").strip("'\"")
-            self._log_error(f"ImportError in {method_name}", e)
-            self.dialog.msgbox(
-                "Module Not Available",
-                f"Required module not installed: {module}\n\n"
-                f"This feature requires additional dependencies.\n"
-                f"Try: pip3 install {module}\n\n"
-                f"Details logged to:\n"
-                f"  {self._get_error_log_path()}"
-            )
-        except subprocess.TimeoutExpired as e:
-            self._log_error(f"Timeout in {method_name}", e)
-            self.dialog.msgbox(
-                "Operation Timed Out",
-                f"{method_name} took too long to respond.\n\n"
-                f"Possible causes:\n"
-                f"  - Service not responding\n"
-                f"  - Network connectivity issue\n"
-                f"  - System under heavy load\n\n"
-                f"Try checking service status from Dashboard."
-            )
-        except PermissionError as e:
-            self._log_error(f"PermissionError in {method_name}", e)
-            self.dialog.msgbox(
-                "Permission Denied",
-                f"Insufficient permissions for {method_name}.\n\n"
-                f"{e}\n\n"
-                f"Make sure MeshForge is running with sudo."
-            )
-        except FileNotFoundError as e:
-            self._log_error(f"FileNotFoundError in {method_name}", e)
-            self.dialog.msgbox(
-                "File Not Found",
-                f"A required file or command was not found:\n\n"
-                f"{e}\n\n"
-                f"The tool or file may not be installed."
-            )
-        except ConnectionError as e:
-            self._log_error(f"ConnectionError in {method_name}", e)
-            self.dialog.msgbox(
-                "Connection Failed",
-                f"Could not connect to service for {method_name}.\n\n"
-                f"{e}\n\n"
-                f"Check that the required service is running."
-            )
-        except Exception as e:
-            self._log_error(f"Unexpected error in {method_name}", e)
-            self.dialog.msgbox(
-                "Error",
-                f"An error occurred in {method_name}:\n\n"
-                f"{type(e).__name__}: {e}\n\n"
-                f"Full details logged to:\n"
-                f"  {self._get_error_log_path()}\n\n"
-                f"Please report this at:\n"
-                f"  github.com/Nursedude/meshforge/issues"
-            )
+        """Safely call a method with exception handling — delegates to TUIContext."""
+        return self._tui_context.safe_call(method_name, method, *args, **kwargs)
 
     def _detect_environment(self) -> dict:
         """Detect the current environment."""

@@ -446,7 +446,7 @@ class ServiceMenuHandler(BaseHandler):
                 continue
 
             if svc == 'rnsd' and use_direct_rnsd:
-                if self._is_rnsd_running():
+                if check_process_running('rnsd'):
                     print(f"  \033[0;32m●\033[0m {svc:<18} running (process)")
                 else:
                     print(f"  \033[2m○\033[0m {svc:<18} stopped")
@@ -801,17 +801,9 @@ WantedBy=multi-user.target
             logger.debug("systemd unit check for %s failed: %s", service_name, e)
             return False
 
-    def _is_rnsd_running(self) -> bool:
-        """Check if rnsd is running as a process."""
-        try:
-            return check_process_running('rnsd')
-        except (subprocess.SubprocessError, OSError) as e:
-            logger.debug("rnsd process check failed: %s", e)
-            return False
-
     def _start_rnsd_direct(self) -> bool:
         """Start rnsd directly as a background process."""
-        if self._is_rnsd_running():
+        if check_process_running('rnsd'):
             print("rnsd is already running.")
             return True
 
@@ -831,7 +823,7 @@ WantedBy=multi-user.target
             )
             import time
             time.sleep(0.5)
-            if self._is_rnsd_running():
+            if check_process_running('rnsd'):
                 print("\033[0;32m✓\033[0m rnsd started successfully.")
                 return True
             else:
@@ -840,7 +832,7 @@ WantedBy=multi-user.target
                     print(result.stderr)
                 return False
         except subprocess.TimeoutExpired:
-            if self._is_rnsd_running():
+            if check_process_running('rnsd'):
                 print("\033[0;32m✓\033[0m rnsd started successfully.")
                 return True
             print("\033[0;31mError:\033[0m rnsd start timed out.")
@@ -851,7 +843,7 @@ WantedBy=multi-user.target
 
     def _stop_rnsd_direct(self) -> bool:
         """Stop rnsd process directly."""
-        if not self._is_rnsd_running():
+        if not check_process_running('rnsd'):
             print("rnsd is not running.")
             return True
 
@@ -864,12 +856,12 @@ WantedBy=multi-user.target
             )
             import time
             time.sleep(0.5)
-            if not self._is_rnsd_running():
+            if not check_process_running('rnsd'):
                 print("\033[0;32m✓\033[0m rnsd stopped.")
                 return True
             subprocess.run(['pkill', '-KILL', '-x', 'rnsd'], timeout=5)
             time.sleep(0.3)
-            if not self._is_rnsd_running():
+            if not check_process_running('rnsd'):
                 print("\033[0;32m✓\033[0m rnsd stopped (forced).")
                 return True
             print("\033[0;31mError:\033[0m Could not stop rnsd.")
@@ -888,7 +880,7 @@ WantedBy=multi-user.target
         if action == "status":
             print(f"=== {service_name} status ===\n")
             if use_direct_rnsd:
-                if self._is_rnsd_running():
+                if check_process_running('rnsd'):
                     print(f"\033[0;32m●\033[0m rnsd is \033[0;32mrunning\033[0m")
                     try:
                         subprocess.run(
