@@ -35,44 +35,34 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
 
     def _mqtt_device_config(self):
         """Configure MQTT uplink/downlink for the Meshtastic radio."""
-        while True:
-            choices = [
-                ("view", "View Current Settings"),
-                ("enable", "Enable MQTT Uplink"),
-                ("disable", "Disable MQTT"),
-                ("broker", "Set Broker Address"),
-                ("credentials", "Set Username/Password"),
-                ("topic", "Set Root Topic"),
-                ("encryption", "Encryption Key (PKC)"),
-                ("uplink", "Configure Uplink Channels"),
-                ("downlink", "Configure Downlink Channels"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "MQTT Device Config",
-                "Configure radio MQTT uplink/downlink:\n\n"
-                "This sends mesh traffic to an MQTT broker.",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "view": ("MQTT View Settings", self._mqtt_view_settings),
-                "enable": ("Enable MQTT", lambda: self._mqtt_set_enabled(True)),
-                "disable": ("Disable MQTT", lambda: self._mqtt_set_enabled(False)),
-                "broker": ("Set MQTT Broker", self._mqtt_set_broker),
-                "credentials": ("Set MQTT Credentials", self._mqtt_set_credentials),
-                "topic": ("Set MQTT Topic", self._mqtt_set_topic),
-                "encryption": ("Set MQTT Encryption", self._mqtt_set_encryption),
-                "uplink": ("Configure Uplink", self._mqtt_configure_uplink),
-                "downlink": ("Configure Downlink", self._mqtt_configure_downlink),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("view", "View Current Settings"),
+            ("enable", "Enable MQTT Uplink"),
+            ("disable", "Disable MQTT"),
+            ("broker", "Set Broker Address"),
+            ("credentials", "Set Username/Password"),
+            ("topic", "Set Root Topic"),
+            ("encryption", "Encryption Key (PKC)"),
+            ("uplink", "Configure Uplink Channels"),
+            ("downlink", "Configure Downlink Channels"),
+        ]
+        dispatch = {
+            "view": ("MQTT View Settings", self._mqtt_view_settings),
+            "enable": ("Enable MQTT", lambda: self._mqtt_set_enabled(True)),
+            "disable": ("Disable MQTT", lambda: self._mqtt_set_enabled(False)),
+            "broker": ("Set MQTT Broker", self._mqtt_set_broker),
+            "credentials": ("Set MQTT Credentials", self._mqtt_set_credentials),
+            "topic": ("Set MQTT Topic", self._mqtt_set_topic),
+            "encryption": ("Set MQTT Encryption", self._mqtt_set_encryption),
+            "uplink": ("Configure Uplink", self._mqtt_configure_uplink),
+            "downlink": ("Configure Downlink", self._mqtt_configure_downlink),
+        }
+        self.run_menu_loop(
+            "MQTT Device Config",
+            "Configure radio MQTT uplink/downlink:\n\n"
+            "This sends mesh traffic to an MQTT broker.",
+            choices, dispatch,
+        )
 
     def _mqtt_view_settings(self):
         """View current MQTT settings."""

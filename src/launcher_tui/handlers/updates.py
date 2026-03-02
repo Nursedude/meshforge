@@ -47,37 +47,27 @@ class UpdatesHandler(BaseHandler):
             )
             return
 
-        while True:
-            choices = [
-                ("check", "Check for Updates"),
-                ("update-all", "Update All Components"),
-                ("meshforge", "Update MeshForge"),
-                ("meshtasticd", "Update meshtasticd"),
-                ("cli", "Update Meshtastic CLI"),
-                ("firmware", "Update Node Firmware (Info)"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Software Updates",
-                "Check and apply software updates:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "check": ("Check Updates", self._check_updates),
-                "update-all": ("Update All", self._update_all),
-                "meshforge": ("Update MeshForge", self._update_meshforge),
-                "meshtasticd": ("Update meshtasticd", self._update_meshtasticd),
-                "cli": ("Update CLI", self._update_cli),
-                "firmware": ("Firmware Info", self._firmware_info),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("check", "Check for Updates"),
+            ("update-all", "Update All Components"),
+            ("meshforge", "Update MeshForge"),
+            ("meshtasticd", "Update meshtasticd"),
+            ("cli", "Update Meshtastic CLI"),
+            ("firmware", "Update Node Firmware (Info)"),
+        ]
+        dispatch = {
+            "check": ("Check Updates", self._check_updates),
+            "update-all": ("Update All", self._update_all),
+            "meshforge": ("Update MeshForge", self._update_meshforge),
+            "meshtasticd": ("Update meshtasticd", self._update_meshtasticd),
+            "cli": ("Update CLI", self._update_cli),
+            "firmware": ("Firmware Info", self._firmware_info),
+        }
+        self.run_menu_loop(
+            "Software Updates",
+            "Check and apply software updates:",
+            choices, dispatch,
+        )
 
     def _check_updates(self) -> Optional[Dict[str, Any]]:
         """Check for available updates."""

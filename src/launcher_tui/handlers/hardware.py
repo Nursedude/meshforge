@@ -31,35 +31,21 @@ class HardwareHandler(BaseHandler):
             self._hardware_menu()
 
     def _hardware_menu(self):
-        while True:
-            choices = [
-                ("detect", "Detect Hardware     SPI, I2C, Serial, USB"),
-                ("rnode", "RNode Setup         RNode device detection"),
-                ("spi", "Enable SPI          For HAT radios"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Hardware",
-                "Hardware detection and configuration:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            if choice == "rnode":
-                # Delegate to RNodeHandler via import
-                self.ctx.safe_call("RNode Setup", self._rnode_submenu)
-                continue
-
-            dispatch = {
-                "detect": ("Detect Hardware", self._detect_hardware),
-                "spi": ("Enable SPI", self._enable_spi),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("detect", "Detect Hardware     SPI, I2C, Serial, USB"),
+            ("rnode", "RNode Setup         RNode device detection"),
+            ("spi", "Enable SPI          For HAT radios"),
+        ]
+        dispatch = {
+            "detect": ("Detect Hardware", self._detect_hardware),
+            "rnode": ("RNode Setup", self._rnode_submenu),
+            "spi": ("Enable SPI", self._enable_spi),
+        }
+        self.run_menu_loop(
+            "Hardware",
+            "Hardware detection and configuration:",
+            choices, dispatch,
+        )
 
     def _rnode_submenu(self):
         """Delegate to RNodeHandler."""

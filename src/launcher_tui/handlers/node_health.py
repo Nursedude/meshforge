@@ -44,33 +44,23 @@ class NodeHealthHandler(BaseHandler):
 
     def _node_health_menu(self):
         """Node health analysis submenu."""
-        while True:
-            choices = [
-                ("latency", "Service Latency     TCP probe all services"),
-                ("battery", "Battery Forecast    Node battery projections"),
-                ("signal", "Signal Trends       SNR/RSSI analysis"),
-                ("alerts", "Health Alerts       Predicted failures"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Node Health",
-                "Proactive health monitoring and prediction:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "latency": ("Service Latency", self._service_latency_probe),
-                "battery": ("Battery Forecast", self._battery_forecast_display),
-                "signal": ("Signal Trends", self._signal_trending_display),
-                "alerts": ("Health Alerts", self._show_health_alerts),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("latency", "Service Latency     TCP probe all services"),
+            ("battery", "Battery Forecast    Node battery projections"),
+            ("signal", "Signal Trends       SNR/RSSI analysis"),
+            ("alerts", "Health Alerts       Predicted failures"),
+        ]
+        dispatch = {
+            "latency": ("Service Latency", self._service_latency_probe),
+            "battery": ("Battery Forecast", self._battery_forecast_display),
+            "signal": ("Signal Trends", self._signal_trending_display),
+            "alerts": ("Health Alerts", self._show_health_alerts),
+        }
+        self.run_menu_loop(
+            "Node Health",
+            "Proactive health monitoring and prediction:",
+            choices, dispatch,
+        )
 
     def _service_latency_probe(self):
         """Probe all NOC services and display latency/health."""

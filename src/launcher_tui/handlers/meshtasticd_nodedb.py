@@ -38,34 +38,24 @@ class MeshtasticdNodeDBHandler(BaseHandler):
 
     def _node_db_cleanup_menu(self):
         """Node database cleanup — identify and remove phantom/incomplete nodes."""
-        while True:
-            choices = [
-                ("scan", "Scan for Phantom Nodes"),
-                ("reset", "Reset Node Database (removes ALL nodes)"),
-                ("maxnodes", "Check MaxNodes Setting"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Node DB Cleanup",
-                "Clean up the meshtasticd node database.\n\n"
-                "Phantom nodes (incomplete data from MQTT) can\n"
-                "crash the web client when clicked.\n\n"
-                "Scan identifies nodes with missing info.",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "scan": ("Scan Phantom Nodes", self._scan_phantom_nodes),
-                "reset": ("Reset Node DB", self._reset_node_database),
-                "maxnodes": ("Check MaxNodes", self._check_maxnodes),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("scan", "Scan for Phantom Nodes"),
+            ("reset", "Reset Node Database (removes ALL nodes)"),
+            ("maxnodes", "Check MaxNodes Setting"),
+        ]
+        dispatch = {
+            "scan": ("Scan Phantom Nodes", self._scan_phantom_nodes),
+            "reset": ("Reset Node DB", self._reset_node_database),
+            "maxnodes": ("Check MaxNodes", self._check_maxnodes),
+        }
+        self.run_menu_loop(
+            "Node DB Cleanup",
+            "Clean up the meshtasticd node database.\n\n"
+            "Phantom nodes (incomplete data from MQTT) can\n"
+            "crash the web client when clicked.\n\n"
+            "Scan identifies nodes with missing info.",
+            choices, dispatch,
+        )
 
     def _scan_phantom_nodes(self):
         """Scan for phantom/incomplete nodes via HTTP API."""
