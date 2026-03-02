@@ -103,42 +103,6 @@ class MeshForgeLauncher:
         """Check if a feature is enabled — delegates to TUIContext."""
         return self._tui_context.feature_enabled(feature)
 
-    def _build_section_menu(self, section, legacy_items, ordering=None):
-        """Build menu choices by merging registry + legacy items.
-
-        Registry items auto-replace legacy items with the same tag.
-        Ordering list controls display order when provided.
-
-        Args:
-            section: Menu section key (e.g., "dashboard", "rf_sdr").
-            legacy_items: List of (tag, description) for unconverted items.
-            ordering: Optional list of tags defining display order.
-
-        Returns:
-            List of (tag, description) tuples with "Back" appended.
-        """
-        registry_items = self._registry.get_menu_items(section)
-        registry_tags = {tag for tag, _ in registry_items}
-
-        # Filter legacy items already handled by registry
-        filtered_legacy = [(t, d) for t, d in legacy_items if t not in registry_tags]
-
-        all_map = {tag: desc for tag, desc in registry_items}
-        all_map.update({tag: desc for tag, desc in filtered_legacy})
-
-        if ordering:
-            result = [(t, all_map[t]) for t in ordering if t in all_map]
-            # Append items not in ordering
-            ordered_set = set(ordering)
-            for tag, desc in list(registry_items) + filtered_legacy:
-                if tag not in ordered_set and (tag, desc) not in result:
-                    result.append((tag, desc))
-        else:
-            result = list(registry_items) + filtered_legacy
-
-        result.append(("back", "Back"))
-        return result
-
 
     def _setup_status_bar(self) -> None:
         """Initialize and attach the status bar to the dialog backend."""
@@ -568,163 +532,54 @@ class MeshForgeLauncher:
 
         return hint
 
-    def _handle_main_choice(self, choice: str):
-        """Handle main menu selection (v0.4.8 restructured).
+    # --- Section submenu configurations ---
+    # Each entry defines the parameters for run_section_menu().
+    # Legacy items are auto-replaced as handlers take over their tags.
 
-        All dispatches go through _safe_call to ensure unhandled
-        exceptions in any mixin show a user-friendly error dialog
-        instead of crashing the TUI.
-        """
-        # Try registry-based dispatch for main-menu handlers (Batch 4+)
-        if self._registry.dispatch("main", choice):
-            return
-
-        dispatch = {
-            "1": ("Dashboard", self._dashboard_menu),
-            "2": ("Mesh Networks", self._mesh_networks_menu),
-            "3": ("RF & SDR Tools", self._rf_sdr_menu),
-            "4": ("Maps & Visualization", self._maps_viz_menu),
-            "5": ("Configuration", self._configuration_menu),
-            "6": ("System Tools", self._system_menu),
-            "a": ("About", self._about_menu),
-        }
-        entry = dispatch.get(choice)
-        if entry:
-            name, method = entry
-            self._safe_call(name, method)
-
-    # --- Submenu: Dashboard (1) ---
-
-    def _dashboard_menu(self):
-        """Dashboard - Status, health, alerts, propagation."""
-        _ORDERING = ["status", "weather", "network", "nodes", "health", "score",
-                      "datapath", "metrics", "analytics", "latency", "reports", "alerts"]
-        while True:
-            # Legacy items — most now handled by DashboardHandler (Batch 4)
-            legacy = [
+    _SECTION_MENUS = {
+        "dashboard": {
+            "title": "Dashboard",
+            "subtitle": "System status and monitoring:",
+            "ordering": ["status", "weather", "network", "nodes", "health",
+                         "score", "datapath", "metrics", "analytics",
+                         "latency", "reports", "alerts"],
+            "legacy": [
                 ("network", "Network Status      Ports, interfaces, conflicts"),
                 ("health", "Node Health         Battery, signal, latency"),
                 ("metrics", "Historical Trends   Metrics over time"),
-            ]
-            choices = self._build_section_menu("dashboard", legacy, _ORDERING)
-
-            choice = self.dialog.menu(
-                "Dashboard",
-                "System status and monitoring:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            # Try registry-based dispatch first (converted handlers)
-            if self._registry.dispatch("dashboard", choice):
-                continue
-
-            # Cross-section dispatch (network handler is in "system" section)
-            if choice == "network":
-                self._registry.dispatch("system", "network")
-
-    # --- Submenu: Mesh Networks (2) ---
-
-    def _mesh_networks_menu(self):
-        """Mesh Networks - Meshtastic, RNS, AREDN."""
-        _ORDERING = ["meshtastic", "meshcore", "rns", "gateway", "aredn",
-                      "messaging", "traffic", "mqtt", "favorites", "ham", "services",
-                      "nomadnet", "meshchat"]
-        while True:
-            # Legacy items — feature-gated items built conditionally
-            legacy = []
-            if self._feature_enabled("meshtastic"):
-                legacy.append(("meshtastic", "Meshtastic          Radio, channels, CLI"))
-            if self._feature_enabled("meshcore"):
-                legacy.append(("meshcore", "MeshCore            Companion radio, config"))
-            if self._feature_enabled("rns"):
-                legacy.append(("rns", "RNS / Reticulum     Status, gateway, messaging"))
-            if self._feature_enabled("gateway"):
-                legacy.append(("gateway", "Gateway Bridge      RNS-Meshtastic-MeshCore"))
-            legacy.append(("aredn", "AREDN Mesh          AREDN integration"))
-            legacy.append(("messaging", "Messaging           Send/receive messages"))
-            legacy.append(("favorites", "Favorites           Manage favorite nodes"))
-            choices = self._build_section_menu("mesh_networks", legacy, _ORDERING)
-
-            choice = self.dialog.menu(
-                "Mesh Networks",
-                "Manage mesh network connections:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            # Try registry-based dispatch first (converted handlers)
-            if self._registry.dispatch("mesh_networks", choice):
-                continue
-
-            # All mesh_networks items handled by registry (Batch 3-9)
-
-    # --- NEW Submenu: RF & SDR (3) ---
-
-    def _rf_sdr_menu(self):
-        """RF & SDR - Calculators, SDR monitoring."""
-        _ORDERING = ["link", "site", "freq", "antenna", "weather", "sdr"]
-        while True:
-            # All RF & SDR tags handled by registry — empty legacy list
-            legacy = []
-            choices = self._build_section_menu("rf_sdr", legacy, _ORDERING)
-
-            choice = self.dialog.menu(
-                "RF & SDR Tools",
-                "Radio frequency tools and monitoring:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            # Try registry-based dispatch first (converted handlers)
-            if self._registry.dispatch("rf_sdr", choice):
-                continue
-
-            # RF & SDR section fully converted — no legacy dispatch remaining
-
-    # --- NEW Submenu: Maps & Viz (4) ---
-
-    def _maps_viz_menu(self):
-        """Maps & Visualization - Coverage maps, topology."""
-        _ORDERING = ["livemap", "coverage", "heatmap", "tiles", "topology",
-                      "traffic", "quality", "export", "ai"]
-        while True:
-            # Legacy items — removed automatically as handlers take over their tags
-            legacy = [
+            ],
+            "cross_dispatch": {"network": ("system", "network")},
+        },
+        "mesh_networks": {
+            "title": "Mesh Networks",
+            "subtitle": "Manage mesh network connections:",
+            "ordering": ["meshtastic", "meshcore", "rns", "gateway", "aredn",
+                         "messaging", "traffic", "mqtt", "favorites", "ham",
+                         "services", "nomadnet", "meshchat"],
+            "legacy": "_build_mesh_networks_legacy",
+        },
+        "rf_sdr": {
+            "title": "RF & SDR Tools",
+            "subtitle": "Radio frequency tools and monitoring:",
+            "ordering": ["link", "site", "freq", "antenna", "weather", "sdr"],
+            "legacy": [],
+        },
+        "maps_viz": {
+            "title": "Maps & Visualization",
+            "subtitle": "Network visualization tools:",
+            "ordering": ["livemap", "coverage", "heatmap", "tiles", "topology",
+                         "traffic", "quality", "export", "ai"],
+            "legacy": [
                 ("quality", "Link Quality        Quality analysis"),
-            ]
-            choices = self._build_section_menu("maps_viz", legacy, _ORDERING)
-
-            choice = self.dialog.menu(
-                "Maps & Visualization",
-                "Network visualization tools:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            # Try registry-based dispatch first (converted handlers)
-            if self._registry.dispatch("maps_viz", choice):
-                continue
-
-            # All maps_viz items handled by registry
-
-    # --- NEW Submenu: Configuration (5) ---
-
-    def _configuration_menu(self):
-        """Configuration - Radio, services, settings."""
-        _ORDERING = ["radio", "channels", "rns-config", "rnode", "backup",
-                      "updates", "webhooks", "meshforge", "config-api", "wizard"]
-        while True:
-            # Legacy items — removed automatically as handlers take over their tags
-            legacy = [
+            ],
+        },
+        "configuration": {
+            "title": "Configuration",
+            "subtitle": "System and service configuration:",
+            "ordering": ["radio", "channels", "rns-config", "rnode", "backup",
+                         "updates", "webhooks", "meshforge", "config-api",
+                         "wizard"],
+            "legacy": [
                 ("radio", "Radio Config        meshtasticd settings"),
                 ("channels", "Channel Config      Meshtastic channels"),
                 ("rns-config", "RNS Config          Reticulum settings"),
@@ -733,35 +588,15 @@ class MeshForgeLauncher:
                 ("webhooks", "Webhooks            External notifications"),
                 ("meshforge", "MeshForge Settings  App preferences"),
                 ("config-api", "Config API Server   REST config endpoint"),
-            ]
-            choices = self._build_section_menu("configuration", legacy, _ORDERING)
-
-            choice = self.dialog.menu(
-                "Configuration",
-                "System and service configuration:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            # Registry-based dispatch (all configuration items converted)
-            if self._registry.dispatch("configuration", choice):
-                continue
-
-            # Cross-section dispatch: RNS config is in the "rns" section
-            if choice == "rns-config":
-                self._registry.dispatch("rns", "edit")
-
-    # --- NEW Submenu: System (6) ---
-
-    def _system_menu(self):
-        """System - Hardware, logs, Linux tools."""
-        _ORDERING = ["hardware", "logs", "network", "discover", "diagnose", "daemon",
-                      "review", "status", "shell", "reboot"]
-        while True:
-            # Legacy items — removed automatically as handlers take over their tags
-            legacy = [
+            ],
+            "cross_dispatch": {"rns-config": ("rns", "edit")},
+        },
+        "system": {
+            "title": "System Tools",
+            "subtitle": "System administration:",
+            "ordering": ["hardware", "logs", "network", "discover", "diagnose",
+                         "daemon", "review", "status", "shell", "reboot"],
+            "legacy": [
                 ("hardware", "Hardware            Detect SPI/I2C/USB"),
                 ("logs", "Logs                View/follow logs"),
                 ("network", "Network Tools       Ping, ports, interfaces"),
@@ -769,47 +604,72 @@ class MeshForgeLauncher:
                 ("daemon", "Daemon Mode         Start/stop headless NOC"),
                 ("status", "Quick Status        One-shot status display"),
                 ("reboot", "Reboot/Shutdown     Safe system control"),
-            ]
-            choices = self._build_section_menu("system", legacy, _ORDERING)
-
-            choice = self.dialog.menu(
-                "System Tools",
-                "System administration:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            # Registry-based dispatch (all system items converted)
-            self._registry.dispatch("system", choice)
-
-    # --- Submenu: About (a) ---
-
-    def _about_menu(self):
-        """About - Version, help, web client, system info, changelog."""
-        _ORDERING = ["version", "changelog", "sysinfo", "deps", "web", "help"]
-        while True:
-            legacy = [
+            ],
+        },
+        "about": {
+            "title": "About MeshForge",
+            "subtitle": "Information, help, and diagnostics:",
+            "ordering": ["version", "changelog", "sysinfo", "deps", "web",
+                         "help"],
+            "legacy": [
                 ("version", "Version Info        MeshForge version"),
                 ("changelog", "Changelog           Release history"),
                 ("sysinfo", "System Info         OS, Python, disk, uptime"),
                 ("deps", "Dependencies        Package status"),
                 ("help", "Help                Documentation"),
-            ]
-            choices = self._build_section_menu("about", legacy, _ORDERING)
+            ],
+        },
+    }
 
-            choice = self.dialog.menu(
-                "About MeshForge",
-                "Information, help, and diagnostics:",
-                choices
+    _MAIN_MENU_DISPATCH = {
+        "1": "dashboard",
+        "2": "mesh_networks",
+        "3": "rf_sdr",
+        "4": "maps_viz",
+        "5": "configuration",
+        "6": "system",
+        "a": "about",
+    }
+
+    def _handle_main_choice(self, choice: str):
+        """Handle main menu selection (v0.4.8 restructured).
+
+        Routes to registry handlers first, then to section submenus
+        via run_section_menu() with config from _SECTION_MENUS.
+        """
+        # Try registry-based dispatch for main-menu handlers (Batch 4+)
+        if self._registry.dispatch("main", choice):
+            return
+
+        section = self._MAIN_MENU_DISPATCH.get(choice)
+        if section:
+            cfg = self._SECTION_MENUS[section]
+            legacy = cfg["legacy"]
+            # String value = method name for dynamic legacy (feature-gated)
+            if isinstance(legacy, str):
+                legacy = getattr(self, legacy)
+            self._safe_call(
+                cfg["title"],
+                self._registry.run_section_menu,
+                section, cfg["title"], cfg["subtitle"],
+                legacy, cfg["ordering"], cfg.get("cross_dispatch"),
             )
 
-            if choice is None or choice == "back":
-                break
-
-            # Registry-based dispatch (all about items converted)
-            self._registry.dispatch("about", choice)
+    def _build_mesh_networks_legacy(self):
+        """Build dynamic legacy items for mesh networks (feature-gated)."""
+        legacy = []
+        if self._feature_enabled("meshtastic"):
+            legacy.append(("meshtastic", "Meshtastic          Radio, channels, CLI"))
+        if self._feature_enabled("meshcore"):
+            legacy.append(("meshcore", "MeshCore            Companion radio, config"))
+        if self._feature_enabled("rns"):
+            legacy.append(("rns", "RNS / Reticulum     Status, gateway, messaging"))
+        if self._feature_enabled("gateway"):
+            legacy.append(("gateway", "Gateway Bridge      RNS-Meshtastic-MeshCore"))
+        legacy.append(("aredn", "AREDN Mesh          AREDN integration"))
+        legacy.append(("messaging", "Messaging           Send/receive messages"))
+        legacy.append(("favorites", "Favorites           Manage favorite nodes"))
+        return legacy
 
 def main():
     """Main entry point."""

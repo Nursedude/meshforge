@@ -118,6 +118,87 @@ class HandlerRegistry:
         self._ctx.safe_call(handler.handler_id, handler.execute, tag)
         return True
 
+    def _build_menu_choices(
+        self, section: str, legacy_items: list, ordering: list = None,
+    ) -> List[Tuple[str, str]]:
+        """Build menu choices by merging registry + legacy items.
+
+        Registry items auto-replace legacy items with the same tag.
+        Ordering list controls display order when provided.
+
+        Args:
+            section: Menu section key (e.g., "dashboard", "rf_sdr").
+            legacy_items: List of (tag, description) for unconverted items.
+            ordering: Optional list of tags defining display order.
+
+        Returns:
+            List of (tag, description) tuples with "Back" appended.
+        """
+        registry_items = self.get_menu_items(section)
+        registry_tags = {tag for tag, _ in registry_items}
+
+        # Filter legacy items already handled by registry
+        filtered_legacy = [(t, d) for t, d in legacy_items if t not in registry_tags]
+
+        all_map = {tag: desc for tag, desc in registry_items}
+        all_map.update({tag: desc for tag, desc in filtered_legacy})
+
+        if ordering:
+            result = [(t, all_map[t]) for t in ordering if t in all_map]
+            # Append items not in ordering
+            ordered_set = set(ordering)
+            for tag, desc in list(registry_items) + filtered_legacy:
+                if tag not in ordered_set and (tag, desc) not in result:
+                    result.append((tag, desc))
+        else:
+            result = list(registry_items) + filtered_legacy
+
+        result.append(("back", "Back"))
+        return result
+
+    def run_section_menu(
+        self,
+        section: str,
+        title: str,
+        subtitle: str,
+        legacy_items,
+        ordering: list,
+        cross_dispatch: Optional[Dict[str, Tuple[str, str]]] = None,
+    ) -> None:
+        """Run a standard section submenu loop.
+
+        Builds menu choices by merging registry items with legacy items,
+        displays via dialog, and dispatches to handlers. Eliminates the
+        repetitive while/menu/break/dispatch boilerplate in main.py.
+
+        Args:
+            section: Registry section key (e.g., "dashboard").
+            title: Dialog title.
+            subtitle: Dialog subtitle.
+            legacy_items: Static list of (tag, desc) or callable returning same.
+                When callable, it is invoked each iteration (for dynamic/
+                feature-gated items).
+            ordering: Tag ordering list for display order.
+            cross_dispatch: Optional dict mapping tags to (section, tag) tuples
+                for cross-section dispatch fallback.
+        """
+        while True:
+            legacy = legacy_items() if callable(legacy_items) else legacy_items
+            choices = self._build_menu_choices(section, legacy, ordering)
+
+            choice = self._ctx.dialog.menu(title, subtitle, choices)
+
+            if choice is None or choice == "back":
+                break
+
+            if self.dispatch(section, choice):
+                continue
+
+            # Cross-section fallback
+            if cross_dispatch and choice in cross_dispatch:
+                target_section, target_tag = cross_dispatch[choice]
+                self.dispatch(target_section, target_tag)
+
     def startup_all(self) -> None:
         """Call ``on_startup()`` on all handlers that implement LifecycleHandler."""
         for handler in self._handlers.values():
