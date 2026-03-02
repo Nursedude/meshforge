@@ -1,11 +1,23 @@
 """
-Site Planner Handler — RF coverage planning, range estimation, preset comparison.
+Site Planner Handler — RF coverage planning, range estimation, preset comparison,
+terrain LOS analysis, and terrain-aware coverage prediction.
 
 Converted from site_planner_mixin.py as part of the mixin-to-registry migration.
 """
 
+import threading
+import webbrowser
+
 from handler_protocol import BaseHandler
 from utils.rf import DeployEnvironment, BuildingType
+from utils.safe_import import safe_import
+
+_LOSAnalyzer, _SRTMProvider, _FlatTerrainProvider, _HAS_TERRAIN = safe_import(
+    'utils.terrain', 'LOSAnalyzer', 'SRTMProvider', 'FlatTerrainProvider'
+)
+_CoverageMapGenerator, _HAS_COVERAGE_MAP = safe_import(
+    'utils.coverage_map', 'CoverageMapGenerator'
+)
 
 _ENV_CHOICES = [
     ("free_space", "Free Space / Clear LOS"),
@@ -44,6 +56,8 @@ class SitePlannerHandler(BaseHandler):
                 ("range", "Range Estimator"),
                 ("presets", "LoRa Preset Comparison"),
                 ("fresnel", "Fresnel Zone Calculator"),
+                ("los", "Line-of-Sight Check"),
+                ("terrain", "Terrain Coverage Map"),
                 ("antenna", "Antenna Guidelines"),
                 ("freq", "Frequency Reference"),
                 ("tools", "External Planning Tools"),
@@ -57,6 +71,8 @@ class SitePlannerHandler(BaseHandler):
                 "range": ("Range Estimator", self._estimate_range),
                 "presets": ("Preset Comparison", self._compare_presets),
                 "fresnel": ("Fresnel Zone", self._calc_fresnel),
+                "los": ("Line-of-Sight Check", self._los_check),
+                "terrain": ("Terrain Coverage Map", self._terrain_coverage),
                 "antenna": ("Antenna Guidelines", self._antenna_guidelines),
                 "freq": ("Frequency Reference", self._frequency_reference),
                 "tools": ("External Tools", self._external_tools),
@@ -287,3 +303,161 @@ Tip: Use these tools to plan
 repeater locations and verify
 line-of-sight paths."""
         self.ctx.dialog.msgbox("External Planning Tools", text)
+
+    def _los_check(self):
+        """Line-of-sight analysis between two coordinates using terrain data."""
+        if not _HAS_TERRAIN:
+            self.ctx.dialog.msgbox(
+                "Not Available",
+                "Terrain module not available.\n\n"
+                "The terrain analysis engine requires\n"
+                "SRTM elevation data support."
+            )
+            return
+
+        # Collect Point A
+        lat1 = self.ctx.dialog.inputbox("LOS Check - Point A", "Latitude:", "21.31")
+        if not lat1:
+            return
+        lon1 = self.ctx.dialog.inputbox("LOS Check - Point A", "Longitude:", "-157.86")
+        if not lon1:
+            return
+        alt1 = self.ctx.dialog.inputbox("LOS Check - Point A", "Antenna height (m):", "10")
+        if not alt1:
+            return
+
+        # Collect Point B
+        lat2 = self.ctx.dialog.inputbox("LOS Check - Point B", "Latitude:", "21.35")
+        if not lat2:
+            return
+        lon2 = self.ctx.dialog.inputbox("LOS Check - Point B", "Longitude:", "-157.90")
+        if not lon2:
+            return
+        alt2 = self.ctx.dialog.inputbox("LOS Check - Point B", "Antenna height (m):", "5")
+        if not alt2:
+            return
+
+        freq = self.ctx.dialog.inputbox("LOS Check", "Frequency (MHz):", "915")
+        if not freq:
+            return
+
+        try:
+            la1, lo1, a1 = float(lat1), float(lon1), float(alt1)
+            la2, lo2, a2 = float(lat2), float(lon2), float(alt2)
+            f = float(freq)
+
+            self.ctx.dialog.infobox(
+                "Calculating",
+                "Fetching terrain data and analyzing LOS...\n\n"
+                "First run may download SRTM elevation tiles."
+            )
+
+            try:
+                provider = _SRTMProvider(auto_download=True)
+            except Exception:
+                provider = _FlatTerrainProvider()
+
+            analyzer = _LOSAnalyzer(provider)
+            result = analyzer.analyze(la1, lo1, a1, la2, lo2, a2, f)
+
+            status = "CLEAR" if result.is_clear else "OBSTRUCTED"
+            text = f"""Line-of-Sight Analysis:
+
+Point A: {la1:.4f}, {lo1:.4f} ({a1:.0f}m antenna)
+Point B: {la2:.4f}, {lo2:.4f} ({a2:.0f}m antenna)
+Frequency: {f:.0f} MHz
+
+Status: {status}
+Distance: {result.distance_m / 1000:.2f} km
+
+Path Loss:
+  Free Space: {result.fspl_db:.1f} dB
+  Terrain:    {result.terrain_loss_db:.1f} dB
+  Total:      {result.total_loss_db:.1f} dB
+
+Terrain Analysis:
+  Obstructions: {result.num_obstructions}
+  Worst Obstruction: {result.worst_obstruction_m:.1f} m
+  Fresnel Clearance: {result.fresnel_clearance_pct:.0f}%
+  Earth Bulge (mid): {result.earth_bulge_m:.1f} m"""
+
+            self.ctx.dialog.msgbox("LOS Result", text)
+        except (ValueError, TypeError):
+            self.ctx.dialog.msgbox("Error", "Invalid number entered")
+
+    def _terrain_coverage(self):
+        """Generate terrain-aware coverage map and open in browser."""
+        if not _HAS_TERRAIN:
+            self.ctx.dialog.msgbox(
+                "Not Available",
+                "Terrain module not available.\n\n"
+                "The terrain analysis engine requires\n"
+                "SRTM elevation data support."
+            )
+            return
+        if not _HAS_COVERAGE_MAP:
+            self.ctx.dialog.msgbox(
+                "Not Available",
+                "Coverage map generator not available.\n\n"
+                "Install folium: pip3 install folium"
+            )
+            return
+
+        lat = self.ctx.dialog.inputbox("Terrain Coverage", "Node Latitude:", "21.31")
+        if not lat:
+            return
+        lon = self.ctx.dialog.inputbox("Terrain Coverage", "Node Longitude:", "-157.86")
+        if not lon:
+            return
+        height = self.ctx.dialog.inputbox("Terrain Coverage", "Antenna height (m):", "10")
+        if not height:
+            return
+        radius = self.ctx.dialog.inputbox("Terrain Coverage", "Analysis radius (km):", "5")
+        if not radius:
+            return
+        freq = self.ctx.dialog.inputbox("Terrain Coverage", "Frequency (MHz):", "915")
+        if not freq:
+            return
+
+        try:
+            la, lo = float(lat), float(lon)
+            h, r, f = float(height), float(radius), float(freq)
+
+            self.ctx.dialog.infobox(
+                "Calculating",
+                f"Generating terrain coverage for {la:.4f}, {lo:.4f}...\n"
+                f"Radius: {r} km, Height: {h} m\n\n"
+                "This may take a moment (fetching SRTM data)..."
+            )
+
+            from utils.paths import get_real_user_home
+            generator = _CoverageMapGenerator()
+            output_dir = get_real_user_home() / ".local" / "share" / "meshforge"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = str(output_dir / "terrain_coverage.html")
+
+            result_path = generator.generate_terrain_coverage(
+                la, lo,
+                antenna_height=h,
+                radius_km=r,
+                freq_mhz=f,
+                output_path=output_path,
+            )
+
+            if not result_path:
+                self.ctx.dialog.msgbox("Error", "Terrain coverage generation failed.")
+                return
+
+            self.ctx.dialog.msgbox(
+                "Terrain Coverage",
+                f"Coverage map saved to:\n{result_path}\n\n"
+                "Opening in browser..."
+            )
+
+            threading.Thread(
+                target=lambda: webbrowser.open(f"file://{result_path}"),
+                daemon=True
+            ).start()
+
+        except (ValueError, TypeError):
+            self.ctx.dialog.msgbox("Error", "Invalid number entered")
