@@ -33,30 +33,23 @@ class WebhooksHandler(BaseHandler):
             self._webhooks_menu()
 
     def _webhooks_menu(self):
-        while True:
-            choices = [
-                ("list", "List Endpoints      Show configured hooks"),
-                ("add", "Add Endpoint        Register new webhook"),
-                ("remove", "Remove Endpoint     Delete a webhook"),
-                ("toggle", "Enable/Disable      Toggle endpoint state"),
-                ("test", "Test Webhook        Send test event"),
-                ("events", "Event Types         Supported event list"),
-                ("back", "Back"),
-            ]
-            choice = self.ctx.dialog.menu("Webhooks", "External notification management:", choices)
-            if choice is None or choice == "back":
-                break
-            dispatch = {
-                "list": ("List Endpoints", self._webhooks_list),
-                "add": ("Add Endpoint", self._webhooks_add),
-                "remove": ("Remove Endpoint", self._webhooks_remove),
-                "toggle": ("Toggle Endpoint", self._webhooks_toggle),
-                "test": ("Test Webhook", self._webhooks_test),
-                "events": ("Event Types", self._webhooks_event_types),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("list", "List Endpoints      Show configured hooks"),
+            ("add", "Add Endpoint        Register new webhook"),
+            ("remove", "Remove Endpoint     Delete a webhook"),
+            ("toggle", "Enable/Disable      Toggle endpoint state"),
+            ("test", "Test Webhook        Send test event"),
+            ("events", "Event Types         Supported event list"),
+        ]
+        dispatch = {
+            "list": ("List Endpoints", self._webhooks_list),
+            "add": ("Add Endpoint", self._webhooks_add),
+            "remove": ("Remove Endpoint", self._webhooks_remove),
+            "toggle": ("Toggle Endpoint", self._webhooks_toggle),
+            "test": ("Test Webhook", self._webhooks_test),
+            "events": ("Event Types", self._webhooks_event_types),
+        }
+        self.run_menu_loop("Webhooks", "External notification management:", choices, dispatch)
 
     def _webhooks_list(self):
         clear_screen()

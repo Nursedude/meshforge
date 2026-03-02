@@ -34,33 +34,23 @@ class ClassifierHandler(BaseHandler):
 
     def _classifier_menu(self):
         """Traffic Classification — routing decisions, notifications, audit."""
-        while True:
-            choices = [
-                ("routing", "Routing Stats       Bridge routing decisions"),
-                ("notify", "Notification Stats  Event priority breakdown"),
-                ("receipts", "Recent Decisions    Last 15 classification receipts"),
-                ("bounced", "Bounced Items       Low-confidence items for review"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Traffic Classification",
-                "Message routing and event classification:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "routing": ("Routing Stats", self._show_routing_stats),
-                "notify": ("Notification Stats", self._show_notification_stats),
-                "receipts": ("Recent Decisions", self._show_recent_receipts),
-                "bounced": ("Bounced Items", self._show_bounced_items),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("routing", "Routing Stats       Bridge routing decisions"),
+            ("notify", "Notification Stats  Event priority breakdown"),
+            ("receipts", "Recent Decisions    Last 15 classification receipts"),
+            ("bounced", "Bounced Items       Low-confidence items for review"),
+        ]
+        dispatch = {
+            "routing": ("Routing Stats", self._show_routing_stats),
+            "notify": ("Notification Stats", self._show_notification_stats),
+            "receipts": ("Recent Decisions", self._show_recent_receipts),
+            "bounced": ("Bounced Items", self._show_bounced_items),
+        }
+        self.run_menu_loop(
+            "Traffic Classification",
+            "Message routing and event classification:",
+            choices, dispatch,
+        )
 
     def _show_routing_stats(self):
         """Show routing classifier statistics."""

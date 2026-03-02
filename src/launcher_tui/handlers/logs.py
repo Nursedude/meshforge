@@ -31,45 +31,35 @@ class LogsHandler(BaseHandler):
             self._logs_menu()
 
     def _logs_menu(self):
-        while True:
-            choices = [
-                ("live-mesh", "Live: meshtasticd      (Ctrl+C to stop)"),
-                ("live-rns", "Live: rnsd             (Ctrl+C to stop)"),
-                ("live-all", "Live: all services     (Ctrl+C to stop)"),
-                ("errors", "Errors                 Last hour, priority err+"),
-                ("mesh-50", "meshtasticd            Last 50 lines"),
-                ("rns-50", "rnsd                   Last 50 lines"),
-                ("boot", "Boot Messages          This boot"),
-                ("kernel", "Kernel Messages        dmesg"),
-                ("meshforge", "MeshForge App Logs     Browse log files"),
-                ("crash", "Crash Log              TUI error output"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Log Viewer",
-                "Terminal-native logs (real journalctl):",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "live-mesh": ("Live meshtasticd Logs", self._view_live_meshtasticd),
-                "live-rns": ("Live rnsd Logs", self._view_live_rnsd),
-                "live-all": ("Live All Logs", self._view_live_all),
-                "errors": ("Error Logs", self._view_error_logs),
-                "mesh-50": ("meshtasticd Logs", self._view_meshtasticd_recent),
-                "rns-50": ("rnsd Logs", self._view_rnsd_recent),
-                "boot": ("Boot Messages", self._view_boot_messages),
-                "kernel": ("Kernel Messages", self._view_kernel_messages),
-                "meshforge": ("MeshForge Logs", self._view_meshforge_logs),
-                "crash": ("Crash Log", self._view_crash_log),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("live-mesh", "Live: meshtasticd      (Ctrl+C to stop)"),
+            ("live-rns", "Live: rnsd             (Ctrl+C to stop)"),
+            ("live-all", "Live: all services     (Ctrl+C to stop)"),
+            ("errors", "Errors                 Last hour, priority err+"),
+            ("mesh-50", "meshtasticd            Last 50 lines"),
+            ("rns-50", "rnsd                   Last 50 lines"),
+            ("boot", "Boot Messages          This boot"),
+            ("kernel", "Kernel Messages        dmesg"),
+            ("meshforge", "MeshForge App Logs     Browse log files"),
+            ("crash", "Crash Log              TUI error output"),
+        ]
+        dispatch = {
+            "live-mesh": ("Live meshtasticd Logs", self._view_live_meshtasticd),
+            "live-rns": ("Live rnsd Logs", self._view_live_rnsd),
+            "live-all": ("Live All Logs", self._view_live_all),
+            "errors": ("Error Logs", self._view_error_logs),
+            "mesh-50": ("meshtasticd Logs", self._view_meshtasticd_recent),
+            "rns-50": ("rnsd Logs", self._view_rnsd_recent),
+            "boot": ("Boot Messages", self._view_boot_messages),
+            "kernel": ("Kernel Messages", self._view_kernel_messages),
+            "meshforge": ("MeshForge Logs", self._view_meshforge_logs),
+            "crash": ("Crash Log", self._view_crash_log),
+        }
+        self.run_menu_loop(
+            "Log Viewer",
+            "Terminal-native logs (real journalctl):",
+            choices, dispatch,
+        )
 
     def _view_live_log(self, title: str, cmd: List[str]) -> None:
         clear_screen()

@@ -30,31 +30,21 @@ class LatencyHandler(BaseHandler):
 
     def _latency_menu(self):
         """Latency Monitor — service response times and health."""
-        while True:
-            choices = [
-                ("status", "Service Latency     Current RTT for all services"),
-                ("probe", "Probe Now           Run one probe cycle"),
-                ("degraded", "Degraded Services   Show unhealthy services"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Latency Monitor",
-                "Service response time monitoring:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "status": ("Service Latency", self._show_latency_status),
-                "probe": ("Probe Now", self._latency_probe_now),
-                "degraded": ("Degraded Services", self._show_degraded_services),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("status", "Service Latency     Current RTT for all services"),
+            ("probe", "Probe Now           Run one probe cycle"),
+            ("degraded", "Degraded Services   Show unhealthy services"),
+        ]
+        dispatch = {
+            "status": ("Service Latency", self._show_latency_status),
+            "probe": ("Probe Now", self._latency_probe_now),
+            "degraded": ("Degraded Services", self._show_degraded_services),
+        }
+        self.run_menu_loop(
+            "Latency Monitor",
+            "Service response time monitoring:",
+            choices, dispatch,
+        )
 
     def _show_latency_status(self):
         """Show current latency for all monitored services."""

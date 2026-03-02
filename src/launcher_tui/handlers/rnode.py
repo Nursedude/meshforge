@@ -33,31 +33,21 @@ class RNodeHandler(BaseHandler):
             self._rnode_menu()
 
     def _rnode_menu(self):
-        while True:
-            choices = [
-                ("detect", "Detect Devices      Scan for RNode hardware"),
-                ("probe", "Deep Scan           Detect + firmware probe"),
-                ("config", "Recommended Config  RNS config for region"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "RNode Setup",
-                "RNode device detection and configuration:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "detect": ("Detect Devices", self._rnode_detect),
-                "probe": ("Deep Scan", self._rnode_deep_scan),
-                "config": ("Recommended Config", self._rnode_recommended_config),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("detect", "Detect Devices      Scan for RNode hardware"),
+            ("probe", "Deep Scan           Detect + firmware probe"),
+            ("config", "Recommended Config  RNS config for region"),
+        ]
+        dispatch = {
+            "detect": ("Detect Devices", self._rnode_detect),
+            "probe": ("Deep Scan", self._rnode_deep_scan),
+            "config": ("Recommended Config", self._rnode_recommended_config),
+        }
+        self.run_menu_loop(
+            "RNode Setup",
+            "RNode device detection and configuration:",
+            choices, dispatch,
+        )
 
     def _rnode_detect(self):
         clear_screen()

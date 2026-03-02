@@ -54,33 +54,23 @@ class ServiceDiscoveryHandler(BaseHandler):
             self._service_discovery_menu()
 
     def _service_discovery_menu(self):
-        while True:
-            choices = [
-                ("scan", "Quick Scan (Local Services)"),
-                ("full", "Full Network Scan"),
-                ("usb", "USB Device Scan"),
-                ("status", "Service Status Overview"),
-                ("back", "Back"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "Service Discovery",
-                "Auto-discover mesh network services:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "scan": ("Quick Scan", self._quick_scan),
-                "full": ("Full Network Scan", self._full_network_scan),
-                "usb": ("USB Device Scan", self._usb_device_scan),
-                "status": ("Service Status Overview", self._service_status_overview),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("scan", "Quick Scan (Local Services)"),
+            ("full", "Full Network Scan"),
+            ("usb", "USB Device Scan"),
+            ("status", "Service Status Overview"),
+        ]
+        dispatch = {
+            "scan": ("Quick Scan", self._quick_scan),
+            "full": ("Full Network Scan", self._full_network_scan),
+            "usb": ("USB Device Scan", self._usb_device_scan),
+            "status": ("Service Status Overview", self._service_status_overview),
+        }
+        self.run_menu_loop(
+            "Service Discovery",
+            "Auto-discover mesh network services:",
+            choices, dispatch,
+        )
 
     def _quick_scan(self):
         self.ctx.dialog.infobox("Scanning", "Discovering local services...")
