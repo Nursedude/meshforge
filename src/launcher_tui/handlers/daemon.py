@@ -33,10 +33,8 @@ class DaemonHandler(BaseHandler):
 
     def _daemon_menu(self):
         """Daemon Mode - Start/stop headless NOC services."""
-        from utils.paths import get_real_user_home
 
-        while True:
-            # Check if daemon is running
+        def _build_choices():
             daemon_status = "unknown"
             try:
                 pid_file = Path("/run/meshforge/meshforged.pid")
@@ -51,29 +49,22 @@ class DaemonHandler(BaseHandler):
                     daemon_status = "stopped"
             except Exception:
                 daemon_status = "unknown"
-
-            choices = [
+            return [
                 ("status", f"Status              Daemon: {daemon_status}"),
                 ("start", "Start Daemon        Launch headless NOC"),
                 ("stop", "Stop Daemon         Stop headless NOC"),
-                ("back", "Back"),
             ]
 
-            choice = self.ctx.dialog.menu(
-                "Daemon Mode",
-                "Headless NOC service manager:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            if choice == "status":
-                self._daemon_show_status()
-            elif choice == "start":
-                self._daemon_start()
-            elif choice == "stop":
-                self._daemon_stop()
+        dispatch = {
+            "status": ("Daemon Status", self._daemon_show_status),
+            "start": ("Start Daemon", self._daemon_start),
+            "stop": ("Stop Daemon", self._daemon_stop),
+        }
+        self.run_menu_loop(
+            "Daemon Mode",
+            "Headless NOC service manager:",
+            _build_choices, dispatch,
+        )
 
     def _daemon_show_status(self):
         """Show daemon status in a dialog."""
