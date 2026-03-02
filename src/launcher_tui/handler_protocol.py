@@ -57,6 +57,7 @@ class TUIContext:
 
     # Internal cached values
     _meshtastic_path: Optional[str] = field(default=None, repr=False)
+    _updates_available: int = field(default=0, repr=False)
 
     def feature_enabled(self, feature: str) -> bool:
         """Check if a feature is enabled in the current deployment profile.
@@ -101,6 +102,24 @@ class TUIContext:
             return 1 <= port <= 65535
         except (ValueError, TypeError):
             return False
+
+    def get_menu_status_hint(self) -> str:
+        """Generate status hint for main menu subtitle.
+
+        Uses plain text indicators (UP/FAIL/--) since whiptail/dialog
+        don't render ANSI color escape codes.
+        Appends update count if updates were detected at startup.
+        """
+        hint = ""
+        if self.env_state:
+            hint = self.env_state.get_status_line(plain=True)
+        else:
+            hint = "Network Operations Center"
+
+        if self._updates_available > 0:
+            hint += f"  |  {self._updates_available} update(s) available"
+
+        return hint
 
     def get_error_log_path(self) -> Path:
         """Get the path to the TUI error log file."""
