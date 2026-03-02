@@ -151,19 +151,21 @@ class TestMeshChatHandler:
 
     def test_check_rns_preflight_no_rnsd(self):
         """Preflight check warns when rnsd not running."""
+        from launcher_tui.handlers import _meshchat_install as _mc
         handler = _make_handler()
         handler.ctx.dialog.yesno.return_value = True
-        handler._get_rnsd_user = lambda: None
-        result = handler._check_rns_for_meshchat()
+        with patch.object(_mc, 'get_rnsd_user', return_value=None):
+            result = _mc.check_rns_for_meshchat(handler)
         assert result is True
         handler.ctx.dialog.yesno.assert_called_once()
 
     def test_check_rns_preflight_cancelled(self):
         """Preflight check returns False when user cancels."""
+        from launcher_tui.handlers import _meshchat_install as _mc
         handler = _make_handler()
         handler.ctx.dialog.yesno.return_value = False
-        handler._get_rnsd_user = lambda: None
-        result = handler._check_rns_for_meshchat()
+        with patch.object(_mc, 'get_rnsd_user', return_value=None):
+            result = _mc.check_rns_for_meshchat(handler)
         assert result is False
 
     def test_check_rns_preflight_rnsd_running(self):
@@ -314,11 +316,12 @@ class TestMeshChatInstaller:
 
     def test_get_meshchat_install_dir(self):
         """Install dir is under user home, not /root."""
+        from launcher_tui.handlers import _meshchat_install as _mc
         handler = _make_handler()
-        with patch('launcher_tui.handlers.meshchat.get_real_user_home') as mock_home:
-            mock_home.return_value = __import__('pathlib').Path('/home/testuser')
-            result = handler._get_meshchat_install_dir()
-            assert str(result) == '/home/testuser/reticulum-meshchat'
+        with patch.object(_mc, 'get_real_user_home',
+                          return_value=__import__('pathlib').Path('/home/testuser')):
+            result = _mc.get_meshchat_install_dir(handler)
+        assert str(result) == '/home/testuser/reticulum-meshchat'
 
     @patch('shutil.which', return_value='/usr/bin/meshchat')
     def test_install_skips_if_already_installed(self, mock_which):
@@ -340,17 +343,19 @@ class TestMeshChatInstaller:
     @patch('shutil.which')
     def test_install_prerequisites_checks_git_node_npm(self, mock_which):
         """Prerequisites checker verifies git, node, npm."""
+        from launcher_tui.handlers._meshchat_install import install_meshchat_prerequisites
         handler = _make_handler()
 
         # All tools available
         mock_which.return_value = '/usr/bin/git'
-        result = handler._install_meshchat_prerequisites()
+        result = install_meshchat_prerequisites(handler)
         assert result is True
 
     @patch('shutil.which', return_value=None)
     @patch('subprocess.run')
     def test_install_prerequisites_installs_nodejs(self, mock_run, mock_which):
         """Prerequisites installs nodejs when not found."""
+        from launcher_tui.handlers._meshchat_install import install_meshchat_prerequisites
         handler = _make_handler()
 
         # First call: git not found, then found after install
@@ -364,19 +369,20 @@ class TestMeshChatInstaller:
 
         mock_which.side_effect = which_side_effect
         mock_run.return_value = MagicMock(returncode=0)
-        result = handler._install_meshchat_prerequisites()
+        result = install_meshchat_prerequisites(handler)
         assert mock_run.called
 
     @patch('subprocess.run')
     def test_install_clone_new_repo(self, mock_run):
         """Clone creates new repo when dir doesn't exist."""
+        from launcher_tui.handlers._meshchat_install import install_meshchat_clone
         handler = _make_handler()
         mock_run.return_value = MagicMock(returncode=0)
 
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             install_dir = __import__('pathlib').Path(tmpdir) / 'reticulum-meshchat'
-            result = handler._install_meshchat_clone(install_dir, None)
+            result = install_meshchat_clone(handler, install_dir, None)
             assert result is True
             # Verify git clone was called
             clone_call = mock_run.call_args_list[0]
@@ -386,34 +392,38 @@ class TestMeshChatInstaller:
     @patch('subprocess.run')
     def test_install_clone_pulls_existing(self, mock_run):
         """Clone pulls latest when dir already exists."""
+        from launcher_tui.handlers._meshchat_install import install_meshchat_clone
         handler = _make_handler()
         mock_run.return_value = MagicMock(returncode=0, stderr='')
 
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             install_dir = __import__('pathlib').Path(tmpdir)
-            result = handler._install_meshchat_clone(install_dir, None)
+            result = install_meshchat_clone(handler, install_dir, None)
             assert result is True
             pull_call = mock_run.call_args_list[0]
             assert 'pull' in pull_call[0][0]
 
     def test_install_service_creates_unit_file(self):
         """Service creation writes a valid systemd unit file."""
+        from launcher_tui.handlers import _meshchat_install as _mc
         handler = _make_handler()
 
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             install_dir = __import__('pathlib').Path(tmpdir)
 
-            with patch('launcher_tui.handlers.meshchat.get_real_user_home',
-                       return_value=__import__('pathlib').Path('/home/testuser')):
+            with patch.object(_mc, 'get_real_user_home',
+                              return_value=__import__('pathlib').Path('/home/testuser')):
                 with patch('subprocess.run', return_value=MagicMock(returncode=0)):
                     with patch('builtins.open', create=True) as mock_open:
                         mock_open.return_value.__enter__ = lambda s: s
                         mock_open.return_value.__exit__ = MagicMock(return_value=False)
                         mock_open.return_value.write = MagicMock()
 
-                        result = handler._install_meshchat_service(install_dir, 'testuser')
+                        result = _mc.install_meshchat_service(
+                            handler, install_dir, 'testuser',
+                        )
                         # Verify write was called with unit file content
                         if mock_open.return_value.write.called:
                             content = mock_open.return_value.write.call_args[0][0]
