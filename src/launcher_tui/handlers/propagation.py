@@ -215,37 +215,43 @@ class PropagationHandler(BaseHandler):
         self.ctx.dialog.msgbox("VOACAP Prediction", "\n".join(lines), height=20, width=60)
 
     def _configure_prop_sources(self):
-        while True:
+        def _source_choices():
             src_result = propagation.get_sources()
             sources = src_result.data.get('sources', {}) if src_result.success else {}
-            noaa_status = "ON (always)"
             ohc = sources.get('openhamclock', {})
             ohc_status = "ON" if ohc.get('enabled') else "OFF"
             hc = sources.get('hamclock', {})
             hc_status = "ON" if hc.get('enabled') else "OFF"
             pskr = sources.get('pskreporter', {})
             pskr_status = "ON" if pskr.get('enabled') else "OFF"
-            choices = [
-                ("noaa", f"NOAA SWPC           {noaa_status}"),
+            return [
+                ("noaa", f"NOAA SWPC           ON (always)"),
                 ("ohc", f"OpenHamClock        {ohc_status}"),
                 ("hc", f"HamClock (legacy)   {hc_status}"),
                 ("pskr", f"PSK Reporter        {pskr_status}"),
                 ("test", "Test Connectivity    Check all sources"),
-                ("back", "Back"),
             ]
-            choice = self.ctx.dialog.menu("Propagation Sources", "Configure data sources (NOAA is always primary):", choices)
-            if choice is None or choice == "back":
-                break
-            if choice == "noaa":
-                self.ctx.dialog.msgbox("NOAA SWPC", "NOAA Space Weather Prediction Center is the primary\ndata source and is always enabled.\n\nNo configuration needed — uses public API.")
-            elif choice == "ohc":
-                self._toggle_rest_source(DataSource.OPENHAMCLOCK, "OpenHamClock", 3000)
-            elif choice == "hc":
-                self._toggle_rest_source(DataSource.HAMCLOCK, "HamClock", 8080)
-            elif choice == "pskr":
-                self._toggle_psk_reporter()
-            elif choice == "test":
-                self._test_prop_sources()
+
+        def _show_noaa_info():
+            self.ctx.dialog.msgbox(
+                "NOAA SWPC",
+                "NOAA Space Weather Prediction Center is the primary\n"
+                "data source and is always enabled.\n\n"
+                "No configuration needed — uses public API."
+            )
+
+        dispatch = {
+            "noaa": ("NOAA SWPC Info", _show_noaa_info),
+            "ohc": ("OpenHamClock", self._toggle_rest_source, DataSource.OPENHAMCLOCK, "OpenHamClock", 3000),
+            "hc": ("HamClock", self._toggle_rest_source, DataSource.HAMCLOCK, "HamClock", 8080),
+            "pskr": ("PSK Reporter", self._toggle_psk_reporter),
+            "test": ("Test Sources", self._test_prop_sources),
+        }
+        self.run_menu_loop(
+            "Propagation Sources",
+            "Configure data sources (NOAA is always primary):",
+            _source_choices, dispatch,
+        )
 
     def _toggle_rest_source(self, source, name, default_port):
         src_result = propagation.get_sources()

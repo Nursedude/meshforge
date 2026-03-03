@@ -183,37 +183,28 @@ class SettingsHandler(BaseHandler):
 
     def _configure_propagation_sources(self):
         """Configure propagation data sources."""
-        while True:
-            choices = [
-                ("noaa", "NOAA SWPC (Primary - always active)"),
-                ("pskreporter", "PSKReporter MQTT (Real-time spots)"),
-                ("openhamclock", "OpenHamClock (Optional)"),
-                ("hamclock", "HamClock Legacy (Optional)"),
-                ("test", "Test All Sources"),
-                ("back", "Back"),
-            ]
+        choices = [
+            ("noaa", "NOAA SWPC (Primary - always active)"),
+            ("pskreporter", "PSKReporter MQTT (Real-time spots)"),
+            ("openhamclock", "OpenHamClock (Optional)"),
+            ("hamclock", "HamClock Legacy (Optional)"),
+            ("test", "Test All Sources"),
+        ]
 
-            choice = self.ctx.dialog.menu(
-                "Propagation Data Sources",
-                "NOAA is always active as primary source.\n"
-                "PSKReporter provides real-time HF spots via MQTT.\n"
-                "OpenHamClock adds VOACAP, DX spots.",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "noaa": ("NOAA SWPC Test", self._test_noaa_source),
-                "pskreporter": ("PSKReporter Config", self._configure_pskreporter),
-                "openhamclock": ("OpenHamClock Config", self._configure_openhamclock),
-                "hamclock": ("HamClock Legacy Config", self._configure_hamclock_legacy),
-                "test": ("Test All Sources", self._test_all_sources),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        dispatch = {
+            "noaa": ("NOAA SWPC Test", self._test_noaa_source),
+            "pskreporter": ("PSKReporter Config", self._configure_pskreporter),
+            "openhamclock": ("OpenHamClock Config", self._configure_openhamclock),
+            "hamclock": ("HamClock Legacy Config", self._configure_hamclock_legacy),
+            "test": ("Test All Sources", self._test_all_sources),
+        }
+        self.run_menu_loop(
+            "Propagation Data Sources",
+            "NOAA is always active as primary source.\n"
+            "PSKReporter provides real-time HF spots via MQTT.\n"
+            "OpenHamClock adds VOACAP, DX spots.",
+            choices, dispatch,
+        )
 
     def _test_noaa_source(self):
         """Test NOAA SWPC connectivity."""

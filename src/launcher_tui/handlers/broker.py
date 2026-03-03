@@ -436,53 +436,44 @@ class BrokerHandler(BaseHandler):
 
     def _mosquitto_service_menu(self):
         """Manage the local mosquitto service."""
-        while True:
+        def _mosquitto_choices():
             installed, inst_msg = check_mosquitto_installed()
-            running, run_msg = check_mosquitto_running()
-
+            running, _ = check_mosquitto_running()
             if not installed:
-                choices = [
-                    ("install", "Install Mosquitto"),
-                    ("back", "Back"),
-                ]
-                subtitle = f"Status: {inst_msg}"
-            else:
-                status = "Running" if running else "Stopped"
-                choices = [
-                    ("status", f"Status: {status}"),
-                    ("start", "Start Mosquitto"),
-                    ("stop", "Stop Mosquitto"),
-                    ("restart", "Restart Mosquitto"),
-                    ("enable", "Enable at Boot"),
-                    ("logs", "View Logs"),
-                    ("test", "Test Connection"),
-                    ("back", "Back"),
-                ]
-                subtitle = f"Mosquitto: {status}"
+                return [("install", "Install Mosquitto")]
+            status = "Running" if running else "Stopped"
+            return [
+                ("status", f"Status: {status}"),
+                ("start", "Start Mosquitto"),
+                ("stop", "Stop Mosquitto"),
+                ("restart", "Restart Mosquitto"),
+                ("enable", "Enable at Boot"),
+                ("logs", "View Logs"),
+                ("test", "Test Connection"),
+            ]
 
-            choice = self.ctx.dialog.menu("Mosquitto Service", subtitle, choices)
+        def _mosquitto_restart():
+            success, msg = restart_mosquitto()
+            self.ctx.dialog.msgbox("Restart" if success else "Error", msg)
 
-            if choice is None or choice == "back":
-                break
+        def _mosquitto_enable():
+            success, msg = enable_mosquitto_at_boot()
+            self.ctx.dialog.msgbox("Enabled" if success else "Error", msg)
 
-            if choice == "install":
-                self._install_mosquitto()
-            elif choice == "status":
-                self._show_mosquitto_status()
-            elif choice == "start":
-                self._mosquitto_action("start")
-            elif choice == "stop":
-                self._mosquitto_action("stop")
-            elif choice == "restart":
-                success, msg = restart_mosquitto()
-                self.ctx.dialog.msgbox("Restart" if success else "Error", msg)
-            elif choice == "enable":
-                success, msg = enable_mosquitto_at_boot()
-                self.ctx.dialog.msgbox("Enabled" if success else "Error", msg)
-            elif choice == "logs":
-                self._show_mosquitto_logs()
-            elif choice == "test":
-                self._test_mosquitto_connection()
+        dispatch = {
+            "install": ("Install Mosquitto", self._install_mosquitto),
+            "status": ("Mosquitto Status", self._show_mosquitto_status),
+            "start": ("Start Mosquitto", self._mosquitto_action, "start"),
+            "stop": ("Stop Mosquitto", self._mosquitto_action, "stop"),
+            "restart": ("Restart Mosquitto", _mosquitto_restart),
+            "enable": ("Enable at Boot", _mosquitto_enable),
+            "logs": ("View Logs", self._show_mosquitto_logs),
+            "test": ("Test Connection", self._test_mosquitto_connection),
+        }
+        self.run_menu_loop(
+            "Mosquitto Service", "Manage the local mosquitto service:",
+            _mosquitto_choices, dispatch,
+        )
 
     def _install_mosquitto(self):
         """Install mosquitto via apt."""
