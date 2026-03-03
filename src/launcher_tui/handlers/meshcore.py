@@ -202,8 +202,8 @@ class MeshCoreHandler(BaseHandler):
             mc = _MeshCoreConfig()
             config.meshcore = mc
 
-        while True:
-            choices = [
+        def _choices():
+            return [
                 ("type", f"Connection Type     {mc.connection_type}"),
                 ("device", f"Device Path         {mc.device_path}"),
                 ("baud", f"Baud Rate           {mc.baud_rate}"),
@@ -213,18 +213,9 @@ class MeshCoreHandler(BaseHandler):
                 ("dms", f"Bridge DMs          {'Yes' if mc.bridge_dms else 'No'}"),
                 ("sim", f"Simulation Mode     {'Yes' if mc.simulation_mode else 'No'}"),
                 ("save", "Save Configuration"),
-                ("back", "Back"),
             ]
 
-            choice = self.ctx.dialog.menu(
-                "MeshCore Configuration",
-                "Configure MeshCore companion radio connection:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
+        def _handle(choice):
             if choice == "type":
                 type_choice = self.ctx.dialog.menu(
                     "Connection Type",
@@ -323,6 +314,12 @@ class MeshCoreHandler(BaseHandler):
                     )
                 except Exception as e:
                     self.ctx.dialog.msgbox("Save Error", f"Could not save config:\n\n{e}")
+
+        self.run_menu_loop(
+            "MeshCore Configuration",
+            "Configure MeshCore companion radio connection:",
+            _choices, default_handler=_handle,
+        )
 
     def _meshcore_toggle(self):
         """Enable or disable MeshCore in gateway config."""

@@ -50,27 +50,17 @@ class SettingsHandler(BaseHandler):
         """Configure application log verbosity."""
         from utils.logging_config import set_log_level, _component_levels, _global_log_level
 
-        current_name = logging.getLevelName(_global_log_level)
-
-        while True:
-            choices = [
-                ("global", f"Global Level            Currently: {current_name}"),
+        def _choices():
+            current = logging.getLevelName(_global_log_level)
+            return [
+                ("global", f"Global Level            Currently: {current}"),
                 ("gateway", "Gateway Bridge          " + logging.getLevelName(_component_levels.get('gateway', logging.DEBUG))),
                 ("meshtastic", "Meshtastic              " + logging.getLevelName(_component_levels.get('meshtastic', logging.INFO))),
                 ("rns", "RNS / Reticulum         " + logging.getLevelName(_component_levels.get('rns', logging.DEBUG))),
                 ("hamclock", "HamClock                " + logging.getLevelName(_component_levels.get('hamclock', logging.DEBUG))),
-                ("back", "Back"),
             ]
 
-            choice = self.ctx.dialog.menu(
-                "Log Level Configuration",
-                "Adjust logging verbosity.\nLogs are written to ~/.config/meshforge/logs/",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
+        def _handle(choice):
             level_choices = [
                 ("DEBUG", "Debug        Most verbose, all details"),
                 ("INFO", "Info         Normal operation messages"),
@@ -88,7 +78,6 @@ class SettingsHandler(BaseHandler):
                 level = getattr(logging, selected)
                 if choice == "global":
                     set_log_level(level)
-                    current_name = selected
                 else:
                     set_log_level(level, component=choice)
                 self.ctx.dialog.msgbox(
@@ -96,6 +85,12 @@ class SettingsHandler(BaseHandler):
                     f"{choice.title()} log level set to {selected}.\n\n"
                     "Change takes effect immediately for this session."
                 )
+
+        self.run_menu_loop(
+            "Log Level Configuration",
+            "Adjust logging verbosity.\nLogs are written to ~/.config/meshforge/logs/",
+            _choices, default_handler=_handle,
+        )
 
     def _configure_deployment_profile(self):
         """Select deployment profile."""
@@ -234,32 +229,23 @@ class SettingsHandler(BaseHandler):
 
     def _configure_pskreporter(self):
         """Configure PSKReporter MQTT."""
-        while True:
+        def _choices():
             pskr_cfg = propagation._sources.get(propagation.DataSource.PSKREPORTER)
             current_call = pskr_cfg.callsign if pskr_cfg else ""
             current_bands = ", ".join(pskr_cfg.bands) if pskr_cfg and pskr_cfg.bands else "all"
             is_enabled = pskr_cfg.enabled if pskr_cfg else False
             status = "ENABLED" if is_enabled else "disabled"
-
-            choices = [
+            return [
                 ("enable", f"Enable/Disable (currently: {status})"),
                 ("callsign", f"Set Callsign Filter ({current_call or 'none'})"),
                 ("bands", f"Set Band Filter ({current_bands})"),
                 ("test", "Test Connection"),
-                ("back", "Back"),
             ]
 
-            choice = self.ctx.dialog.menu(
-                "PSKReporter MQTT",
-                "Real-time amateur radio reception reports\n"
-                "from mqtt.pskreporter.info (by M0LTE).\n"
-                "Provides band activity & propagation data.\n"
-                f"\nStatus: {status}  Callsign: {current_call or 'all'}",
-                choices,
-            )
-
-            if choice is None or choice == "back":
-                break
+        def _handle(choice):
+            pskr_cfg = propagation._sources.get(propagation.DataSource.PSKREPORTER)
+            current_call = pskr_cfg.callsign if pskr_cfg else ""
+            is_enabled = pskr_cfg.enabled if pskr_cfg else False
 
             if choice == "enable":
                 new_state = not is_enabled
@@ -328,6 +314,14 @@ class SettingsHandler(BaseHandler):
                         "Ensure PSKReporter is enabled and\n"
                         "paho-mqtt is installed."
                     )
+
+        self.run_menu_loop(
+            "PSKReporter MQTT",
+            "Real-time amateur radio reception reports\n"
+            "from mqtt.pskreporter.info (by M0LTE).\n"
+            "Provides band activity & propagation data.",
+            _choices, default_handler=_handle,
+        )
 
     def _configure_openhamclock(self):
         """Configure OpenHamClock."""

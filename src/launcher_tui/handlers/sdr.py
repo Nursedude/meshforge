@@ -324,16 +324,15 @@ class SDRHandler(BaseHandler):
         if rf is None:
             self.ctx.dialog.msgbox("Unavailable", "RF Awareness module not loaded.")
             return
-        settings_choices = [
-            ("gain", f"Gain (current: {rf._gain:.0f} dB)"),
-            ("sample_rate", f"Sample Rate (current: {rf._sample_rate / 1e6:.1f} MSPS)"),
-            ("fft_size", f"FFT Size (current: {rf._fft_size})"),
-            ("back", "Back"),
-        ]
-        while True:
-            choice = self.ctx.dialog.menu("SDR Settings", "Configure SDR parameters:", settings_choices)
-            if choice is None or choice == "back":
-                break
+
+        def _choices():
+            return [
+                ("gain", f"Gain (current: {rf._gain:.0f} dB)"),
+                ("sample_rate", f"Sample Rate (current: {rf._sample_rate / 1e6:.1f} MSPS)"),
+                ("fft_size", f"FFT Size (current: {rf._fft_size})"),
+            ]
+
+        def _handle(choice):
             if choice == "gain":
                 gain_str = self.ctx.dialog.inputbox("Gain", "Enter gain in dB (0-45 for Airspy):", str(rf._gain))
                 if gain_str:
@@ -360,9 +359,5 @@ class SDRHandler(BaseHandler):
                 if fft_choice:
                     rf._fft_size = int(fft_choice)
                     self.ctx.dialog.msgbox("Updated", f"FFT size set to {fft_choice}")
-            settings_choices = [
-                ("gain", f"Gain (current: {rf._gain:.0f} dB)"),
-                ("sample_rate", f"Sample Rate (current: {rf._sample_rate / 1e6:.1f} MSPS)"),
-                ("fft_size", f"FFT Size (current: {rf._fft_size})"),
-                ("back", "Back"),
-            ]
+
+        self.run_menu_loop("SDR Settings", "Configure SDR parameters:", _choices, default_handler=_handle)

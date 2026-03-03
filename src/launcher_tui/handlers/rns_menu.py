@@ -334,61 +334,45 @@ class RNSMenuHandler(BaseHandler):
 
     def _rns_set_node_positions(self):
         """Set GPS positions for RNS nodes so they appear on the map."""
-        while True:
-            clear_screen()
-            print("=== Set RNS Node Positions ===\n")
-            print("NomadNet nodes don't broadcast GPS. Set positions manually")
-            print("so your RNS nodes appear on the live network map.\n")
+        rns_nodes = []
 
-            # Load node tracker and cache
+        def _choices():
+            nonlocal rns_nodes
             try:
                 from gateway.node_tracker import UnifiedNodeTracker
                 tracker = UnifiedNodeTracker()
                 rns_nodes = tracker.get_rns_nodes()
-            except Exception as e:
-                print(f"Error loading node tracker: {e}")
-                self.ctx.wait_for_enter()
-                return
+            except Exception:
+                rns_nodes = []
+                return []
 
             if not rns_nodes:
-                print("No RNS nodes discovered yet.")
-                print("\nMake sure rnsd is running and you've exchanged announces")
-                print("with other nodes (via NomadNet or Sideband).")
-                self.ctx.wait_for_enter()
-                return
+                return []
 
-            # Build menu of nodes
-            choices = []
-            print(f"{'#':<3} {'Name':<20} {'Hash':<12} {'Position'}")
-            print("-" * 60)
+            items = []
             for i, node in enumerate(rns_nodes):
                 if node.position.is_valid():
                     pos_str = f"({node.position.latitude:.4f}, {node.position.longitude:.4f})"
                 else:
                     pos_str = "NOT SET"
                 name = node.name[:18] if node.name else node.id[:18]
-                hash_short = node.id.replace('rns_', '')[:10]
-                print(f"{i+1:<3} {name:<20} {hash_short:<12} {pos_str}")
-                choices.append((str(i), f"{name} - {pos_str}"))
+                items.append((str(i), f"{name} - {pos_str}"))
+            return items
 
-            choices.append(("back", "Back to RNS Menu"))
-            print()
-
-            choice = self.ctx.dialog.menu(
-                "Select Node",
-                "Choose a node to set its position:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
+        def _handle(choice):
             try:
                 idx = int(choice)
                 if 0 <= idx < len(rns_nodes):
                     self._set_single_node_position(rns_nodes[idx])
             except ValueError:
                 pass
+
+        self.run_menu_loop(
+            "Set RNS Node Positions",
+            "NomadNet nodes don't broadcast GPS. Set positions manually\n"
+            "so your RNS nodes appear on the live network map.",
+            _choices, default_handler=_handle,
+        )
 
     def _set_single_node_position(self, node):
         """Set position for a single RNS node."""

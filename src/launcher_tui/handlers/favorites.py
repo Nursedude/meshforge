@@ -120,65 +120,47 @@ class FavoritesHandler(BaseHandler):
             self.ctx.dialog.msgbox("Error", f"Failed to show favorites:\n{e}")
 
     def _show_all_nodes_with_favorites(self):
-        while True:
-            try:
-                tracker = self._get_node_tracker()
-                if not tracker:
-                    self.ctx.dialog.msgbox(
-                        "Unavailable",
-                        "Node tracker not available.\n\n"
-                        "Start the gateway or MQTT monitor first."
-                    )
-                    return
+        tracker = self._get_node_tracker()
+        if not tracker:
+            self.ctx.dialog.msgbox(
+                "Unavailable",
+                "Node tracker not available.\n\n"
+                "Start the gateway or MQTT monitor first."
+            )
+            return
 
-                nodes = tracker.get_meshtastic_nodes()
+        def _choices():
+            nodes = tracker.get_meshtastic_nodes()
+            if not nodes:
+                return []
 
-                if not nodes:
-                    self.ctx.dialog.msgbox(
-                        "No Nodes",
-                        "No Meshtastic nodes discovered yet.\n\n"
-                        "Connect to meshtasticd or start MQTT monitoring\n"
-                        "to discover nodes."
-                    )
-                    return
+            nodes.sort(key=lambda n: (
+                0 if getattr(n, 'is_favorite', False) else 1,
+                n.name.lower() if n.name else "zzz"
+            ))
 
-                nodes.sort(key=lambda n: (
-                    0 if getattr(n, 'is_favorite', False) else 1,
-                    n.name.lower() if n.name else "zzz"
+            items = []
+            for node in nodes[:75]:
+                is_fav = getattr(node, 'is_favorite', False)
+                star = "[*]" if is_fav else "[ ]"
+
+                name = node.name or node.short_name or "Unknown"
+                name = name[:20]
+                mesh_id = node.meshtastic_id or node.id
+
+                status = "+" if node.is_online else "-"
+
+                items.append((
+                    mesh_id,
+                    f"{star} {name} ({mesh_id[-8:]}) {status}"
                 ))
+            return items
 
-                node_choices = []
-                for node in nodes[:75]:
-                    is_fav = getattr(node, 'is_favorite', False)
-                    star = "[*]" if is_fav else "[ ]"
-
-                    name = node.name or node.short_name or "Unknown"
-                    name = name[:20]
-                    mesh_id = node.meshtastic_id or node.id
-
-                    status = "+" if node.is_online else "-"
-
-                    node_choices.append((
-                        mesh_id,
-                        f"{star} {name} ({mesh_id[-8:]}) {status}"
-                    ))
-
-                node_choices.append(("back", "Back"))
-
-                selected = self.ctx.dialog.menu(
-                    f"All Nodes ({len(nodes)})",
-                    "[*] = favorite | Select to toggle:",
-                    node_choices
-                )
-
-                if selected and selected != "back":
-                    self._toggle_favorite_on_node(selected)
-                    continue
-                return
-
-            except Exception as e:
-                self.ctx.dialog.msgbox("Error", f"Failed to show nodes:\n{e}")
-                return
+        self.run_menu_loop(
+            "All Nodes",
+            "[*] = favorite | Select to toggle:",
+            _choices, default_handler=self._toggle_favorite_on_node,
+        )
 
     def _show_favorite_node_details(self, node_id: str):
         try:
