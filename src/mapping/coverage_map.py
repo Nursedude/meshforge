@@ -1,0 +1,1126 @@
+"""
+Coverage Map Generator for MeshForge.
+
+Generates interactive Folium-based maps showing:
+- Node locations with status indicators
+- Coverage estimation circles
+- Network links/paths
+- Terrain analysis overlays
+
+Output: Self-contained HTML files viewable in any browser.
+
+Supports offline operation with local tile caching.
+
+Usage:
+    from utils.coverage_map import CoverageMapGenerator
+
+    generator = CoverageMapGenerator()
+    generator.add_nodes(nodes)
+    generator.generate("coverage_map.html")
+
+    # Offline mode
+    generator = CoverageMapGenerator(offline=True)
+    generator.generate("offline_map.html")
+"""
+
+import json
+import logging
+import math
+from html import escape as html_escape
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any
+
+from utils.safe_import import safe_import
+
+# Import centralized path utility for sudo compatibility
+from utils.paths import get_real_user_home
+
+# Tile caching (extracted to _tile_cache.py for file size compliance)
+from mapping._tile_cache import (
+    OFFLINE_TILE_PROVIDERS,
+    TileCacheManager,
+    get_tile_cache_dir,
+    download_tile,
+    cache_tiles_for_area,
+)
+
+# Optional: Folium map library
+_folium, _HAS_FOLIUM = safe_import('folium')
+_folium_plugins, _HAS_FOLIUM_PLUGINS = safe_import('folium.plugins')
+
+# Optional: Terrain analysis
+_LOSAnalyzer, _SRTMProvider, _FlatTerrainProvider, _HAS_TERRAIN = safe_import(
+    'utils.terrain', 'LOSAnalyzer', 'SRTMProvider', 'FlatTerrainProvider'
+)
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class MapNode:
+    """Node for mapping with required fields."""
+    id: str
+    name: str
+    latitude: float
+    longitude: float
+    network: str = "meshtastic"  # meshtastic, rns
+    is_online: bool = False
+    is_gateway: bool = False
+    via_mqtt: bool = False
+    snr: Optional[float] = None
+    rssi: Optional[int] = None
+    battery: Optional[int] = None
+    altitude: Optional[float] = None
+    last_seen: str = ""
+    hardware: str = ""
+    role: str = ""
+
+
+def _compute_heatmap_weight(node: MapNode, weight_by: str) -> float:
+    """
+    Compute heatmap intensity weight for a node based on the weighting mode.
+
+    Args:
+        node: MapNode with optional snr/rssi fields
+        weight_by: "density", "snr", or "rssi"
+
+    Returns:
+        Float weight in [0.0, 1.0]
+    """
+    if weight_by == "snr":
+        if node.snr is not None:
+            # Normalize SNR: -20 dB (worst) → 0.0, +10 dB (best) → 1.0
+            return max(0.0, min(1.0, (node.snr + 20.0) / 30.0))
+        # No SNR data — use presence-based fallback
+        return 0.5 if node.is_online else 0.1
+
+    elif weight_by == "rssi":
+        if node.rssi is not None:
+            # Normalize RSSI: -137 dBm (worst) → 0.0, -70 dBm (best) → 1.0
+            return max(0.0, min(1.0, (node.rssi + 137.0) / 67.0))
+        return 0.5 if node.is_online else 0.1
+
+    else:
+        # density mode — original behavior
+        return 1.0 if node.is_online else 0.3
+
+
+class CoverageMapGenerator:
+    """
+    Interactive coverage map generator using Folium.
+
+    Features:
+    - Node markers with popup info
+    - Coverage radius estimation
+    - Heatmaps for signal density and signal quality
+    - Multiple tile layers (OSM, satellite, terrain)
+    - Export to standalone HTML
+    """
+
+    # Estimated coverage radius by LoRa preset (meters)
+    PRESET_RANGES = {
+        "LONG_FAST": 10000,      # ~10km typical
+        "LONG_SLOW": 20000,      # ~20km
+        "MEDIUM_FAST": 5000,     # ~5km
+        "MEDIUM_SLOW": 8000,     # ~8km
+        "SHORT_FAST": 2000,      # ~2km
+        "SHORT_SLOW": 3000,      # ~3km
+        "SHORT_TURBO": 1000,     # ~1km
+        "DEFAULT": 5000,         # Default assumption
+    }
+
+    # Custom node marker icons by role
+    # Maps Meshtastic role names to FontAwesome icons
+    NODE_ICONS = {
+        'ROUTER': {'icon': 'tower-broadcast', 'color': 'red', 'prefix': 'fa'},
+        'ROUTER_CLIENT': {'icon': 'tower-broadcast', 'color': 'orange', 'prefix': 'fa'},
+        'REPEATER': {'icon': 'arrows-repeat', 'color': 'purple', 'prefix': 'fa'},
+        'CLIENT': {'icon': 'mobile', 'color': 'blue', 'prefix': 'fa'},
+        'CLIENT_MUTE': {'icon': 'mobile', 'color': 'gray', 'prefix': 'fa'},
+        'CLIENT_HIDDEN': {'icon': 'mobile', 'color': 'lightgray', 'prefix': 'fa'},
+        'TRACKER': {'icon': 'location-dot', 'color': 'green', 'prefix': 'fa'},
+        'SENSOR': {'icon': 'thermometer', 'color': 'cadetblue', 'prefix': 'fa'},
+        'TAK': {'icon': 'crosshairs', 'color': 'darkred', 'prefix': 'fa'},
+        'TAK_TRACKER': {'icon': 'crosshairs', 'color': 'darkgreen', 'prefix': 'fa'},
+        'LOST_AND_FOUND': {'icon': 'magnifying-glass', 'color': 'darkblue', 'prefix': 'fa'},
+        # Additional roles that may be added in future Meshtastic versions
+        'GATEWAY': {'icon': 'tower-broadcast', 'color': 'purple', 'prefix': 'fa'},
+        'RELAY': {'icon': 'arrows-repeat', 'color': 'orange', 'prefix': 'fa'},
+        'DEFAULT': {'icon': 'circle', 'color': 'blue', 'prefix': 'fa'},
+    }
+
+    # Pattern-based icon fallbacks for unknown roles
+    # Allows graceful handling of new Meshtastic roles
+    ROLE_PATTERNS = [
+        ('ROUTER', {'icon': 'tower-broadcast', 'color': 'red', 'prefix': 'fa'}),
+        ('CLIENT', {'icon': 'mobile', 'color': 'blue', 'prefix': 'fa'}),
+        ('TRACK', {'icon': 'location-dot', 'color': 'green', 'prefix': 'fa'}),
+        ('SENSOR', {'icon': 'thermometer', 'color': 'cadetblue', 'prefix': 'fa'}),
+        ('TAK', {'icon': 'crosshairs', 'color': 'darkred', 'prefix': 'fa'}),
+        ('REPEAT', {'icon': 'arrows-repeat', 'color': 'purple', 'prefix': 'fa'}),
+        ('GATEWAY', {'icon': 'tower-broadcast', 'color': 'purple', 'prefix': 'fa'}),
+    ]
+
+    # Track unknown roles for logging (avoid spam)
+    _unknown_roles_logged: set = set()
+
+    # Network-specific colors
+    NETWORK_COLORS = {
+        'meshtastic': '#4A90D9',  # Blue
+        'rns': '#50C878',          # Green
+        'both': '#9B59B6',         # Purple
+    }
+
+    def __init__(self, lora_preset: str = "DEFAULT", offline: bool = False,
+                 custom_markers: bool = True):
+        """
+        Initialize the map generator.
+
+        Args:
+            lora_preset: LoRa preset for coverage estimation
+            offline: Use offline/cached tiles only
+            custom_markers: Use custom markers based on node role
+        """
+        self._nodes: List[MapNode] = []
+        self._links: List[Tuple[str, str, Dict]] = []  # (from_id, to_id, props)
+        self._lora_preset = lora_preset
+        self._coverage_radius = self.PRESET_RANGES.get(lora_preset, 5000)
+        self._offline = offline
+        self._custom_markers = custom_markers
+        self._map = None  # Folium map object, set by generate()
+        self._rns_edges: List[Dict] = []  # RNS link quality edges
+        self._terrain_coverage: List[Dict] = []  # Terrain coverage grid points
+
+    @classmethod
+    def get_icon_for_role(cls, role: str) -> Dict[str, str]:
+        """Get icon configuration for a node role.
+
+        Uses exact match first, then pattern matching fallback for unknown roles.
+        This allows graceful handling of new Meshtastic roles.
+
+        Args:
+            role: Node role string (e.g., 'ROUTER', 'CLIENT', 'TRACKER')
+
+        Returns:
+            Dict with 'icon', 'color', 'prefix' keys
+        """
+        if not role:
+            return cls.NODE_ICONS['DEFAULT']
+
+        role_upper = role.upper().replace(' ', '_')
+
+        # Try exact match first
+        if role_upper in cls.NODE_ICONS:
+            return cls.NODE_ICONS[role_upper]
+
+        # Try pattern-based fallback
+        for pattern, icon_config in cls.ROLE_PATTERNS:
+            if pattern in role_upper:
+                # Log first occurrence of unknown role that matched a pattern
+                if role_upper not in cls._unknown_roles_logged:
+                    cls._unknown_roles_logged.add(role_upper)
+                    logger.debug(f"Unknown role '{role}' matched pattern '{pattern}'")
+                return icon_config
+
+        # No match - use default and log once
+        if role_upper not in cls._unknown_roles_logged:
+            cls._unknown_roles_logged.add(role_upper)
+            logger.info(f"Unknown node role '{role}', using default icon")
+        return cls.NODE_ICONS['DEFAULT']
+
+    def add_node(self, node: MapNode) -> None:
+        """Add a single node to the map."""
+        self._nodes.append(node)
+
+    def add_nodes(self, nodes: List[MapNode]) -> None:
+        """Add multiple nodes to the map."""
+        self._nodes.extend(nodes)
+
+    def add_nodes_from_geojson(self, geojson: Dict) -> None:
+        """Add nodes from GeoJSON FeatureCollection."""
+        for feature in geojson.get("features", []):
+            props = feature.get("properties", {})
+            geom = feature.get("geometry", {})
+            coords = geom.get("coordinates", [0, 0])
+
+            node = MapNode(
+                id=props.get("id", ""),
+                name=props.get("name", "Unknown"),
+                longitude=coords[0],
+                latitude=coords[1],
+                network=props.get("network", "meshtastic"),
+                is_online=props.get("is_online", False),
+                is_gateway=props.get("is_gateway", False),
+                via_mqtt=props.get("via_mqtt", False),
+                snr=props.get("snr"),
+                rssi=props.get("rssi"),
+                battery=props.get("battery"),
+                last_seen=props.get("last_seen", ""),
+                hardware=props.get("hardware", ""),
+                role=props.get("role", ""),
+            )
+            self._nodes.append(node)
+
+    def add_link(self, from_id: str, to_id: str, **props) -> None:
+        """Add a link between two nodes."""
+        self._links.append((from_id, to_id, props))
+
+    def add_link_with_quality(self, from_id: str, to_id: str, snr: float = None,
+                               rssi: int = None, bidirectional: bool = True) -> None:
+        """
+        Add a link with quality-based coloring (inspired by Stridetastic).
+
+        Args:
+            from_id: Source node ID
+            to_id: Destination node ID
+            snr: Signal-to-noise ratio in dB
+            rssi: Received signal strength indicator
+            bidirectional: True if link works both ways
+        """
+        # SNR-based color coding
+        # Excellent: > 10 dB (green)
+        # Good: 5-10 dB (light green)
+        # Marginal: 0-5 dB (yellow)
+        # Poor: -5 to 0 dB (orange)
+        # Bad: < -5 dB (red)
+        if snr is not None:
+            if snr > 10:
+                color = '#22c55e'  # Green
+                quality = 'Excellent'
+            elif snr > 5:
+                color = '#84cc16'  # Light green
+                quality = 'Good'
+            elif snr > 0:
+                color = '#eab308'  # Yellow
+                quality = 'Marginal'
+            elif snr > -5:
+                color = '#f97316'  # Orange
+                quality = 'Poor'
+            else:
+                color = '#ef4444'  # Red
+                quality = 'Bad'
+        else:
+            color = '#3b82f6'  # Blue (unknown)
+            quality = 'Unknown'
+
+        # Line weight based on quality
+        weight = 3 if snr and snr > 5 else 2
+
+        # Dashed line for unidirectional links
+        dash_array = None if bidirectional else '5, 10'
+
+        # Build label
+        label_parts = [f"Quality: {quality}"]
+        if snr is not None:
+            label_parts.append(f"SNR: {snr:.1f} dB")
+        if rssi is not None:
+            label_parts.append(f"RSSI: {rssi} dBm")
+        if not bidirectional:
+            label_parts.append("(One-way)")
+
+        self._links.append((from_id, to_id, {
+            'color': color,
+            'weight': weight,
+            'dash_array': dash_array,
+            'label': '<br>'.join(label_parts),
+            'snr': snr,
+            'rssi': rssi,
+            'bidirectional': bidirectional,
+        }))
+
+    def add_links_from_neighborinfo(self, neighbor_data: List[Dict]) -> None:
+        """
+        Add links from Meshtastic NeighborInfo packets.
+
+        Parses the standard NeighborInfo format from meshtastic telemetry.
+
+        Args:
+            neighbor_data: List of neighbor info dicts with structure:
+                {
+                    'node_id': '!abc123',
+                    'neighbors': [
+                        {'node_id': '!def456', 'snr': 8.5},
+                        {'node_id': '!ghi789', 'snr': -2.0},
+                    ]
+                }
+        """
+        # Track which links we've seen for bidirectional detection
+        seen_links = set()
+
+        for node_info in neighbor_data:
+            node_id = node_info.get('node_id', '')
+            neighbors = node_info.get('neighbors', [])
+
+            for neighbor in neighbors:
+                neighbor_id = neighbor.get('node_id', '')
+                snr = neighbor.get('snr')
+
+                if node_id and neighbor_id:
+                    # Check if reverse link exists
+                    reverse_key = (neighbor_id, node_id)
+                    forward_key = (node_id, neighbor_id)
+
+                    bidirectional = reverse_key in seen_links
+                    seen_links.add(forward_key)
+
+                    self.add_link_with_quality(
+                        from_id=node_id,
+                        to_id=neighbor_id,
+                        snr=snr,
+                        bidirectional=bidirectional
+                    )
+
+    def set_coverage_radius(self, meters: int) -> None:
+        """Set custom coverage radius in meters."""
+        self._coverage_radius = meters
+
+    def get_center(self) -> Tuple[float, float]:
+        """Calculate map center from nodes."""
+        if not self._nodes:
+            # Default to center of continental US
+            return (39.8283, -98.5795)
+
+        lats = [n.latitude for n in self._nodes if n.latitude is not None]
+        lons = [n.longitude for n in self._nodes if n.longitude is not None]
+
+        if not lats or not lons:
+            return (39.8283, -98.5795)
+
+        return (sum(lats) / len(lats), sum(lons) / len(lons))
+
+    def get_bounds(self) -> Optional[List[List[float]]]:
+        """Get bounding box for all nodes."""
+        if not self._nodes:
+            return None
+
+        lats = [n.latitude for n in self._nodes if n.latitude is not None]
+        lons = [n.longitude for n in self._nodes if n.longitude is not None]
+
+        if not lats or not lons:
+            return None
+
+        return [[min(lats), min(lons)], [max(lats), max(lons)]]
+
+    def generate(self, output_path: str = None, show_coverage: bool = True,
+                 show_links: bool = True, tile_layer: str = "OpenStreetMap") -> str:
+        """
+        Generate the coverage map HTML.
+
+        Args:
+            output_path: Output file path (default: ~/.cache/meshforge/coverage_map.html)
+            show_coverage: Show coverage radius circles
+            show_links: Show links between nodes
+            tile_layer: Base tile layer
+
+        Returns:
+            Path to generated HTML file
+        """
+        if not _HAS_FOLIUM or not _HAS_FOLIUM_PLUGINS:
+            # Folium not installed - use Leaflet.js fallback instead
+            logger.debug("Folium not installed, using Leaflet fallback")
+            return self._generate_fallback(output_path)
+
+        folium = _folium
+        MarkerCluster = getattr(_folium_plugins, 'MarkerCluster', None)
+        HeatMap = getattr(_folium_plugins, 'HeatMap', None)
+
+        # Determine output path
+        if output_path is None:
+            cache_dir = get_real_user_home() / ".cache" / "meshforge"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            output_path = str(cache_dir / "coverage_map.html")
+
+        # Create map centered on nodes
+        center = self.get_center()
+        m = folium.Map(
+            location=center,
+            zoom_start=10,
+            tiles=tile_layer
+        )
+        self._map = m
+
+        # Add tile layers
+        folium.TileLayer('OpenStreetMap', name='Street').add_to(m)
+        folium.TileLayer(
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            attr='Esri',
+            name='Satellite'
+        ).add_to(m)
+        folium.TileLayer(
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+            attr='Esri',
+            name='Terrain'
+        ).add_to(m)
+
+        # Create node groups
+        online_group = folium.FeatureGroup(name='Online Nodes')
+        offline_group = folium.FeatureGroup(name='Offline Nodes')
+        gateway_group = folium.FeatureGroup(name='Gateways')
+        coverage_group = folium.FeatureGroup(name='Coverage Areas', show=show_coverage)
+        links_group = folium.FeatureGroup(name='Links', show=show_links)
+
+        # Node lookup for links
+        node_lookup = {n.id: n for n in self._nodes}
+
+        # Add nodes
+        for node in self._nodes:
+            if not node.latitude or not node.longitude:
+                continue
+
+            # Create popup content
+            popup_html = self._create_popup(node)
+
+            # Determine marker style based on role (if custom markers enabled)
+            if self._custom_markers and node.role:
+                icon_config = self.get_icon_for_role(node.role)
+
+                # Adjust color for offline nodes
+                color = icon_config['color']
+                if not node.is_online:
+                    color = 'gray'
+                elif node.is_gateway:
+                    color = 'purple'
+
+                icon = folium.Icon(
+                    color=color,
+                    icon=icon_config['icon'],
+                    prefix=icon_config['prefix']
+                )
+
+                # Determine group
+                if node.is_gateway:
+                    group = gateway_group
+                elif node.is_online:
+                    group = online_group
+                else:
+                    group = offline_group
+
+            # Fallback: original style
+            elif node.is_gateway:
+                icon = folium.Icon(color='purple', icon='tower-broadcast', prefix='fa')
+                group = gateway_group
+            elif node.is_online:
+                icon = folium.Icon(color='green', icon='signal', prefix='fa')
+                group = online_group
+            else:
+                icon = folium.Icon(color='gray', icon='circle', prefix='fa')
+                group = offline_group
+
+            # Special icon for MQTT nodes
+            if node.via_mqtt:
+                icon = folium.Icon(
+                    color='blue' if node.is_online else 'lightgray',
+                    icon='cloud',
+                    prefix='fa'
+                )
+
+            # Add marker
+            marker = folium.Marker(
+                location=[node.latitude, node.longitude],
+                popup=folium.Popup(popup_html, max_width=300),
+                tooltip=node.name,
+                icon=icon
+            )
+            marker.add_to(group)
+
+            # Add coverage circle
+            if show_coverage and node.is_online:
+                folium.Circle(
+                    location=[node.latitude, node.longitude],
+                    radius=self._coverage_radius,
+                    color='green' if not node.is_gateway else 'purple',
+                    fill=True,
+                    fill_opacity=0.1,
+                    weight=1,
+                    popup=f"Coverage: ~{self._coverage_radius/1000:.1f}km"
+                ).add_to(coverage_group)
+
+        # Add links
+        if show_links:
+            for from_id, to_id, props in self._links:
+                from_node = node_lookup.get(from_id)
+                to_node = node_lookup.get(to_id)
+
+                if from_node and to_node:
+                    if (from_node.latitude and from_node.longitude and
+                        to_node.latitude and to_node.longitude):
+                        # Support dash_array for unidirectional links
+                        line_opts = {
+                            'locations': [
+                                [from_node.latitude, from_node.longitude],
+                                [to_node.latitude, to_node.longitude]
+                            ],
+                            'color': props.get('color', 'blue'),
+                            'weight': props.get('weight', 2),
+                            'opacity': 0.7,
+                            'popup': props.get('label', ''),
+                        }
+                        if props.get('dash_array'):
+                            line_opts['dash_array'] = props['dash_array']
+
+                        folium.PolyLine(**line_opts).add_to(links_group)
+
+        # Add groups to map
+        online_group.add_to(m)
+        offline_group.add_to(m)
+        gateway_group.add_to(m)
+        coverage_group.add_to(m)
+        links_group.add_to(m)
+
+        # Add RNS link quality layer if edges were set
+        if self._rns_edges:
+            self.add_rns_link_quality_layer(self._rns_edges)
+
+        # Add terrain coverage layer if data was set
+        if self._terrain_coverage:
+            self.add_terrain_coverage_layer(self._terrain_coverage)
+
+        # Add layer control
+        folium.LayerControl().add_to(m)
+
+        # Add stats box
+        stats_html = self._create_stats_html()
+        m.get_root().html.add_child(folium.Element(stats_html))
+
+        # Fit bounds if we have nodes
+        bounds = self.get_bounds()
+        if bounds:
+            m.fit_bounds(bounds, padding=[50, 50])
+
+        # Save map
+        m.save(output_path)
+        logger.info(f"Coverage map saved to: {output_path}")
+
+        return output_path
+
+    def _create_popup(self, node: MapNode) -> str:
+        """Create HTML popup content for a node."""
+        status = "Online" if node.is_online else "Offline"
+        status_color = "green" if node.is_online else "gray"
+
+        # Escape all external data to prevent XSS
+        name = html_escape(str(node.name)) if node.name else "Unknown"
+        node_id = html_escape(str(node.id)) if node.id else ""
+        network = html_escape(str(node.network).upper()) if node.network else ""
+
+        html = f"""
+        <div style="font-family: sans-serif; min-width: 200px;">
+            <h4 style="margin: 0 0 8px 0;">{name}</h4>
+            <div style="color: {status_color}; font-weight: bold; margin-bottom: 8px;">
+                ● {status}
+            </div>
+            <table style="font-size: 12px; border-collapse: collapse;">
+                <tr><td><b>ID:</b></td><td>{node_id}</td></tr>
+                <tr><td><b>Network:</b></td><td>{network}</td></tr>
+        """
+
+        if node.hardware:
+            html += f'<tr><td><b>Hardware:</b></td><td>{html_escape(str(node.hardware))}</td></tr>'
+        if node.role:
+            html += f'<tr><td><b>Role:</b></td><td>{html_escape(str(node.role))}</td></tr>'
+        if node.snr is not None:
+            html += f'<tr><td><b>SNR:</b></td><td>{node.snr:.1f} dB</td></tr>'
+        if node.rssi is not None:
+            html += f'<tr><td><b>RSSI:</b></td><td>{node.rssi} dBm</td></tr>'
+        if node.battery is not None:
+            html += f'<tr><td><b>Battery:</b></td><td>{node.battery}%</td></tr>'
+        if node.altitude is not None:
+            html += f'<tr><td><b>Altitude:</b></td><td>{node.altitude:.0f}m</td></tr>'
+        if node.last_seen:
+            html += f'<tr><td><b>Last seen:</b></td><td>{html_escape(str(node.last_seen))}</td></tr>'
+        if node.via_mqtt:
+            html += '<tr><td><b>Via:</b></td><td>MQTT</td></tr>'
+
+        html += """
+            </table>
+            <div style="margin-top: 8px; font-size: 11px; color: #666;">
+                Lat: {:.6f}, Lon: {:.6f}
+            </div>
+        </div>
+        """.format(node.latitude, node.longitude)
+
+        return html
+
+    def _create_stats_html(self) -> str:
+        """Create HTML for stats overlay."""
+        total = len(self._nodes)
+        online = len([n for n in self._nodes if n.is_online])
+        with_pos = len([n for n in self._nodes if n.latitude and n.longitude])
+        gateways = len([n for n in self._nodes if n.is_gateway])
+        via_mqtt = len([n for n in self._nodes if n.via_mqtt])
+        total_links = len(self._links)
+
+        # Check if we have quality-colored links
+        has_quality_links = any(props.get('snr') is not None for _, _, props in self._links)
+
+        # Link quality legend (only if we have quality data)
+        link_legend = ""
+        if has_quality_links:
+            link_legend = """
+            <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd;">
+                <div style="font-weight: bold; margin-bottom: 4px;">Link Quality (SNR)</div>
+                <div><span style="color: #22c55e;">━</span> Excellent (&gt;10dB)</div>
+                <div><span style="color: #84cc16;">━</span> Good (5-10dB)</div>
+                <div><span style="color: #eab308;">━</span> Marginal (0-5dB)</div>
+                <div><span style="color: #f97316;">━</span> Poor (-5-0dB)</div>
+                <div><span style="color: #ef4444;">━</span> Bad (&lt;-5dB)</div>
+                <div style="color: #888; font-size: 11px;">┄ = one-way link</div>
+            </div>
+            """
+
+        return f"""
+        <div style="
+            position: fixed;
+            bottom: 30px;
+            left: 10px;
+            background: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+            font-family: sans-serif;
+            font-size: 13px;
+            z-index: 1000;
+        ">
+            <div style="font-weight: bold; margin-bottom: 5px;">MeshForge Network</div>
+            <div>Total: {total} nodes</div>
+            <div style="color: green;">Online: {online}</div>
+            <div>Mapped: {with_pos}</div>
+            <div style="color: purple;">Gateways: {gateways}</div>
+            <div style="color: blue;">Via MQTT: {via_mqtt}</div>
+            <div>Links: {total_links}</div>
+            {link_legend}
+            <div style="font-size: 11px; color: #888; margin-top: 5px;">
+                Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+            </div>
+        </div>
+        """
+
+    def _generate_fallback(self, output_path: str = None) -> str:
+        """Generate simple HTML map without Folium."""
+        if output_path is None:
+            cache_dir = get_real_user_home() / ".cache" / "meshforge"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            output_path = str(cache_dir / "coverage_map.html")
+
+        center = self.get_center()
+        nodes_json = json.dumps([{
+            "id": n.id,
+            "name": n.name,
+            "lat": n.latitude,
+            "lon": n.longitude,
+            "online": n.is_online,
+            "gateway": n.is_gateway,
+            "mqtt": n.via_mqtt,
+        } for n in self._nodes if n.latitude and n.longitude])
+
+        html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>MeshForge Coverage Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body {{ margin: 0; padding: 0; }}
+        #map {{ width: 100%; height: 100vh; }}
+        .stats-box {{
+            position: fixed;
+            bottom: 30px;
+            left: 10px;
+            background: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+            font-family: sans-serif;
+            font-size: 13px;
+            z-index: 1000;
+        }}
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="stats-box">
+        <div style="font-weight: bold;">MeshForge Network</div>
+        <div id="stats"></div>
+    </div>
+    <script>
+        var nodes = {nodes_json};
+        var map = L.map('map').setView([{center[0]}, {center[1]}], 10);
+
+        L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+            attribution: '© OpenStreetMap'
+        }}).addTo(map);
+
+        var online = 0, gateways = 0, mqtt = 0;
+        nodes.forEach(function(node) {{
+            var color = node.online ? 'green' : 'gray';
+            if (node.gateway) color = 'purple';
+            if (node.mqtt) color = 'blue';
+
+            if (node.online) online++;
+            if (node.gateway) gateways++;
+            if (node.mqtt) mqtt++;
+
+            L.circleMarker([node.lat, node.lon], {{
+                radius: 8,
+                fillColor: color,
+                color: '#fff',
+                weight: 2,
+                opacity: 1,
+                fillOpacity: 0.8
+            }}).bindPopup('<b>' + node.name + '</b><br>ID: ' + node.id).addTo(map);
+        }});
+
+        document.getElementById('stats').innerHTML =
+            'Total: ' + nodes.length + '<br>' +
+            '<span style="color:green">Online: ' + online + '</span><br>' +
+            '<span style="color:purple">Gateways: ' + gateways + '</span><br>' +
+            '<span style="color:blue">Via MQTT: ' + mqtt + '</span>';
+
+        if (nodes.length > 0) {{
+            var bounds = nodes.map(n => [n.lat, n.lon]);
+            map.fitBounds(bounds, {{padding: [50, 50]}});
+        }}
+    </script>
+</body>
+</html>"""
+
+        with open(output_path, 'w') as f:
+            f.write(html)
+
+        logger.info(f"Fallback coverage map saved to: {output_path}")
+        return output_path
+
+    def generate_heatmap(self, output_path: str = None, radius: int = 25,
+                         weight_by: str = "density") -> str:
+        """
+        Generate a heatmap showing node density or signal quality.
+
+        Args:
+            output_path: Output file path
+            radius: Heatmap point radius
+            weight_by: Weighting mode — "density" (original), "snr", or "rssi"
+
+        Returns:
+            Path to generated HTML file
+        """
+        if not _HAS_FOLIUM or not _HAS_FOLIUM_PLUGINS:
+            logger.warning("Folium not installed, heatmap unavailable")
+            return ""
+
+        folium = _folium
+        HeatMap = getattr(_folium_plugins, 'HeatMap', None)
+
+        if output_path is None:
+            cache_dir = get_real_user_home() / ".cache" / "meshforge"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            output_path = str(cache_dir / "coverage_heatmap.html")
+
+        center = self.get_center()
+        m = folium.Map(location=center, zoom_start=10)
+
+        heat_data = []
+        for n in self._nodes:
+            if not n.latitude or not n.longitude:
+                continue
+            weight = _compute_heatmap_weight(n, weight_by)
+            heat_data.append([n.latitude, n.longitude, weight])
+
+        # Select gradient based on weighting mode
+        if weight_by in ("snr", "rssi"):
+            gradient = {
+                0.2: '#3b82f6',   # Blue (weak)
+                0.4: '#06b6d4',   # Cyan
+                0.6: '#22c55e',   # Green (good)
+                0.8: '#eab308',   # Yellow
+                1.0: '#ef4444',   # Red (strong)
+            }
+        else:
+            gradient = {0.4: 'blue', 0.65: 'lime', 1: 'red'}
+
+        if heat_data:
+            HeatMap(
+                heat_data,
+                radius=radius,
+                blur=15,
+                gradient=gradient,
+            ).add_to(m)
+
+        folium.LayerControl().add_to(m)
+        m.save(output_path)
+
+        logger.info(f"Heatmap ({weight_by}) saved to: {output_path}")
+        return output_path
+
+    # ── RNS Link Quality Layer ──
+
+    def set_rns_edges(self, edges: List[Dict]) -> None:
+        """
+        Set RNS topology edges for link quality overlay.
+
+        Call before generate() to include the layer automatically,
+        or call add_rns_link_quality_layer() directly on a stored map.
+
+        Args:
+            edges: List of edge dicts from NetworkTopology.to_dict()['edges']
+        """
+        self._rns_edges = edges or []
+
+    def add_rns_link_quality_layer(self, edges: List[Dict]) -> None:
+        """
+        Add a Folium FeatureGroup showing RNS link quality as colored polylines.
+
+        Each edge is drawn between its source and destination nodes (if both
+        have coordinates), color-coded by SNR quality:
+            green (#22c55e) — excellent (SNR > 5 dB)
+            yellow (#eab308) — good (0 to 5 dB)
+            orange (#f97316) — fair (-10 to 0 dB)
+            red (#ef4444)    — bad (< -10 dB)
+            gray (#6b7280)   — unknown (no SNR data)
+
+        Args:
+            edges: List of edge dicts, each with at minimum:
+                source_id, dest_id, and optionally snr, rssi, hops, is_active
+        """
+        if not _HAS_FOLIUM or self._map is None:
+            return
+
+        folium = _folium
+
+        # Build lookup: node_id -> (lat, lon)
+        node_coords = {}
+        for n in self._nodes:
+            if n.latitude and n.longitude:
+                node_coords[n.id] = (n.latitude, n.longitude)
+
+        if not node_coords or not edges:
+            return
+
+        fg = folium.FeatureGroup(name='RNS Link Quality', show=True)
+
+        for edge in edges:
+            src_id = edge.get('source_id', '')
+            dst_id = edge.get('dest_id', '')
+
+            src_coords = node_coords.get(src_id)
+            dst_coords = node_coords.get(dst_id)
+            if not src_coords or not dst_coords:
+                continue
+
+            snr = edge.get('snr')
+            rssi = edge.get('rssi')
+            hops = edge.get('hops', 0)
+            is_active = edge.get('is_active', True)
+
+            # Color by SNR quality
+            color, quality = _snr_to_link_color(snr)
+
+            # Line weight: active=3, inactive=1
+            weight = 3 if is_active else 1
+            dash_array = None if is_active else '5, 10'
+
+            # Build tooltip
+            tooltip_parts = [f"{src_id} \u2192 {dst_id}", f"Quality: {quality}"]
+            if snr is not None:
+                tooltip_parts.append(f"SNR: {snr:.1f} dB")
+            if rssi is not None:
+                tooltip_parts.append(f"RSSI: {rssi} dBm")
+            if hops:
+                tooltip_parts.append(f"Hops: {hops}")
+            tooltip_text = '<br>'.join(tooltip_parts)
+
+            folium.PolyLine(
+                locations=[src_coords, dst_coords],
+                color=color,
+                weight=weight,
+                opacity=0.8,
+                dash_array=dash_array,
+                tooltip=tooltip_text,
+            ).add_to(fg)
+
+        fg.add_to(self._map)
+
+    # ── Terrain Coverage Layer ──
+
+    def set_terrain_coverage(self, coverage_points: List[Dict]) -> None:
+        """Set terrain coverage data for overlay.
+
+        Call before generate() to include the layer automatically.
+
+        Args:
+            coverage_points: List of dicts from LOSAnalyzer.coverage_grid()
+                with lat, lon, is_clear, total_loss_db, terrain_loss_db,
+                fresnel_clearance_pct, distance_m, bearing keys.
+        """
+        self._terrain_coverage = coverage_points or []
+
+    def add_terrain_coverage_layer(self, points: List[Dict]) -> None:
+        """Add terrain coverage overlay as colored circles on the Folium map.
+
+        Each point is colored by total path loss and LOS clearance:
+            green  -- clear LOS, low loss (< 120 dB)
+            yellow -- clear, moderate loss (120-140 dB)
+            orange -- clear, high loss (140-160 dB)
+            red    -- obstructed or very high loss (> 160 dB)
+
+        Args:
+            points: Coverage grid results from LOSAnalyzer.coverage_grid()
+        """
+        if not _HAS_FOLIUM or self._map is None:
+            return
+
+        folium = _folium
+        fg = folium.FeatureGroup(name='Terrain Coverage', show=True)
+
+        for pt in points:
+            lat = pt.get('lat', 0)
+            lon = pt.get('lon', 0)
+            is_clear = pt.get('is_clear', False)
+            total_loss = pt.get('total_loss_db', 999)
+            terrain_loss = pt.get('terrain_loss_db', 0)
+            fresnel_pct = pt.get('fresnel_clearance_pct', 0)
+            distance_m = pt.get('distance_m', 0)
+
+            color, quality = _loss_to_coverage_color(is_clear, total_loss)
+
+            tooltip = (
+                f"Loss: {total_loss:.0f} dB | "
+                f"Terrain: {terrain_loss:.0f} dB | "
+                f"Fresnel: {fresnel_pct:.0f}% | "
+                f"Dist: {distance_m / 1000:.1f} km | "
+                f"{quality}"
+            )
+
+            folium.CircleMarker(
+                location=[lat, lon],
+                radius=6,
+                color=color,
+                fill=True,
+                fill_color=color,
+                fill_opacity=0.6,
+                weight=1,
+                tooltip=tooltip,
+            ).add_to(fg)
+
+        fg.add_to(self._map)
+
+    def generate_terrain_coverage(self, center_lat: float, center_lon: float,
+                                   antenna_height: float = 10.0,
+                                   radius_km: float = 5.0,
+                                   freq_mhz: float = 915.0,
+                                   resolution: int = 24,
+                                   output_path: str = None) -> str:
+        """Generate a terrain-aware coverage map for a single node.
+
+        Uses SRTM elevation data and LOS analysis to predict RF coverage
+        in a radial pattern around the node.
+
+        Args:
+            center_lat, center_lon: Node position (decimal degrees).
+            antenna_height: Antenna height above ground (meters).
+            radius_km: Analysis radius in kilometers.
+            freq_mhz: Operating frequency in MHz.
+            resolution: Number of radial steps per bearing direction.
+            output_path: Output HTML file path.
+
+        Returns:
+            Path to generated HTML file, or empty string on failure.
+        """
+        if not _HAS_TERRAIN:
+            logger.warning("Terrain module not available for coverage prediction")
+            return ""
+        if not _HAS_FOLIUM:
+            logger.warning("Folium not installed, terrain coverage map unavailable")
+            return ""
+
+        if output_path is None:
+            cache_dir = get_real_user_home() / ".cache" / "meshforge"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            output_path = str(cache_dir / "terrain_coverage.html")
+
+        folium = _folium
+
+        # Initialize terrain analysis
+        try:
+            provider = _SRTMProvider(auto_download=True)
+        except Exception as e:
+            logger.warning(f"SRTM provider init failed, using flat terrain: {e}")
+            provider = _FlatTerrainProvider()
+
+        analyzer = _LOSAnalyzer(provider, profile_points=50)
+        points = analyzer.coverage_grid(
+            center_lat, center_lon, antenna_height,
+            radius_km=radius_km, freq_mhz=freq_mhz,
+            resolution=min(resolution, 48)
+        )
+
+        # Build Folium map
+        m = folium.Map(location=[center_lat, center_lon], zoom_start=12)
+        folium.TileLayer('OpenStreetMap', name='Street').add_to(m)
+        folium.TileLayer(
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+            attr='Esri', name='Terrain'
+        ).add_to(m)
+        self._map = m
+
+        # Center node marker
+        folium.Marker(
+            location=[center_lat, center_lon],
+            popup=(
+                f"Node @ {center_lat:.4f}, {center_lon:.4f}<br>"
+                f"Height: {antenna_height}m<br>"
+                f"Freq: {freq_mhz} MHz"
+            ),
+            icon=folium.Icon(color='red', icon='tower-broadcast', prefix='fa'),
+        ).add_to(m)
+
+        # Add coverage overlay
+        self.add_terrain_coverage_layer(points)
+
+        folium.LayerControl().add_to(m)
+        m.save(output_path)
+
+        # Compute summary stats
+        clear = sum(1 for p in points if p.get('is_clear', False))
+        total = len(points)
+        logger.info(
+            f"Terrain coverage map saved to: {output_path} "
+            f"({clear}/{total} points clear)"
+        )
+        return output_path
+
+
+def _loss_to_coverage_color(is_clear: bool, total_loss_db: float) -> tuple:
+    """Map LOS clearance and total loss to a color and label.
+
+    Returns:
+        (color_hex, quality_label) tuple
+    """
+    if not is_clear:
+        return '#ef4444', 'Obstructed'
+    if total_loss_db < 120:
+        return '#22c55e', 'Excellent'
+    if total_loss_db < 140:
+        return '#eab308', 'Good'
+    if total_loss_db < 160:
+        return '#f97316', 'Marginal'
+    return '#ef4444', 'Poor'
+
+
+def _snr_to_link_color(snr: float = None) -> tuple:
+    """
+    Map SNR value to a color and quality label for link visualization.
+
+    Returns:
+        (color_hex, quality_label) tuple
+    """
+    if snr is None:
+        return '#6b7280', 'Unknown'
+    if snr > 5:
+        return '#22c55e', 'Excellent'
+    if snr > 0:
+        return '#eab308', 'Good'
+    if snr > -10:
+        return '#f97316', 'Fair'
+    return '#ef4444', 'Bad'

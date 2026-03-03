@@ -1,2 +1,5 @@
 """Backward-compatibility shim. Canonical location: core.rf.awareness"""
-from core.rf.awareness import *  # noqa: F401,F403
+import importlib as _importlib
+import sys as _sys
+_real = _importlib.import_module('core.rf.awareness')
+_sys.modules[__name__] = _real
