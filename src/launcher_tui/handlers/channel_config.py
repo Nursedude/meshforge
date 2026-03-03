@@ -8,7 +8,7 @@ import sys
 import secrets
 import base64
 
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 
 
 class ChannelConfigHandler(BaseHandler):
@@ -16,6 +16,7 @@ class ChannelConfigHandler(BaseHandler):
 
     handler_id = "channel_config"
     menu_section = "configuration"
+    privilege_level = PRIVILEGE_ADMIN
 
     def menu_items(self):
         return [

@@ -7,7 +7,7 @@ Batch 10b: Extracted from MeshForgeLauncher._reboot_menu() in main.py.
 import logging
 import subprocess
 
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +17,7 @@ class RebootHandler(BaseHandler):
 
     handler_id = "reboot"
     menu_section = "system"
+    privilege_level = PRIVILEGE_ADMIN
 
     def menu_items(self):
         return [

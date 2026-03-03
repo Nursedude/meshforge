@@ -35,7 +35,7 @@ import time
 from pathlib import Path
 
 from backend import clear_screen
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 from handlers._lxmf_utils import ensure_lxmf_exclusive
 
 from utils.paths import get_real_user_home
@@ -67,6 +67,7 @@ class MeshChatHandler(BaseHandler):
 
     handler_id = "meshchat"
     menu_section = "mesh_networks"
+    privilege_level = PRIVILEGE_ADMIN
 
     MESHCHAT_REPO = "https://github.com/liamcottle/reticulum-meshchat"
     MESHCHAT_SERVICE_NAME = "reticulum-meshchat"

@@ -19,7 +19,7 @@ import tempfile
 import yaml
 from pathlib import Path
 
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 from backend import clear_screen
 from utils.service_check import check_service, check_systemd_service
 
@@ -101,6 +101,7 @@ class MeshtasticdConfigHandler(BaseHandler):
 
     handler_id = "meshtasticd_config"
     menu_section = "configuration"
+    privilege_level = PRIVILEGE_ADMIN
 
     def menu_items(self):
         return [

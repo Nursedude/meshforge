@@ -14,7 +14,7 @@ import os
 import subprocess
 from typing import Optional
 
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,7 @@ class BrokerHandler(BaseHandler):
 
     handler_id = "broker"
     menu_section = "mesh_networks"
+    privilege_level = PRIVILEGE_ADMIN
 
     def menu_items(self):
         return [

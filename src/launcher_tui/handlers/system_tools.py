@@ -10,7 +10,7 @@ import shutil
 import logging
 
 from backend import clear_screen
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,7 @@ class SystemToolsHandler(BaseHandler):
 
     handler_id = "system_tools"
     menu_section = "system"
+    admin_tags = frozenset({"services"})
 
     def menu_items(self):
         return [

@@ -17,7 +17,7 @@ import threading
 import time
 from typing import Optional, Dict, Any
 
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 from utils.safe_import import safe_import
 from utils.paths import get_real_user_home
 from . import _mqtt_telemetry
@@ -80,6 +80,7 @@ class MQTTHandler(BaseHandler):
 
     handler_id = "mqtt"
     menu_section = "mesh_networks"
+    admin_tags = frozenset({"broker"})
 
     def __init__(self):
         super().__init__()

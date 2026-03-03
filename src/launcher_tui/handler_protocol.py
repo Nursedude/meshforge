@@ -13,15 +13,20 @@ See also:
 """
 
 import logging
+import os
 import re
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Optional, Tuple, runtime_checkable
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple, runtime_checkable
 
 from typing import Protocol
 
 logger = logging.getLogger(__name__)
+
+# Privilege levels for handler operations
+PRIVILEGE_VIEWER = "viewer"   # No sudo required (default)
+PRIVILEGE_ADMIN = "admin"     # Requires root/sudo
 
 
 @dataclass
@@ -58,6 +63,34 @@ class TUIContext:
     # Internal cached values
     _meshtastic_path: Optional[str] = field(default=None, repr=False)
     _updates_available: int = field(default=0, repr=False)
+
+    @property
+    def is_admin(self) -> bool:
+        """True when running with root privileges (sudo).
+
+        Checks EnvironmentState.is_root first, falls back to os.geteuid().
+        """
+        if self.env_state and hasattr(self.env_state, 'is_root'):
+            return self.env_state.is_root
+        return os.geteuid() == 0
+
+    def check_privilege(self, name: str, level: str) -> bool:
+        """Check if current privilege level is sufficient.
+
+        Returns True if the operation should proceed. If insufficient,
+        shows a dialog explaining Viewer Mode and returns False.
+        """
+        if level != PRIVILEGE_ADMIN or self.is_admin:
+            return True
+        self.dialog.msgbox(
+            "Admin Privileges Required",
+            f"{name} requires elevated privileges.\n\n"
+            f"MeshForge is running in Viewer Mode (no sudo).\n"
+            f"Monitoring, RF tools, and dashboards work normally.\n\n"
+            f"To use admin features (service control, config editing):\n"
+            f"  sudo python3 src/launcher_tui/main.py"
+        )
+        return False
 
     def feature_enabled(self, feature: str) -> bool:
         """Check if a feature is enabled in the current deployment profile.
@@ -108,13 +141,15 @@ class TUIContext:
 
         Uses plain text indicators (UP/FAIL/--) since whiptail/dialog
         don't render ANSI color escape codes.
+        Prepends privilege mode ([Viewer] or [Admin]).
         Appends update count if updates were detected at startup.
         """
-        hint = ""
+        mode = "Admin" if self.is_admin else "Viewer"
+        hint = f"[{mode}]  "
         if self.env_state:
-            hint = self.env_state.get_status_line(plain=True)
+            hint += self.env_state.get_status_line(plain=True)
         else:
-            hint = "Network Operations Center"
+            hint += "Network Operations Center"
 
         if self._updates_available > 0:
             hint += f"  |  {self._updates_available} update(s) available"
@@ -192,12 +227,20 @@ class TUIContext:
             )
         except PermissionError as e:
             self.log_error(f"PermissionError in {name}", e)
-            self.dialog.msgbox(
-                "Permission Denied",
-                f"Insufficient permissions for {name}.\n\n"
-                f"{e}\n\n"
-                f"Make sure MeshForge is running with sudo."
-            )
+            if self.is_admin:
+                self.dialog.msgbox(
+                    "Permission Denied",
+                    f"Permission denied for {name}.\n\n{e}"
+                )
+            else:
+                self.dialog.msgbox(
+                    "Permission Denied",
+                    f"Insufficient permissions for {name}.\n\n"
+                    f"{e}\n\n"
+                    f"MeshForge is running in Viewer Mode.\n"
+                    f"This operation requires admin privileges.\n\n"
+                    f"Restart with:  sudo python3 src/launcher_tui/main.py"
+                )
         except FileNotFoundError as e:
             self.log_error(f"FileNotFoundError in {name}", e)
             self.dialog.msgbox(
@@ -284,13 +327,29 @@ class BaseHandler:
     Not required — the CommandHandler Protocol uses structural typing.
     This class provides common boilerplate: context storage, a no-op
     ``menu_items()``, and a ``NotImplementedError`` for ``execute()``.
+
+    Privilege model:
+        privilege_level: Handler-level default (PRIVILEGE_VIEWER or PRIVILEGE_ADMIN).
+        admin_tags: Tags that require admin in otherwise-viewer handlers (mixed).
     """
 
     handler_id: str = ""
     menu_section: str = ""
+    privilege_level: str = PRIVILEGE_VIEWER
+    admin_tags: FrozenSet[str] = frozenset()
 
     def __init__(self):
         self.ctx: Optional[TUIContext] = None
+
+    def get_item_privilege(self, tag: str) -> str:
+        """Get the effective privilege level for a specific menu item tag.
+
+        For mixed handlers, checks admin_tags first. Otherwise returns
+        the handler-level privilege_level.
+        """
+        if tag in self.admin_tags:
+            return PRIVILEGE_ADMIN
+        return self.privilege_level
 
     def set_context(self, ctx: TUIContext) -> None:
         self.ctx = ctx
@@ -318,6 +377,9 @@ class BaseHandler:
         found in 51+ handlers. Handles "back" item, None/escape, and
         wraps dispatch calls in safe_call().
 
+        When running in Viewer Mode, admin-tagged items are annotated
+        with ``[sudo]`` and blocked with a dialog on selection.
+
         Args:
             title: Dialog title.
             subtitle: Dialog subtitle.
@@ -331,12 +393,28 @@ class BaseHandler:
         """
         while True:
             items = choices() if callable(choices) else choices
+
+            # Annotate admin items when running in Viewer Mode
+            if self.ctx and not self.ctx.is_admin:
+                annotated = []
+                for tag, desc in items:
+                    if self.get_item_privilege(tag) == PRIVILEGE_ADMIN:
+                        desc = desc.rstrip() + "  [sudo]"
+                    annotated.append((tag, desc))
+                items = annotated
+
             full_choices = list(items) + [("back", "Back")]
 
             choice = self.ctx.dialog.menu(title, subtitle, full_choices)
 
             if choice is None or choice == "back":
                 break
+
+            # Privilege check before execution
+            if self.ctx and not self.ctx.check_privilege(
+                f"{title}: {choice}", self.get_item_privilege(choice)
+            ):
+                continue
 
             entry = dispatch.get(choice) if dispatch else None
             if entry:

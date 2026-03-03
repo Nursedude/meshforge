@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,7 @@ class RNSConfigHandler(BaseHandler):
 
     handler_id = "rns_config"
     menu_section = "rns"
+    privilege_level = PRIVILEGE_ADMIN
 
     def menu_items(self):
         return [

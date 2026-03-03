@@ -17,7 +17,7 @@ import shutil
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +110,7 @@ class FirstRunHandler(BaseHandler):
 
     handler_id = "first_run"
     menu_section = "configuration"
+    privilege_level = PRIVILEGE_ADMIN
 
     FIRST_RUN_FLAG = ".meshforge_setup_complete"
 

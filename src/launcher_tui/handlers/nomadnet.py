@@ -29,7 +29,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 from backend import clear_screen
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,7 @@ class NomadNetHandler(BaseHandler):
 
     handler_id = "nomadnet"
     menu_section = "mesh_networks"
+    privilege_level = PRIVILEGE_ADMIN
 
     def menu_items(self):
         return [

@@ -13,7 +13,7 @@ import re
 import yaml
 from pathlib import Path
 
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 from handlers.meshtasticd_config import (
     OVERLAY_PATH, read_overlay, write_overlay,
 )
@@ -35,6 +35,7 @@ class MeshtasticdLoRaHandler(BaseHandler):
 
     handler_id = "meshtasticd_lora"
     menu_section = "meshtasticd"
+    privilege_level = PRIVILEGE_ADMIN
 
     def menu_items(self):
         return [

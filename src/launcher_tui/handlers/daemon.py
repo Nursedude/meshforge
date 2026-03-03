@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,7 @@ class DaemonHandler(BaseHandler):
 
     handler_id = "daemon"
     menu_section = "system"
+    privilege_level = PRIVILEGE_ADMIN
 
     def menu_items(self):
         return [

@@ -518,9 +518,11 @@ class StatusBar:
         else:
             parts.append("MeshForge")
 
-        # Root indicator
-        if not env.is_root:
-            parts.append("[user]")
+        # Privilege mode indicator
+        if env.is_root:
+            parts.append("[ADMIN]")
+        else:
+            parts.append("[VIEWER]")
 
         # Service statuses from enhanced checker
         for name, info in env.services.items():

@@ -16,7 +16,10 @@ import logging
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
-from handler_protocol import CommandHandler, LifecycleHandler, TUIContext
+from handler_protocol import (
+    CommandHandler, LifecycleHandler, TUIContext,
+    PRIVILEGE_ADMIN, PRIVILEGE_VIEWER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +85,19 @@ class HandlerRegistry:
         """
         return self._handlers.get(handler_id)
 
+    @staticmethod
+    def _is_admin_item(handler, tag: str) -> bool:
+        """Check if a specific menu item requires admin privilege."""
+        if hasattr(handler, 'get_item_privilege'):
+            return handler.get_item_privilege(tag) == PRIVILEGE_ADMIN
+        level = getattr(handler, 'privilege_level', PRIVILEGE_VIEWER)
+        return level == PRIVILEGE_ADMIN
+
     def get_menu_items(self, section: str) -> List[Tuple[str, str]]:
         """Get filtered menu items for a section, respecting feature flags.
+
+        When running in Viewer Mode (no sudo), admin items are annotated
+        with ``[sudo]`` in their description.
 
         Args:
             section: Menu section key (e.g., ``"dashboard"``, ``"rf_sdr"``).
@@ -92,9 +106,12 @@ class HandlerRegistry:
             List of (tag, description) tuples, filtered by feature flags.
         """
         items: List[Tuple[str, str]] = []
+        is_admin = self._ctx.is_admin
         for handler in self._sections.get(section, []):
             for tag, desc, flag in handler.menu_items():
                 if flag is None or self._ctx.feature_enabled(flag):
+                    if not is_admin and self._is_admin_item(handler, tag):
+                        desc = desc.rstrip() + "  [sudo]"
                     items.append((tag, desc))
         return items
 
@@ -102,7 +119,8 @@ class HandlerRegistry:
         """Find and execute the handler for a given section + tag.
 
         Wraps the handler's ``execute()`` in ``safe_call()`` for
-        consistent error handling.
+        consistent error handling. Checks privilege before execution
+        when running in Viewer Mode.
 
         Args:
             section: Menu section key.
@@ -115,6 +133,11 @@ class HandlerRegistry:
         if handler is None:
             return False
 
+        # Pre-execution privilege check
+        if self._is_admin_item(handler, tag):
+            if not self._ctx.check_privilege(handler.handler_id, PRIVILEGE_ADMIN):
+                return True  # Handled (showed dialog), don't fall through
+
         self._ctx.safe_call(handler.handler_id, handler.execute, tag)
         return True
 
@@ -125,6 +148,8 @@ class HandlerRegistry:
 
         Registry items auto-replace legacy items with the same tag.
         Ordering list controls display order when provided.
+        Legacy items whose tags map to admin handlers get ``[sudo]``
+        annotation when running in Viewer Mode.
 
         Args:
             section: Menu section key (e.g., "dashboard", "rf_sdr").
@@ -139,6 +164,16 @@ class HandlerRegistry:
 
         # Filter legacy items already handled by registry
         filtered_legacy = [(t, d) for t, d in legacy_items if t not in registry_tags]
+
+        # Annotate legacy items whose tags map to admin handlers
+        if not self._ctx.is_admin:
+            annotated_legacy = []
+            for tag, desc in filtered_legacy:
+                handler = self._tag_index.get(section, {}).get(tag)
+                if handler and self._is_admin_item(handler, tag):
+                    desc = desc.rstrip() + "  [sudo]"
+                annotated_legacy.append((tag, desc))
+            filtered_legacy = annotated_legacy
 
         all_map = {tag: desc for tag, desc in registry_items}
         all_map.update({tag: desc for tag, desc in filtered_legacy})

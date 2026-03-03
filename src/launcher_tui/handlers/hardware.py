@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 from backend import clear_screen
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,7 @@ class HardwareHandler(BaseHandler):
 
     handler_id = "hardware"
     menu_section = "system"
+    privilege_level = PRIVILEGE_ADMIN
 
     def menu_items(self):
         return [

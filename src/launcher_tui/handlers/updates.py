@@ -8,7 +8,7 @@ import subprocess
 import logging
 from typing import Dict, Any, Optional, Tuple
 
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,7 @@ class UpdatesHandler(BaseHandler):
 
     handler_id = "updates"
     menu_section = "configuration"
+    privilege_level = PRIVILEGE_ADMIN
 
     def menu_items(self):
         return [

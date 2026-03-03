@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from backend import clear_screen
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,7 @@ class ServiceMenuHandler(BaseHandler):
 
     handler_id = "service_menu"
     menu_section = "mesh_networks"
+    privilege_level = PRIVILEGE_ADMIN
 
     def __init__(self):
         super().__init__()

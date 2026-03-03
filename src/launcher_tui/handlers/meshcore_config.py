@@ -11,7 +11,7 @@ import os
 import subprocess
 
 from backend import clear_screen
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ class MeshCoreConfigHandler(BaseHandler):
 
     handler_id = "meshcore_config"
     menu_section = "configuration"
+    privilege_level = PRIVILEGE_ADMIN
 
     def menu_items(self):
         return [

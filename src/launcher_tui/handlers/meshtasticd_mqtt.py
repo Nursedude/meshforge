@@ -11,7 +11,7 @@ MeshtasticdConfigHandler's thin dispatcher menu.
 import logging
 import subprocess
 
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 from backend import clear_screen
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
 
     handler_id = "meshtasticd_device_mqtt"
     menu_section = "meshtasticd"
+    privilege_level = PRIVILEGE_ADMIN
 
     def menu_items(self):
         return [

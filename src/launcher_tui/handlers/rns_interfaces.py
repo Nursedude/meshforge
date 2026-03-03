@@ -7,7 +7,7 @@ Converted from rns_interfaces_mixin.py as part of the mixin-to-registry migratio
 import re
 import logging
 
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 from backend import clear_screen
 from commands import rns as rns_mod
 
@@ -19,6 +19,7 @@ class RNSInterfacesHandler(BaseHandler):
 
     handler_id = "rns_interfaces"
     menu_section = "rns"
+    privilege_level = PRIVILEGE_ADMIN
 
     def menu_items(self):
         return [

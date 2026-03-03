@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 from backend import clear_screen
-from handler_protocol import BaseHandler
+from handler_protocol import BaseHandler, PRIVILEGE_ADMIN
 from utils.paths import get_real_user_home
 
 
@@ -19,6 +19,7 @@ class RadioMenuHandler(BaseHandler):
 
     handler_id = "radio_menu"
     menu_section = "mesh_networks"
+    privilege_level = PRIVILEGE_ADMIN
 
     def menu_items(self):
         return [
