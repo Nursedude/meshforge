@@ -102,28 +102,27 @@ class BrokerHandler(BaseHandler):
         """View and manage broker profiles."""
         profiles = ensure_default_profiles()
 
-        while True:
-            choices = []
+        def _choices():
+            nonlocal profiles
+            profiles = load_profiles()
+            items = []
             for name, profile in profiles.items():
                 active_marker = " [ACTIVE]" if profile.is_active else ""
                 ptype = profile.broker_type.upper()[:4]
-                choices.append(
+                items.append(
                     (name, f"[{ptype}] {profile.host}:{profile.port}{active_marker}")
                 )
-            choices.append(("back", "Back"))
+            return items
 
-            choice = self.ctx.dialog.menu(
-                f"Broker Profiles ({len(profiles)})",
-                "Select a profile to view/activate:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
+        def _handle(choice):
             if choice in profiles:
                 self._profile_detail_menu(choice, profiles)
-                profiles = load_profiles()
+
+        self.run_menu_loop(
+            "Broker Profiles",
+            "Select a profile to view/activate:",
+            _choices, default_handler=_handle,
+        )
 
     def _profile_detail_menu(self, name: str, profiles: dict):
         """Show profile details and management options."""

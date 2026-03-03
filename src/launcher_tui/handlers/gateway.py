@@ -201,9 +201,10 @@ class GatewayHandler(BaseHandler):
 
     def _config_mqtt_bridge(self, config):
         """Configure MQTT bridge settings."""
-        while True:
-            mqtt = config.mqtt_bridge
-            choices = [
+        mqtt = config.mqtt_bridge
+
+        def _choices():
+            return [
                 ("broker", f"Broker              {mqtt.broker}"),
                 ("port", f"Port                {mqtt.port}"),
                 ("region", f"Region              {mqtt.region}"),
@@ -211,19 +212,9 @@ class GatewayHandler(BaseHandler):
                 ("tls", f"TLS                 {mqtt.use_tls}"),
                 ("auth", f"Auth                {'Set' if mqtt.username else 'None'}"),
                 ("setup", "Run MQTT Setup Guide"),
-                ("back", "Back"),
             ]
 
-            choice = self.ctx.dialog.menu(
-                "MQTT Bridge Settings",
-                "Configure MQTT transport for zero-interference bridging.\n\n"
-                "Requires: mosquitto + meshtasticd mqtt.enabled=true",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
+        def _handle(choice):
             if choice == "broker":
                 val = self.ctx.dialog.inputbox(
                     "MQTT Broker",
@@ -305,26 +296,24 @@ class GatewayHandler(BaseHandler):
                     width=60, height=25
                 )
 
+        self.run_menu_loop(
+            "MQTT Bridge Settings",
+            "Configure MQTT transport for zero-interference bridging.\n\n"
+            "Requires: mosquitto + meshtasticd mqtt.enabled=true",
+            _choices, default_handler=_handle,
+        )
+
     def _config_meshtastic(self, config):
         """Configure Meshtastic connection settings."""
-        while True:
-            choices = [
+        def _choices():
+            return [
                 ("host", f"Host                {config.meshtastic.host}"),
                 ("port", f"Port                {config.meshtastic.port}"),
                 ("channel", f"Channel             {config.meshtastic.channel}"),
                 ("mqtt", f"Use MQTT            {config.meshtastic.use_mqtt}"),
-                ("back", "Back"),
             ]
 
-            choice = self.ctx.dialog.menu(
-                "Meshtastic Settings",
-                "Configure Meshtastic connection:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
+        def _handle(choice):
             if choice == "host":
                 host = self.ctx.dialog.inputbox(
                     "Meshtastic Host",
@@ -357,25 +346,22 @@ class GatewayHandler(BaseHandler):
             elif choice == "mqtt":
                 config.meshtastic.use_mqtt = not config.meshtastic.use_mqtt
 
+        self.run_menu_loop(
+            "Meshtastic Settings",
+            "Configure Meshtastic connection:",
+            _choices, default_handler=_handle,
+        )
+
     def _config_rns(self, config):
         """Configure RNS settings."""
-        while True:
-            choices = [
+        def _choices():
+            return [
                 ("identity", f"Identity Name       {config.rns.identity_name}"),
                 ("announce", f"Announce Interval   {config.rns.announce_interval}s"),
                 ("config_dir", f"Config Directory    {config.rns.config_dir or 'default'}"),
-                ("back", "Back"),
             ]
 
-            choice = self.ctx.dialog.menu(
-                "RNS Settings",
-                "Configure Reticulum Network Stack:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
+        def _handle(choice):
             if choice == "identity":
                 name = self.ctx.dialog.inputbox(
                     "RNS Identity Name",
@@ -405,51 +391,47 @@ class GatewayHandler(BaseHandler):
                 if dir_path is not None:
                     config.rns.config_dir = dir_path.strip()
 
+        self.run_menu_loop(
+            "RNS Settings",
+            "Configure Reticulum Network Stack:",
+            _choices, default_handler=_handle,
+        )
+
     def _config_routing(self, config):
         """Configure routing rules."""
-        while True:
-            choices = [
+        def _choices():
+            items = [
                 ("default", f"Default Route       {config.default_route}"),
                 ("add", "Add Rule"),
             ]
-
             for i, rule in enumerate(config.routing_rules):
                 status = "ON" if rule.enabled else "OFF"
-                choices.append((f"rule_{i}", f"{rule.name:<18} [{status}] {rule.direction}"))
+                items.append((f"rule_{i}", f"{rule.name:<18} [{status}] {rule.direction}"))
+            items.append(("clear", "Clear All Rules"))
+            items.append(("defaults", "Load Default Rules"))
+            return items
 
-            choices.append(("clear", "Clear All Rules"))
-            choices.append(("defaults", "Load Default Rules"))
-            choices.append(("back", "Back"))
+        dispatch = {
+            "default": ("Default Route", self._set_default_route, config),
+            "add": ("Add Routing Rule", self._add_routing_rule, config),
+        }
 
-            choice = self.ctx.dialog.menu(
-                f"Routing Rules ({len(config.routing_rules)})",
-                "Configure message routing between networks:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
+        def _handle(choice):
             if choice == "clear":
                 if self.ctx.dialog.yesno("Clear Rules", "Remove all routing rules?"):
                     config.routing_rules = []
-                continue
             elif choice == "defaults":
                 if self.ctx.dialog.yesno("Load Defaults", "Replace rules with defaults?"):
                     config.routing_rules = config.get_default_rules()
-                continue
             elif choice.startswith("rule_"):
                 idx = int(choice.split("_")[1])
-                self.ctx.safe_call(f"Edit Rule {idx}", self._edit_routing_rule, config, idx)
-                continue
+                self._edit_routing_rule(config, idx)
 
-            dispatch = {
-                "default": ("Default Route", self._set_default_route),
-                "add": ("Add Routing Rule", self._add_routing_rule),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(entry[0], entry[1], config)
+        self.run_menu_loop(
+            f"Routing Rules",
+            "Configure message routing between networks:",
+            _choices, dispatch, default_handler=_handle,
+        )
 
     def _set_default_route(self, config):
         """Set the default routing direction."""
@@ -571,25 +553,16 @@ class GatewayHandler(BaseHandler):
 
     def _config_telemetry(self, config):
         """Configure telemetry settings."""
-        while True:
-            choices = [
+        def _choices():
+            return [
                 ("position", f"Share Position      {config.telemetry.share_position}"),
                 ("battery", f"Share Battery       {config.telemetry.share_battery}"),
                 ("environment", f"Share Environment   {config.telemetry.share_environment}"),
                 ("precision", f"Position Precision  {config.telemetry.position_precision} decimals"),
                 ("interval", f"Update Interval     {config.telemetry.update_interval}s"),
-                ("back", "Back"),
             ]
 
-            choice = self.ctx.dialog.menu(
-                "Telemetry Settings",
-                "Configure what data is shared between networks:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
+        def _handle(choice):
             if choice == "position":
                 config.telemetry.share_position = not config.telemetry.share_position
             elif choice == "battery":
@@ -616,6 +589,12 @@ class GatewayHandler(BaseHandler):
                     i = int(val)
                     if 30 <= i <= 3600:
                         config.telemetry.update_interval = i
+
+        self.run_menu_loop(
+            "Telemetry Settings",
+            "Configure what data is shared between networks:",
+            _choices, default_handler=_handle,
+        )
 
     def _load_template(self, config):
         """Load a configuration template."""

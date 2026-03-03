@@ -178,24 +178,22 @@ def show_mqtt_nodes(handler):
 
     if len(nodes) > 50:
         choices.append(("more", f"... and {len(nodes) - 50} more nodes"))
-    choices.append(("back", "Back"))
 
-    while True:
-        selected = handler.ctx.dialog.menu(
-            f"MQTT Nodes ({len(nodes)})",
-            "Select a node for details, or Back to exit:",
-            choices
-        )
-
-        if selected is None or selected == "back" or selected == "more":
-            break
-
+    def _handle(selected):
+        if selected == "more":
+            return
         try:
             idx = int(selected)
             if 0 <= idx < len(node_list):
                 show_mqtt_node_details(handler, node_list[idx])
         except (ValueError, IndexError):
             pass
+
+    handler.run_menu_loop(
+        f"MQTT Nodes ({len(nodes)})",
+        "Select a node for details, or Back to exit:",
+        choices, default_handler=_handle,
+    )
 
 def show_mqtt_node_details(handler, node):
     """Show detailed information for an MQTT-discovered node."""
@@ -447,40 +445,31 @@ def configure_private_broker(handler, config: Dict[str, Any]):
 
 def request_telemetry_menu(handler):
     """Request telemetry from silent Meshtastic 2.7+ nodes."""
-    choices = [
-        ("single", "Request from Node    Enter node ID manually"),
-        ("silent", "Find Silent Nodes    Nodes with stale telemetry"),
-        ("batch", "Poll Silent Nodes    Request from all silent"),
-    ]
+    def _choices():
+        items = [
+            ("single", "Request from Node    Enter node ID manually"),
+            ("silent", "Find Silent Nodes    Nodes with stale telemetry"),
+            ("batch", "Poll Silent Nodes    Request from all silent"),
+        ]
+        if _HAS_TELEMETRY_POLLER:
+            poller = get_telemetry_poller()
+            stats = poller.get_stats()
+            items.append(("stats", f"Poller Statistics    {stats.get('total_requests', 0)} requests"))
+        return items
 
-    if _HAS_TELEMETRY_POLLER:
-        poller = get_telemetry_poller()
-        stats = poller.get_stats()
-        choices.append(("stats", f"Poller Statistics    {stats.get('total_requests', 0)} requests"))
-
-    choices.append(("back", "Back"))
-
-    while True:
-        choice = handler.ctx.dialog.menu(
-            "Telemetry Requests",
-            "Request telemetry from silent Meshtastic 2.7+ nodes.\n\n"
-            "These nodes don't broadcast telemetry by default to reduce\n"
-            "mesh congestion. Use this to poll them explicitly.",
-            choices
-        )
-
-        if choice is None or choice == "back":
-            break
-
-        dispatch = {
-            "single": ("Request Single Telemetry", lambda: request_single_telemetry(handler)),
-            "silent": ("Show Silent Nodes", lambda: show_silent_nodes(handler)),
-            "batch": ("Batch Telemetry Request", lambda: batch_telemetry_request(handler)),
-            "stats": ("Poller Statistics", lambda: show_poller_stats(handler)),
-        }
-        entry = dispatch.get(choice)
-        if entry:
-            handler.ctx.safe_call(*entry)
+    dispatch = {
+        "single": ("Request Single Telemetry", lambda: request_single_telemetry(handler)),
+        "silent": ("Show Silent Nodes", lambda: show_silent_nodes(handler)),
+        "batch": ("Batch Telemetry Request", lambda: batch_telemetry_request(handler)),
+        "stats": ("Poller Statistics", lambda: show_poller_stats(handler)),
+    }
+    handler.run_menu_loop(
+        "Telemetry Requests",
+        "Request telemetry from silent Meshtastic 2.7+ nodes.\n\n"
+        "These nodes don't broadcast telemetry by default to reduce\n"
+        "mesh congestion. Use this to poll them explicitly.",
+        _choices, dispatch,
+    )
 
 def request_single_telemetry(handler):
     """Request telemetry from a single node by ID."""
