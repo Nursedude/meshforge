@@ -73,17 +73,8 @@ class SweepStore:
     @staticmethod
     def _default_db_path() -> Path:
         """Get default database path using MF001-compliant home detection."""
-        try:
-            from utils.paths import get_real_user_home
-            home = get_real_user_home()
-        except ImportError:
-            import os
-            sudo_user = os.environ.get("SUDO_USER")
-            if sudo_user:
-                home = Path(f"/home/{sudo_user}")
-            else:
-                home = Path.home()
-        return home / ".config" / "meshforge" / "nanovna_sweeps.db"
+        from utils.paths import get_real_user_home
+        return get_real_user_home() / ".config" / "meshforge" / "nanovna_sweeps.db"
 
     def _init_db(self) -> None:
         """Initialize database schema."""

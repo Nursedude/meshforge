@@ -8,6 +8,7 @@ from backend import clear_screen
 from handler_protocol import BaseHandler
 from commands.device_backup import create_backup, list_backups, get_backup_dir
 from commands.device_backup import restore_backup, delete_backup
+from utils.validation import validate_serial_port
 
 
 class BackupHandler(BaseHandler):
@@ -71,6 +72,13 @@ class BackupHandler(BaseHandler):
             )
             if not port_input:
                 return
+            if not validate_serial_port(port_input):
+                self.ctx.dialog.msgbox(
+                    "Error",
+                    "Invalid serial port path.\n\n"
+                    "Expected format: /dev/ttyUSB0, /dev/ttyACM0, etc."
+                )
+                return
             connection = port_input
         elif conn_type == "remote":
             host_input = self.ctx.dialog.inputbox(
@@ -89,6 +97,9 @@ class BackupHandler(BaseHandler):
                     return
             else:
                 connection = host_input
+            if not self.ctx.validate_hostname(connection):
+                self.ctx.dialog.msgbox("Error", "Invalid hostname or IP address.")
+                return
 
         notes = self.ctx.dialog.inputbox(
             "Backup Notes",
@@ -213,6 +224,13 @@ class BackupHandler(BaseHandler):
             )
             if not port_input:
                 return
+            if not validate_serial_port(port_input):
+                self.ctx.dialog.msgbox(
+                    "Error",
+                    "Invalid serial port path.\n\n"
+                    "Expected format: /dev/ttyUSB0, /dev/ttyACM0, etc."
+                )
+                return
             connection = port_input
         elif conn_type == "remote":
             host_input = self.ctx.dialog.inputbox(
@@ -231,6 +249,9 @@ class BackupHandler(BaseHandler):
                     return
             else:
                 connection = host_input
+            if not self.ctx.validate_hostname(connection):
+                self.ctx.dialog.msgbox("Error", "Invalid hostname or IP address.")
+                return
 
         self.ctx.dialog.infobox("Restoring", "Restoring device configuration...")
 

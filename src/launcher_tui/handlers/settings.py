@@ -162,10 +162,14 @@ class SettingsHandler(BaseHandler):
                     try:
                         port = int(parts[1])
                     except ValueError:
-                        port = 4403
+                        self.ctx.dialog.msgbox("Error", "Invalid port number.")
+                        return
                 else:
                     host = host_input
                     port = 4403
+                if not self.ctx.validate_hostname(host):
+                    self.ctx.dialog.msgbox("Error", "Invalid hostname or IP address.")
+                    return
                 self._save_meshtasticd_connection(host, port)
                 self.ctx.dialog.msgbox("Connection", f"Connection set to {host}:{port}")
 

@@ -313,7 +313,11 @@ def get_latest_firmware_version() -> Optional[str]:
 
 
 def check_all_versions() -> Dict[str, VersionInfo]:
-    """Check all component versions and return status"""
+    """Check all component versions and return status.
+
+    Note: update_command fields are for display purposes only.
+    Actual execution logic is in updates handler _UPDATE_COMMANDS dispatch table.
+    """
     results = {}
 
     # MeshForge itself

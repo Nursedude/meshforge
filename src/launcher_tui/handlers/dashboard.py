@@ -24,7 +24,12 @@ generate_report, generate_and_save, _HAS_REPORT_GEN = safe_import(
     'utils.report_generator', 'generate_report', 'generate_and_save'
 )
 from utils.health_score import get_health_scorer
-from plugins.eas_alerts import EASAlertsPlugin
+try:
+    from plugins.eas_alerts import EASAlertsPlugin
+    _HAS_EAS_ALERTS = True
+except ImportError:
+    EASAlertsPlugin = None
+    _HAS_EAS_ALERTS = False
 pub, _HAS_PUBSUB = safe_import('pubsub', 'pub')
 
 
@@ -544,6 +549,9 @@ class DashboardHandler(BaseHandler):
 
         print()
         try:
+            if not _HAS_EAS_ALERTS:
+                print("  Weather: EAS alerts plugin not available")
+                raise ImportError("EAS alerts plugin not installed")
             plugin = EASAlertsPlugin()
             eas_alerts = plugin.get_weather_alerts()
             if eas_alerts:

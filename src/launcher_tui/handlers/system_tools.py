@@ -677,9 +677,18 @@ class SystemToolsHandler(BaseHandler):
         print("=== MeshForge Shell ===")
         print("Type 'exit' to return to the menu.\n")
 
-        # Try to use user's preferred shell
+        # Use user's preferred shell, validated against known shells
         import os
+        import shutil
+
+        _KNOWN_SHELLS = {
+            '/bin/bash', '/bin/sh', '/bin/zsh', '/bin/dash', '/bin/fish',
+            '/usr/bin/bash', '/usr/bin/zsh', '/usr/bin/fish', '/usr/bin/dash',
+        }
+
         shell = os.environ.get('SHELL', '/bin/bash')
+        if shell not in _KNOWN_SHELLS or not shutil.which(shell):
+            shell = '/bin/bash'
 
         try:
             subprocess.run([shell], timeout=None)
