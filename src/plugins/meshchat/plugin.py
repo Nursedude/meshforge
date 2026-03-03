@@ -12,28 +12,16 @@ Features:
 """
 
 import logging
-from dataclasses import dataclass
 from typing import Optional, List, Dict, Any, Callable
 
+from utils.plugins import IntegrationPlugin, PluginMetadata, PluginType
 from .client import MeshChatClient, MeshChatError, MeshChatPeer
 from .service import MeshChatService, ServiceStatus, ServiceState
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class PluginMetadata:
-    """Plugin metadata for registration."""
-    name: str = "meshchat"
-    version: str = "1.0.0"
-    description: str = "MeshChat LXMF messaging integration"
-    plugin_type: str = "integration"
-    external_service: bool = True
-    service_port: int = 8000
-    optional: bool = True
-
-
-class MeshChatPlugin:
+class MeshChatPlugin(IntegrationPlugin):
     """
     MeshChat integration plugin.
 
@@ -66,21 +54,32 @@ class MeshChatPlugin:
     @staticmethod
     def get_metadata() -> PluginMetadata:
         """Return plugin metadata for registration."""
-        return PluginMetadata()
+        return PluginMetadata(
+            name="meshchat",
+            version="1.0.0",
+            description="MeshChat LXMF messaging integration",
+            author="MeshForge Community",
+            plugin_type=PluginType.INTEGRATION,
+            homepage="https://github.com/Nursedude/meshforge",
+        )
 
-    def activate(self) -> bool:
-        """
-        Activate the plugin.
-
-        Returns True if MeshChat is available, False otherwise.
-        Plugin can still be used in degraded mode when False.
-        """
+    def activate(self) -> None:
+        """Activate the plugin and attempt to connect to MeshChat service."""
         logger.info("Activating MeshChat plugin")
         self._activated = True
+        self.connect()
 
-        # Check if service is available
+    def deactivate(self) -> None:
+        """Deactivate the plugin and cleanup resources."""
+        logger.info("Deactivating MeshChat plugin")
+        self.disconnect()
+        self._activated = False
+
+    # IntegrationPlugin interface
+
+    def connect(self) -> bool:
+        """Connect to MeshChat service. Returns True if available."""
         status = self._service.check_status(blocking=True)
-
         if status.available:
             self._client = MeshChatClient(host=self.host, port=self.port)
             logger.info(f"MeshChat connected (v{status.version})")
@@ -91,20 +90,22 @@ class MeshChatPlugin:
                 logger.debug(f"Fix hint: {status.fix_hint}")
             return False
 
-    def deactivate(self):
-        """Deactivate the plugin and cleanup resources."""
-        logger.info("Deactivating MeshChat plugin")
+    def disconnect(self) -> None:
+        """Disconnect from MeshChat service."""
         if self._client:
             self._client.close()
             self._client = None
-        self._activated = False
 
-    def is_available(self) -> bool:
-        """Check if MeshChat service is reachable."""
+    def is_connected(self) -> bool:
+        """Return True if MeshChat service is reachable."""
         status = self._service.last_status
         if status.state == ServiceState.UNKNOWN:
             status = self._service.check_status(blocking=True)
         return status.available
+
+    def is_available(self) -> bool:
+        """Check if MeshChat service is reachable (alias for is_connected)."""
+        return self.is_connected()
 
     def check_status_async(
         self,
