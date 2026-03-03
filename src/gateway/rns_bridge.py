@@ -17,6 +17,9 @@ from typing import Optional, Callable, Dict, Any
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import _bridge_rns_connection
+from . import _bridge_message_processing
+
 from .config import GatewayConfig
 from .node_tracker import UnifiedNodeTracker, UnifiedNode
 from .reconnect import ReconnectStrategy
@@ -1229,361 +1232,33 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
     @staticmethod
     @contextmanager
     def _suppress_signal_in_thread():
-        """Suppress signal.signal() calls when not in the main thread.
-
-        LXMF.LXMRouter() and RNS.Reticulum() internally register signal
-        handlers for graceful shutdown. When called from a background
-        thread, signal.signal() raises ValueError. This context manager
-        temporarily replaces signal.signal with a safe wrapper that
-        returns SIG_DFL instead of raising.
-
-        On the main thread, this is a no-op passthrough.
-        """
-        if threading.current_thread() is threading.main_thread():
+        """Suppress signal.signal() calls when not in the main thread."""
+        with _bridge_rns_connection.suppress_signal_in_thread():
             yield
-            return
-
-        original = _signal_mod.signal
-
-        def _safe_signal(signalnum, handler):
-            # Cannot register signal handlers from non-main thread.
-            # Return default disposition; bridge has its own shutdown logic.
-            return _signal_mod.SIG_DFL
-
-        _signal_mod.signal = _safe_signal
-        try:
-            yield
-        finally:
-            _signal_mod.signal = original
 
     def _init_rns_main_thread(self):
-        """Pre-initialize RNS from the main thread.
-
-        RNS.Reticulum() registers signal handlers that only work in the
-        main thread. If we defer to the background _rns_loop thread,
-        initialization fails with 'signal only works in main thread'.
-
-        When rnsd is running, we connect as a client to its shared instance.
-
-        POLICY: Diagnose, don't fix. This method NEVER restarts services
-        or modifies configs. It logs issues and lets the user fix them.
-        """
-        import threading as _threading
-        if _threading.current_thread() is not _threading.main_thread():
-            logger.warning("RNS pre-init skipped (not main thread)")
-            return
-
-        if not _HAS_RNS:
-            logger.info("RNS not installed, will be handled in _connect_rns")
-            return
-
-        RNS = _RNS_mod
-
-        # Ensure /etc/reticulum/storage subdirs exist before RNS init.
-        # RNS requires ratchets/, resources/, cache/announces/.
-        # Create dirs if missing but NEVER restart services.
-        if os.geteuid() == 0:
-            if not ReticulumPaths.ensure_system_dirs():
-                logger.warning("Could not create /etc/reticulum directories "
-                             "(filesystem may be read-only)")
-
-        # Detect rnsd process
-        try:
-            from utils.gateway_diagnostic import find_rns_processes
-            rns_pids = find_rns_processes()
-        except ImportError:
-            rns_pids = []
-
-        # Determine config directory: explicit config > rnsd's actual path > default
-        config_dir = self.config.rns.config_dir or None
-        if config_dir:
-            logger.info(f"Using explicit RNS config dir: {config_dir}")
-        else:
-            # Check for config drift between gateway and rnsd
-            try:
-                drift = detect_rnsd_config_drift()
-                if drift.drifted:
-                    logger.warning("Config drift: %s", drift.message)
-                    config_dir = str(drift.rnsd_config_dir)
-                    logger.info("Using rnsd's config dir: %s", config_dir)
-            except Exception as e:
-                logger.debug("Config drift check skipped: %s", e)
-
-        try:
-            if rns_pids:
-                logger.info(f"rnsd detected (PID: {rns_pids[0]}), "
-                           "connecting as shared instance client")
-                self._rns_via_rnsd = True
-
-            self._reticulum = RNS.Reticulum(configdir=config_dir)
-            self._rns_pre_initialized = True
-            logger.info("RNS pre-initialized from main thread")
-        except Exception as e:
-            err_msg = str(e).lower()
-            if "reinitialise" in err_msg or "already running" in err_msg:
-                self._rns_pre_initialized = True
-                logger.info("RNS already initialized, bridge will use existing instance")
-            elif hasattr(e, 'errno') and getattr(e, 'errno', None) == 98:
-                logger.warning(f"RNS port conflict: {e} (will retry in background)")
-            else:
-                logger.warning(f"RNS pre-init failed: {e}")
-                try:
-                    from utils.gateway_diagnostic import diagnose_rnsd_connection
-                    diagnose_rnsd_connection(rns_pids, error=e)
-                except Exception:
-                    pass  # diagnostic failure should never block init
+        """Pre-initialize RNS from the main thread."""
+        _bridge_rns_connection.init_rns_main_thread(self)
 
     def _connect_rns(self):
-        """Initialize RNS and LXMF.
-
-        If RNS was pre-initialized from the main thread (via _init_rns_main_thread),
-        skips Reticulum initialization and proceeds directly to LXMF setup.
-        Otherwise falls back to initialization here (background thread).
-
-        POLICY: Diagnose, don't fix. Never restart services or modify configs.
-        """
-        if not (_HAS_RNS and _HAS_LXMF):
-            logger.warning("RNS/LXMF library not installed - bridge cannot connect")
-            self._connected_rns = False
-            self._rns_init_failed_permanently = True
-            return
-
-        # Pre-flight: verify rnsd is available (advisory, not blocking)
-        rnsd_status = check_service('rnsd')
-        if not rnsd_status.available:
-            logger.warning("rnsd not available: %s", rnsd_status.message)
-            if rnsd_status.fix_hint:
-                logger.info("Fix: %s", rnsd_status.fix_hint)
-            # Continue anyway — RNS can init standalone without rnsd
-
-        RNS = _RNS_mod
-        LXMF = _LXMF_mod
-
-        # Both RNS.Reticulum() and LXMF.LXMRouter() register signal
-        # handlers internally. When _connect_rns is called from the
-        # background _rns_loop thread, signal.signal() raises ValueError.
-        # Suppress signal registration for the entire init sequence.
-        with self._suppress_signal_in_thread():
-            try:
-                if self._rns_pre_initialized:
-                    logger.info("RNS pre-initialized, proceeding to LXMF setup")
-                else:
-                    # Fallback: init RNS from background thread.
-                    # Works when rnsd is running (client mode, no signal handlers).
-                    config_dir = self.config.rns.config_dir or None
-                    if not config_dir:
-                        try:
-                            effective = get_rnsd_effective_config_dir()
-                            config_dir = str(effective)
-                        except Exception:
-                            pass  # Use RNS default resolution
-
-                    try:
-                        self._reticulum = RNS.Reticulum(configdir=config_dir)
-                    except Exception as e:
-                        err_msg = str(e).lower()
-                        if "reinitialise" in err_msg or "already running" in err_msg:
-                            logger.info("RNS already initialized, proceeding to LXMF")
-                        elif "signal only works in main thread" in err_msg:
-                            logger.warning("RNS needs main thread init (no rnsd running?)")
-                            self._rns_init_failed_permanently = True
-                            self._connected_rns = False
-                            return
-                        elif hasattr(e, 'errno') and getattr(e, 'errno', None) == 98:
-                            logger.warning(f"RNS port conflict: {e} (will retry)")
-                            self._connected_rns = False
-                            return
-                        else:
-                            raise
-
-                # Set up LXMF messaging on top of the RNS instance
-                self._setup_lxmf(RNS, LXMF)
-
-            except Exception as e:
-                logger.error(f"Failed to connect to RNS: {e}")
-                try:
-                    from utils.gateway_diagnostic import (
-                        diagnose_rnsd_connection, find_rns_processes
-                    )
-                    diagnose_rnsd_connection(find_rns_processes(), error=e)
-                except Exception:
-                    pass  # diagnostic failure should never block bridge
-                self._connected_rns = False
+        """Initialize RNS and LXMF."""
+        _bridge_rns_connection.connect_rns(self)
 
     def _setup_lxmf(self, RNS, LXMF):
-        """Set up LXMF identity, router, and announce handler.
-
-        Called after RNS is initialized (either pre-init or fallback).
-        Separated from _connect_rns to keep the method focused and
-        allow LXMF setup to be retried independently.
-        """
-        # Create or load identity
-        identity_path = get_real_user_home() / ".config" / "meshforge" / "gateway_identity"
-        if identity_path.exists():
-            self._identity = RNS.Identity.from_file(str(identity_path))
-        else:
-            self._identity = RNS.Identity()
-            identity_path.parent.mkdir(parents=True, exist_ok=True)
-            self._identity.to_file(str(identity_path))
-
-        # Create LXMF router
-        storage_path = get_real_user_home() / ".config" / "meshforge" / "lxmf_storage"
-        storage_path.mkdir(parents=True, exist_ok=True)
-        self._lxmf_router = LXMF.LXMRouter(storagepath=str(storage_path))
-
-        # Register delivery callback
-        self._lxmf_router.register_delivery_callback(self._on_lxmf_receive)
-
-        # Create source identity
-        self._lxmf_source = self._lxmf_router.register_delivery_identity(
-            self._identity,
-            display_name="MeshForge Gateway"
-        )
-
-        # Announce presence
-        self._lxmf_router.announce(self._lxmf_source.hash)
-
-        # Register announce handler for node discovery
-        class AnnounceHandler:
-            def __init__(self, bridge):
-                self.aspect_filter = "lxmf.delivery"
-                self.bridge = bridge
-
-            def received_announce(self, dest_hash, announced_identity, app_data):
-                self.bridge._on_rns_announce(dest_hash, announced_identity, app_data)
-
-        RNS.Transport.register_announce_handler(AnnounceHandler(self))
-
-        self._connected_rns = True
-        logger.info("Connected to RNS (LXMF ready)")
-        self._notify_status("rns_connected")
+        """Set up LXMF identity, router, and announce handler."""
+        _bridge_rns_connection.setup_lxmf(self, RNS, LXMF)
 
     def _disconnect_rns(self):
-        """Disconnect from RNS and release ports"""
-        # Properly shut down RNS to release ports
-        if self._reticulum:
-            try:
-                import RNS
-                # RNS.Transport.exithandler() closes all interfaces and releases ports
-                RNS.Transport.exithandler()
-                logger.debug("RNS Transport shut down")
-            except Exception as e:
-                logger.debug(f"Error shutting down RNS Transport: {e}")
-
-        self._lxmf_router = None
-        self._lxmf_source = None
-        self._identity = None
-        self._reticulum = None
-        self._connected_rns = False
+        """Disconnect from RNS and release ports."""
+        _bridge_rns_connection.disconnect_rns(self)
 
     def _on_lxmf_receive(self, message):
-        """Handle incoming LXMF message"""
-        try:
-            # Update node info
-            source_hash = message.source_hash
-            node = UnifiedNode.from_rns(source_hash)
-            self.node_tracker.add_node(node)
-
-            # Capture LXMF message for traffic inspection
-            if HAS_RNS_SNIFFER:
-                try:
-                    sniffer = get_rns_sniffer()
-                    if sniffer and sniffer._running:
-                        # Encode message content as payload
-                        content_bytes = message.content.encode('utf-8') if message.content else b''
-                        packet_info = RNSPacketInfo(
-                            packet_type=RNSPacketType.DATA,
-                            source_hash=source_hash,
-                            direction="inbound",
-                            payload=content_bytes,
-                            payload_size=len(content_bytes),
-                            announce_aspect="lxmf.delivery",
-                        )
-                        sniffer._store_packet(packet_info)
-                except Exception as e:
-                    logger.debug(f"RNS sniffer LXMF capture error: {e}")
-
-            msg = BridgedMessage(
-                source_network="rns",
-                source_id=source_hash.hex(),
-                destination_id=None,
-                content=message.content,
-                title=message.title,
-                metadata={
-                    'lxmf_stamp': message.stamp,
-                }
-            )
-
-            # Store incoming message for UI/history
-            try:
-                from commands import messaging
-                # Combine title and content for RNS messages
-                content = message.content
-                if message.title:
-                    content = f"[{message.title}] {content}"
-                messaging.store_incoming(
-                    from_id=source_hash.hex(),
-                    content=content,
-                    network="rns",
-                    to_id=None,  # LXMF doesn't have destination in received messages
-                )
-            except Exception as e:
-                logger.debug(f"Could not store incoming RNS message: {e}")
-
-            # Queue for bridging if enabled (non-blocking to prevent deadlock)
-            if self._router.should_bridge(msg):
-                try:
-                    self._rns_to_mesh_queue.put_nowait(msg)
-                except Full:
-                    logger.warning("RNS→Mesh queue full, dropping message")
-                    with self._stats_lock:
-                        self.stats['errors'] += 1
-
-            # Notify callbacks
-            self._notify_message(msg)
-
-        except Exception as e:
-            logger.error(f"Error processing LXMF message: {e}")
+        """Handle incoming LXMF message."""
+        _bridge_rns_connection.handle_lxmf_receive(self, message)
 
     def _on_rns_announce(self, dest_hash, announced_identity, app_data):
-        """Handle RNS announce for node discovery"""
-        try:
-            # Capture announce packet for traffic inspection
-            if HAS_RNS_SNIFFER:
-                try:
-                    import RNS
-                    sniffer = get_rns_sniffer()
-                    if sniffer and sniffer._running:
-                        packet_info = RNSPacketInfo(
-                            packet_type=RNSPacketType.ANNOUNCE,
-                            destination_hash=dest_hash,
-                            direction="inbound",
-                            announce_app_data=app_data,
-                            announce_aspect="lxmf.delivery",
-                        )
-                        # Get identity hash if available
-                        if announced_identity:
-                            try:
-                                packet_info.source_hash = announced_identity.hash
-                                packet_info.announce_identity = announced_identity.hash
-                            except Exception:
-                                pass
-                        # Get hop count
-                        try:
-                            if RNS.Transport.has_path(dest_hash):
-                                hops = RNS.Transport.hops_to(dest_hash)
-                                packet_info.hops = hops if hops is not None else 0
-                        except Exception:
-                            pass
-                        sniffer._store_packet(packet_info)
-                except Exception as e:
-                    logger.debug(f"RNS sniffer capture error: {e}")
-
-            node = UnifiedNode.from_rns(dest_hash, app_data=app_data)
-            self.node_tracker.add_node(node)
-            logger.debug(f"Discovered RNS node: {dest_hash.hex()[:8]}")
-        except Exception as e:
-            logger.error(f"Error processing RNS announce: {e}")
+        """Handle RNS announce for node discovery."""
+        _bridge_rns_connection.handle_rns_announce(self, dest_hash, announced_identity, app_data)
 
     # Routing delegated to MessageRouter (see gateway/message_routing.py)
 
@@ -1600,155 +1275,20 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
         return self._router.fix_routing(msg_id, correct_category)
 
     def _process_mesh_to_rns(self, msg: BridgedMessage):
-        """Process message from Meshtastic to RNS.
-
-        On send failure for non-broadcast messages, attempts to persist
-        to the persistent queue for later retry.
-        """
-        msg_id = getattr(msg, 'id', '') or msg.source_id or 'unknown'
-        self.flow_tracker.record_event(
-            msg_id, MessageLifecycleState.SENT,
-            source_network="meshtastic", destination_network="rns",
-            content_preview=msg.content,
-        )
-        try:
-            prefix = f"[Mesh:{msg.source_id[-4:]}] " if msg.source_id else "[Mesh] "
-            content = prefix + msg.content
-
-            destination_hash = None
-            if msg.destination_id and not msg.is_broadcast:
-                destination_hash = self._get_rns_destination(msg.destination_id)
-
-            if self.send_to_rns(content, destination_hash):
-                logger.info(f"Bridge Mesh→RNS: {content[:50]}...")
-                with self._stats_lock:
-                    self.stats['messages_mesh_to_rns'] += 1
-                self.health.record_message_sent("mesh_to_rns")
-                self.flow_tracker.record_event(
-                    msg_id, MessageLifecycleState.DELIVERED,
-                    source_network="meshtastic", destination_network="rns",
-                    content_preview=msg.content,
-                )
-            else:
-                if msg.is_broadcast:
-                    logger.debug(f"Mesh→RNS broadcast not sent (no propagation node): {content[:30]}...")
-                else:
-                    logger.warning(f"Failed to bridge Mesh→RNS: {content[:30]}...")
-                    with self._stats_lock:
-                        self.stats['errors'] += 1
-                    requeued = self._requeue_failed_message(msg, "rns")
-                    self.health.record_message_failed("mesh_to_rns", requeued=requeued)
-                    self.flow_tracker.record_event(
-                        msg_id, MessageLifecycleState.FAILED,
-                        source_network="meshtastic", destination_network="rns",
-                        content_preview=msg.content,
-                        details="Send failed, requeued" if requeued else "Send failed",
-                    )
-
-        except Exception as e:
-            logger.error(f"Error bridging Mesh→RNS: {e}")
-            with self._stats_lock:
-                self.stats['errors'] += 1
-            self.health.record_error("rns", e)
-            self._requeue_failed_message(msg, "rns")
-            self.health.record_message_failed("mesh_to_rns", requeued=True)
-            self.flow_tracker.record_event(
-                msg_id, MessageLifecycleState.FAILED,
-                source_network="meshtastic", destination_network="rns",
-                details=str(e),
-            )
+        """Process message from Meshtastic to RNS."""
+        _bridge_message_processing.process_mesh_to_rns(self, msg)
 
     def _get_rns_destination(self, meshtastic_id: str) -> bytes:
-        """Look up RNS destination hash for a Meshtastic node ID"""
-        # Check node tracker for known mappings
-        if hasattr(self, 'node_tracker') and self.node_tracker:
-            node = self.node_tracker.get_node_by_mesh_id(meshtastic_id)
-            if node and hasattr(node, 'rns_hash') and node.rns_hash:
-                return node.rns_hash
-        return None
+        """Look up RNS destination hash for a Meshtastic node ID."""
+        return _bridge_message_processing.get_rns_destination(self, meshtastic_id)
 
     def _requeue_failed_message(self, msg, destination: str) -> bool:
-        """Persist a failed message to the persistent queue for later retry.
-
-        Args:
-            msg: The message that failed to send (BridgedMessage or CanonicalMessage).
-            destination: Target network ("meshtastic", "rns", or "meshcore").
-
-        Returns:
-            True if message was successfully persisted, False otherwise.
-        """
-        if not self._persistent_queue:
-            return False
-
-        try:
-            # Handle both BridgedMessage (source_id) and CanonicalMessage (source_address)
-            source_id = getattr(msg, 'source_id', None) or getattr(msg, 'source_address', '')
-            dest_id = getattr(msg, 'destination_id', None) or getattr(msg, 'destination_address', '')
-            self._persistent_queue.enqueue(
-                payload={
-                    'message': msg.content,
-                    'source_id': source_id,
-                    'destination_id': dest_id or "",
-                    'metadata': msg.metadata or {},
-                },
-                destination=destination,
-                priority=MessagePriority.HIGH,
-            )
-            logger.debug(f"Failed message re-queued to persistent storage ({destination})")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to persist message for retry: {e}")
-            return False
+        """Persist a failed message to the persistent queue for later retry."""
+        return _bridge_message_processing.requeue_failed_message(self, msg, destination)
 
     def _process_rns_to_mesh(self, msg: BridgedMessage):
-        """Process message from RNS to Meshtastic.
-
-        On send failure, persists to persistent queue for later retry.
-        """
-        msg_id = getattr(msg, 'id', '') or msg.source_id or 'unknown'
-        self.flow_tracker.record_event(
-            msg_id, MessageLifecycleState.SENT,
-            source_network="rns", destination_network="meshtastic",
-            content_preview=msg.content,
-        )
-        try:
-            prefix = f"[RNS:{msg.source_id[:4]}] "
-            content = prefix + msg.content
-
-            if self.send_to_meshtastic(content, channel=self.config.meshtastic.channel):
-                logger.info(f"Bridge RNS→Mesh: {content[:50]}...")
-                with self._stats_lock:
-                    self.stats['messages_rns_to_mesh'] += 1
-                self.health.record_message_sent("rns_to_mesh")
-                self.flow_tracker.record_event(
-                    msg_id, MessageLifecycleState.DELIVERED,
-                    source_network="rns", destination_network="meshtastic",
-                    content_preview=msg.content,
-                )
-            else:
-                logger.warning("Failed to bridge RNS→Mesh")
-                with self._stats_lock:
-                    self.stats['errors'] += 1
-                requeued = self._requeue_failed_message(msg, "meshtastic")
-                self.health.record_message_failed("rns_to_mesh", requeued=requeued)
-                self.flow_tracker.record_event(
-                    msg_id, MessageLifecycleState.FAILED,
-                    source_network="rns", destination_network="meshtastic",
-                    details="Send failed, requeued" if requeued else "Send failed",
-                )
-
-        except Exception as e:
-            logger.error(f"Error bridging RNS→Mesh: {e}")
-            with self._stats_lock:
-                self.stats['errors'] += 1
-            self.health.record_error("meshtastic", e)
-            self._requeue_failed_message(msg, "meshtastic")
-            self.health.record_message_failed("rns_to_mesh", requeued=True)
-            self.flow_tracker.record_event(
-                msg_id, MessageLifecycleState.FAILED,
-                source_network="rns", destination_network="meshtastic",
-                details=str(e),
-            )
+        """Process message from RNS to Meshtastic."""
+        _bridge_message_processing.process_rns_to_mesh(self, msg)
 
     # _process_meshcore_to_bridge() and _process_bridge_to_meshcore()
     # inherited from MeshCoreBridgeMixin — see meshcore_bridge_mixin.py
@@ -1761,94 +1301,20 @@ class RNSMeshtasticBridge(MeshCoreBridgeMixin):
         """Notify message callbacks and emit to event bus (thread-safe snapshot).
 
         Handles both BridgedMessage and CanonicalMessage objects.
-
-        Issue #17 Phase 3: Emit messages to event bus so UI panels can subscribe
-        and display RX messages without being directly coupled to the bridge.
         """
-        with self._callbacks_lock:
-            callbacks = list(self._message_callbacks)
-        for callback in callbacks:
-            try:
-                callback(msg)
-            except Exception as e:
-                logger.error(f"Message callback error: {e}")
-
-        # Emit to event bus for UI panels (Issue #17 Phase 3)
-        if HAS_EVENT_BUS and emit_message:
-            try:
-                # Handle both BridgedMessage (source_id) and CanonicalMessage (source_address)
-                node_id = getattr(msg, 'source_id', None) or getattr(msg, 'source_address', '') or ''
-                dest_id = getattr(msg, 'destination_id', None) or getattr(msg, 'destination_address', None)
-                title = getattr(msg, 'title', None) or (msg.metadata.get('title') if msg.metadata else None)
-                emit_message(
-                    direction='rx',
-                    content=msg.content,
-                    node_id=node_id,
-                    node_name="",  # Could be enhanced with node lookup
-                    channel=msg.metadata.get('channel', 0) if msg.metadata else 0,
-                    network=msg.source_network,
-                    raw_data={
-                        'destination_id': dest_id,
-                        'is_broadcast': msg.is_broadcast,
-                        'title': title,
-                        'timestamp': msg.timestamp.isoformat() if msg.timestamp else None,
-                        'metadata': msg.metadata
-                    }
-                )
-            except Exception as e:
-                logger.warning(f"Event bus emit failed: {e}")
-
-        # Auto-ingest tactical messages (X1 format) to timeline + event bus
-        msg_type = getattr(msg, 'message_type', None)
-        if msg_type is not None and hasattr(msg_type, 'value') and msg_type.value == 'tactical':
-            try:
-                from tactical.x1_codec import decode as x1_decode, is_x1
-                if is_x1(msg.content):
-                    tac_msg = x1_decode(msg.content)
-                    emit_tactical(
-                        tactical_type=tac_msg.tactical_type.name,
-                        message_id=tac_msg.id,
-                        sender_id=tac_msg.sender_id,
-                        content=tac_msg.content,
-                        encryption_mode=tac_msg.encryption_mode.value,
-                    )
-            except Exception as e:
-                logger.warning(f"Tactical auto-ingest failed: {e}")
+        _bridge_message_processing.notify_message(self, msg)
 
     def _start_websocket_server(self):
         """Start WebSocket server for real-time message broadcast to web UI."""
-        if not HAS_WEBSOCKET:
-            return
-        try:
-            if is_websocket_available():
-                if start_websocket_server(port=5001):
-                    logger.info("WebSocket server started on port 5001")
-                    self._websocket_started = True
-                else:
-                    logger.debug("WebSocket server failed to start")
-            else:
-                logger.debug("WebSocket not available (websockets library not installed)")
-        except Exception as e:
-            logger.debug(f"Could not start WebSocket server: {e}")
+        _bridge_message_processing.start_ws_server(self)
 
     def _stop_websocket_server(self):
         """Stop WebSocket server."""
-        if getattr(self, '_websocket_started', False):
-            try:
-                stop_websocket_server()
-                logger.info("WebSocket server stopped")
-            except Exception as e:
-                logger.debug(f"Error stopping WebSocket server: {e}")
+        _bridge_message_processing.stop_ws_server(self)
 
     def _notify_status(self, status: str):
-        """Notify status callbacks (thread-safe snapshot)"""
-        with self._callbacks_lock:
-            callbacks = list(self._status_callbacks)
-        for callback in callbacks:
-            try:
-                callback(status, self.get_status())
-            except Exception as e:
-                logger.error(f"Status callback error: {e}")
+        """Notify status callbacks (thread-safe snapshot)."""
+        _bridge_message_processing.notify_status(self, status)
 
 
 # === Module-level helper functions for CLI/headless operation ===

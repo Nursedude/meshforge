@@ -61,39 +61,30 @@ class EmergencyModeHandler(BaseHandler):
         Every action is individually protected to ensure the menu
         always returns, even if individual operations fail.
         """
-        while True:
-            choices = [
-                ("send", "SEND MESSAGE (broadcast)"),
-                ("direct", "SEND DIRECT (to node)"),
-                ("status", "WHO IS ONLINE"),
-                ("msgs", "RECENT MESSAGES"),
-                ("pos", "MY POSITION"),
-                ("sos", "SOS BEACON (repeating)"),
-                ("alerts", "WEATHER/EAS ALERTS"),
-                ("exit", "EXIT Emergency Mode"),
-            ]
-
-            choice = self.ctx.dialog.menu(
-                "EMERGENCY MODE",
-                "EMCOMM Quick Actions — field operations:",
-                choices
-            )
-
-            if choice is None or choice == "exit":
-                break
-
-            dispatch = {
-                "send": ("EMCOMM Broadcast", self._emcomm_broadcast),
-                "direct": ("EMCOMM Direct Message", self._emcomm_direct),
-                "status": ("EMCOMM Node Status", self._emcomm_status),
-                "msgs": ("EMCOMM Messages", self._emcomm_messages),
-                "pos": ("EMCOMM Position", self._emcomm_position),
-                "sos": ("EMCOMM SOS Beacon", self._emcomm_sos_beacon),
-                "alerts": ("EMCOMM EAS Alerts", self._emcomm_eas_alerts),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
+        choices = [
+            ("send", "SEND MESSAGE (broadcast)"),
+            ("direct", "SEND DIRECT (to node)"),
+            ("status", "WHO IS ONLINE"),
+            ("msgs", "RECENT MESSAGES"),
+            ("pos", "MY POSITION"),
+            ("sos", "SOS BEACON (repeating)"),
+            ("alerts", "WEATHER/EAS ALERTS"),
+        ]
+        dispatch = {
+            "send": ("EMCOMM Broadcast", self._emcomm_broadcast),
+            "direct": ("EMCOMM Direct Message", self._emcomm_direct),
+            "status": ("EMCOMM Node Status", self._emcomm_status),
+            "msgs": ("EMCOMM Messages", self._emcomm_messages),
+            "pos": ("EMCOMM Position", self._emcomm_position),
+            "sos": ("EMCOMM SOS Beacon", self._emcomm_sos_beacon),
+            "alerts": ("EMCOMM EAS Alerts", self._emcomm_eas_alerts),
+        }
+        self.run_menu_loop(
+            "EMERGENCY MODE",
+            "EMCOMM Quick Actions — field operations:",
+            choices,
+            dispatch,
+        )
 
     def _emcomm_broadcast(self):
         """Send a broadcast message to all nodes."""
