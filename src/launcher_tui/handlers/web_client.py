@@ -207,34 +207,23 @@ class WebClientHandler(BaseHandler):
         else:
             status_line = "Trusted certificate: NOT installed (using meshtasticd default)"
 
-        while True:
-            choices = [
-                ("generate", "Generate Trusted Cert   Eliminate browser warnings"),
-                ("manual", "Manual Accept Help     Browser-specific instructions"),
-                ("back", "Back"),
-            ]
+        choices = [
+            ("generate", "Generate Trusted Cert   Eliminate browser warnings"),
+            ("manual", "Manual Accept Help     Browser-specific instructions"),
+        ]
 
-            choice = self.ctx.dialog.menu(
-                "SSL Certificate",
-                f"{status_line}\n\n"
-                "meshtasticd uses HTTPS with a self-signed certificate.\n"
-                "This causes warnings in browsers and blocks lynx/curl.\n\n"
-                "Generate a trusted certificate to fix this permanently.",
-                choices,
-                height=18, width=65
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            if choice == "generate":
-                self._generate_trusted_cert()
-                try:
-                    cert_installed = is_cert_installed()
-                except Exception:
-                    pass
-            elif choice == "manual":
-                self._show_manual_ssl_help()
+        dispatch = {
+            "generate": ("Generate Trusted Cert", self._generate_trusted_cert),
+            "manual": ("Manual Accept Help", self._show_manual_ssl_help),
+        }
+        self.run_menu_loop(
+            "SSL Certificate",
+            f"{status_line}\n\n"
+            "meshtasticd uses HTTPS with a self-signed certificate.\n"
+            "This causes warnings in browsers and blocks lynx/curl.\n\n"
+            "Generate a trusted certificate to fix this permanently.",
+            choices, dispatch,
+        )
 
     def _generate_trusted_cert(self):
         """Generate and install a trusted localhost SSL certificate."""

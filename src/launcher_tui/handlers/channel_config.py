@@ -183,35 +183,26 @@ class ChannelConfigHandler(BaseHandler):
 
     def _edit_single_channel(self, idx: int):
         """Edit a single channel's settings."""
-        while True:
-            slot_name = "PRIMARY" if idx == 0 else f"Slot {idx+1}"
+        slot_name = "PRIMARY" if idx == 0 else f"Slot {idx+1}"
 
-            choices = [
-                ("name", "Set Channel Name"),
-                ("psk", "Set PSK (Encryption Key)"),
-                ("role", "Set Role (Primary/Secondary/Disabled)"),
-                ("view", "View Current Settings"),
-                ("back", "Back"),
-            ]
+        choices = [
+            ("name", "Set Channel Name"),
+            ("psk", "Set PSK (Encryption Key)"),
+            ("role", "Set Role (Primary/Secondary/Disabled)"),
+            ("view", "View Current Settings"),
+        ]
 
-            choice = self.ctx.dialog.menu(
-                f"Channel {idx} ({slot_name})",
-                f"Edit channel {idx} settings:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "name": ("Set Channel Name", self._set_channel_name),
-                "psk": ("Set Channel PSK", self._set_channel_psk),
-                "role": ("Set Channel Role", self._set_channel_role),
-                "view": ("View Channel", self._view_single_channel),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(entry[0], entry[1], idx)
+        dispatch = {
+            "name": ("Set Channel Name", self._set_channel_name, idx),
+            "psk": ("Set Channel PSK", self._set_channel_psk, idx),
+            "role": ("Set Channel Role", self._set_channel_role, idx),
+            "view": ("View Channel", self._view_single_channel, idx),
+        }
+        self.run_menu_loop(
+            f"Channel {idx} ({slot_name})",
+            f"Edit channel {idx} settings:",
+            choices, dispatch,
+        )
 
     def _set_channel_name(self, idx: int):
         """Set name for a specific channel."""
