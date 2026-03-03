@@ -1,13 +1,25 @@
 """
-MeshForge Plugin Architecture
+MeshForge Plugin Architecture (DEPRECATED)
 
-Provides extensibility for MeshForge.io through a plugin system.
+.. deprecated:: 0.5.4
+    This module is deprecated. Use ``utils.plugins`` instead, which is the
+    canonical plugin system with auto-discovery, event bus integration, and
+    active support for all 6 built-in plugins.
 
-Plugin Types:
-- Panel Plugins: Add new UI panels
-- Tool Plugins: Add calculation/analysis tools
-- Integration Plugins: Connect external services
-- Theme Plugins: Customize appearance
+    Migration guide::
+
+        # Old (deprecated):
+        from core.plugin_base import Plugin, PluginManager, PluginManifest
+
+        # New (canonical):
+        from utils.plugins import BasePlugin, PluginManager, PluginMetadata
+
+    This file will be removed in 0.6.x.
+
+Original description:
+    Provides extensibility for MeshForge.io through a plugin system.
+    Designed for the removed GTK desktop UI with manifest.json-driven
+    discovery. No production code uses this module.
 """
 
 import json

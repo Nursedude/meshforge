@@ -13,7 +13,10 @@ This module contains:
 """
 
 from .edition import Edition, detect_edition, has_feature, get_edition_features
-from .plugin_base import Plugin, PluginManager, PluginManifest
+
+# Plugin system: canonical location is utils.plugins (active system).
+# core.plugin_base is deprecated — kept for backward compatibility.
+from utils.plugins import BasePlugin as Plugin, PluginManager, PluginMetadata as PluginManifest
 
 # Diagnostics engine (lazy import to avoid circular dependencies)
 def get_diagnostic_engine():
