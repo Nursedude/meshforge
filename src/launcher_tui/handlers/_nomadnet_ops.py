@@ -25,6 +25,7 @@ from pathlib import Path
 from backend import clear_screen
 from utils.paths import get_real_user_home
 from utils.safe_import import safe_import
+from utils.validation import validate_unix_username
 
 # Import centralized service checking
 check_process_running, _HAS_SERVICE_CHECK = safe_import(
@@ -289,6 +290,9 @@ def launch_nomadnet_daemon(handler):
     # Build command - run as real user if we're under sudo
     # This ensures NomadNet uses ~/.nomadnetwork/config, not /root/.nomadnetwork/config
     sudo_user = os.environ.get('SUDO_USER')
+    if sudo_user and not validate_unix_username(sudo_user):
+        logger.warning("Invalid SUDO_USER value: %r, ignoring", sudo_user)
+        sudo_user = None
 
     # Build base args with optional --rnsconfig
     nn_args = ['--daemon']
@@ -500,6 +504,9 @@ def edit_nomadnet_config(handler):
                     # Build command - run as real user if we're under sudo
                     # This ensures config is created with correct ownership
                     sudo_user = os.environ.get('SUDO_USER')
+                    if sudo_user and not validate_unix_username(sudo_user):
+                        logger.warning("Invalid SUDO_USER value: %r, ignoring", sudo_user)
+                        sudo_user = None
 
                     # Build base args with optional --rnsconfig
                     nn_args = ['--daemon']
@@ -597,6 +604,9 @@ def install_nomadnet(handler):
 
     # Determine if we should install as a different user (when running via sudo)
     sudo_user = os.environ.get('SUDO_USER')
+    if sudo_user and not validate_unix_username(sudo_user):
+        logger.warning("Invalid SUDO_USER value: %r, ignoring", sudo_user)
+        sudo_user = None
     run_as_user = sudo_user if sudo_user and sudo_user != 'root' else None
 
     try:
@@ -617,8 +627,9 @@ def install_nomadnet(handler):
         def run_pipx_cmd(args, timeout_sec=300):
             """Run pipx command, as real user if running via sudo."""
             if run_as_user:
-                # Run as real user with login shell (-i) to set HOME correctly
-                cmd = ['sudo', '-i', '-u', run_as_user] + args
+                # Run as real user with -H to set HOME correctly
+                # Using -H instead of -i avoids running shell profiles which can interfere
+                cmd = ['sudo', '-H', '-u', run_as_user] + args
             else:
                 cmd = args
             return subprocess.run(cmd, timeout=timeout_sec)

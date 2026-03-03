@@ -439,32 +439,114 @@ class UpdatesHandler(BaseHandler):
             "Run: meshforge"
         )
 
+    # Explicit command dispatch table — avoids shell interpretation.
+    # Each entry is a list of (argv_list, timeout_seconds) steps run sequentially.
+    # The update_command field on VersionInfo is display-only; actual execution
+    # is defined here with safe argument lists (no shell=True, no bash -c).
+    _UPDATE_COMMANDS = {
+        'meshtasticd': [
+            (['sudo', 'apt', 'update'], 60),
+            (['sudo', 'apt', 'upgrade', '-y', 'meshtasticd'], 300),
+        ],
+        'cli': [
+            (['pipx', 'upgrade', 'meshtastic'], 300),
+        ],
+        'cli_install': [
+            (['pipx', 'install', 'meshtastic'], 300),
+        ],
+    }
+
     def _run_update_command(self, component: str, command: str) -> Tuple[bool, str]:
-        """Execute an update command safely."""
+        """Execute an update command safely via dispatch table.
+
+        Uses _UPDATE_COMMANDS to map component names to safe argument lists.
+        Falls back to shlex.split() for simple commands not in the table.
+        Never uses shell interpretation (no bash -c, no shell=True).
+
+        Args:
+            component: Component key (e.g., 'meshtasticd', 'cli').
+            command: Display command string (used as fallback for simple commands).
+
+        Returns:
+            Tuple of (success, output_message).
+        """
+        # Prefer the dispatch table for known components
+        steps = self._UPDATE_COMMANDS.get(component)
+        if steps:
+            return self._run_command_steps(component, steps)
+
+        # Fallback: parse simple commands (no shell metacharacters)
+        if '|' in command or '>' in command or '&&' in command:
+            logger.warning(
+                "Refusing to execute compound command for unknown component %r: %s",
+                component, command,
+            )
+            return False, (
+                f"Cannot execute compound command for '{component}'. "
+                "Add it to _UPDATE_COMMANDS dispatch table."
+            )
+
+        import shlex
         try:
-            import shlex
-            if '|' in command or '>' in command or '&&' in command:
-                cmd_args = ['bash', '-c', command]
-            else:
-                cmd_args = shlex.split(command)
+            cmd_args = shlex.split(command)
+        except ValueError as e:
+            logger.error("Failed to parse update command for %s: %s", component, e)
+            return False, f"Invalid command syntax: {e}"
+
+        return self._run_single_command(component, cmd_args, timeout=300)
+
+    def _run_command_steps(
+        self, component: str, steps: list
+    ) -> Tuple[bool, str]:
+        """Execute a sequence of command steps for a component.
+
+        Args:
+            component: Component name for logging.
+            steps: List of (argv_list, timeout_seconds) tuples.
+
+        Returns:
+            Tuple of (success, last_output).
+        """
+        last_output = ""
+        for cmd_args, timeout in steps:
+            success, output = self._run_single_command(component, cmd_args, timeout)
+            last_output = output
+            if not success:
+                return False, output
+        return True, last_output
+
+    def _run_single_command(
+        self, component: str, cmd_args: list, timeout: int = 300
+    ) -> Tuple[bool, str]:
+        """Execute a single subprocess command safely.
+
+        Args:
+            component: Component name for logging.
+            cmd_args: Command as argument list (no shell).
+            timeout: Subprocess timeout in seconds.
+
+        Returns:
+            Tuple of (success, output_message).
+        """
+        try:
             result = subprocess.run(
                 cmd_args,
                 capture_output=True,
                 text=True,
-                timeout=300
+                timeout=timeout,
             )
 
             if result.returncode == 0:
-                logger.info(f"Updated {component} successfully")
+                logger.info("Updated %s successfully", component)
                 return True, result.stdout
 
             error_msg = result.stderr or result.stdout or f"Exit code: {result.returncode}"
-            logger.error(f"Failed to update {component}: {error_msg}")
+            logger.error("Failed to update %s: %s", component, error_msg)
             return False, error_msg
 
         except subprocess.TimeoutExpired:
-            logger.error(f"Update timeout for {component}")
-            return False, "Update timed out after 5 minutes"
+            logger.error("Update timeout for %s", component)
+            return False, f"Update timed out after {timeout} seconds"
         except Exception as e:
-            logger.error(f"Update error for {component}: {e}")
+            logger.error("Update error for %s: %s", component, e)
             return False, str(e)

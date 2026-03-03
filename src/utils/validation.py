@@ -70,6 +70,46 @@ def validate_node_id(node_id: str) -> bool:
     return bool(re.match(r'^[a-fA-F0-9]+$', hex_part))
 
 
+def validate_unix_username(username: str) -> bool:
+    """Validate a Unix username.
+
+    Accepts usernames matching standard Linux conventions:
+    starts with lowercase letter or underscore, followed by lowercase
+    letters, digits, underscores, or hyphens. Max 32 characters.
+
+    Args:
+        username: Username string to validate
+
+    Returns:
+        True if valid Unix username
+    """
+    if not username or len(username) > 32:
+        return False
+    return bool(re.match(r'^[a-z_][a-z0-9_-]*$', username))
+
+
+def validate_serial_port(port: str) -> bool:
+    """Validate a serial port device path.
+
+    Accepts standard Linux serial device paths:
+    /dev/ttyUSB0, /dev/ttyACM1, /dev/ttyS0, /dev/ttyAMA0, etc.
+
+    Rejects:
+        - Empty strings
+        - Paths with traversal (../)
+        - Non-/dev/tty* paths
+
+    Args:
+        port: Device path to validate (e.g., /dev/ttyUSB0)
+
+    Returns:
+        True if valid serial port path
+    """
+    if not port:
+        return False
+    return bool(re.match(r'^/dev/tty[A-Za-z0-9]+[0-9]*$', port))
+
+
 def validate_message_length(message: str, max_bytes: int = 228) -> Optional[str]:
     """Validate message doesn't exceed byte limit.
 

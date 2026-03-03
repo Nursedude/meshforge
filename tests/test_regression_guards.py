@@ -373,3 +373,28 @@ class TestMessageLengthEnforcement:
                 f"{filename} must reference MAX_MESHTASTIC_MSG_LENGTH "
                 f"or inherit from BaseMessageHandler which does"
             )
+
+
+class TestNoBashC:
+    """Enforce: No bash -c pattern in production code.
+
+    bash -c with string commands is functionally equivalent to shell=True
+    and bypasses the MF002 lint rule. Update commands should use explicit
+    argument lists via the _UPDATE_COMMANDS dispatch table.
+    """
+
+    def test_no_bash_c_in_production_code(self):
+        """No production code should use bash -c for command execution."""
+        matches = _scan_python_files(
+            r"""['"]bash['"],\s*['"]-c['"]""",
+            exclude_dirs=['tests'],
+        )
+        violations = [
+            f"  {os.path.relpath(fp, SRC_DIR)}:{ln}: {line.strip()}"
+            for fp, ln, line in matches
+        ]
+        assert len(violations) == 0, (
+            f"Found {len(violations)} bash -c pattern(s) in production code.\n"
+            "Use explicit subprocess argument lists instead.\n\n"
+            "Violations:\n" + "\n".join(violations)
+        )
