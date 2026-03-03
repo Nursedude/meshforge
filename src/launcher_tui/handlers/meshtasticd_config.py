@@ -119,53 +119,41 @@ class MeshtasticdConfigHandler(BaseHandler):
         """Configuration management for meshtasticd."""
         ensure_meshtasticd_config()
 
-        while True:
-            choices = [
-                ("view", "View Active Config"),
-                ("overlays", "View config.d/ Overlays"),
-                ("available", "Available Hardware Configs"),
-                ("presets", "LoRa Presets"),
-                ("channels", "Channel Configuration"),
-                ("meshtasticd", "Advanced meshtasticd Config"),
-                ("settings", "MeshForge Settings"),
-                ("wizard", "Run Setup Wizard"),
-                ("back", "Back"),
-            ]
+        choices = [
+            ("view", "View Active Config"),
+            ("overlays", "View config.d/ Overlays"),
+            ("available", "Available Hardware Configs"),
+            ("presets", "LoRa Presets"),
+            ("channels", "Channel Configuration"),
+            ("meshtasticd", "Advanced meshtasticd Config"),
+            ("settings", "MeshForge Settings"),
+            ("wizard", "Run Setup Wizard"),
+        ]
+        dispatch = {
+            "view": ("View Active Config", self._view_active_config),
+            "overlays": ("Config Overlays", self._view_config_overlays),
+            "available": ("Available Hardware Configs", self._view_available_configs),
+            "presets": ("LoRa Presets", self._radio_presets_menu),
+            "meshtasticd": ("Advanced Config", self._meshtasticd_menu),
+        }
+        self.run_menu_loop(
+            "Configuration",
+            "meshtasticd & MeshForge configuration:",
+            choices,
+            dispatch,
+            default_handler=self._config_menu_fallback,
+        )
 
-            choice = self.ctx.dialog.menu(
-                "Configuration",
-                "meshtasticd & MeshForge configuration:",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "view": ("View Active Config", self._view_active_config),
-                "overlays": ("Config Overlays", self._view_config_overlays),
-                "available": ("Available Hardware Configs", self._view_available_configs),
-                "presets": ("LoRa Presets", self._radio_presets_menu),
-                "meshtasticd": ("Advanced Config", self._meshtasticd_menu),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
-                continue
-
-            # Cross-handler dispatch via registry
-            if choice == "channels":
-                if self.ctx.registry:
-                    self.ctx.registry.dispatch("configuration", "channels")
-                continue
-            if choice == "settings":
-                if self.ctx.registry:
-                    self.ctx.registry.dispatch("configuration", "meshforge")
-                continue
-            if choice == "wizard":
-                if self.ctx.registry:
-                    self.ctx.registry.dispatch("configuration", "wizard")
-                continue
+    def _config_menu_fallback(self, choice):
+        """Cross-handler dispatch for config menu items."""
+        registry_map = {
+            "channels": ("configuration", "channels"),
+            "settings": ("configuration", "meshforge"),
+            "wizard": ("configuration", "wizard"),
+        }
+        entry = registry_map.get(choice)
+        if entry and self.ctx.registry:
+            self.ctx.registry.dispatch(*entry)
 
     # ------------------------------------------------------------------
     # View methods (moved from main.py)
@@ -293,8 +281,7 @@ class MeshtasticdConfigHandler(BaseHandler):
         """Meshtasticd configuration menu (thin dispatcher)."""
         ensure_meshtasticd_config()
 
-        while True:
-            # Own inline items
+        def _build_choices():
             own_items = [
                 ("web", "Web Client (Full Config)"),
                 ("status", "Service Status"),
@@ -305,69 +292,52 @@ class MeshtasticdConfigHandler(BaseHandler):
                 ("edit", "Edit Config Files"),
                 ("restart", "Restart Service"),
             ]
-
-            # Merge with registry sub-handler items (lora, mqtt, cleanup)
             registry_items = []
             if self.ctx.registry:
                 registry_items = self.ctx.registry.get_menu_items("meshtasticd")
-
-            registry_tags = {tag for tag, _ in registry_items}
             own_map = {tag: desc for tag, desc in own_items}
             reg_map = {tag: desc for tag, desc in registry_items}
             all_map = {**own_map, **reg_map}
-
-            # Apply ordering
             result = []
             for tag in _MESHTASTICD_ORDERING:
                 if tag in all_map:
                     result.append((tag, all_map[tag]))
-            # Append any unordered items
             ordered_set = set(_MESHTASTICD_ORDERING)
             for tag, desc in list(own_items) + list(registry_items):
                 if tag not in ordered_set and (tag, desc) not in result:
                     result.append((tag, desc))
+            return result
 
-            result.append(("back", "Back"))
+        dispatch = {
+            "web": ("Web Client", self._show_web_client_info),
+            "status": ("Service Status", self._meshtasticd_status),
+            "owner": ("Set Owner Name", self._set_owner_name),
+            "presets": ("Radio Presets", self._radio_presets_menu),
+            "hardware": ("Hardware Config", self._hardware_config_menu),
+            "edit": ("Edit Config Files", self._edit_config_menu),
+            "restart": ("Restart Service", self._restart_meshtasticd),
+        }
+        self.run_menu_loop(
+            "Meshtasticd Config",
+            "Configure meshtasticd radio daemon:",
+            _build_choices,
+            dispatch,
+            default_handler=self._meshtasticd_menu_fallback,
+        )
 
-            choice = self.ctx.dialog.menu(
-                "Meshtasticd Config",
-                "Configure meshtasticd radio daemon:",
-                result
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            # Try registry sub-handlers first (lora, mqtt, cleanup)
-            if choice in registry_tags:
-                if self.ctx.registry:
-                    self.ctx.registry.dispatch("meshtasticd", choice)
-                continue
-
-            # Own inline dispatch
-            own_dispatch = {
-                "web": ("Web Client", self._show_web_client_info),
-                "status": ("Service Status", self._meshtasticd_status),
-                "owner": ("Set Owner Name", self._set_owner_name),
-                "presets": ("Radio Presets", self._radio_presets_menu),
-                "hardware": ("Hardware Config", self._hardware_config_menu),
-                "edit": ("Edit Config Files", self._edit_config_menu),
-                "restart": ("Restart Service", self._restart_meshtasticd),
-            }
-            entry = own_dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
-                continue
-
-            # Cross-handler dispatch
-            if choice == "channels":
-                if self.ctx.registry:
-                    self.ctx.registry.dispatch("configuration", "channels")
-            elif choice == "gateway":
-                # Gateway template is in ChannelConfigHandler
-                handler = self.ctx.registry.get_handler("channel_config") if self.ctx.registry else None
-                if handler and hasattr(handler, '_gateway_template_menu'):
-                    self.ctx.safe_call("Gateway Template", handler._gateway_template_menu)
+    def _meshtasticd_menu_fallback(self, choice):
+        """Registry and cross-handler dispatch for meshtasticd menu."""
+        # Try registry sub-handlers first (lora, mqtt, cleanup)
+        if self.ctx.registry and self.ctx.registry.dispatch("meshtasticd", choice):
+            return
+        # Cross-handler dispatch
+        if choice == "channels":
+            if self.ctx.registry:
+                self.ctx.registry.dispatch("configuration", "channels")
+        elif choice == "gateway":
+            handler = self.ctx.registry.get_handler("channel_config") if self.ctx.registry else None
+            if handler and hasattr(handler, '_gateway_template_menu'):
+                self.ctx.safe_call("Gateway Template", handler._gateway_template_menu)
 
     # ------------------------------------------------------------------
     # General operations

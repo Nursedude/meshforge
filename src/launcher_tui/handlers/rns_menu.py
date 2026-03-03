@@ -54,14 +54,11 @@ class RNSMenuHandler(BaseHandler):
 
     def _rns_submenu(self):
         """RNS / Reticulum submenu — dispatches to sub-handlers and own methods."""
-        while True:
-            # Build choices from "rns" section handlers + own items
+        def _build_choices():
             registry_items = {}
             if self.ctx.registry:
                 for tag, desc in self.ctx.registry.get_menu_items("rns"):
                     registry_items[tag] = desc
-
-            # Own items (not from sub-handlers)
             own_items = {
                 "status": "RNS Status (rnstatus)",
                 "paths": "RNS Path Table (rnpath)",
@@ -70,79 +67,66 @@ class RNSMenuHandler(BaseHandler):
                 "nodes": "Known Destinations",
                 "positions": "Set Node Positions (for map)",
             }
-
-            # Merge: registry items + own items
             all_items = {}
             all_items.update(own_items)
-            all_items.update(registry_items)  # registry wins on conflicts
-
-            # Build ordered choices list
+            all_items.update(registry_items)
             choices = []
             seen = set()
             for tag in _RNS_ORDERING:
                 if tag in all_items and tag not in seen:
                     choices.append((tag, all_items[tag]))
                     seen.add(tag)
-            # Add any items not in the ordering list
             for tag, desc in all_items.items():
                 if tag not in seen:
                     choices.append((tag, desc))
                     seen.add(tag)
-            choices.append(("back", "Back"))
+            return choices
 
-            choice = self.ctx.dialog.menu(
-                "RNS / Reticulum",
-                "Reticulum Network Stack tools:",
-                choices
+        dispatch = {
+            "probe": ("Probe Destination", self._rns_probe_destination),
+            "identity": ("Identity Info", self._rns_identity_info),
+            "nodes": ("Known Destinations", self._rns_known_destinations),
+            "positions": ("Set Node Positions", self._rns_set_node_positions),
+        }
+        self.run_menu_loop(
+            "RNS / Reticulum",
+            "Reticulum Network Stack tools:",
+            _build_choices,
+            dispatch,
+            default_handler=self._rns_submenu_fallback,
+        )
+
+    def _rns_submenu_fallback(self, choice):
+        """Registry dispatch and inline RNS tool commands."""
+        if self.ctx.registry and self.ctx.registry.dispatch("rns", choice):
+            return
+        try:
+            diag = self.ctx.registry.get_handler("rns_diagnostics") if self.ctx.registry else None
+            if choice == "status":
+                clear_screen()
+                print("=== RNS Status ===\n")
+                if diag:
+                    diag._run_rns_tool(['rnstatus'], 'rnstatus')
+                else:
+                    print("RNS diagnostics handler not available.")
+                self.ctx.wait_for_enter()
+            elif choice == "paths":
+                clear_screen()
+                print("=== RNS Path Table ===\n")
+                if diag:
+                    diag._run_rns_tool(['rnpath', '-t'], 'rnpath')
+                else:
+                    print("RNS diagnostics handler not available.")
+                self.ctx.wait_for_enter()
+        except KeyboardInterrupt:
+            pass
+        except Exception as e:
+            self.ctx.dialog.msgbox(
+                "RNS Error",
+                f"Operation failed:\n{type(e).__name__}: {e}\n\n"
+                f"Check that rnsd is running:\n"
+                f"  sudo systemctl status rnsd"
             )
-
-            if choice is None or choice == "back":
-                break
-
-            # Try sub-handler dispatch first (rns section)
-            if self.ctx.registry and self.ctx.registry.dispatch("rns", choice):
-                continue
-
-            # Own inline dispatches
-            own_dispatch = {
-                "probe": ("Probe Destination", self._rns_probe_destination),
-                "identity": ("Identity Info", self._rns_identity_info),
-                "nodes": ("Known Destinations", self._rns_known_destinations),
-                "positions": ("Set Node Positions", self._rns_set_node_positions),
-            }
-            entry = own_dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
-                continue
-
-            # Inline RNS tool commands (status, paths) — need diagnostics handler
-            try:
-                diag = self.ctx.registry.get_handler("rns_diagnostics") if self.ctx.registry else None
-                if choice == "status":
-                    clear_screen()
-                    print("=== RNS Status ===\n")
-                    if diag:
-                        diag._run_rns_tool(['rnstatus'], 'rnstatus')
-                    else:
-                        print("RNS diagnostics handler not available.")
-                    self.ctx.wait_for_enter()
-                elif choice == "paths":
-                    clear_screen()
-                    print("=== RNS Path Table ===\n")
-                    if diag:
-                        diag._run_rns_tool(['rnpath', '-t'], 'rnpath')
-                    else:
-                        print("RNS diagnostics handler not available.")
-                    self.ctx.wait_for_enter()
-            except KeyboardInterrupt:
-                pass
-            except Exception as e:
-                self.ctx.dialog.msgbox(
-                    "RNS Error",
-                    f"Operation failed:\n{type(e).__name__}: {e}\n\n"
-                    f"Check that rnsd is running:\n"
-                    f"  sudo systemctl status rnsd"
-                )
 
     # ------------------------------------------------------------------
     # Own methods (from rns_menu_mixin.py)
@@ -179,115 +163,103 @@ class RNSMenuHandler(BaseHandler):
 
     def _rns_identity_info(self):
         """Show RNS identity information."""
-        clear_screen()
-        print("=== RNS Identity Info ===\n")
-
-        while True:
-            # Check identity status for menu hints
+        def _build_choices():
             config_dir = ReticulumPaths.get_config_dir()
             rnsd_exists = (config_dir / 'identity').exists()
             gw_exists = get_identity_path().exists()
-
-            choices = [
+            return [
                 ("show", "Show local identity"),
                 ("create", "Create identities" + (
                     "" if not rnsd_exists or not gw_exists else " (all exist)")),
                 ("path", "Show identity file paths"),
                 ("recall", "Recall identity by hash"),
-                ("back", "Back"),
             ]
 
-            choice = self.ctx.dialog.menu(
-                "RNS Identity",
-                "Identity management:",
-                choices
-            )
+        dispatch = {
+            "create": ("Create Identities", self._create_rns_identities),
+            "show": ("Show Identity", self._rns_show_identity),
+            "path": ("Identity Paths", self._rns_identity_paths),
+            "recall": ("Recall Identity", self._rns_recall_identity),
+        }
+        self.run_menu_loop(
+            "RNS Identity",
+            "Identity management:",
+            _build_choices,
+            dispatch,
+        )
 
-            if choice is None or choice == "back":
-                break
+    def _rns_show_identity(self):
+        """Show local RNS identity details."""
+        clear_screen()
+        print("=== Local RNS Identity ===\n")
+        config_dir = ReticulumPaths.get_config_dir()
+        diag = self.ctx.registry.get_handler("rns_diagnostics") if self.ctx.registry else None
 
+        rnsd_identity = config_dir / 'identity'
+        if rnsd_identity.exists():
+            print(f"rnsd identity: {rnsd_identity}")
+            if diag:
+                diag._run_rns_tool(
+                    ['rnid', '-i', str(rnsd_identity), '-p'], 'rnid')
+        else:
+            print(f"rnsd identity: {rnsd_identity}")
+            print("  Not found — use 'Create identities' to generate.\n")
+
+        gw_id = get_identity_path()
+        print(f"\nMeshForge gateway identity: {gw_id}")
+        if gw_id.exists():
+            if diag:
+                diag._run_rns_tool(
+                    ['rnid', '-i', str(gw_id), '-p'], 'rnid')
+        else:
+            print("  Not created — use 'Create identities' to generate.")
+        self.ctx.wait_for_enter()
+
+    def _rns_identity_paths(self):
+        """Show RNS identity file paths and metadata."""
+        clear_screen()
+        print("=== RNS Identity Paths ===\n")
+        config_dir = ReticulumPaths.get_config_dir()
+        identity_path = config_dir / 'identity'
+        print(f"RNS config dir:    {config_dir}")
+        print(f"RNS identity file: {identity_path}")
+        if identity_path.exists():
+            stat = identity_path.stat()
+            print(f"  Size: {stat.st_size} bytes")
+            from datetime import datetime
+            mtime = datetime.fromtimestamp(stat.st_mtime)
+            print(f"  Modified: {mtime.strftime('%Y-%m-%d %H:%M:%S')}")
+        else:
+            print("  Not found (created on first rnsd start)")
+
+        gw_id = get_identity_path()
+        print(f"\nMeshForge gateway:  {gw_id}")
+        if gw_id.exists():
+            stat = gw_id.stat()
+            print(f"  Size: {stat.st_size} bytes")
+        else:
+            print("  Not created yet")
+        self.ctx.wait_for_enter()
+
+    def _rns_recall_identity(self):
+        """Look up an RNS identity by its destination hash."""
+        clear_screen()
+        print("=== Recall RNS Identity ===\n")
+        print("Look up a known identity by its destination hash.\n")
+        try:
+            dest_hash = input("Destination hash (or 'q' to cancel): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        if dest_hash and dest_hash.lower() != 'q':
             diag = self.ctx.registry.get_handler("rns_diagnostics") if self.ctx.registry else None
-
-            try:
-                if choice == "create":
-                    self._create_rns_identities()
-
-                elif choice == "show":
-                    clear_screen()
-                    print("=== Local RNS Identity ===\n")
-
-                    rnsd_identity = config_dir / 'identity'
-                    if rnsd_identity.exists():
-                        print(f"rnsd identity: {rnsd_identity}")
-                        if diag:
-                            diag._run_rns_tool(
-                                ['rnid', '-i', str(rnsd_identity), '-p'],
-                                'rnid'
-                            )
-                    else:
-                        print(f"rnsd identity: {rnsd_identity}")
-                        print("  Not found — use 'Create identities' to generate.\n")
-
-                    gw_id = get_identity_path()
-                    print(f"\nMeshForge gateway identity: {gw_id}")
-                    if gw_id.exists():
-                        if diag:
-                            diag._run_rns_tool(
-                                ['rnid', '-i', str(gw_id), '-p'],
-                                'rnid'
-                            )
-                    else:
-                        print("  Not created — use 'Create identities' to generate.")
-                    self.ctx.wait_for_enter()
-
-                elif choice == "path":
-                    clear_screen()
-                    print("=== RNS Identity Paths ===\n")
-                    identity_path = config_dir / 'identity'
-                    print(f"RNS config dir:    {config_dir}")
-                    print(f"RNS identity file: {identity_path}")
-                    if identity_path.exists():
-                        stat = identity_path.stat()
-                        print(f"  Size: {stat.st_size} bytes")
-                        from datetime import datetime
-                        mtime = datetime.fromtimestamp(stat.st_mtime)
-                        print(f"  Modified: {mtime.strftime('%Y-%m-%d %H:%M:%S')}")
-                    else:
-                        print("  Not found (created on first rnsd start)")
-
-                    gw_id = get_identity_path()
-                    print(f"\nMeshForge gateway:  {gw_id}")
-                    if gw_id.exists():
-                        stat = gw_id.stat()
-                        print(f"  Size: {stat.st_size} bytes")
-                    else:
-                        print("  Not created yet")
-                    self.ctx.wait_for_enter()
-
-                elif choice == "recall":
-                    clear_screen()
-                    print("=== Recall RNS Identity ===\n")
-                    print("Look up a known identity by its destination hash.\n")
-                    try:
-                        dest_hash = input("Destination hash (or 'q' to cancel): ").strip()
-                    except (KeyboardInterrupt, EOFError):
-                        print()
-                        continue
-                    if dest_hash and dest_hash.lower() != 'q':
-                        if not re.match(r'^[0-9a-fA-F]+$', dest_hash):
-                            print("Error: Hash must contain only hex characters (0-9, a-f).")
-                        elif diag:
-                            diag._run_rns_tool(['rnid', '--recall', dest_hash], 'rnid')
-                        else:
-                            print("RNS diagnostics handler not available.")
-                    self.ctx.wait_for_enter()
-            except KeyboardInterrupt:
-                pass
-            except Exception as e:
-                self.ctx.dialog.msgbox(
-                    "Identity Error",
-                    f"Operation failed:\n{type(e).__name__}: {e}"
-                )
+            if not re.match(r'^[0-9a-fA-F]+$', dest_hash):
+                print("Error: Hash must contain only hex characters (0-9, a-f).")
+            elif diag:
+                diag._run_rns_tool(['rnid', '--recall', dest_hash], 'rnid')
+            else:
+                print("RNS diagnostics handler not available.")
+        self.ctx.wait_for_enter()
 
     def _create_rns_identities(self):
         """Create RNS and gateway identities from the TUI."""
