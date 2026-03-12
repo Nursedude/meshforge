@@ -591,7 +591,7 @@ class NomadNetHandler(NomadNetRNSChecksMixin, BaseHandler):
                 import collections
                 with open(logfile, 'r') as f:
                     last_lines = list(
-                        collections.deque(f, maxlen=20)
+                        collections.deque(f, maxlen=50)
                     )
 
                 # Look for known error patterns
@@ -638,6 +638,33 @@ class NomadNetHandler(NomadNetRNSChecksMixin, BaseHandler):
                     elif 'ModuleNotFoundError' in line or 'ImportError' in line:
                         error_hints.append("Missing Python dependencies")
                         error_hints.append("Try: pipx reinstall nomadnet")
+                        break
+                    elif ('ConnectionRefusedError' in line
+                          or 'Connection refused' in line):
+                        error_hints.append(
+                            "rnsd's RPC socket refused NomadNet's connection"
+                        )
+                        error_hints.append(
+                            "This usually means NomadNet's RNS library can't "
+                            "talk to rnsd's RPC"
+                        )
+                        error_hints.append(
+                            "Common cause: Python/RNS version mismatch "
+                            "between system and pipx"
+                        )
+                        error_hints.append("Fixes to try:")
+                        error_hints.append(
+                            "  1. pipx reinstall nomadnet   "
+                            "(reinstall with latest RNS)"
+                        )
+                        error_hints.append(
+                            "  2. sudo systemctl restart rnsd   "
+                            "(restart the daemon)"
+                        )
+                        error_hints.append(
+                            "  3. rnstatus   "
+                            "(verify system RNS can reach rnsd)"
+                        )
                         break
             except (OSError, PermissionError):
                 pass
