@@ -85,31 +85,24 @@ sudo bash scripts/install_noc.sh --force-python        # Force USB mode
 
 ### MeshAnchor (MeshCore-Primary Sister App)
 
-The `alpha/meshcore-bridge` branch is becoming **MeshAnchor** — a standalone
-sister app where MeshCore is the primary radio and Meshtastic is a gateway
-plugin. This is the mirror image of MeshForge's architecture.
+**[MeshAnchor](https://github.com/Nursedude/meshanchor)** is the sister project
+where MeshCore is the primary radio and Meshtastic is an optional gateway — the
+mirror image of MeshForge's architecture.
 
 ```
-MeshForge (this repo)          MeshAnchor (coming soon)
+MeshForge (this repo)          MeshAnchor (live)
   Primary: Meshtastic            Primary: MeshCore
-  Gateway to: MeshCore/RNS      Gateway to: Meshtastic/RNS
+  Gateway to: MeshCore/RNS       Gateway to: Meshtastic/RNS
 ```
 
-**Current status:** The alpha branch is undergoing field testing with MeshCore
-hardware before the split. Once validated, it will move to `Nursedude/meshanchor`.
-
-To preview the alpha branch (pre-split):
+MeshAnchor was extracted from MeshForge main on 2026-04-01. Both share the same
+TUI framework, gateway bridge, and RF tools. They differ in which radio is "home."
 
 ```bash
-git clone https://github.com/Nursedude/meshforge.git
-cd meshforge
-git checkout alpha/meshcore-bridge
-sudo bash scripts/install_noc.sh
+git clone https://github.com/Nursedude/meshanchor.git
+cd meshanchor
+sudo python3 src/launcher_tui/main.py
 ```
-
-Alpha (`0.6.0-alpha`) includes RadioMode abstraction, MeshCore 3-way routing,
-plugin system with auto-discovery, viewer mode (no sudo), and structural
-refactoring. See [Branch Strategy](#branch-strategy) for details.
 
 ### Deployment Profiles
 
@@ -210,7 +203,7 @@ Main Menu (MeshForge NOC)
 | **Field-Tested** | Validated in real deployments with actual hardware and services |
 | **Beta** | Code works in automated tests, needs real-world soak time |
 | **Code-Ready** | Implemented and unit-tested, not yet validated with hardware/services |
-| **Alpha** | Architecture solid, on `alpha/meshcore-bridge` branch, needs QA |
+| **MeshAnchor** | Live at [Nursedude/meshanchor](https://github.com/Nursedude/meshanchor), field testing in progress |
 
 ### Field-Tested (Real-World Validated)
 
@@ -262,24 +255,18 @@ Code works in testing but hasn't been validated in real-world deployments with a
 | **Grafana Dashboards** | Pre-built JSON dashboards for Prometheus | Needs Grafana + Prometheus setup |
 | **uConsole AIO V2** | Hardware detection, GPIO power control, auto-config | Hardware ships Q2 2026 |
 
-### MeshAnchor Preview (`alpha/meshcore-bridge`, v0.6.0-alpha)
+### MeshAnchor (Live — [Nursedude/meshanchor](https://github.com/Nursedude/meshanchor))
 
-These features exist on the alpha branch and are being **field-tested** before
-the MeshAnchor repository split. They will move to `Nursedude/meshanchor`:
+These features are now in the [MeshAnchor](https://github.com/Nursedude/meshanchor) repository:
 
-| Category | Capabilities | Notes |
-|----------|-------------|-------|
-| **MeshCore 3-Way Bridge** | Meshtastic <> RNS <> MeshCore routing, CanonicalMessage format | Field testing |
-| **RadioMode** | Select primary radio (Meshtastic / MeshCore / Dual), meshcore_primary mode | Config abstraction |
-| **MeshCore Config** | `/etc/meshcore/` config management, device detection, TUI menus | Mirrors meshtasticd pattern |
-| **MeshCore Diagnostics** | MeshCore-specific diagnostic checks | Part of modular diagnostic engine |
-| **NanoVNA** | Antenna analysis, S11/VSWR measurement, sweep storage | Needs NanoVNA hardware |
-| **AREDN Topology** | Network topology inspection from gateway | Needs AREDN mesh |
+| Category | Capabilities |
+|----------|-------------|
+| **MeshCore 3-Way Bridge** | Meshtastic <> RNS <> MeshCore routing, CanonicalMessage format |
+| **RadioMode** | Select primary radio (Meshtastic / MeshCore / Dual) |
+| **MeshCore Config** | Device detection, connection management, TUI menus |
+| **MeshCore Diagnostics** | Library, device, config, bridge status checks |
 
-> **Note:** Alpha also contains structural refactoring (src/core/rf/, src/core/services/,
-> src/mapping/, modular diagnostics, plugin event bus) that will carry over to MeshAnchor.
-> MeshForge main retains MeshCore as an optional gateway handler.
-> See [Branch Strategy](#branch-strategy) below.
+MeshForge retains MeshCore as an optional gateway handler.
 
 ### Roadmap
 
@@ -315,24 +302,15 @@ These features exist on main but need real-world testing before the v0.6.0 relea
 | Traffic inspector | Packet capture with actual mesh packets | Medium |
 | Circuit breaker | Failure recovery under real disconnect conditions | Medium |
 
-**MeshAnchor Track (MeshCore-Primary App)**
+**MeshAnchor Track**
 
-The alpha branch is becoming **MeshAnchor** — a separate repo for MeshCore-primary operations.
-Currently field-testing on `alpha/meshcore-bridge` before the split:
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| MeshCore 3-way bridge | Field testing | Meshtastic ↔ RNS ↔ MeshCore routing via CanonicalMessage |
-| RadioMode abstraction | Implemented | Meshtastic / MeshCore / Dual mode selection |
-| MeshCore config manager | Implemented | `/etc/meshcore/` mirroring meshtasticd pattern |
-| MeshCore diagnostics | Implemented | Library, device, config, bridge status checks |
-| Structural refactoring | Implemented | src/core/rf/ (13 modules), src/core/services/ (8), src/mapping/ (12) |
+MeshCore-primary features have moved to [MeshAnchor](https://github.com/Nursedude/meshanchor).
+MeshForge retains MeshCore as an optional gateway handler.
 
 **Future Releases (v0.6.x+)**
 
 | Feature | Target | Status |
 |---------|--------|--------|
-| MeshAnchor repo creation | After field test | Alpha → `Nursedude/meshanchor` |
 | Historical playback (Live Map) | v0.6.0 | Planned |
 | SDR spectrum analysis (RTL-SDR) | v0.6.0 | Planned — hardware dependent |
 | Hardware support matrix | v0.7.0 | RAK, Heltec, uConsole AIO V2 |
@@ -972,40 +950,24 @@ See [CLAUDE.md](CLAUDE.md) for details.
 
 ### Branch Strategy
 
-| Branch | Version | Focus | Real-World Tested |
-|--------|---------|-------|-------------------|
-| `main` | `0.5.5-beta` | Meshtastic-primary NOC, production use | TUI, meshtasticd, RNS, NomadNet |
-| `alpha/meshcore-bridge` | `0.6.0-alpha` | MeshCore-primary (becoming **MeshAnchor**) | Field testing in progress |
+| Branch | Version | Focus |
+|--------|---------|-------|
+| `main` | `0.5.5-beta` | Meshtastic-primary NOC, production use |
 
-**MeshAnchor split (2026-03-05):** The alpha branch will become a separate
-repository (`Nursedude/meshanchor`) — a standalone sister app where MeshCore
-is the primary radio. This replaces the previous convergence plan.
+**Sister project:** [MeshAnchor](https://github.com/Nursedude/meshanchor) is the
+MeshCore-primary NOC — extracted from this repo on 2026-04-01.
 
-**Why split instead of merge?** Alpha's `RadioMode` abstraction already models
-two distinct apps — one Meshtastic-primary, one MeshCore-primary. Rather than
-forcing both into one codebase, the split lets each app optimize for its
-primary radio while sharing the gateway protocol for interop.
-
-**Main (this branch)** is the Meshtastic-primary NOC:
+**MeshForge main** is the Meshtastic-primary NOC:
 - Gateway config schema validation + MQTT message queue persistence
 - Meshtastic API 2.7.x upgrade
 - TUI security hardening, timeout module, circuit breaker
 - MeshCore available as optional handler (gateway to MeshCore networks)
 
-**Alpha → MeshAnchor** is the MeshCore-primary NOC:
-- RadioMode abstraction (Meshtastic / MeshCore / Dual)
-- MeshCore 3-way routing (Meshtastic ↔ RNS ↔ MeshCore)
-- Plugin system with auto-discovery + event bus
-- Structural refactoring into `src/core/` modules
-- Viewer mode (TUI works without sudo)
-
 **Which should you run?**
-- **`main`** for stable Meshtastic + RNS operation
-- **`alpha/meshcore-bridge`** if you have a MeshCore radio and want to help
-  field-test before the MeshAnchor split
+- **MeshForge** for Meshtastic + RNS operation
+- **[MeshAnchor](https://github.com/Nursedude/meshanchor)** if MeshCore is your primary radio
 
-See `.claude/plans/meshanchor_split_plan.md` for the full split analysis.
-Feature branches use `claude/` prefix, merged via PR to the appropriate target.
+Feature branches use `claude/` prefix, merged via PR to main.
 
 ```bash
 git clone https://github.com/Nursedude/meshforge.git
@@ -1216,7 +1178,7 @@ Full research library: [`.claude/research/`](.claude/research/README.md)
 | AREDN Mesh | [arednmesh.org](https://www.arednmesh.org/) | Monitoring integration |
 | RTL-SDR | [rtl-sdr.com](https://www.rtl-sdr.com/) | Spectrum analysis (planned) |
 | uConsole AIO V2 | [hackergadgets.com](https://hackergadgets.com/products/uconsole-aio-v2) | Field hardware (Q2 2026) |
-| MeshCore | [meshcore.co](https://meshcore.co/) | Optional handler on main; primary radio on MeshAnchor (coming soon) |
+| MeshCore | [meshcore.co](https://meshcore.co/) | Optional gateway handler on MeshForge; primary radio on [MeshAnchor](https://github.com/Nursedude/meshanchor) |
 
 ---
 
