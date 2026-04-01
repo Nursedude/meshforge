@@ -40,15 +40,13 @@ MeshForge is a **Network Operations Center (NOC)** bridging Meshtastic and Retic
 | Branch | Version | Status |
 |--------|---------|--------|
 | `main` | `0.5.5-beta` | Stable — TUI, meshtasticd, RNS, RF tools. Field-tested. |
-| `alpha/meshcore-bridge` | `0.6.0-alpha` | MeshCore 3-way routing + structural refactor. Not field-tested. |
 
+- **Sister project**: [MeshAnchor](https://github.com/Nursedude/meshanchor) — MeshCore-primary NOC, extracted from main on 2026-04-01.
 - `main` includes XTOC/ATAK/CoT, MQTT bridge, security hardening. Gateway bridge, coverage maps, NOC map have unit tests but need field validation.
-- `alpha` diverged at PR #1000. Contains RadioMode abstraction, `src/core/rf/`, `src/core/services/`, `src/mapping/`. Missing main's Meshtastic 2.7.x upgrade and dead code cleanup.
-- **Convergence plan**: After field testing, rebase main's unique commits onto alpha. See `.claude/plans/branch_convergence_guide.md`.
-- **Architecture decision**: MeshCore stays IN MeshForge — it's a protocol (like Meshtastic/RNS), not a plugin.
-- Feature branches use `claude/` prefix → PR to target branch.
-
-> Current branch delta: `git log --oneline main..alpha/meshcore-bridge | wc -l`
+- MeshCore is available as an optional gateway handler on main.
+- `CanonicalMessage` in `src/gateway/canonical_message.py` is the shared bridge contract — keep compatible with MeshAnchor's version.
+- Feature branches use `claude/` prefix → PR to main.
+- Alpha branch archived as tag `alpha-archived`.
 
 ---
 
