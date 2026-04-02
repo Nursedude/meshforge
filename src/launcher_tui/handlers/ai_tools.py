@@ -668,6 +668,13 @@ class AIToolsHandler(BaseHandler):
                     "Error", f"git clone failed:\n{result.stderr[:500]}")
                 return
 
+            # Step 1b: Fix ownership (git clone as root → chown to real user)
+            from utils.paths import get_real_username
+            username = get_real_username()
+            subprocess.run(
+                ["chown", "-R", f"{username}:{username}", self._MFMAPS_DIR],
+                timeout=30)
+
             # Step 2: Venv
             self.ctx.dialog.infobox("Installing", "Creating virtual environment...")
             result = subprocess.run(
@@ -746,6 +753,21 @@ class AIToolsHandler(BaseHandler):
             svc_content = svc_content.replace("Group=pi", f"Group={username}")
             svc_content = svc_content.replace("/home/pi", home)
 
+            # Remove ExecStartPre __pycache__ cleanup (causes permission errors)
+            lines = svc_content.splitlines()
+            lines = [ln for ln in lines if "ExecStartPre=" not in ln]
+            svc_content = "\n".join(lines) + "\n"
+
+            # Move StartLimit directives from [Service] to [Unit] (systemd compat)
+            for key in ("StartLimitIntervalSec", "StartLimitBurst"):
+                for ln in list(lines):
+                    if ln.strip().startswith(f"{key}="):
+                        val = ln.strip()
+                        svc_content = svc_content.replace(ln + "\n", "")
+                        svc_content = svc_content.replace(
+                            "[Unit]\n", f"[Unit]\n{val}\n", 1)
+                        break
+
             # Ensure working directory is writable by the service
             if "ReadWritePaths=/opt/meshforge-maps" not in svc_content:
                 svc_content = svc_content.replace(
@@ -757,9 +779,14 @@ class AIToolsHandler(BaseHandler):
 
             subprocess.run(
                 ["systemctl", "daemon-reload"], timeout=10, check=True)
-            subprocess.run(
+            result = subprocess.run(
                 ["systemctl", "enable", "--now", self._MFMAPS_SERVICE],
-                timeout=15, check=True)
+                capture_output=True, text=True, timeout=15)
+            if result.returncode != 0:
+                self.ctx.dialog.msgbox(
+                    "Error",
+                    f"Service enable failed:\n{result.stderr.strip()}")
+                return
 
             if interactive:
                 self.ctx.dialog.msgbox(
@@ -767,7 +794,9 @@ class AIToolsHandler(BaseHandler):
                     "meshforge-maps service installed and started!\n\n"
                     f"Access: http://localhost:{self._MFMAPS_PORT}")
         except subprocess.CalledProcessError as e:
-            self.ctx.dialog.msgbox("Error", f"Service install failed:\n{e}")
+            stderr = getattr(e, 'stderr', '') or ''
+            self.ctx.dialog.msgbox(
+                "Error", f"Service install failed:\n{stderr or e}")
         except subprocess.TimeoutExpired:
             self.ctx.dialog.msgbox("Timeout", "Command timed out.")
 
