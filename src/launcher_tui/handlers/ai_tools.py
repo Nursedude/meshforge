@@ -350,61 +350,338 @@ class AIToolsHandler(BaseHandler):
         ssh = os.environ.get('SSH_CONNECTION')
         return (not display and not wayland) or bool(ssh)
 
-    def _open_meshforge_maps(self):
-        """Open MeshForge Maps extension (multi-source map on port 8808)."""
-        port = 8808
-        service_name = "meshforge-maps"
+    # =========================================================================
+    # MeshForge Maps Extension Management
+    # =========================================================================
 
-        # Check if service is running
+    _MFMAPS_SERVICE = "meshforge-maps"
+    _MFMAPS_PORT = 8808
+    _MFMAPS_WS_PORT = 8809
+    _MFMAPS_DIR = "/opt/meshforge-maps"
+    _MFMAPS_SERVICE_FILE = "/opt/meshforge-maps/scripts/meshforge-maps.service"
+
+    def _open_meshforge_maps(self):
+        """MeshForge Maps extension management sub-menu."""
+        while True:
+            installed = Path(self._MFMAPS_DIR).exists()
+            svc_installed = Path(f"/etc/systemd/system/{self._MFMAPS_SERVICE}.service").exists()
+            running = self._mfmaps_is_running()
+
+            if not installed:
+                choices = [
+                    ("install", "Install MeshForge Maps"),
+                    ("back", "Back"),
+                ]
+                subtitle = "Not installed"
+            elif not svc_installed:
+                choices = [
+                    ("svc_install", "Install Systemd Service"),
+                    ("open", "Open in Browser"),
+                    ("back", "Back"),
+                ]
+                subtitle = "Installed — service not configured"
+            else:
+                status = "Running" if running else "Stopped"
+                choices = [
+                    ("open", "Open in Browser"),
+                    ("status", "Service Status"),
+                    ("start", "Start Service"),
+                    ("stop", "Stop Service"),
+                    ("restart", "Restart Service"),
+                    ("logs", "View Logs"),
+                    ("health", "Health Check"),
+                    ("config", "Configure"),
+                    ("enable", "Enable at Boot"),
+                    ("disable", "Disable at Boot"),
+                    ("back", "Back"),
+                ]
+                subtitle = f"MeshForge Maps v0.7 — {status} (:{self._MFMAPS_PORT})"
+
+            choice = self.ctx.dialog.menu(
+                "MeshForge Maps", subtitle, choices)
+
+            if choice is None or choice == "back":
+                break
+            elif choice == "install":
+                self._mfmaps_install()
+            elif choice == "svc_install":
+                self._mfmaps_install_service()
+            elif choice == "open":
+                self._mfmaps_open_browser()
+            elif choice == "status":
+                self._mfmaps_show_status()
+            elif choice in ("start", "stop", "restart"):
+                self._mfmaps_service_action(choice)
+            elif choice == "logs":
+                self._mfmaps_show_logs()
+            elif choice == "health":
+                self._mfmaps_health_check()
+            elif choice == "config":
+                self._mfmaps_config_menu()
+            elif choice == "enable":
+                self._mfmaps_service_action("enable")
+            elif choice == "disable":
+                self._mfmaps_service_action("disable")
+
+    def _mfmaps_is_running(self) -> bool:
+        """Check if meshforge-maps is listening on its port."""
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(2)
-            result = sock.connect_ex(('127.0.0.1', port))
+            result = sock.connect_ex(('127.0.0.1', self._MFMAPS_PORT))
             sock.close()
-            running = result == 0
+            return result == 0
         except OSError:
-            running = False
+            return False
 
-        if not running:
-            # Try to start the service
-            try:
-                subprocess.run(
-                    ["sudo", "systemctl", "start", service_name],
-                    timeout=10, capture_output=True,
-                )
-                import time as _time
-                _time.sleep(2)
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(2)
-                result = sock.connect_ex(('127.0.0.1', port))
-                sock.close()
-                running = result == 0
-            except Exception:
-                pass
-
-        if not running:
-            self.ctx.dialog.msgbox(
-                "MeshForge Maps",
-                f"MeshForge Maps service is not running.\n\n"
-                f"To install:\n"
-                f"  sudo systemctl enable --now {service_name}\n\n"
-                f"Service file: /opt/meshforge-maps/scripts/meshforge-maps.service"
-            )
-            return
+    def _mfmaps_open_browser(self):
+        """Open meshforge-maps in browser, start service if needed."""
+        if not self._mfmaps_is_running():
+            self._mfmaps_service_action("start")
+            time.sleep(2)
+            if not self._mfmaps_is_running():
+                self.ctx.dialog.msgbox(
+                    "Error", "Service failed to start. Check logs.")
+                return
 
         from utils.map_data_service import get_all_ips
         all_ips = get_all_ips()
-        urls = "\n".join(f"  http://{ip}:{port}" for ip in all_ips)
-
+        urls = "\n".join(f"  http://{ip}:{self._MFMAPS_PORT}" for ip in all_ips)
         self.ctx.dialog.msgbox(
             "MeshForge Maps",
-            f"MeshForge Maps is running!\n\n"
-            f"Sources: Meshtastic, AREDN, MeshCore, MQTT, RNS\n\n"
             f"Access via:\n{urls}\n\n"
-            f"WebSocket: ws://localhost:8809\n\n"
-            f"Service: sudo systemctl status {service_name}"
+            f"WebSocket: ws://localhost:{self._MFMAPS_WS_PORT}\n\n"
+            "Opening in browser...")
+        self._open_in_browser(f"http://localhost:{self._MFMAPS_PORT}")
+
+    def _mfmaps_show_status(self):
+        """Show systemd service status."""
+        try:
+            result = subprocess.run(
+                ["systemctl", "status", self._MFMAPS_SERVICE, "--no-pager"],
+                capture_output=True, text=True, timeout=10)
+            output = result.stdout or result.stderr or "No status available."
+            self.ctx.dialog.msgbox("MeshForge Maps Status", output, width=78)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            self.ctx.dialog.msgbox("Error", "Could not retrieve status.")
+
+    def _mfmaps_service_action(self, action: str):
+        """Start/stop/restart/enable/disable the meshforge-maps service."""
+        try:
+            result = subprocess.run(
+                ["systemctl", action, self._MFMAPS_SERVICE],
+                capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                label = {"enable": "Enabled", "disable": "Disabled"}.get(
+                    action, f"{action.title()}ed")
+                self.ctx.dialog.msgbox(
+                    "MeshForge Maps", f"Service {label} successfully.")
+            else:
+                self.ctx.dialog.msgbox(
+                    "Error",
+                    f"Failed to {action} service:\n{result.stderr.strip()}")
+        except subprocess.TimeoutExpired:
+            self.ctx.dialog.msgbox("Timeout", "Command timed out.")
+        except FileNotFoundError:
+            self.ctx.dialog.msgbox("Error", "systemctl not found.")
+
+    def _mfmaps_show_logs(self):
+        """Show recent meshforge-maps logs."""
+        try:
+            result = subprocess.run(
+                ["journalctl", "-u", self._MFMAPS_SERVICE,
+                 "-n", "50", "--no-pager"],
+                capture_output=True, text=True, timeout=10)
+            if result.stdout:
+                self.ctx.dialog.msgbox(
+                    "MeshForge Maps Logs (last 50 lines)",
+                    result.stdout, width=78)
+            else:
+                self.ctx.dialog.msgbox("No Logs", "No log entries found.")
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            self.ctx.dialog.msgbox("Error", "Could not retrieve logs.")
+
+    def _mfmaps_health_check(self):
+        """Query the meshforge-maps health endpoint."""
+        if not self._mfmaps_is_running():
+            self.ctx.dialog.msgbox("Health", "Service is not running.")
+            return
+        try:
+            import requests
+            resp = requests.get(
+                f"http://127.0.0.1:{self._MFMAPS_PORT}/api/health",
+                timeout=5)
+            data = resp.json()
+
+            status = data.get("status", "unknown").upper()
+            score = data.get("score", "?")
+            age = data.get("data_age_seconds")
+            age_str = f"{int(age)}s" if age is not None else "no data"
+            sources = data.get("sources_reporting", {})
+            src_lines = "\n".join(
+                f"  {k}: {v} nodes" for k, v in sources.items()
+            ) if sources else "  (none reporting)"
+            components = data.get("components", {})
+            comp_lines = "\n".join(
+                f"  {k}: {v.get('score', '?')}/{v.get('max', '?')}"
+                for k, v in components.items()
+            ) if components else ""
+
+            msg = (
+                f"Status: {status}  (score: {score}/100)\n"
+                f"Data age: {age_str}\n\n"
+                f"Sources:\n{src_lines}"
+            )
+            if comp_lines:
+                msg += f"\n\nScoring:\n{comp_lines}"
+
+            self.ctx.dialog.msgbox("MeshForge Maps Health", msg, width=60)
+        except Exception as e:
+            self.ctx.dialog.msgbox("Error", f"Health check failed: {e}")
+
+    def _mfmaps_config_menu(self):
+        """Configure meshforge-maps settings."""
+        config_path = (
+            Path(os.path.expanduser("~/.config/meshforge"))
+            / "plugins" / "org.meshforge.extension.maps" / "settings.json"
         )
-        self._open_in_browser(f"http://localhost:{port}")
+
+        # Load current settings
+        current = {}
+        if config_path.exists():
+            try:
+                current = json.loads(config_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        while True:
+            mqtt_broker = current.get("mqtt_broker", "mqtt.meshtastic.org")
+            mqtt_topic = current.get("mqtt_topic", "msh/#")
+            http_host = current.get("http_host", "127.0.0.1")
+            tile = current.get("default_tile_provider", "carto_dark")
+
+            choices = [
+                ("mqtt_broker", f"MQTT Broker       [{mqtt_broker}]"),
+                ("mqtt_topic", f"MQTT Topic        [{mqtt_topic}]"),
+                ("http_host", f"Bind Address      [{http_host}]"),
+                ("tile", f"Tile Provider     [{tile}]"),
+                ("layers", "Data Layers       Toggle sources"),
+                ("show", "Show Full Config"),
+                ("back", "Back"),
+            ]
+
+            choice = self.ctx.dialog.menu(
+                "MeshForge Maps Config", "Extension settings", choices)
+
+            if choice is None or choice == "back":
+                break
+            elif choice == "show":
+                self.ctx.dialog.msgbox(
+                    "Current Config",
+                    json.dumps(current, indent=2) if current
+                    else "(using defaults — no settings.json yet)",
+                    width=70)
+            elif choice == "layers":
+                self._mfmaps_toggle_layers(current, config_path)
+            elif choice == "tile":
+                tiles = [
+                    ("carto_dark", "Carto Dark"),
+                    ("osm_standard", "OpenStreetMap"),
+                    ("osm_topo", "OpenTopo"),
+                    ("esri_satellite", "ESRI Satellite"),
+                    ("esri_topo", "ESRI Topo"),
+                    ("stadia_terrain", "Stadia Terrain"),
+                ]
+                pick = self.ctx.dialog.menu("Tile Provider", f"Current: {tile}", tiles)
+                if pick:
+                    current["default_tile_provider"] = pick
+                    self._mfmaps_save_config(current, config_path)
+            else:
+                label = {"mqtt_broker": "MQTT Broker",
+                         "mqtt_topic": "MQTT Topic",
+                         "http_host": "Bind Address"}.get(choice, choice)
+                val = self.ctx.dialog.inputbox(label, current.get(choice, ""))
+                if val is not None:
+                    current[choice] = val
+                    self._mfmaps_save_config(current, config_path)
+
+    def _mfmaps_toggle_layers(self, current: dict, config_path: Path):
+        """Toggle data source layers on/off."""
+        layers = [
+            ("enable_meshtastic", "Meshtastic"),
+            ("enable_reticulum", "Reticulum/RMAP"),
+            ("enable_hamclock", "HamClock"),
+            ("enable_aredn", "AREDN"),
+        ]
+        choices = [
+            (key, f"{label:20s} [{'ON' if current.get(key, True) else 'OFF'}]")
+            for key, label in layers
+        ]
+        choices.append(("back", "Back"))
+
+        pick = self.ctx.dialog.menu("Data Layers", "Toggle sources", choices)
+        if pick and pick != "back":
+            current[pick] = not current.get(pick, True)
+            self._mfmaps_save_config(current, config_path)
+
+    def _mfmaps_save_config(self, config: dict, config_path: Path):
+        """Save meshforge-maps settings and prompt for restart."""
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config, indent=2))
+        if self._mfmaps_is_running():
+            if self.ctx.dialog.yesno(
+                "Restart?",
+                "Settings saved. Restart service to apply?"
+            ):
+                self._mfmaps_service_action("restart")
+
+    def _mfmaps_install(self):
+        """Clone and set up meshforge-maps."""
+        self.ctx.dialog.msgbox(
+            "Install MeshForge Maps",
+            "MeshForge Maps is not installed at /opt/meshforge-maps.\n\n"
+            "To install:\n"
+            "  sudo git clone https://github.com/Nursedude/meshforge-maps "
+            "/opt/meshforge-maps\n"
+            "  cd /opt/meshforge-maps\n"
+            "  python3 -m venv venv --system-site-packages\n"
+            "  venv/bin/pip install -r requirements.txt\n\n"
+            "Then return here to install the service.")
+
+    def _mfmaps_install_service(self):
+        """Install the meshforge-maps systemd service."""
+        svc_src = Path(self._MFMAPS_SERVICE_FILE)
+        if not svc_src.exists():
+            self.ctx.dialog.msgbox(
+                "Error", f"Service file not found:\n{svc_src}")
+            return
+
+        if not self.ctx.dialog.yesno(
+            "Install Service",
+            f"Install meshforge-maps systemd service?\n\n"
+            f"This copies the service file to /etc/systemd/system/\n"
+            f"and enables it to start at boot."
+        ):
+            return
+
+        try:
+            subprocess.run(
+                ["cp", str(svc_src),
+                 f"/etc/systemd/system/{self._MFMAPS_SERVICE}.service"],
+                timeout=10, check=True)
+            subprocess.run(
+                ["systemctl", "daemon-reload"], timeout=10, check=True)
+            subprocess.run(
+                ["systemctl", "enable", "--now", self._MFMAPS_SERVICE],
+                timeout=15, check=True)
+            self.ctx.dialog.msgbox(
+                "Installed",
+                "meshforge-maps service installed and started!\n\n"
+                f"Access: http://localhost:{self._MFMAPS_PORT}")
+        except subprocess.CalledProcessError as e:
+            self.ctx.dialog.msgbox("Error", f"Service install failed:\n{e}")
+        except subprocess.TimeoutExpired:
+            self.ctx.dialog.msgbox("Timeout", "Command timed out.")
 
     def _start_map_server(self):
         """Start the map HTTP server for live-updating browser access.
