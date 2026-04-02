@@ -64,6 +64,7 @@ class AIToolsHandler(BaseHandler):
     def menu_items(self):
         return [
             ("livemap",   "Live NOC Map        Real-time browser view", None),
+            ("mfmaps",    "MeshForge Maps      Multi-source map ext.", None),
             ("coverage",  "Coverage Map        Generate coverage map",  None),
             ("heatmap",   "Heatmap             Node density heatmap",   None),
             ("tiles",     "Offline Tiles       Cache map tiles",        None),
@@ -73,6 +74,7 @@ class AIToolsHandler(BaseHandler):
     def execute(self, action):
         dispatch = {
             "livemap": ("Live NOC Map", self._open_live_map),
+            "mfmaps": ("MeshForge Maps", self._open_meshforge_maps),
             "coverage": ("Coverage Map", self._generate_coverage_map),
             "heatmap": ("Heatmap", self._generate_heatmap),
             "tiles": ("Offline Tile Cache", self._tile_cache_menu),
@@ -347,6 +349,62 @@ class AIToolsHandler(BaseHandler):
         wayland = os.environ.get('WAYLAND_DISPLAY')
         ssh = os.environ.get('SSH_CONNECTION')
         return (not display and not wayland) or bool(ssh)
+
+    def _open_meshforge_maps(self):
+        """Open MeshForge Maps extension (multi-source map on port 8808)."""
+        port = 8808
+        service_name = "meshforge-maps"
+
+        # Check if service is running
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            result = sock.connect_ex(('127.0.0.1', port))
+            sock.close()
+            running = result == 0
+        except OSError:
+            running = False
+
+        if not running:
+            # Try to start the service
+            try:
+                subprocess.run(
+                    ["sudo", "systemctl", "start", service_name],
+                    timeout=10, capture_output=True,
+                )
+                import time as _time
+                _time.sleep(2)
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)
+                result = sock.connect_ex(('127.0.0.1', port))
+                sock.close()
+                running = result == 0
+            except Exception:
+                pass
+
+        if not running:
+            self.ctx.dialog.msgbox(
+                "MeshForge Maps",
+                f"MeshForge Maps service is not running.\n\n"
+                f"To install:\n"
+                f"  sudo systemctl enable --now {service_name}\n\n"
+                f"Service file: /opt/meshforge-maps/scripts/meshforge-maps.service"
+            )
+            return
+
+        from utils.map_data_service import get_all_ips
+        all_ips = get_all_ips()
+        urls = "\n".join(f"  http://{ip}:{port}" for ip in all_ips)
+
+        self.ctx.dialog.msgbox(
+            "MeshForge Maps",
+            f"MeshForge Maps is running!\n\n"
+            f"Sources: Meshtastic, AREDN, MeshCore, MQTT, RNS\n\n"
+            f"Access via:\n{urls}\n\n"
+            f"WebSocket: ws://localhost:8809\n\n"
+            f"Service: sudo systemctl status {service_name}"
+        )
+        self._open_in_browser(f"http://localhost:{port}")
 
     def _start_map_server(self):
         """Start the map HTTP server for live-updating browser access.
