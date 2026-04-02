@@ -636,48 +636,136 @@ class AIToolsHandler(BaseHandler):
                 self._mfmaps_service_action("restart")
 
     def _mfmaps_install(self):
-        """Clone and set up meshforge-maps."""
-        self.ctx.dialog.msgbox(
-            "Install MeshForge Maps",
-            "MeshForge Maps is not installed at /opt/meshforge-maps.\n\n"
-            "To install:\n"
-            "  sudo git clone https://github.com/Nursedude/meshforge-maps "
-            "/opt/meshforge-maps\n"
-            "  cd /opt/meshforge-maps\n"
-            "  python3 -m venv venv --system-site-packages\n"
-            "  venv/bin/pip install -r requirements.txt\n\n"
-            "Then return here to install the service.")
+        """Clone, set up, and start meshforge-maps."""
+        if os.geteuid() != 0:
+            self.ctx.dialog.msgbox(
+                "Root Required",
+                "Run MeshForge with sudo to install extensions.")
+            return
 
-    def _mfmaps_install_service(self):
-        """Install the meshforge-maps systemd service."""
+        if not self.ctx.dialog.yesno(
+            "Install MeshForge Maps",
+            "Install the MeshForge Maps extension?\n\n"
+            "This will:\n"
+            "  1. Clone the repository to /opt/meshforge-maps\n"
+            "  2. Create a Python virtual environment\n"
+            "  3. Install dependencies\n"
+            "  4. Install and start the systemd service\n\n"
+            "Requires internet access."
+        ):
+            return
+
+        try:
+            # Step 1: Clone
+            self.ctx.dialog.infobox("Installing", "Cloning meshforge-maps...")
+            result = subprocess.run(
+                ["git", "clone", "-q",
+                 "https://github.com/Nursedude/meshforge-maps.git",
+                 self._MFMAPS_DIR],
+                capture_output=True, text=True, timeout=120)
+            if result.returncode != 0:
+                self.ctx.dialog.msgbox(
+                    "Error", f"git clone failed:\n{result.stderr[:500]}")
+                return
+
+            # Step 2: Venv
+            self.ctx.dialog.infobox("Installing", "Creating virtual environment...")
+            result = subprocess.run(
+                ["python3", "-m", "venv",
+                 f"{self._MFMAPS_DIR}/venv", "--system-site-packages"],
+                capture_output=True, text=True, timeout=60)
+            if result.returncode != 0:
+                self.ctx.dialog.msgbox(
+                    "Error", f"venv creation failed:\n{result.stderr[:500]}")
+                return
+
+            # Step 3: Dependencies
+            self.ctx.dialog.infobox("Installing", "Installing dependencies...")
+            result = subprocess.run(
+                [f"{self._MFMAPS_DIR}/venv/bin/pip", "install", "-q",
+                 "--timeout", "60", "-r",
+                 f"{self._MFMAPS_DIR}/requirements.txt"],
+                capture_output=True, text=True, timeout=180)
+            if result.returncode != 0:
+                self.ctx.dialog.msgbox(
+                    "Error", f"pip install failed:\n{result.stderr[:500]}")
+                return
+
+            # Step 4: Install and start service
+            self.ctx.dialog.infobox("Installing", "Setting up systemd service...")
+            self._mfmaps_install_service(interactive=False)
+
+            if self._mfmaps_is_running():
+                self.ctx.dialog.msgbox(
+                    "Installed",
+                    "MeshForge Maps installed and running!\n\n"
+                    f"Access: http://localhost:{self._MFMAPS_PORT}\n"
+                    f"WebSocket: ws://localhost:{self._MFMAPS_WS_PORT}\n\n"
+                    "Use 'Configure' to set MQTT broker, layers, etc.")
+            else:
+                self.ctx.dialog.msgbox(
+                    "Installed",
+                    "MeshForge Maps installed but service may not have started.\n"
+                    "Check 'View Logs' for details.")
+
+        except subprocess.TimeoutExpired:
+            self.ctx.dialog.msgbox("Timeout", "Installation step timed out.")
+        except Exception as e:
+            self.ctx.dialog.msgbox("Error", f"Installation failed:\n{e}")
+
+    def _mfmaps_install_service(self, interactive: bool = True):
+        """Install the meshforge-maps systemd service.
+
+        Args:
+            interactive: If True, prompt for confirmation. False when
+                         called from the full install flow.
+        """
         svc_src = Path(self._MFMAPS_SERVICE_FILE)
         if not svc_src.exists():
             self.ctx.dialog.msgbox(
                 "Error", f"Service file not found:\n{svc_src}")
             return
 
-        if not self.ctx.dialog.yesno(
+        if interactive and not self.ctx.dialog.yesno(
             "Install Service",
-            f"Install meshforge-maps systemd service?\n\n"
-            f"This copies the service file to /etc/systemd/system/\n"
-            f"and enables it to start at boot."
+            "Install meshforge-maps systemd service?\n\n"
+            "This copies the service file to /etc/systemd/system/\n"
+            "and enables it to start at boot."
         ):
             return
 
         try:
-            subprocess.run(
-                ["cp", str(svc_src),
-                 f"/etc/systemd/system/{self._MFMAPS_SERVICE}.service"],
-                timeout=10, check=True)
+            from utils.paths import get_real_username, get_real_user_home
+
+            username = get_real_username()
+            home = str(get_real_user_home())
+
+            # Read template and fix user/paths for this system
+            svc_content = svc_src.read_text()
+            svc_content = svc_content.replace("User=pi", f"User={username}")
+            svc_content = svc_content.replace("Group=pi", f"Group={username}")
+            svc_content = svc_content.replace("/home/pi", home)
+
+            # Ensure working directory is writable by the service
+            if "ReadWritePaths=/opt/meshforge-maps" not in svc_content:
+                svc_content = svc_content.replace(
+                    "[Install]",
+                    f"ReadWritePaths={self._MFMAPS_DIR}\n\n[Install]")
+
+            dest = f"/etc/systemd/system/{self._MFMAPS_SERVICE}.service"
+            Path(dest).write_text(svc_content)
+
             subprocess.run(
                 ["systemctl", "daemon-reload"], timeout=10, check=True)
             subprocess.run(
                 ["systemctl", "enable", "--now", self._MFMAPS_SERVICE],
                 timeout=15, check=True)
-            self.ctx.dialog.msgbox(
-                "Installed",
-                "meshforge-maps service installed and started!\n\n"
-                f"Access: http://localhost:{self._MFMAPS_PORT}")
+
+            if interactive:
+                self.ctx.dialog.msgbox(
+                    "Installed",
+                    "meshforge-maps service installed and started!\n\n"
+                    f"Access: http://localhost:{self._MFMAPS_PORT}")
         except subprocess.CalledProcessError as e:
             self.ctx.dialog.msgbox("Error", f"Service install failed:\n{e}")
         except subprocess.TimeoutExpired:
