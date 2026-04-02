@@ -42,6 +42,17 @@ from utils.paths import get_real_user_home
 _folium, _HAS_FOLIUM = safe_import('folium')
 _folium_plugins, _HAS_FOLIUM_PLUGINS = safe_import('folium.plugins')
 
+
+def _ensure_folium():
+    """Re-check folium availability (handles install-after-startup)."""
+    global _folium, _HAS_FOLIUM, _folium_plugins, _HAS_FOLIUM_PLUGINS
+    if _HAS_FOLIUM and _HAS_FOLIUM_PLUGINS:
+        return True
+    _folium, _HAS_FOLIUM = safe_import('folium')
+    _folium_plugins, _HAS_FOLIUM_PLUGINS = safe_import('folium.plugins')
+    return _HAS_FOLIUM and _HAS_FOLIUM_PLUGINS
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -789,7 +800,7 @@ class CoverageMapGenerator:
         Returns:
             Path to generated HTML file
         """
-        if not _HAS_FOLIUM or not _HAS_FOLIUM_PLUGINS:
+        if not _ensure_folium():
             # Folium not installed - use Leaflet.js fallback instead
             logger.debug("Folium not installed, using Leaflet fallback")
             return self._generate_fallback(output_path)
@@ -1166,7 +1177,7 @@ class CoverageMapGenerator:
         Returns:
             Path to generated HTML file
         """
-        if not _HAS_FOLIUM or not _HAS_FOLIUM_PLUGINS:
+        if not _ensure_folium():
             # Heatmap requires Folium - no fallback available
             logger.warning("Folium not installed, heatmap unavailable")
             return ""

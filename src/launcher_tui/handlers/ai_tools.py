@@ -1065,11 +1065,20 @@ class AIToolsHandler(BaseHandler):
             result_path = generator.generate_heatmap(output_path=output_file)
 
             if not result_path:
+                import importlib.util
+                if importlib.util.find_spec('folium'):
+                    detail = (
+                        "Folium is installed but heatmap generation returned empty.\n"
+                        "Try restarting MeshForge to reload the module."
+                    )
+                else:
+                    detail = (
+                        "Folium with HeatMap plugin is required:\n"
+                        "pip3 install folium"
+                    )
                 self.ctx.dialog.msgbox(
                     "Error",
-                    "Heatmap generation failed.\n\n"
-                    "Folium with HeatMap plugin is required:\n"
-                    "pip3 install folium"
+                    f"Heatmap generation failed.\n\n{detail}"
                 )
                 return
 
