@@ -381,8 +381,18 @@ class AIToolsHandler(BaseHandler):
                 ]
                 subtitle = "Installed — service not configured"
             else:
-                status = "Running" if running else "Stopped"
-                choices = [
+                if running:
+                    status = "Running"
+                    problem = None
+                else:
+                    problem, fixable = self._mfmaps_diagnose_service()
+                    status = f"FAILED — {problem}" if problem else "Stopped"
+
+                choices = []
+                if problem and fixable:
+                    choices.append(
+                        ("fix", f"Fix Service    {problem}"))
+                choices.extend([
                     ("open", "Open in Browser"),
                     ("status", "Service Status"),
                     ("start", "Start Service"),
@@ -394,7 +404,7 @@ class AIToolsHandler(BaseHandler):
                     ("enable", "Enable at Boot"),
                     ("disable", "Disable at Boot"),
                     ("back", "Back"),
-                ]
+                ])
                 subtitle = f"MeshForge Maps v0.7 — {status} (:{self._MFMAPS_PORT})"
 
             choice = self.ctx.dialog.menu(
@@ -405,6 +415,8 @@ class AIToolsHandler(BaseHandler):
             elif choice == "install":
                 self._mfmaps_install()
             elif choice == "svc_install":
+                self._mfmaps_install_service()
+            elif choice == "fix":
                 self._mfmaps_install_service()
             elif choice == "open":
                 self._mfmaps_open_browser()
@@ -433,6 +445,54 @@ class AIToolsHandler(BaseHandler):
             return result == 0
         except OSError:
             return False
+
+    def _mfmaps_diagnose_service(self):
+        """Diagnose why the meshforge-maps service is failing.
+
+        Returns:
+            (problem_description, can_auto_fix) or (None, False) if healthy.
+        """
+        import pwd
+        import re
+
+        svc_path = Path(f"/etc/systemd/system/{self._MFMAPS_SERVICE}.service")
+        if not svc_path.exists():
+            return None, False
+
+        content = svc_path.read_text()
+
+        # Check User= exists on this system
+        user_match = re.search(r'^User=(\S+)', content, re.MULTILINE)
+        if user_match:
+            try:
+                pwd.getpwnam(user_match.group(1))
+            except KeyError:
+                return f"User '{user_match.group(1)}' not found on this system", True
+
+        # Check ExecStartPre + ProtectSystem conflict
+        if 'ExecStartPre=' in content and 'ProtectSystem=strict' in content:
+            return "ExecStartPre incompatible with ProtectSystem", True
+
+        # Check WorkingDirectory exists
+        wd_match = re.search(r'^WorkingDirectory=(\S+)', content, re.MULTILINE)
+        if wd_match and not Path(wd_match.group(1)).exists():
+            return f"WorkingDirectory not found: {wd_match.group(1)}", False
+
+        # Check venv exists
+        if not Path(f"{self._MFMAPS_DIR}/venv/bin/python").exists():
+            return "Virtual environment missing", True
+
+        # Check systemctl failed state
+        try:
+            result = subprocess.run(
+                ["systemctl", "is-failed", self._MFMAPS_SERVICE],
+                capture_output=True, text=True, timeout=5)
+            if result.stdout.strip() == "failed":
+                return "Service in failed state", True
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+        return None, False
 
     def _mfmaps_open_browser(self):
         """Open meshforge-maps in browser, start service if needed."""
