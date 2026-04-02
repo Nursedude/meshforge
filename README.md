@@ -40,6 +40,19 @@ Plug in a LoRa radio, run the installer, and you get:
 Optional add-ons (install from TUI when you need them):
 - **NomadNet** — terminal-based LXMF client (Reticulum users)
 
+### Extensions (install from TUI: Maps & Viz menu)
+
+| Extension | Description | Port | Repo |
+|-----------|-------------|------|------|
+| **[MeshForge Maps](https://github.com/Nursedude/meshforge-maps)** | Multi-source map (Meshtastic, AREDN, MeshCore, MQTT, RNS) | 8808 | `Nursedude/meshforge-maps` |
+| **Meshing Around** | Bot framework integration for Meshtastic mesh bots | — | `Nursedude/meshing_around_meshforge` |
+
+Extensions are managed as systemd services. The TUI handles the full lifecycle:
+- **Install**: clone, venv, deps, service setup — one click
+- **Auto-diagnose**: detects wrong user, missing venv, permission errors
+- **Fix Service**: one-click auto-repair for broken service files
+- **Manage**: start/stop/restart, view logs, health check, configure
+
 ### The Vision
 
 Modern mesh networks are fragmented. Meshtastic nodes can't talk to Reticulum nodes. AREDN operates on a different layer entirely. Each ecosystem has its own tools, its own interfaces, its own learning curve.
