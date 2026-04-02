@@ -545,6 +545,7 @@ class MeshForgeLauncher:
                 choices.append(("4", "Maps & Viz          Coverage maps, topology"))
             choices.append(("5", "Configuration       Radio, services, settings"))
             choices.append(("6", "System              Hardware, logs, Linux tools"))
+            choices.append(("7", "Extensions          Maps, bots, add-ons"))
             # Quick Access
             if self._feature_enabled("tactical"):
                 choices.append(("t", "Tactical Ops        SITREP, zones, QR, ATAK"))
@@ -623,6 +624,7 @@ class MeshForgeLauncher:
             "4": ("Maps & Visualization", self._maps_viz_menu),
             "5": ("Configuration", self._configuration_menu),
             "6": ("System Tools", self._system_menu),
+            "7": ("Extensions", self._extensions_menu),
             "a": ("About", self._about_menu),
         }
         entry = dispatch.get(choice)
@@ -820,6 +822,32 @@ class MeshForgeLauncher:
 
             # Registry-based dispatch (all system items converted)
             self._registry.dispatch("system", choice)
+
+    # --- Submenu: Extensions (7) ---
+
+    def _extensions_menu(self):
+        """Extensions - Maps, bots, add-ons."""
+        _ORDERING = ["mfmaps", "meshing"]
+        while True:
+            legacy = [
+                ("mfmaps", "MeshForge Maps      Multi-source map extension"),
+                ("meshing", "Meshing Around      Mesh bot framework"),
+            ]
+            choices = self._build_section_menu("extensions", legacy, _ORDERING)
+
+            # Also include maps_viz mfmaps handler
+            choice = self.dialog.menu(
+                "Extensions",
+                "MeshForge ecosystem extensions:",
+                choices
+            )
+
+            if choice is None or choice == "back":
+                break
+
+            # Try extensions section first, then maps_viz for mfmaps
+            if not self._registry.dispatch("extensions", choice):
+                self._registry.dispatch("maps_viz", choice)
 
     # --- Submenu: About (a) ---
 

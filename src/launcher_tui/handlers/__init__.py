@@ -205,4 +205,8 @@ def get_all_handlers() -> List[Type]:
         DemoHandler,
     ])
 
+    # Batch 16 — extension management (meshing_around, future extensions)
+    from handlers.extensions import ExtensionsHandler
+    handlers.append(ExtensionsHandler)
+
     return handlers
