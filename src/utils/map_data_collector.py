@@ -73,6 +73,7 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
     DEFAULT_MQTT_THRESHOLD_MINUTES = 15
     DEFAULT_RNS_THRESHOLD_MINUTES = 30   # RNS announces less frequently
     DEFAULT_AREDN_THRESHOLD_MINUTES = 60  # AREDN scans are infrequent
+    DEFAULT_PUBLIC_FALLBACK_THRESHOLD_MINUTES = 240  # meshmap.net reports less frequently
     # Meshtasticd connection defaults
     DEFAULT_MESHTASTICD_HOST = "localhost"
     DEFAULT_MESHTASTICD_PORT = 4403
@@ -103,6 +104,7 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                 "mqtt_threshold_minutes": self.DEFAULT_MQTT_THRESHOLD_MINUTES,
                 "rns_threshold_minutes": self.DEFAULT_RNS_THRESHOLD_MINUTES,
                 "aredn_threshold_minutes": self.DEFAULT_AREDN_THRESHOLD_MINUTES,
+                "public_fallback_threshold_minutes": self.DEFAULT_PUBLIC_FALLBACK_THRESHOLD_MINUTES,
                 # Public data fallbacks (disabled by default — opt-in)
                 "enable_meshmap_fallback": False,
                 "enable_rmap_fallback": False,
@@ -234,6 +236,7 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
             "mqtt": self.DEFAULT_MQTT_THRESHOLD_MINUTES,
             "rns": self.DEFAULT_RNS_THRESHOLD_MINUTES,
             "aredn": self.DEFAULT_AREDN_THRESHOLD_MINUTES,
+            "public_fallback": self.DEFAULT_PUBLIC_FALLBACK_THRESHOLD_MINUTES,
         }
         default = defaults.get(source, self.DEFAULT_ONLINE_THRESHOLD_MINUTES)
         if self._settings:
@@ -797,6 +800,7 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
             via_mqtt=data.get('viaMqtt', False),
             is_local=(data.get('hopsAway', 99) == 0),
             last_seen=last_seen,
+            last_heard=last_heard,
             temperature=env_metrics.get('temperature'),
             humidity=env_metrics.get('relativeHumidity'),
             pressure=env_metrics.get('barometricPressure'),

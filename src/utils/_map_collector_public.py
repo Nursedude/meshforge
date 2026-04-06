@@ -150,7 +150,7 @@ class PublicDataFallbackMixin:
         elif not isinstance(last_heard, (int, float)):
             last_heard = 0
 
-        is_online = self._is_node_online(last_heard, source="meshtastic")
+        is_online = self._is_node_online(last_heard, source="public_fallback")
 
         feature = self._make_feature(
             node_id=hex_id,
@@ -214,7 +214,7 @@ class PublicDataFallbackMixin:
 
         last_seen = node.get("last_seen_ts")
         if isinstance(last_seen, (int, float)):
-            is_online = self._is_node_online(last_seen, source="rns")
+            is_online = self._is_node_online(last_seen, source="public_fallback")
             last_heard = last_seen
         else:
             is_online = False
@@ -283,7 +283,7 @@ class PublicDataFallbackMixin:
                 from datetime import datetime
                 dt = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
                 last_heard = dt.timestamp()
-                is_online = self._is_node_online(last_heard, source="aredn")
+                is_online = self._is_node_online(last_heard, source="public_fallback")
             except (ValueError, TypeError):
                 last_heard = 0
                 is_online = False
