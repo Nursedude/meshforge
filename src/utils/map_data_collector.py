@@ -46,9 +46,10 @@ _msgpack, _HAS_MSGPACK = safe_import('msgpack')
 
 
 from utils._map_collector_rns import RNSDataCollectorMixin
+from utils._map_collector_public import PublicDataFallbackMixin
 
 
-class MapDataCollector(RNSDataCollectorMixin):
+class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
     """Collects node data from all available sources into unified GeoJSON.
 
     Sources (tried in order, all merged):
@@ -102,6 +103,11 @@ class MapDataCollector(RNSDataCollectorMixin):
                 "mqtt_threshold_minutes": self.DEFAULT_MQTT_THRESHOLD_MINUTES,
                 "rns_threshold_minutes": self.DEFAULT_RNS_THRESHOLD_MINUTES,
                 "aredn_threshold_minutes": self.DEFAULT_AREDN_THRESHOLD_MINUTES,
+                # Public data fallbacks (disabled by default — opt-in)
+                "enable_meshmap_fallback": False,
+                "enable_rmap_fallback": False,
+                "enable_aredn_worldmap_fallback": False,
+                "public_fallback_threshold": 3,
             }
         )
 
@@ -359,7 +365,16 @@ class MapDataCollector(RNSDataCollectorMixin):
             if fid and fid not in features:
                 features[fid] = f
 
-        # Source 6: Last-known cache (fill gaps)
+        # Source 6: Public data fallbacks (conditional — only when local data sparse)
+        public_features = self._collect_public_fallbacks(
+            current_feature_count=len(features),
+        )
+        for f in public_features:
+            fid = f["properties"].get("id", "")
+            if fid and fid not in features:
+                features[fid] = f
+
+        # Source 7: Last-known cache (fill gaps)
         if not features:
             cache_features = self._load_cache()
             for f in cache_features:
@@ -369,7 +384,8 @@ class MapDataCollector(RNSDataCollectorMixin):
 
         sources = self._get_source_summary(
             tcp_features, mqtt_features, tracker_features, aredn_features,
-            direct_radio_features, rns_direct_features, tracker_unified_features
+            direct_radio_features, rns_direct_features, tracker_unified_features,
+            public_features,
         )
         geojson = {
             "type": "FeatureCollection",
@@ -394,7 +410,8 @@ class MapDataCollector(RNSDataCollectorMixin):
             f"direct_radio:{sources.get('direct_radio', 0)} "
             f"mqtt:{sources.get('mqtt', 0)} "
             f"tracker:{sources.get('node_tracker', 0)} "
-            f"rns_direct:{sources.get('rns_direct', 0)})"
+            f"rns_direct:{sources.get('rns_direct', 0)} "
+            f"public:{sources.get('public_fallback', 0)})"
         )
 
         # Cache result
@@ -1300,7 +1317,7 @@ class MapDataCollector(RNSDataCollectorMixin):
     def _get_source_summary(
         self, tcp: List, mqtt: List, tracker: List, aredn: List = None,
         direct_radio: List = None, rns_direct: List = None,
-        unified_tracker: List = None
+        unified_tracker: List = None, public: List = None,
     ) -> Dict:
         """Summarize which sources contributed data."""
         summary = {
@@ -1311,6 +1328,7 @@ class MapDataCollector(RNSDataCollectorMixin):
             "node_tracker": len(tracker),
             "aredn": len(aredn) if aredn else 0,
             "rns_direct": len(rns_direct) if rns_direct else 0,
+            "public_fallback": len(public) if public else 0,
         }
         # Flag if HTTP was used (source tag on features)
         if tcp and any(f.get("properties", {}).get("source") == "meshtasticd_http" for f in tcp):
