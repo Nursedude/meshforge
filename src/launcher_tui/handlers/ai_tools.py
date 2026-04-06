@@ -250,15 +250,20 @@ class AIToolsHandler(BaseHandler):
                     logger.debug("Settings load failed: %s", e)
 
             auto_label = "ON" if auto_enabled else "OFF"
+            running = self._is_map_server_running()
+            status_label = "RUNNING" if running else "STOPPED"
             choices = [
                 ("browser", "Open map in browser (snapshot)"),
-                ("server", "Start map server (live updates)"),
+                ("start", "Start map server"),
+                ("stop", "Stop map server"),
+                ("restart", "Restart map server"),
+                ("logs", "View map server logs"),
                 ("autostart", f"Auto-open on launch [{auto_label}]"),
                 ("back", "Back"),
             ]
 
             choice = self.ctx.dialog.menu(
-                "Live Network Map",
+                f"Live Network Map [{status_label}]",
                 "Select map mode:",
                 choices
             )
@@ -268,7 +273,10 @@ class AIToolsHandler(BaseHandler):
 
             dispatch = {
                 "browser": ("Browser Map Snapshot", self._open_live_map_browser),
-                "server": ("Map Server", self._start_map_server),
+                "start": ("Start Map Server", self._start_map_server),
+                "stop": ("Stop Map Server", self._stop_map_server),
+                "restart": ("Restart Map Server", self._restart_map_server),
+                "logs": ("Map Server Logs", self._view_map_server_logs),
                 "autostart": ("Toggle Auto-open", self._toggle_auto_map),
             }
             entry = dispatch.get(choice)
@@ -1004,6 +1012,105 @@ class AIToolsHandler(BaseHandler):
         except (subprocess.SubprocessError, OSError) as e:
             logger.debug("Map service status check failed: %s", e)
             return "in-process (TUI)"
+
+    def _is_map_server_running(self) -> bool:
+        """Check if map server is listening on port 5000."""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            result = sock.connect_ex(('127.0.0.1', 5000))
+            sock.close()
+            return result == 0
+        except OSError:
+            return False
+
+    def _stop_map_server(self):
+        """Stop the running map server."""
+        if not self._is_map_server_running():
+            self.ctx.dialog.msgbox("Map Server", "Map server is not running.")
+            return
+
+        # Try systemd first
+        try:
+            result = subprocess.run(
+                ['systemctl', 'is-active', 'meshforge-map'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.stdout.strip() == "active":
+                subprocess.run(
+                    ['sudo', 'systemctl', 'stop', 'meshforge-map'],
+                    capture_output=True, text=True, timeout=10
+                )
+                self.ctx.dialog.msgbox("Map Server", "Map server service stopped.")
+                return
+        except (subprocess.SubprocessError, OSError) as e:
+            logger.debug("systemctl stop failed: %s", e)
+
+        # Stop in-process server
+        if hasattr(self, '_map_server') and self._map_server:
+            try:
+                self._map_server.stop()
+                self._map_server = None
+                self.ctx.dialog.msgbox("Map Server", "In-process map server stopped.")
+                return
+            except Exception as e:
+                logger.debug("In-process stop failed: %s", e)
+
+        # Last resort: find and kill the process on port 5000
+        try:
+            result = subprocess.run(
+                ['fuser', '5000/tcp'],
+                capture_output=True, text=True, timeout=5
+            )
+            pids = result.stdout.strip().split()
+            if pids:
+                for pid in pids:
+                    pid = pid.strip()
+                    if pid.isdigit():
+                        subprocess.run(['kill', pid], timeout=5)
+                self.ctx.dialog.msgbox("Map Server", "Map server process stopped.")
+                return
+        except (subprocess.SubprocessError, OSError) as e:
+            logger.debug("fuser/kill failed: %s", e)
+
+        self.ctx.dialog.msgbox("Map Server", "Could not stop map server.")
+
+    def _restart_map_server(self):
+        """Restart the map server (stop then start)."""
+        if self._is_map_server_running():
+            self._stop_map_server()
+            time.sleep(1)
+        self._start_map_server()
+
+    def _view_map_server_logs(self):
+        """View map server logs."""
+        log_lines = ""
+
+        # Try systemd journal first
+        try:
+            result = subprocess.run(
+                ['journalctl', '-u', 'meshforge-map', '-n', '50', '--no-pager'],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                log_lines = result.stdout.strip()
+        except (subprocess.SubprocessError, OSError) as e:
+            logger.debug("journalctl failed: %s", e)
+
+        if not log_lines:
+            # Check if server is running at all
+            if self._is_map_server_running():
+                status = self._get_map_service_status()
+                log_lines = (
+                    f"Map server is running ({status})\n"
+                    f"No systemd journal available.\n\n"
+                    f"For in-process servers, logs go to the\n"
+                    f"MeshForge log file or console."
+                )
+            else:
+                log_lines = "Map server is not running.\nNo logs available."
+
+        self.ctx.dialog.msgbox("Map Server Logs (last 50 lines)", log_lines)
 
     def _toggle_auto_map(self):
         """Toggle the auto-open map on launch setting."""
