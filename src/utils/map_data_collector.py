@@ -108,6 +108,7 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                 "enable_rmap_fallback": False,
                 "enable_aredn_worldmap_fallback": False,
                 "public_fallback_threshold": 3,
+                "selected_region": None,
             }
         )
 
