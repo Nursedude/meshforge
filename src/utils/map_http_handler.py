@@ -6,7 +6,10 @@ This module is used by MapServer in map_data_service.py.
 
 Endpoints:
 - GET /              -> node_map.html (the live map)
-- GET /api/nodes/geojson  -> live node GeoJSON from all sources
+- GET /api/nodes/geojson  -> live node GeoJSON (?bbox=s,w,n,e or ?region=key)
+- GET /api/region-presets -> available region presets with bbox definitions
+- GET /api/settings      -> current map settings (selected_region)
+- POST /api/settings     -> save map settings (selected_region)
 - GET /api/nodes/history  -> node history stats + unique nodes (24h)
 - GET /api/nodes/trajectory/<id> -> trajectory GeoJSON for a node
 - GET /api/nodes/snapshot -> historical network snapshot for playback
@@ -47,6 +50,7 @@ from datetime import datetime
 from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse, parse_qs, unquote
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +86,55 @@ from utils._map_meshtastic_proxy import MeshtasticProxyMixin
 from utils._map_radio_endpoints import RadioEndpointsMixin
 
 
+# ── Query parameter helper ────────────────────────────────────────────
+def _safe_query_param(query, key, default=None):
+    """Safely extract a single query parameter value."""
+    values = query.get(key)
+    if not values:
+        return default
+    return values[0] if values[0] else default
+
+
+# ── Region presets (ported from meshforge-maps) ───────────────────────
+REGION_PRESETS = {
+    "hawaii": {
+        "label": "Hawaii",
+        "map_center_lat": 20.5, "map_center_lon": -157.0,
+        "map_default_zoom": 7,
+        "bbox": [18.5, -161.0, 22.5, -154.0],
+    },
+    "west_coast": {
+        "label": "West Coast",
+        "map_center_lat": 37.5, "map_center_lon": -122.0,
+        "map_default_zoom": 6,
+        "bbox": [32.0, -125.0, 49.0, -114.0],
+    },
+    "us": {
+        "label": "United States",
+        "map_center_lat": 39.0, "map_center_lon": -98.0,
+        "map_default_zoom": 4,
+        "bbox": [
+            [24.5, -125.0, 49.5, -66.0],   # CONUS
+            [51.0, -180.0, 72.0, -130.0],   # Alaska
+            [18.5, -161.0, 22.5, -154.0],   # Hawaii
+            [17.5, -68.0, 18.6, -64.0],     # PR + USVI
+        ],
+    },
+    "americas": {
+        "label": "Americas",
+        "map_center_lat": 15.0, "map_center_lon": -80.0,
+        "map_default_zoom": 3,
+        "bbox": [-56.0, -180.0, 72.0, -34.0],
+    },
+    "world": {
+        "label": "World",
+        "map_center_lat": 20.0, "map_center_lon": 0.0,
+        "map_default_zoom": 3,
+        "bbox": None,
+    },
+}
+
+
 class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPRequestHandler):
     """HTTP handler that serves the map HTML and node GeoJSON API."""
 
@@ -111,69 +164,70 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
             self.send_header('Access-Control-Allow-Origin', 'http://localhost:5000')
 
     def do_GET(self):
-        if self.path == '/api/nodes/geojson' or self.path == '/api/nodes/geojson/':
+        # Parse path and query once for all routes
+        parsed = urlparse(self.path)
+        path_only = parsed.path.rstrip('/')
+        self._query = parse_qs(parsed.query)
+
+        if path_only == '/api/nodes/geojson':
             self._serve_geojson()
-        elif self.path == '/' or self.path == '/index.html':
+        elif path_only in ('', '/index.html'):
             self._serve_map()
-        elif self.path == '/api/status':
+        elif path_only == '/api/region-presets':
+            self._serve_region_presets()
+        elif path_only == '/api/settings':
+            self._serve_settings()
+        elif path_only == '/api/status':
             self._serve_status()
-        elif self.path == '/api/nodes/history':
+        elif path_only == '/api/nodes/history':
             self._serve_history_stats()
         elif self.path.startswith('/api/nodes/trajectory/'):
-            node_id = self.path.split('/api/nodes/trajectory/', 1)[1].rstrip('/')
+            node_id = path_only.split('/api/nodes/trajectory/', 1)[1].rstrip('/')
             self._serve_trajectory(node_id)
         elif self.path.startswith('/api/coverage/'):
             # Coverage prediction for a node: /api/coverage/<lat>/<lon>/<alt>
-            from urllib.parse import urlparse
-            path_only = urlparse(self.path).path
             parts = path_only.split('/api/coverage/', 1)[1].rstrip('/').split('/')
             self._serve_coverage(parts)
         elif self.path.startswith('/api/los/'):
             # Line of sight check: /api/los/<lat1>/<lon1>/<lat2>/<lon2>
-            from urllib.parse import urlparse
-            path_only = urlparse(self.path).path
             parts = path_only.split('/api/los/', 1)[1].rstrip('/').split('/')
             self._serve_los(parts)
         elif self.path.startswith('/api/nodes/snapshot'):
             # Historical snapshot: /api/nodes/snapshot?timestamp=<unix_ts>&window=300
             self._serve_snapshot()
-        elif self.path == '/api/messages/queue' or self.path == '/api/messages/queue/':
+        elif path_only == '/api/messages/queue':
             self._serve_message_queue()
         elif self.path.startswith('/api/messages/received'):
             self._serve_received_messages()
-        elif self.path == '/api/messages/rx-status' or self.path == '/api/messages/rx-status/':
+        elif path_only == '/api/messages/rx-status':
             self._serve_rx_status()
-        elif self.path == '/api/websocket/status' or self.path == '/api/websocket/status/':
+        elif path_only == '/api/websocket/status':
             self._serve_websocket_status()
-        elif self.path == '/api/network/topology' or self.path == '/api/network/topology/':
+        elif path_only == '/api/network/topology':
             self._serve_network_topology()
-        elif self.path == '/api/weather' or self.path == '/api/weather/':
+        elif path_only == '/api/weather':
             self._serve_weather()
         # ─────────────────────────────────────────────────────────────
         # Meshtastic API Proxy - MeshForge owns the web client API
         # ─────────────────────────────────────────────────────────────
         elif self.path.startswith('/api/v1/fromradio'):
             self._proxy_fromradio()
-        elif self.path == '/json/nodes' or self.path == '/json/nodes/':
-            self._proxy_json('/json/nodes')
-        elif self.path == '/json/report' or self.path == '/json/report/':
-            self._proxy_json('/json/report')
-        elif self.path == '/json/blink' or self.path == '/json/blink/':
-            self._proxy_json('/json/blink')
+        elif path_only in ('/json/nodes', '/json/report', '/json/blink'):
+            self._proxy_json(path_only)
         elif self.path.startswith('/mesh/') or self.path == '/mesh':
             self._serve_mesh_web_client()
-        elif self.path == '/api/proxy/status' or self.path == '/api/proxy/status/':
+        elif path_only == '/api/proxy/status':
             self._serve_proxy_status()
         # ─────────────────────────────────────────────────────────────
         # Radio Control API - MeshForge-owned radio access
         # ─────────────────────────────────────────────────────────────
-        elif self.path == '/api/radio/info' or self.path == '/api/radio/info/':
+        elif path_only == '/api/radio/info':
             self._serve_radio_info()
-        elif self.path == '/api/radio/nodes' or self.path == '/api/radio/nodes/':
+        elif path_only == '/api/radio/nodes':
             self._serve_radio_nodes()
-        elif self.path == '/api/radio/channels' or self.path == '/api/radio/channels/':
+        elif path_only == '/api/radio/channels':
             self._serve_radio_channels()
-        elif self.path == '/api/radio/status' or self.path == '/api/radio/status/':
+        elif path_only == '/api/radio/status':
             self._serve_radio_status()
         else:
             # Serve static files from web/ directory
@@ -187,10 +241,17 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
 
     def do_POST(self):
         """Handle POST requests for radio control and meshtastic API proxy."""
+        path_only = urlparse(self.path).path.rstrip('/')
+
+        # ─────────────────────────────────────────────────────────────
+        # Map settings API
+        # ─────────────────────────────────────────────────────────────
+        if path_only == '/api/settings':
+            self._handle_settings_update()
         # ─────────────────────────────────────────────────────────────
         # Meshtastic API Proxy - POST endpoints
         # ─────────────────────────────────────────────────────────────
-        if self.path.startswith('/api/v1/toradio'):
+        elif self.path.startswith('/api/v1/toradio'):
             self._proxy_toradio()
         elif self.path.startswith('/mesh/api/v1/toradio'):
             self._proxy_toradio()
@@ -209,7 +270,7 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
         # ─────────────────────────────────────────────────────────────
         # Radio Control API - POST endpoints
         # ─────────────────────────────────────────────────────────────
-        elif self.path == '/api/radio/message' or self.path == '/api/radio/message/':
+        elif path_only == '/api/radio/message':
             self._handle_send_message()
         else:
             self.send_error(404, "Not Found")
@@ -323,7 +384,7 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
 
     def _serve_static_html(self):
         """Serve static HTML files with no-cache headers."""
-        from urllib.parse import urlparse, unquote
+
         path_only = unquote(urlparse(self.path).path).lstrip('/')
 
         if self.web_dir:
@@ -358,20 +419,96 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
             self.send_error(404, f"File not found: {path_only}")
 
     def _serve_geojson(self):
-        """Serve live node GeoJSON."""
+        """Serve live node GeoJSON with optional bbox/region filtering."""
         if self.collector:
             geojson = self.collector.collect()
         else:
             geojson = {"type": "FeatureCollection", "features": []}
 
-        data = json.dumps(geojson).encode()
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(data)))
-        self._send_cors_header()
-        self.send_header('Cache-Control', 'no-cache')
-        self.end_headers()
-        self.wfile.write(data)
+        # Resolve bbox from ?region= preset or explicit ?bbox= param
+        query = getattr(self, '_query', {})
+        bboxes = []
+
+        region_key = _safe_query_param(query, "region")
+        if region_key and region_key in REGION_PRESETS:
+            preset_bbox = REGION_PRESETS[region_key]["bbox"]
+            if preset_bbox is not None:
+                if isinstance(preset_bbox[0], list):
+                    bboxes = preset_bbox
+                else:
+                    bboxes = [preset_bbox]
+
+        # Explicit ?bbox= overrides ?region=
+        bbox_str = _safe_query_param(query, "bbox")
+        if bbox_str:
+            try:
+                parsed_bboxes = []
+                for part in bbox_str.split(";"):
+                    coords = [float(x) for x in part.split(",")]
+                    if len(coords) == 4:
+                        parsed_bboxes.append(coords)
+                if parsed_bboxes:
+                    bboxes = parsed_bboxes
+            except (ValueError, TypeError):
+                pass
+
+        # Apply bbox filter if any bboxes resolved
+        if bboxes:
+            filtered = []
+            for f in geojson.get("features", []):
+                gc = f.get("geometry", {}).get("coordinates", [])
+                if len(gc) < 2:
+                    continue
+                lon, lat = gc[0], gc[1]
+                for south, west, north, east in bboxes:
+                    if south <= lat <= north and west <= lon <= east:
+                        filtered.append(f)
+                        break
+            geojson = dict(geojson)
+            geojson["features"] = filtered
+            props = dict(geojson.get("properties", {}))
+            props["nodes_with_position"] = len(filtered)
+            props["bbox_filtered"] = True
+            geojson["properties"] = props
+
+        self._serve_json(geojson)
+
+    def _serve_region_presets(self):
+        """Serve available region preset definitions."""
+        self._serve_json(REGION_PRESETS)
+
+    def _serve_settings(self):
+        """Serve current map settings (selected region)."""
+        settings = {"selected_region": None}
+        if self.collector:
+            settings["selected_region"] = self.collector._settings.get(
+                "selected_region"
+            )
+        self._serve_json(settings)
+
+    def _handle_settings_update(self):
+        """Handle POST /api/settings — save map settings."""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length <= 0 or content_length > 4096:
+                self._serve_json({"error": "Invalid payload"}, status=400)
+                return
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body)
+        except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
+            self._serve_json({"error": "Invalid JSON"}, status=400)
+            return
+
+        region = data.get("selected_region")
+        if region is not None and region not in REGION_PRESETS:
+            self._serve_json({"error": "Unknown region"}, status=400)
+            return
+
+        if self.collector:
+            self.collector._settings.set("selected_region", region)
+            self.collector._settings.save()
+
+        self._serve_json({"status": "saved", "selected_region": region})
 
     def _serve_map(self):
         """Serve the node_map.html file."""
@@ -479,7 +616,7 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
             return
 
         # URL decode the node_id (! becomes %21 in URLs)
-        from urllib.parse import unquote
+
         node_id = unquote(node_id)
 
         history = self.collector._history
@@ -513,7 +650,7 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
             alt = float(parts[2])
 
             # Parse query params
-            from urllib.parse import parse_qs, urlparse
+
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
             radius_km = float(params.get('radius_km', ['10'])[0])
@@ -584,8 +721,6 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
 
         URL: /api/nodes/snapshot?timestamp=<unix_ts>&window=300
         """
-        from urllib.parse import parse_qs, urlparse
-
         try:
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
@@ -656,7 +791,7 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
             lon2 = float(parts[3])
 
             # Parse query params
-            from urllib.parse import parse_qs, urlparse
+
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
             alt1 = float(params.get('alt1', ['10'])[0])
@@ -763,8 +898,6 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
         This endpoint returns messages RECEIVED from the mesh, stored by
         the MessageListener. Use /api/messages/queue for pending OUTBOUND messages.
         """
-        from urllib.parse import urlparse, parse_qs
-
         # Parse query parameters
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)

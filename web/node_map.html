@@ -1226,10 +1226,111 @@
                 touch-action: manipulation;
             }
         }
+
+        /* ── Loading overlay ─────────────────────────────────── */
+        .loading-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(10, 14, 26, 0.85);
+            z-index: 1500;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .loading-overlay.visible { display: flex; }
+        .loading-spinner {
+            width: 40px; height: 40px;
+            border: 3px solid #2a3a4a;
+            border-top-color: #4fc3f7;
+            border-radius: 50%;
+            animation: meshforge-spin 0.8s linear infinite;
+        }
+        @keyframes meshforge-spin { to { transform: rotate(360deg); } }
+        .loading-text {
+            color: #8aa8b8;
+            font-size: 13px;
+            text-align: center;
+            max-width: 280px;
+        }
+
+        /* ── Region picker modal ─────────────────────────────── */
+        .region-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            z-index: 2000;
+        }
+        .region-overlay.visible { display: block; }
+        .region-modal {
+            display: none;
+            position: fixed;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 340px;
+            max-width: 90vw;
+            background: #141e2e;
+            border: 1px solid #2a3a4a;
+            border-radius: 10px;
+            z-index: 2001;
+            padding: 24px;
+            font-family: inherit;
+        }
+        .region-modal.visible { display: block; }
+        .region-modal h3 {
+            color: #4fc3f7;
+            margin: 0 0 8px 0;
+            font-size: 16px;
+        }
+        .region-modal p {
+            color: #888;
+            font-size: 12px;
+            margin: 0 0 16px 0;
+            line-height: 1.4;
+        }
+        .region-modal select {
+            width: 100%;
+            background: #0a1622;
+            color: #e0e0e0;
+            border: 1px solid #2a3a4a;
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-size: 13px;
+            margin-bottom: 16px;
+        }
+        .region-modal .btn-apply {
+            width: 100%;
+            background: #1565c0;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            padding: 10px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .region-modal .btn-apply:hover { background: #1976d2; }
     </style>
 </head>
 <body>
     <div id="map"></div>
+
+    <!-- Loading overlay -->
+    <div class="loading-overlay" id="loading-overlay">
+        <div class="loading-spinner"></div>
+        <div class="loading-text" id="loading-text">Loading nodes...</div>
+    </div>
+
+    <!-- Region picker (first-run modal) -->
+    <div class="region-overlay" id="region-overlay"></div>
+    <div class="region-modal" id="region-modal">
+        <h3>Select Your Region</h3>
+        <p>Choose a region to filter map data. Smaller regions load faster.
+           You can change this anytime from the control panel.</p>
+        <select id="region-select"></select>
+        <button class="btn-apply" onclick="applyRegion()">Apply</button>
+    </div>
 
     <!-- Phase 4: D3.js Topology View -->
     <div id="topology-view">
@@ -1352,6 +1453,12 @@
                     <option value="TAK">TAK</option>
                     <option value="CLIENT_HIDDEN">Hidden</option>
                     <option value="rns">RNS Node</option>
+                </select>
+            </div>
+            <div class="filter-section" style="margin-top: 4px; padding-top: 4px; border-top: 1px solid #1a2a3a;">
+                <span style="font-size: 10px; color: #888; display: block; margin-bottom: 4px;">Region</span>
+                <select id="region-filter" style="width: 100%; background: #0a1622; color: #e0e0e0; border: 1px solid #2a3a4a; border-radius: 4px; padding: 3px 6px; font-size: 11px;"
+                        onchange="changeRegion(this.value)">
                 </select>
             </div>
 
@@ -1658,7 +1765,10 @@
         apiFailCount: 0,
         lastSuccessfulFetch: null,
         // Role filter state
-        activeRoleFilter: null   // null = show all, string = specific role
+        activeRoleFilter: null,  // null = show all, string = specific role
+        // Region filtering
+        selectedRegion: null,    // Current region preset key
+        regionPresets: {}        // Fetched from /api/region-presets
     };
 
     // ============================================
@@ -3375,26 +3485,186 @@
         }
     }
 
+    // ============================================
+    // Region Filtering & Loading UX
+    // ============================================
+
+    function showLoading(text) {
+        document.getElementById('loading-text').textContent = text || 'Loading...';
+        document.getElementById('loading-overlay').classList.add('visible');
+    }
+
+    function hideLoading() {
+        document.getElementById('loading-overlay').classList.remove('visible');
+    }
+
+    function _getActiveBbox() {
+        const preset = state.selectedRegion;
+        if (preset && state.regionPresets[preset] && state.regionPresets[preset].bbox) {
+            const bbox = state.regionPresets[preset].bbox;
+            // Multi-bbox (array of arrays) vs single bbox
+            if (Array.isArray(bbox[0])) {
+                return bbox.map(function(b) { return b.join(','); }).join(';');
+            }
+            return bbox.join(',');
+        }
+        return null;
+    }
+
+    async function loadRegionPresets() {
+        try {
+            const resp = await fetch('/api/region-presets');
+            if (resp.ok) {
+                state.regionPresets = await resp.json();
+            }
+        } catch (e) {
+            console.debug('Failed to load region presets:', e);
+        }
+        // Fallback if API unavailable
+        if (!Object.keys(state.regionPresets).length) {
+            state.regionPresets = {
+                hawaii: { label: 'Hawaii', map_center_lat: 20.5, map_center_lon: -157.0, map_default_zoom: 7, bbox: [18.5, -161.0, 22.5, -154.0] },
+                west_coast: { label: 'West Coast', map_center_lat: 37.5, map_center_lon: -122.0, map_default_zoom: 6, bbox: [32.0, -125.0, 49.0, -114.0] },
+                us: { label: 'United States', map_center_lat: 39.0, map_center_lon: -98.0, map_default_zoom: 4, bbox: [[24.5,-125.0,49.5,-66.0],[51.0,-180.0,72.0,-130.0],[18.5,-161.0,22.5,-154.0],[17.5,-68.0,18.6,-64.0]] },
+                americas: { label: 'Americas', map_center_lat: 15.0, map_center_lon: -80.0, map_default_zoom: 3, bbox: [-56.0, -180.0, 72.0, -34.0] },
+                world: { label: 'World', map_center_lat: 20.0, map_center_lon: 0.0, map_default_zoom: 3, bbox: null }
+            };
+        }
+        populateRegionSelects();
+    }
+
+    function populateRegionSelects() {
+        ['region-select', 'region-filter'].forEach(function(id) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.innerHTML = '';
+            for (const [key, preset] of Object.entries(state.regionPresets)) {
+                const opt = document.createElement('option');
+                opt.value = key;
+                opt.textContent = preset.label;
+                el.appendChild(opt);
+            }
+            if (state.selectedRegion) el.value = state.selectedRegion;
+        });
+    }
+
+    async function loadSavedRegion() {
+        try {
+            const resp = await fetch('/api/settings');
+            if (resp.ok) {
+                const settings = await resp.json();
+                if (settings.selected_region) {
+                    state.selectedRegion = settings.selected_region;
+                }
+            }
+        } catch (e) {
+            console.debug('Failed to load settings:', e);
+        }
+        // Fallback: check localStorage
+        if (!state.selectedRegion) {
+            state.selectedRegion = localStorage.getItem('meshforge_selected_region');
+        }
+    }
+
+    function showRegionPicker() {
+        document.getElementById('region-overlay').classList.add('visible');
+        document.getElementById('region-modal').classList.add('visible');
+    }
+
+    function applyRegion() {
+        const select = document.getElementById('region-select');
+        const region = select.value;
+        state.selectedRegion = region;
+
+        // Apply map view
+        const preset = state.regionPresets[region];
+        if (preset) {
+            map.setView([preset.map_center_lat, preset.map_center_lon], preset.map_default_zoom);
+        }
+
+        // Persist to server
+        fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ selected_region: region })
+        }).catch(function() {});
+
+        // Persist to localStorage as fallback
+        try { localStorage.setItem('meshforge_selected_region', region); } catch (e) {}
+
+        // Close modal
+        document.getElementById('region-overlay').classList.remove('visible');
+        document.getElementById('region-modal').classList.remove('visible');
+
+        // Update inline selector
+        const regionFilter = document.getElementById('region-filter');
+        if (regionFilter) regionFilter.value = region;
+
+        // Clear existing markers and reload with new bbox
+        nodeLayer.clearLayers();
+        state.markers.clear();
+        state.firstLoad = true;
+        refreshNodes();
+    }
+
+    function changeRegion(regionKey) {
+        state.selectedRegion = regionKey;
+        const preset = state.regionPresets[regionKey];
+        if (preset) {
+            map.setView([preset.map_center_lat, preset.map_center_lon], preset.map_default_zoom);
+        }
+
+        // Persist
+        fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ selected_region: regionKey })
+        }).catch(function() {});
+        try { localStorage.setItem('meshforge_selected_region', regionKey); } catch (e) {}
+
+        // Reload
+        nodeLayer.clearLayers();
+        state.markers.clear();
+        state.firstLoad = true;
+        refreshNodes();
+    }
+
     async function refreshNodes() {
+        // Show loading on first load or region change
+        if (state.firstLoad) {
+            const preset = state.regionPresets[state.selectedRegion];
+            const regionLabel = preset ? preset.label : '';
+            showLoading(regionLabel
+                ? 'Loading ' + regionLabel + ' nodes...'
+                : 'Loading nodes...');
+        }
+
         // 1. Check for embedded data (injected by GTK panel)
         if (window.meshforgeData) {
             loadNodes(window.meshforgeData);
             updateApiStatus(true);
+            hideLoading();
             return;
         }
 
-        // 2. Try local API
+        // 2. Try local API with bbox filtering
         try {
-            const response = await fetch('/api/nodes/geojson');
+            let geoUrl = '/api/nodes/geojson';
+            const bbox = _getActiveBbox();
+            if (bbox) geoUrl += '?bbox=' + bbox;
+            const response = await fetch(geoUrl);
             if (response.ok) {
                 loadNodes(await response.json());
                 updateApiStatus(true);
+                hideLoading();
                 return;
             }
             updateApiStatus(false, `HTTP ${response.status}`);
         } catch (e) {
             updateApiStatus(false, e.message);
         }
+
+        hideLoading();
 
         // 3. Check URL params
         const params = new URLSearchParams(window.location.search);
@@ -4575,7 +4845,25 @@
     // Initialization
     // ============================================
 
-    refreshNodes();
+    // Startup: load presets, check saved region, then load data
+    (async function init() {
+        await loadRegionPresets();
+        await loadSavedRegion();
+
+        if (!state.selectedRegion) {
+            // First run: show region picker, defer data loading
+            showRegionPicker();
+        } else {
+            // Apply saved region view
+            const preset = state.regionPresets[state.selectedRegion];
+            if (preset) {
+                map.setView([preset.map_center_lat, preset.map_center_lon], preset.map_default_zoom);
+            }
+            const regionFilter = document.getElementById('region-filter');
+            if (regionFilter) regionFilter.value = state.selectedRegion;
+            refreshNodes();
+        }
+    })();
 
     // Initialize WebSocket for real-time messages
     initWebSocket();
