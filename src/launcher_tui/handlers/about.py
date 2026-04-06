@@ -111,8 +111,8 @@ Made with aloha for the mesh community
             )
             if result.returncode == 0 and result.stdout.strip():
                 lines.append(f"Distro:    {result.stdout.strip()}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not read distro: %s", e)
         lines.append(f"Arch:      {platform.machine()}")
         lines.append(f"Python:    {platform.python_version()}")
         lines.append(f"MeshForge: v{__version__}")
@@ -126,8 +126,8 @@ Made with aloha for the mesh community
             hours = int((uptime_secs % 86400) // 3600)
             mins = int((uptime_secs % 3600) // 60)
             lines.append(f"Uptime:    {days}d {hours}h {mins}m")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not read uptime: %s", e)
 
         # Memory
         try:
@@ -138,8 +138,8 @@ Made with aloha for the mesh community
                     total_kb = int(line.split()[1])
                     lines.append(f"Memory:    {total_kb // 1024} MB total")
                     break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not read memory: %s", e)
 
         # Disk usage
         lines.append("")
@@ -151,8 +151,8 @@ Made with aloha for the mesh community
             free_gb = (statvfs.f_frsize * statvfs.f_bavail) / (1024**3)
             used_pct = ((total_gb - free_gb) / total_gb) * 100 if total_gb else 0
             lines.append(f"Root (/):  {free_gb:.1f} GB free / {total_gb:.1f} GB ({used_pct:.0f}% used)")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not read disk: %s", e)
 
         # Log directory size
         try:
@@ -160,8 +160,8 @@ Made with aloha for the mesh community
             if log_dir.exists():
                 total_size = sum(f.stat().st_size for f in log_dir.rglob("*") if f.is_file())
                 lines.append(f"Logs:      {total_size / 1024:.1f} KB in {log_dir}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Could not read log size: %s", e)
 
         self.ctx.dialog.msgbox("System Information", "\n".join(lines), width=65, height=22)
 

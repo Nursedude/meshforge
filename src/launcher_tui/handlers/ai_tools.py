@@ -157,8 +157,8 @@ class AIToolsHandler(BaseHandler):
             sock.close()
             if result == 0:
                 return  # Already running
-        except OSError:
-            pass
+        except OSError as e:
+            logger.debug("Port check failed: %s", e)
 
         # Try to start via systemd service first (preferred for reliability)
         if self._try_start_map_service_quiet():
@@ -217,8 +217,8 @@ class AIToolsHandler(BaseHandler):
                     sock.close()
                     if result == 0:
                         return True
-                except OSError:
-                    pass
+                except OSError as e:
+                    logger.debug("Service port check failed: %s", e)
 
             return False
         except (subprocess.SubprocessError, OSError) as e:
@@ -246,8 +246,8 @@ class AIToolsHandler(BaseHandler):
                 try:
                     with open(settings_file) as f:
                         auto_enabled = json.load(f).get("auto_open_map", False)
-                except (json.JSONDecodeError, OSError):
-                    pass
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.debug("Settings load failed: %s", e)
 
             auto_label = "ON" if auto_enabled else "OFF"
             choices = [
@@ -489,8 +489,8 @@ class AIToolsHandler(BaseHandler):
                 capture_output=True, text=True, timeout=5)
             if result.stdout.strip() == "failed":
                 return "Service in failed state", True
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logger.debug("Service status check failed: %s", e)
 
         return None, False
 
@@ -611,8 +611,8 @@ class AIToolsHandler(BaseHandler):
         if config_path.exists():
             try:
                 current = json.loads(config_path.read_text())
-            except (json.JSONDecodeError, OSError):
-                pass
+            except (json.JSONDecodeError, OSError) as e:
+                logger.debug("Config read failed: %s", e)
 
         while True:
             mqtt_broker = current.get("mqtt_broker", "mqtt.meshtastic.org")
@@ -890,8 +890,8 @@ class AIToolsHandler(BaseHandler):
                     "The map auto-refreshes every 30 seconds."
                 )
                 return
-        except OSError:
-            pass
+        except OSError as e:
+            logger.debug("Port availability check failed: %s", e)
 
         # Try systemd service first (preferred for reliability)
         service_started = self._try_start_map_service()
@@ -980,8 +980,8 @@ class AIToolsHandler(BaseHandler):
                     sock.close()
                     if result == 0:
                         return True
-                except OSError:
-                    pass
+                except OSError as e:
+                    logger.debug("Service check failed: %s", e)
 
             return False
         except (subprocess.SubprocessError, OSError) as e:
@@ -1014,8 +1014,8 @@ class AIToolsHandler(BaseHandler):
             try:
                 with open(settings_file) as f:
                     settings = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                pass
+            except (json.JSONDecodeError, OSError) as e:
+                logger.debug("Settings load failed: %s", e)
 
         current = settings.get("auto_open_map", False)
         settings["auto_open_map"] = not current
@@ -1524,8 +1524,8 @@ class AIToolsHandler(BaseHandler):
             except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
                 try:
                     webbrowser.open(url)
-                except (webbrowser.Error, OSError):
-                    pass
+                except (webbrowser.Error, OSError) as e:
+                    logger.warning("Could not open browser: %s", e)
 
         threading.Thread(target=do_open, daemon=True).start()
 
