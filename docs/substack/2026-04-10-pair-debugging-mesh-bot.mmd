@@ -1,0 +1,21 @@
+%% Source of truth for the architecture diagram in 2026-04-10-pair-debugging-mesh-bot.md
+%% Rendered SVG: 2026-04-10-pair-debugging-mesh-bot.svg
+%% Render with: mmdc -i 2026-04-10-pair-debugging-mesh-bot.mmd -o out.svg -t neutral
+
+flowchart TB
+    G2["<b>G2 'Borg Server'</b><br/>Solar · WiFi · LoRa TX/RX<br/><i>meshtasticd</i>"]
+    MESH(("LoRa mesh<br/>meshforge channel"))
+    PI["<b>Pi Zero 2W</b><br/>No USB · power-only<br/><i>mosquitto broker</i>"]
+    TUI["<b>mesh_client</b><br/>terminal UI<br/>(subscribes)"]
+    BOT["<b>meshing-around bot</b><br/>auto-replies over LoRa"]
+
+    G2 -- "LoRa ))" --> MESH
+    G2 -- "native MQTT uplink" --> PI
+    PI --> TUI
+    PI --> BOT
+    BOT -. "TCP → G2 → LoRa TX" .-> G2
+
+    classDef device fill:#fff,stroke:#2b2b2b,stroke-width:2px,color:#2b2b2b
+    classDef cloud fill:#fef3e0,stroke:#c97b3e,stroke-width:2px,color:#c97b3e
+    class G2,PI,TUI,BOT device
+    class MESH cloud
