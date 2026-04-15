@@ -7,6 +7,10 @@
           {
             "type": "command",
             "command": "python3 scripts/lint.py --severity warning \"$CLAUDE_TOOL_ARG_file_path\" 2>/dev/null || true"
+          },
+          {
+            "type": "command",
+            "command": "case \"$CLAUDE_TOOL_ARG_file_path\" in */.claude/settings.json|.claude/settings.json) python3 scripts/validate_claude_settings.py \"$CLAUDE_TOOL_ARG_file_path\" ;; esac"
           }
         ]
       }
