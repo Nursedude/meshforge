@@ -1,0 +1,14 @@
+[Unit]
+Description=MeshForge Fleet Backup Timer
+Documentation=https://github.com/Nursedude/meshforge
+
+[Timer]
+# Run daily at 3:00 AM with up to 10 minutes random delay
+# to avoid all fleet Pis hitting the network simultaneously
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=600
+# If the Pi was off at 3 AM, run backup on next boot
+Persistent=true
+
+[Install]
+WantedBy=timers.target

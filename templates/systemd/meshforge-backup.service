@@ -1,0 +1,13 @@
+[Unit]
+Description=MeshForge Fleet Backup
+Documentation=https://github.com/Nursedude/meshforge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/meshforge/scripts/fleet_backup.sh --push --quiet
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshforge-backup
