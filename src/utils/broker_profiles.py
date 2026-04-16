@@ -411,8 +411,10 @@ def generate_mosquitto_conf(profile: BrokerProfile) -> str:
         password_file_line = "password_file /etc/mosquitto/meshforge_passwd"
         acl_file_line = "acl_file /etc/mosquitto/meshforge_acl"
 
-    # Local-only vs LAN-accessible
-    bind_address = "0.0.0.0"  # LAN-accessible by default for gateway nodes
+    # Mosquitto broker binds to all interfaces — intentional for gateway nodes
+    # that need to accept MQTT connections from mesh radios on the LAN.
+    # Change to "127.0.0.1" if only local clients connect.
+    bind_address = "0.0.0.0"
 
     return MOSQUITTO_CONF_TEMPLATE.format(
         port=profile.port,

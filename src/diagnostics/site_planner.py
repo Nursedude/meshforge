@@ -18,10 +18,14 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-from rich.console import Console
-from rich.panel import Panel
-from rich.prompt import Prompt, Confirm
-from rich.table import Table
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.prompt import Prompt, Confirm
+    from rich.table import Table
+    HAS_RICH = True
+except ImportError:
+    HAS_RICH = False
 
 from utils import emoji as em
 

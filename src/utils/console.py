@@ -14,8 +14,12 @@ Or for explicit access:
     c = get_console()
 """
 
-from rich.console import Console
-from rich.theme import Theme
+try:
+    from rich.console import Console
+    from rich.theme import Theme
+    HAS_RICH = True
+except ImportError:
+    HAS_RICH = False
 from typing import Optional
 import threading
 

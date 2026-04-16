@@ -4,9 +4,13 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from rich.console import Console
-from rich.prompt import Confirm
-from rich.panel import Panel
+try:
+    from rich.console import Console
+    from rich.prompt import Confirm
+    from rich.panel import Panel
+    HAS_RICH = True
+except ImportError:
+    HAS_RICH = False
 
 from utils.system import run_command, is_service_running
 from utils.logger import log

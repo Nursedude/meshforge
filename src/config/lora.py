@@ -1,8 +1,12 @@
 """LoRa-specific configuration module"""
 
-from rich.console import Console
-from rich.prompt import Prompt, Confirm
-from rich.table import Table
+try:
+    from rich.console import Console
+    from rich.prompt import Prompt, Confirm
+    from rich.table import Table
+    HAS_RICH = True
+except ImportError:
+    HAS_RICH = False
 
 from utils.cli import find_meshtastic_cli
 

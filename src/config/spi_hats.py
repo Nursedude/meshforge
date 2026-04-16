@@ -3,10 +3,14 @@
 import os
 import subprocess
 from pathlib import Path
-from rich.console import Console
-from rich.prompt import Prompt, Confirm, IntPrompt
-from rich.table import Table
-from rich.panel import Panel
+try:
+    from rich.console import Console
+    from rich.prompt import Prompt, Confirm, IntPrompt
+    from rich.table import Table
+    from rich.panel import Panel
+    HAS_RICH = True
+except ImportError:
+    HAS_RICH = False
 
 from config.hardware import HardwareDetector
 from utils.logger import log

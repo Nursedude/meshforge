@@ -20,7 +20,6 @@ jobs:
 
       - name: Run MeshForge linter
         run: python3 scripts/lint.py --all
-        continue-on-error: true
 
   test:
     name: Test Suite
@@ -48,11 +47,10 @@ jobs:
 
       - name: Run tests
         run: |
-          python -m pytest tests/ -v --tb=short --timeout=30 --timeout-method=thread -x --ignore=tests/test_bridge_integration.py 2>&1 | head -500 || echo "Some tests failed"
+          python -m pytest tests/ -v --tb=short --timeout=30 --timeout-method=thread -x --ignore=tests/test_bridge_integration.py 2>&1 | head -500
         env:
           CI: true
           MESHFORGE_CI: true
-        continue-on-error: true
 
   syntax-check:
     name: Syntax Check
