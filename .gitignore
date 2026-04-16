@@ -55,3 +55,4 @@ CLAUDE.local.md
 
 # Session context (local only)
 .claude/CURRENT.md
+.claude/settings.local.json
