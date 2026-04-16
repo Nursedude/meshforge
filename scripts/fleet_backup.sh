@@ -406,8 +406,12 @@ with open(os.path.join(staging, 'manifest.json'), 'w') as f:
     local latest_link="${BACKUP_BASE}/${HOSTNAME_SHORT}/latest.tar.gz"
     ln -sf "$(basename "$archive_path")" "$latest_link"
 
-    # Fix ownership if running as sudo
+    # Fix ownership if running as sudo. We must chown BACKUP_BASE itself
+    # (not only the host subdir); otherwise when a peer SSHs in as
+    # $REAL_USER to push its backup, it can't create its own subdir under
+    # the root-owned parent and every incoming push fails as "unreachable".
     if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+        chown "$SUDO_USER:$SUDO_USER" "$BACKUP_BASE" 2>/dev/null || true
         chown -R "$SUDO_USER:$SUDO_USER" "$BACKUP_BASE/${HOSTNAME_SHORT}" 2>/dev/null || true
     fi
 
