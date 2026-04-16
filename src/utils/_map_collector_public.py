@@ -119,19 +119,30 @@ class PublicDataFallbackMixin:
         self, num_id: str, node: Dict[str, Any]
     ) -> Optional[Dict]:
         """Parse a node from meshmap.net nodes.json format."""
-        lat = node.get("latitude")
-        lon = node.get("longitude")
-
-        # Handle Meshtastic integer coordinates (latitudeI = lat * 1e7)
-        if lat is not None and lon is not None:
+        # Prefer explicit Meshtastic integer fields (latitudeI = lat * 1e7).
+        # Fall back to float "latitude"/"longitude". The prior heuristic
+        # (abs > 900) was brittle — use explicit field names instead.
+        lat_i = node.get("latitudeI")
+        lon_i = node.get("longitudeI")
+        if lat_i is not None and lon_i is not None:
             try:
-                lat, lon = float(lat), float(lon)
-                if abs(lat) > 900 or abs(lon) > 900:
-                    lat, lon = lat / 1e7, lon / 1e7
+                lat = float(lat_i) / 1e7
+                lon = float(lon_i) / 1e7
             except (TypeError, ValueError):
+                logger.debug("meshmap node %s: bad latitudeI/longitudeI", num_id)
                 return None
+        else:
+            lat = node.get("latitude")
+            lon = node.get("longitude")
+            if lat is not None and lon is not None:
+                try:
+                    lat, lon = float(lat), float(lon)
+                except (TypeError, ValueError):
+                    logger.debug("meshmap node %s: bad latitude/longitude", num_id)
+                    return None
 
         if not self._is_valid_coordinate(lat, lon):
+            logger.debug("meshmap node %s: coords out of range", num_id)
             return None
 
         try:
@@ -172,8 +183,19 @@ class PublicDataFallbackMixin:
     # -- RMAP.world (Reticulum) --------------------------------------------
 
     def _fetch_rmap_nodes(self) -> List[Dict]:
-        """Fetch Reticulum nodes from RMAP.world public API."""
+        """Fetch Reticulum nodes from RMAP.world public API.
+
+        TLS verification is enabled by default. Operators who need to opt
+        into an insecure connection (e.g., development against a self-signed
+        endpoint on a trusted LAN) must set ``rmap_insecure_tls`` to True in
+        map_settings.json AND acknowledge the MITM risk — the data drives
+        node positions/names rendered in the map UI.
+        """
         features = []
+        insecure = False
+        if self._settings:
+            insecure = bool(self._settings.get("rmap_insecure_tls", False))
+
         try:
             req = Request(
                 RMAP_WORLD_URL,
@@ -183,8 +205,13 @@ class PublicDataFallbackMixin:
                 },
             )
             ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
+            if insecure:
+                logger.warning(
+                    "RMAP.world TLS verification disabled via rmap_insecure_tls "
+                    "— map data is vulnerable to MITM injection."
+                )
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
             with urlopen(req, timeout=15, context=ctx) as resp:
                 data = json.loads(resp.read().decode())
 
@@ -195,7 +222,7 @@ class PublicDataFallbackMixin:
                     features.append(feature)
             if features:
                 logger.debug("RMAP.world returned %d rns nodes", len(features))
-        except (URLError, OSError, json.JSONDecodeError, ValueError) as e:
+        except (ssl.SSLError, URLError, OSError, json.JSONDecodeError, ValueError) as e:
             logger.debug("RMAP.world unavailable: %s", e)
         return features
 

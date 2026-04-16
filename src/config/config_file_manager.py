@@ -17,6 +17,10 @@ try:
     from rich import box
     HAS_RICH = True
 except ImportError:
+    from utils.rich_fallback import (
+        Console, Prompt, Confirm, IntPrompt,
+        Table, Panel, Layout, Text, box,
+    )
     HAS_RICH = False
 
 from utils.safe_import import safe_import

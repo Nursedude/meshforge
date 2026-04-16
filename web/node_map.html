@@ -2498,16 +2498,18 @@
         container.innerHTML = state.receivedMessages.slice(0, 10).map(msg => {
             const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : '';
             const from = msg.from_id || 'Unknown';
-            const preview = (msg.content || '').substring(0, 30) + ((msg.content || '').length > 30 ? '...' : '');
-            const snrInfo = msg.snr != null ? ` SNR:${msg.snr}` : '';
+            const content = String(msg.content || '');
+            const preview = content.substring(0, 30) + (content.length > 30 ? '...' : '');
+            const snrInfo = msg.snr != null ? ` SNR:${Number(msg.snr)}` : '';
+            const netClass = String(msg.network || 'meshtastic').replace(/[^a-zA-Z0-9_-]/g, '');
 
             return `
-                <div class="queue-item received-msg" title="${msg.content || ''}${snrInfo}">
-                    <div class="queue-network ${msg.network || 'meshtastic'}"></div>
+                <div class="queue-item received-msg" title="${escHtml(content + snrInfo)}">
+                    <div class="queue-network ${netClass}"></div>
                     <span class="queue-direction">←</span>
-                    <span class="msg-from">${from.substring(0, 10)}</span>
-                    <span class="msg-preview">${preview}</span>
-                    <span class="msg-time">${time}</span>
+                    <span class="msg-from">${escHtml(from.substring(0, 10))}</span>
+                    <span class="msg-preview">${escHtml(preview)}</span>
+                    <span class="msg-time">${escHtml(time)}</span>
                 </div>
             `;
         }).join('');
@@ -2522,13 +2524,17 @@
             return;
         }
 
-        container.innerHTML = state.messageQueue.slice(0, 10).map(msg => `
+        container.innerHTML = state.messageQueue.slice(0, 10).map(msg => {
+            const netClass = String(msg.network || 'meshtastic').replace(/[^a-zA-Z0-9_-]/g, '');
+            const target = msg.target_name || msg.target || 'Unknown';
+            return `
             <div class="queue-item">
-                <div class="queue-network ${msg.network || 'meshtastic'}"></div>
+                <div class="queue-network ${netClass}"></div>
                 <span class="queue-direction">→</span>
-                <span class="queue-target">${msg.target_name || msg.target || 'Unknown'}</span>
+                <span class="queue-target">${escHtml(target)}</span>
             </div>
-        `).join('');
+        `;
+        }).join('');
     }
 
     // Alias for backward compatibility
@@ -2588,21 +2594,60 @@
         });
     }
 
+    // HTML escape for untrusted node data (names, roles, hardware strings).
+    // Public fallback sources and MQTT-uplinked nodes are NOT trusted.
+    function escHtml(v) {
+        if (v === null || v === undefined) return '';
+        return String(v)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+    // JS string escape for values embedded inside '...' in inline handlers.
+    function escJsString(v) {
+        if (v === null || v === undefined) return '';
+        return String(v)
+            .replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'")
+            .replace(/"/g, '\\"')
+            .replace(/\r/g, '\\r')
+            .replace(/\n/g, '\\n')
+            .replace(/</g, '\\u003c');
+    }
+
     function createPopupContent(props, coords) {
         const badgeClass = props.network === 'both' ? 'badge-both' :
                           props.network === 'rns' ? 'badge-rns' :
                           props.network === 'aredn' ? 'badge-aredn' : 'badge-meshtastic';
 
+        // Source provenance badge — distinguishes trusted local/live data from
+        // untrusted public fallback sources (meshmap.net, rmap.world, AREDN worldmap).
+        let sourceBadgeHtml = '';
+        if (props.source) {
+            const sourceLabels = {
+                'meshmap_net': 'via meshmap.net',
+                'rmap_world': 'via rmap.world',
+                'aredn_worldmap': 'via AREDN worldmap',
+            };
+            const label = sourceLabels[props.source];
+            if (label) {
+                sourceBadgeHtml = `<div class="source-badge" style="background:#4a2c1a;color:#ffa726;font-size:10px;padding:2px 6px;border-radius:3px;display:inline-block;margin-left:4px" title="Untrusted public source — positions and names not verified">⚠ ${escHtml(label)}</div>`;
+            }
+        }
+
         let snrHtml = '';
         if (props.snr !== null && props.snr !== undefined) {
             // SNR range: -20 to +15 dB for LoRa
-            const pct = Math.min(100, Math.max(0, ((props.snr + 20) / 35) * 100));
+            const snrNum = Number(props.snr);
+            const pct = Math.min(100, Math.max(0, ((snrNum + 20) / 35) * 100));
             const snrColor = pct > 70 ? '#66bb6a' : pct > 40 ? '#ffa726' : '#ef5350';
             snrHtml = `
                 <div class="info-label">SNR</div>
                 <div class="info-value">
                     <div class="snr-bar">
-                        <span>${props.snr} dB</span>
+                        <span>${Number.isFinite(snrNum) ? snrNum.toFixed(1) : '—'} dB</span>
                         <div class="snr-bar-track"><div class="snr-bar-fill" style="width:${pct}%;background:${snrColor}"></div></div>
                     </div>
                 </div>`;
@@ -2610,13 +2655,15 @@
 
         let batteryHtml = '';
         if (props.battery !== null && props.battery !== undefined) {
-            const battColor = props.battery > 50 ? '#66bb6a' : props.battery > 20 ? '#ffa726' : '#ef5350';
+            const battNum = Number(props.battery);
+            const battPct = Number.isFinite(battNum) ? Math.min(100, Math.max(0, battNum)) : 0;
+            const battColor = battPct > 50 ? '#66bb6a' : battPct > 20 ? '#ffa726' : '#ef5350';
             batteryHtml = `
                 <div class="info-label">Battery</div>
                 <div class="info-value">
                     <div class="battery-indicator">
-                        <div class="battery-icon"><div class="battery-fill" style="width:${props.battery}%;background:${battColor}"></div></div>
-                        <span>${props.battery}%</span>
+                        <div class="battery-icon"><div class="battery-fill" style="width:${battPct}%;background:${battColor}"></div></div>
+                        <span>${battPct}%</span>
                     </div>
                 </div>`;
         }
@@ -2624,35 +2671,52 @@
         // Hop count + relay info (meshtastic-map inspired)
         let hopHtml = '';
         if (props.hops_away !== null && props.hops_away !== undefined) {
-            hopHtml = `<div class="info-label">Hops</div><div class="info-value">${props.hops_away} hop${props.hops_away !== 1 ? 's' : ''}</div>`;
+            const hops = Number(props.hops_away);
+            if (Number.isFinite(hops)) {
+                hopHtml = `<div class="info-label">Hops</div><div class="info-value">${hops} hop${hops !== 1 ? 's' : ''}</div>`;
+            }
         }
         if (props.relay_node) {
-            hopHtml += `<div class="info-label">Relay</div><div class="info-value" style="font-size:11px">via !..${String(props.relay_node).padStart(2,'0')}</div>`;
+            // Only allow short alphanumeric relay IDs into HTML.
+            const relaySafe = String(props.relay_node).replace(/[^a-zA-Z0-9]/g, '').slice(0, 16);
+            if (relaySafe) {
+                hopHtml += `<div class="info-label">Relay</div><div class="info-value" style="font-size:11px">via !..${relaySafe.padStart(2,'0')}</div>`;
+            }
         }
 
         // AREDN link quality (AREDN world map inspired)
         let arednHtml = '';
         if (props.network === 'aredn') {
             if (props.link_type) {
-                const ltColor = props.link_type === 'RF' ? '#4fc3f7' :
-                                props.link_type === 'DTD' ? '#66bb6a' :
-                                props.link_type === 'TUN' ? '#ab47bc' : '#888';
-                arednHtml += `<div class="info-label">Link</div><div class="info-value" style="color:${ltColor}">${props.link_type}</div>`;
+                const linkType = String(props.link_type);
+                const ltColor = linkType === 'RF' ? '#4fc3f7' :
+                                linkType === 'DTD' ? '#66bb6a' :
+                                linkType === 'TUN' ? '#ab47bc' : '#888';
+                arednHtml += `<div class="info-label">Link</div><div class="info-value" style="color:${ltColor}">${escHtml(linkType)}</div>`;
             }
             if (props.link_quality !== null && props.link_quality !== undefined) {
-                const lqPct = Math.round(props.link_quality * 100);
-                const lqColor = lqPct > 80 ? '#66bb6a' : lqPct > 50 ? '#ffa726' : '#ef5350';
-                arednHtml += `<div class="info-label">Quality</div><div class="info-value" style="color:${lqColor}">${lqPct}%</div>`;
+                const lq = Number(props.link_quality);
+                if (Number.isFinite(lq)) {
+                    const lqPct = Math.round(lq * 100);
+                    const lqColor = lqPct > 80 ? '#66bb6a' : lqPct > 50 ? '#ffa726' : '#ef5350';
+                    arednHtml += `<div class="info-label">Quality</div><div class="info-value" style="color:${lqColor}">${lqPct}%</div>`;
+                }
             }
         }
 
         // Environment sensors (if present)
         let envHtml = '';
         if (props.temperature !== null && props.temperature !== undefined) {
-            envHtml += `<div class="info-label">Temp</div><div class="info-value">${props.temperature.toFixed(1)}°C</div>`;
+            const t = Number(props.temperature);
+            if (Number.isFinite(t)) {
+                envHtml += `<div class="info-label">Temp</div><div class="info-value">${t.toFixed(1)}°C</div>`;
+            }
         }
         if (props.humidity !== null && props.humidity !== undefined) {
-            envHtml += `<div class="info-label">Humidity</div><div class="info-value">${props.humidity.toFixed(0)}%</div>`;
+            const h = Number(props.humidity);
+            if (Number.isFinite(h)) {
+                envHtml += `<div class="info-label">Humidity</div><div class="info-value">${h.toFixed(0)}%</div>`;
+            }
         }
 
         // Congestion indicator
@@ -2660,7 +2724,10 @@
         if (props.is_congested) {
             congestionHtml = `<div class="info-label">Channel</div><div class="info-value" style="color:#ef5350">⚠ Congested</div>`;
         } else if (props.channel_utilization !== null && props.channel_utilization !== undefined) {
-            congestionHtml = `<div class="info-label">ChUtil</div><div class="info-value">${props.channel_utilization.toFixed(1)}%</div>`;
+            const cu = Number(props.channel_utilization);
+            if (Number.isFinite(cu)) {
+                congestionHtml = `<div class="info-label">ChUtil</div><div class="info-value">${cu.toFixed(1)}%</div>`;
+            }
         }
 
         // Format last_heard timestamp into human-readable age
@@ -2676,7 +2743,7 @@
         // Channel / encryption info
         let channelHtml = '';
         if (props.channel_name) {
-            channelHtml += `<div class="info-label">Channel</div><div class="info-value" style="font-size:11px">${props.channel_name}</div>`;
+            channelHtml += `<div class="info-label">Channel</div><div class="info-value" style="font-size:11px">${escHtml(props.channel_name)}</div>`;
         }
         if (props.has_encryption === true) {
             channelHtml += `<div class="info-label">Encryption</div><div class="info-value" style="color:#66bb6a">Encrypted</div>`;
@@ -2684,20 +2751,34 @@
             channelHtml += `<div class="info-label">Encryption</div><div class="info-value" style="color:#ef5350">None</div>`;
         }
 
+        // Sanitize id for use as DOM id and inline JS string. Only allow a
+        // conservative alnum/underscore slice to prevent attribute/JS breakout.
+        const rawId = props.id === null || props.id === undefined ? '' : String(props.id);
+        const idForDom = rawId.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 64);
+        // escJsString covers the inline handler; escHtml covers all other HTML text.
+        const nameSafe = escHtml(props.name || props.id || 'Unknown');
+        const networkSafe = escHtml(props.network || 'mesh');
+        const roleSafe = props.role ? escHtml(props.role) : '';
+        const hardwareSafe = props.hardware ? escHtml(props.hardware) : '';
+        const lastHeardSafe = escHtml(lastHeardText);
+        const latText = (coords && Number.isFinite(Number(coords[1]))) ? Number(coords[1]).toFixed(5) : '—';
+        const lonText = (coords && Number.isFinite(Number(coords[0]))) ? Number(coords[0]).toFixed(5) : '—';
+
         return `
             <div class="node-popup">
-                <h3>${props.name || props.id || 'Unknown'}</h3>
-                <span class="network-badge ${badgeClass}">${props.network || 'mesh'}</span>
+                <h3>${nameSafe}</h3>
+                <span class="network-badge ${badgeClass}">${networkSafe}</span>
+                ${sourceBadgeHtml}
                 <div class="info-grid">
                     <div class="info-label">Status</div>
                     <div class="info-value ${props.is_online ? 'status-online' : 'status-offline'}">
                         ${props.is_online ? '● Online' : '○ Offline'}
                     </div>
-                    ${props.role ? `<div class="info-label">Role</div><div class="info-value">${props.role}</div>` : ''}
+                    ${roleSafe ? `<div class="info-label">Role</div><div class="info-value">${roleSafe}</div>` : ''}
                     ${props.is_gateway ? `<div class="info-label">Type</div><div class="info-value status-gateway">Gateway</div>` : ''}
                     ${props.via_mqtt ? `<div class="info-label">Via</div><div class="info-value" style="color:#ab47bc">MQTT</div>` : ''}
                     <div class="info-label">Last heard</div>
-                    <div class="info-value">${lastHeardText}</div>
+                    <div class="info-value">${lastHeardSafe}</div>
                     ${channelHtml}
                     ${hopHtml}
                     ${snrHtml}
@@ -2705,11 +2786,11 @@
                     ${arednHtml}
                     ${envHtml}
                     ${congestionHtml}
-                    ${props.hardware ? `<div class="info-label">Hardware</div><div class="info-value" style="font-size:11px">${props.hardware}</div>` : ''}
+                    ${hardwareSafe ? `<div class="info-label">Hardware</div><div class="info-value" style="font-size:11px">${hardwareSafe}</div>` : ''}
                     <div class="info-label">Position</div>
-                    <div class="info-value" style="font-size:11px">${coords[1].toFixed(5)}, ${coords[0].toFixed(5)}</div>
+                    <div class="info-value" style="font-size:11px">${latText}, ${lonText}</div>
                 </div>
-                <button class="btn-trail" onclick="toggleNodeTrail('${props.id}', event)" id="trail-btn-${props.id.replace(/[^a-zA-Z0-9]/g, '_')}">
+                <button class="btn-trail" onclick="toggleNodeTrail('${escJsString(rawId)}', event)" id="trail-btn-${idForDom}">
                     Show Trail (24h)
                 </button>
             </div>`;
@@ -3341,10 +3422,12 @@
             font-size: 11px;
             box-shadow: 0 4px 20px rgba(0,0,0,0.4);
         `;
+        const pointCountNum = Number(props.point_count);
+        const durationNum = Number(props.duration_hours);
         trailInfo.innerHTML = `
             <div style="color: #4fc3f7; font-weight: 600; margin-bottom: 6px;">Node Trail</div>
-            <div style="color: #aaa;">Points: <span style="color: #e0e0e0; font-weight: 500;">${props.point_count}</span></div>
-            <div style="color: #aaa;">Duration: <span style="color: #e0e0e0; font-weight: 500;">${props.duration_hours.toFixed(1)}h</span></div>
+            <div style="color: #aaa;">Points: <span style="color: #e0e0e0; font-weight: 500;">${Number.isFinite(pointCountNum) ? pointCountNum : 0}</span></div>
+            <div style="color: #aaa;">Duration: <span style="color: #e0e0e0; font-weight: 500;">${Number.isFinite(durationNum) ? durationNum.toFixed(1) : '0'}h</span></div>
             <button onclick="clearNodeTrail()" style="margin-top: 8px; padding: 4px 10px; background: #1a3a4a; color: #4fc3f7; border: 1px solid #2a4a5a; border-radius: 4px; cursor: pointer; font-size: 10px;">
                 Clear Trail
             </button>

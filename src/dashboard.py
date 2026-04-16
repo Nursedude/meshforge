@@ -15,6 +15,7 @@ try:
     from rich.box import ROUNDED, HEAVY
     HAS_RICH = True
 except ImportError:
+    from utils.rich_fallback import Console, Panel, Table, Text, ROUNDED, HEAVY
     HAS_RICH = False
 import logging
 

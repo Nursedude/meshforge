@@ -9,6 +9,7 @@ try:
     from rich.panel import Panel
     HAS_RICH = True
 except ImportError:
+    from utils.rich_fallback import Console, Panel
     HAS_RICH = False
 
 from utils.system import (

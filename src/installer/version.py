@@ -8,6 +8,7 @@ try:
     from rich.table import Table
     HAS_RICH = True
 except ImportError:
+    from utils.rich_fallback import Console, Table
     HAS_RICH = False
 
 from utils.system import run_command
