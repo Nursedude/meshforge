@@ -76,6 +76,27 @@ jobs:
           awk '/short test summary info/{flag=1} flag' /tmp/pytest.log | head -50 || true
           echo "============================================"
 
+      - name: Comment failure summary on PR
+        if: failure() && steps.pytest.outcome == 'failure' && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PY_VERSION: ${{ matrix.python-version }}
+        run: |
+          {
+            echo "## CI failure summary (Python ${PY_VERSION})"
+            echo
+            echo '```'
+            echo "--- FAILED lines ---"
+            grep -aE "^FAILED|^ERROR|^tests/.*FAIL|AssertionError|^E +" /tmp/pytest.log | head -30 || true
+            echo
+            echo "--- short test summary info ---"
+            awk '/short test summary info/{flag=1} flag' /tmp/pytest.log | head -30 || true
+            echo '```'
+          } > /tmp/comment.md
+          gh pr comment "$PR_NUMBER" --body-file /tmp/comment.md --repo "${{ github.repository }}" || true
+
   syntax-check:
     name: Syntax Check
     runs-on: ubuntu-latest
