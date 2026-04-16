@@ -10,6 +10,7 @@ try:
     from rich.panel import Panel
     HAS_RICH = True
 except ImportError:
+    from utils.rich_fallback import Console, Prompt, Confirm, IntPrompt, Table, Panel
     HAS_RICH = False
 
 from config.hardware import HardwareDetector

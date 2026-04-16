@@ -159,12 +159,15 @@ class MapServer:
 
         Args:
             port: Port to listen on (default 5000)
-            host: Bind address. Options:
-                  - "0.0.0.0": All interfaces (default, works with AREDN/VPN/LAN)
-                  - "localhost" or "127.0.0.1": Local only
+            host: Bind address. Default is "127.0.0.1" (loopback only).
+                  Options:
+                  - "127.0.0.1" or "localhost": Local only (default — secure)
+                  - "0.0.0.0": All interfaces. Only set this on a trusted LAN
+                    (AREDN, VPN) — the server has no authentication and
+                    /api/network/topology exposes mesh routing structure.
                   - Specific IP: Bind to that IP only
             cors_origins: CORS allowed origins. Options:
-                  - None: Allow all origins (*) - best for LAN/AREDN access
+                  - None: Restrict to localhost (secure default)
                   - List: Only allow specified origins, e.g.,
                     ["http://localhost", "http://192.168.1."]
             enable_message_listener: Start MessageListener for inbound messages (default True)

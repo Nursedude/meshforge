@@ -8,6 +8,7 @@ try:
     from rich.table import Table
     HAS_RICH = True
 except ImportError:
+    from utils.rich_fallback import Console, Prompt, Confirm, Panel, Table
     HAS_RICH = False
 from utils.cli import find_meshtastic_cli, get_meshtastic_install_instructions
 

@@ -10,6 +10,7 @@ try:
     from rich.panel import Panel
     HAS_RICH = True
 except ImportError:
+    from utils.rich_fallback import Console, Confirm, Panel
     HAS_RICH = False
 
 from utils.system import run_command, is_service_running
