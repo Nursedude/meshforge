@@ -26,7 +26,7 @@ The push script was one of ours. Commit `43b1968`, added Thursday. It had shippe
 
 Fix: redirect all `log_*` to `>&2`; add `-n` to every `ssh` inside the loop and `</dev/null` to the `scp`. Committed as `7cd3470`. Pushed. Fleet synced in thirty seconds. All four peers got the archive. Moved on.
 
-**Bug three, parent-directory ownership.** Except "moved on" lasted about an hour. Rolled the whole system out to the four MOCs — generated per-host `fleet.json` files (peer keys had to be realigned to match `hostname -s`, which on each Pi is `meshforge-moc{,1,2,3}`, not the short labels VolcanoAI had used), copied the SSH key to each, installed the timer on every node. Ran the full-mesh test. Each MOC reported "VolcanoAI (192.168.86.34) — unreachable."
+**Bug three, parent-directory ownership.** Except "moved on" lasted about an hour. Rolled the whole system out to the four MOCs — generated per-host `fleet.json` files (peer keys had to be realigned to match `hostname -s`, which on each Pi is `meshforge-moc{,1,2,3}`, not the short labels VolcanoAI had used), copied the SSH key to each, installed the timer on every node. Ran the full-mesh test. Each MOC reported "VolcanoAI (192.168.x.x) — unreachable."
 
 The SSH key worked fine from a manual prompt. The script ran under `sudo`. Dig in: on VolcanoAI's first `--push`, root had created `/home/wh6gxz/.meshforge-fleet-backups/` with mode `root:root 755`. The existing sudo-fixup chowned `$BACKUP_BASE/$HOSTNAME_SHORT` — the subdirectory — but not the parent. When an inbound push from a MOC ran `mkdir -p ~/.meshforge-fleet-backups/meshforge-moc` as user `wh6gxz`, it couldn't write into a root-owned parent. "Unreachable" was actually "remote mkdir returned non-zero."
 
