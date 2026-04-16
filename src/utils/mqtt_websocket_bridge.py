@@ -113,7 +113,7 @@ class MQTTWebSocketBridge:
                 self._subscriber.register_node_callback(self._on_mqtt_node)
 
             self._running = True
-            logger.info(f"MQTT→WebSocket bridge started on ws://0.0.0.0:{self._ws_port}")
+            logger.info(f"MQTT→WebSocket bridge started on ws://127.0.0.1:{self._ws_port}")
             return True
 
         except Exception as e:

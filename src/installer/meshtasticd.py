@@ -4,8 +4,12 @@ import os
 import subprocess
 from pathlib import Path
 from datetime import datetime
-from rich.console import Console
-from rich.panel import Panel
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    HAS_RICH = True
+except ImportError:
+    HAS_RICH = False
 
 from utils.system import (
     get_system_info,

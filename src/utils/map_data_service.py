@@ -149,7 +149,7 @@ class MapServer:
         server.start_background()  # Returns immediately
     """
 
-    def __init__(self, port: int = 5000, host: str = "0.0.0.0",
+    def __init__(self, port: int = 5000, host: str = "127.0.0.1",
                  cors_origins: Optional[List[str]] = None,
                  enable_message_listener: bool = True,
                  enable_websocket: bool = True,
@@ -441,8 +441,8 @@ Examples:
     )
     parser.add_argument("-p", "--port", type=int, default=5000,
                         help="Port (default: 5000)")
-    parser.add_argument("--host", default="0.0.0.0",
-                        help="Bind address (default: 0.0.0.0 for all interfaces)")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="Bind address (default: 127.0.0.1; use 0.0.0.0 for LAN access)")
     parser.add_argument("--collect-only", action="store_true",
                         help="Just collect and print GeoJSON, then exit")
     parser.add_argument("--daemon", action="store_true",

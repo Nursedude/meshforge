@@ -1,8 +1,12 @@
 """Device configuration for Meshtastic"""
 
-from rich.console import Console
-from rich.prompt import Prompt, Confirm
-from rich.table import Table
+try:
+    from rich.console import Console
+    from rich.prompt import Prompt, Confirm
+    from rich.table import Table
+    HAS_RICH = True
+except ImportError:
+    HAS_RICH = False
 
 from utils.logger import log, log_exception
 from config.hardware import HardwareDetector

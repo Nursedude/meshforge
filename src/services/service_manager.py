@@ -1,10 +1,14 @@
 """Service management for meshtasticd"""
 
 import subprocess
-from rich.console import Console
-from rich.prompt import Prompt, Confirm
-from rich.panel import Panel
-from rich.table import Table
+try:
+    from rich.console import Console
+    from rich.prompt import Prompt, Confirm
+    from rich.panel import Panel
+    from rich.table import Table
+    HAS_RICH = True
+except ImportError:
+    HAS_RICH = False
 
 from utils.safe_import import safe_import
 

@@ -7,13 +7,17 @@ import os
 import subprocess
 import shutil
 from pathlib import Path
-from rich.console import Console
-from rich.prompt import Prompt, Confirm, IntPrompt
-from rich.table import Table
-from rich.panel import Panel
-from rich.layout import Layout
-from rich.text import Text
-from rich import box
+try:
+    from rich.console import Console
+    from rich.prompt import Prompt, Confirm, IntPrompt
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.layout import Layout
+    from rich.text import Text
+    from rich import box
+    HAS_RICH = True
+except ImportError:
+    HAS_RICH = False
 
 from utils.safe_import import safe_import
 

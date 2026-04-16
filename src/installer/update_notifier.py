@@ -5,9 +5,13 @@ import json
 import time
 from pathlib import Path
 from datetime import datetime, timedelta
-from rich.console import Console
-from rich.panel import Panel
-from rich.prompt import Confirm
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.prompt import Confirm
+    HAS_RICH = True
+except ImportError:
+    HAS_RICH = False
 
 from utils.paths import get_real_user_home
 

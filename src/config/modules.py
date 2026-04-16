@@ -1,8 +1,12 @@
 """Meshtastic module configuration"""
 
-from rich.console import Console
-from rich.prompt import Prompt, Confirm, IntPrompt
-from rich.table import Table
+try:
+    from rich.console import Console
+    from rich.prompt import Prompt, Confirm, IntPrompt
+    from rich.table import Table
+    HAS_RICH = True
+except ImportError:
+    HAS_RICH = False
 
 from utils.logger import log
 
