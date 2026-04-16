@@ -188,7 +188,7 @@ sudo usermod -a -G dialout $USER
 
 ### Can't connect to server
 ```bash
-nc -zv 192.168.86.38 4242
+nc -zv 192.0.2.38 4242
 sudo ufw allow 4242/tcp
 ```
 

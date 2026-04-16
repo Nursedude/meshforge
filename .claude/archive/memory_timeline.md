@@ -171,7 +171,7 @@ MeshForge Gateway
       ↓
 [rnsd → TCPClient]
       ↓
-Regional RNS (192.168.86.38:4242)
+Regional RNS (192.0.2.38:4242)
 ```
 
 ---

@@ -421,7 +421,7 @@ class RNSConfigGenerator:
 
     def generate_regional_client(
         self,
-        server_ip: str = "192.168.86.38"
+        server_ip: str = "192.0.2.38"
     ) -> RNSConfig:
         """
         Generate Regional client configuration.

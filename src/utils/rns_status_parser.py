@@ -60,7 +60,7 @@ class TrafficCounters:
 class RNSInterface:
     """Parsed data for a single RNS interface."""
     type_name: str          # e.g. "TCPInterface", "Shared Instance"
-    display_name: str       # e.g. "Regional RNS/192.168.86.38:4242"
+    display_name: str       # e.g. "Regional RNS/192.0.2.38:4242"
     status: InterfaceStatus = InterfaceStatus.UNKNOWN
     mode: InterfaceMode = InterfaceMode.UNKNOWN
     rate: str = ""          # e.g. "10.00 Mbps"

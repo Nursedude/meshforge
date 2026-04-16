@@ -18,7 +18,7 @@
 #   sudo bash fleet_restore.sh /path/to/fleet-host-20260416-120000.tar.gz
 #
 #   # Pull latest backup from a peer Pi:
-#   sudo bash fleet_restore.sh --pull-from 192.168.86.38 --hostname fleet-host
+#   sudo bash fleet_restore.sh --pull-from 192.0.2.38 --hostname fleet-host
 #
 #   # Dry run (show what would be restored):
 #   sudo bash fleet_restore.sh backup.tar.gz --dry-run
