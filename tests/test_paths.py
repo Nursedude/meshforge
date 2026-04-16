@@ -167,7 +167,7 @@ class TestReticulumPathsResolution:
     changed", the answer is usually that they edited the wrong file.
     """
 
-    @patch('src.utils.paths.get_real_user_home', return_value=Path('/home/wh6gxz'))
+    @patch('utils.paths.get_real_user_home', return_value=Path('/home/wh6gxz'))
     def test_etc_reticulum_highest_priority(self, mock_home):
         """System-wide /etc/reticulum wins when both dir and config file exist."""
         from utils.paths import ReticulumPaths
@@ -182,7 +182,7 @@ class TestReticulumPathsResolution:
             with patch.object(Path, 'is_file', mock_is_file):
                 assert ReticulumPaths.get_config_dir() == Path('/etc/reticulum')
 
-    @patch('src.utils.paths.get_real_user_home', return_value=Path('/home/wh6gxz'))
+    @patch('utils.paths.get_real_user_home', return_value=Path('/home/wh6gxz'))
     def test_xdg_when_etc_missing(self, mock_home):
         """XDG config wins when /etc/reticulum doesn't exist."""
         from utils.paths import ReticulumPaths
@@ -197,7 +197,7 @@ class TestReticulumPathsResolution:
             with patch.object(Path, 'is_file', mock_is_file):
                 assert ReticulumPaths.get_config_dir() == Path('/home/<user>/.config/reticulum')
 
-    @patch('src.utils.paths.get_real_user_home', return_value=Path('/home/wh6gxz'))
+    @patch('utils.paths.get_real_user_home', return_value=Path('/home/wh6gxz'))
     def test_traditional_fallback(self, mock_home):
         """~/.reticulum is the fallback when nothing else exists."""
         from utils.paths import ReticulumPaths
@@ -207,7 +207,7 @@ class TestReticulumPathsResolution:
                 result = ReticulumPaths.get_config_dir()
                 assert result == Path('/home/<user>/.reticulum')
 
-    @patch('src.utils.paths.get_real_user_home', return_value=Path('/home/wh6gxz'))
+    @patch('utils.paths.get_real_user_home', return_value=Path('/home/wh6gxz'))
     def test_config_file_returned_from_config_dir(self, mock_home):
         """get_config_file() appends 'config' to get_config_dir()."""
         from utils.paths import ReticulumPaths
@@ -217,7 +217,7 @@ class TestReticulumPathsResolution:
                 result = ReticulumPaths.get_config_file()
                 assert result == Path('/home/<user>/.reticulum/config')
 
-    @patch('src.utils.paths.get_real_user_home', return_value=Path('/home/wh6gxz'))
+    @patch('utils.paths.get_real_user_home', return_value=Path('/home/wh6gxz'))
     def test_interfaces_dir_under_config_dir(self, mock_home):
         """get_interfaces_dir() returns config_dir/interfaces."""
         from utils.paths import ReticulumPaths
@@ -233,7 +233,7 @@ class TestReticulumPathsResolution:
                 result = ReticulumPaths.get_interfaces_dir()
                 assert result == Path('/etc/reticulum/interfaces')
 
-    @patch('src.utils.paths.get_real_user_home', return_value=Path('/home/wh6gxz'))
+    @patch('utils.paths.get_real_user_home', return_value=Path('/home/wh6gxz'))
     def test_sudo_user_gets_correct_home(self, mock_home):
         """Under sudo, paths resolve to real user's home, not /root."""
         from utils.paths import ReticulumPaths
@@ -245,7 +245,7 @@ class TestReticulumPathsResolution:
                 assert '/root' not in str(result)
                 assert 'wh6gxz' in str(result)
 
-    @patch('src.utils.paths.get_real_user_home', return_value=Path('/home/wh6gxz'))
+    @patch('utils.paths.get_real_user_home', return_value=Path('/home/wh6gxz'))
     def test_etc_dir_without_config_file_skipped(self, mock_home):
         """/etc/reticulum exists but has no config file => skip to next tier."""
         from utils.paths import ReticulumPaths

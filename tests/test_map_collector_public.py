@@ -213,7 +213,10 @@ class TestRmapFetch:
         assert f["properties"]["hardware"] == "RNode (LoRa)"
 
     @patch("utils._map_collector_public.urlopen")
-    def test_rmap_ssl_context_used(self, mock_urlopen):
+    def test_rmap_ssl_context_default_verifies(self, mock_urlopen):
+        """Default posture: TLS verification enabled. Flipped from the
+        legacy CERT_NONE behavior (MITM on rmap.world could inject node
+        positions into the map UI — see security review 2026-04-16)."""
         resp = MagicMock()
         resp.read.return_value = json.dumps({"nodes": []}).encode()
         resp.__enter__ = MagicMock(return_value=resp)
@@ -225,6 +228,25 @@ class TestRmapFetch:
 
         call_kwargs = mock_urlopen.call_args
         assert call_kwargs is not None
+        ctx = call_kwargs.kwargs.get("context") or call_kwargs[1].get("context")
+        assert ctx is not None
+        import ssl
+        assert ctx.check_hostname is True
+        assert ctx.verify_mode == ssl.CERT_REQUIRED
+
+    @patch("utils._map_collector_public.urlopen")
+    def test_rmap_ssl_context_insecure_opt_in(self, mock_urlopen):
+        """Opt-in path: setting rmap_insecure_tls=True disables verification."""
+        resp = MagicMock()
+        resp.read.return_value = json.dumps({"nodes": []}).encode()
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = resp
+
+        c = self._make_collector(rmap_insecure_tls=True)
+        c._fetch_rmap_nodes()
+
+        call_kwargs = mock_urlopen.call_args
         ctx = call_kwargs.kwargs.get("context") or call_kwargs[1].get("context")
         assert ctx is not None
         import ssl
