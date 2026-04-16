@@ -209,4 +209,8 @@ def get_all_handlers() -> List[Type]:
     from handlers.extensions import ExtensionsHandler
     handlers.append(ExtensionsHandler)
 
+    # Batch 17 — fleet backup & disaster recovery
+    from handlers.fleet_backup import FleetBackupHandler
+    handlers.append(FleetBackupHandler)
+
     return handlers
