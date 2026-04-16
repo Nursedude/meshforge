@@ -49,10 +49,15 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python -m pytest tests/ -v --tb=short --timeout=30 --timeout-method=thread -x --ignore=tests/test_bridge_integration.py 2>&1 | head -500
+          # Note: do NOT pipe to head — background-thread debug logs can
+          # exceed any reasonable line cap and hide the pytest summary.
+          # Silence chatty loggers via PYTHONWARNINGS/logging config below
+          # if volume becomes an issue again.
+          python -m pytest tests/ -v --tb=short --timeout=30 --timeout-method=thread -x -rA --ignore=tests/test_bridge_integration.py -o log_cli_level=WARNING
         env:
           CI: true
           MESHFORGE_CI: true
+          PYTHONUNBUFFERED: "1"
 
   syntax-check:
     name: Syntax Check
