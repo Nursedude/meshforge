@@ -372,22 +372,26 @@ class TestAutomationEngineTraceroute:
 class TestTracerouteLogging:
     """Test traceroute log file setup."""
 
-    def test_log_path_uses_real_home(self):
+    def test_log_path_uses_real_home(self, tmp_path):
+        fake_home = tmp_path / "testuser"
+        fake_home.mkdir()
         with patch(
             'utils.automation_engine.get_real_user_home',
-            return_value=Path("/home/testuser"),
+            return_value=fake_home,
         ):
             from utils.automation_engine import _get_traceroute_log_path
             path = _get_traceroute_log_path()
-        assert "/home/testuser" in str(path)
+        assert str(fake_home) in str(path)
         assert "traceroute.log" in str(path)
 
-    def test_db_path_uses_real_home(self):
+    def test_db_path_uses_real_home(self, tmp_path):
+        fake_home = tmp_path / "testuser"
+        fake_home.mkdir()
         with patch(
             'utils.automation_engine.get_real_user_home',
-            return_value=Path("/home/testuser"),
+            return_value=fake_home,
         ):
             from utils.automation_engine import _get_traceroute_db_path
             path = _get_traceroute_db_path()
-        assert "/home/testuser" in str(path)
+        assert str(fake_home) in str(path)
         assert "traceroute_history.db" in str(path)
