@@ -70,19 +70,19 @@ HOSTNAME_SHORT=$(hostname -s)
 # Helper functions
 # ─────────────────────────────────────────────────────────────────
 log_info() {
-    $QUIET || echo -e "  ${GREEN}+${NC} $1"
+    $QUIET || echo -e "  ${GREEN}+${NC} $1" >&2
 }
 
 log_warn() {
-    echo -e "  ${YELLOW}!${NC} $1"
+    echo -e "  ${YELLOW}!${NC} $1" >&2
 }
 
 log_error() {
-    echo -e "  ${RED}x${NC} $1"
+    echo -e "  ${RED}x${NC} $1" >&2
 }
 
 log_header() {
-    $QUIET || echo -e "${CYAN}$1${NC}"
+    $QUIET || echo -e "${CYAN}$1${NC}" >&2
 }
 
 # Safe SQLite backup — avoids corrupt copies of WAL-mode databases
@@ -462,7 +462,10 @@ do_push() {
         local remote_dir=".meshforge-fleet-backups/${HOSTNAME_SHORT}"
 
         # Create remote directory + copy archive
-        if ssh -i "$ssh_key" \
+        # Note: ssh/scp need stdin redirected from /dev/null; otherwise
+        # they consume the while-read loop's input and only the first
+        # peer is processed.
+        if ssh -n -i "$ssh_key" \
                -o ConnectTimeout=10 \
                -o BatchMode=yes \
                -o StrictHostKeyChecking=no \
@@ -474,10 +477,10 @@ do_push() {
                    -o BatchMode=yes \
                    -o StrictHostKeyChecking=no \
                    "$archive_path" \
-                   "$REAL_USER@$peer_ip:~/${remote_dir}/${archive_name}" 2>/dev/null; then
+                   "$REAL_USER@$peer_ip:~/${remote_dir}/${archive_name}" </dev/null 2>/dev/null; then
 
                 # Update latest symlink on remote
-                ssh -i "$ssh_key" \
+                ssh -n -i "$ssh_key" \
                     -o ConnectTimeout=10 \
                     -o BatchMode=yes \
                     -o StrictHostKeyChecking=no \
