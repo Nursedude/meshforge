@@ -46,7 +46,9 @@ jobs:
           pip install folium || echo "folium optional - continuing"
 
       - name: Run tests
+        shell: bash
         run: |
+          set -o pipefail
           python -m pytest tests/ -v --tb=short --timeout=30 --timeout-method=thread -x --ignore=tests/test_bridge_integration.py 2>&1 | head -500
         env:
           CI: true

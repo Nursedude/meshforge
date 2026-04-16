@@ -50,7 +50,16 @@ TileCache, HAWAII_BOUNDS, _HAS_TILE_CACHE = safe_import(
 )
 
 # Import service helpers for privileged systemctl calls
-from utils.service_check import _sudo_cmd, start_service
+from utils.service_check import (
+    _sudo_cmd,
+    check_service as _check_service,
+    start_service,
+    stop_service,
+)
+
+# Service controlled by the map-server TUI actions. Centralized so it can't
+# drift — see Issue #29 (no raw systemctl for state changes).
+MAP_SERVER_SERVICE = "meshforge-map"
 
 logger = logging.getLogger(__name__)
 
@@ -997,18 +1006,14 @@ class AIToolsHandler(BaseHandler):
             return False
 
     def _get_map_service_status(self) -> str:
-        """Get map server service status for display."""
+        """Get map server service status for display (read-only)."""
         try:
-            result = subprocess.run(
-                ['systemctl', 'is-active', 'meshforge-map'],
-                capture_output=True, text=True, timeout=5
-            )
-            status = result.stdout.strip()
-            if status == "active":
+            status = _check_service(MAP_SERVER_SERVICE)
+            if status.available:
                 return "systemd service (active)"
-            elif result.returncode != 0:
+            if status.state.name == "NOT_RUNNING":
                 return "in-process (TUI)"
-            return f"systemd ({status})"
+            return f"systemd ({status.state.name.lower()})"
         except (subprocess.SubprocessError, OSError) as e:
             logger.debug("Map service status check failed: %s", e)
             return "in-process (TUI)"
@@ -1030,19 +1035,17 @@ class AIToolsHandler(BaseHandler):
             self.ctx.dialog.msgbox("Map Server", "Map server is not running.")
             return
 
-        # Try systemd first
+        # Try systemd first via the central service helper (Issue #29).
         try:
-            result = subprocess.run(
-                ['systemctl', 'is-active', 'meshforge-map'],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.stdout.strip() == "active":
-                subprocess.run(
-                    ['sudo', 'systemctl', 'stop', 'meshforge-map'],
-                    capture_output=True, text=True, timeout=10
-                )
-                self.ctx.dialog.msgbox("Map Server", "Map server service stopped.")
-                return
+            status = _check_service(MAP_SERVER_SERVICE)
+            if status.available:
+                ok, msg = stop_service(MAP_SERVER_SERVICE)
+                if ok:
+                    self.ctx.dialog.msgbox(
+                        "Map Server", "Map server service stopped."
+                    )
+                    return
+                logger.debug("stop_service(%s) failed: %s", MAP_SERVER_SERVICE, msg)
         except (subprocess.SubprocessError, OSError) as e:
             logger.debug("systemctl stop failed: %s", e)
 
@@ -1086,10 +1089,10 @@ class AIToolsHandler(BaseHandler):
         """View map server logs."""
         log_lines = ""
 
-        # Try systemd journal first
+        # Try systemd journal first (read-only — journalctl does not change state)
         try:
             result = subprocess.run(
-                ['journalctl', '-u', 'meshforge-map', '-n', '50', '--no-pager'],
+                ['journalctl', '-u', MAP_SERVER_SERVICE, '-n', '50', '--no-pager'],
                 capture_output=True, text=True, timeout=10
             )
             if result.returncode == 0 and result.stdout.strip():

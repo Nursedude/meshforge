@@ -11,6 +11,7 @@ try:
     from rich.prompt import Confirm
     HAS_RICH = True
 except ImportError:
+    from utils.rich_fallback import Console, Panel, Confirm
     HAS_RICH = False
 
 from utils.paths import get_real_user_home

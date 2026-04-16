@@ -19,6 +19,8 @@ try:
     from rich.theme import Theme
     HAS_RICH = True
 except ImportError:
+    from utils.rich_fallback import Console
+    Theme = None  # type: ignore[assignment]
     HAS_RICH = False
 from typing import Optional
 import threading
@@ -28,7 +30,7 @@ _console: Optional[Console] = None
 _lock = threading.Lock()
 
 # MeshForge custom theme
-MESHFORGE_THEME = Theme({
+_THEME_STYLES = {
     "info": "cyan",
     "success": "green",
     "warning": "yellow",
@@ -40,7 +42,8 @@ MESHFORGE_THEME = Theme({
     "rf": "bold yellow",
     "node": "green",
     "callsign": "bold cyan",
-})
+}
+MESHFORGE_THEME = Theme(_THEME_STYLES) if Theme is not None else None
 
 
 def get_console(force_terminal: bool = None,
