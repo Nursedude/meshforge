@@ -36,7 +36,10 @@ class TestGetRealUserHome:
 
     def test_sudo_user_root(self):
         """Test handles SUDO_USER=root correctly."""
-        with patch.dict(os.environ, {'SUDO_USER': 'root'}):
+        # Clear LOGNAME too — get_real_user_home() falls through to LOGNAME
+        # before Path.home(), and GitHub Actions runners export
+        # LOGNAME=runner which would otherwise short-circuit the test.
+        with patch.dict(os.environ, {'SUDO_USER': 'root', 'LOGNAME': 'root'}):
             with patch('pathlib.Path.home') as mock_home:
                 mock_home.return_value = Path('/root')
                 result = get_real_user_home()
@@ -46,7 +49,9 @@ class TestGetRealUserHome:
 
     def test_empty_sudo_user(self):
         """Test handles empty SUDO_USER."""
-        with patch.dict(os.environ, {'SUDO_USER': ''}):
+        # See test_sudo_user_root — clear LOGNAME so the Path.home() fall-
+        # through is actually exercised on CI hosts that set LOGNAME.
+        with patch.dict(os.environ, {'SUDO_USER': '', 'LOGNAME': ''}):
             with patch('pathlib.Path.home') as mock_home:
                 mock_home.return_value = Path('/home/default')
                 result = get_real_user_home()
