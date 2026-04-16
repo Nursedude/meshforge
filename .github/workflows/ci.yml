@@ -25,6 +25,9 @@ jobs:
     name: Test Suite
     runs-on: ubuntu-latest
     timeout-minutes: 10  # Kill job if tests hang
+    permissions:
+      contents: read
+      pull-requests: write   # for the PR-comment failure diagnostic below
     strategy:
       fail-fast: false
       matrix:
@@ -83,7 +86,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PY_VERSION: ${{ matrix.python-version }}
+          REPO: ${{ github.repository }}
         run: |
+          echo "DEBUG: entering comment step for PR #${PR_NUMBER} on ${REPO}"
+          echo "DEBUG: /tmp/pytest.log size: $(wc -c </tmp/pytest.log 2>/dev/null || echo MISSING)"
           {
             echo "## CI failure summary (Python ${PY_VERSION})"
             echo
@@ -95,7 +101,10 @@ jobs:
             awk '/short test summary info/{flag=1} flag' /tmp/pytest.log | head -30 || true
             echo '```'
           } > /tmp/comment.md
-          gh pr comment "$PR_NUMBER" --body-file /tmp/comment.md --repo "${{ github.repository }}" || true
+          echo "DEBUG: comment body:"
+          cat /tmp/comment.md
+          echo "DEBUG: posting comment…"
+          gh pr comment "$PR_NUMBER" --body-file /tmp/comment.md --repo "$REPO" && echo "DEBUG: gh exit=$?" || echo "DEBUG: gh exit=$?"
 
   syntax-check:
     name: Syntax Check
