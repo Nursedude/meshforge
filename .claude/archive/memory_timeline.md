@@ -171,7 +171,7 @@ MeshForge Gateway
       ↓
 [rnsd → TCPClient]
       ↓
-HawaiiNet RNS (192.168.86.38:4242)
+HawaiiNet RNS (192.0.2.38:4242)
 ```
 
 ---

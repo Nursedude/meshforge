@@ -51,7 +51,7 @@ FULL_OUTPUT = """\
     Traffic   : ↑239 B  0 bps
                 ↓0 B    0 bps
 
- TCPInterface[HawaiiNet RNS/192.168.86.38:4242]
+ TCPInterface[HawaiiNet RNS/192.0.2.38:4242]
     Status    : Up
     Mode      : Full
     Rate      : 10.00 Mbps
@@ -158,11 +158,11 @@ class TestParseDisplayNames:
 
     def test_tcp_interface_name_with_address(self):
         result = parse_rnstatus(FULL_OUTPUT)
-        assert "192.168.86.38:4242" in result.interfaces[2].display_name
+        assert "192.0.2.38:4242" in result.interfaces[2].display_name
 
     def test_full_name_property(self):
         result = parse_rnstatus(FULL_OUTPUT)
-        assert result.interfaces[2].full_name == "TCPInterface[HawaiiNet RNS/192.168.86.38:4242]"
+        assert result.interfaces[2].full_name == "TCPInterface[HawaiiNet RNS/192.0.2.38:4242]"
 
 
 class TestParseStatus:
