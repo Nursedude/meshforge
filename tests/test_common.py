@@ -388,7 +388,12 @@ class TestRunCliAsync:
             results['success'] = success
             results['stderr'] = stderr
 
-        with patch('shutil.which', return_value=None):
+        # Patch find_meshtastic_cli directly — shutil.which is only one of
+        # several lookup paths (see utils.cli.find_meshtastic_cli), so on
+        # hosts where meshtastic is installed under ~/.local/bin or
+        # /root/.local/bin, patching shutil.which alone doesn't force the
+        # not-found path.
+        with patch('src.utils.common.find_meshtastic_cli', return_value=None):
             thread = run_cli_async(['--info'], callback, cli_path=None)
             thread.join(timeout=5)
 

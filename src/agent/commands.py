@@ -816,7 +816,21 @@ class CommandHandler:
         service = _validate_service_name(args.get("service", "meshforge"))
         if not service:
             return CommandResult.error("Service not in allowlist", CommandStatus.INVALID_ARGS)
-        lines = min(max(int(args.get("lines", 100)), 1), 10000)
+
+        raw_lines = args.get("lines", 100)
+        # Reject obviously abusive input before int() (arbitrarily long digit
+        # strings cost O(n^2) to parse and waste CPU before the clamp).
+        if isinstance(raw_lines, str) and len(raw_lines) > 8:
+            return CommandResult.error(
+                "lines value too long", CommandStatus.INVALID_ARGS
+            )
+        try:
+            lines = int(raw_lines)
+        except (TypeError, ValueError):
+            return CommandResult.error(
+                "lines must be an integer", CommandStatus.INVALID_ARGS
+            )
+        lines = min(max(lines, 1), 10000)
 
         try:
             result = subprocess.run(

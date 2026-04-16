@@ -25,6 +25,7 @@ try:
     from rich.table import Table
     HAS_RICH = True
 except ImportError:
+    from utils.rich_fallback import Console, Panel, Prompt, Confirm, Table
     HAS_RICH = False
 
 from utils import emoji as em

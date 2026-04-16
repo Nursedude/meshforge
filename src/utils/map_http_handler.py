@@ -153,15 +153,19 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
 
         When allowed_origins is None: restrict to localhost (secure default)
         When allowed_origins is a list: only allow those origins
+
+        If the request origin is not permitted, no Access-Control-Allow-Origin
+        header is sent at all. Previously we fell back to
+        ``http://localhost:5000`` for any unknown origin, which leaked an
+        allow-list entry regardless of who was asking.
         """
         origin = self.headers.get('Origin', '')
+        if not origin:
+            return
         origins = self.allowed_origins if self.allowed_origins is not None else self._DEFAULT_ORIGINS
-
-        if origin and any(origin.startswith(allowed) for allowed in origins):
+        if any(origin.startswith(allowed) for allowed in origins):
             self.send_header('Access-Control-Allow-Origin', origin)
-        else:
-            # Default fallback for localhost
-            self.send_header('Access-Control-Allow-Origin', 'http://localhost:5000')
+            self.send_header('Vary', 'Origin')
 
     def do_GET(self):
         # Parse path and query once for all routes
@@ -438,19 +442,33 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
                 else:
                     bboxes = [preset_bbox]
 
-        # Explicit ?bbox= overrides ?region=
+        # Explicit ?bbox= overrides ?region=. Reject malformed or
+        # out-of-range coordinates so a crafted query can't stall the server
+        # (NaN/inf arithmetic) or bypass the region allowlist.
         bbox_str = _safe_query_param(query, "bbox")
         if bbox_str:
-            try:
-                parsed_bboxes = []
-                for part in bbox_str.split(";"):
+            # Cap how many bboxes a single request can declare.
+            MAX_BBOXES = 8
+            parsed_bboxes: List[List[float]] = []
+            for part in bbox_str.split(";")[:MAX_BBOXES]:
+                try:
                     coords = [float(x) for x in part.split(",")]
-                    if len(coords) == 4:
-                        parsed_bboxes.append(coords)
-                if parsed_bboxes:
-                    bboxes = parsed_bboxes
-            except (ValueError, TypeError):
-                pass
+                except (ValueError, TypeError):
+                    continue
+                if len(coords) != 4:
+                    continue
+                if not all(isinstance(c, float) and c == c and c not in (float("inf"), float("-inf")) for c in coords):
+                    continue
+                south, west, north, east = coords
+                if not (-90.0 <= south <= 90.0 and -90.0 <= north <= 90.0):
+                    continue
+                if not (-180.0 <= west <= 180.0 and -180.0 <= east <= 180.0):
+                    continue
+                if south >= north or west >= east:
+                    continue
+                parsed_bboxes.append(coords)
+            if parsed_bboxes:
+                bboxes = parsed_bboxes
 
         # Apply bbox filter if any bboxes resolved
         if bboxes:
