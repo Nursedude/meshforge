@@ -233,29 +233,40 @@ class MapServer:
         except Exception as e:
             logger.debug(f"Error stopping WebSocket server: {e}")
 
-    def _check_mqtt_available(self) -> bool:
+    def _check_mqtt_available(self, retries: int = 1, delay: float = 1.0) -> bool:
         """Check if mosquitto MQTT broker is available for message listening.
 
         Uses check_service (SSOT for systemd) with port fallback for
-        non-systemd installations.
+        non-systemd installations. Optionally retries on failure to
+        absorb boot-time races where mosquitto.service starts a beat
+        after meshforge-map.service.
         """
-        try:
-            from utils.service_check import check_service, check_port
-            status = check_service('mosquitto')
-            if status.available:
-                return True
-            # mosquitto may run outside systemd — check port directly
-            return check_port(1883)
-        except ImportError:
-            import socket
+        import time as _time
+
+        def _probe() -> bool:
             try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(2)
-                result = sock.connect_ex(('localhost', 1883))
-                sock.close()
-                return result == 0
-            except OSError:
-                return False
+                from utils.service_check import check_service, check_port
+                status = check_service('mosquitto')
+                if status.available:
+                    return True
+                return check_port(1883)
+            except ImportError:
+                import socket
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(2)
+                    result = sock.connect_ex(('localhost', 1883))
+                    sock.close()
+                    return result == 0
+                except OSError:
+                    return False
+
+        for attempt in range(max(1, retries)):
+            if _probe():
+                return True
+            if attempt < retries - 1:
+                _time.sleep(delay)
+        return False
 
     def _start_message_listener(self):
         """Start the MessageListener for receiving inbound mesh messages.
@@ -272,14 +283,16 @@ class MapServer:
             return
 
         try:
-            # Prefer MQTT mode — avoids TCP contention with web UI
-            mqtt_available = self._check_mqtt_available()
+            # Prefer MQTT mode — avoids TCP contention with web UI.
+            # Retry briefly so a systemd boot-time race (mosquitto starting
+            # a second or two after us) doesn't trap us in TCP fallback.
+            mqtt_available = self._check_mqtt_available(retries=10, delay=1.0)
             if mqtt_available:
                 success = _start_listener(host="localhost", mode="mqtt")
                 mode_label = "MQTT"
             else:
                 logger.info(
-                    "MQTT not available, falling back to TCP listener "
+                    "MQTT not available after retry, falling back to TCP listener "
                     "(may cause 'waiting for delivery' in web UI at :9443)"
                 )
                 success = _start_listener(host="localhost", mode="tcp")
