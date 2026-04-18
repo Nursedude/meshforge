@@ -235,18 +235,21 @@ class MQTTBridgeHandler(BaseMessageHandler):
             self._connected = True
             mqtt_cfg = self.config.mqtt_bridge
 
-            # Subscribe to JSON topics (human-readable, recommended)
-            # Topic format: msh/{REGION}/2/json/{CHANNEL}/{NODE_ID}
-            if mqtt_cfg.json_enabled:
-                json_topic = f"{mqtt_cfg.root_topic}/{mqtt_cfg.region}/2/json/{mqtt_cfg.channel}/#"
-                client.subscribe(json_topic)
-                logger.debug(f"Subscribed to JSON topic: {json_topic}")
+            # meshtasticd publishes in two topic shapes depending on build:
+            #   region-ful:  msh/{REGION}/2/json/{CHANNEL}/{NODE}
+            #   region-less: msh/2/json/{CHANNEL}/{NODE}   (e.g. 2.7.15)
+            # Subscribe to both so the bridge works regardless of daemon version.
+            root = mqtt_cfg.root_topic
+            chan = mqtt_cfg.channel
 
-            # Also subscribe to protobuf topics for completeness
-            # Topic format: msh/{REGION}/2/e/{CHANNEL}/{NODE_ID}
-            proto_topic = f"{mqtt_cfg.root_topic}/{mqtt_cfg.region}/2/e/{mqtt_cfg.channel}/#"
-            client.subscribe(proto_topic)
-            logger.debug(f"Subscribed to protobuf topic: {proto_topic}")
+            if mqtt_cfg.json_enabled:
+                for t in (f"{root}/+/2/json/{chan}/#", f"{root}/2/json/{chan}/#"):
+                    client.subscribe(t)
+                    logger.debug(f"Subscribed to JSON topic: {t}")
+
+            for t in (f"{root}/+/2/e/{chan}/#", f"{root}/2/e/{chan}/#"):
+                client.subscribe(t)
+                logger.debug(f"Subscribed to protobuf topic: {t}")
 
             logger.info(f"MQTT bridge connected to {mqtt_cfg.broker}:{mqtt_cfg.port}")
         else:
@@ -728,9 +731,13 @@ class MQTTBridgeHandler(BaseMessageHandler):
             "channel": channel,
         })
 
-        # Publish to the JSON topic
-        topic = (f"{mqtt_cfg.root_topic}/{mqtt_cfg.region}/2/json/"
-                 f"{mqtt_cfg.channel}/meshforge")
+        # Publish to the JSON topic. Match meshtasticd's publish shape:
+        # include region only when configured (some daemon builds omit it).
+        if mqtt_cfg.region:
+            topic = (f"{mqtt_cfg.root_topic}/{mqtt_cfg.region}/2/json/"
+                     f"{mqtt_cfg.channel}/meshforge")
+        else:
+            topic = f"{mqtt_cfg.root_topic}/2/json/{mqtt_cfg.channel}/meshforge"
 
         try:
             with self._mqtt_lock:
