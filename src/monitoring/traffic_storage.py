@@ -624,7 +624,21 @@ class TrafficLogger:
     def __init__(self, log_path: Optional[str] = None):
         if log_path is None:
             log_dir = get_real_user_home() / ".cache" / "meshforge" / "logs"
-            log_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                log_dir.mkdir(parents=True, exist_ok=True)
+            except PermissionError as e:
+                # Parent dir may be root-owned from a prior sudo install — degrade
+                # gracefully rather than crash. Packet logging will be disabled.
+                logger.warning(
+                    "Traffic log dir not writable (%s); packet logging disabled. "
+                    "Fix: sudo chown -R $(id -un):$(id -gn) %s",
+                    e, log_dir.parent,
+                )
+                self._log_path = None
+                self._enabled = False
+                self._lock = threading.Lock()
+                self._packet_count = 0
+                return
             log_path = str(log_dir / "traffic.log")
 
         self._log_path = log_path
@@ -648,8 +662,13 @@ class TrafficLogger:
                 f.write(f"{'Time':<12} {'Dir':<4} {'Proto':<10} {'Source':<14} "
                         f"{'Dest':<14} {'Port':<16} {'Hops':<5} {'SNR':<8} {'Size':<8}\n")
                 f.write("-" * 100 + "\n")
-        except IOError as e:
-            logger.error(f"Failed to create traffic log: {e}")
+        except (IOError, PermissionError) as e:
+            logger.warning(
+                "Traffic log not writable (%s); disabling packet logging. "
+                "Fix: sudo chown -R $(id -un):$(id -gn) ~/.cache/meshforge",
+                e,
+            )
+            self._enabled = False
 
     def log_packet(self, packet: 'MeshPacket') -> None:
         """Log a packet to the traffic log file."""

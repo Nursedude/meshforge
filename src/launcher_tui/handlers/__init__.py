@@ -213,4 +213,8 @@ def get_all_handlers() -> List[Type]:
     from handlers.fleet_backup import FleetBackupHandler
     handlers.append(FleetBackupHandler)
 
+    # Batch 18 — gateway bridge pre-flight diagnostic
+    from handlers.gateway_preflight import GatewayPreflightHandler
+    handlers.append(GatewayPreflightHandler)
+
     return handlers

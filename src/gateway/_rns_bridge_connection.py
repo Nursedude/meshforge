@@ -158,7 +158,17 @@ class RNSConnectionMixin:
         POLICY: Diagnose, don't fix. Never restart services or modify configs.
         """
         if not (_HAS_RNS and _HAS_LXMF):
-            logger.warning("RNS/LXMF library not installed - bridge cannot connect")
+            missing = []
+            if not _HAS_RNS:
+                missing.append("rns")
+            if not _HAS_LXMF:
+                missing.append("lxmf")
+            pkgs = " ".join(missing)
+            logger.error(
+                "Gateway cannot connect: Python package(s) missing: %s. "
+                "Fix: pip3 install --user --break-system-packages %s "
+                "(see requirements/rns.txt)", pkgs, pkgs,
+            )
             self._connected_rns = False
             self._rns_init_failed_permanently = True
             return
