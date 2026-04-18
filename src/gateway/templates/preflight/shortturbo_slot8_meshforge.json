@@ -1,0 +1,96 @@
+{
+  "$schema_version": 1,
+  "name": "shortturbo-slot8-meshforge-bridge",
+  "description": "MeshForge NOC bridge: Meshtastic HAT on US/SHORT_TURBO/channel_num=8 ↔ MeshForge Gateway (mqtt_bridge mode, 'meshforge' channel) ↔ RNS/NomadNet. First validated end-to-end on 2026-04-18 (see persistent_issues.md Issue #33).",
+  "maintainer": "WH6GXZ",
+  "validated_date": "2026-04-18",
+  "validated_on": "meshforge-fleet-host-3",
+  "region_compliance": "US (FCC ISM 902-928 MHz)",
+
+  "meshtastic": {
+    "region": {
+      "expected": "US",
+      "severity": "fail",
+      "note": "Regulatory region. Must match your jurisdiction; don't blindly copy across sites."
+    },
+    "modem_preset": {
+      "expected": "SHORT_TURBO",
+      "severity": "fail"
+    },
+    "channel_num": {
+      "expected": 8,
+      "severity": "fail",
+      "note": "All nodes on this mesh must use the same slot + preset."
+    },
+    "bridge_channel_name": {
+      "expected": "meshforge",
+      "severity": "warn",
+      "note": "Channel name convention; must match gateway.json mqtt_channel but the exact string is operator choice."
+    },
+    "bridge_channel_uplink_enabled": {
+      "expected": true,
+      "severity": "fail"
+    },
+    "bridge_channel_downlink_enabled": {
+      "expected": true,
+      "severity": "fail"
+    }
+  },
+
+  "gateway": {
+    "bridge_mode": {
+      "expected": "mqtt_bridge",
+      "severity": "fail",
+      "note": "Zero-interference mode: MQTT for RX, HTTP for TX. Avoids Issue #17 TCP contention."
+    },
+    "mqtt_channel": {
+      "expected": "meshforge",
+      "severity": "warn",
+      "note": "Must match bridge_channel_name above."
+    },
+    "mqtt_region": {
+      "expected": "US",
+      "severity": "fail"
+    },
+    "default_lxmf_destination_set": {
+      "expected": true,
+      "severity": "warn",
+      "note": "Required for broadcast routing to NomadNet. Can be unset if only DMs via contact_mapping."
+    }
+  },
+
+  "packages": {
+    "rns": {
+      "min_version": "1.1.1",
+      "severity": "fail",
+      "install": "pip3 install --user --break-system-packages rns"
+    },
+    "lxmf": {
+      "min_version": "0.9.0",
+      "severity": "fail",
+      "install": "pip3 install --user --break-system-packages lxmf"
+    }
+  },
+
+  "services": {
+    "meshtasticd": {"expected": "active", "severity": "fail"},
+    "rnsd":        {"expected": "active", "severity": "fail"},
+    "mosquitto":   {"expected": "active", "severity": "fail"}
+  },
+
+  "rns_shared_instance": {
+    "reachable": {
+      "expected": true,
+      "severity": "fail",
+      "note": "Verified via check_rns_shared_instance (Unix socket / TCP / UDP fallback)."
+    }
+  },
+
+  "nomadnet": {
+    "identity_matches_default_lxmf_destination": {
+      "expected": true,
+      "severity": "warn",
+      "note": "Only checked if NomadNet logfile exists; missing is not a failure."
+    }
+  }
+}

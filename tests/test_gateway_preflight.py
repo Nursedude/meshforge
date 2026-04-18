@@ -32,8 +32,8 @@ def test_handler_protocol_contract():
     assert h.handler_id == "gateway_preflight"
     assert h.menu_section == "mesh_networks"
     items = h.menu_items()
-    assert len(items) == 1
-    assert items[0][0] == "check"
+    actions = [i[0] for i in items]
+    assert "check" in actions
 
 
 def test_check_lxmf_present(monkeypatch):

@@ -50,11 +50,17 @@ class GatewayPreflightHandler(BaseHandler):
     def menu_items(self):
         return [
             ("check", "Gateway Pre-Flight  Validate bridge readiness", None),
+            ("export", "Export Config       Snapshot current state as template", None),
         ]
 
     def execute(self, action):
-        if action == "check":
-            self.ctx.safe_call("Gateway Pre-Flight", self._run_preflight)
+        dispatch = {
+            "check": ("Gateway Pre-Flight", self._run_preflight),
+            "export": ("Export Config as Template", self._run_export),
+        }
+        entry = dispatch.get(action)
+        if entry:
+            self.ctx.safe_call(*entry)
 
     # ------------------------------------------------------------------
     # Main flow
@@ -85,9 +91,20 @@ class GatewayPreflightHandler(BaseHandler):
                 print(f"      {_CYAN}Fix:{_RESET} {fix}")
             print()
 
+        # Template drift — if a known-good template is present, compare.
+        template_results = self._run_template_drift()
+        if template_results:
+            print(f"\n{_BOLD}{_CYAN}Template Drift Check{_RESET}")
+            print(f"{_CYAN}{'─' * 60}{_RESET}\n")
+            for status, msg, fix in template_results:
+                print(f"  {status}  {msg}")
+                if fix:
+                    print(f"      {_CYAN}Fix:{_RESET} {fix}")
+            results.extend(template_results)
+
         fails = sum(1 for s, _, _ in results if s == _FAIL)
         warns = sum(1 for s, _, _ in results if s == _WARN)
-        print(f"{_CYAN}{'─' * 60}{_RESET}")
+        print(f"\n{_CYAN}{'─' * 60}{_RESET}")
         if fails == 0 and warns == 0:
             print(f"{_GREEN}{_BOLD}  All checks passed — bridge ready to launch.{_RESET}")
         elif fails == 0:
@@ -98,6 +115,38 @@ class GatewayPreflightHandler(BaseHandler):
                 f"fix failures before launching bridge.{_RESET}"
             )
 
+        try:
+            self.ctx.wait_for_enter("\nPress Enter to return to menu...")
+        except KeyboardInterrupt:
+            print()
+
+    def _run_template_drift(self) -> List[Tuple[str, str, Optional[str]]]:
+        """Load default template, capture live state, return drift results."""
+        from handlers import _gateway_preflight_template as tmpl_mod
+        template = tmpl_mod.load_default_template()
+        if template is None:
+            return []
+        info_text = tmpl_mod.run_meshtastic_info()
+        live = tmpl_mod.capture_live_state(info_text)
+        return tmpl_mod.check_template_drift(template, live)
+
+    def _run_export(self):
+        """Snapshot current live state as a JSON template for the fleet."""
+        from backend import clear_screen
+        from handlers import _gateway_preflight_template as tmpl_mod
+        clear_screen()
+        print(f"\n{_BOLD}{_CYAN}Export Current Config as Template{_RESET}\n")
+        info_text = tmpl_mod.run_meshtastic_info()
+        if info_text is None:
+            print(f"  {_WARN}  meshtastic --info failed; export will omit radio section")
+        live = tmpl_mod.capture_live_state(info_text)
+        try:
+            target = tmpl_mod.export_current_as_template(live)
+            print(f"  {_OK}  Wrote template to {_BOLD}{target}{_RESET}")
+            print(f"\n  Review, rename, and copy into "
+                  f"src/gateway/templates/preflight/ to add it to the built-in set.")
+        except (OSError, PermissionError) as e:
+            print(f"  {_FAIL}  Export failed: {e}")
         try:
             self.ctx.wait_for_enter("\nPress Enter to return to menu...")
         except KeyboardInterrupt:
