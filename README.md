@@ -1098,7 +1098,8 @@ file integrity, and radio hardware detection without modifying anything.
 | Config file conflicts | Restore from `~/meshforge-backup-*` or regenerate via TUI |
 | `meshtastic` module not found | See "Python Library Conflicts" below |
 | Stale `.pyc` files | Clean reinstall handles this automatically |
-| Wrong bridge mode after upgrade | New installs default to `mqtt_bridge`; existing configs preserved |
+| Wrong bridge mode after upgrade | New installs default to `mqtt_bridge`. Existing configs are preserved — check with `grep bridge_mode ~/.config/meshforge/gateway.json` (or `/root/.config/...` if run as root). If it says `message_bridge`, the gateway will hold `:4403` persistently and starve the meshtasticd `:9443` web UI. Change to `mqtt_bridge` and add an `mqtt_bridge` section (see `src/gateway/config.py::MQTTBridgeConfig`). Leave `mqtt_bridge.region` empty unless your meshtasticd build includes region in the MQTT topic path. |
+| `:9443` web UI can't send messages / empty reply | Usually `bridge_mode=message_bridge` holding the single-client TCP slot. Check `ss -tnp \| grep :4403`. Fix: migrate to `mqtt_bridge` (see row above). |
 
 #### Python Library Conflicts
 
