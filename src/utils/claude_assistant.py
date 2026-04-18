@@ -251,10 +251,11 @@ Always prioritize safety - never suggest actions that could damage hardware
 
             # Call Claude API
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-6",
                 max_tokens=1024,
                 system=self._get_system_prompt(),
-                messages=messages
+                messages=messages,
+                cache_control={"type": "ephemeral"},
             )
 
             # Safely extract response text
