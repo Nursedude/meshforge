@@ -297,9 +297,12 @@ class MQTTBridgeConfig:
     use_tls: bool = False
     username: str = ""
     password: str = ""
-    # Topic structure: {root_topic}/{region}/2/json/{channel}/{node_id}
+    # Topic structure: {root_topic}/[{region}/]2/json/{channel}/{node_id}
+    # Region is optional — meshtasticd 2.7.x publishes without it. Leave empty
+    # unless your daemon build includes region in the topic path (older releases).
+    # RX always subscribes to both shapes; TX uses region only when set.
     root_topic: str = "msh"
-    region: str = "US"
+    region: str = ""
     channel: str = "LongFast"
     # JSON mode (recommended - human-readable, no protobuf dependency)
     json_enabled: bool = True
