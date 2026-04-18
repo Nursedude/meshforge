@@ -1,8 +1,8 @@
 [Unit]
 Description=MeshForge Map Server - NOC Web Interface
 Documentation=https://github.com/Nursedude/meshforge
-After=network.target meshtasticd.service
-Wants=meshtasticd.service
+After=network.target meshtasticd.service mosquitto.service
+Wants=meshtasticd.service mosquitto.service
 
 # Stop crash-looping after 3 failures in 60 seconds
 StartLimitIntervalSec=60
