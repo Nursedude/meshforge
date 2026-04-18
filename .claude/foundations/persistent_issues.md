@@ -361,3 +361,60 @@ MeshForge status says "rnsd: RUNNING (shared instance available)" when rnsd is a
 - `check_process_running()` now verifies all pgrep hits via `/proc/cmdline`
 - Status display always distinguishes process detection from shared instance availability
 - `find_blocking_interfaces()` runs regardless of rnsd state for pre-startup diagnostics
+
+
+---
+
+## Issue #33: Gateway Bridge Field Validation — First Green End-to-End (2026-04-18)
+
+**Status**: RX path (Meshtastic→NomadNet) validated end-to-end for the first time on hardware.
+Remaining: field TX validation with a second Meshtastic radio on the `meshforge` channel.
+
+**Environment**:
+- HAT: US / SHORT_TURBO / channel_num=8 (already correct at start; Phase 1 was no-op)
+- RNode: Silicon Labs CP2102 on `/dev/ttyUSB0` → added as `[[RNode LoRa]]` in `/etc/reticulum/config`
+- rnsd runs as root; NomadNet runs as `wh6gxz` via pipx venv — `--rnsconfig /etc/reticulum` keeps them aligned
+- NomadNet LXMF delivery hash: `d69f7e802960b39561768588fc6e6082` (matched pre-configured `default_lxmf_destination`)
+- Gateway LXMF source hash: `f68c2f56cb61527b6c9ad603b9a5009a` (from `~/.config/meshforge/gateway_identity`)
+
+**Non-obvious gotchas** (recurring footguns — worth surfacing in install path):
+
+1. **LXMF is NOT installed with RNS**. `pip install rns` does not pull `lxmf`. The gateway's
+   `_rns_bridge_connection.py` logs `"RNS/LXMF library not installed - bridge cannot connect"`
+   and continues with RNS subsystem marked `disabled`. Fix:
+   ```
+   pip3 install --user --break-system-packages lxmf
+   ```
+   The NomadNet pipx venv has its own LXMF but it is not on the system Python path.
+
+2. **MQTT uplink/downlink default off**. Fresh Meshtastic devices ship with `uplinkEnabled=false`
+   on all channels. Gateway `mqtt_bridge` mode receives NOTHING until at least one channel has
+   uplink enabled. Preferred pattern: dedicated bridge channel (named `meshforge` in our config)
+   with its own PSK, leave primary channel untouched for local mesh privacy:
+   ```
+   meshtastic --ch-index 2 --ch-set uplink_enabled true --ch-set downlink_enabled true
+   ```
+
+3. **gateway.json `mqtt_channel` must match channel NAME, not preset name.** The gateway
+   subscribes to `msh/{REGION}/2/json/{CHANNEL_NAME}/#`. Default config ships with `"LongFast"`.
+   Update both `meshtastic.mqtt_channel` and `mqtt_bridge.channel` to the actual channel name.
+
+4. **Local HAT TX does NOT uplink to MQTT**. Only RX from other nodes is uplinked. To exercise
+   the RX path without a second physical node: publish a simulated packet directly to MQTT:
+   ```
+   mosquitto_pub -h 127.0.0.1 -t 'msh/US/2/json/meshforge/!deadbeef' \
+     -m '{"payload":{"text":"test"},"sender":"!deadbeef","type":"text","channel":2,"to":4294967295,"from":3735928559}'
+   ```
+   Gateway parses JSON, routes `bridge_to_rns`, delivers LXMF to `default_lxmf_destination`,
+   NomadNet creates a conversation dir under `~/.nomadnetwork/storage/conversations/<gw_hash>`.
+
+5. **traffic.log permission noise**. `monitoring/traffic_storage.py` tries to write to
+   `~/.cache/meshforge/logs/traffic.log`; fails with `Errno 13` when the dir doesn't exist or
+   is root-owned. Non-fatal, gateway still bridges — but noisy. Create dir at install time or
+   handle `FileNotFoundError` by creating parents.
+
+**Regression guards** (all 15 pass as of 2026-04-18):
+- `tests/test_regression_guards.py` — TCP/MQTT/service-check/PathHome/shell/event-bus contracts
+- `python3 scripts/lint.py --all` — MF001-010 clean
+
+**Rollback**: `/etc/reticulum/config.bak.20260418-074417` preserves pre-change state.

@@ -192,6 +192,21 @@ chmod +x /usr/local/bin/meshforge-tui
 
 echo -e "${GREEN}  ✓ Commands created: meshforge, meshforge-tui${NC}"
 
+# Reclaim user-writable dirs that sudo invocations may have left root-owned.
+# Gateway writes to ~/.cache/meshforge/logs and ~/.config/meshforge; if those
+# dirs are root-owned, runtime fails with Errno 13 (see persistent_issues #33).
+if [[ -n "$SUDO_USER" ]]; then
+    REAL_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+    if [[ -n "$REAL_HOME" ]]; then
+        for dir in "$REAL_HOME/.cache/meshforge" "$REAL_HOME/.config/meshforge"; do
+            if [[ -d "$dir" ]]; then
+                chown -R "$SUDO_USER:$SUDO_USER" "$dir" 2>/dev/null || true
+            fi
+        done
+        echo -e "${GREEN}  ✓ User dirs reclaimed for $SUDO_USER${NC}"
+    fi
+fi
+
 # Success message
 echo ""
 echo -e "${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"
