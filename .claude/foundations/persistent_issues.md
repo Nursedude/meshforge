@@ -418,3 +418,53 @@ Remaining: field TX validation with a second Meshtastic radio on the `meshforge`
 - `python3 scripts/lint.py --all` — MF001-010 clean
 
 **Rollback**: `/etc/reticulum/config.bak.20260418-074417` preserves pre-change state.
+
+
+---
+
+## Issue #34: mqtt_bridge topic shape mismatch (2026-04-18)
+
+**Symptom**: `bridge_mode=mqtt_bridge` gateway reports "MQTT bridge handler connected"
+but never receives any real mesh traffic from local meshtasticd. Gateway appears green
+in logs; actual RX count stays at zero. Meanwhile `bridge_mode=message_bridge` is the
+only mode that delivers messages — at the cost of holding :4403 forever and starving
+the :9443 web UI.
+
+**Root cause**: `mqtt_bridge_handler._on_connect` subscribed to
+`{root}/{REGION}/2/json/{channel}/#`, but meshtasticd 2.7.x publishes to
+`{root}/2/json/{channel}/{node}` — no region segment. MQTT `+` is single-segment,
+so one subscription pattern can't match both shapes.
+
+**How it slipped through Issue #33's validation**: the "first green end-to-end"
+on fleet-host-1 was validated with a crafted `mosquitto_pub -t 'msh/US/2/json/meshforge/...'`
+that happened to match the region-ful pattern. Nobody ever observed meshtasticd's
+real publishes go through the bridge.
+
+**Fix** (`be6f411`):
+- `_on_connect` now subscribes to both shapes for JSON and protobuf:
+  `{root}/+/2/json/{channel}/#` and `{root}/2/json/{channel}/#`
+- TX publish path omits the region segment when `mqtt_bridge.region == ""` to match
+  what meshtasticd subscribes to for downlink.
+- `MQTTBridgeConfig.region` default changed from `"US"` to `""`. Explicit `"US"` or
+  similar stays valid for daemon builds that DO include region in the topic path.
+
+**Validation** on fleet-host (meshtasticd 2.7.15):
+```
+mosquitto_pub -h 127.0.0.1 -u mesh_publish -P <pass> \
+  -t 'msh/2/json/meshforge/!deadbeef' \
+  -m '{"payload":{"text":"…"},"sender":"!deadbeef","type":"text","channel":3,"to":4294967295,"from":3735928559,"id":9999001}'
+```
+→ gateway logs `node_tracker | Added new node: !deadbeef` and
+`gateway.cli | Message bridged: meshtastic -> !ffffffff`. :9443 stays healthy (200),
+:4403 has no persistent TCP client.
+
+**Fleet state post-fix** (2026-04-18):
+- fleet-host, fleet-host-3: `bridge_mode=mqtt_bridge`, `region=""`, restarted, subscribed to both shapes
+- moc, fleet-host-1, fleet-host-2: no `gateway.json` exists — picked up code change, ready for first config
+- Backups preserved as `gateway.json.bak.20260418-*`
+
+**Prevention**:
+- Future MQTT-bridge validation must use real meshtasticd publishes, not crafted
+  `mosquitto_pub` commands that assume a topic shape.
+- When adding MQTT topic logic, default to subscribing to every plausible shape
+  rather than one "correct" one — MQTT wildcards can't match structurally different paths.
