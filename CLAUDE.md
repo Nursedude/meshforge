@@ -31,7 +31,7 @@
 
 MeshForge is a **Network Operations Center (NOC)** bridging Meshtastic and Reticulum (RNS) mesh networks — the first open-source tool to unify these incompatible ecosystems.
 
-**Active context / current sprint**: `.claude/CURRENT.md`
+**Active context / current sprint**: per-box session handoff notes at `~/.claude/plans/gateway-session-notes-*.md` (not repo-tracked; each box maintains its own).
 
 ---
 
@@ -45,7 +45,7 @@ MeshForge is a **Network Operations Center (NOC)** bridging Meshtastic and Retic
 - `main` includes XTOC/ATAK/CoT, MQTT bridge, security hardening. Gateway bridge, coverage maps, NOC map have unit tests but need field validation.
 - MeshCore is available as an optional gateway handler on main.
 - `CanonicalMessage` in `src/gateway/canonical_message.py` is the shared bridge contract — keep compatible with MeshAnchor's version.
-- Feature branches use `claude/` prefix → PR to main.
+- Solo dev workflow: commit direct to `main`, push via `git push origin main`. PR/feature-branch flow was retired 2026-04-19 (caused more divergence than it prevented). A permission hook may still deny pushes; use `origin` remote rather than literal SSH URL.
 - Alpha branch archived as tag `alpha-archived`.
 
 ---
@@ -92,7 +92,7 @@ src/
 │   ├── handler_protocol.py  # CommandHandler Protocol + TUIContext + BaseHandler
 │   ├── handler_registry.py  # register/lookup/dispatch
 │   ├── backend.py           # whiptail/dialog abstraction
-│   └── handlers/            # 64 registered command handlers
+│   └── handlers/            # 67 registered command handlers (2026-04-19)
 ├── commands/          # propagation.py, hamclock.py, base.py
 ├── gateway/           # RNS-Meshtastic bridge
 │   ├── rns_bridge.py, gateway_cli.py, meshcore_handler.py
@@ -183,7 +183,7 @@ test: Add tests             security: Security fix
 
 ---
 
-## Research Docs (`.claude/` — 84 files)
+## Research Docs (`.claude/` — 93 files)
 
 | File | Contents |
 |------|----------|
