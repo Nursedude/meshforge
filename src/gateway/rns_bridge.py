@@ -974,6 +974,19 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin):
                         continue
 
                 if self._connected_rns:
+                    # Periodic LXMF re-announce so late-joining RNS clients can
+                    # discover this gateway. First announce fires in _setup_lxmf.
+                    announce_interval = max(60, int(self.config.rns.announce_interval))
+                    last = getattr(self, "_last_lxmf_announce", None)
+                    if last is not None and (time.monotonic() - last) >= announce_interval:
+                        try:
+                            self._lxmf_router.announce(self._lxmf_source.hash)
+                            self._last_lxmf_announce = time.monotonic()
+                            logger.info("LXMF re-announce sent (dest=%s)",
+                                        self._lxmf_source.hash.hex())
+                        except Exception as e:
+                            logger.warning("LXMF re-announce failed: %s", e)
+
                     # RNS handles its own event loop
                     self._stop_event.wait(1)
 

@@ -8,6 +8,7 @@ import logging
 import os
 import signal as _signal_mod
 import threading
+import time
 from contextlib import contextmanager
 
 from utils.paths import get_real_user_home, ReticulumPaths
@@ -275,8 +276,11 @@ class RNSConnectionMixin:
             except (ValueError, TypeError) as e:
                 logger.error("Invalid propagation_node hash '%s': %s", prop_node, e)
 
-        # Announce presence
+        # Announce presence and log destination so operators (and future LXMF
+        # clients) can discover the hash to direct LXMF at this gateway.
         self._lxmf_router.announce(self._lxmf_source.hash)
+        self._last_lxmf_announce = time.monotonic()
+        logger.info("Gateway LXMF destination: %s", self._lxmf_source.hash.hex())
 
         # Register announce handler for node discovery
         class AnnounceHandler:
