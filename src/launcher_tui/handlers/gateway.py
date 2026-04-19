@@ -384,8 +384,10 @@ class GatewayHandler(BaseHandler):
     def _config_rns(self, config):
         """Configure RNS settings."""
         while True:
+            gw_name_display = config.rns.gateway_name or "(auto: hostname)"
             choices = [
                 ("identity", f"Identity Name       {config.rns.identity_name}"),
+                ("gateway_name", f"Announced Name      {gw_name_display}"),
                 ("announce", f"Announce Interval   {config.rns.announce_interval}s"),
                 ("config_dir", f"Config Directory    {config.rns.config_dir or 'default'}"),
                 ("back", "Back"),
@@ -408,6 +410,17 @@ class GatewayHandler(BaseHandler):
                 )
                 if name:
                     config.rns.identity_name = name.strip()
+
+            elif choice == "gateway_name":
+                name = self.ctx.dialog.inputbox(
+                    "Announced Name",
+                    "Display name peers see in LXMF announces.\n"
+                    "Blank = auto-derive as 'MeshForge Gateway ({hostname})'.\n"
+                    "Changes propagate on next re-announce.",
+                    init=config.rns.gateway_name
+                )
+                if name is not None:
+                    config.rns.gateway_name = name.strip()
 
             elif choice == "announce":
                 interval = self.ctx.dialog.inputbox(
