@@ -1,0 +1,33 @@
+[Unit]
+Description=MeshForge Gateway Bridge (Meshtastic <-> RNS/LXMF)
+After=network-online.target rnsd.service
+Wants=network-online.target rnsd.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+WorkingDirectory=/opt/meshforge
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=@HOME@
+ExecStart=/usr/bin/python3 /opt/meshforge/src/gateway/bridge_cli.py
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=@HOME@/.config/meshforge @HOME@/.cache/meshforge
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

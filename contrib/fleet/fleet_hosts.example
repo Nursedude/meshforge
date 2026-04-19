@@ -1,0 +1,18 @@
+# MeshForge fleet host list — one host per line.
+# Lines starting with # and blank lines are ignored.
+#
+# Format: [user@]hostname
+# Uses ~/.ssh/config for aliases, jump hosts, identity files.
+#
+# Copy to:
+#   ~/.config/meshforge/fleet_hosts
+#
+# Then run:
+#   scripts/fleet_sync.sh
+
+# fleet-host       # fleet manager — include only if /opt/meshforge is deployed there
+# volcano         # access hop — include only if it runs the gateway itself
+# moc
+# fleet-host-1
+# fleet-host-2
+# DO NOT include the local host (this Pi) — it would pull over SSH back to itself
