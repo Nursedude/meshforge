@@ -7,6 +7,7 @@ Extracted from rns_bridge.py for file size compliance (CLAUDE.md #6).
 import logging
 import os
 import signal as _signal_mod
+import socket
 import threading
 import time
 from contextlib import contextmanager
@@ -260,10 +261,16 @@ class RNSConnectionMixin:
         # Register delivery callback
         self._lxmf_router.register_delivery_callback(self._on_lxmf_receive)
 
-        # Create source identity
+        # Resolve announced display name. Empty config = hostname-tagged default
+        # so fleet Pis (moc3, volcanoai, etc.) are distinguishable in peers'
+        # contact lists without operator config. Hex hash (routable address) is
+        # cryptographically fixed by the identity file and unaffected by this.
+        configured = self.config.rns.gateway_name.strip()
+        display_name = configured or f"MeshForge Gateway ({socket.gethostname()})"
+
         self._lxmf_source = self._lxmf_router.register_delivery_identity(
             self._identity,
-            display_name="MeshForge Gateway"
+            display_name=display_name
         )
 
         # Configure outbound propagation node for store-and-forward
@@ -280,7 +287,10 @@ class RNSConnectionMixin:
         # clients) can discover the hash to direct LXMF at this gateway.
         self._lxmf_router.announce(self._lxmf_source.hash)
         self._last_lxmf_announce = time.monotonic()
-        logger.info("Gateway LXMF destination: %s", self._lxmf_source.hash.hex())
+        logger.info(
+            "Gateway LXMF destination: %s (%s)",
+            self._lxmf_source.hash.hex(), display_name,
+        )
 
         # Register announce handler for node discovery
         class AnnounceHandler:

@@ -351,6 +351,7 @@ class RNSConfig:
     """Reticulum Network Stack configuration"""
     config_dir: str = ""  # Empty = default ~/.reticulum
     identity_name: str = "meshforge_gateway"
+    gateway_name: str = ""  # Announced LXMF display_name; empty = "MeshForge Gateway ({hostname})"
     announce_interval: int = 300  # seconds
     propagation_node: str = ""  # Optional propagation node address
     default_lxmf_destination: str = ""  # Hex hash — broadcast messages route here
