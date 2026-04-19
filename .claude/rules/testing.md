@@ -22,7 +22,7 @@ python3 -m py_compile src/**/*.py
 ## Test Locations
 
 ```
-tests/                             # 2,975 tests across 81 files
+tests/                             # 3,160 tests across 90 files (as of 2026-04-19)
 ├── conftest.py                    # Shared fixtures (mock_meshtastic, mock_rns, no_network)
 ├── test_rns_bridge.py             # Gateway bridge (140 tests)
 ├── test_rf.py                     # RF calculations (107 tests)
@@ -34,7 +34,7 @@ tests/                             # 2,975 tests across 81 files
 ├── test_mqtt_robustness.py        # MQTT reliability (66 tests)
 ├── test_commands.py               # CLI commands (61 tests)
 ├── ... (59 more test files)
-└── test_regression_guards.py      # Architectural regression prevention (9 tests)
+└── test_regression_guards.py      # Architectural regression prevention (15 tests)
 ```
 
 ---
