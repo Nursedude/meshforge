@@ -117,6 +117,7 @@ def get_all_handlers() -> List[Type]:
     from handlers.rns_interfaces import RNSInterfacesHandler
     from handlers.rns_monitor import RNSMonitorHandler
     from handlers.rns_sniffer import RNSSnifferHandler
+    from handlers.rns_tools import RNSToolsHandler
     from handlers.rns_menu import RNSMenuHandler
     handlers.extend([
         RNSConfigHandler,
@@ -124,6 +125,7 @@ def get_all_handlers() -> List[Type]:
         RNSInterfacesHandler,
         RNSMonitorHandler,
         RNSSnifferHandler,
+        RNSToolsHandler,
         RNSMenuHandler,
     ])
 

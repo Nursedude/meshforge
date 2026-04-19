@@ -92,7 +92,7 @@ src/
 │   ├── handler_protocol.py  # CommandHandler Protocol + TUIContext + BaseHandler
 │   ├── handler_registry.py  # register/lookup/dispatch
 │   ├── backend.py           # whiptail/dialog abstraction
-│   └── handlers/            # 67 registered command handlers (2026-04-19)
+│   └── handlers/            # 68 registered command handlers (2026-04-19)
 ├── commands/          # propagation.py, hamclock.py, base.py
 ├── gateway/           # RNS-Meshtastic bridge
 │   ├── rns_bridge.py, gateway_cli.py, meshcore_handler.py
