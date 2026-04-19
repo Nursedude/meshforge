@@ -8,7 +8,8 @@
 #   ~/.config/meshforge/fleet_hosts
 #
 # Then run:
-#   scripts/fleet_sync.sh
+#   scripts/fleet_sync.sh    # git pull + restart gateway across the fleet
+#   scripts/fleet_status.sh  # read-only dashboard: HEAD, branch, unit state
 
 # volcanoai       # fleet manager — include only if /opt/meshforge is deployed there
 # volcano         # access hop — include only if it runs the gateway itself
