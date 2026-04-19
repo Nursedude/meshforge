@@ -77,9 +77,16 @@ class NomadNetHandler(NomadNetInstallUtilsMixin, NomadNetRNSChecksMixin, BaseHan
     # LXMF exclusivity — imported from shared utility
     # ------------------------------------------------------------------
 
-    def _ensure_lxmf_exclusive(self, starting_app: str) -> bool:
-        """Ensure no other LXMF app is using port 37428."""
-        return ensure_lxmf_exclusive(self.ctx.dialog, starting_app)
+    def _ensure_lxmf_exclusive(self, starting_app: str,
+                               config_dir: str = None) -> bool:
+        """Ensure no other LXMF client is using the same config_dir.
+
+        Pass None to check the default config dir; pass an explicit
+        path when launching with ``--config``.
+        """
+        return ensure_lxmf_exclusive(
+            self.ctx.dialog, starting_app, config_dir=config_dir,
+        )
 
     # ------------------------------------------------------------------
     # Cross-handler helpers (delegate to rns_diagnostics handler)
@@ -350,6 +357,10 @@ class NomadNetHandler(NomadNetInstallUtilsMixin, NomadNetRNSChecksMixin, BaseHan
                 else:
                     choices.append(("textui", "Launch Text UI (interactive)"))
                     choices.append(("daemon", "Start as Daemon (background)"))
+                # Always-visible: launches a *separate* identity so it
+                # coexists with a running daemon (or textui) on this Pi.
+                choices.append(("interactive",
+                                "Launch Interactive Client (separate identity)"))
                 choices.append(("logs", "View NomadNet Logs"))
                 choices.append(("config", "View NomadNet Config"))
                 choices.append(("edit", "Edit NomadNet Config"))
@@ -372,12 +383,14 @@ class NomadNetHandler(NomadNetInstallUtilsMixin, NomadNetRNSChecksMixin, BaseHan
 
             # Actions that take over the terminal — return to main menu
             # after completion instead of looping back to this submenu
-            terminal_actions = {"textui", "stop"}
+            terminal_actions = {"textui", "interactive", "stop"}
 
             dispatch = {
                 "status": ("NomadNet Status", self._nomadnet_status),
                 "textui": ("Launch NomadNet TUI", self._launch_nomadnet_textui),
                 "daemon": ("Start NomadNet Daemon", self._launch_nomadnet_daemon),
+                "interactive": ("Launch Interactive Client",
+                                self._launch_nomadnet_interactive),
                 "stop": ("Stop NomadNet", self._stop_nomadnet),
                 "logs": ("View NomadNet Logs", self._view_nomadnet_logs),
                 "config": ("View NomadNet Config", self._view_nomadnet_config),
@@ -893,6 +906,154 @@ class NomadNetHandler(NomadNetInstallUtilsMixin, NomadNetRNSChecksMixin, BaseHan
             except (EOFError, KeyboardInterrupt):
                 pass
 
+    # ------------------------------------------------------------------
+    # Launch interactive client with separate identity
+    # ------------------------------------------------------------------
+
+    # Sibling to the default ~/.nomadnetwork config dir. Different name =
+    # different identity file = different lxmf.delivery hash. Attaches to
+    # the same rnsd shared instance.
+    INTERACTIVE_CONFIG_REL = ".nomadnetwork-interactive"
+
+    def _interactive_config_dir(self) -> Path:
+        return get_real_user_home() / self.INTERACTIVE_CONFIG_REL
+
+    def _launch_nomadnet_interactive(self):
+        """Launch a second NomadNet TUI with its own identity.
+
+        Uses ``--config ~/.nomadnetwork-interactive`` so it does NOT
+        collide with a running daemon or default-config textui. Safe to
+        run alongside the meshforge-gateway daemon — it attaches to the
+        same rnsd shared instance but owns a distinct LXMF identity.
+        """
+        nn_path = self._find_nomadnet_binary()
+        if not nn_path:
+            return
+
+        config_dir = self._interactive_config_dir()
+
+        # Exclusivity check keyed on THIS config dir — no false-positives
+        # from rnsd or from the daemon using the default config.
+        if not self._ensure_lxmf_exclusive("nomadnet", str(config_dir)):
+            return
+
+        # Create config dir as the real user so NomadNet can write to it.
+        if not self._ensure_interactive_config_dir(config_dir):
+            return
+
+        if not self._check_rns_for_nomadnet(nn_path=nn_path):
+            return
+
+        rns_config_path = self._get_rns_config_for_user()
+
+        clear_screen()
+        print("=== Launching NomadNet (Interactive Client) ===")
+        print(f"Config dir: {config_dir}")
+        print(f"Identity:   {config_dir}/storage/identity")
+        if rns_config_path:
+            print(f"RNS config: {rns_config_path}")
+        print()
+        print("Exit NomadNet (Ctrl+Q) to return to MeshForge.")
+        print("After exit, MeshForge will show your interactive hash")
+        print("so you can share it with peers to receive DMs.\n")
+
+        sudo_user = os.environ.get('SUDO_USER')
+
+        try:
+            nn_args = ['--config', str(config_dir), '--textui']
+            if rns_config_path:
+                nn_args = ['--rnsconfig', rns_config_path] + nn_args
+
+            cmd = self._get_wrapper_command(nn_path, nn_args)
+
+            if sudo_user and sudo_user != 'root':
+                user_home = get_real_user_home()
+                user_path = f"{user_home}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+                result = subprocess.run(
+                    ['sudo', '-u', sudo_user, '-H',
+                     f'PATH={user_path}'] + cmd,
+                    stderr=subprocess.PIPE, text=True,
+                    timeout=None,
+                )
+            else:
+                result = subprocess.run(
+                    cmd, stderr=subprocess.PIPE, text=True,
+                    timeout=None,
+                )
+
+            print()
+            if result.returncode != 0:
+                self._show_launch_error(result.returncode, result.stderr)
+            else:
+                print("NomadNet (interactive) exited normally.")
+            self._print_interactive_hash(config_dir)
+            print("\nPress Enter to return to MeshForge...")
+            try:
+                input()
+            except (EOFError, KeyboardInterrupt):
+                pass
+        except KeyboardInterrupt:
+            print("\n\nAborted.\nReturning to MeshForge...")
+        except FileNotFoundError:
+            print(f"\nError: NomadNet binary not found at: {nn_path}")
+            print("\nPress Enter to continue...")
+            try:
+                input()
+            except (EOFError, KeyboardInterrupt):
+                pass
+        except Exception as e:
+            print(f"\nFailed to launch NomadNet (interactive): {e}")
+            print("\nPress Enter to continue...")
+            try:
+                input()
+            except (EOFError, KeyboardInterrupt):
+                pass
+
+    def _ensure_interactive_config_dir(self, config_dir: Path) -> bool:
+        """Create the interactive config dir (with correct ownership) if missing."""
+        try:
+            if not config_dir.exists():
+                config_dir.mkdir(parents=True, exist_ok=True)
+                sudo_user = os.environ.get('SUDO_USER')
+                if sudo_user and sudo_user != 'root':
+                    subprocess.run(
+                        ['chown', '-R', f'{sudo_user}:{sudo_user}',
+                         str(config_dir)],
+                        capture_output=True, timeout=15,
+                    )
+            return True
+        except (OSError, subprocess.SubprocessError) as e:
+            self.ctx.dialog.msgbox(
+                "Config Dir Error",
+                f"Could not prepare interactive config dir:\n\n"
+                f"  {config_dir}\n\n"
+                f"Error: {e}",
+            )
+            return False
+
+    def _print_interactive_hash(self, config_dir: Path) -> None:
+        """Print the lxmf.delivery hash of the interactive identity, if available."""
+        identity = config_dir / "storage" / "identity"
+        if not identity.exists():
+            print(f"\n  (No identity found yet at {identity};")
+            print(f"   it's created on first NomadNet start.)")
+            return
+        try:
+            result = subprocess.run(
+                ['rnid', '-i', str(identity), '-H', 'lxmf.delivery'],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0 and result.stdout:
+                print("\n--- Your interactive LXMF hash ---")
+                print(result.stdout.rstrip())
+                print("Share this hash with peers so they can DM you.")
+            else:
+                print(f"\n  (rnid exit {result.returncode})")
+                if result.stderr:
+                    print(result.stderr.rstrip())
+        except (subprocess.SubprocessError, OSError, FileNotFoundError) as e:
+            print(f"\n  (Could not read hash via rnid: {e})")
+
     def _show_launch_error(self, returncode: int, stderr: str = ""):
         """Show NomadNet launch error using stderr output.
 
@@ -946,22 +1107,53 @@ class NomadNetHandler(NomadNetInstallUtilsMixin, NomadNetRNSChecksMixin, BaseHan
     def _view_nomadnet_logs(self):
         """View NomadNet logfile (works in daemon and textui mode).
 
-        NomadNet writes to ~/.nomadnetwork/logfile independently of
-        stdout/stderr, so this works regardless of launch mode.
+        NomadNet writes to ``<config_dir>/logfile`` independently of
+        stdout/stderr, so this works regardless of launch mode. When
+        the interactive client has been launched at least once, its
+        separate logfile is offered as an additional choice.
         """
         import collections
 
         user_home = get_real_user_home()
-        logfile = user_home / '.nomadnetwork' / 'logfile'
+        default_log = user_home / '.nomadnetwork' / 'logfile'
+        interactive_log = self._interactive_config_dir() / 'logfile'
 
-        if not logfile.exists():
+        # Build a picker only when more than one log exists. With a single
+        # log, skip straight to the view options.
+        available = []
+        if default_log.exists():
+            available.append((str(default_log), default_log))
+        if interactive_log.exists():
+            available.append((str(interactive_log), interactive_log))
+
+        if not available:
             self.ctx.dialog.msgbox(
                 "No Logs",
                 "NomadNet logfile not found yet.\n\n"
-                f"Expected at: {logfile}\n\n"
+                f"Default:     {default_log}\n"
+                f"Interactive: {interactive_log}\n\n"
                 "Logs are created when NomadNet runs.",
             )
             return
+
+        if len(available) == 1:
+            logfile = available[0][1]
+        else:
+            picker = [
+                ("default", f"Daemon/default ({default_log})"),
+                ("interactive", f"Interactive client ({interactive_log})"),
+                ("back", "Back"),
+            ]
+            which = self.ctx.dialog.menu(
+                "Which Logfile?",
+                "Two NomadNet logfiles exist on this Pi.\n"
+                "Pick the one you want to view:",
+                picker,
+            )
+            if which is None or which == "back":
+                return
+            logfile = (interactive_log if which == "interactive"
+                       else default_log)
 
         clear_screen()
 
