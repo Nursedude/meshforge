@@ -153,6 +153,21 @@ def _make_nomadnet():
 class TestPrelaunchCheckIntegration:
     """Test _check_rns_for_nomadnet dialog integration."""
 
+    @pytest.fixture(autouse=True)
+    def _stub_mesh_iface_probes(self):
+        """Stub Meshtastic-iface probes so these tests only exercise the
+        downstream RNS readiness path. Mesh-iface probes are covered by
+        TestCheckMeshIfaceBeforeLaunch."""
+        with patch(
+            'handlers._rns_interface_mgr.find_blocking_interfaces',
+            return_value=[],
+        ):
+            with patch(
+                'handlers._rns_diagnostics_engine.check_rns_interface_health',
+                return_value=[],
+            ):
+                yield
+
     @patch('handlers._nomadnet_rns_checks.socket')
     @patch('handlers._nomadnet_rns_checks.get_rns_shared_instance_info')
     def test_prelaunch_passes_when_ready(self, mock_info, mock_socket):
@@ -202,20 +217,22 @@ class TestPrelaunchCheckIntegration:
     @patch('handlers._nomadnet_rns_checks.socket')
     @patch('handlers._nomadnet_rns_checks.get_rns_shared_instance_info')
     def test_prelaunch_user_mismatch_warning(self, mock_info, mock_socket):
-        """User mismatch shows warning but still allows launch."""
+        """User mismatch shows a menu and, on 'continue', allows launch."""
         mock_info.return_value = {'available': True}
         h = _make_nomadnet()
+        # First menu call is the user-mismatch prompt; pick "continue".
+        h.ctx.dialog._menu_returns = ["continue"]
         with patch.object(h, '_get_rnsd_user', return_value='root'):
             with patch.dict(os.environ, {'SUDO_USER': 'pi'}):
                 result = h._check_rns_for_nomadnet()
         assert result is True
-        # Should show a warning via msgbox or infobox
-        warning_calls = [
-            c for c in h.ctx.dialog.calls
-            if c[0] in ('msgbox', 'infobox') and c[1][1] and 'mismatch' in str(c[1][1]).lower()
-            or c[0] in ('msgbox', 'infobox') and c[1][1] and 'warning' in str(c[1][0]).lower()
-        ]
-        # At least acknowledged — warning is informational
+        # Verify a mismatch menu was shown with both users named.
+        menu_calls = [c for c in h.ctx.dialog.calls if c[0] == 'menu']
+        assert menu_calls, "Expected a mismatch menu to be shown"
+        mismatch = menu_calls[0]
+        title, body, _ = mismatch[1]
+        assert 'mismatch' in title.lower()
+        assert 'root' in body and 'pi' in body
 
 
 # ======================================================================
@@ -442,6 +459,18 @@ class TestRNSReadinessDegraded:
 class TestPrelaunchDegradedFlow:
     """Test _handle_degraded_rnsd dialog flow."""
 
+    @pytest.fixture(autouse=True)
+    def _stub_mesh_iface_probes(self):
+        with patch(
+            'handlers._rns_interface_mgr.find_blocking_interfaces',
+            return_value=[],
+        ):
+            with patch(
+                'handlers._rns_diagnostics_engine.check_rns_interface_health',
+                return_value=[],
+            ):
+                yield
+
     @patch('handlers._nomadnet_rns_checks.socket')
     @patch('handlers._nomadnet_rns_checks.get_rns_shared_instance_info')
     def test_prelaunch_degraded_user_picks_restart(self, mock_info, mock_socket):
@@ -526,3 +555,320 @@ class TestConfigValidation:
                 result = h._validate_nomadnet_config()
         os.unlink(f.name)
         assert result is True
+
+
+# ======================================================================
+# Phase 5: User-mismatch detection
+# ======================================================================
+
+class TestCheckRnsdUserMatch:
+    """_check_rnsd_user_match warns only when rnsd_user != nomadnet_user."""
+
+    def test_no_rnsd_skips_check_silently(self):
+        h = _make_nomadnet()
+        with patch.object(h, '_get_rnsd_user', return_value=None):
+            result = h._check_rnsd_user_match()
+        assert result is True
+        assert not any(c[0] == 'menu' for c in h.ctx.dialog.calls)
+
+    def test_match_skips_check_silently(self):
+        h = _make_nomadnet()
+        with patch.object(h, '_get_rnsd_user', return_value='wh6gxz'):
+            with patch.dict(os.environ, {'SUDO_USER': 'wh6gxz'}):
+                result = h._check_rnsd_user_match()
+        assert result is True
+        assert not any(c[0] == 'menu' for c in h.ctx.dialog.calls)
+
+    def test_mismatch_shows_menu_and_continue_returns_true(self):
+        h = _make_nomadnet()
+        h.ctx.dialog._menu_returns = ["continue"]
+        with patch.object(h, '_get_rnsd_user', return_value='root'):
+            with patch.dict(os.environ, {'SUDO_USER': 'wh6gxz'}):
+                result = h._check_rnsd_user_match()
+        assert result is True
+        menu = [c for c in h.ctx.dialog.calls if c[0] == 'menu']
+        assert len(menu) == 1
+        title, body, _ = menu[0][1]
+        assert 'mismatch' in title.lower()
+        assert 'root' in body and 'wh6gxz' in body
+
+    def test_mismatch_cancel_returns_false(self):
+        h = _make_nomadnet()
+        h.ctx.dialog._menu_returns = [None]
+        with patch.object(h, '_get_rnsd_user', return_value='root'):
+            with patch.dict(os.environ, {'SUDO_USER': 'wh6gxz'}):
+                result = h._check_rnsd_user_match()
+        assert result is False
+
+    def test_mismatch_diagnostics_invokes_handler_and_returns_false(self):
+        h = _make_nomadnet()
+        h.ctx.dialog._menu_returns = ["diagnostics"]
+        mock_diag = MagicMock()
+        with patch.object(h, '_get_rnsd_user', return_value='root'):
+            with patch.object(h, '_get_rns_diagnostics_handler',
+                              return_value=mock_diag):
+                with patch.dict(os.environ, {'SUDO_USER': 'wh6gxz'}):
+                    result = h._check_rnsd_user_match()
+        assert result is False
+        mock_diag._rns_diagnostics.assert_called_once()
+
+
+# ======================================================================
+# Phase 6: Meshtastic RNS-interface pre-launch probe
+# ======================================================================
+
+class TestCheckMeshIfaceBeforeLaunch:
+    """_check_mesh_iface_before_launch — warn only on Meshtastic blockers."""
+
+    def test_no_blockers_returns_true_silently(self):
+        h = _make_nomadnet()
+        with patch(
+            'handlers._rns_interface_mgr.find_blocking_interfaces',
+            return_value=[],
+        ):
+            with patch(
+                'handlers._rns_diagnostics_engine.check_rns_interface_health',
+                return_value=[],
+            ):
+                result = h._check_mesh_iface_before_launch()
+        assert result is True
+        assert not any(c[0] == 'menu' for c in h.ctx.dialog.calls)
+
+    def test_non_mesh_blocker_is_ignored(self):
+        h = _make_nomadnet()
+        with patch(
+            'handlers._rns_interface_mgr.find_blocking_interfaces',
+            return_value=[('DeadTCP', 'host unreachable', 'bring host up')],
+        ):
+            with patch(
+                'handlers._rns_diagnostics_engine.check_rns_interface_health',
+                return_value=[],
+            ):
+                result = h._check_mesh_iface_before_launch()
+        assert result is True
+        assert not any(c[0] == 'menu' for c in h.ctx.dialog.calls)
+
+    def test_mesh_blocker_continue_returns_true(self):
+        h = _make_nomadnet()
+        h.ctx.dialog._menu_returns = ["continue"]
+        with patch(
+            'handlers._rns_interface_mgr.find_blocking_interfaces',
+            return_value=[('MeshLF', 'meshtasticd not running', 'sudo start')],
+        ):
+            result = h._check_mesh_iface_before_launch()
+        assert result is True
+        menu = [c for c in h.ctx.dialog.calls if c[0] == 'menu']
+        assert len(menu) == 1
+        title, body, _ = menu[0][1]
+        assert 'meshtastic' in title.lower()
+        assert 'meshtasticd not running' in body
+
+    def test_mesh_blocker_cancel_returns_false(self):
+        h = _make_nomadnet()
+        h.ctx.dialog._menu_returns = [None]
+        with patch(
+            'handlers._rns_interface_mgr.find_blocking_interfaces',
+            return_value=[
+                ('MeshLF', 'meshtasticd running but TCP port closed', 'wait'),
+            ],
+        ):
+            result = h._check_mesh_iface_before_launch()
+        assert result is False
+
+    def test_mesh_blocker_diagnostics_delegates(self):
+        h = _make_nomadnet()
+        h.ctx.dialog._menu_returns = ["diagnostics"]
+        mock_diag = MagicMock()
+        with patch(
+            'handlers._rns_interface_mgr.find_blocking_interfaces',
+            return_value=[
+                ('MeshLF', 'meshtasticd not running', 'sudo start'),
+            ],
+        ):
+            with patch.object(h, '_get_rns_diagnostics_handler',
+                              return_value=mock_diag):
+                result = h._check_mesh_iface_before_launch()
+        assert result is False
+        mock_diag._rns_diagnostics.assert_called_once()
+
+
+# ======================================================================
+# Phase 7: Interactive config seeding (never overwrite, user-owned)
+# ======================================================================
+
+class TestEnsureInteractiveConfigDirSeeding:
+    """_ensure_interactive_config_dir seeds from default, never overwrites."""
+
+    def test_seed_from_default_when_missing(self, tmp_path):
+        h = _make_nomadnet()
+        default_home = tmp_path / "home"
+        default_dir = default_home / ".nomadnetwork"
+        default_dir.mkdir(parents=True)
+        default_cfg = default_dir / "config"
+        default_cfg.write_text("[client]\nenable_node = yes\n")
+
+        interactive_dir = default_home / ".nomadnetwork-interactive"
+
+        with patch(
+            'handlers.nomadnet.get_real_user_home', return_value=default_home,
+        ):
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop('SUDO_USER', None)
+                ok = h._ensure_interactive_config_dir(interactive_dir)
+
+        assert ok is True
+        assert (interactive_dir / "config").exists()
+        assert (interactive_dir / "config").read_text() == default_cfg.read_text()
+        # User saw the seed confirmation dialog
+        assert any(
+            c[0] == 'msgbox' and 'Seeded' in c[1][0]
+            for c in h.ctx.dialog.calls
+        )
+
+    def test_does_not_overwrite_existing_interactive_config(self, tmp_path):
+        h = _make_nomadnet()
+        default_home = tmp_path / "home"
+        default_dir = default_home / ".nomadnetwork"
+        default_dir.mkdir(parents=True)
+        (default_dir / "config").write_text("DEFAULT_CONTENT\n")
+
+        interactive_dir = default_home / ".nomadnetwork-interactive"
+        interactive_dir.mkdir()
+        existing = interactive_dir / "config"
+        existing.write_text("EXISTING_USER_EDITS\n")
+
+        with patch(
+            'handlers.nomadnet.get_real_user_home', return_value=default_home,
+        ):
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop('SUDO_USER', None)
+                ok = h._ensure_interactive_config_dir(interactive_dir)
+
+        assert ok is True
+        # Critical: user's existing edits preserved.
+        assert existing.read_text() == "EXISTING_USER_EDITS\n"
+        # No "Seeded" confirmation because no seeding happened.
+        assert not any(
+            c[0] == 'msgbox' and 'Seeded' in c[1][0]
+            for c in h.ctx.dialog.calls
+        )
+
+    def test_no_default_means_no_seeding(self, tmp_path):
+        h = _make_nomadnet()
+        default_home = tmp_path / "home"
+        default_home.mkdir()
+        # No ~/.nomadnetwork/config
+        interactive_dir = default_home / ".nomadnetwork-interactive"
+
+        with patch(
+            'handlers.nomadnet.get_real_user_home', return_value=default_home,
+        ):
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop('SUDO_USER', None)
+                ok = h._ensure_interactive_config_dir(interactive_dir)
+
+        assert ok is True
+        assert interactive_dir.exists()
+        # No config file seeded (NomadNet will generate blank on first launch)
+        assert not (interactive_dir / "config").exists()
+
+
+# ======================================================================
+# Phase 8: Identity-scoped stop
+# ======================================================================
+
+class TestStopNomadnetScoped:
+    """_stop_nomadnet(config_dir=X) only kills processes using X."""
+
+    def test_no_competing_clients_msgbox(self):
+        h = _make_nomadnet()
+        target = Path("/home/wh6gxz/.nomadnetwork-interactive")
+        with patch(
+            'handlers._lxmf_utils.find_competing_clients', return_value=[],
+        ):
+            h._stop_nomadnet(config_dir=target)
+        # Should show "Not Running" dialog, no kill invoked.
+        assert any(
+            c[0] == 'msgbox' and 'Not Running' in c[1][0]
+            for c in h.ctx.dialog.calls
+        )
+
+    def test_kills_identified_pids_on_confirm(self):
+        h = _make_nomadnet()
+        h.ctx.dialog._yesno_returns = [True]
+        target = Path("/home/wh6gxz/.nomadnetwork-interactive")
+        # find_competing_clients returns (pid, client, cfg) tuples; strings.
+        with patch(
+            'handlers._lxmf_utils.find_competing_clients',
+            side_effect=[
+                [('12345', 'nomadnet', str(target))],  # initial — pids found
+                [],                                    # post-kill — clean
+            ],
+        ):
+            with patch.object(h, '_kill_nomadnet_pids') as mock_kill:
+                h._stop_nomadnet(config_dir=target)
+        mock_kill.assert_called_once_with([12345])
+        # "Stopped" message shown because nothing remains.
+        assert any(
+            c[0] == 'msgbox' and 'Stopped' in c[1][0]
+            for c in h.ctx.dialog.calls
+        )
+
+    def test_cancel_does_not_kill(self):
+        h = _make_nomadnet()
+        h.ctx.dialog._yesno_returns = [False]
+        target = Path("/home/wh6gxz/.nomadnetwork-interactive")
+        with patch(
+            'handlers._lxmf_utils.find_competing_clients',
+            return_value=[('12345', 'nomadnet', str(target))],
+        ):
+            with patch.object(h, '_kill_nomadnet_pids') as mock_kill:
+                h._stop_nomadnet(config_dir=target)
+        mock_kill.assert_not_called()
+
+
+# ======================================================================
+# Phase 9: Menu subtitle — Meshtastic iface state
+# ======================================================================
+
+class TestMeshIfaceSubtitleState:
+    """_mesh_iface_subtitle_state summarizes for the main NomadNet menu."""
+
+    def test_no_config_returns_empty_string(self, tmp_path):
+        h = _make_nomadnet()
+        missing = tmp_path / "nonexistent_config"
+        with patch(
+            'utils.paths.ReticulumPaths.get_config_file',
+            return_value=missing,
+        ):
+            assert h._mesh_iface_subtitle_state() == ""
+
+    def test_no_mesh_iface_says_not_configured(self, tmp_path):
+        h = _make_nomadnet()
+        cfg = tmp_path / "config"
+        cfg.write_text("[[SomeOther]]\n  type = TCPClientInterface\n")
+        with patch(
+            'utils.paths.ReticulumPaths.get_config_file',
+            return_value=cfg,
+        ):
+            assert h._mesh_iface_subtitle_state() == "Meshtastic iface: not configured"
+
+    def test_blocked_mesh_iface_is_shown(self, tmp_path):
+        h = _make_nomadnet()
+        cfg = tmp_path / "config"
+        cfg.write_text(
+            "[[MeshLF]]\n  type = Meshtastic_Interface\n  enabled = yes\n"
+        )
+        with patch(
+            'utils.paths.ReticulumPaths.get_config_file',
+            return_value=cfg,
+        ):
+            with patch(
+                'handlers._rns_interface_mgr.find_blocking_interfaces',
+                return_value=[
+                    ('MeshLF', 'meshtasticd not running', 'sudo start'),
+                ],
+            ):
+                result = h._mesh_iface_subtitle_state()
+        assert result.startswith("Meshtastic iface: BLOCKED")
+        assert "meshtasticd not running" in result

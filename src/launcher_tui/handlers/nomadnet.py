@@ -54,11 +54,24 @@ from handlers._lxmf_utils import ensure_lxmf_exclusive
 # RNS prerequisite checks extracted for file size compliance (CLAUDE.md #6)
 from handlers._nomadnet_rns_checks import NomadNetRNSChecksMixin
 
+# User-match + Meshtastic-iface checks extracted from rns_checks to keep
+# it under the 300-line regression-guard cap.
+from handlers._nomadnet_iface_checks import NomadNetIfaceChecksMixin
+
 # Install/upgrade utilities extracted for file size compliance (CLAUDE.md #6)
 from handlers._nomadnet_install_utils import NomadNetInstallUtilsMixin
 
+# Per-identity submenus extracted for file size compliance (CLAUDE.md #6)
+from handlers._nomadnet_submenus import NomadNetSubmenusMixin
 
-class NomadNetHandler(NomadNetInstallUtilsMixin, NomadNetRNSChecksMixin, BaseHandler):
+# Log viewer + config IO + launch-error diagnosis extracted for file size (#6)
+from handlers._nomadnet_io_ops import NomadNetIOOpsMixin
+
+
+class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
+                      NomadNetIfaceChecksMixin,
+                      NomadNetInstallUtilsMixin, NomadNetRNSChecksMixin,
+                      BaseHandler):
     """TUI handler for NomadNet client management."""
 
     handler_id = "nomadnet"
@@ -335,36 +348,31 @@ class NomadNetHandler(NomadNetInstallUtilsMixin, NomadNetRNSChecksMixin, BaseHan
     # ------------------------------------------------------------------
 
     def _nomadnet_menu(self):
-        """NomadNet RNS client -- install, configure, launch."""
+        """NomadNet top-level menu — install + per-identity submenus."""
         while True:
-            running = self._is_nomadnet_running()
             installed = self._is_nomadnet_installed()
+            default_running = (self._is_default_identity_running()
+                               if installed else False)
+            interactive_running = (self._is_interactive_identity_running()
+                                   if installed else False)
 
-            if not installed:
-                subtitle = "NomadNet is NOT INSTALLED"
-            elif running:
-                subtitle = "NomadNet is RUNNING"
-            else:
-                subtitle = "NomadNet is installed (not running)"
+            state_line = (
+                "NomadNet is NOT INSTALLED" if not installed
+                else "Default: {} | Interactive: {}".format(
+                    "RUNNING" if default_running else "stopped",
+                    "RUNNING" if interactive_running else "stopped",
+                )
+            )
+            mesh_line = self._mesh_iface_subtitle_state() if installed else ""
+            subtitle = state_line + (f"\n{mesh_line}" if mesh_line else "")
 
-            choices = [
-                ("status", "NomadNet Status"),
-            ]
+            choices = [("status", "NomadNet Status (global overview)")]
 
             if installed:
-                if running:
-                    choices.append(("stop", "Stop NomadNet"))
-                else:
-                    choices.append(("textui", "Launch Text UI (interactive)"))
-                    choices.append(("daemon", "Start as Daemon (background)"))
-                # Always-visible: launches a *separate* identity so it
-                # coexists with a running daemon (or textui) on this Pi.
-                choices.append(("interactive",
-                                "Launch Interactive Client (separate identity)"))
-                choices.append(("logs", "View NomadNet Logs"))
-                choices.append(("config", "View NomadNet Config"))
-                choices.append(("edit", "Edit NomadNet Config"))
-                choices.append(("propnode", "Set Propagation Node"))
+                choices.append(("default", "Default Identity  ›  start/stop/logs/edit"))
+                choices.append(("interactive", "Interactive Client  ›  separate identity"))
+                choices.append(("propnode", "Set Propagation Node (default identity)"))
+                choices.append(("view_config", "View Default Config"))
                 choices.append(("uninstall", "Disable NomadNet"))
             else:
                 choices.append(("install", "Install NomadNet"))
@@ -381,29 +389,20 @@ class NomadNetHandler(NomadNetInstallUtilsMixin, NomadNetRNSChecksMixin, BaseHan
             if choice is None or choice == "back":
                 break
 
-            # Actions that take over the terminal — return to main menu
-            # after completion instead of looping back to this submenu
-            terminal_actions = {"textui", "interactive", "stop"}
-
             dispatch = {
                 "status": ("NomadNet Status", self._nomadnet_status),
-                "textui": ("Launch NomadNet TUI", self._launch_nomadnet_textui),
-                "daemon": ("Start NomadNet Daemon", self._launch_nomadnet_daemon),
-                "interactive": ("Launch Interactive Client",
-                                self._launch_nomadnet_interactive),
-                "stop": ("Stop NomadNet", self._stop_nomadnet),
-                "logs": ("View NomadNet Logs", self._view_nomadnet_logs),
-                "config": ("View NomadNet Config", self._view_nomadnet_config),
-                "edit": ("Edit NomadNet Config", self._edit_nomadnet_config),
-                "propnode": ("Set Propagation Node", self._configure_propagation_node),
+                "default": ("Default Identity", self._default_identity_menu),
+                "interactive": ("Interactive Client", self._interactive_client_menu),
+                "propnode": ("Set Propagation Node",
+                             self._configure_propagation_node),
+                "view_config": ("View Default Config",
+                                self._view_nomadnet_config),
                 "install": ("Install NomadNet", self._install_nomadnet),
                 "uninstall": ("Disable NomadNet", self._uninstall_nomadnet),
             }
             entry = dispatch.get(choice)
             if entry:
                 self.ctx.safe_call(*entry)
-                if choice in terminal_actions:
-                    break
 
     # ------------------------------------------------------------------
     # Status
@@ -1010,17 +1009,67 @@ class NomadNetHandler(NomadNetInstallUtilsMixin, NomadNetRNSChecksMixin, BaseHan
                 pass
 
     def _ensure_interactive_config_dir(self, config_dir: Path) -> bool:
-        """Create the interactive config dir (with correct ownership) if missing."""
+        """Create the interactive config dir and seed its config from default.
+
+        Behavior:
+          1. mkdir the dir if missing (ownership fixed via chown below).
+          2. If ``<config_dir>/config`` is missing AND the default NomadNet
+             config (``~/.nomadnetwork/config``) exists, copy the default's
+             content into place so node-hosting settings ([nodeserver],
+             [propagation], [textui] etc.) carry over. We copy content,
+             not the file, because the identity lives in a separate
+             ``storage/identity`` file — only the config text is shared.
+          3. Never overwrite an existing interactive config (Issue #22/#31).
+          4. chown -R the whole tree to the real user when running via sudo.
+        """
         try:
-            if not config_dir.exists():
+            newly_created = not config_dir.exists()
+            if newly_created:
                 config_dir.mkdir(parents=True, exist_ok=True)
-                sudo_user = os.environ.get('SUDO_USER')
-                if sudo_user and sudo_user != 'root':
-                    subprocess.run(
-                        ['chown', '-R', f'{sudo_user}:{sudo_user}',
-                         str(config_dir)],
-                        capture_output=True, timeout=15,
+
+            interactive_cfg = config_dir / "config"
+            seeded = False
+            if not interactive_cfg.exists():
+                default_cfg = get_real_user_home() / ".nomadnetwork" / "config"
+                if default_cfg.exists():
+                    try:
+                        interactive_cfg.write_text(default_cfg.read_text())
+                        seeded = True
+                        logger.info(
+                            "Seeded interactive config from default: %s -> %s",
+                            default_cfg, interactive_cfg,
+                        )
+                    except (OSError, PermissionError) as e:
+                        logger.warning(
+                            "Could not seed interactive config from %s: %s",
+                            default_cfg, e,
+                        )
+                else:
+                    logger.info(
+                        "No default config at %s — interactive config will "
+                        "be generated blank by NomadNet on first launch",
+                        default_cfg,
                     )
+
+            sudo_user = os.environ.get('SUDO_USER')
+            if sudo_user and sudo_user != 'root':
+                subprocess.run(
+                    ['chown', '-R', f'{sudo_user}:{sudo_user}',
+                     str(config_dir)],
+                    capture_output=True, timeout=15,
+                )
+
+            if seeded:
+                self.ctx.dialog.msgbox(
+                    "Config Seeded",
+                    f"Seeded interactive config from your default NomadNet\n"
+                    f"config. Node-hosting settings ([nodeserver],\n"
+                    f"[propagation]) carry over.\n\n"
+                    f"New:       {interactive_cfg}\n"
+                    f"Seeded from: {get_real_user_home()}/.nomadnetwork/config\n\n"
+                    f"Use 'Edit Config' in the Interactive Client submenu\n"
+                    f"to customize before or after launch.",
+                )
             return True
         except (OSError, subprocess.SubprocessError) as e:
             self.ctx.dialog.msgbox(
@@ -1054,209 +1103,8 @@ class NomadNetHandler(NomadNetInstallUtilsMixin, NomadNetRNSChecksMixin, BaseHan
         except (subprocess.SubprocessError, OSError, FileNotFoundError) as e:
             print(f"\n  (Could not read hash via rnid: {e})")
 
-    def _show_launch_error(self, returncode: int, stderr: str = ""):
-        """Show NomadNet launch error using stderr output.
-
-        Replaces the 150-line logfile parser with direct stderr inspection.
-        """
-        print(f"NomadNet exited with error code {returncode}")
-
-        if stderr and stderr.strip():
-            # Extract the most relevant lines from stderr
-            lines = stderr.strip().splitlines()
-            # Look for known error patterns
-            for line in lines:
-                if 'ConnectionRefusedError' in line or 'Errno 111' in line:
-                    print("\nDiagnosis: RPC connection to rnsd refused")
-                    print("  Fix: Use RNS Diagnostics to check rnsd status")
-                    print("       sudo systemctl restart rnsd")
-                    return
-                if 'AuthenticationError' in line or 'digest sent was rejected' in line:
-                    print("\nDiagnosis: RPC authentication failed")
-                    print("  Fix: Use RNS Diagnostics to fix user mismatch")
-                    return
-                if 'KeyError' in line and 'textui' in line.lower():
-                    print("\nDiagnosis: Config missing [textui] section")
-                    print("  Fix: Delete ~/.nomadnetwork/config and restart")
-                    return
-                if 'PermissionError' in line or 'Permission denied' in line:
-                    print("\nDiagnosis: Permission denied")
-                    print("  Fix: Check file ownership with ls -la ~/.nomadnetwork/")
-                    return
-                if 'ModuleNotFoundError' in line or 'ImportError' in line:
-                    print("\nDiagnosis: Missing Python dependencies")
-                    print("  Fix: pipx reinstall nomadnet")
-                    return
-
-            # No known pattern — show last few stderr lines
-            print("\n--- stderr output ---")
-            for line in lines[-10:]:
-                print(f"  {line}")
-            print("---")
-        else:
-            # No stderr captured — fall back to logfile hint
-            user_home = get_real_user_home()
-            logfile = user_home / '.nomadnetwork' / 'logfile'
-            print(f"\nCheck logs: cat {logfile}")
-            print(f"  journalctl --user -u nomadnet -n 50")
-
-    # ------------------------------------------------------------------
-    # Log viewer
-    # ------------------------------------------------------------------
-
-    def _view_nomadnet_logs(self):
-        """View NomadNet logfile (works in daemon and textui mode).
-
-        NomadNet writes to ``<config_dir>/logfile`` independently of
-        stdout/stderr, so this works regardless of launch mode. When
-        the interactive client has been launched at least once, its
-        separate logfile is offered as an additional choice.
-        """
-        import collections
-
-        user_home = get_real_user_home()
-        default_log = user_home / '.nomadnetwork' / 'logfile'
-        interactive_log = self._interactive_config_dir() / 'logfile'
-
-        # Build a picker only when more than one log exists. With a single
-        # log, skip straight to the view options.
-        available = []
-        if default_log.exists():
-            available.append((str(default_log), default_log))
-        if interactive_log.exists():
-            available.append((str(interactive_log), interactive_log))
-
-        if not available:
-            self.ctx.dialog.msgbox(
-                "No Logs",
-                "NomadNet logfile not found yet.\n\n"
-                f"Default:     {default_log}\n"
-                f"Interactive: {interactive_log}\n\n"
-                "Logs are created when NomadNet runs.",
-            )
-            return
-
-        if len(available) == 1:
-            logfile = available[0][1]
-        else:
-            picker = [
-                ("default", f"Daemon/default ({default_log})"),
-                ("interactive", f"Interactive client ({interactive_log})"),
-                ("back", "Back"),
-            ]
-            which = self.ctx.dialog.menu(
-                "Which Logfile?",
-                "Two NomadNet logfiles exist on this Pi.\n"
-                "Pick the one you want to view:",
-                picker,
-            )
-            if which is None or which == "back":
-                return
-            logfile = (interactive_log if which == "interactive"
-                       else default_log)
-
-        clear_screen()
-
-        # Offer view options
-        choices = [
-            ("last50", "Last 50 lines"),
-            ("last200", "Last 200 lines"),
-            ("errors", "Errors only (last 200 lines)"),
-            ("rnsd", "rnsd journal logs (last 50 lines)"),
-            ("follow", "Follow live (Ctrl+C to stop)"),
-            ("back", "Back"),
-        ]
-
-        choice = self.ctx.dialog.menu(
-            "NomadNet Logs",
-            f"Logfile: {logfile}",
-            choices,
-        )
-
-        if choice is None or choice == "back":
-            return
-
-        if choice == "follow":
-            clear_screen()
-            print(f"=== NomadNet log — {logfile} "
-                  f"(Ctrl+C to stop) ===\n")
-            try:
-                subprocess.run(
-                    ['tail', '-f', '-n', '30', str(logfile)],
-                    timeout=None
-                )
-            except KeyboardInterrupt:
-                pass
-            return
-
-        if choice == "rnsd":
-            clear_screen()
-            print("=== rnsd journal (last 50 lines) ===\n")
-            try:
-                result = subprocess.run(
-                    ['journalctl', '-u', 'rnsd', '-n', '50',
-                     '--no-pager'],
-                    capture_output=True, text=True, timeout=15,
-                )
-                output = result.stdout.strip()
-                if output:
-                    print(output)
-                else:
-                    print("  (no rnsd journal entries found)")
-                    print("  Check if rnsd runs as a systemd service:")
-                    print("    sudo systemctl status rnsd")
-            except FileNotFoundError:
-                print("  journalctl not found (not a systemd system?)")
-            except subprocess.TimeoutExpired:
-                print("  journalctl timed out")
-            except OSError as e:
-                print(f"  Error reading journal: {e}")
-            self.ctx.wait_for_enter()
-            return
-
-        # Read the logfile tail
-        if choice == "last200":
-            maxlines = 200
-        else:
-            maxlines = 50  # last50 and errors both read 200
-
-        clear_screen()
-
-        try:
-            with open(logfile, 'r') as f:
-                lines = list(collections.deque(
-                    f, maxlen=max(maxlines, 200)
-                ))
-
-            if choice == "errors":
-                error_patterns = [
-                    'Error', 'Exception', 'CRITICAL',
-                    'WARNING', 'AuthenticationError',
-                    'PermissionError', 'Traceback',
-                ]
-                lines = [
-                    line for line in lines
-                    if any(p in line for p in error_patterns)
-                ]
-                print(f"=== NomadNet errors "
-                      f"({len(lines)} found) ===\n")
-            else:
-                lines = lines[-maxlines:]
-                print(f"=== NomadNet log (last "
-                      f"{len(lines)} lines) ===\n")
-
-            if lines:
-                for line in lines:
-                    print(line.rstrip())
-            else:
-                print("  (no matching lines)")
-
-        except PermissionError:
-            print(f"Cannot read {logfile} — permission denied")
-        except OSError as e:
-            print(f"Error reading logfile: {e}")
-
-        self.ctx.wait_for_enter()
+    # _show_launch_error, _view_nomadnet_logs[_for], _show_log_options —
+    # see NomadNetIOOpsMixin
 
     # ------------------------------------------------------------------
     # Launch daemon
@@ -1384,8 +1232,59 @@ class NomadNetHandler(NomadNetInstallUtilsMixin, NomadNetRNSChecksMixin, BaseHan
     # Stop
     # ------------------------------------------------------------------
 
-    def _stop_nomadnet(self):
-        """Stop running NomadNet process(es)."""
+    def _stop_nomadnet(self, config_dir: "Optional[Path]" = None):
+        """Stop running NomadNet process(es).
+
+        When ``config_dir`` is given, only processes whose ``--config``
+        argv (or default config dir) matches are killed — this scopes the
+        stop to a single identity (default or interactive). Without
+        ``config_dir`` the original behavior is preserved: kill every
+        nomadnet process on the box.
+        """
+        from handlers._lxmf_utils import find_competing_clients
+
+        if config_dir is not None:
+            pids = [
+                int(pid) for (pid, _client, _cfg)
+                in find_competing_clients(str(config_dir))
+                if pid.isdigit()
+            ]
+            if not pids:
+                self.ctx.dialog.msgbox(
+                    "Not Running",
+                    f"No NomadNet process found for this identity:\n\n"
+                    f"  {config_dir}",
+                )
+                return
+            if not self.ctx.dialog.yesno(
+                "Stop NomadNet",
+                f"Stop NomadNet for identity:\n\n"
+                f"  {config_dir}\n\n"
+                f"PIDs: {', '.join(str(p) for p in pids)}",
+            ):
+                return
+            logger.info(
+                "Stopping NomadNet for config_dir=%s PIDs=%s",
+                config_dir, pids,
+            )
+            self._kill_nomadnet_pids(pids)
+            # Confirm via /proc — _is_nomadnet_running() is not
+            # identity-scoped, so use find_competing_clients again.
+            remaining = find_competing_clients(str(config_dir))
+            if remaining:
+                self.ctx.dialog.msgbox(
+                    "Warning",
+                    f"NomadNet may still be running for {config_dir}.\n"
+                    f"Try: sudo kill -9 {' '.join(p for p, _, _ in remaining)}",
+                )
+            else:
+                self.ctx.dialog.msgbox(
+                    "Stopped",
+                    f"NomadNet stopped for identity:\n  {config_dir}",
+                )
+            return
+
+        # Global stop — original behavior.
         if not self._is_nomadnet_running():
             self.ctx.dialog.msgbox("Not Running", "NomadNet is not currently running.")
             return
@@ -1419,6 +1318,25 @@ class NomadNetHandler(NomadNetInstallUtilsMixin, NomadNetRNSChecksMixin, BaseHan
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed to stop NomadNet:\n{e}")
 
+    def _kill_nomadnet_pids(self, pids):
+        """SIGTERM then SIGKILL a list of NomadNet PIDs."""
+        import signal
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError) as e:
+                logger.debug("SIGTERM %s failed: %s", pid, e)
+        time.sleep(2)
+        for pid in pids:
+            try:
+                os.kill(pid, 0)  # probe — raises if gone
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except PermissionError as e:
+                logger.debug("SIGKILL %s failed: %s", pid, e)
+        time.sleep(1)
+
     # ------------------------------------------------------------------
     # Uninstall (stop + disable)
     # ------------------------------------------------------------------
@@ -1429,133 +1347,8 @@ class NomadNetHandler(NomadNetInstallUtilsMixin, NomadNetRNSChecksMixin, BaseHan
     # Config management
     # ------------------------------------------------------------------
 
-    def _view_nomadnet_config(self):
-        """View NomadNet configuration."""
-        clear_screen()
-        print("=== NomadNet Configuration ===\n")
-
-        config_path = self._get_nomadnet_config_path()
-        if config_path and config_path.exists():
-            print(f"Config: {config_path}\n")
-            try:
-                content = config_path.read_text()
-                print(content)
-
-                # Highlight key connectivity settings
-                print("\n--- Connectivity Notes ---")
-                content_lower = content.lower()
-                if 'enable_client = yes' in content_lower:
-                    print("  Client:    ENABLED (can send/receive messages)")
-                elif 'enable_client = no' in content_lower:
-                    print("  Client:    DISABLED")
-                if 'enable_node = yes' in content_lower:
-                    print("  Node:      ENABLED (serving pages, propagation)")
-                elif 'enable_node = no' in content_lower:
-                    print("  Node:      DISABLED (not serving)")
-                if 'announce_at_start = yes' in content_lower:
-                    print("  Announce:  YES (visible to other nodes)")
-                if 'user_interface = text' in content_lower:
-                    print("  UI mode:   text (interactive TUI with browser)")
-            except PermissionError:
-                print(f"Permission denied reading {config_path}")
-        else:
-            print("No NomadNet config found.\n")
-            print("Config is created on first run of NomadNet.")
-            print("Expected locations (checked in order):")
-            print("  1. /etc/nomadnetwork/config")
-            user_home = get_real_user_home()
-            print(f"  2. {user_home}/.config/nomadnetwork/config")
-            print(f"  3. {user_home}/.nomadnetwork/config")
-            print("\nRun 'Launch Text UI' to create the default config.")
-
-        self.ctx.wait_for_enter()
-
-    def _edit_nomadnet_config(self):
-        """Edit NomadNet config with available editor."""
-        config_path = self._get_nomadnet_config_path()
-
-        if not config_path or not config_path.exists():
-            if self.ctx.dialog.yesno(
-                "No Config Found",
-                "NomadNet config doesn't exist yet.\n\n"
-                "It is created automatically on first run.\n"
-                "Launch NomadNet once to generate it?\n\n"
-                "(It will create the config and exit.)",
-            ):
-                nn_path = self._find_nomadnet_binary()
-                if nn_path:
-                    self.ctx.dialog.infobox("Generating Config", "Running NomadNet briefly to generate config...")
-                    try:
-                        # Check if we need to use a specific RNS config path
-                        rns_config_path = self._get_rns_config_for_user()
-
-                        # Build command - run as real user if we're under sudo
-                        # This ensures config is created with correct ownership
-                        sudo_user = os.environ.get('SUDO_USER')
-
-                        # Build base args with optional --rnsconfig
-                        nn_args = ['--daemon']
-                        if rns_config_path:
-                            nn_args = ['--rnsconfig', rns_config_path, '--daemon']
-
-                        if sudo_user and sudo_user != 'root':
-                            # Using -H instead of -i to set HOME without shell profiles
-                            cmd = ['sudo', '-H', '-u', sudo_user, nn_path] + nn_args
-                        else:
-                            cmd = [nn_path] + nn_args
-
-                        # Run daemon briefly, then kill to generate config
-                        proc = subprocess.Popen(
-                            cmd,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            start_new_session=True,
-                        )
-                        time.sleep(5)
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-
-                        config_path = self._get_nomadnet_config_path()
-                        if config_path and config_path.exists():
-                            self.ctx.dialog.msgbox(
-                                "Config Generated",
-                                f"Config created at:\n  {config_path}\n\n"
-                                f"Opening editor...",
-                            )
-                        else:
-                            self.ctx.dialog.msgbox(
-                                "Config Not Found",
-                                "NomadNet ran but config was not generated.\n"
-                                "Check: ~/.nomadnetwork/config",
-                            )
-                            return
-                    except FileNotFoundError:
-                        self.ctx.dialog.msgbox("Error", f"NomadNet not found at: {nn_path}")
-                        return
-                    except Exception as e:
-                        self.ctx.dialog.msgbox("Error", f"Failed to generate config:\n{e}")
-                        return
-            else:
-                return
-
-        if not config_path or not config_path.exists():
-            return
-
-        # Find editor
-        editor = None
-        for cmd in ['nano', 'vim', 'vi']:
-            if shutil.which(cmd):
-                editor = cmd
-                break
-
-        if not editor:
-            self.ctx.dialog.msgbox("Error", "No text editor found (nano, vim, vi)")
-            return
-
-        subprocess.run([editor, str(config_path)], timeout=None)
+    # _view_nomadnet_config, _edit_nomadnet_config[_for], _open_editor —
+    # see NomadNetIOOpsMixin
 
     # ------------------------------------------------------------------
     # Propagation node configuration

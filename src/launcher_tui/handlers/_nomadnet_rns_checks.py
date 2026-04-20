@@ -67,12 +67,22 @@ class NomadNetRNSChecksMixin:
 
         Uses the pure-logic readiness gate from _nomadnet_prelaunch.py.
         When blocked, offers diagnostics redirect instead of inline repair.
+        Also runs rnsd-user-match and Meshtastic-interface checks so every
+        launch path (textui / daemon / interactive) inherits them.
 
         Args:
             nn_path: Path to NomadNet binary (unused, kept for API compat).
 
         Returns True if OK to proceed, False if user cancelled.
         """
+        # 0. User-mismatch warning (only fires when rnsd/nomadnet users differ)
+        if not self._check_rnsd_user_match():
+            return False
+
+        # 0b. Meshtastic RNS-interface pre-launch probe
+        if not self._check_mesh_iface_before_launch():
+            return False
+
         # 1. Gather state (read-only, no mutations)
         rnsd_user = self._get_rnsd_user()
         shared_info = {}
@@ -280,3 +290,7 @@ hide_guide = no
                 f"and let NomadNet recreate it.",
             )
             return False
+
+    # _check_rnsd_user_match, _check_mesh_iface_before_launch,
+    # _mesh_iface_subtitle_state, _meshtastic_blockers
+    #   -> provided by NomadNetIfaceChecksMixin (_nomadnet_iface_checks.py)
