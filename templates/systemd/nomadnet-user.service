@@ -1,46 +1,65 @@
-# MeshForge - NomadNet User Service
-# ==================================
+# MeshForge — NomadNet User Service (consolidated, tmux-detached)
+# ================================================================
 #
-# NomadNet MUST start AFTER rnsd so it connects as a client to
-# rnsd's shared instance (port 37428) instead of fighting over it.
+# Single NomadNet per box, wrapped in a detached tmux session so the
+# TUI keeps running without an operator attached. Replaces the prior
+# "--daemon + separate interactive identity" split (see 2026-04-20
+# consolidation plan + Issue #35 in persistent_issues.md).
+#
+# The operator reads by attaching the tmux session:
+#
+#   tmux attach -t nomadnet      # view / reply
+#   Ctrl-b d                     # detach (process keeps running)
 #
 # Install:
-#   pip install --user nomadnet
+#   sudo apt-get install -y tmux
+#   pipx install nomadnet        (or pip install --user nomadnet)
 #   mkdir -p ~/.config/systemd/user
 #   cp nomadnet-user.service ~/.config/systemd/user/nomadnet.service
 #
-# Enable:
+# Enable + start:
 #   systemctl --user daemon-reload
-#   systemctl --user enable nomadnet
-#   systemctl --user start nomadnet
+#   systemctl --user enable --now nomadnet
+#   loginctl enable-linger $USER      # survive logout on headless hosts
 #
-# Persist after logout (required for headless/server):
-#   loginctl enable-linger $USER
-#
-# IMPORTANT: rnsd must be the shared instance owner.
-# Start order: rnsd -> nomadnet -> meshforge
-#
-# Status:
+# Status / control:
 #   systemctl --user status nomadnet
+#   systemctl --user restart nomadnet
+#   tmux ls                            # verify session exists
+#
+# rnsd on this fleet is a SYSTEM service running as root (not a user
+# service). We don't Require= a user rnsd.service — the wrapper script
+# (nomadnet_wrapper.py, created by MeshForge's TUI first-run) tolerates
+# transient rnsd unavailability and AuthenticationError on startup
+# (see Issue #37).
 
 [Unit]
-Description=NomadNet LXMF Client
+Description=NomadNet LXMF Client (tmux-detached, consolidated)
 After=default.target network-online.target rnsd.service
 Wants=network-online.target
-Requires=rnsd.service
 
 [Service]
-Type=simple
+Type=forking
+Environment=HOME=%h
+Environment=TERM=xterm-256color
+
+# Clean slate: if a prior tmux session is lingering (from a crash or a
+# previous ExecStart), kill it before starting a fresh one. The leading
+# `-` tells systemd to ignore failure when no session exists.
+ExecStartPre=-/usr/bin/tmux kill-session -t nomadnet
+
+# Launch the real TUI wrapped in a detached tmux session. Adjust the
+# python path per box if pipx placed the venv elsewhere.
+ExecStart=/usr/bin/tmux new-session -d -s nomadnet \
+    '%h/.local/share/pipx/venvs/nomadnet/bin/python3 %h/.config/meshforge/nomadnet_wrapper.py --rnsconfig /etc/reticulum'
+
+ExecStop=/usr/bin/tmux kill-session -t nomadnet
+
 Restart=on-failure
 RestartSec=5
 
-# nomadnet binary installed by pip --user
-ExecStart=%h/.local/bin/nomadnet --daemon
-
-# Use user's config directory
-Environment=HOME=%h
-
-# Logging
+# Logging — tmux itself goes silent after daemonising, but ExecStart*
+# return codes land in the journal.
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=nomadnet

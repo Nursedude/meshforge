@@ -614,3 +614,89 @@ with what NomadNet loads on next start.
 "start rnsd" (not the reverse). If the Issue #37 wrapper patch masks the crash, a follow-up
 preflight check should explicitly probe the RPC socket and warn the operator — that's
 future work, not part of this ship.
+
+
+---
+
+## Issue #38: NomadNet single-identity consolidation (2026-04-20)
+
+**Background**: fleet-host-3 was running TWO NomadNet processes in parallel — a `--daemon`
+on the default storage dir (`~/.nomadnetwork/`) and an interactive TUI on a separate
+dir (`~/.nomadnetwork-interactive/`) with its own identity. Gateway targeted the
+daemon. Operator read the interactive. Bridged mesh messages landed in a directory
+no human opened. Issue #35 documents the user-visible symptom.
+
+**Resolution (fleet-host-3, 2026-04-20)**: consolidated to a single NomadNet per box, wrapped
+in a detached tmux session managed by a systemd-user service. Deployed end-to-end
+and validated with a real HAT probe (`consolidation-1776737308` → 1.0 s round-trip
+→ visible in tmux TUI with the ✉ unread indicator).
+
+**The pattern**:
+- One NomadNet process per box, using the default storage dir (`~/.nomadnetwork/`).
+- Detached tmux session `nomadnet` owns the TUI. Operator attaches on demand:
+  `tmux attach -t nomadnet`. `Ctrl-b d` to detach without killing the process.
+- Systemd-user unit `~/.config/systemd/user/nomadnet.service` manages lifecycle.
+  See the canonical template at `templates/systemd/nomadnet-user.service`.
+- `loginctl enable-linger $USER` so the service survives operator logout.
+- rnsd remains a system service as root (no user rnsd.service needed or wanted).
+- Gateway's `rns.default_lxmf_destination` points at this single identity's LXMF
+  destination hash (NOT the root identity hash — see below).
+
+**Fleet migration steps per box** (fleet-host-3 is the reference; fleet-host-1/fleet-host-2/fleet-host next):
+
+1. `sudo apt install tmux` (now in `scripts/install_noc.sh` for new installs).
+2. Backup: `tar -czf ~/nomadnet-backups/<host>-$(date +%Y%m%d-%H%M%S).tgz
+   -C ~ .nomadnetwork .nomadnetwork-interactive` (include whichever dirs exist).
+3. Choose the identity to keep. Recommendation: the one the operator has been
+   actively using (peers already have its hash). On fleet-host-3 this was the interactive's
+   identity at `~/.nomadnetwork-interactive/`.
+4. Stop both old NomadNet processes cleanly (`sudo kill <pid>`).
+5. Archive the old daemon dir: `mv ~/.nomadnetwork ~/.nomadnetwork-daemon-archived-<date>`.
+6. Promote the kept dir: `mv ~/.nomadnetwork-interactive ~/.nomadnetwork`.
+7. Install the systemd unit from `templates/systemd/nomadnet-user.service` into
+   `~/.config/systemd/user/nomadnet.service`.
+8. `systemctl --user daemon-reload && systemctl --user enable --now nomadnet`.
+9. Verify tmux + NomadNet alive: `tmux capture-pane -t nomadnet -p | head -5`.
+10. Resolve the kept identity's LXMF destination hash (see next section).
+11. Edit `~/.config/meshforge/gateway.json` → set `rns.default_lxmf_destination` to
+    that hash. Back up the old file as `.bak.<timestamp>-preconsolidate` first.
+12. Restart gateway: `sudo systemctl restart meshforge-gateway`.
+13. Validate with a real HAT probe:
+    `meshtastic --host localhost --sendtext 'consolidation-probe' --ch-index <n> --dest '!ffffffff'`.
+14. Confirm: gateway log shows `Message bridged` + `LXMF delivery confirmed`, and
+    the tmux NomadNet UI shows ✉ unread on the "MeshForge Gateway" conversation.
+15. Retain the daemon-archived dir for 7 days, then remove.
+
+**How to resolve an LXMF destination hash offline** (needed for Step 10):
+```python
+# Via the nomadnet venv python (has LXMF + RNS installed):
+python3 <<'PY'
+import tempfile, os
+cfg = tempfile.mkdtemp(prefix='rns_hashcalc_')
+with open(os.path.join(cfg, 'config'), 'w') as f:
+    f.write("[reticulum]\n  enable_transport = No\n  share_instance = No\n\n")
+import RNS
+RNS.Reticulum(configdir=cfg, loglevel=0)
+ident = RNS.Identity.from_file('/home/<user>/.nomadnetwork/storage/identity')
+dest = RNS.Destination(ident, RNS.Destination.IN, RNS.Destination.SINGLE, "lxmf", "delivery")
+print("LXMF destination hash:", dest.hash.hex())
+PY
+```
+
+**Backout** (if validation fails): stop the new unit, swap the dirs back
+(`mv ~/.nomadnetwork ~/.nomadnetwork-consolidated-failed && mv ~/.nomadnetwork-daemon-archived-<date> ~/.nomadnetwork`),
+restore `gateway.json` from the `.bak.<timestamp>-preconsolidate` copy, restart
+gateway. Old daemon + interactive processes can be resurrected manually or via
+prior TUI menu actions.
+
+**Side observation (2026-04-20)**: the gateway itself also hit an
+`AuthenticationError: digest sent was rejected` in its `first_hop_timeout` RPC
+call during LXMF path lookup (same root cause as Issue #37). The gateway swallowed
+it and delivery still completed in 0.1 s — so non-fatal, but worth a future
+defensive patch in `src/gateway/_rns_bridge_connection.py` to match the wrapper's
+resilience.
+
+**Prevention**: new installs pick up the consolidated pattern automatically because
+`templates/systemd/nomadnet-user.service` is now the tmux-wrapped version and
+`install_noc.sh` adds `tmux` to the apt install list. Do NOT manually re-introduce
+a `--daemon` NomadNet alongside the tmux one.
