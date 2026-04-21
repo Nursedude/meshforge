@@ -219,4 +219,8 @@ def get_all_handlers() -> List[Type]:
     from handlers.gateway_preflight import GatewayPreflightHandler
     handlers.append(GatewayPreflightHandler)
 
+    # Batch 19 — end-to-end gateway RX test (MQTT probe -> RNS -> NomadNet)
+    from handlers.test_gateway_rx import TestGatewayRxHandler
+    handlers.append(TestGatewayRxHandler)
+
     return handlers
