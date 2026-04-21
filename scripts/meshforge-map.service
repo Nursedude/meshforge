@@ -17,9 +17,9 @@ RuntimeDirectory=meshforge
 # Use venv if available, fall back to system Python
 ExecStart=/bin/bash -c '\
     if [ -x /opt/meshforge/venv/bin/python ]; then \
-        exec /opt/meshforge/venv/bin/python -m utils.map_data_service --daemon --port 5000; \
+        exec /opt/meshforge/venv/bin/python -m utils.map_data_service --daemon --host 0.0.0.0 --port 5000; \
     else \
-        exec python3 -m utils.map_data_service --daemon --port 5000; \
+        exec python3 -m utils.map_data_service --daemon --host 0.0.0.0 --port 5000; \
     fi'
 
 # Graceful shutdown
