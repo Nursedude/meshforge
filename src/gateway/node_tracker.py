@@ -433,6 +433,25 @@ instance_control_port = 37429
                     return node
             return None
 
+    def get_node_by_short_name(self, short_name: str) -> Optional[UnifiedNode]:
+        """Case-insensitive Meshtastic short_name lookup.
+
+        Returns the matching UnifiedNode, or None if absent or ambiguous
+        (more than one node shares the same short_name). Ambiguity yields
+        None so the caller can fail safe to broadcast rather than guess.
+        """
+        if not short_name:
+            return None
+        target = short_name.strip().lower()
+        if not target:
+            return None
+        with self._lock:
+            hits = [
+                n for n in self._nodes.values()
+                if n.meshtastic_id and (n.short_name or "").lower() == target
+            ]
+        return hits[0] if len(hits) == 1 else None
+
     def get_node_by_rns_hash(self, rns_hash: bytes) -> Optional[UnifiedNode]:
         """Get a node by its RNS destination hash"""
         with self._lock:

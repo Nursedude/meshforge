@@ -736,23 +736,81 @@ class TestProcessMeshToRNS:
         assert bridge.stats['errors'] == 1
         bridge.health.record_message_failed.assert_called_once_with("mesh_to_rns", requeued=True)
 
-    def test_prefix_includes_source_id(self, bridge):
+    def test_body_is_clean_identity_in_title(self, bridge):
+        """Mesh→RNS carries the body verbatim; identity lives in the title."""
         from gateway.rns_bridge import BridgedMessage
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
         msg = BridgedMessage(
             source_network="meshtastic", source_id="!aabb0042",
             destination_id=None, content="hello",
         )
-        sent_content = None
 
-        def capture_send(content, dest_hash=None):
-            nonlocal sent_content
-            sent_content = content
+        captured = {}
+
+        def capture_send(content, dest_hash=None, title=None, fields=None):
+            captured["content"] = content
+            captured["title"] = title
+            captured["fields"] = fields
             return True
 
         with patch.object(bridge, 'send_to_rns', side_effect=capture_send):
             bridge._process_mesh_to_rns(msg)
 
-        assert sent_content.startswith("[Mesh:0042] ")
+        assert captured["content"] == "hello"
+        assert captured["title"] == "!aabb0042 via Meshtastic"
+
+    def test_title_includes_long_name_when_known(self, bridge):
+        """node_tracker hit produces '<long_name> (<id>) via Meshtastic'."""
+        from gateway.rns_bridge import BridgedMessage
+        mock_node = MagicMock()
+        mock_node.name = "HAT-fleet-host-3"
+        mock_node.short_name = "HAT3"
+        bridge.node_tracker.get_node_by_mesh_id.return_value = mock_node
+        msg = BridgedMessage(
+            source_network="meshtastic", source_id="!ebfa1b11",
+            destination_id=None, content="summit check",
+        )
+
+        captured = {}
+
+        def capture_send(content, dest_hash=None, title=None, fields=None):
+            captured["title"] = title
+            captured["fields"] = fields
+            return True
+
+        with patch.object(bridge, 'send_to_rns', side_effect=capture_send):
+            bridge._process_mesh_to_rns(msg)
+
+        assert captured["title"] == "HAT-fleet-host-3 (!ebfa1b11) via Meshtastic"
+        assert captured["fields"]["meshforge_from_id"] == "!ebfa1b11"
+        assert captured["fields"]["meshforge_from_long"] == "HAT-fleet-host-3"
+        assert captured["fields"]["meshforge_from_short"] == "HAT3"
+        assert captured["fields"]["meshforge_source_network"] == "meshtastic"
+
+    def test_fields_present_even_when_node_unknown(self, bridge):
+        """Identity fallback still emits the fields dict with empty name slots."""
+        from gateway.rns_bridge import BridgedMessage
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
+        msg = BridgedMessage(
+            source_network="meshtastic", source_id="!deadbeef",
+            destination_id=None, content="orphan",
+            metadata={"channel": "meshforge"},
+        )
+
+        captured = {}
+
+        def capture_send(content, dest_hash=None, title=None, fields=None):
+            captured["fields"] = fields
+            return True
+
+        with patch.object(bridge, 'send_to_rns', side_effect=capture_send):
+            bridge._process_mesh_to_rns(msg)
+
+        fields = captured["fields"]
+        assert fields["meshforge_from_id"] == "!deadbeef"
+        assert fields["meshforge_from_long"] == ""
+        assert fields["meshforge_from_short"] == ""
+        assert fields["meshforge_channel"] == "meshforge"
 
 
 # ---------------------------------------------------------------------------
@@ -808,17 +866,134 @@ class TestProcessRNSToMesh:
             source_network="rns", source_id="abcdef01",
             destination_id=None, content="hello",
         )
-        sent_content = None
+        captured = {}
 
         def capture_send(content, destination=None, channel=0):
-            nonlocal sent_content
-            sent_content = content
+            captured["content"] = content
+            captured["destination"] = destination
             return True
 
         with patch.object(bridge, 'send_to_meshtastic', side_effect=capture_send):
             bridge._process_rns_to_mesh(msg)
 
-        assert sent_content.startswith("[RNS:abcd] ")
+        assert captured["content"].startswith("[RNS:abcd] ")
+        assert captured["destination"] is None
+
+    def test_hex_prefix_targets_node(self, bridge):
+        """'@!ebfa1b11 reply' is a DM to !ebfa1b11; the @token is stripped."""
+        from gateway.rns_bridge import BridgedMessage
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content="@!EBFA1B11 roger copy",
+        )
+        captured = {}
+
+        def capture_send(content, destination=None, channel=0):
+            captured["content"] = content
+            captured["destination"] = destination
+            return True
+
+        with patch.object(bridge, 'send_to_meshtastic', side_effect=capture_send):
+            bridge._process_rns_to_mesh(msg)
+
+        assert captured["destination"] == "!ebfa1b11"
+        assert captured["content"] == "[RNS:abcd] roger copy"
+
+    def test_shortname_prefix_resolves_via_tracker(self, bridge):
+        """'@HAT3 hi' asks the node_tracker to resolve the short_name."""
+        from gateway.rns_bridge import BridgedMessage
+        mock_node = MagicMock()
+        mock_node.meshtastic_id = "!ebfa1b11"
+        bridge.node_tracker.get_node_by_short_name.return_value = mock_node
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content="@HAT3 meet at 7",
+        )
+        captured = {}
+
+        def capture_send(content, destination=None, channel=0):
+            captured["content"] = content
+            captured["destination"] = destination
+            return True
+
+        with patch.object(bridge, 'send_to_meshtastic', side_effect=capture_send):
+            bridge._process_rns_to_mesh(msg)
+
+        bridge.node_tracker.get_node_by_short_name.assert_called_with("HAT3")
+        assert captured["destination"] == "!ebfa1b11"
+        assert captured["content"] == "[RNS:abcd] meet at 7"
+
+    def test_unknown_shortname_falls_through_to_broadcast(self, bridge):
+        """Unresolvable @token keeps original content and broadcasts."""
+        from gateway.rns_bridge import BridgedMessage
+        bridge.node_tracker.get_node_by_short_name.return_value = None
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content="@ghostnode anyone home?",
+        )
+        captured = {}
+
+        def capture_send(content, destination=None, channel=0):
+            captured["content"] = content
+            captured["destination"] = destination
+            return True
+
+        with patch.object(bridge, 'send_to_meshtastic', side_effect=capture_send):
+            bridge._process_rns_to_mesh(msg)
+
+        assert captured["destination"] is None
+        assert captured["content"] == "[RNS:abcd] @ghostnode anyone home?"
+
+    def test_no_prefix_is_broadcast(self, bridge):
+        """Plain text (no leading '@') broadcasts on the bridge channel."""
+        from gateway.rns_bridge import BridgedMessage
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content="broadcast check",
+        )
+        captured = {}
+
+        def capture_send(content, destination=None, channel=0):
+            captured["content"] = content
+            captured["destination"] = destination
+            return True
+
+        with patch.object(bridge, 'send_to_meshtastic', side_effect=capture_send):
+            bridge._process_rns_to_mesh(msg)
+
+        assert captured["destination"] is None
+        assert captured["content"] == "[RNS:abcd] broadcast check"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_mesh_destination
+# ---------------------------------------------------------------------------
+
+
+class TestResolveMeshDestination:
+    """Tests for the @address resolver used by _process_rns_to_mesh."""
+
+    def test_hex_id_lowercased(self, bridge):
+        assert bridge._resolve_mesh_destination("!EBFA1B11") == "!ebfa1b11"
+
+    def test_empty_token_returns_none(self, bridge):
+        assert bridge._resolve_mesh_destination("") is None
+
+    def test_malformed_hex_falls_through(self, bridge):
+        bridge.node_tracker.get_node_by_short_name.return_value = None
+        assert bridge._resolve_mesh_destination("!notahexid") is None
+
+    def test_shortname_resolved(self, bridge):
+        mock_node = MagicMock()
+        mock_node.meshtastic_id = "!ebfa1b11"
+        bridge.node_tracker.get_node_by_short_name.return_value = mock_node
+        assert bridge._resolve_mesh_destination("HAT3") == "!ebfa1b11"
+
+    def test_shortname_with_no_meshtastic_id_returns_none(self, bridge):
+        mock_node = MagicMock()
+        mock_node.meshtastic_id = None
+        bridge.node_tracker.get_node_by_short_name.return_value = mock_node
+        assert bridge._resolve_mesh_destination("GHST") is None
 
 
 # ---------------------------------------------------------------------------

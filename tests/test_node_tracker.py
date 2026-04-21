@@ -341,6 +341,48 @@ class TestUnifiedNodeTracker:
 
             assert result is None
 
+    def test_get_node_by_short_name_found(self):
+        """Case-insensitive short_name lookup returns the matching node."""
+        with patch.object(UnifiedNodeTracker, '_load_cache'):
+            tracker = UnifiedNodeTracker()
+            tracker.add_node(UnifiedNode(
+                id="hat3", network="meshtastic",
+                meshtastic_id="!ebfa1b11", short_name="HAT3",
+            ))
+
+            result = tracker.get_node_by_short_name("hat3")
+            assert result is not None
+            assert result.meshtastic_id == "!ebfa1b11"
+
+    def test_get_node_by_short_name_empty_returns_none(self):
+        with patch.object(UnifiedNodeTracker, '_load_cache'):
+            tracker = UnifiedNodeTracker()
+            assert tracker.get_node_by_short_name("") is None
+            assert tracker.get_node_by_short_name("   ") is None
+
+    def test_get_node_by_short_name_ambiguous_returns_none(self):
+        """Two nodes sharing the same short_name -> None (fail safe)."""
+        with patch.object(UnifiedNodeTracker, '_load_cache'):
+            tracker = UnifiedNodeTracker()
+            tracker.add_node(UnifiedNode(
+                id="a", network="meshtastic",
+                meshtastic_id="!aaaa0001", short_name="DUPE",
+            ))
+            tracker.add_node(UnifiedNode(
+                id="b", network="meshtastic",
+                meshtastic_id="!bbbb0002", short_name="dupe",
+            ))
+
+            assert tracker.get_node_by_short_name("DUPE") is None
+
+    def test_get_node_by_short_name_skips_nodes_without_meshtastic_id(self):
+        with patch.object(UnifiedNodeTracker, '_load_cache'):
+            tracker = UnifiedNodeTracker()
+            tracker.add_node(UnifiedNode(
+                id="rnsnode", network="rns", short_name="RNS1",
+            ))
+            assert tracker.get_node_by_short_name("RNS1") is None
+
     def test_get_node_by_rns_hash(self):
         """Test finding node by RNS hash."""
         with patch.object(UnifiedNodeTracker, '_load_cache'):

@@ -105,8 +105,12 @@ class TestMeshToRnsFlow:
             bridge._mesh_to_rns_queue.get(timeout=0.1)
 
     def test_process_mesh_to_rns_success(self, bridge):
-        """Process queued message and send to RNS successfully."""
+        """Process queued message and send to RNS successfully.
+
+        Body stays clean; identity lives in the LXMF title and fields.
+        """
         bridge._connected_rns = True
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
 
         msg = BridgedMessage(
             source_network="meshtastic",
@@ -119,11 +123,14 @@ class TestMeshToRnsFlow:
         with patch.object(bridge, 'send_to_rns', return_value=True) as mock_send:
             bridge._process_mesh_to_rns(msg)
 
-        # Verify send was called with prefixed content
         mock_send.assert_called_once()
         sent_content = mock_send.call_args[0][0]
-        assert "[Mesh:1234]" in sent_content
-        assert "Hello from mesh" in sent_content
+        assert sent_content == "Hello from mesh"
+        kwargs = mock_send.call_args.kwargs
+        assert kwargs.get("title") == "!abcd1234 via Meshtastic"
+        fields = kwargs.get("fields") or {}
+        assert fields.get("meshforge_from_id") == "!abcd1234"
+        assert fields.get("meshforge_source_network") == "meshtastic"
 
         # Stats updated
         assert bridge.stats['messages_mesh_to_rns'] == 1
@@ -254,13 +261,15 @@ class TestRoundTrip:
         assert mesh_msg.source_network == "meshtastic"
 
         # Step 3: Bridge processes and sends to RNS
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
         with patch.object(bridge, 'send_to_rns', return_value=True) as mock_rns_send:
             bridge._process_mesh_to_rns(mesh_msg)
 
-        # Verify RNS received the message with mesh prefix
+        # Body is clean; identity moved to title + fields
         rns_content = mock_rns_send.call_args[0][0]
-        assert "[Mesh:f9d0]" in rns_content
-        assert "CQ CQ de WH6GXZ" in rns_content
+        assert rns_content == "CQ CQ de WH6GXZ"
+        rns_title = mock_rns_send.call_args.kwargs.get("title")
+        assert "!ba4bf9d0" in (rns_title or "")
         assert bridge.stats['messages_mesh_to_rns'] == 1
 
         # === PHASE 2: RNS → Meshtastic (reply) ===
@@ -673,9 +682,10 @@ class TestEdgeCases:
         sent_text = mock_send.call_args[0][0]
         assert "Aloha \u2708 73 de WH6GXZ" in sent_text
 
-    def test_long_source_id_prefix_truncation(self, bridge):
-        """Source ID prefix uses last 4 chars for meshtastic."""
+    def test_full_source_id_surfaces_in_title(self, bridge):
+        """Full Meshtastic source id is preserved in the LXMF title."""
         bridge._connected_rns = True
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
 
         msg = BridgedMessage(
             source_network="meshtastic",
@@ -688,8 +698,8 @@ class TestEdgeCases:
         with patch.object(bridge, 'send_to_rns', return_value=True) as mock_send:
             bridge._process_mesh_to_rns(msg)
 
-        content = mock_send.call_args[0][0]
-        assert "[Mesh:cdef]" in content
+        assert mock_send.call_args[0][0] == "Long ID test"
+        assert "!1234567890abcdef" in mock_send.call_args.kwargs.get("title", "")
 
     def test_rns_source_prefix_uses_first_4(self, bridge):
         """RNS prefix uses first 4 chars of source hash."""
