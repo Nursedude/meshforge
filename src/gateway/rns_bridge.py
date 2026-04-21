@@ -1379,9 +1379,14 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin):
             # Handle both BridgedMessage (source_id) and CanonicalMessage (source_address)
             source_id = getattr(msg, 'source_id', None) or getattr(msg, 'source_address', '')
             dest_id = getattr(msg, 'destination_id', None) or getattr(msg, 'destination_address', '')
+            content = msg.content
+            if isinstance(content, bytes):
+                content = content.decode("utf-8", errors="replace")
+            elif not isinstance(content, str):
+                content = ""
             self._persistent_queue.enqueue(
                 payload={
-                    'message': msg.content,
+                    'message': content,
                     'source_id': source_id,
                     'destination_id': dest_id or "",
                     'metadata': msg.metadata or {},
@@ -1431,7 +1436,13 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin):
         persists to queue on failure.
         """
         try:
-            body = msg.content or ""
+            raw = msg.content
+            if isinstance(raw, bytes):
+                body = raw.decode("utf-8", errors="replace")
+            elif isinstance(raw, str):
+                body = raw
+            else:
+                body = ""
             destination = None
             if body.startswith('@'):
                 parts = body.split(None, 1)
@@ -1462,7 +1473,7 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin):
                 }
                 msg_id = self._persistent_queue.enqueue(
                     payload=payload,
-                    destination="mqtt",
+                    destination="meshtastic",
                     priority=MessagePriority.NORMAL,
                 )
                 if msg_id:

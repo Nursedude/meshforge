@@ -794,3 +794,104 @@ real fix for identity + addressability rather than just a UI workaround.
   to extend — callers do not care whether a destination came from hex-id
   parsing, short-name resolution, or future RNS-identity-to-mesh-node
   routing.
+
+
+---
+
+## Issue #40: RNS→Mesh bridge — bytes payload crash + wrong-topic MQTT downlink (2026-04-21)
+
+**Symptom**: Since Issue #33's first-green-end-to-end (2026-04-18), the bridge
+stat was stuck at `R→M: 0` across every gateway restart. Meshtastic clients
+never received messages sent by NomadNet/RNS peers. The broken path was
+simultaneously hiding two independent defects; both had to fall to unblock TX.
+
+**Root cause 1 — `_process_rns_to_mesh()` crashed on bytes LXMF content.**
+LXMF delivers `message.content` as `bytes`. `_on_lxmf_receive` at
+`src/gateway/rns_bridge.py:1191` stored it into `BridgedMessage.content` without
+decoding. Then `_process_rns_to_mesh()` did `body = msg.content or ""` followed
+by str operations (`body.startswith('@')`, `prefix + body`). On any real LXMF
+message this raised `TypeError: can only concatenate str (not "bytes") to str`;
+the `except` branch tried to `_requeue_failed_message()` but that serialized
+bytes to JSON and raised `Object of type bytes is not JSON serializable`. Net
+effect: every RNS-inbound message crashed twice and was dropped without trace
+in the persistent queue.
+
+**Root cause 2 — `publish_to_mqtt()` used an uplink-shaped topic meshtasticd
+never subscribes to.** `src/gateway/mqtt_bridge_handler.py:746–750` published
+to `msh/{REGION}/2/json/{CHANNEL_NAME}/meshforge`. Meshtasticd 2.7.x subscribes
+to `msh/{REGION}/2/json/mqtt/#` — the channel segment is literally the string
+`"mqtt"` (firmware PR #3183 convention), never the actual channel name. The
+daemon's own log confirmed it was dropping our publishes with
+`WARN | [mqtt] JSON downlink received on channel not called 'mqtt' or without
+downlink enabled`. Even with cause #1 fixed, every message queued for MQTT
+downlink would have been silently dropped by the daemon.
+
+**Fix**:
+
+1. **Decode bytes→str at function entry** in both `_process_rns_to_mesh()` and
+   `_requeue_failed_message()`. Handle `bytes`, `str`, and None uniformly with
+   `errors="replace"` to survive non-UTF-8 payloads.
+
+2. **Reroute the MQTT-bridge-mode enqueue from `destination="mqtt"` to
+   `destination="meshtastic"`.** The persistent queue already has a registered
+   handler for `"meshtastic"` (`rns_bridge.py:384`) that dispatches to
+   `MQTTBridgeHandler.queue_send()` → `send_text()` → `send_text_direct()` —
+   the HTTP `/api/v1/toradio` path that is the Issue #29 blessed single-writer
+   TX contract. This is the same path used by `mesh_bridge.py`,
+   `radio_failover.py`, `map_http_handler.py`, and `commands/meshtastic.py`.
+   It avoids the meshtasticd "channel-literally-named-mqtt" requirement, the
+   `from: 0` issue, the topic region-shape ambiguity, and any cross-fleet
+   channel reconfig. No device-side changes required.
+
+3. **`publish_to_mqtt()` is now dead code on the live TX path** and has been
+   left in place for potential future resurrection (a true MQTT-only gateway
+   with no `:9443` / :443 HTTP access). If resurrected, it would also need:
+   topic change to `msh/{REGION}/2/json/mqtt/{gw_node_id}`, `from` filled with
+   the gateway's real numeric node id, and removal of `sender`/`type` keys
+   (not part of the downlink JSON spec).
+
+**Tests added** (`tests/test_rns_bridge.py`):
+
+- `test_bytes_content_is_decoded` — plain bytes body bridges cleanly.
+- `test_bytes_content_with_at_prefix` — decode happens before `@address`
+  parsing so directed downlink works with bytes.
+- `test_invalid_utf8_uses_replacement` — non-UTF-8 bytes don't crash.
+- `test_mqtt_bridge_mode_enqueues_to_meshtastic` — the MQTT-bridge-mode code
+  path enqueues with `destination="meshtastic"`, not `"mqtt"`.
+- `test_bytes_content_serializes_as_str` — retry-persist payload is JSON-safe.
+
+**Field-validation note — Issue #37 blocks full end-to-end on fleet-host-3.** The
+gateway's Reticulum instance (configdir `/tmp/meshforge_rns_client/`) has a
+different identity than rnsd (configdir `/etc/reticulum/`), so their RPC keys
+(derived from identity private bytes) diverge. When rnsd forwards an incoming
+link packet to the gateway, the gateway's `RNS.Link.receive()` calls
+`__update_phy_stats()` → `get_packet_rssi()` → RPC-to-rnsd, which fails with
+`AuthenticationError: digest sent was rejected`. The exception propagates and
+aborts inbound frame processing, so real LXMF deliveries never reach
+`_on_lxmf_receive`. This is a broader manifestation of Issue #37 and was NOT
+seen in Issue #38's testing because that direction was mesh→RNS (no inbound
+link-packet RSSI query on the gateway's side of the ledger).
+
+Proof-by-parts of the Issue #40 fix in the interim:
+- Unit tests cover all three changed code paths (+5 new tests, all 175 pass).
+- `send_text_direct()` direct-invoked against `localhost:443` (fleet-host-3's
+  meshtasticd HTTPS port) returned `True` for both broadcast and directed DM
+  (`dest=0xebfa1b11` — fleet-host-3's own HAT). The downstream path my fix routes to
+  works end-to-end; only the RNS-inbound-link side is blocked by Issue #37.
+
+**Prevention / future work**:
+- **Unblock full end-to-end**: fix Issue #37 for the gateway. Either (a) make
+  the gateway use `configdir=/etc/reticulum` so it shares rnsd's identity, or
+  (b) pin `shared_instance_rpc_key` explicitly in both configs. NomadNet
+  already uses pattern (a) via `--rnsconfig /etc/reticulum`.
+- **Defensive catch for `AuthenticationError`** around the Issue #38 side
+  observation is now doubly warranted — both in
+  `gateway._rns_bridge_connection` (first_hop_timeout) AND in whatever owns
+  the packet processing path. This is separate from the Issue #37 wrapper
+  already shipped for NomadNet.
+- **Never regress the LXMF bytes assumption**: a regression guard test that
+  passes bytes content to `_process_rns_to_mesh` would catch any future
+  recursion. Added as `test_bytes_content_is_decoded`.
+- **Never regress away from the HTTP TX path**: `test_mqtt_bridge_mode_enqueues_to_meshtastic`
+  guards against accidentally re-setting `destination="mqtt"`.
+
