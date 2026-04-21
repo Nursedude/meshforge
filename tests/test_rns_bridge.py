@@ -964,6 +964,110 @@ class TestProcessRNSToMesh:
         assert captured["destination"] is None
         assert captured["content"] == "[RNS:abcd] broadcast check"
 
+    def test_bytes_content_is_decoded(self, bridge):
+        """LXMF delivers content as bytes; must decode before string ops."""
+        from gateway.rns_bridge import BridgedMessage
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content=b"hello from bytes",
+        )
+        captured = {}
+
+        def capture_send(content, destination=None, channel=0):
+            captured["content"] = content
+            return True
+
+        with patch.object(bridge, 'send_to_meshtastic', side_effect=capture_send):
+            bridge._process_rns_to_mesh(msg)
+
+        assert captured["content"] == "[RNS:abcd] hello from bytes"
+        assert bridge.stats['errors'] == 0
+
+    def test_bytes_content_with_at_prefix(self, bridge):
+        """Decoding must happen before @address parsing so bytes work there too."""
+        from gateway.rns_bridge import BridgedMessage
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content=b"@!EBFA1B11 bytes-directed",
+        )
+        captured = {}
+
+        def capture_send(content, destination=None, channel=0):
+            captured["content"] = content
+            captured["destination"] = destination
+            return True
+
+        with patch.object(bridge, 'send_to_meshtastic', side_effect=capture_send):
+            bridge._process_rns_to_mesh(msg)
+
+        assert captured["destination"] == "!ebfa1b11"
+        assert captured["content"] == "[RNS:abcd] bytes-directed"
+
+    def test_invalid_utf8_uses_replacement(self, bridge):
+        """Non-UTF-8 bytes must not crash — use replacement chars."""
+        from gateway.rns_bridge import BridgedMessage
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content=b"hi \xff\xfe world",
+        )
+
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True):
+            bridge._process_rns_to_mesh(msg)
+
+        assert bridge.stats['messages_rns_to_mesh'] == 1
+        assert bridge.stats['errors'] == 0
+
+    def test_mqtt_bridge_mode_enqueues_to_meshtastic(self):
+        """In mqtt_bridge mode the queue destination must be 'meshtastic'
+        (HTTP send_text_direct path), NOT 'mqtt' (which publishes to a
+        topic meshtasticd does not subscribe to)."""
+        with patch("gateway.rns_bridge.GatewayConfig") as MockConfig, \
+             patch("gateway.rns_bridge.UnifiedNodeTracker"), \
+             patch("gateway.rns_bridge.BridgeHealthMonitor"), \
+             patch("gateway.rns_bridge.DeliveryTracker"), \
+             patch("gateway.rns_bridge.MeshtasticHandler"), \
+             patch("gateway.rns_bridge.MQTTBridgeHandler") as MockMQTT, \
+             patch("gateway.rns_bridge.ReconnectStrategy"), \
+             patch("gateway.rns_bridge.HAS_CIRCUIT_BREAKER", False), \
+             patch("gateway.rns_bridge.HAS_MQTT_BRIDGE", True), \
+             patch("gateway.rns_bridge.HAS_PERSISTENT_QUEUE", True), \
+             patch("gateway.rns_bridge.PersistentMessageQueue") as MockQueue, \
+             patch("gateway.message_routing.CLASSIFIER_AVAILABLE", False), \
+             patch("gateway.rns_bridge.HAS_SERVICE_CHECK", False), \
+             patch("gateway.rns_bridge.HAS_EVENT_BUS", False), \
+             patch("gateway.rns_bridge.HAS_RNS_SNIFFER", False):
+
+            config = _mock_gateway_config(bridge_mode="mqtt_bridge")
+            MockConfig.load.return_value = config
+
+            mock_queue = MagicMock()
+            mock_queue.enqueue.return_value = "msg-id-1"
+            MockQueue.return_value = mock_queue
+
+            mock_handler = MagicMock()
+            mock_handler.publish_to_mqtt = MagicMock()
+            MockMQTT.return_value = mock_handler
+
+            from gateway.rns_bridge import RNSMeshtasticBridge, BridgedMessage
+            b = RNSMeshtasticBridge(config=config)
+
+            msg = BridgedMessage(
+                source_network="rns", source_id="abcdef01",
+                destination_id=None, content="queue-path check",
+            )
+            b._process_rns_to_mesh(msg)
+
+            # Last enqueue call (register_sender may also enqueue during setup;
+            # we care about the _process_rns_to_mesh one)
+            rns_enqueue = [
+                c for c in mock_queue.enqueue.call_args_list
+                if c.kwargs.get("destination") in ("mqtt", "meshtastic")
+            ]
+            assert len(rns_enqueue) == 1
+            assert rns_enqueue[0].kwargs["destination"] == "meshtastic"
+            assert rns_enqueue[0].kwargs["payload"]["message"] == \
+                "[RNS:abcd] queue-path check"
+
 
 # ---------------------------------------------------------------------------
 # _resolve_mesh_destination
@@ -1037,6 +1141,21 @@ class TestRequeueFailedMessage:
             destination_id=None, content="fail",
         )
         assert bridge._requeue_failed_message(msg, "rns") is False
+
+    def test_bytes_content_serializes_as_str(self, bridge):
+        """Retry payload must be JSON-serializable: decode bytes to str."""
+        mock_queue = MagicMock()
+        bridge._persistent_queue = mock_queue
+
+        from gateway.rns_bridge import BridgedMessage
+        msg = BridgedMessage(
+            source_network="rns", source_id="abc",
+            destination_id=None, content=b"retry with bytes",
+        )
+        assert bridge._requeue_failed_message(msg, "meshtastic") is True
+        call = mock_queue.enqueue.call_args
+        assert call.kwargs["payload"]["message"] == "retry with bytes"
+        assert isinstance(call.kwargs["payload"]["message"], str)
 
 
 # ---------------------------------------------------------------------------
