@@ -502,6 +502,7 @@ apt-get install -y -qq \
     git wget curl gnupg \
     libusb-1.0-0 \
     mosquitto mosquitto-clients \
+    tmux \
     &>/dev/null
 
 echo -e "  ${GREEN}✓ System dependencies installed${NC}"
