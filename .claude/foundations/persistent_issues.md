@@ -552,3 +552,65 @@ already satisfied on moc3 (`/usr/bin/python3` + system-wide meshtastic 2.7.8).
 
 **Prevention**: do not re-enable casually. The gateway owns the text-bridging contract;
 this plugin is complementary infrastructure, not a replacement.
+
+
+---
+
+## Issue #37: NomadNet AuthenticationError on startup — rnsd rpc_key mismatch (2026-04-20)
+
+**Symptom**: NomadNet crashes on startup with a Python traceback ending in:
+```
+File ".../RNS/Reticulum.py", line 1094, in get_rpc_client
+    return multiprocessing.connection.Client(
+        self.rpc_addr, family=self.rpc_type, authkey=self.rpc_key)
+File ".../multiprocessing/connection.py", line 964, in answer_challenge
+    raise AuthenticationError('digest sent was rejected')
+```
+Observed on moc1 and moc2 with fresh NomadNet installs. Repeating at every launch attempt.
+
+**Root cause**: RNS shared-instance RPC uses `multiprocessing.connection.Client` with an
+authkey derived from the RNS config that NomadNet loaded. If the **rnsd daemon** currently
+listening on `@rns/default` was started with a DIFFERENT config dir (or a config that has
+since been regenerated), its authkey differs and it rejects the client's digest.
+
+Common triggers:
+1. rnsd was started before `/etc/reticulum/config` existed (systemd auto-start on first
+   boot), so it generated a key from `~/.reticulum/config` which has since been replaced.
+2. `/etc/reticulum/config` was regenerated/edited after rnsd already loaded an older
+   version — rnsd is still running with the old key.
+3. A stale rnsd process from a prior install is still bound to `@rns/default` while a
+   newer rnsd's config is what we expect to see.
+4. Two users on the same box each have their own `~/.reticulum/config` and whichever
+   rnsd won the race owns the abstract socket; the loser's config diverges.
+
+**Not the cause on this fleet**: missing `--rnsconfig` flag. MeshForge's TUI launcher
+always passes `--rnsconfig /etc/reticulum` via `_get_rns_config_for_user()`
+(`src/launcher_tui/handlers/nomadnet.py:188`). The flag is unconditionally present.
+
+**Wrapper patch (shipped in version 6)**: `nomadnet_wrapper.py` now catches
+`multiprocessing.context.AuthenticationError` in `_safe_get_interface_stats`. NomadNet
+starts without interface stats instead of crashing. See
+`src/launcher_tui/handlers/_nomadnet_install_utils.py:_WRAPPER_VERSION` to force
+re-creation on each fleet box. The wrapper is regenerated on every NomadNet launch via
+TUI if the version marker changed.
+
+**Diagnostic checklist** when AuthenticationError reappears on a box:
+1. `ps -ef | grep rnsd` — note PID, config flag (`-c` or absence), start time. If
+   rnsd is older than `/etc/reticulum/config`, it loaded a pre-edit key.
+2. `sudo systemctl status rnsd` — confirm it's the systemd-managed one, not a
+   leftover. Start time here vs. file mtime of `/etc/reticulum/config` is the tell.
+3. `grep -r rpc_key /etc/reticulum ~/.reticulum 2>/dev/null` — any explicit
+   `shared_instance_rpc_key` entries? If present and different, that's the proof.
+4. `ls -la /home/*/.reticulum/config 2>/dev/null` — are there competing per-user
+   configs any fleet script might race with?
+5. `lsof 2>/dev/null | grep '@rns/default'` — identify which PID currently owns the
+   abstract socket.
+
+**Real fix** (manual, per-box): `sudo systemctl restart rnsd` **after** `/etc/reticulum/config`
+is in its final state. That forces rnsd to re-derive the key from the current config, aligning
+with what NomadNet loads on next start.
+
+**Prevention**: MeshForge install paths should order "write /etc/reticulum/config" BEFORE
+"start rnsd" (not the reverse). If the Issue #37 wrapper patch masks the crash, a follow-up
+preflight check should explicitly probe the RPC socket and warn the operator — that's
+future work, not part of this ship.

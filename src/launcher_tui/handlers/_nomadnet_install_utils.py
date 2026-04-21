@@ -414,7 +414,7 @@ class NomadNetInstallUtilsMixin:
     # NomadNet wrapper (monkey-patch broken RPC)
     # ------------------------------------------------------------------
 
-    _WRAPPER_VERSION = "5"  # bump to force re-creation
+    _WRAPPER_VERSION = "6"  # bump to force re-creation
 
     def _create_nomadnet_wrapper(self) -> Optional[Path]:
         """Create a wrapper script that patches get_interface_stats.
@@ -434,25 +434,50 @@ class NomadNetInstallUtilsMixin:
         wrapper_path = wrapper_dir / 'nomadnet_wrapper.py'
 
         wrapper_content = '''\
-"""MeshForge NomadNet wrapper — patches RPC ConnectionRefusedError.
+"""MeshForge NomadNet wrapper — patches RPC failures during startup.
 
 Version: {version}
 
-NomadNet crashes when rnsd RPC management socket is not listening.
-This wrapper patches RNS.Reticulum.get_interface_stats to catch the
-error gracefully so NomadNet can still run (without interface stats).
+NomadNet's TextUI startup calls RNS.Reticulum.get_interface_stats(),
+which opens a multiprocessing.connection.Client to rnsd's RPC socket.
+When rnsd is unreachable OR when its rpc_key differs from the one our
+RNS config derived, NomadNet crashes before any UI appears. This
+wrapper monkey-patches get_interface_stats to swallow those failures
+and return an empty stats dict so NomadNet at least starts.
+
+Error classes caught:
+  - ConnectionRefusedError / BrokenPipeError / OSError: rnsd RPC down.
+  - AuthenticationError: rnsd running, but rpc_key mismatch — usually
+    config-dir drift (rnsd loaded a different /etc/reticulum/config
+    than NomadNet did, or ~/.reticulum vs /etc/reticulum split).
+  - TypeError / KeyError: malformed stats structure from upstream.
+
+NOT fixed by this wrapper: the underlying authkey mismatch. NomadNet
+will start but interface stats stay empty. See Issue #37 in
+.claude/foundations/persistent_issues.md for the diagnostic checklist.
 """
 import sys
+from multiprocessing.context import AuthenticationError
 import RNS
 
 _orig_get_interface_stats = RNS.Reticulum.get_interface_stats
 
 _FALLBACK = dict(interfaces=[])
 
+_SAFE_EXC = (
+    ConnectionRefusedError,
+    BrokenPipeError,
+    TypeError,
+    KeyError,
+    OSError,
+    AuthenticationError,
+)
+
+
 def _safe_get_interface_stats(self):
     try:
         result = _orig_get_interface_stats(self)
-    except (ConnectionRefusedError, BrokenPipeError, TypeError, KeyError, OSError):
+    except _SAFE_EXC:
         return _FALLBACK
     if not isinstance(result, dict) or 'interfaces' not in result:
         return _FALLBACK
