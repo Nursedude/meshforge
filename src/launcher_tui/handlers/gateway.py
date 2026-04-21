@@ -5,8 +5,11 @@ Converted from gateway_config_mixin.py as part of the mixin-to-registry migratio
 """
 
 import logging
+import re
+from pathlib import Path
 
 from handler_protocol import BaseHandler
+from utils.paths import get_real_user_home
 from utils.safe_import import safe_import
 from gateway.circuit_breaker import get_all_registries
 
@@ -83,6 +86,7 @@ class GatewayHandler(BaseHandler):
                 ("telemetry", "Telemetry Settings"),
                 ("templates", "Load Template"),
                 ("validate", "Validate Config"),
+                ("audit", "Delivery Audit       Recent bridged msgs + NomadNet path"),
                 ("save", "Save Configuration"),
                 ("back", "Back"),
             ])
@@ -122,6 +126,7 @@ class GatewayHandler(BaseHandler):
                 "telemetry": ("Telemetry Settings", self._config_telemetry),
                 "templates": ("Load Template", self._load_template),
                 "validate": ("Validate Config", self._validate_gateway_config),
+                "audit": ("Delivery Audit", self._show_delivery_audit),
             }
             entry = dispatch.get(choice)
             if entry:
@@ -735,3 +740,137 @@ class GatewayHandler(BaseHandler):
         lines.insert(2, f"Status: {status}")
 
         self.ctx.dialog.msgbox("Validation Results", "\n".join(lines), width=60, height=25)
+
+    def _show_delivery_audit(self, config):
+        """Show recent gateway LXMF deliveries + the NomadNet conversation path.
+
+        Answers the recurring operator question "I sent a message on the mesh —
+        where did it land in NomadNet?" by pairing gateway log evidence with
+        the conversation directory under ~/.nomadnetwork/storage/conversations/
+        that the bridged messages actually land in (indexed by the GATEWAY's
+        own LXMF source hash — see Issue #35 in persistent_issues.md).
+        """
+        home = get_real_user_home()
+        log_dir = home / ".config" / "meshforge" / "logs"
+        nomadnet_conv_dir = home / ".nomadnetwork" / "storage" / "conversations"
+
+        bridge_lines = self._recent_bridge_log_lines(log_dir, max_lines=20)
+        gateway_hash, hash_source = self._resolve_gateway_lxmf_hash(nomadnet_conv_dir)
+        convs = self._recent_nomadnet_conversations(nomadnet_conv_dir, limit=5)
+
+        lines = [
+            "GATEWAY DELIVERY AUDIT",
+            "=" * 50,
+            "",
+            "Recent bridged messages (from gateway log):",
+        ]
+        if bridge_lines:
+            lines.extend(f"  {ln}" for ln in bridge_lines)
+        else:
+            lines.append("  (no recent 'Message bridged' / 'LXMF delivery' entries)")
+            lines.append(f"  Searched: {log_dir}")
+
+        lines.extend([
+            "",
+            "Gateway LXMF source hash (conversation key):",
+            f"  {gateway_hash}  ({hash_source})",
+            "",
+            "NomadNet conversations (most recently touched first):",
+        ])
+        if convs:
+            for conv_hash, mtime, count in convs:
+                marker = "  * " if conv_hash == gateway_hash else "    "
+                lines.append(f"{marker}{conv_hash[:16]}...  {mtime}  ({count} msgs)")
+            lines.append("")
+            lines.append("  * = your gateway; open this conversation in NomadNet to see")
+            lines.append("      messages bridged FROM your mesh. Text is prefixed with")
+            lines.append("      [Mesh:xxxx] where xxxx is the sender's last 4 node-id hex.")
+        else:
+            lines.append(f"  (none found under {nomadnet_conv_dir})")
+
+        self.ctx.dialog.msgbox(
+            "Gateway Delivery Audit", "\n".join(lines), width=70, height=25
+        )
+
+    @staticmethod
+    def _recent_bridge_log_lines(log_dir: Path, max_lines: int = 20) -> list:
+        """Pull the tail of 'Message bridged' / 'LXMF delivery' log entries."""
+        if not log_dir.is_dir():
+            return []
+        logs = sorted(log_dir.glob("meshforge_*.log"), reverse=True)[:2]
+        if not logs:
+            return []
+        pattern = re.compile(r"(Message bridged|LXMF delivery confirmed|Bridge Mesh\S+)")
+        hits: list = []
+        for log_path in logs:
+            try:
+                with log_path.open("r", errors="replace") as fh:
+                    for line in fh:
+                        if pattern.search(line):
+                            hits.append(line.rstrip())
+            except OSError as e:
+                logger.debug("Audit: could not read %s: %s", log_path, e)
+        compact = [
+            ln.split(" | ", 2)[-1] if " | " in ln else ln
+            for ln in hits[-max_lines:]
+        ]
+        return compact
+
+    @staticmethod
+    def _recent_nomadnet_conversations(conv_dir: Path, limit: int = 5) -> list:
+        """List conversations by most-recent-file mtime. Returns (hash, time_str, count)."""
+        import time
+        if not conv_dir.is_dir():
+            return []
+        rows = []
+        for child in conv_dir.iterdir():
+            if not child.is_dir():
+                continue
+            try:
+                files = [f for f in child.iterdir() if f.is_file()]
+                if not files:
+                    continue
+                newest = max(f.stat().st_mtime for f in files)
+                rows.append((child.name, newest, len(files)))
+            except OSError as e:
+                logger.debug("Audit: could not stat %s: %s", child, e)
+        rows.sort(key=lambda r: r[1], reverse=True)
+        return [
+            (h, time.strftime("%Y-%m-%d %H:%M", time.localtime(t)), c)
+            for h, t, c in rows[:limit]
+        ]
+
+    @staticmethod
+    def _resolve_gateway_lxmf_hash(conv_dir: Path) -> tuple:
+        """Best-effort resolve the gateway's LXMF source hash.
+
+        Preferred: load via RNS.Identity.from_file on gateway_identity.
+        Fallback: pick the conversation dir with the most files — gateway
+        bridging aggregates all mesh->RNS traffic under its own hash, so
+        that conversation has the highest file count on a typical NOC box.
+        """
+        identity_path = (
+            get_real_user_home() / ".config" / "meshforge" / "gateway_identity"
+        )
+        if identity_path.exists():
+            try:
+                import RNS  # type: ignore
+                ident = RNS.Identity.from_file(str(identity_path))
+                if ident is not None and hasattr(ident, "hash"):
+                    return ident.hash.hex(), "from gateway_identity"
+            except Exception as e:
+                logger.debug("Audit: could not load identity via RNS: %s", e)
+        if conv_dir.is_dir():
+            try:
+                candidates = []
+                for child in conv_dir.iterdir():
+                    if not child.is_dir():
+                        continue
+                    count = sum(1 for _ in child.iterdir())
+                    candidates.append((count, child.name))
+                if candidates:
+                    candidates.sort(reverse=True)
+                    return candidates[0][1], "inferred from largest conversation"
+            except OSError as e:
+                logger.debug("Audit: could not scan conv dir: %s", e)
+        return "(unknown)", "identity not loadable, no conversations yet"

@@ -399,14 +399,19 @@ Remaining: field TX validation with a second Meshtastic radio on the `meshforge`
    subscribes to `msh/{REGION}/2/json/{CHANNEL_NAME}/#`. Default config ships with `"LongFast"`.
    Update both `meshtastic.mqtt_channel` and `mqtt_bridge.channel` to the actual channel name.
 
-4. **Local HAT TX does NOT uplink to MQTT**. Only RX from other nodes is uplinked. To exercise
-   the RX path without a second physical node: publish a simulated packet directly to MQTT:
+4. **Local HAT TX uplink to MQTT depends on firmware**. ~~Only RX from other nodes is uplinked.~~
+   **UPDATED 2026-04-20 (fleet-host-3, meshtasticd 2.7.15)**: the local HAT's own TX *does* uplink when
+   `mqtt.enabled=true`, `mqtt.json_enabled=true`, and the sending channel has `uplinkEnabled=true`.
+   A send of `meshtastic --host localhost --sendtext 'probe' --ch-index 2 --dest '!ffffffff'`
+   appears on `msh/US/2/json/meshforge/{local_node_id}` within ~1s and is bridged to NomadNet
+   end-to-end (confirmed by `Message bridged` gateway log + conversation file under
+   `~/.nomadnetwork/storage/conversations/<gateway_hash>/`). Older firmware may suppress local TX —
+   if you hit a silent bridge on an older fleet box, upgrade meshtasticd before blaming the gateway.
+   To exercise the RX path without a HAT at all (synthetic probe):
    ```
    mosquitto_pub -h 127.0.0.1 -t 'msh/US/2/json/meshforge/!deadbeef' \
      -m '{"payload":{"text":"test"},"sender":"!deadbeef","type":"text","channel":2,"to":4294967295,"from":3735928559}'
    ```
-   Gateway parses JSON, routes `bridge_to_rns`, delivers LXMF to `default_lxmf_destination`,
-   NomadNet creates a conversation dir under `~/.nomadnetwork/storage/conversations/<gw_hash>`.
 
 5. **traffic.log permission noise**. `monitoring/traffic_storage.py` tries to write to
    `~/.cache/meshforge/logs/traffic.log`; fails with `Errno 13` when the dir doesn't exist or
@@ -468,3 +473,82 @@ mosquitto_pub -h 127.0.0.1 -u mesh_publish -P <pass> \
   `mosquitto_pub` commands that assume a topic shape.
 - When adding MQTT topic logic, default to subscribing to every plausible shape
   rather than one "correct" one — MQTT wildcards can't match structurally different paths.
+
+
+---
+
+## Issue #35: Gateway-delivered LXMF lands under GATEWAY's hash, not receiver's (2026-04-20)
+
+**Symptom**: operator sends from local Meshtastic HAT on channel `meshforge`, gateway logs
+`Message bridged: meshtastic -> !ffffffff` and `LXMF delivery confirmed`, but NomadNet appears
+not to show the message. Classic "I sent it, where did it go?"
+
+**Root cause (not a bug)**: the receiving NomadNet indexes the conversation by the LXMF
+**sender** identity — which is the **gateway's own** source hash (`f68c2f56…` on fleet-host-3) —
+NOT by the `default_lxmf_destination` (which is the RECEIVING NomadNet's own hash) or by the
+original Meshtastic node id. Operators looking for a new "inbox" under their own identity, or a
+new conversation per-Meshtastic-node, will not find one.
+
+**Verification recipe**:
+```
+ls -lt ~/.nomadnetwork/storage/conversations/<gateway_lxmf_source_hash>/ | head
+```
+The newest file's mtime should match the send time. Content check:
+```
+strings -n 6 <that_file> | grep -E '^\[Mesh:'
+```
+Look for `[Mesh:<last-4-of-sender-nodeid>] <your text>`.
+
+**Operator guidance**: open the conversation indexed by the GATEWAY's hash in NomadNet.
+The text body is prefixed with `[Mesh:xxxx]` where `xxxx` is the last 4 hex chars of the
+originating Meshtastic node id. All bridged traffic for a given gateway aggregates into that
+single conversation — one-to-many from the NomadNet user's perspective.
+
+**Prevention**: the TUI now has a **Delivery Audit** entry under the Gateway Bridge menu that
+lists recent `Message bridged` / `LXMF delivery confirmed` log lines along with the gateway's
+LXMF source hash and the NomadNet conversation path, so operators can navigate to the right
+thread without filesystem spelunking. See `src/launcher_tui/handlers/gateway.py` → `_show_delivery_audit`.
+
+
+---
+
+## Issue #36: Meshtastic_Interface rnsd plugin — present, disabled, bypasses MeshForge (2026-04-20)
+
+**State on fleet-host-3**: `/etc/reticulum/interfaces/Meshtastic_Interface.py.disabled` exists. The
+config stanza `[[Meshtastic Gateway]]` is present in `/etc/reticulum/config` but points at a
+file rnsd won't load (`.disabled` suffix). Template source:
+`/opt/meshforge/templates/interfaces/Meshtastic_Interface.py`.
+
+**What it does (if enabled)**: holds a persistent TCP client on meshtasticd `:4403`, subscribes
+to `meshtastic.receive` pubsub, and forwards packets with `decoded.portnum == RETICULUM_TUNNEL_APP`
+only — plain Meshtastic text is ignored. Outbound sends fragment at 200B and `sendData(portNum=
+RETICULUM_TUNNEL_APP, ...)`. It is effectively a native RNS-over-Meshtastic transport, not a text
+bridge.
+
+**What enabling it would LOSE vs. the MeshForge gateway**:
+- `gateway/message_routing.py` rules (direction, source/dest/message regex filters)
+- `~/.cache/meshforge/logs/gateway.log` audit trail and delivery stats
+- `gateway/message_queue.py` persistent retry queue
+- LXMF source identity aggregation under `f68c2f56…`
+- Support for plain Meshtastic text at all
+
+**Coexistence with current gateway** (`mqtt_bridge` mode): NO port conflict — the gateway uses
+MQTT for RX and HTTP `/api/v1/toradio` for TX, never holding `:4403`. The plugin could be
+enabled alongside without fighting for the TCP slot. It would only trigger for inbound packets
+carrying the RNS tunnel portnum.
+
+**Decision (2026-04-20): keep disabled.** No current use case needs RNS-tunneled Meshtastic
+traffic, and the existing bridge handles text end-to-end. If a future use case appears (e.g.
+native RNS nodes talking to remote RNS peers over LoRa without any MQTT broker present), enable
+with:
+```
+sudo mv /etc/reticulum/interfaces/Meshtastic_Interface.py.disabled \
+        /etc/reticulum/interfaces/Meshtastic_Interface.py
+sudo systemctl restart rnsd
+sudo journalctl -u rnsd -n 50   # expect "Meshtastic: Opening tcp device..."
+```
+Requires `python3 -c 'import meshtastic'` to succeed from rnsd's interpreter (Issue #24) —
+already satisfied on fleet-host-3 (`/usr/bin/python3` + system-wide meshtastic 2.7.8).
+
+**Prevention**: do not re-enable casually. The gateway owns the text-bridging contract;
+this plugin is complementary infrastructure, not a replacement.
