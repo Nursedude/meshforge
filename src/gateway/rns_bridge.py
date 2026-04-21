@@ -6,6 +6,7 @@ MeshCore bridge processing extracted to meshcore_bridge_mixin.py.
 RNS/LXMF connection lifecycle extracted to _rns_bridge_connection.py.
 """
 
+import re
 import threading
 import time
 import logging
@@ -686,8 +687,21 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin):
             return False
         return self._mesh_handler.send_text(message, destination, channel)
 
-    def send_to_rns(self, message: str, destination_hash: bytes = None) -> bool:
-        """Send a message to RNS network via LXMF"""
+    def send_to_rns(
+        self,
+        message: str,
+        destination_hash: bytes = None,
+        title: str = None,
+        fields: dict = None,
+    ) -> bool:
+        """Send a message to RNS network via LXMF.
+
+        Optional ``title`` and ``fields`` let the caller carry structured
+        sender identity (Mesh→RNS path uses this to surface the originating
+        Meshtastic node's long_name + full id). When omitted, falls back
+        to the legacy gateway-branded title with no extra fields — keeps
+        the persistent-queue retry call site behavior unchanged.
+        """
         if not self._connected_rns:
             logger.warning("Not connected to RNS")
             return False
@@ -735,7 +749,8 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin):
                 destination,
                 self._lxmf_source,
                 message,
-                "MeshForge Gateway"
+                title or "MeshForge Gateway",
+                fields=fields,
             )
 
             # Track delivery confirmation
@@ -1268,12 +1283,40 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin):
     def _process_mesh_to_rns(self, msg: BridgedMessage):
         """Process message from Meshtastic to RNS.
 
+        Identity is carried in the LXMF title and fields dict so that
+        RNS peers (NomadNet etc.) can distinguish which Meshtastic node
+        a bridged message originated from. Body stays clean.
+
         On send failure for non-broadcast messages, attempts to persist
         to the persistent queue for later retry.
         """
         try:
-            prefix = f"[Mesh:{msg.source_id[-4:]}] " if msg.source_id else "[Mesh] "
-            content = prefix + msg.content
+            content = msg.content
+
+            long_name = ""
+            short_name = ""
+            if msg.source_id and getattr(self, 'node_tracker', None):
+                try:
+                    node = self.node_tracker.get_node_by_mesh_id(msg.source_id)
+                    if node:
+                        long_name = node.name or ""
+                        short_name = getattr(node, 'short_name', '') or ""
+                except Exception as e:
+                    logger.debug(f"node_tracker lookup failed for {msg.source_id}: {e}")
+
+            source_id = msg.source_id or "unknown"
+            if long_name:
+                title = f"{long_name} ({source_id}) via Meshtastic"
+            else:
+                title = f"{source_id} via Meshtastic"
+
+            fields = {
+                "meshforge_from_id": source_id,
+                "meshforge_from_long": long_name,
+                "meshforge_from_short": short_name,
+                "meshforge_channel": (msg.metadata or {}).get("channel", ""),
+                "meshforge_source_network": "meshtastic",
+            }
 
             destination_hash = None
             if msg.destination_id and not msg.is_broadcast:
@@ -1287,8 +1330,8 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin):
                 except ValueError:
                     logger.warning("Invalid default_lxmf_destination hex in config")
 
-            if self.send_to_rns(content, destination_hash):
-                logger.info(f"Bridge Mesh→RNS: {content[:50]}...")
+            if self.send_to_rns(content, destination_hash, title=title, fields=fields):
+                logger.info(f"Bridge Mesh→RNS: {title} — {content[:50]}")
                 with self._stats_lock:
                     self.stats['messages_mesh_to_rns'] += 1
                 self.health.record_message_sent("mesh_to_rns")
@@ -1352,16 +1395,60 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin):
             logger.error(f"Failed to persist message for retry: {e}")
             return False
 
+    def _resolve_mesh_destination(self, addr_token: str) -> Optional[str]:
+        """Resolve an ``@address`` token to a Meshtastic node id.
+
+        Accepts ``!abcdef12`` (hex id) directly, or a short_name that
+        node_tracker can uniquely resolve. Returns the canonical
+        ``!xxxxxxxx`` form, or None when unresolvable or ambiguous —
+        the caller falls through to broadcast on None rather than
+        silently misdelivering.
+        """
+        if not addr_token:
+            return None
+        hex_match = re.match(r'^!([0-9a-fA-F]{8})$', addr_token)
+        if hex_match:
+            return f"!{hex_match.group(1).lower()}"
+        if getattr(self, 'node_tracker', None):
+            try:
+                node = self.node_tracker.get_node_by_short_name(addr_token)
+                if node and node.meshtastic_id:
+                    return node.meshtastic_id
+            except Exception as e:
+                logger.debug(f"short_name resolve failed for {addr_token!r}: {e}")
+        return None
+
     def _process_rns_to_mesh(self, msg: BridgedMessage):
         """Process message from RNS to Meshtastic.
+
+        Supports directed downlink via a leading ``@!xxxxxxxx`` or
+        ``@shortname`` token in the message body. When resolvable, the
+        token is stripped and the message is sent as a Meshtastic DM
+        to that node. Unresolvable or absent = broadcast (unchanged).
 
         In mqtt_bridge mode, routes through the persistent queue for
         reliable delivery with retry. Otherwise sends directly and
         persists to queue on failure.
         """
         try:
+            body = msg.content or ""
+            destination = None
+            if body.startswith('@'):
+                parts = body.split(None, 1)
+                if len(parts) == 2:
+                    addr_token = parts[0][1:]
+                    resolved = self._resolve_mesh_destination(addr_token)
+                    if resolved:
+                        destination = resolved
+                        body = parts[1]
+                    else:
+                        logger.info(
+                            f"RNS→Mesh: @address {addr_token!r} unresolved, "
+                            f"falling through to broadcast"
+                        )
+
             prefix = f"[RNS:{msg.source_id[:4]}] "
-            content = prefix + msg.content
+            content = prefix + body
 
             # In mqtt_bridge mode, use persistent queue for reliable delivery
             if (self._persistent_queue
@@ -1371,6 +1458,7 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin):
                     'message': content,
                     'channel': self.config.meshtastic.channel,
                     'source_id': msg.source_id,
+                    'destination': destination,
                 }
                 msg_id = self._persistent_queue.enqueue(
                     payload=payload,
@@ -1378,15 +1466,21 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin):
                     priority=MessagePriority.NORMAL,
                 )
                 if msg_id:
-                    logger.info(f"Bridge RNS→Mesh (queued): {content[:50]}...")
+                    tag = f" -> {destination}" if destination else ""
+                    logger.info(f"Bridge RNS→Mesh (queued{tag}): {content[:50]}...")
                     with self._stats_lock:
                         self.stats['messages_rns_to_mesh'] += 1
                     self.health.record_message_sent("rns_to_mesh")
                     return
 
             # Direct send (non-MQTT mode or queue unavailable)
-            if self.send_to_meshtastic(content, channel=self.config.meshtastic.channel):
-                logger.info(f"Bridge RNS→Mesh: {content[:50]}...")
+            if self.send_to_meshtastic(
+                content,
+                destination=destination,
+                channel=self.config.meshtastic.channel,
+            ):
+                tag = f" -> {destination}" if destination else ""
+                logger.info(f"Bridge RNS→Mesh{tag}: {content[:50]}...")
                 with self._stats_lock:
                     self.stats['messages_rns_to_mesh'] += 1
                 self.health.record_message_sent("rns_to_mesh")

@@ -716,20 +716,30 @@ class MQTTBridgeHandler(BaseMessageHandler):
         message = payload.get('message', '')
         channel = payload.get('channel', 0)
         source_id = payload.get('source_id', 'meshforge')
+        destination = payload.get('destination')
 
         if not message:
             return False
 
         mqtt_cfg = self.config.mqtt_bridge
 
-        # Build JSON payload matching meshtasticd format
-        mqtt_payload = json.dumps({
+        mqtt_body = {
             "from": 0,
             "payload": {"text": message},
             "sender": source_id,
             "type": "text",
             "channel": channel,
-        })
+        }
+        if isinstance(destination, str) and destination.startswith('!'):
+            try:
+                mqtt_body["to"] = int(destination[1:], 16)
+            except ValueError:
+                logger.warning(
+                    f"Invalid destination hex in payload, sending as broadcast: "
+                    f"{destination!r}"
+                )
+
+        mqtt_payload = json.dumps(mqtt_body)
 
         # Publish to the JSON topic. Match meshtasticd's publish shape:
         # include region only when configured (some daemon builds omit it).
