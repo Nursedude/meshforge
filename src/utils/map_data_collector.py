@@ -19,6 +19,7 @@ import math
 import os
 import socket
 import subprocess
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -88,6 +89,15 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
         self._cache_file = self._cache_dir / "map_nodes.geojson"
         self._last_collect: Optional[float] = None
         self._cached_geojson: Optional[Dict] = None
+
+        # Serialize concurrent collect() callers. The HTTP server is
+        # ThreadingHTTPServer (one thread per request), so two parallel
+        # /api/nodes/geojson requests during a cache miss would both race
+        # through the source collection and both stomp on per-call state
+        # (self._nodes_without_position reset at the top of collect()).
+        # Lock here means the second caller waits briefly and then gets
+        # the freshly-populated cache from the first caller's run.
+        self._collect_lock = threading.Lock()
 
         # User-configurable cache age settings
         self._settings = SettingsManager(
@@ -365,11 +375,28 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
         Returns:
             GeoJSON FeatureCollection with all known nodes.
         """
-        # Use cache if fresh enough
+        # Fast path — cache hit, no lock needed. Class attrs are pointer
+        # reassignments, atomic under the GIL. Worst case during a cache
+        # write is a stale read of _cached_geojson, which is acceptable.
         if (self._cached_geojson and self._last_collect and
                 time.time() - self._last_collect < max_age_seconds):
             return self._cached_geojson
 
+        # Slow path — collection happens under the lock so concurrent
+        # callers don't double-collect (wasteful) or race on per-call
+        # state (_nodes_without_position reset below). The second caller
+        # blocks briefly and then sees the first caller's fresh cache.
+        with self._collect_lock:
+            # Re-check cache inside the lock: while we waited, the holder
+            # may have populated it and we can just return their result.
+            if (self._cached_geojson and self._last_collect and
+                    time.time() - self._last_collect < max_age_seconds):
+                return self._cached_geojson
+
+            return self._collect_locked()
+
+    def _collect_locked(self) -> Dict[str, Any]:
+        """Actual collection body. Caller MUST hold self._collect_lock."""
         # Reset per-call state so diagnostics/nodes_without_position reflect THIS run only.
         self._nodes_without_position = []
         self._source_diagnostics = {}
