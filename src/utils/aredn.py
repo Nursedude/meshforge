@@ -288,7 +288,12 @@ class AREDNClient:
         if not data:
             return None
 
-        node = AREDNNode(hostname=self.hostname)
+        # Prefer the AREDN-reported node name ("WH6GXZ-6-BI-ECOM") over whatever
+        # hostname the caller used to reach the device ("localnode.local.mesh").
+        # The reported name is stable across DNS shape, matches the AREDN worldmap
+        # CSV's `node` column, and is what operators recognize.
+        reported_name = data.get('node')
+        node = AREDNNode(hostname=reported_name or self.hostname)
         if self.ip:
             node.ip = self.ip
 
