@@ -175,10 +175,7 @@ class EventBus:
             subscribers = self._subscribers.get(event_type, []).copy()
 
         if not subscribers:
-            logger.debug(f"Event '{event_type}' emitted with no subscribers")
             return
-
-        logger.debug(f"Emitting '{event_type}' to {len(subscribers)} subscribers")
 
         # Dispatch callbacks to bounded thread pool (max 4 workers).
         # Previous implementation spawned a new Thread per subscriber per emit,
