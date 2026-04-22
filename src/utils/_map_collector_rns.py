@@ -32,13 +32,17 @@ def _rns_is_initialized() -> bool:
     ``RNS/Reticulum.py:225``). The collector runs every 60s; we must
     init exactly once per process and read ``Transport.path_table``
     directly on subsequent cycles.
+
+    Uses the public ``RNS.Reticulum.get_instance()`` classmethod rather
+    than peeking at the name-mangled ``_Reticulum__instance`` attr
+    (that was fragile against rns minor-version changes).
     """
     if not _HAS_RNS:
         return False
-    # Reticulum stores its single instance in a name-mangled class attr.
-    # _Reticulum__instance is RNS's own invariant; if they rename it the
-    # fallback (OSError catch on init attempt) still covers us.
-    return getattr(_RNS.Reticulum, '_Reticulum__instance', None) is not None
+    try:
+        return _RNS.Reticulum.get_instance() is not None
+    except Exception:
+        return False
 
 
 class RNSDataCollectorMixin:
@@ -111,13 +115,26 @@ class RNSDataCollectorMixin:
                 client_config_file.write_text("\n".join(lines) + "\n")
                 try:
                     _RNS.Reticulum(configdir=str(client_config_dir))
-                except OSError as e:
-                    # Another component in this process initialized RNS before
-                    # us (e.g. node_tracker on the gateway path). Transport is
-                    # already live — fall through and use it.
-                    if "reinitialise" not in str(e).lower():
+                except (OSError, ValueError) as e:
+                    # Two known cases where init fails but Transport is still
+                    # usable and we should not record 'unreachable':
+                    #   1. "Attempt to reinitialise Reticulum" — another
+                    #      component beat us to init (gateway path).
+                    #   2. "signal only works in main thread of the main
+                    #      interpreter" — init ran in a ThreadingHTTPServer
+                    #      worker thread and failed at signal.signal()
+                    #      registration (RNS/Reticulum.py:349). At that point
+                    #      Reticulum.__instance is ALREADY set (line 226,
+                    #      before the signal call), so get_instance() returns
+                    #      a partially-initialized object and Transport is
+                    #      running. Ideally pre-warm from the main thread
+                    #      prevents this (see MapServer._prewarm_collector),
+                    #      but catch it here as a second line of defense.
+                    msg = str(e).lower()
+                    if "reinitialise" in msg or "main thread" in msg:
+                        logger.debug("RNS already partially-initialized (%s) — reusing", e)
+                    else:
                         raise
-                    logger.debug("RNS already initialized by another component — reusing")
 
             # Check for known destinations in path table
             if hasattr(_RNS.Transport, 'path_table') and _RNS.Transport.path_table:
