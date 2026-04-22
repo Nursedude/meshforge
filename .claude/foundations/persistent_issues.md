@@ -558,3 +558,82 @@ not_configured vs unreachable distinction, and the `_collect_via_http`
 extend-not-overwrite contract.
 
 
+---
+
+## Issue #44: Map server threading — RNS main-thread invariant (2026-04-22)
+
+**Background**: `meshforge-map` (`src/utils/map_data_service.py`) switched
+from single-threaded `HTTPServer` to `ThreadingHTTPServer` to unblock the
+stall where a slow `/api/nodes/geojson` (20MB for ~38k MeshCore features)
+blocked every subsequent request (fleet-host-3, 2026-04-22). Throughput was
+immediately better; a new regression surfaced in the same session.
+
+**The trap — RNS.Reticulum() must init from the main thread**.
+`RNS.Reticulum.__init__` at `RNS/Reticulum.py:349-350` unconditionally
+calls `signal.signal(SIGINT/SIGTERM, handler)`. CPython only allows
+signal handler registration from the main thread; any worker-thread
+caller raises `ValueError: signal only works in main thread of the main
+interpreter`. With `HTTPServer`, request handlers ran on the main thread
+and this never fired. With `ThreadingHTTPServer`, every request runs on
+a spawned worker; the first cache-miss `/api/status` or
+`/api/nodes/geojson` triggered `_collect_rns_direct` which called
+`Reticulum()` on the worker, and `rns_direct` ended up permanently
+recording `reason_if_zero: unreachable, notes: "signal only works in
+main thread..."`. Worse: at the point `signal.signal` raises,
+`Reticulum.__instance` has **already** been assigned (line 226, before
+the signal call at line 349), so the singleton is half-initialized and
+subsequent in-process code paths may trust it.
+
+**Design invariants** (must hold anywhere RNS + threaded HTTP coexist):
+
+1. **Pre-warm RNS from the main thread before accepting HTTP requests.**
+   `MapServer._prewarm_collector()` calls `collector.collect()` once on
+   the main thread in `start()` / `start_background()` before creating
+   `ThreadingHTTPServer`. This installs RNS signal handlers correctly;
+   subsequent worker-thread calls hit the singleton-reuse branch and
+   skip init.
+
+2. **Check the singleton via `RNS.Reticulum.get_instance()`, not
+   name-mangled attrs.** An earlier fix peeked at
+   `_Reticulum__instance` directly and sometimes returned False in a
+   worker even after main-thread init had set it (mechanism unknown —
+   possibly RNS-version-dependent name mangling). The public
+   `get_instance()` classmethod is stable across RNS 1.1.x.
+
+3. **Treat "signal only works in main thread" as benign in init catch
+   blocks.** If a worker-thread init does slip through, Transport is
+   already running (instance was assigned before signal failed). The
+   OSError handler in `_collect_rns_direct` now catches both "reinitialise"
+   AND "main thread" patterns and falls through to read
+   `Transport.path_table` instead of recording `unreachable`.
+
+4. **`MapDataCollector.collect()` must serialize**. Under threading, two
+   simultaneous cache-miss callers would stomp on `_nodes_without_position`
+   and `_source_diagnostics` (both reset at the top of each collection).
+   Fix: `threading.Lock`, cache-hit fast path outside the lock, inside-lock
+   cache re-check so the second caller returns the first caller's fresh
+   result.
+
+**Files**:
+- `src/utils/map_data_service.py` — `ThreadingHTTPServer`, `daemon_threads=True`,
+  `_prewarm_collector()` called from main thread in both start paths.
+- `src/utils/map_data_collector.py` — `self._collect_lock`, `collect()` +
+  `_collect_locked()` split.
+- `src/utils/_map_collector_rns.py` — `_rns_is_initialized()` uses
+  `get_instance()`; init `except` covers both `reinitialise` and
+  `main thread` OSError messages.
+
+**Tests**: `tests/test_map_data_collector_diagnostics.py`
+`TestCollectIsThreadSafe` — concurrent-caller dedup + cache-hit fast-path
+non-blocking under held lock.
+
+**Prevention**: any future code that calls `RNS.Reticulum()` (or any
+other stdlib function that registers signal handlers) from inside a
+web request handler must either (a) run on the main thread, or (b)
+ensure a prior main-thread call has already installed the handlers.
+The lint catalog (MF009 — "RNS.Reticulum() without configdir") is the
+nearest enforcement point; if this becomes a second source of bugs,
+extend MF009 to also flag calls outside known main-thread init sites.
+
+
+
