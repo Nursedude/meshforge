@@ -58,15 +58,20 @@ class RNSDataCollectorMixin:
             # 1. Creating a default config at /root/.reticulum/ (Path.home() bug MF001)
             # 2. Initializing interfaces that conflict with rnsd's bindings
             import tempfile
+            from utils.paths import ReticulumPaths
             client_config_dir = Path(tempfile.gettempdir()) / "meshforge_rns_client"
             client_config_dir.mkdir(exist_ok=True)
             client_config_file = client_config_dir / "config"
-            client_config_file.write_text(
-                "[reticulum]\n"
-                "  share_instance = Yes\n"
-                "  shared_instance_port = 37428\n"
-                "  instance_control_port = 37429\n"
-            )
+            lines = [
+                "[reticulum]",
+                "  share_instance = Yes",
+                "  shared_instance_port = 37428",
+                "  instance_control_port = 37429",
+            ]
+            rpc_key = ReticulumPaths.get_shared_rpc_key()
+            if rpc_key:
+                lines.append(f"  shared_instance_rpc_key = {rpc_key}")
+            client_config_file.write_text("\n".join(lines) + "\n")
             reticulum = _RNS.Reticulum(configdir=str(client_config_dir))
 
             # Check for known destinations in path table

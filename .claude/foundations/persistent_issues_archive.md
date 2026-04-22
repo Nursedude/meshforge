@@ -2,7 +2,7 @@
 
 > **Purpose**: Historical record of resolved issues.
 > These were moved from `persistent_issues.md` to reduce file size.
-> Last updated: 2026-03-13
+> Last updated: 2026-04-21
 >
 > **Note**: GTK-specific issues (#2, #11, #13, #14, #15) were removed during
 > the 2026-02-21 cleanup. GTK4 was removed in v0.5.x; TUI is the only interface.
@@ -184,3 +184,163 @@ Added thin dark-themed scrollbar CSS to `web/node_map.html`.
 See `handler_protocol.py` (Protocol + BaseHandler + TUIContext) and
 `handler_registry.py` (register/lookup/dispatch). 60 handler files in
 `launcher_tui/handlers/`. `main.py` dropped from 1,947 to 1,148 lines.
+
+
+---
+
+## Issue #17: Meshtastic Connection Contention (Single-Client TCP) — RESOLVED (2026-04-21 archived)
+
+**meshtasticd only supports ONE TCP client at a time.** Multiple components creating
+independent connections causes thrashing every 1-2 seconds.
+
+### Fix: Shared Connection Manager
+All components share ONE persistent connection via `get_connection_manager()`.
+Short-lived reads use `MeshtasticConnection` context manager.
+Long-lived connections acquire `MESHTASTIC_CONNECTION_LOCK`.
+
+### HTTP fromradio Contention Fix
+The `/api/v1/fromradio` endpoint is also single-consumer. `send_text_direct()` POSTs
+directly to `/api/v1/toradio` without ever reading fromradio. All TX paths use this.
+
+### Prevention (automated)
+- Lint `MF007` — no direct `TCPInterface()` outside connection infrastructure.
+- `TestTCPConnectionContract` — regression guard against new violations.
+- `TestFromradioContract` — TX must use `send_text_direct()`.
+
+
+---
+
+## Issue #18: Auto-Reconnect on Connection Drop — RESOLVED (2026-04-21 archived)
+
+Gateway uses health monitoring + exponential backoff (1s → 2s → 4s → ... → 30s max)
+in `rns_bridge.py`. All persistent connections should have health monitoring.
+Release connection manager resources on disconnect.
+
+### Status
+Behavioral pattern; no regression guards required. Still the correct pattern for any
+new persistent connection code — verify by reading the existing health-monitor in
+`rns_bridge.py` before writing new reconnect logic.
+
+
+---
+
+## Issue #19: RNS Node Discovery from path_table — RESOLVED (2026-04-21 archived)
+
+Use `RNS.Transport.path_table` (not just `destinations`) for complete routing info.
+**path_table may be empty immediately after connect** — use delayed checks (5s) and
+periodic re-checks (30s).
+
+Location: `src/gateway/node_tracker.py`
+
+### Status
+Stable implementation detail since 2026-02. Retain pattern if rewriting node
+discovery — don't re-introduce the `destinations`-only shortcut.
+
+
+---
+
+## Issue #20: Service Detection & Status Display — RESOLVED (2026-04-21 archived)
+
+All 3 components resolved:
+
+1. **Service Detection**: Simplified to systemctl-only for systemd services (SSOT)
+2. **Status Display**: Separates "service state" from "detection capability" —
+   never shows "FAILED" when service is running
+3. **RX Messages**: `event_bus.py` → `websocket_server.py` → TUI live feed
+
+### RNS Socket Detection
+RNS uses abstract Unix domain sockets (`\0rns/{instance_name}`), not UDP port 37428.
+Use `check_rns_shared_instance()` (3-tier: Unix socket → TCP → UDP fallback).
+
+### Prevention (automated)
+- Lint `MF008` — no raw `systemctl is-active` for service state (use `check_service()`).
+- `TestServiceCheckContract` — regression guard against raw `systemctl` state checks.
+- `TestKnownServicesConsistency` — keeps `KNOWN_SERVICES` correct.
+- `TestEventBusThreadPool` — event-bus emission contract stable.
+- UI-layer rule still in force: always distinguish "service state" from "detection
+  capability" in any new status display code.
+
+
+---
+
+## Issue #16: Gateway Message Routing Reliability — RESOLVED (2026-04-21 archived)
+
+Delivery is **best-effort** — inherent to mesh networking. Message queue persists
+to SQLite for retry. UI always shows "Sent (delivery not guaranteed)" or "Queued".
+
+Files: `commands/messaging.py`, `gateway/rns_bridge.py`, `gateway/message_queue.py`
+
+### Status
+Behavioral pattern, stable since early gateway bring-up. Retain UI wording and
+SQLite retry path in any new messaging flow — don't show "Delivered" for
+best-effort mesh transports.
+
+
+---
+
+## Issue #24: Python Environment Mismatch (rnsd + meshtastic module) — ARCHIVED (2026-04-21)
+
+rnsd's `Meshtastic_Interface.py` plugin requires the `meshtastic` Python module.
+pipx isolation, different Python versions, or user-vs-system site-packages can
+make the module invisible to rnsd.
+
+**Fix**: `sudo pip3 install --break-system-packages --ignore-installed meshtastic`
+or install into the interpreter rnsd uses: `head -1 $(which rnsd)` then use that
+interpreter's pip.
+
+**Diagnose**: `sudo python3 -c "import meshtastic; print(meshtastic.__version__)"`
+
+### Status
+Upstream-driven; stable since initial bring-up. Still a relevant footgun for
+fresh Pi installs — the plugin itself is disabled on the fleet per Issue #36.
+
+
+---
+
+## Issue #27: rnsd is OPTIONAL — ARCHIVED (2026-04-21)
+
+MeshForge supports two independent transports:
+- **MQTT** (mosquitto) — Meshtastic native. Used for preset bridging, monitoring.
+- **RNS** (rnsd) — Reticulum. Used for LXMF messaging, cross-protocol bridging.
+
+**Meshtastic preset bridging** (LF ↔ ST) needs only mosquitto — both radios MQTT
+uplink/downlink to the same broker with same channel/PSK. No gateway code needed.
+
+**Full NOC** (Meshtastic + RNS) uses both transports. They coexist independently.
+
+### Status
+Design principle, stable. When scoping a deployment, check whether RNS is
+actually required — many preset-bridging use cases don't need it.
+
+
+---
+
+## Issue #36: Meshtastic_Interface rnsd plugin — keep disabled (2026-04-20, archived 2026-04-21)
+
+**Decision**: the rnsd `Meshtastic_Interface.py` plugin is installed
+(`/etc/reticulum/interfaces/Meshtastic_Interface.py.disabled`) but NOT loaded.
+MeshForge's gateway owns the text-bridging contract.
+
+**Why disabled**: if enabled, the plugin forwards only packets with
+`decoded.portnum == RETICULUM_TUNNEL_APP` (native RNS-over-Meshtastic tunneling),
+which would bypass `gateway/message_routing.py`, the `gateway.log` audit trail,
+the SQLite retry queue, LXMF source identity aggregation, and all plain-text
+Meshtastic support.
+
+**Coexistence**: no port conflict with the current `mqtt_bridge` gateway (which
+uses MQTT for RX and HTTP `/api/v1/toradio` for TX, never holding `:4403`). The
+plugin could be enabled alongside without fighting for the TCP slot.
+
+**If a future use case needs it** (e.g. native RNS peers communicating over
+LoRa without any MQTT broker):
+```
+sudo mv /etc/reticulum/interfaces/Meshtastic_Interface.py.disabled \
+        /etc/reticulum/interfaces/Meshtastic_Interface.py
+sudo systemctl restart rnsd
+sudo journalctl -u rnsd -n 50   # expect "Meshtastic: Opening tcp device..."
+```
+Requires `python3 -c 'import meshtastic'` from rnsd's interpreter (Issue #24).
+
+### Status
+Stable decision; do not re-enable casually. The plugin is complementary
+infrastructure, not a gateway replacement.

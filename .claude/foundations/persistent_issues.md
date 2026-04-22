@@ -1,7 +1,7 @@
 # MeshForge Persistent Issues & Resolution Patterns
 
 > **Purpose**: Document recurring issues and their proper fixes to prevent regression.
-> **Last audited**: 2026-03-13 — Trimmed to <40k chars; resolved issues archived.
+> **Last audited**: 2026-04-21 — Trimmed to <40k chars; resolved issues archived.
 
 ---
 
@@ -20,7 +20,16 @@ Full history in `persistent_issues_archive.md`.
 | #8 Outdated Fallback Versions | Search hardcoded versions on bump | `grep -rn "0\.[0-9]\.[0-9]" src/` |
 | #9 Broad Exception Swallowing | 28/30 fixed; 2 benign by design | `grep except.*:.*pass` |
 | #10 Map Scrollbar Overlap | Thin dark-themed scrollbar CSS | — |
+| #4 Silent Debug Logging | ERROR/WARNING/INFO/DEBUG level guidance | Behavioral pattern |
+| #16 Best-Effort Delivery | SQLite retry queue + "Sent (not guaranteed)" UI wording | Behavioral pattern |
+| #17 TCP Connection Contention | Connection manager + `send_text_direct()` | Lint MF007 + `TestTCPConnectionContract` + `TestFromradioContract` |
+| #18 Auto-Reconnect | Health monitor + exp. backoff in `rns_bridge.py` | Behavioral pattern |
+| #19 RNS path_table discovery | `path_table` (not `destinations`), delayed re-checks | Implementation stable |
+| #20 Service Detection / Status | systemctl-only SSOT; state vs. capability separation | Lint MF008 + `TestServiceCheckContract` + `TestKnownServicesConsistency` |
+| #24 Python Env Mismatch (rnsd) | Install `meshtastic` module where rnsd's Python finds it | Upstream fix, stable |
 | #25, #26, #28 | rnsd ratchets, ReticulumPaths copies, API proxy | — |
+| #27 rnsd is OPTIONAL | Two independent transports (MQTT, RNS); preset bridging needs only mosquitto | Design principle |
+| #36 Meshtastic_Interface plugin | Keep rnsd's plugin disabled; MeshForge gateway owns text-bridging | Decision record |
 | GTK Issues (#2, #11, #13–#15) | GTK4 removed in v0.5.x | — |
 
 ---
@@ -92,13 +101,6 @@ regression when mosquitto wasn't detectable via systemctl.
 
 ---
 
-## Issue #4: Silent Debug-Level Logging
-
-Use appropriate log levels — don't hide errors at DEBUG:
-- **ERROR**: Something broke | **WARNING**: Unusual | **INFO**: User-visible ops | **DEBUG**: Dev internals
-
----
-
 ## Issue #6: Large Files — ALL UNDER THRESHOLD
 
 Only `knowledge_content.py` (1,993 lines) exceeds 1,500 — acceptable as content file.
@@ -118,73 +120,6 @@ MeshForge creates a client-only config in `/tmp/meshforge_rns_client/` with
 rnsd without binding ports.
 
 Location: `src/gateway/node_tracker.py` — `_init_rns_main_thread()`
-
----
-
-## Issue #16: Gateway Message Routing Reliability
-
-Delivery is **best-effort** — inherent to mesh networking. Message queue persists to SQLite for retry.
-Always show "Sent (delivery not guaranteed)" or "Queued" status.
-
-Files: `commands/messaging.py`, `gateway/rns_bridge.py`, `gateway/message_queue.py`
-
----
-
-## Issue #17: Meshtastic Connection Contention (Single-Client TCP)
-
-**meshtasticd only supports ONE TCP client at a time.** Multiple components creating
-independent connections causes thrashing every 1-2 seconds.
-
-### Fix: Shared Connection Manager
-All components share ONE persistent connection via `get_connection_manager()`.
-Short-lived reads use `MeshtasticConnection` context manager.
-Long-lived connections acquire `MESHTASTIC_CONNECTION_LOCK`.
-
-### HTTP fromradio Contention Fix
-The `/api/v1/fromradio` endpoint is also single-consumer. `send_text_direct()` POSTs
-directly to `/api/v1/toradio` without ever reading fromradio. All TX paths use this.
-
-### Prevention
-- **NEVER** create `TCPInterface()` directly — use connection manager
-- **NEVER** read `/api/v1/fromradio` in TX paths — use `send_text_direct()`
-- Reserve session-based `connect()` + `start_polling()` for config reads only
-
----
-
-## Issue #18: Auto-Reconnect on Connection Drop
-
-Gateway uses health monitoring + exponential backoff (1s → 2s → 4s → ... → 30s max)
-in `rns_bridge.py`. All persistent connections should have health monitoring.
-Release connection manager resources on disconnect.
-
----
-
-## Issue #19: RNS Node Discovery from path_table
-
-Use `RNS.Transport.path_table` (not just `destinations`) for complete routing info.
-**path_table may be empty immediately after connect** — use delayed checks (5s) and
-periodic re-checks (30s).
-
-Location: `src/gateway/node_tracker.py`
-
----
-
-## Issue #20: Service Detection & Status Display — ALL DONE
-
-All 3 components resolved:
-
-1. **Service Detection**: Simplified to systemctl-only for systemd services (SSOT)
-2. **Status Display**: Separates "service state" from "detection capability" —
-   never shows "FAILED" when service is running
-3. **RX Messages**: `event_bus.py` → `websocket_server.py` → TUI live feed
-
-### RNS Socket Detection
-RNS uses abstract Unix domain sockets (`\0rns/{instance_name}`), not UDP port 37428.
-Use `check_rns_shared_instance()` (3-tier: Unix socket → TCP → UDP fallback).
-
-### Prevention
-- UI must always distinguish "service state" from "detection capability"
-- Use `check_rns_shared_instance()` for all rnsd checks (never raw UDP)
 
 ---
 
@@ -222,33 +157,6 @@ MeshForge's job: Help users SELECT HATs from meshtasticd's `available.d/`, COPY 
 `scripts/verify_post_install.sh` checks: meshtasticd binary, config.yaml validity,
 Webserver section, port 9443, radio detection, config.d/, rnsd, udev rules.
 Also available via `meshforge --verify-install`.
-
----
-
-## Issue #24: Python Environment Mismatch (rnsd + meshtastic module)
-
-rnsd's `Meshtastic_Interface.py` plugin requires the `meshtastic` Python module.
-pipx isolation, different Python versions, or user vs system site-packages can
-make the module invisible to rnsd.
-
-**Fix**: `sudo pip3 install --break-system-packages --ignore-installed meshtastic`
-or install to the same Python that rnsd uses:
-`head -1 $(which rnsd)` then use that interpreter's pip.
-
-**Diagnose**: `sudo python3 -c "import meshtastic; print(meshtastic.__version__)"`
-
----
-
-## Issue #27: rnsd is OPTIONAL
-
-MeshForge supports two independent transports:
-- **MQTT** (mosquitto) — Meshtastic native. Used for preset bridging, monitoring.
-- **RNS** (rnsd) — Reticulum. Used for LXMF messaging, cross-protocol bridging.
-
-**Meshtastic preset bridging** (LF ↔ ST) needs only mosquitto — both radios MQTT
-uplink/downlink to the same broker with same channel/PSK. No gateway code needed.
-
-**Full NOC** (Meshtastic + RNS) uses both transports. They coexist independently.
 
 ---
 
@@ -508,50 +416,6 @@ single conversation — one-to-many from the NomadNet user's perspective.
 lists recent `Message bridged` / `LXMF delivery confirmed` log lines along with the gateway's
 LXMF source hash and the NomadNet conversation path, so operators can navigate to the right
 thread without filesystem spelunking. See `src/launcher_tui/handlers/gateway.py` → `_show_delivery_audit`.
-
-
----
-
-## Issue #36: Meshtastic_Interface rnsd plugin — present, disabled, bypasses MeshForge (2026-04-20)
-
-**State on moc3**: `/etc/reticulum/interfaces/Meshtastic_Interface.py.disabled` exists. The
-config stanza `[[Meshtastic Gateway]]` is present in `/etc/reticulum/config` but points at a
-file rnsd won't load (`.disabled` suffix). Template source:
-`/opt/meshforge/templates/interfaces/Meshtastic_Interface.py`.
-
-**What it does (if enabled)**: holds a persistent TCP client on meshtasticd `:4403`, subscribes
-to `meshtastic.receive` pubsub, and forwards packets with `decoded.portnum == RETICULUM_TUNNEL_APP`
-only — plain Meshtastic text is ignored. Outbound sends fragment at 200B and `sendData(portNum=
-RETICULUM_TUNNEL_APP, ...)`. It is effectively a native RNS-over-Meshtastic transport, not a text
-bridge.
-
-**What enabling it would LOSE vs. the MeshForge gateway**:
-- `gateway/message_routing.py` rules (direction, source/dest/message regex filters)
-- `~/.cache/meshforge/logs/gateway.log` audit trail and delivery stats
-- `gateway/message_queue.py` persistent retry queue
-- LXMF source identity aggregation under `f68c2f56…`
-- Support for plain Meshtastic text at all
-
-**Coexistence with current gateway** (`mqtt_bridge` mode): NO port conflict — the gateway uses
-MQTT for RX and HTTP `/api/v1/toradio` for TX, never holding `:4403`. The plugin could be
-enabled alongside without fighting for the TCP slot. It would only trigger for inbound packets
-carrying the RNS tunnel portnum.
-
-**Decision (2026-04-20): keep disabled.** No current use case needs RNS-tunneled Meshtastic
-traffic, and the existing bridge handles text end-to-end. If a future use case appears (e.g.
-native RNS nodes talking to remote RNS peers over LoRa without any MQTT broker present), enable
-with:
-```
-sudo mv /etc/reticulum/interfaces/Meshtastic_Interface.py.disabled \
-        /etc/reticulum/interfaces/Meshtastic_Interface.py
-sudo systemctl restart rnsd
-sudo journalctl -u rnsd -n 50   # expect "Meshtastic: Opening tcp device..."
-```
-Requires `python3 -c 'import meshtastic'` to succeed from rnsd's interpreter (Issue #24) —
-already satisfied on moc3 (`/usr/bin/python3` + system-wide meshtastic 2.7.8).
-
-**Prevention**: do not re-enable casually. The gateway owns the text-bridging contract;
-this plugin is complementary infrastructure, not a replacement.
 
 
 ---
@@ -894,4 +758,45 @@ Proof-by-parts of the Issue #40 fix in the interim:
   recursion. Added as `test_bytes_content_is_decoded`.
 - **Never regress away from the HTTP TX path**: `test_mqtt_bridge_mode_enqueues_to_meshtastic`
   guards against accidentally re-setting `destination="mqtt"`.
+
+
+---
+
+## Issue #41: rpc_key pinning closes the Issue #37/#40 gateway inbound gap (2026-04-21)
+
+**Symptom**: After `ddb40de` the bridge stat `R→M` stayed at zero. Unit tests
+proved the bytes-decode path was correct; real inbound LXMF still never fired
+`_on_lxmf_receive`. Same root cause as Issue #37, but on the gateway side.
+
+**Root cause**: MeshForge writes three client-only configs in
+`/tmp/meshforge_rns_client/` (gateway, TUI RNS commands, map collector).
+Each caused `RNS.Reticulum(configdir=…)` to generate a fresh transport
+identity, and rnsd's `multiprocessing.connection` authkey is derived from
+identity private bytes. Divergent identities → divergent authkeys → every
+RPC to rnsd (`get_packet_rssi`, `first_hop_timeout`, etc.) fails
+`AuthenticationError: digest sent was rejected`. On the gateway this
+aborts inbound link-packet processing before LXMF delivery.
+
+**Fix**: propagate rnsd's `shared_instance_rpc_key` into each client config
+when pinned. Completes Issue #40's "Prevention / future work" option (b).
+
+- `src/utils/paths.py` — `ReticulumPaths.get_shared_rpc_key()`: strict
+  64-hex reader, lowercase-normalized, rejects malformed / commented-out
+  / missing-file. 6 new tests.
+- `src/commands/rns.py`, `src/gateway/node_tracker.py`,
+  `src/utils/_map_collector_rns.py` — each appends the key when available.
+  The `node_tracker.py` site is the R→M=0 unblocker.
+
+**Operator preflight**: `grep shared_instance_rpc_key /etc/reticulum/config`.
+If absent, generate (`python3 -c "import os; print(os.urandom(32).hex())"`)
+and add under `[reticulum]`, then `sudo systemctl restart rnsd` and any
+MeshForge consumers. Verify:
+`grep shared_instance_rpc_key /tmp/meshforge_rns_client/config` matches.
+
+**Prevention**: future client-config writers should call
+`get_shared_rpc_key()` rather than hand-rolling a stanza. Worth adding a
+preflight warning when the pinned key is absent — today's silent-None
+regresses to Issue #37 behavior without a surface error. Cross-reference:
+closes out Issue #37 (NomadNet side masked by wrapper `1856b58`) and
+Issue #40 (bytes + TX landed in `ddb40de`; this is the inbound complement).
 

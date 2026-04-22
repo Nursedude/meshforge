@@ -10,6 +10,7 @@ config files, not root's.
 """
 
 from pathlib import Path
+from typing import Optional
 import os
 import tempfile
 
@@ -260,6 +261,42 @@ class ReticulumPaths:
     def get_interfaces_dir(cls) -> Path:
         """Get RNS custom interfaces directory (for plugins like Meshtastic_Interface)"""
         return cls.get_config_dir() / 'interfaces'
+
+    @classmethod
+    def get_shared_rpc_key(cls) -> Optional[str]:
+        """Read ``shared_instance_rpc_key`` from the active RNS config, if set.
+
+        rnsd derives its RPC key from the transport identity's private bytes by
+        default. Any client using a different configdir (e.g. the gateway's
+        /tmp/meshforge_rns_client/) gets a different identity and therefore a
+        different key — every RPC to rnsd then fails with
+        ``AuthenticationError: digest sent was rejected`` (Issue #37, #40).
+
+        Pinning ``shared_instance_rpc_key`` explicitly in both configs makes
+        the key deterministic and identity-independent. This helper returns
+        the pinned key so client-only config writers can propagate it.
+
+        Returns the 64-char hex string if present, else None.
+        """
+        cfg = cls.get_config_file()
+        try:
+            text = cfg.read_text()
+        except (OSError, PermissionError):
+            return None
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith('#'):
+                continue
+            if '=' not in line:
+                continue
+            name, _, value = line.partition('=')
+            if name.strip() != 'shared_instance_rpc_key':
+                continue
+            key = value.strip()
+            if len(key) == 64 and all(c in '0123456789abcdefABCDEF' for c in key):
+                return key.lower()
+            return None
+        return None
 
 
 class MeshForgePaths:
