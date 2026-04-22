@@ -321,6 +321,22 @@ class AREDNClient:
                 if 'gridsquare' in loc:
                     node.grid_square = loc.get('gridsquare', '')
 
+        # AREDN API v2.0 puts lat/lon/gridsquare at the TOP LEVEL of the
+        # sysinfo response (not inside node_details or location). Applied last
+        # so explicit nested keys still win if a future firmware reintroduces them.
+        if node.latitude is None and 'lat' in data:
+            try:
+                node.latitude = float(data['lat'])
+            except (ValueError, TypeError):
+                pass
+        if node.longitude is None and 'lon' in data:
+            try:
+                node.longitude = float(data['lon'])
+            except (ValueError, TypeError):
+                pass
+        if not node.grid_square and data.get('gridsquare'):
+            node.grid_square = data.get('gridsquare') or ''
+
         # Parse sysinfo
         if 'sysinfo' in data:
             sysinfo = data['sysinfo']
