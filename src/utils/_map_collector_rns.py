@@ -22,6 +22,25 @@ _msgpack, _HAS_MSGPACK = safe_import('msgpack')
 logger = logging.getLogger(__name__)
 
 
+def _rns_is_initialized() -> bool:
+    """Return True if an ``RNS.Reticulum`` instance has already been
+    constructed in this process.
+
+    RNS uses a process-wide singleton — ``RNS.Reticulum()`` raises
+    ``OSError("Attempt to reinitialise Reticulum, when it was already
+    running")`` on the second construction (see
+    ``RNS/Reticulum.py:225``). The collector runs every 60s; we must
+    init exactly once per process and read ``Transport.path_table``
+    directly on subsequent cycles.
+    """
+    if not _HAS_RNS:
+        return False
+    # Reticulum stores its single instance in a name-mangled class attr.
+    # _Reticulum__instance is RNS's own invariant; if they rename it the
+    # fallback (OSError catch on init attempt) still covers us.
+    return getattr(_RNS.Reticulum, '_Reticulum__instance', None) is not None
+
+
 class RNSDataCollectorMixin:
     """Mixin providing RNS data collection methods for MapDataCollector."""
 
@@ -69,26 +88,36 @@ class RNSDataCollectorMixin:
         rns_positions = self._load_rns_position_cache()
 
         try:
-            # Connect as a client to the running rnsd shared instance.
-            # Use a temp client-only config to avoid:
-            # 1. Creating a default config at /root/.reticulum/ (Path.home() bug MF001)
-            # 2. Initializing interfaces that conflict with rnsd's bindings
-            import tempfile
-            client_config_dir = Path(tempfile.gettempdir()) / "meshforge_rns_client"
-            client_config_dir.mkdir(exist_ok=True)
-            client_config_file = client_config_dir / "config"
-            lines = [
-                "[reticulum]",
-                "  share_instance = Yes",
-                "  shared_instance_port = 37428",
-                "  instance_control_port = 37429",
-                f"  instance_name = {instance_name}",
-            ]
-            rpc_key = ReticulumPaths.get_shared_rpc_key()
-            if rpc_key:
-                lines.append(f"  rpc_key = {rpc_key}")
-            client_config_file.write_text("\n".join(lines) + "\n")
-            reticulum = _RNS.Reticulum(configdir=str(client_config_dir))
+            # Initialize the Reticulum client ONCE per process. Subsequent
+            # collect cycles read Transport.path_table directly — it's a
+            # class-level singleton and stays live. Calling Reticulum(...)
+            # a second time in the same process raises OSError (see the
+            # _rns_is_initialized() helper above for the mechanism).
+            if not _rns_is_initialized():
+                import tempfile
+                client_config_dir = Path(tempfile.gettempdir()) / "meshforge_rns_client"
+                client_config_dir.mkdir(exist_ok=True)
+                client_config_file = client_config_dir / "config"
+                lines = [
+                    "[reticulum]",
+                    "  share_instance = Yes",
+                    "  shared_instance_port = 37428",
+                    "  instance_control_port = 37429",
+                    f"  instance_name = {instance_name}",
+                ]
+                rpc_key = ReticulumPaths.get_shared_rpc_key()
+                if rpc_key:
+                    lines.append(f"  rpc_key = {rpc_key}")
+                client_config_file.write_text("\n".join(lines) + "\n")
+                try:
+                    _RNS.Reticulum(configdir=str(client_config_dir))
+                except OSError as e:
+                    # Another component in this process initialized RNS before
+                    # us (e.g. node_tracker on the gateway path). Transport is
+                    # already live — fall through and use it.
+                    if "reinitialise" not in str(e).lower():
+                        raise
+                    logger.debug("RNS already initialized by another component — reusing")
 
             # Check for known destinations in path table
             if hasattr(_RNS.Transport, 'path_table') and _RNS.Transport.path_table:

@@ -348,6 +348,20 @@
             min-width: 0;
         }
         .stat-row .value.online { color: #66bb6a; }
+        /* Source health badge — sits inside the value span, right-aligned via flex.
+           Three states: ok (no badge), warn (yellow ⚠), disabled (grey —). The
+           tooltip carries the diagnostic reason from /api/status.source_diagnostics
+           so 'RNS: 0' is never ambiguous ("no peers" vs "rnsd down"). */
+        .health-badge {
+            display: none;
+            margin-left: 6px;
+            font-size: 10px;
+            font-weight: normal;
+            cursor: help;
+        }
+        .health-badge.warn { display: inline; color: #ffa726; }
+        .health-badge.disabled { display: inline; color: #6a7a8a; }
+        .health-badge.ok { display: none; }
 
         .filter-section {
             margin-top: 10px;
@@ -1446,19 +1460,19 @@
             </div>
             <div class="stat-row">
                 <span class="label">Meshtastic:</span>
-                <span class="value" id="stat-meshtastic">0</span>
+                <span class="value" id="stat-meshtastic" title="Local meshtasticd + MQTT + tracker">0<span class="health-badge" id="health-meshtastic"></span></span>
             </div>
             <div class="stat-row">
                 <span class="label">RNS:</span>
-                <span class="value" id="stat-rns">0</span>
+                <span class="value" id="stat-rns" title="Reticulum path_table + NomadNet peers">0<span class="health-badge" id="health-rns"></span></span>
             </div>
             <div class="stat-row">
                 <span class="label">AREDN:</span>
-                <span class="value" id="stat-aredn">0</span>
+                <span class="value" id="stat-aredn" title="Local AREDN nodes + worldmap">0<span class="health-badge" id="health-aredn"></span></span>
             </div>
             <div class="stat-row">
                 <span class="label">MeshCore:</span>
-                <span class="value" id="stat-meshcore">0</span>
+                <span class="value" id="stat-meshcore" title="MeshCore public directory + operator-assigned positions">0<span class="health-badge" id="health-meshcore"></span></span>
             </div>
 
             <div class="filter-section">
@@ -1478,16 +1492,26 @@
                 <span style="font-size: 10px; color: #888; display: block; margin-bottom: 4px;">Node Role</span>
                 <select id="filter-role" style="width: 100%; background: #0a1622; color: #e0e0e0; border: 1px solid #2a3a4a; border-radius: 4px; padding: 3px 6px; font-size: 11px;">
                     <option value="">All Roles</option>
-                    <option value="ROUTER">Router</option>
-                    <option value="ROUTER_CLIENT">Router+Client</option>
-                    <option value="CLIENT">Client</option>
-                    <option value="CLIENT_MUTE">Client (Mute)</option>
-                    <option value="REPEATER">Repeater</option>
-                    <option value="TRACKER">Tracker</option>
-                    <option value="SENSOR">Sensor</option>
-                    <option value="TAK">TAK</option>
-                    <option value="CLIENT_HIDDEN">Hidden</option>
-                    <option value="rns">RNS Node</option>
+                    <optgroup label="Meshtastic">
+                        <option value="ROUTER">Router</option>
+                        <option value="ROUTER_CLIENT">Router+Client</option>
+                        <option value="CLIENT">Client</option>
+                        <option value="CLIENT_MUTE">Client (Mute)</option>
+                        <option value="REPEATER">Repeater</option>
+                        <option value="TRACKER">Tracker</option>
+                        <option value="SENSOR">Sensor</option>
+                        <option value="TAK">TAK</option>
+                        <option value="CLIENT_HIDDEN">Hidden</option>
+                    </optgroup>
+                    <optgroup label="MeshCore">
+                        <option value="meshcore:client">Client</option>
+                        <option value="meshcore:repeater">Repeater</option>
+                        <option value="meshcore:room_server">Room Server</option>
+                        <option value="meshcore:companion">Companion</option>
+                    </optgroup>
+                    <optgroup label="Other">
+                        <option value="rns">RNS Node</option>
+                    </optgroup>
                 </select>
             </div>
             <div class="filter-section" style="margin-top: 4px; padding-top: 4px; border-top: 1px solid #1a2a3a;">
@@ -2912,11 +2936,22 @@
             if (props.network === 'rns' && !showRNS) return;
             if (props.network === 'aredn' && !showAREDN) return;
             if (props.network === 'meshcore' && !showMeshCore) return;
-            // Role filter (RMAP-inspired node type filtering)
+            // Role filter (RMAP-inspired node type filtering).
+            // Three selector shapes:
+            //   'rns'              — show only RNS-network nodes
+            //   'meshcore:<role>'  — network-qualified MeshCore role match (case-insensitive)
+            //   bare uppercase     — Meshtastic role match (legacy, uppercase)
             if (roleFilter) {
                 if (roleFilter === 'rns') {
                     if (props.network !== 'rns') return;
+                } else if (roleFilter.startsWith('meshcore:')) {
+                    const want = roleFilter.slice('meshcore:'.length).toLowerCase();
+                    if (props.network !== 'meshcore') return;
+                    if ((props.role || '').toLowerCase() !== want) return;
                 } else {
+                    // Meshtastic role: restrict to meshtastic network so MeshCore's
+                    // lowercase 'client' doesn't collide with Meshtastic's 'CLIENT'.
+                    if (props.network !== 'meshtastic') return;
                     const nodeRole = (props.role || '').toUpperCase();
                     if (nodeRole !== roleFilter) return;
                 }
@@ -4964,6 +4999,83 @@
     }
 
     // ============================================
+    // Source Health Badges
+    // ============================================
+    // Each network count row (Meshtastic / RNS / AREDN / MeshCore) has a
+    // health badge span next to its number. The badge pulls state from
+    // /api/status.source_diagnostics.{source}.reason_if_zero and the
+    // matching notes string. Taxonomy comes from map_data_collector:
+    //   ok              -> no badge (healthy)
+    //   no_positions    -> no badge (data is flowing, GPS absent — not broken)
+    //   no_data         -> no badge (empty but unconfigured/unused)
+    //   not_configured  -> grey — (source intentionally off or unset)
+    //   source_disabled -> grey — (feature-flagged off)
+    //   unreachable     -> yellow ⚠ (real problem: upstream broken / rnsd down)
+    //
+    // The mapping from network to contributing sources is deliberate:
+    // Meshtastic counts pull from meshtasticd + mqtt; RNS from rns_direct +
+    // unified_tracker; AREDN from local aredn + aredn_worldmap; MeshCore
+    // from meshcore_public + operator_positions. A network is "warn" if
+    // ANY of its sources is unreachable; "disabled" if ALL are off; "ok"
+    // otherwise.
+    const SOURCE_MAP = {
+        meshtastic: ['meshtasticd', 'mqtt'],
+        rns: ['rns_direct', 'unified_tracker'],
+        aredn: ['aredn', 'aredn_worldmap'],
+        meshcore: ['meshcore_public'],
+    };
+
+    function computeHealth(diagnostics, sources) {
+        let warnNotes = [];
+        let disabledNotes = [];
+        let okCount = 0;
+        for (const src of sources) {
+            const d = diagnostics[src];
+            if (!d) continue;
+            const reason = d.reason_if_zero;
+            if (reason === 'ok' || reason === 'no_positions' || reason === 'no_data') {
+                okCount++;
+            } else if (reason === 'unreachable') {
+                warnNotes.push(`${src}: ${d.notes || reason}`);
+            } else if (reason === 'not_configured' || reason === 'source_disabled') {
+                disabledNotes.push(`${src}: ${d.notes || reason}`);
+            }
+        }
+        if (warnNotes.length > 0) {
+            return { state: 'warn', symbol: '⚠', title: warnNotes.join('\n') };
+        }
+        if (okCount > 0) {
+            return { state: 'ok', symbol: '', title: '' };
+        }
+        if (disabledNotes.length > 0) {
+            return { state: 'disabled', symbol: '—', title: disabledNotes.join('\n') };
+        }
+        return { state: 'ok', symbol: '', title: '' };
+    }
+
+    function applyHealthBadge(network, health) {
+        const badge = document.getElementById('health-' + network);
+        if (!badge) return;
+        badge.className = 'health-badge ' + health.state;
+        badge.textContent = health.symbol;
+        badge.title = health.title;
+    }
+
+    async function refreshSourceHealth() {
+        try {
+            const resp = await fetch('/api/status');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            const diagnostics = data.source_diagnostics || {};
+            for (const [network, sources] of Object.entries(SOURCE_MAP)) {
+                applyHealthBadge(network, computeHealth(diagnostics, sources));
+            }
+        } catch (e) {
+            console.debug('Source health fetch failed:', e);
+        }
+    }
+
+    // ============================================
     // Initialization
     // ============================================
 
@@ -5001,6 +5113,11 @@
     // Space weather: fetch on load, refresh every 15 minutes
     refreshWeather();
     setInterval(refreshWeather, 900000);
+
+    // Source health badges: poll /api/status every 30s so operators can see
+    // when a 'Count: 0' row means "0 peers" vs "source broken" vs "not configured".
+    refreshSourceHealth();
+    setInterval(refreshSourceHealth, 30000);
 
     // Fallback: Poll for received messages if WebSocket is disconnected
     setInterval(() => {
