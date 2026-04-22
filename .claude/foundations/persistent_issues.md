@@ -1,7 +1,13 @@
 # MeshForge Persistent Issues & Resolution Patterns
 
 > **Purpose**: Document recurring issues and their proper fixes to prevent regression.
-> **Last audited**: 2026-04-21 — Trimmed to <40k chars; resolved issues archived.
+> **Last audited**: 2026-04-22 — Trimmed to <40k chars; resolved issues archived.
+>
+> **Bloat guard**: lint rule MF012 (`scripts/lint.py --all`) fails when this file
+> exceeds 40,000 chars. If it trips, move the oldest fully-resolved issues to
+> `persistent_issues_archive.md` and leave a one-row summary in the table below —
+> DO NOT raise the limit. The cap exists because the loaded-context overhead of
+> this file scales with every conversation turn.
 
 ---
 
@@ -32,7 +38,11 @@ Full history in `persistent_issues_archive.md`.
 | #30 NomadNet RPC ConnectionRefusedError | Pre-launch check in `_nomadnet_rns_checks.py`; auto-restart rnsd | Upstream-aware preflight |
 | #31 Silent persistent startup changes | `auto_lock_port()` removed; explicit user action only | Design principle |
 | #32 NomadNet "enabled but disconnected" | `/proc/cmdline` pgrep verify + shared-instance explicit check | Behavioral pattern |
+| #33 Gateway first green end-to-end (2026-04-18) | RX field-validated; 5 install-path gotchas (LXMF pip, uplink default off, topic shape, local TX uplink, traffic.log perms) | Superseded by #34/#40 |
+| #34 MQTT topic shape mismatch | Subscribe to `{root}/+/2/json/{ch}/#` AND `{root}/2/json/{ch}/#`; `region=""` default | Code `be6f411` |
 | #36 Meshtastic_Interface plugin | Keep rnsd's plugin disabled; MeshForge gateway owns text-bridging | Decision record |
+| #37 rnsd AuthenticationError on startup | Authkey derives from identity; `systemctl restart rnsd` after `/etc/reticulum/config` changes | Wrapper catch + Issue #41 pin |
+| #38 NomadNet single-identity consolidation | One `~/.nomadnetwork/` per box; tmux-wrapped `nomadnet.service` systemd-user unit | `templates/systemd/nomadnet-user.service` |
 | GTK Issues (#2, #11, #13–#15) | GTK4 removed in v0.5.x | — |
 
 ---
@@ -209,118 +219,6 @@ if MESHTASTIC_CONNECTION_LOCK.acquire(timeout=10):
 
 ---
 
-## Issue #33: Gateway Bridge Field Validation — First Green End-to-End (2026-04-18)
-
-**Status**: RX path (Meshtastic→NomadNet) validated end-to-end for the first time on hardware.
-Remaining: field TX validation with a second Meshtastic radio on the `meshforge` channel.
-
-**Environment**:
-- HAT: US / SHORT_TURBO / channel_num=8 (already correct at start; Phase 1 was no-op)
-- RNode: Silicon Labs CP2102 on `/dev/ttyUSB0` → added as `[[RNode LoRa]]` in `/etc/reticulum/config`
-- rnsd runs as root; NomadNet runs as `wh6gxz` via pipx venv — `--rnsconfig /etc/reticulum` keeps them aligned
-- NomadNet LXMF delivery hash: `d69f7e802960b39561768588fc6e6082` (matched pre-configured `default_lxmf_destination`)
-- Gateway LXMF source hash: `f68c2f56cb61527b6c9ad603b9a5009a` (from `~/.config/meshforge/gateway_identity`)
-
-**Non-obvious gotchas** (recurring footguns — worth surfacing in install path):
-
-1. **LXMF is NOT installed with RNS**. `pip install rns` does not pull `lxmf`. The gateway's
-   `_rns_bridge_connection.py` logs `"RNS/LXMF library not installed - bridge cannot connect"`
-   and continues with RNS subsystem marked `disabled`. Fix:
-   ```
-   pip3 install --user --break-system-packages lxmf
-   ```
-   The NomadNet pipx venv has its own LXMF but it is not on the system Python path.
-
-2. **MQTT uplink/downlink default off**. Fresh Meshtastic devices ship with `uplinkEnabled=false`
-   on all channels. Gateway `mqtt_bridge` mode receives NOTHING until at least one channel has
-   uplink enabled. Preferred pattern: dedicated bridge channel (named `meshforge` in our config)
-   with its own PSK, leave primary channel untouched for local mesh privacy:
-   ```
-   meshtastic --ch-index 2 --ch-set uplink_enabled true --ch-set downlink_enabled true
-   ```
-
-3. **gateway.json `mqtt_channel` must match channel NAME, not preset name.** The gateway
-   subscribes to `msh/{REGION}/2/json/{CHANNEL_NAME}/#`. Default config ships with `"LongFast"`.
-   Update both `meshtastic.mqtt_channel` and `mqtt_bridge.channel` to the actual channel name.
-
-4. **Local HAT TX uplink to MQTT depends on firmware**. ~~Only RX from other nodes is uplinked.~~
-   **UPDATED 2026-04-20 (moc3, meshtasticd 2.7.15)**: the local HAT's own TX *does* uplink when
-   `mqtt.enabled=true`, `mqtt.json_enabled=true`, and the sending channel has `uplinkEnabled=true`.
-   A send of `meshtastic --host localhost --sendtext 'probe' --ch-index 2 --dest '!ffffffff'`
-   appears on `msh/US/2/json/meshforge/{local_node_id}` within ~1s and is bridged to NomadNet
-   end-to-end (confirmed by `Message bridged` gateway log + conversation file under
-   `~/.nomadnetwork/storage/conversations/<gateway_hash>/`). Older firmware may suppress local TX —
-   if you hit a silent bridge on an older fleet box, upgrade meshtasticd before blaming the gateway.
-   To exercise the RX path without a HAT at all (synthetic probe):
-   ```
-   mosquitto_pub -h 127.0.0.1 -t 'msh/US/2/json/meshforge/!deadbeef' \
-     -m '{"payload":{"text":"test"},"sender":"!deadbeef","type":"text","channel":2,"to":4294967295,"from":3735928559}'
-   ```
-
-5. **traffic.log permission noise**. `monitoring/traffic_storage.py` tries to write to
-   `~/.cache/meshforge/logs/traffic.log`; fails with `Errno 13` when the dir doesn't exist or
-   is root-owned. Non-fatal, gateway still bridges — but noisy. Create dir at install time or
-   handle `FileNotFoundError` by creating parents.
-
-**Regression guards** (all 15 pass as of 2026-04-18):
-- `tests/test_regression_guards.py` — TCP/MQTT/service-check/PathHome/shell/event-bus contracts
-- `python3 scripts/lint.py --all` — MF001-010 clean
-
-**Rollback**: `/etc/reticulum/config.bak.20260418-074417` preserves pre-change state.
-
-
----
-
-## Issue #34: mqtt_bridge topic shape mismatch (2026-04-18)
-
-**Symptom**: `bridge_mode=mqtt_bridge` gateway reports "MQTT bridge handler connected"
-but never receives any real mesh traffic from local meshtasticd. Gateway appears green
-in logs; actual RX count stays at zero. Meanwhile `bridge_mode=message_bridge` is the
-only mode that delivers messages — at the cost of holding :4403 forever and starving
-the :9443 web UI.
-
-**Root cause**: `mqtt_bridge_handler._on_connect` subscribed to
-`{root}/{REGION}/2/json/{channel}/#`, but meshtasticd 2.7.x publishes to
-`{root}/2/json/{channel}/{node}` — no region segment. MQTT `+` is single-segment,
-so one subscription pattern can't match both shapes.
-
-**How it slipped through Issue #33's validation**: the "first green end-to-end"
-on moc1 was validated with a crafted `mosquitto_pub -t 'msh/US/2/json/meshforge/...'`
-that happened to match the region-ful pattern. Nobody ever observed meshtasticd's
-real publishes go through the bridge.
-
-**Fix** (`be6f411`):
-- `_on_connect` now subscribes to both shapes for JSON and protobuf:
-  `{root}/+/2/json/{channel}/#` and `{root}/2/json/{channel}/#`
-- TX publish path omits the region segment when `mqtt_bridge.region == ""` to match
-  what meshtasticd subscribes to for downlink.
-- `MQTTBridgeConfig.region` default changed from `"US"` to `""`. Explicit `"US"` or
-  similar stays valid for daemon builds that DO include region in the topic path.
-
-**Validation** on volcanoai (meshtasticd 2.7.15):
-```
-mosquitto_pub -h 127.0.0.1 -u mesh_publish -P <pass> \
-  -t 'msh/2/json/meshforge/!deadbeef' \
-  -m '{"payload":{"text":"…"},"sender":"!deadbeef","type":"text","channel":3,"to":4294967295,"from":3735928559,"id":9999001}'
-```
-→ gateway logs `node_tracker | Added new node: !deadbeef` and
-`gateway.cli | Message bridged: meshtastic -> !ffffffff`. :9443 stays healthy (200),
-:4403 has no persistent TCP client.
-
-**Fleet state post-fix** (2026-04-18):
-- volcanoai, moc3: `bridge_mode=mqtt_bridge`, `region=""`, restarted, subscribed to both shapes
-- moc, moc1, moc2: no `gateway.json` exists — picked up code change, ready for first config
-- Backups preserved as `gateway.json.bak.20260418-*`
-
-**Prevention**:
-- Future MQTT-bridge validation must use real meshtasticd publishes, not crafted
-  `mosquitto_pub` commands that assume a topic shape.
-- When adding MQTT topic logic, default to subscribing to every plausible shape
-  rather than one "correct" one — MQTT wildcards can't match structurally different paths.
-
-
----
-
 ## Issue #35: Gateway-delivered LXMF lands under GATEWAY's hash, not receiver's (2026-04-20)
 
 **Symptom**: operator sends from local Meshtastic HAT on channel `meshforge`, gateway logs
@@ -352,156 +250,6 @@ single conversation — one-to-many from the NomadNet user's perspective.
 lists recent `Message bridged` / `LXMF delivery confirmed` log lines along with the gateway's
 LXMF source hash and the NomadNet conversation path, so operators can navigate to the right
 thread without filesystem spelunking. See `src/launcher_tui/handlers/gateway.py` → `_show_delivery_audit`.
-
-
----
-
-## Issue #37: NomadNet AuthenticationError on startup — rnsd rpc_key mismatch (2026-04-20)
-
-**Symptom**: NomadNet crashes on startup with a Python traceback ending in:
-```
-File ".../RNS/Reticulum.py", line 1094, in get_rpc_client
-    return multiprocessing.connection.Client(
-        self.rpc_addr, family=self.rpc_type, authkey=self.rpc_key)
-File ".../multiprocessing/connection.py", line 964, in answer_challenge
-    raise AuthenticationError('digest sent was rejected')
-```
-Observed on moc1 and moc2 with fresh NomadNet installs. Repeating at every launch attempt.
-
-**Root cause**: RNS shared-instance RPC uses `multiprocessing.connection.Client` with an
-authkey derived from the RNS config that NomadNet loaded. If the **rnsd daemon** currently
-listening on `@rns/default` was started with a DIFFERENT config dir (or a config that has
-since been regenerated), its authkey differs and it rejects the client's digest.
-
-Common triggers:
-1. rnsd was started before `/etc/reticulum/config` existed (systemd auto-start on first
-   boot), so it generated a key from `~/.reticulum/config` which has since been replaced.
-2. `/etc/reticulum/config` was regenerated/edited after rnsd already loaded an older
-   version — rnsd is still running with the old key.
-3. A stale rnsd process from a prior install is still bound to `@rns/default` while a
-   newer rnsd's config is what we expect to see.
-4. Two users on the same box each have their own `~/.reticulum/config` and whichever
-   rnsd won the race owns the abstract socket; the loser's config diverges.
-
-**Not the cause on this fleet**: missing `--rnsconfig` flag. MeshForge's TUI launcher
-always passes `--rnsconfig /etc/reticulum` via `_get_rns_config_for_user()`
-(`src/launcher_tui/handlers/nomadnet.py:188`). The flag is unconditionally present.
-
-**Wrapper patch (shipped in version 6)**: `nomadnet_wrapper.py` now catches
-`multiprocessing.context.AuthenticationError` in `_safe_get_interface_stats`. NomadNet
-starts without interface stats instead of crashing. See
-`src/launcher_tui/handlers/_nomadnet_install_utils.py:_WRAPPER_VERSION` to force
-re-creation on each fleet box. The wrapper is regenerated on every NomadNet launch via
-TUI if the version marker changed.
-
-**Diagnostic checklist** when AuthenticationError reappears on a box:
-1. `ps -ef | grep rnsd` — note PID, config flag (`-c` or absence), start time. If
-   rnsd is older than `/etc/reticulum/config`, it loaded a pre-edit key.
-2. `sudo systemctl status rnsd` — confirm it's the systemd-managed one, not a
-   leftover. Start time here vs. file mtime of `/etc/reticulum/config` is the tell.
-3. `grep -rE '^\s*rpc_key|^\s*shared_instance_rpc_key' /etc/reticulum ~/.reticulum 2>/dev/null` —
-   any explicit `rpc_key` entries? If different between rnsd's and the client's config,
-   that's the proof. Legacy `shared_instance_rpc_key` lines (silently ignored by RNS)
-   also flagged — rename them to `rpc_key`.
-4. `ls -la /home/*/.reticulum/config 2>/dev/null` — are there competing per-user
-   configs any fleet script might race with?
-5. `lsof 2>/dev/null | grep '@rns/default'` — identify which PID currently owns the
-   abstract socket.
-
-**Real fix** (manual, per-box): `sudo systemctl restart rnsd` **after** `/etc/reticulum/config`
-is in its final state. That forces rnsd to re-derive the key from the current config, aligning
-with what NomadNet loads on next start.
-
-**Prevention**: MeshForge install paths should order "write /etc/reticulum/config" BEFORE
-"start rnsd" (not the reverse). If the Issue #37 wrapper patch masks the crash, a follow-up
-preflight check should explicitly probe the RPC socket and warn the operator — that's
-future work, not part of this ship.
-
-
----
-
-## Issue #38: NomadNet single-identity consolidation (2026-04-20)
-
-**Background**: moc3 was running TWO NomadNet processes in parallel — a `--daemon`
-on the default storage dir (`~/.nomadnetwork/`) and an interactive TUI on a separate
-dir (`~/.nomadnetwork-interactive/`) with its own identity. Gateway targeted the
-daemon. Operator read the interactive. Bridged mesh messages landed in a directory
-no human opened. Issue #35 documents the user-visible symptom.
-
-**Resolution (moc3, 2026-04-20)**: consolidated to a single NomadNet per box, wrapped
-in a detached tmux session managed by a systemd-user service. Deployed end-to-end
-and validated with a real HAT probe (`consolidation-1776737308` → 1.0 s round-trip
-→ visible in tmux TUI with the ✉ unread indicator).
-
-**The pattern**:
-- One NomadNet process per box, using the default storage dir (`~/.nomadnetwork/`).
-- Detached tmux session `nomadnet` owns the TUI. Operator attaches on demand:
-  `tmux attach -t nomadnet`. `Ctrl-b d` to detach without killing the process.
-- Systemd-user unit `~/.config/systemd/user/nomadnet.service` manages lifecycle.
-  See the canonical template at `templates/systemd/nomadnet-user.service`.
-- `loginctl enable-linger $USER` so the service survives operator logout.
-- rnsd remains a system service as root (no user rnsd.service needed or wanted).
-- Gateway's `rns.default_lxmf_destination` points at this single identity's LXMF
-  destination hash (NOT the root identity hash — see below).
-
-**Fleet migration steps per box** (moc3 is the reference; moc1/moc2/volcanoai next):
-
-1. `sudo apt install tmux` (now in `scripts/install_noc.sh` for new installs).
-2. Backup: `tar -czf ~/nomadnet-backups/<host>-$(date +%Y%m%d-%H%M%S).tgz
-   -C ~ .nomadnetwork .nomadnetwork-interactive` (include whichever dirs exist).
-3. Choose the identity to keep. Recommendation: the one the operator has been
-   actively using (peers already have its hash). On moc3 this was the interactive's
-   identity at `~/.nomadnetwork-interactive/`.
-4. Stop both old NomadNet processes cleanly (`sudo kill <pid>`).
-5. Archive the old daemon dir: `mv ~/.nomadnetwork ~/.nomadnetwork-daemon-archived-<date>`.
-6. Promote the kept dir: `mv ~/.nomadnetwork-interactive ~/.nomadnetwork`.
-7. Install the systemd unit from `templates/systemd/nomadnet-user.service` into
-   `~/.config/systemd/user/nomadnet.service`.
-8. `systemctl --user daemon-reload && systemctl --user enable --now nomadnet`.
-9. Verify tmux + NomadNet alive: `tmux capture-pane -t nomadnet -p | head -5`.
-10. Resolve the kept identity's LXMF destination hash (see next section).
-11. Edit `~/.config/meshforge/gateway.json` → set `rns.default_lxmf_destination` to
-    that hash. Back up the old file as `.bak.<timestamp>-preconsolidate` first.
-12. Restart gateway: `sudo systemctl restart meshforge-gateway`.
-13. Validate with a real HAT probe:
-    `meshtastic --host localhost --sendtext 'consolidation-probe' --ch-index <n> --dest '!ffffffff'`.
-14. Confirm: gateway log shows `Message bridged` + `LXMF delivery confirmed`, and
-    the tmux NomadNet UI shows ✉ unread on the "MeshForge Gateway" conversation.
-15. Retain the daemon-archived dir for 7 days, then remove.
-
-**How to resolve an LXMF destination hash offline** (needed for Step 10):
-```python
-# Via the nomadnet venv python (has LXMF + RNS installed):
-python3 <<'PY'
-import tempfile, os
-cfg = tempfile.mkdtemp(prefix='rns_hashcalc_')
-with open(os.path.join(cfg, 'config'), 'w') as f:
-    f.write("[reticulum]\n  enable_transport = No\n  share_instance = No\n\n")
-import RNS
-RNS.Reticulum(configdir=cfg, loglevel=0)
-ident = RNS.Identity.from_file('/home/wh6gxz/.nomadnetwork/storage/identity')
-dest = RNS.Destination(ident, RNS.Destination.IN, RNS.Destination.SINGLE, "lxmf", "delivery")
-print("LXMF destination hash:", dest.hash.hex())
-PY
-```
-
-**Backout** (if validation fails): stop the new unit, swap the dirs back
-(`mv ~/.nomadnetwork ~/.nomadnetwork-consolidated-failed && mv ~/.nomadnetwork-daemon-archived-<date> ~/.nomadnetwork`),
-restore `gateway.json` from the `.bak.<timestamp>-preconsolidate` copy, restart
-gateway. Old daemon + interactive processes can be resurrected manually or via
-prior TUI menu actions.
-
-**Side observation (2026-04-20)**: the gateway itself also hit an
-`AuthenticationError: digest sent was rejected` in its `first_hop_timeout` RPC
-call during LXMF path lookup (same root cause as Issue #37). The gateway swallowed
-it and delivery still completed in 0.1 s — so non-fatal, but worth a future
-defensive patch in `src/gateway/_rns_bridge_connection.py` to match the wrapper's
-resilience.
-
-**Prevention**: new installs pick up the consolidated pattern automatically because
-`templates/systemd/nomadnet-user.service` is now the tmux-wrapped version and
-`install_noc.sh` adds `tmux` to the apt install list. Do NOT manually re-introduce
-a `--daemon` NomadNet alongside the tmux one.
 
 
 ---
