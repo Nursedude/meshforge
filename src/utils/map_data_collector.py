@@ -114,8 +114,15 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                 # Public data fallbacks (disabled by default — opt-in)
                 "enable_meshmap_fallback": False,
                 "enable_rmap_fallback": False,
-                "enable_aredn_worldmap_fallback": False,
+                # AREDN worldmap defaults ON so AREDN appears without operator config —
+                # matches meshforge-maps :8808 behavior. ~2500 global AREDN nodes.
+                "enable_aredn_worldmap_fallback": True,
                 "public_fallback_threshold": 3,
+                # MeshCore public map (https://map.meshcore.dev) — first-class source,
+                # not a fallback. ~30k global MeshCore nodes with GPS. Default ON
+                # because local MeshCoreHandler yields no GPS and without this
+                # MeshCore is invisible on the map.
+                "enable_meshcore_public": True,
                 "selected_region": None,
             }
         )
@@ -412,9 +419,18 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
             if fid and fid not in features:
                 features[fid] = f
 
-        # Source 4: AREDN mesh network
+        # Source 4: AREDN mesh network (local scan via sysinfo API)
         aredn_features = self._collect_aredn()
         for f in aredn_features:
+            fid = f["properties"].get("id", "")
+            if fid and fid not in features:
+                features[fid] = f
+
+        # Source 4.5: AREDN worldmap (public CSV, always runs when enabled —
+        # NOT threshold-gated. Provides geographic context alongside local
+        # Meshtastic/RNS, not a fill-when-sparse fallback.)
+        aredn_worldmap_features = self._collect_aredn_worldmap()
+        for f in aredn_worldmap_features:
             fid = f["properties"].get("id", "")
             if fid and fid not in features:
                 features[fid] = f
@@ -422,6 +438,14 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
         # Source 5: RNS direct query (from rnsd path table)
         rns_direct_features = self._collect_rns_direct()
         for f in rns_direct_features:
+            fid = f["properties"].get("id", "")
+            if fid and fid not in features:
+                features[fid] = f
+
+        # Source 5.5: MeshCore public map (always runs when enabled — NOT gated by
+        # feature count threshold, because this is the primary MeshCore visibility path).
+        meshcore_public_features = self._collect_meshcore_public()
+        for f in meshcore_public_features:
             fid = f["properties"].get("id", "")
             if fid and fid not in features:
                 features[fid] = f
@@ -452,6 +476,8 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
             direct_radio_features, rns_direct_features, tracker_unified_features,
             public_features,
         )
+        sources["meshcore_public"] = len(meshcore_public_features)
+        sources["aredn_worldmap"] = len(aredn_worldmap_features)
         if promoted:
             sources["operator_positions"] = promoted
         geojson = {
@@ -478,7 +504,9 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
             f"direct_radio:{sources.get('direct_radio', 0)} "
             f"mqtt:{sources.get('mqtt', 0)} "
             f"tracker:{sources.get('node_tracker', 0)} "
+            f"aredn:{sources.get('aredn', 0)} "
             f"rns_direct:{sources.get('rns_direct', 0)} "
+            f"meshcore_public:{sources.get('meshcore_public', 0)} "
             f"public:{sources.get('public_fallback', 0)} "
             f"operator_positions:{promoted}) "
             f"no_position:{len(self._nodes_without_position)}"
@@ -818,8 +846,9 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                             if no_pos_info:
                                 no_position_nodes.append(no_pos_info)
 
-                    # Update the tracking lists
-                    self._nodes_without_position = no_position_nodes
+                    # Extend (not overwrite) so entries added by earlier sources
+                    # (MeshCore from _collect_unified_tracker, etc.) survive.
+                    self._nodes_without_position.extend(no_position_nodes)
                     self._total_nodes_seen = total_nodes
 
                     logger.debug(
@@ -888,9 +917,12 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                             if no_pos_info:
                                 no_position_nodes.append(no_pos_info)
 
-                    # Update the tracking lists (if meshtasticd didn't already)
+                    # Extend (not overwrite). The `if not self._total_nodes_seen`
+                    # gate stays — we still only want to claim _total_nodes_seen
+                    # when meshtasticd didn't report, but the no-position list
+                    # should always accumulate so MeshCore / RNS entries survive.
+                    self._nodes_without_position.extend(no_position_nodes)
                     if not self._total_nodes_seen:
-                        self._nodes_without_position = no_position_nodes
                         self._total_nodes_seen = total_nodes
 
                     logger.debug(
@@ -1041,6 +1073,7 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
         return {
             "id": formatted_id,
             "name": name or formatted_id,
+            "network": "meshtastic",
             "is_online": is_online,
             "last_seen": last_seen,
             "hardware": user.get('hwModel', ''),
@@ -1359,6 +1392,171 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
             notes=f"local node {local_node_ip}",
         )
         return features
+
+    def _collect_aredn_worldmap(self) -> List[Dict]:
+        """Wrapper around _fetch_aredn_worldmap_nodes that runs independent of
+        the public_fallback threshold. AREDN worldmap is geographic context
+        (where are AREDN nodes in my region), not a Meshtastic-sparse-fill fallback.
+
+        Disabled via `enable_aredn_worldmap_fallback=False` in map_settings.json.
+        """
+        if not self._settings or not self._settings.get("enable_aredn_worldmap_fallback", True):
+            self._record_diagnostic(
+                "aredn_worldmap",
+                attempted=0, yielded=0,
+                reason_if_zero="source_disabled",
+                notes="set enable_aredn_worldmap_fallback=true",
+            )
+            return []
+        try:
+            features = self._fetch_aredn_worldmap_nodes()
+        except Exception as e:
+            self._record_diagnostic(
+                "aredn_worldmap", attempted=0, yielded=0,
+                reason_if_zero="unreachable", notes=str(e)[:120],
+            )
+            return []
+        self._record_diagnostic(
+            "aredn_worldmap",
+            attempted=len(features),
+            yielded=len(features),
+            reason_if_zero=None if features else "unreachable",
+            notes="worldmap.arednmesh.org",
+        )
+        return features
+
+    # MeshCore node type ids from the public map API schema.
+    _MESHCORE_NODE_TYPES = {1: "client", 2: "repeater", 3: "room_server"}
+    _MESHCORE_MAP_URL = "https://map.meshcore.dev/api/v1/nodes"
+
+    def _collect_meshcore_public(self) -> List[Dict]:
+        """Fetch MeshCore nodes from the public map API (map.meshcore.dev).
+
+        MeshCore advertisements carry no GPS locally (MeshCoreHandler adds nodes
+        to UnifiedNodeTracker without position → they get filtered out of the map),
+        so the only way to render MeshCore with GPS is to pull the public map API.
+        ~30k nodes globally, validated coordinates, network='meshcore'.
+
+        Disabled via `enable_meshcore_public=False` in map_settings.json.
+
+        Operator-assigned positions (map_settings.json `meshcore_positions`) still
+        take precedence for specific local nodes — see `_apply_operator_positions`.
+        """
+        if not self._settings or not self._settings.get("enable_meshcore_public", True):
+            self._record_diagnostic(
+                "meshcore_public",
+                attempted=0, yielded=0,
+                reason_if_zero="source_disabled",
+                notes="set enable_meshcore_public=true in map_settings.json",
+            )
+            return []
+
+        import urllib.request
+        import urllib.error
+        features: List[Dict] = []
+        attempted = 0
+        try:
+            req = urllib.request.Request(
+                self._MESHCORE_MAP_URL,
+                headers={"Accept": "application/json", "User-Agent": "MeshForge/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                # Cap at 64 MB — current global MeshCore map is ~12 MB for ~30k nodes.
+                # An 8 MB cap truncates mid-JSON and leaves an "Unterminated string"
+                # parse error rather than complete data.
+                raw = resp.read(64 * 1024 * 1024)
+                data = json.loads(raw.decode("utf-8", errors="replace"))
+
+            if not isinstance(data, list):
+                self._record_diagnostic(
+                    "meshcore_public", attempted=0, yielded=0,
+                    reason_if_zero="unreachable",
+                    notes="unexpected response shape (not a list)",
+                )
+                return []
+
+            attempted = len(data)
+            for node in data:
+                feature = self._parse_meshcore_public_node(node)
+                if feature:
+                    features.append(feature)
+
+            if features:
+                logger.info(f"MeshCore public map: {len(features)}/{attempted} nodes")
+
+        except (urllib.error.URLError, OSError, json.JSONDecodeError, ValueError) as e:
+            logger.debug(f"MeshCore public map unavailable: {e}")
+            self._record_diagnostic(
+                "meshcore_public", attempted=attempted, yielded=len(features),
+                reason_if_zero="unreachable" if not features else None,
+                notes=str(e)[:120],
+            )
+            return features
+
+        reason = None
+        if not features:
+            reason = "no_positions"
+        self._record_diagnostic(
+            "meshcore_public",
+            attempted=attempted, yielded=len(features),
+            reason_if_zero=reason,
+            notes=self._MESHCORE_MAP_URL,
+        )
+        return features
+
+    def _parse_meshcore_public_node(self, node: Dict) -> Optional[Dict]:
+        """Parse one node from map.meshcore.dev into a GeoJSON feature."""
+        lat = node.get("adv_lat")
+        lon = node.get("adv_lon")
+        try:
+            lat = float(lat)
+            lon = float(lon)
+        except (TypeError, ValueError):
+            return None
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            return None
+        if lat == 0.0 and lon == 0.0:
+            return None  # null-island filter
+
+        pubkey = node.get("public_key") or ""
+        if not pubkey:
+            return None
+
+        name = node.get("adv_name") or pubkey[:16]
+        node_type_id = node.get("type", 0)
+        node_type = self._MESHCORE_NODE_TYPES.get(node_type_id, "unknown")
+        params = node.get("params") or {}
+        last_advert = node.get("last_advert")
+
+        is_online = False
+        try:
+            if last_advert:
+                last_ts = float(last_advert)
+                is_online = self._is_node_online(last_ts, source="public_fallback")
+        except (TypeError, ValueError):
+            pass
+
+        return {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [lon, lat]},
+            "properties": {
+                "id": f"meshcore:{pubkey}",
+                "name": name,
+                "network": "meshcore",
+                "node_type": node_type,
+                "is_online": is_online,
+                "is_local": False,
+                "is_gateway": node_type_id == 2,  # repeater
+                "last_heard": last_advert,
+                "hardware": "",
+                "role": node_type,
+                "frequency": params.get("freq"),
+                "spreading_factor": params.get("sf"),
+                "coding_rate": params.get("cr"),
+                "bandwidth": params.get("bw"),
+                "source": "meshcore_public_map",
+            },
+        }
 
     def _get_aredn_node_ip(self) -> Optional[str]:
         """Find AREDN node on local network.
