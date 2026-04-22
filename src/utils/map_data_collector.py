@@ -99,6 +99,12 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                 "meshtasticd_host": self.DEFAULT_MESHTASTICD_HOST,
                 "meshtasticd_port": self.DEFAULT_MESHTASTICD_PORT,
                 "aredn_node_ips": [],  # e.g. ["10.54.25.1", "10.1.0.1"]
+                # Operator-assigned positions for nodes that don't self-report GPS
+                # (MeshCore advertisements carry no position by protocol design).
+                # Shape: {"<node_id_or_pubkey_prefix>": {"lat": 19.4, "lon": -155.3, "note": "Hilo relay"}}
+                # Match key is compared against UnifiedNode.id (e.g. "meshcore:abc123...")
+                # OR a shorter prefix like "abc123" (first N chars of the pubkey after "meshcore:").
+                "meshcore_positions": {},
                 # Per-source online thresholds (minutes)
                 "meshtastic_threshold_minutes": self.DEFAULT_MESHTASTIC_THRESHOLD_MINUTES,
                 "mqtt_threshold_minutes": self.DEFAULT_MQTT_THRESHOLD_MINUTES,
@@ -117,6 +123,13 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
         # Track nodes without GPS for reporting
         self._nodes_without_position: List[Dict] = []
         self._total_nodes_seen: int = 0  # Total from meshtasticd (with + without GPS)
+
+        # Per-source diagnostics — populated by each _collect_* method during collect().
+        # Shape: {"source_name": {"attempted": int, "yielded": int, "reason_if_zero": str|None, "notes": str|None}}
+        # Reason taxonomy: not_configured | unreachable | no_positions | source_disabled | ok
+        self._source_diagnostics: Dict[str, Dict[str, Any]] = {}
+        # Rate-limit for actionable INFO logs (source_name -> last-log-timestamp)
+        self._last_info_log: Dict[str, float] = {}
 
         # Node history database for position/state tracking over time
         self._history = None
@@ -296,6 +309,46 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
         """
         return self._nodes_without_position
 
+    def get_source_diagnostics(self) -> Dict[str, Dict[str, Any]]:
+        """Per-source collection diagnostics from the most recent collect().
+
+        Each entry: {attempted, yielded, reason_if_zero, notes}.
+        Consumed by /api/status to let operators diagnose "why is source X empty"
+        without reading source code.
+        """
+        return dict(self._source_diagnostics)
+
+    def _record_diagnostic(
+        self,
+        source: str,
+        attempted: int,
+        yielded: int,
+        reason_if_zero: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> None:
+        """Record diagnostic for a single source during collect()."""
+        if yielded > 0 and reason_if_zero is None:
+            reason_if_zero = "ok"
+        elif yielded == 0 and reason_if_zero is None:
+            reason_if_zero = "no_positions" if attempted > 0 else "unreachable"
+        self._source_diagnostics[source] = {
+            "attempted": attempted,
+            "yielded": yielded,
+            "reason_if_zero": reason_if_zero,
+            "notes": notes,
+        }
+
+    def _info_log_rate_limited(self, source: str, message: str, cooldown_s: float = 300.0) -> None:
+        """Emit an INFO log for `source` at most once per cooldown window.
+
+        Prevents one-liner operator guidance from drowning logs on every collect cycle.
+        """
+        now = time.time()
+        last = self._last_info_log.get(source, 0.0)
+        if now - last >= cooldown_s:
+            logger.info(message)
+            self._last_info_log[source] = now
+
     def collect(self, max_age_seconds: int = 30) -> Dict[str, Any]:
         """Collect nodes from all sources, merge, and return GeoJSON.
 
@@ -309,6 +362,10 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
         if (self._cached_geojson and self._last_collect and
                 time.time() - self._last_collect < max_age_seconds):
             return self._cached_geojson
+
+        # Reset per-call state so diagnostics/nodes_without_position reflect THIS run only.
+        self._nodes_without_position = []
+        self._source_diagnostics = {}
 
         features: Dict[str, Dict] = {}  # id -> feature (dedup by id)
 
@@ -386,11 +443,17 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                 if fid:
                     features[fid] = f
 
+        # Post-process: promote MeshCore (and other position-less) nodes to map features
+        # when the operator has assigned coordinates via map_settings.json.
+        promoted = self._apply_operator_positions(features)
+
         sources = self._get_source_summary(
             tcp_features, mqtt_features, tracker_features, aredn_features,
             direct_radio_features, rns_direct_features, tracker_unified_features,
             public_features,
         )
+        if promoted:
+            sources["operator_positions"] = promoted
         geojson = {
             "type": "FeatureCollection",
             "features": list(features.values()),
@@ -398,6 +461,7 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                 "collected_at": datetime.now().isoformat(),
                 "source_count": len(features),
                 "sources": sources,
+                "source_diagnostics": dict(self._source_diagnostics),
                 "total_nodes": self._total_nodes_seen,
                 "nodes_with_position": len(features),
                 "nodes_without_position": self._nodes_without_position,
@@ -406,8 +470,8 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
             }
         }
 
-        # Log collection summary for debugging
-        logger.debug(
+        # Collection summary (INFO — surfaces without --verbose)
+        logger.info(
             f"MapDataCollector: {len(features)} nodes "
             f"(unified:{sources.get('unified_tracker', 0)} "
             f"meshtasticd:{sources.get('meshtasticd', 0)} "
@@ -415,7 +479,9 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
             f"mqtt:{sources.get('mqtt', 0)} "
             f"tracker:{sources.get('node_tracker', 0)} "
             f"rns_direct:{sources.get('rns_direct', 0)} "
-            f"public:{sources.get('public_fallback', 0)})"
+            f"public:{sources.get('public_fallback', 0)} "
+            f"operator_positions:{promoted}) "
+            f"no_position:{len(self._nodes_without_position)}"
         )
 
         # Cache result
@@ -439,11 +505,17 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
         RNS path table, meshtasticd, and the gateway bridge into a unified view.
         This is the same data the Topology view displays.
 
+        Also appends non-Meshtastic nodes WITHOUT position (primarily MeshCore —
+        its advertisements carry no GPS) to self._nodes_without_position, so the
+        map UI can render them as a sidebar list and operators can assign
+        positions via map_settings.json meshcore_positions.
+
         Returns:
             List of GeoJSON features for nodes with valid positions.
         """
         try:
             tracker = get_node_tracker()
+            all_nodes = tracker.get_all_nodes()
             geojson = tracker.to_geojson()
             features = geojson.get("features", [])
 
@@ -451,7 +523,6 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                 # Enrich with additional properties the map expects
                 for f in features:
                     props = f.get("properties", {})
-                    # Ensure standard fields exist
                     if "via_mqtt" not in props:
                         props["via_mqtt"] = False
                     if "hardware" not in props:
@@ -461,14 +532,43 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                     if "source" not in props:
                         props["source"] = "unified_tracker"
 
-                logger.debug(
-                    f"UnifiedNodeTracker: {len(features)} nodes with position "
-                    f"(total tracked: {len(tracker.get_all_nodes())})"
-                )
+            # Capture non-Meshtastic nodes without position. Meshtastic's own
+            # no-GPS nodes are handled by _collect_via_http (richer data available there);
+            # for MeshCore/RNS/etc. the tracker is the only source.
+            with_pos_ids = {n.id for n in tracker.get_nodes_with_position()}
+            for node in all_nodes:
+                if node.id in with_pos_ids:
+                    continue
+                if node.network == "meshtastic":
+                    continue  # handled by HTTP collector
+                try:
+                    last_seen = node.get_age_string() if hasattr(node, "get_age_string") else None
+                except Exception:
+                    last_seen = None
+                self._nodes_without_position.append({
+                    "id": node.id,
+                    "name": getattr(node, "name", node.id),
+                    "network": node.network,
+                    "is_online": getattr(node, "is_online", False),
+                    "last_seen": last_seen,
+                })
+
+            self._record_diagnostic(
+                "unified_tracker",
+                attempted=len(all_nodes),
+                yielded=len(features),
+            )
             return features
 
         except Exception as e:
             logger.debug(f"UnifiedNodeTracker collection error: {e}")
+            self._record_diagnostic(
+                "unified_tracker",
+                attempted=0,
+                yielded=0,
+                reason_if_zero="unreachable",
+                notes=str(e)[:200],
+            )
             return []
 
     def _collect_meshtasticd(self) -> List[Dict]:
@@ -486,6 +586,12 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
         # Strategy 1: HTTP API (preferred — doesn't conflict with gateway bridge)
         features = self._collect_via_http(host)
         if features:
+            self._record_diagnostic(
+                "meshtasticd",
+                attempted=self._total_nodes_seen or len(features),
+                yielded=len(features),
+                notes="via http",
+            )
             return features
 
         # Strategy 2: TCP interface (needs lock)
@@ -499,12 +605,30 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
             sock.close()
             if result != 0:
                 logger.debug(f"meshtasticd not reachable at {host}:{port}")
+                self._record_diagnostic(
+                    "meshtasticd",
+                    attempted=0, yielded=0,
+                    reason_if_zero="unreachable",
+                    notes=f"{host}:{port} closed",
+                )
                 return []
         except OSError:
+            self._record_diagnostic(
+                "meshtasticd",
+                attempted=0, yielded=0,
+                reason_if_zero="unreachable",
+                notes="socket check failed",
+            )
             return []
 
         features = self._collect_via_tcp_interface()
         if features:
+            self._record_diagnostic(
+                "meshtasticd",
+                attempted=len(features),
+                yielded=len(features),
+                notes="via tcp",
+            )
             return features
 
         # Strategy 3: Fall back to CLI parsing
@@ -513,6 +637,71 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
             logger.debug(f"meshtasticd (CLI): {len(features)} nodes with position")
 
         return features
+
+    def _apply_operator_positions(self, features: Dict[str, Dict]) -> int:
+        """Promote position-less nodes to map features using operator-assigned coordinates.
+
+        Reads `meshcore_positions` from map_settings.json. Matches against
+        self._nodes_without_position by either the full node id (e.g. "meshcore:abcd…")
+        or a prefix of the id after the "network:" part (e.g. "abcd" matches
+        "meshcore:abcd1234ef"). Promoted nodes are added to `features` and REMOVED
+        from `self._nodes_without_position` (they're no longer "without" — operator fixed that).
+
+        Returns the number of nodes promoted.
+        """
+        if not self._settings or not self._nodes_without_position:
+            return 0
+        positions = self._settings.get("meshcore_positions", {}) or {}
+        if not positions:
+            return 0
+
+        promoted = 0
+        remaining: List[Dict] = []
+        for entry in self._nodes_without_position:
+            nid = entry.get("id", "")
+            match = positions.get(nid)
+            if match is None:
+                # Try prefix match on the body after "network:"
+                body = nid.split(":", 1)[1] if ":" in nid else nid
+                for key, val in positions.items():
+                    if body.startswith(key):
+                        match = val
+                        break
+            if match is None:
+                remaining.append(entry)
+                continue
+
+            try:
+                lat = float(match["lat"])
+                lon = float(match["lon"])
+            except (KeyError, TypeError, ValueError):
+                remaining.append(entry)
+                continue
+
+            feature = {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                "properties": {
+                    "id": nid,
+                    "name": entry.get("name", nid),
+                    "network": entry.get("network", "unknown"),
+                    "is_online": entry.get("is_online", False),
+                    "is_local": False,
+                    "is_gateway": False,
+                    "last_seen": entry.get("last_seen"),
+                    "source": "operator_positions",
+                    "position_source": "operator",
+                    "note": match.get("note", ""),
+                },
+            }
+            if nid and nid not in features:
+                features[nid] = feature
+                promoted += 1
+            else:
+                remaining.append(entry)
+
+        self._nodes_without_position = remaining
+        return promoted
 
     def _collect_via_http(self, host: str) -> List[Dict]:
         """Collect nodes via meshtasticd's HTTP JSON API.
@@ -568,12 +757,15 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                     no_position_nodes.append({
                         "id": node.node_id,
                         "name": node.long_name or node.short_name or node.node_id,
+                        "network": "meshtastic",
                         "hw_model": node.hw_model,
                         "snr": node.snr,
                         "last_heard": node.last_heard,
                     })
 
-            self._nodes_without_position = no_position_nodes
+            # Append (not overwrite) so entries added by other sources
+            # (MeshCore from _collect_unified_tracker, etc.) survive.
+            self._nodes_without_position.extend(no_position_nodes)
             self._total_nodes_seen = len(nodes)
 
             logger.debug(
@@ -941,15 +1133,24 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
         Tries the live subscriber singleton first (best data, includes sensors),
         then falls back to cached GeoJSON file.
         """
+        live_connected = False
+        live_features: List[Dict] = []
         # Try live subscriber first (has real-time sensor data)
         try:
             subscriber = get_local_subscriber()
             if subscriber.is_connected():
+                live_connected = True
                 geojson = subscriber.get_geojson()
-                features = geojson.get("features", [])
-                if features:
-                    logger.debug(f"MQTT live: {len(features)} nodes with position")
-                    return features
+                live_features = geojson.get("features", [])
+                if live_features:
+                    logger.debug(f"MQTT live: {len(live_features)} nodes with position")
+                    self._record_diagnostic(
+                        "mqtt",
+                        attempted=len(live_features),
+                        yielded=len(live_features),
+                        notes="live subscriber",
+                    )
+                    return live_features
         except Exception as e:
             logger.debug(f"MQTT live collection error: {e}")
 
@@ -962,10 +1163,23 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                     with open(mqtt_cache) as f:
                         data = json.load(f)
                     if data.get("type") == "FeatureCollection":
-                        return data.get("features", [])
+                        cached = data.get("features", [])
+                        self._record_diagnostic(
+                            "mqtt",
+                            attempted=len(cached),
+                            yielded=len(cached),
+                            notes=f"cached ({int(age)}s old)",
+                        )
+                        return cached
         except Exception as e:
             logger.debug(f"MQTT cache collection error: {e}")
 
+        self._record_diagnostic(
+            "mqtt",
+            attempted=0, yielded=0,
+            reason_if_zero="unreachable" if live_connected else "not_configured",
+            notes="no live subscriber and no fresh cache",
+        )
         return []
 
     def _collect_node_tracker(self) -> List[Dict]:
@@ -1058,14 +1272,40 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
         Scans the local AREDN network for nodes with GPS coordinates.
         AREDN nodes may have location data configured by the operator.
         """
-        features = []
+        features: List[Dict] = []
+        configured_ips = []
+        if self._settings:
+            raw = self._settings.get("aredn_node_ips", [])
+            configured_ips = [raw] if isinstance(raw, str) else list(raw or [])
 
-        # First try to connect to the local AREDN node
+        # First try to connect to the local AREDN node (zero-config via localnode.local.mesh
+        # + common defaults is already built into _get_aredn_node_ip).
         local_node_ip = self._get_aredn_node_ip()
         if not local_node_ip:
-            logger.debug("No AREDN node found on local network")
+            if configured_ips:
+                reason = "unreachable"
+                msg = (
+                    f"AREDN: none of configured IPs {configured_ips} reachable; "
+                    "check aredn_node_ips in ~/.config/meshforge/map_settings.json"
+                )
+            else:
+                reason = "not_configured"
+                msg = (
+                    "AREDN: no local node reachable (tried localnode.local.mesh + "
+                    "defaults). Configure aredn_node_ips in "
+                    "~/.config/meshforge/map_settings.json to add a specific IP."
+                )
+            self._info_log_rate_limited("aredn", msg)
+            self._record_diagnostic(
+                "aredn",
+                attempted=len(configured_ips),
+                yielded=0,
+                reason_if_zero=reason,
+                notes=(f"configured: {len(configured_ips)}" if configured_ips else "no IPs configured"),
+            )
             return []
 
+        neighbors_tried = 0
         try:
             # Get the local node info (may have location)
             client = AREDNClient(local_node_ip, timeout=5)
@@ -1079,13 +1319,13 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                 # Get neighbor nodes through links
                 for link in local_node.links:
                     if link.ip:
+                        neighbors_tried += 1
                         try:
                             neighbor_client = AREDNClient(link.ip, timeout=3)
                             neighbor_node = neighbor_client.get_node_info()
                             if neighbor_node:
                                 neighbor_feature = self._aredn_node_to_feature(neighbor_node)
                                 if neighbor_feature:
-                                    # Add link quality info
                                     neighbor_feature["properties"]["link_type"] = link.link_type.value
                                     neighbor_feature["properties"]["link_quality"] = link.link_quality
                                     neighbor_feature["properties"]["snr"] = link.snr if link.snr else None
@@ -1098,7 +1338,26 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
 
         except Exception as e:
             logger.debug(f"AREDN collection error: {e}")
+            self._record_diagnostic(
+                "aredn",
+                attempted=1 + neighbors_tried,
+                yielded=len(features),
+                reason_if_zero="unreachable" if not features else None,
+                notes=f"{local_node_ip}: {str(e)[:120]}",
+            )
+            return features
 
+        # Success path — reason "no_positions" means we reached AREDN but nothing had GPS set.
+        reason = None
+        if not features:
+            reason = "no_positions"
+        self._record_diagnostic(
+            "aredn",
+            attempted=1 + neighbors_tried,
+            yielded=len(features),
+            reason_if_zero=reason,
+            notes=f"local node {local_node_ip}",
+        )
         return features
 
     def _get_aredn_node_ip(self) -> Optional[str]:
