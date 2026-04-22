@@ -149,3 +149,30 @@ class TestTopLevelLocation:
         # node_details wins because it's parsed first; top-level only fills None gaps.
         assert node.latitude == 10.0
         assert node.longitude == 20.0
+
+    def test_reported_node_name_replaces_caller_hostname(self):
+        """AREDN sysinfo `node` field (e.g. 'WH6GXZ-6-BI-ECOM') should become the
+        canonical hostname on the parsed AREDNNode — not the string the caller
+        used to connect ('localnode.local.mesh')."""
+        payload = {
+            "api_version": "2.0",
+            "node": "WH6GXZ-6-BI-ECOM",
+            "lat": 19.43517, "lon": -155.21384,
+            "node_details": {"description": "Ecomm Big Island"},
+        }
+        client, patcher = _client_with_response(payload)
+        try:
+            node = client.get_node_info()
+        finally:
+            patcher.stop()
+        assert node.hostname == "WH6GXZ-6-BI-ECOM"
+        assert node.description == "Ecomm Big Island"
+
+    def test_missing_node_name_falls_back_to_caller_hostname(self):
+        payload = {"api_version": "2.0", "lat": 10.0, "lon": 20.0}
+        client, patcher = _client_with_response(payload)
+        try:
+            node = client.get_node_info()
+        finally:
+            patcher.stop()
+        assert node.hostname == "localnode.local.mesh"
