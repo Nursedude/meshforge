@@ -1418,25 +1418,24 @@ class TestRNSConnectionFlow:
     """Tests for RNS connection and LXMF setup flow."""
 
     def test_connect_rns_import_error_is_permanent(self, bridge):
+        """When RNS/LXMF modules are unavailable, ``_connect_rns`` must mark
+        the init permanently failed and bail before any config access.
+
+        Patches the module-level ``_HAS_RNS`` / ``_HAS_LXMF`` flags directly
+        per CLAUDE.md Issue #29 ("Patch _HAS_* flags directly, not
+        sys.modules"). The previous builtins.__import__ approach didn't
+        work because safe_import() resolves those flags at module load
+        time — a later __import__ hook can't flip them, so the guard at
+        the top of _connect_rns never triggered and the code instead fell
+        through to the main try block where the MagicMock config tripped
+        a different exception path that leaves _rns_init_failed_permanently
+        at False.
+        """
         bridge._rns_pre_initialized = False
-        import builtins
-        original_import = builtins.__import__
 
-        def mock_import(name, *args, **kwargs):
-            if name in ('RNS', 'LXMF'):
-                raise ImportError("No module")
-            return original_import(name, *args, **kwargs)
-
-        with patch('builtins.__import__', side_effect=mock_import):
-            saved_rns = sys.modules.pop('RNS', None)
-            saved_lxmf = sys.modules.pop('LXMF', None)
-            try:
-                bridge._connect_rns()
-            finally:
-                if saved_rns:
-                    sys.modules['RNS'] = saved_rns
-                if saved_lxmf:
-                    sys.modules['LXMF'] = saved_lxmf
+        with patch('gateway._rns_bridge_connection._HAS_RNS', False), \
+             patch('gateway._rns_bridge_connection._HAS_LXMF', False):
+            bridge._connect_rns()
 
         assert bridge._connected_rns is False
         assert bridge._rns_init_failed_permanently is True
