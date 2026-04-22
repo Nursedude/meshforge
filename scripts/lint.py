@@ -14,6 +14,7 @@ Checks:
 - MF009: RNS.Reticulum() without configdir (causes EADDRINUSE, Issue #12)
 - MF010: time.sleep() in daemon loops (must use _stop_event.wait(), H1)
 - MF011: Repair logic in _nomadnet_rns_checks.py (must be in _rns_repair.py/diagnostics)
+- MF012: Context-loaded doc size (persistent_issues.md must stay under 40k chars)
 
 Usage:
     python3 scripts/lint.py [files...]
@@ -362,6 +363,35 @@ def get_all_python_files(directory: str = 'src') -> List[str]:
     return files
 
 
+# MF012: Context-loaded docs must stay small so per-conversation overhead is bounded.
+# When a doc trips this cap, move the oldest fully-resolved issues to the companion
+# archive file and leave a one-row summary in the in-file archived-issues table.
+# DO NOT raise the limit to make a tripped check pass.
+CONTEXT_DOC_LIMITS = {
+    '.claude/foundations/persistent_issues.md': 40_000,
+}
+
+
+def check_context_doc_sizes(repo_root: str = '.') -> List[LintIssue]:
+    """MF012: enforce char-size caps on docs routinely loaded into model context."""
+    issues: List[LintIssue] = []
+    for rel_path, limit in CONTEXT_DOC_LIMITS.items():
+        full = os.path.join(repo_root, rel_path)
+        if not os.path.isfile(full):
+            continue
+        try:
+            size = os.path.getsize(full)
+        except OSError:
+            continue
+        if size > limit:
+            issues.append(LintIssue(
+                rel_path, 0, Severity.ERROR, "MF012",
+                f"File is {size:,} chars (limit {limit:,}). "
+                f"Move oldest resolved issues to the archive; do not raise the limit.",
+            ))
+    return issues
+
+
 def main():
     parser = argparse.ArgumentParser(description='MeshForge Linter')
     parser.add_argument('files', nargs='*', help='Files to lint')
@@ -391,6 +421,10 @@ def main():
     # Run linter
     linter = MeshForgeLinter()
     issues = linter.lint_files(files)
+
+    # MF012: doc-size cap (skip in --staged mode — only relevant to whole-repo checks)
+    if not args.staged:
+        issues.extend(check_context_doc_sizes())
 
     # Filter by severity
     severity_order = {'error': 0, 'warning': 1, 'info': 2}
