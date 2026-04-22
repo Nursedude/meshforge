@@ -53,6 +53,7 @@ TileCache, HAWAII_BOUNDS, _HAS_TILE_CACHE = safe_import(
 from utils.service_check import (
     _sudo_cmd,
     check_service as _check_service,
+    is_service_unit_installed,
     start_service,
     stop_service,
 )
@@ -169,11 +170,17 @@ class AIToolsHandler(BaseHandler):
         except OSError as e:
             logger.debug("Port check failed: %s", e)
 
-        # Try to start via systemd service first (preferred for reliability)
-        if self._try_start_map_service_quiet():
-            return  # Successfully started via systemd
+        # If the systemd unit is installed, IT owns :5000. Do not fall back
+        # to an in-process server even if systemd fails to start — an
+        # in-process bind would race systemd's Restart=always loop forever,
+        # leaving :5000 pinned to this TUI process while the service unit
+        # keeps failing (fleet-host-3 incident 2026-04-22). If systemd is broken,
+        # the operator needs to see it — not be quietly papered over.
+        if is_service_unit_installed(MAP_SERVER_SERVICE):
+            self._try_start_map_service_quiet()
+            return
 
-        # Fall back to in-process server (non-systemd environments)
+        # No systemd unit installed on this box — in-process fallback only.
         # Suppress console output to prevent TUI corruption, keep file logging
         try:
             from contextlib import redirect_stdout, redirect_stderr
@@ -910,23 +917,40 @@ class AIToolsHandler(BaseHandler):
         except OSError as e:
             logger.debug("Port availability check failed: %s", e)
 
-        # Try systemd service first (preferred for reliability)
-        service_started = self._try_start_map_service()
-
-        if service_started:
-            urls = "\n".join(f"  http://{ip}:{port}" for ip in all_ips)
+        # If the systemd unit is installed, IT owns :5000 — try systemd and
+        # do NOT fall back to in-process. An in-process bind would collide
+        # with systemd's Restart=always loop and leave the service stuck.
+        # If systemd fails, surface it so the operator can fix the unit.
+        if is_service_unit_installed(MAP_SERVER_SERVICE):
+            if self._try_start_map_service():
+                urls = "\n".join(f"  http://{ip}:{port}" for ip in all_ips)
+                self.ctx.dialog.msgbox(
+                    "Map Server Started",
+                    f"Map server running as system service!\n\n"
+                    f"Access via:\n{urls}\n\n"
+                    "Open any URL in your browser.\n"
+                    "The map pulls fresh data every 30 seconds.\n\n"
+                    "Service persists after TUI exits.\n"
+                    "Manage with: meshforge-map start|stop|status"
+                )
+                return
             self.ctx.dialog.msgbox(
-                "Map Server Started",
-                f"Map server running as system service!\n\n"
-                f"Access via:\n{urls}\n\n"
-                "Open any URL in your browser.\n"
-                "The map pulls fresh data every 30 seconds.\n\n"
-                "Service persists after TUI exits.\n"
-                "Manage with: meshforge-map start|stop|status"
+                "Map Server Failed to Start",
+                "meshforge-map.service is installed but failed to start.\n\n"
+                "Diagnose:\n"
+                "  systemctl status meshforge-map\n"
+                "  journalctl -u meshforge-map -n 50\n\n"
+                "Common causes:\n"
+                "  - Port 5000 already bound by another process\n"
+                "  - Python import error (check dependencies)\n"
+                "  - Bad config in ~/.config/meshforge/\n\n"
+                "The TUI will not start an in-process server while the\n"
+                "systemd unit is installed (avoids port conflicts that\n"
+                "trap the service in a restart loop)."
             )
             return
 
-        # Fall back to in-process server
+        # No systemd unit installed on this box — in-process is the only option.
         try:
             from contextlib import redirect_stdout, redirect_stderr
             from io import StringIO
