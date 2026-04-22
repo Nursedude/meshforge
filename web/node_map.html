@@ -1456,11 +1456,16 @@
                 <span class="label">AREDN:</span>
                 <span class="value" id="stat-aredn">0</span>
             </div>
+            <div class="stat-row">
+                <span class="label">MeshCore:</span>
+                <span class="value" id="stat-meshcore">0</span>
+            </div>
 
             <div class="filter-section">
                 <label><input type="checkbox" id="filter-meshtastic" checked> Meshtastic</label>
                 <label><input type="checkbox" id="filter-rns" checked> Reticulum</label>
                 <label><input type="checkbox" id="filter-aredn" checked> AREDN</label>
+                <label><input type="checkbox" id="filter-meshcore" checked> MeshCore</label>
                 <label><input type="checkbox" id="filter-online-only"> Online only</label>
                 <label><input type="checkbox" id="filter-coverage"> Coverage circles</label>
                 <label><input type="checkbox" id="filter-links" checked> Link lines</label>
@@ -2877,6 +2882,7 @@
         const showMeshtastic = document.getElementById('filter-meshtastic').checked;
         const showRNS = document.getElementById('filter-rns').checked;
         const showAREDN = document.getElementById('filter-aredn').checked;
+        const showMeshCore = document.getElementById('filter-meshcore').checked;
         const onlineOnly = document.getElementById('filter-online-only').checked;
         const showCoverage = document.getElementById('filter-coverage').checked;
         const showLinks = document.getElementById('filter-links').checked;
@@ -2884,7 +2890,7 @@
 
         // Track which nodes are in this update
         const activeIds = new Set();
-        let total = 0, meshtastic = 0, rns = 0, aredn = 0, online = 0;
+        let total = 0, meshtastic = 0, rns = 0, aredn = 0, meshcore = 0, online = 0;
 
         // Process each feature
         state.currentGeoJSON.features.forEach(feature => {
@@ -2897,6 +2903,7 @@
             if (props.network === 'meshtastic' || props.network === 'both') meshtastic++;
             if (props.network === 'rns' || props.network === 'both') rns++;
             if (props.network === 'aredn') aredn++;
+            if (props.network === 'meshcore') meshcore++;
             if (props.is_online) online++;
 
             // Apply filters
@@ -2904,6 +2911,7 @@
             if (props.network === 'meshtastic' && !showMeshtastic) return;
             if (props.network === 'rns' && !showRNS) return;
             if (props.network === 'aredn' && !showAREDN) return;
+            if (props.network === 'meshcore' && !showMeshCore) return;
             // Role filter (RMAP-inspired node type filtering)
             if (roleFilter) {
                 if (roleFilter === 'rns') {
@@ -3044,6 +3052,7 @@
         document.getElementById('stat-meshtastic').textContent = meshtastic;
         document.getElementById('stat-rns').textContent = rns;
         document.getElementById('stat-aredn').textContent = aredn;
+        document.getElementById('stat-meshcore').textContent = meshcore;
         document.getElementById('stat-online').textContent = online;
 
         // Fit bounds only on first load
@@ -4016,8 +4025,8 @@
         updateDisplay();
     });
 
-    ['filter-meshtastic', 'filter-rns', 'filter-aredn', 'filter-online-only',
-     'filter-coverage', 'filter-links', 'filter-link-anim', 'filter-heatmap'].forEach(id => {
+    ['filter-meshtastic', 'filter-rns', 'filter-aredn', 'filter-meshcore',
+     'filter-online-only', 'filter-coverage', 'filter-links', 'filter-link-anim', 'filter-heatmap'].forEach(id => {
         document.getElementById(id).addEventListener('change', () => {
             // Reset markers to force rebuild with new settings
             if (id === 'filter-coverage') {
