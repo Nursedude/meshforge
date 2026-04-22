@@ -119,6 +119,47 @@ class TestCheckSystemdService:
             assert is_enabled is False
 
 
+class TestIsServiceUnitInstalled:
+    """Tests for is_service_unit_installed — used by the TUI to decide whether
+    systemd owns :5000 (unit installed → don't fall back to in-process)."""
+
+    def test_unit_installed_returns_true(self):
+        from utils.service_check import is_service_unit_installed
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="# /etc/systemd/system/meshforge-map.service\n[Unit]\n...\n")
+            assert is_service_unit_installed('meshforge-map') is True
+            args, _ = mock_run.call_args
+            assert args[0] == ['systemctl', 'cat', 'meshforge-map']
+
+    def test_unit_missing_returns_false(self):
+        """systemctl cat exits non-zero when no unit file matches."""
+        from utils.service_check import is_service_unit_installed
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="No files found for does-not-exist.service")
+            assert is_service_unit_installed('does-not-exist') is False
+
+    def test_unit_installed_but_disabled_still_true(self):
+        """Disabled != missing. Unit file exists → helper returns True. This is
+        the core contract: the TUI should not race systemd even if the unit is
+        disabled; the operator can enable it, but the TUI should never bind
+        :5000 in-process on a box that has the unit file present."""
+        from utils.service_check import is_service_unit_installed
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="[Unit]\nDescription=...\n")
+            assert is_service_unit_installed('meshforge-map') is True
+
+    def test_systemctl_missing_returns_false(self):
+        """Non-systemd environment — helper reports no unit so in-process is fine."""
+        from utils.service_check import is_service_unit_installed
+        with patch('subprocess.run', side_effect=FileNotFoundError):
+            assert is_service_unit_installed('meshforge-map') is False
+
+    def test_timeout_returns_false(self):
+        from utils.service_check import is_service_unit_installed
+        with patch('subprocess.run', side_effect=subprocess.TimeoutExpired('systemctl', 5)):
+            assert is_service_unit_installed('meshforge-map') is False
+
+
 class TestCheckService:
     """Tests for check_service function."""
 

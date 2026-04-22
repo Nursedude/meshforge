@@ -560,6 +560,46 @@ def _wait_for_tcp_ready(port: int, host: str = 'localhost', max_wait: int = 15) 
     return False
 
 
+def is_service_unit_installed(service_name: str, timeout: int = 5) -> bool:
+    """Return True iff the systemd unit FILE exists on this box.
+
+    Orthogonal to active/enabled state — answers the question
+    "does systemd have a unit for this service at all?" An installed unit
+    might be disabled, masked, or failed; this helper reports True for all
+    of those. Only returns False when there is no unit file to load.
+
+    Uses ``systemctl cat`` (read-only, non-privileged), which exits 0
+    whenever it can resolve a unit file. Safer than ``is-enabled`` for
+    this question: ``is-enabled`` returns non-zero for both "not installed"
+    and "disabled" and the caller can't distinguish.
+
+    Primary use case: the TUI's map-server auto-start must know whether
+    systemd owns :5000 on this box. If it does, the TUI should NOT fall
+    back to an in-process HTTP server — that races systemd's Restart=always
+    loop and leaves :5000 pinned by the TUI while the service unit keeps
+    failing (see moc3 incident 2026-04-22). No unit installed → in-process
+    fallback is fine.
+
+    Args:
+        service_name: Service unit name (with or without .service suffix).
+        timeout: Subprocess timeout in seconds (default: 5).
+
+    Returns:
+        True if the unit file exists, False otherwise (including errors).
+    """
+    try:
+        result = subprocess.run(
+            ['systemctl', 'cat', service_name],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
+        logger.debug("is_service_unit_installed(%s) failed: %s", service_name, e)
+        return False
+
+
 def daemon_reload(timeout: int = 30) -> Tuple[bool, str]:
     """
     Reload the systemd daemon to pick up service file changes.
