@@ -176,8 +176,12 @@ class UnifiedNodeTracker:
 
                 # Write minimal client-only config (no interfaces, just shared transport).
                 # Propagate rnsd's rpc_key when pinned (Issue #37/#40/#41) so
-                # our RPC digests match rnsd's.
+                # our RPC digests match rnsd's. Also propagate rnsd's
+                # instance_name — @rns/<name> on disk must match what we ask
+                # the client to attach to, or the client binds its own fresh
+                # socket and sees an empty path table.
                 from utils.paths import ReticulumPaths
+                instance_name = ReticulumPaths.get_configured_instance_name()
                 cfg = [
                     "# MeshForge RNS Client Config (auto-generated)",
                     "# This config connects to existing rnsd without creating interfaces",
@@ -186,19 +190,20 @@ class UnifiedNodeTracker:
                     "share_instance = Yes",
                     "shared_instance_port = 37428",
                     "instance_control_port = 37429",
+                    f"instance_name = {instance_name}",
                 ]
                 rpc_key = ReticulumPaths.get_shared_rpc_key()
                 if rpc_key:
                     cfg.append(f"rpc_key = {rpc_key}")
                 client_config_file.write_text("\n".join(cfg) + "\n")
 
-                # Pre-flight: check if shared instance port is listening
+                # Pre-flight: check if shared instance socket is listening
                 try:
                     from utils.service_check import check_rns_shared_instance
-                    if not check_rns_shared_instance():
+                    if not check_rns_shared_instance(instance_name=instance_name):
                         logger.warning(
-                            "rnsd PID %d found but shared instance not available "
-                            "(may be initializing or hung)", rns_pids[0]
+                            "rnsd PID %d found but shared instance @rns/%s not available "
+                            "(may be initializing or hung)", rns_pids[0], instance_name
                         )
                 except ImportError:
                     pass  # service_check not available, proceed anyway

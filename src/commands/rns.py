@@ -1080,6 +1080,7 @@ def _init_rns_client():
         "share_instance = Yes",
         "shared_instance_port = 37428",
         "instance_control_port = 37429",
+        f"instance_name = {ReticulumPaths.get_configured_instance_name()}",
     ]
     rpc_key = ReticulumPaths.get_shared_rpc_key()
     if rpc_key:
