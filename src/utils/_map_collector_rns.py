@@ -174,10 +174,15 @@ class RNSDataCollectorMixin:
                     notes=f"{path_count} path_table entries, {len(rns_positions)} cached positions",
                 )
             else:
-                # Differentiate: zero destinations (RNS isolated) vs. destinations
-                # exist but none have cached GPS.
+                # Differentiate three distinct zero-yield states:
+                #   - path_table empty but rnsd reachable -> no_data (healthy,
+                #     just nothing announced yet; NOT a fault — the sidebar
+                #     badge logic treats 'unreachable' as a warn state and
+                #     this situation doesn't warrant that)
+                #   - destinations in path_table but none have GPS -> no_positions
+                #   - exception path (see except below) -> unreachable
                 if path_count == 0:
-                    reason = "unreachable"
+                    reason = "no_data"
                     notes = "rnsd path_table empty — no RNS peers announced yet"
                 else:
                     reason = "no_positions"
