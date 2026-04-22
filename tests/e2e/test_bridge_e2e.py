@@ -2,18 +2,13 @@
 
 These exercise the bridge → queue → handler → HTTP path with NO mocking
 below the LXMF receive boundary — the layer Issue #40's bugs lived in.
-Currently SKELETONS (xfail strict) until harness/pipeline.py is wired.
-
-The test bodies show the intended assertion shape so the implementer
-knows the target. Each captures one Issue #40 bug class:
+Each captures one Issue #40 bug class:
   - bytes content reaches HTTP as decoded text
   - @address routes to a directed Meshtastic node
   - failed HTTP send requeues with JSON-safe payload
 """
 
 from __future__ import annotations
-
-import pytest
 
 from tests.e2e.harness.pipeline import (
     build_bridge_with_real_pipeline,
@@ -22,7 +17,6 @@ from tests.e2e.harness.pipeline import (
 )
 
 
-@pytest.mark.xfail(reason="harness/pipeline.py is skeleton — see module TODO", strict=True)
 def test_lxmf_bytes_reaches_meshtasticd_as_text(
     mock_meshtasticd, gateway_identity_dir, queue_db_path
 ):
@@ -48,7 +42,6 @@ def test_lxmf_bytes_reaches_meshtasticd_as_text(
     )
 
 
-@pytest.mark.xfail(reason="harness/pipeline.py is skeleton — see module TODO", strict=True)
 def test_at_address_routes_directed_to_node(
     mock_meshtasticd, gateway_identity_dir, queue_db_path
 ):
@@ -73,7 +66,6 @@ def test_at_address_routes_directed_to_node(
     assert mock_meshtasticd.received_toradio, "expected at least one HTTP PUT"
 
 
-@pytest.mark.xfail(reason="harness/pipeline.py is skeleton — see module TODO", strict=True)
 def test_failed_send_requeues_with_str_payload(
     mock_meshtasticd, gateway_identity_dir, queue_db_path
 ):
