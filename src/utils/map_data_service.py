@@ -352,6 +352,32 @@ class MapServer:
         self._stop_message_listener()
         self._stop_websocket_server()
 
+    def _prewarm_collector(self):
+        """Run one collect() on the main thread before starting threaded HTTP.
+
+        RNS.Reticulum.__init__ registers SIGINT/SIGTERM handlers via
+        signal.signal(), which only works on the main thread. If the first
+        collect() runs in a ThreadingHTTPServer worker, the RNS init raises
+        "signal only works in main thread of the main interpreter" and the
+        rns_direct source gets stuck reporting unreachable forever (the
+        singleton never gets to the else branch because init never finishes).
+
+        Calling collect() here does two things on the main thread:
+          1. RNS.Reticulum() runs if rnsd is reachable — signal handlers
+             install cleanly; subsequent worker-thread calls hit the
+             singleton-reuse branch in _map_collector_rns and skip init.
+          2. The cache is populated so the first HTTP request is instant
+             instead of eating the collector cold-start latency.
+
+        Any failure is non-fatal — the server still starts, the next
+        cache-miss request runs collect() again (and may fail the same way
+        if, say, rnsd came up between calls; not worse than before).
+        """
+        try:
+            self.collector.collect()
+        except Exception as e:
+            logger.warning("Collector pre-warm failed (non-fatal): %s", e)
+
     def start(self):
         """Start server (blocking)."""
         MapRequestHandler.collector = self.collector
@@ -363,6 +389,16 @@ class MapServer:
 
         # Start message listener for inbound messages
         self._start_message_listener()
+
+        # Pre-warm collectors on the main thread BEFORE starting
+        # ThreadingHTTPServer. RNS.Reticulum.__init__ unconditionally
+        # calls signal.signal(SIGINT/SIGTERM, ...) (Reticulum.py:349-350),
+        # which raises "signal only works in main thread of the main
+        # interpreter" if first called from a request-handler worker
+        # thread. Doing one collect() here installs the handlers on the
+        # main thread; subsequent in-worker-thread calls reuse the
+        # singleton via _rns_is_initialized() in _map_collector_rns.
+        self._prewarm_collector()
 
         # ThreadingHTTPServer: one thread per request so a slow endpoint
         # (e.g. /api/nodes/geojson returning 20MB for ~38k MeshCore features)
@@ -407,6 +443,10 @@ class MapServer:
 
         # Start message listener for inbound messages
         self._start_message_listener()
+
+        # Same main-thread pre-warm as start() — install RNS signal
+        # handlers before spawning request-handler worker threads.
+        self._prewarm_collector()
 
         self._server = ThreadingHTTPServer((self.host, self.port), MapRequestHandler)
         self._server.daemon_threads = True
