@@ -34,7 +34,7 @@ import logging
 import os
 import socket
 import threading
-from http.server import HTTPServer
+from http.server import HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 from typing import List, Optional
 
@@ -183,7 +183,7 @@ class MapServer:
         self.websocket_port = websocket_port
         self.meshtasticd_port = meshtasticd_port
         self.collector = MapDataCollector()
-        self._server: Optional[HTTPServer] = None
+        self._server: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self._message_listener_started = False
         self._websocket_started = False
@@ -364,7 +364,14 @@ class MapServer:
         # Start message listener for inbound messages
         self._start_message_listener()
 
-        self._server = HTTPServer((self.host, self.port), MapRequestHandler)
+        # ThreadingHTTPServer: one thread per request so a slow endpoint
+        # (e.g. /api/nodes/geojson returning 20MB for ~38k MeshCore features)
+        # no longer blocks subsequent requests. daemon_threads=True ensures
+        # server shutdown doesn't wait for in-flight handlers. The collector
+        # itself serializes concurrent callers internally (see
+        # MapDataCollector.collect's lock) so multi-threading here is safe.
+        self._server = ThreadingHTTPServer((self.host, self.port), MapRequestHandler)
+        self._server.daemon_threads = True
         logger.info(f"Map server starting on http://{self.host}:{self.port}")
         print(f"MeshForge NOC Server running on port {self.port}")
         if self.host == "0.0.0.0":
@@ -401,7 +408,8 @@ class MapServer:
         # Start message listener for inbound messages
         self._start_message_listener()
 
-        self._server = HTTPServer((self.host, self.port), MapRequestHandler)
+        self._server = ThreadingHTTPServer((self.host, self.port), MapRequestHandler)
+        self._server.daemon_threads = True
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         logger.info(f"Map server running in background on port {self.port}")

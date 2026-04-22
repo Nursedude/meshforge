@@ -363,3 +363,60 @@ class TestTCPInterfaceDoesNotClobberNoPositionList:
         # This is the value the TCP path appends to no_position_nodes —
         # must carry a network tag so by_network doesn't say "unknown".
         assert info["network"] == "meshtastic"
+
+
+class TestCollectIsThreadSafe:
+    """With ThreadingHTTPServer in front, collect() must serialize under
+    a lock so concurrent requests don't race on per-call state
+    (_nodes_without_position / _source_diagnostics) or double-collect.
+    The second caller should get the cache the first caller just wrote."""
+
+    def test_concurrent_callers_get_single_collection(self, collector, tmp_path):
+        import threading, time
+        calls = []
+        real_locked = collector._collect_locked
+
+        def counting_locked():
+            calls.append(time.time())
+            # Small delay to make the race window reliably hit in the test.
+            time.sleep(0.2)
+            return real_locked()
+
+        with patch.object(collector, '_collect_locked', side_effect=counting_locked):
+            results = [None, None]
+            def worker(i):
+                results[i] = collector.collect(max_age_seconds=60)
+            t1 = threading.Thread(target=worker, args=(0,))
+            t2 = threading.Thread(target=worker, args=(1,))
+            t1.start(); t2.start()
+            t1.join(); t2.join()
+
+        # Only one actual collection ran — the second waiter hit the
+        # inside-lock cache re-check and returned the first caller's result.
+        assert len(calls) == 1, f"expected 1 collection, got {len(calls)}"
+        assert results[0] is results[1]
+
+    def test_cache_hit_does_not_acquire_lock(self, collector):
+        """Fast path (cache hit) must NOT block on the lock — concurrent
+        readers should not serialize during normal steady-state traffic."""
+        import threading
+        # Prime the cache
+        collector._cached_geojson = {"type": "FeatureCollection", "features": []}
+        collector._last_collect = __import__('time').time()
+
+        # Hold the lock from another thread
+        release = threading.Event()
+        def lock_holder():
+            with collector._collect_lock:
+                release.wait(timeout=2)
+        holder = threading.Thread(target=lock_holder)
+        holder.start()
+        try:
+            # This must return immediately from the fast path; if it waited
+            # on the held lock, the test would time out on holder.join below.
+            result = collector.collect(max_age_seconds=30)
+            assert result is collector._cached_geojson
+        finally:
+            release.set()
+            holder.join(timeout=3)
+            assert not holder.is_alive()
