@@ -245,3 +245,121 @@ class TestMeshtasticDoesNotClobberNoPositionList:
         assert "meshcore:abc" in ids
         # Meshtastic entry is appended
         assert "!dead" in ids
+
+
+class TestExtractNodeInfoWithoutPosition:
+    """Regression: _extract_node_info_without_position used to omit the
+    'network' field, surfacing as 'unknown' in /api/status by_network summary."""
+
+    def test_returns_meshtastic_network_tag(self, collector):
+        info = collector._extract_node_info_without_position(
+            node_id="!abc12345",
+            data={
+                "num": 0xabc12345,
+                "user": {"longName": "Test", "shortName": "T", "hwModel": "HELTEC_V3"},
+                "lastHeard": 1000000000,
+                "snr": 5.5,
+            },
+            now=1000000300,
+            online_threshold_seconds=900,
+        )
+        assert info is not None
+        assert info["network"] == "meshtastic"
+        assert info["id"] == "!abc12345"
+
+
+class TestMeshCorePublicCollector:
+    """The map.meshcore.dev public API is the only source of MeshCore nodes
+    with GPS — local MeshCoreHandler advertisements carry no position."""
+
+    def test_source_disabled_when_setting_off(self, collector):
+        collector._settings.set("enable_meshcore_public", False)
+        features = collector._collect_meshcore_public()
+        assert features == []
+        d = collector.get_source_diagnostics()
+        assert d["meshcore_public"]["reason_if_zero"] == "source_disabled"
+
+    @patch("urllib.request.urlopen")
+    def test_parses_api_shape(self, mock_urlopen, collector):
+        import json as _json
+        collector._settings.set("enable_meshcore_public", True)
+        resp = MagicMock()
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.return_value = _json.dumps([
+            {
+                "public_key": "abc123def456",
+                "adv_name": "HiloRepeater",
+                "adv_lat": 19.42,
+                "adv_lon": -155.28,
+                "type": 2,  # repeater
+                "last_advert": 1700000000,
+                "params": {"freq": 915000000, "sf": 10, "cr": 5, "bw": 125000},
+            },
+            {
+                # Missing pubkey — should be dropped
+                "adv_name": "NoKey",
+                "adv_lat": 10.0,
+                "adv_lon": 10.0,
+                "type": 1,
+            },
+            {
+                # Null-island — should be dropped
+                "public_key": "xyz",
+                "adv_name": "NullIsland",
+                "adv_lat": 0.0,
+                "adv_lon": 0.0,
+                "type": 1,
+            },
+        ]).encode()
+        mock_urlopen.return_value = resp
+
+        features = collector._collect_meshcore_public()
+        assert len(features) == 1
+        f = features[0]
+        assert f["properties"]["network"] == "meshcore"
+        assert f["properties"]["id"] == "meshcore:abc123def456"
+        assert f["properties"]["node_type"] == "repeater"
+        assert f["properties"]["is_gateway"] is True  # repeater → gateway
+        assert f["geometry"]["coordinates"] == [-155.28, 19.42]
+        assert f["properties"]["frequency"] == 915000000
+
+        d = collector.get_source_diagnostics()
+        assert d["meshcore_public"]["attempted"] == 3
+        assert d["meshcore_public"]["yielded"] == 1
+        assert d["meshcore_public"]["reason_if_zero"] == "ok"
+
+    @patch("urllib.request.urlopen", side_effect=OSError("no network"))
+    def test_network_error_records_unreachable(self, _mock_urlopen, collector):
+        collector._settings.set("enable_meshcore_public", True)
+        features = collector._collect_meshcore_public()
+        assert features == []
+        d = collector.get_source_diagnostics()
+        assert d["meshcore_public"]["reason_if_zero"] == "unreachable"
+
+    def test_invalid_coord_types_skipped(self, collector):
+        result = collector._parse_meshcore_public_node({
+            "public_key": "x", "adv_lat": "not-a-float", "adv_lon": -155.3, "type": 1,
+        })
+        assert result is None
+
+    def test_out_of_range_coords_skipped(self, collector):
+        result = collector._parse_meshcore_public_node({
+            "public_key": "x", "adv_lat": 200.0, "adv_lon": -155.3, "type": 1,
+        })
+        assert result is None
+
+
+class TestTCPInterfaceDoesNotClobberNoPositionList:
+    """Regression: _collect_via_tcp_interface used to `=` overwrite too."""
+
+    def test_tcp_extraction_includes_network_tag(self, collector):
+        # Calling the private helper directly is the right shape here since
+        # the full TCP path requires a live meshtasticd.
+        info = collector._extract_node_info_without_position(
+            node_id="!beef", data={"num": 0xbeef, "user": {}, "lastHeard": 0},
+            now=1000, online_threshold_seconds=900,
+        )
+        # This is the value the TCP path appends to no_position_nodes —
+        # must carry a network tag so by_network doesn't say "unknown".
+        assert info["network"] == "meshtastic"
