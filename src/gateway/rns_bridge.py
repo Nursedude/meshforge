@@ -534,6 +534,17 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin):
             else:
                 logger.info("Pre-flight check: meshtasticd is running")
 
+        # Issue #42: reconcile TX channel index with mqtt_bridge.channel name.
+        # In mqtt_bridge mode, RX arrives via MQTT topic .../<name>/# and TX
+        # uses a numeric index. If the two disagree, RNS→Mesh lands on the
+        # wrong channel. Resolve once at startup from the radio's own channel
+        # list; non-fatal if meshtasticd is unreachable.
+        try:
+            from ._channel_resolver import apply_resolved_channel
+            apply_resolved_channel(self.config)
+        except Exception as e:
+            logger.warning(f"TX channel resolution failed: {e}")
+
         logger.info("Starting RNS-Meshtastic bridge...")
         self._running = True
         self.stats['start_time'] = datetime.now()
