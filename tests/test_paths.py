@@ -298,6 +298,50 @@ class TestReticulumPathsResolution:
         with patch.object(ReticulumPaths, 'get_config_file', return_value=missing):
             assert ReticulumPaths.get_shared_rpc_key() is None
 
+    def test_configured_instance_name_default_when_unset(self, tmp_path):
+        """Missing ``instance_name`` option => 'default'."""
+        from utils.paths import ReticulumPaths
+
+        cfg = tmp_path / "config"
+        cfg.write_text("[reticulum]\n  share_instance = Yes\n")
+        with patch.object(ReticulumPaths, 'get_config_file', return_value=cfg):
+            assert ReticulumPaths.get_configured_instance_name() == 'default'
+
+    def test_configured_instance_name_explicit(self, tmp_path):
+        """Set ``instance_name`` is returned exactly (trimmed)."""
+        from utils.paths import ReticulumPaths
+
+        cfg = tmp_path / "config"
+        cfg.write_text("[reticulum]\n  instance_name = volcano ai rns\n")
+        with patch.object(ReticulumPaths, 'get_config_file', return_value=cfg):
+            assert ReticulumPaths.get_configured_instance_name() == 'volcano ai rns'
+
+    def test_configured_instance_name_comment_ignored(self, tmp_path):
+        """Commented-out line is ignored — fall back to 'default'."""
+        from utils.paths import ReticulumPaths
+
+        cfg = tmp_path / "config"
+        cfg.write_text("[reticulum]\n# instance_name = shadow\n")
+        with patch.object(ReticulumPaths, 'get_config_file', return_value=cfg):
+            assert ReticulumPaths.get_configured_instance_name() == 'default'
+
+    def test_configured_instance_name_empty_value_falls_back(self, tmp_path):
+        """``instance_name =`` (no value) => 'default', not empty string."""
+        from utils.paths import ReticulumPaths
+
+        cfg = tmp_path / "config"
+        cfg.write_text("[reticulum]\n  instance_name = \n")
+        with patch.object(ReticulumPaths, 'get_config_file', return_value=cfg):
+            assert ReticulumPaths.get_configured_instance_name() == 'default'
+
+    def test_configured_instance_name_missing_file(self, tmp_path):
+        """Missing config file => 'default', no exception."""
+        from utils.paths import ReticulumPaths
+
+        missing = tmp_path / "does-not-exist"
+        with patch.object(ReticulumPaths, 'get_config_file', return_value=missing):
+            assert ReticulumPaths.get_configured_instance_name() == 'default'
+
     @patch('utils.paths.get_real_user_home', return_value=Path('/home/wh6gxz'))
     def test_interfaces_dir_under_config_dir(self, mock_home):
         """get_interfaces_dir() returns config_dir/interfaces."""

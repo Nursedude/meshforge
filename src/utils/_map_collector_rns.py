@@ -36,15 +36,21 @@ class RNSDataCollectorMixin:
         """
         features = []
 
-        # Quick check if rnsd shared instance is available
+        # Quick check if rnsd shared instance is available.
+        # Must use rnsd's configured instance_name — a box with e.g.
+        # "instance_name = volcano ai rns" registers its socket as
+        # @rns/volcano ai rns, not @rns/default, and the hardcoded-default
+        # precheck would falsely report unavailable.
+        from utils.paths import ReticulumPaths
+        instance_name = ReticulumPaths.get_configured_instance_name()
         try:
             from utils.service_check import check_rns_shared_instance
-            if not check_rns_shared_instance():
-                logger.debug("rnsd shared instance not available")
+            if not check_rns_shared_instance(instance_name=instance_name):
+                logger.debug("rnsd shared instance not available (instance_name=%s)", instance_name)
                 self._record_diagnostic(
                     "rns_direct", attempted=0, yielded=0,
                     reason_if_zero="not_configured",
-                    notes="rnsd shared instance unavailable — start rnsd.service",
+                    notes=f"rnsd shared instance unavailable (@rns/{instance_name}) — start rnsd.service",
                 )
                 return []
         except ImportError:
@@ -68,7 +74,6 @@ class RNSDataCollectorMixin:
             # 1. Creating a default config at /root/.reticulum/ (Path.home() bug MF001)
             # 2. Initializing interfaces that conflict with rnsd's bindings
             import tempfile
-            from utils.paths import ReticulumPaths
             client_config_dir = Path(tempfile.gettempdir()) / "meshforge_rns_client"
             client_config_dir.mkdir(exist_ok=True)
             client_config_file = client_config_dir / "config"
@@ -77,6 +82,7 @@ class RNSDataCollectorMixin:
                 "  share_instance = Yes",
                 "  shared_instance_port = 37428",
                 "  instance_control_port = 37429",
+                f"  instance_name = {instance_name}",
             ]
             rpc_key = ReticulumPaths.get_shared_rpc_key()
             if rpc_key:

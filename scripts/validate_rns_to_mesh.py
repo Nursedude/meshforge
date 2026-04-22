@@ -37,32 +37,15 @@ sys.path.insert(0, str(_THIS_DIR.parent / "src"))
 
 
 def _read_rnsd_instance_name() -> str:
-    """Return the ``instance_name`` line from the active RNS config.
+    """Return the ``instance_name`` from the active RNS config (or 'default').
 
-    RNS namespaces its shared-instance socket as ``@rns/<instance_name>``.
-    The default is ``default`` when the option is omitted. If rnsd runs
-    under a non-default instance_name (e.g., ``volcano ai rns``) and our
-    client config defaults to ``default``, the client binds its own fresh
-    shared-instance socket instead of attaching to rnsd — path table
-    starts empty, path requests never resolve. Propagate whatever rnsd
-    is actually using.
+    Thin wrapper kept for the script's local call-site; the shared helper
+    is ``ReticulumPaths.get_configured_instance_name()`` and that is the
+    one every other MeshForge client-config writer should use.
     """
     from utils.paths import ReticulumPaths
 
-    try:
-        text = ReticulumPaths.get_config_file().read_text()
-    except (OSError, PermissionError):
-        return "default"
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        name, _, value = line.partition("=")
-        if name.strip() == "instance_name":
-            return value.strip() or "default"
-    return "default"
+    return ReticulumPaths.get_configured_instance_name()
 
 
 def _build_client_config(tmpdir: Path) -> Path:
