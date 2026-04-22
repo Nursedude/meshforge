@@ -223,15 +223,30 @@ class TestReticulumPathsResolution:
                 assert result == Path('/home/<user>/.reticulum/config')
 
     def test_shared_rpc_key_present(self, tmp_path):
-        """Pinned shared_instance_rpc_key is returned (64 lowercase hex)."""
+        """Pinned rpc_key is returned (64 lowercase hex)."""
         from utils.paths import ReticulumPaths
 
         cfg = tmp_path / "config"
         key = "bea1bf1aab671abb5aa9a0b7b013c1ddcbe5c7b71dd87e15bd0a7ebdc64fc96a"
-        cfg.write_text(f"[reticulum]\n  share_instance = Yes\n  shared_instance_rpc_key = {key}\n")
+        cfg.write_text(f"[reticulum]\n  share_instance = Yes\n  rpc_key = {key}\n")
 
         with patch.object(ReticulumPaths, 'get_config_file', return_value=cfg):
             assert ReticulumPaths.get_shared_rpc_key() == key
+
+    def test_shared_rpc_key_legacy_name_ignored(self, tmp_path):
+        """Legacy ``shared_instance_rpc_key`` option (ignored by RNS) must NOT be
+        honored — RNS 1.1.x parses only ``rpc_key``. Treating the old name as a
+        hit would make the helper claim identity-independence that RNS does not
+        actually deliver.
+        """
+        from utils.paths import ReticulumPaths
+
+        cfg = tmp_path / "config"
+        key = "bea1bf1aab671abb5aa9a0b7b013c1ddcbe5c7b71dd87e15bd0a7ebdc64fc96a"
+        cfg.write_text(f"[reticulum]\n  shared_instance_rpc_key = {key}\n")
+
+        with patch.object(ReticulumPaths, 'get_config_file', return_value=cfg):
+            assert ReticulumPaths.get_shared_rpc_key() is None
 
     def test_shared_rpc_key_absent(self, tmp_path):
         """No key line in config => None (not an error)."""
@@ -248,7 +263,7 @@ class TestReticulumPathsResolution:
         from utils.paths import ReticulumPaths
 
         cfg = tmp_path / "config"
-        cfg.write_text("[reticulum]\n  shared_instance_rpc_key = not-a-hex-string-xyz\n")
+        cfg.write_text("[reticulum]\n  rpc_key = not-a-hex-string-xyz\n")
 
         with patch.object(ReticulumPaths, 'get_config_file', return_value=cfg):
             assert ReticulumPaths.get_shared_rpc_key() is None
@@ -260,7 +275,7 @@ class TestReticulumPathsResolution:
         cfg = tmp_path / "config"
         cfg.write_text(
             "[reticulum]\n"
-            "# shared_instance_rpc_key = aa" + "bb" * 31 + "\n"
+            "# rpc_key = aa" + "bb" * 31 + "\n"
         )
         with patch.object(ReticulumPaths, 'get_config_file', return_value=cfg):
             assert ReticulumPaths.get_shared_rpc_key() is None
@@ -271,7 +286,7 @@ class TestReticulumPathsResolution:
 
         cfg = tmp_path / "config"
         key_upper = "BEA1BF1AAB671ABB5AA9A0B7B013C1DDCBE5C7B71DD87E15BD0A7EBDC64FC96A"
-        cfg.write_text(f"[reticulum]\n  shared_instance_rpc_key = {key_upper}\n")
+        cfg.write_text(f"[reticulum]\n  rpc_key = {key_upper}\n")
         with patch.object(ReticulumPaths, 'get_config_file', return_value=cfg):
             assert ReticulumPaths.get_shared_rpc_key() == key_upper.lower()
 

@@ -1083,7 +1083,7 @@ def _init_rns_client():
     ]
     rpc_key = ReticulumPaths.get_shared_rpc_key()
     if rpc_key:
-        lines.append(f"shared_instance_rpc_key = {rpc_key}")
+        lines.append(f"rpc_key = {rpc_key}")
     client_config_file.write_text("\n".join(lines) + "\n")
 
     return RNS.Reticulum(configdir=str(client_config_dir))
