@@ -82,6 +82,10 @@ _component_levels = {
     'rns': logging.DEBUG,
     'meshtastic': logging.INFO,
     'gateway': logging.DEBUG,
+    # Map modules default to INFO so the per-source collection summary surfaces
+    # without --verbose. Set to DEBUG for deeper per-node tracing.
+    'utils.map_data_collector': logging.INFO,
+    'utils.map_http_handler': logging.INFO,
 }
 
 # Shared handler references for runtime level changes

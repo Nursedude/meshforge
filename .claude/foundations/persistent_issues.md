@@ -746,3 +746,67 @@ regresses to Issue #37 behavior without a surface error. Cross-reference:
 closes out Issue #37 (NomadNet side masked by wrapper `1856b58`) and
 Issue #40 (bytes + TX landed in `ddb40de`; this is the inbound complement).
 
+
+---
+
+## Issue #43: MeshCore + AREDN visibility on :5000 map (2026-04-22)
+
+**Symptom**: MeshCore + AREDN nodes visible on external `:8808` (`meshforge-maps`)
+but never on built-in `:5000`. Operators assumed `:5000` was Meshtastic-only.
+
+**Three distinct gaps, not one bug**:
+
+1. **MeshCore — position filter, not protocol filter.** `_collect_unified_tracker`
+   already ingested every protocol including MeshCore; `node_tracker.to_geojson()`
+   filters to `get_nodes_with_position()`, and MeshCore advertisements carry no
+   GPS by design → every MeshCore node silently dropped.
+2. **AREDN — silent "not configured".** `_collect_aredn` returned `[]` at DEBUG
+   when `aredn_node_ips` empty AND `localnode.local.mesh` unresolvable.
+   Indistinguishable from "AREDN unsupported."
+3. **Diagnostic gap.** `/api/status` never surfaced per-source
+   attempt/yield/reason. "Why isn't my node there" meant reading source code.
+
+**Fix** (commit reference; see `git log`): diagnostic dict + `_record_diagnostic`
+helper per source (taxonomy: `ok | not_configured | unreachable | no_positions
+| source_disabled`). `_collect_unified_tracker` appends non-Meshtastic
+position-less nodes to `_nodes_without_position`. `_collect_via_http` switched
+from `=` overwrite to `.extend()` so MeshCore entries aren't clobbered. New
+`_apply_operator_positions()` promotes entries matching `meshcore_positions` in
+`map_settings.json` (full id or prefix match) to real features. `/api/status`
+now emits `source_diagnostics`, `nodes_without_position: {total, by_network}`,
+and `radio_config` (local HAT preset + channel_num + region + frequency —
+so operators can diff fleet boxes on incompatible presets without SSHing).
+Map-module log levels raised to INFO so the per-source summary surfaces in
+`journalctl -t meshforge` without `--verbose`.
+
+**:8808 parity**: `meshforge-maps` consumes the same `/api/nodes/geojson` —
+MeshCore nodes with operator-assigned positions appear on `:8808` automatically.
+Position-less MeshCore surfaced via the sibling `nodes_without_position` array
+in the response; UI rendering (sidebar list, legend) is an external-repo concern
+for `Nursedude/meshforge-maps` CSS/JS.
+
+**Operator recipe — expose a MeshCore node**:
+```bash
+curl http://localhost:5000/api/status | jq '.nodes_without_position, .source_diagnostics.unified_tracker'
+# Grab the node id from nodes_without_position array in /api/nodes/geojson
+$EDITOR ~/.config/meshforge/map_settings.json
+# Add: "meshcore_positions": {"abc123": {"lat": 19.42, "lon": -155.28, "note": "Hilo"}}
+sudo systemctl restart meshforge-map
+# Verify:
+curl -s http://localhost:5000/api/nodes/geojson | jq '.features[] | select(.properties.source=="operator_positions")'
+```
+
+**Operator recipe — "why is node X missing from box Y's map?"**:
+1. `curl http://Y:5000/api/status | jq '.radio_config, .source_diagnostics'`.
+2. If `radio_config` differs from the box where X is visible (e.g.
+   `modem_preset` LongFast vs SHORT_TURBO), that's config-by-design —
+   see `project_fleet_radio_heterogeneity` memory. Cross-preset visibility
+   requires MQTT/RNS bridging, not RF.
+3. Any `source_diagnostics[*].reason_if_zero != "ok"` is a concrete pointer.
+
+**Tests**: `tests/test_map_data_collector_diagnostics.py` (19 tests) lock in
+diagnostic shape, reason taxonomy, operator position promotion, AREDN
+not_configured vs unreachable distinction, and the `_collect_via_http`
+extend-not-overwrite contract.
+
+

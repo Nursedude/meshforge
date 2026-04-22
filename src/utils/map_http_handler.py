@@ -564,8 +564,32 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
             except Exception:
                 status["history"] = None
 
-        # Include radio connection status
+        # Per-source collection diagnostics from the most recent collect() call.
+        # Operators use this to answer "why is source X empty" without a code reader.
+        if self.collector:
+            try:
+                status["source_diagnostics"] = self.collector.get_source_diagnostics()
+            except Exception as e:
+                logger.debug(f"Failed to fetch source diagnostics: {e}")
+
+            # Per-network breakdown of position-less nodes (MeshCore lives here).
+            try:
+                no_pos = self.collector.get_nodes_without_position()
+                by_network: Dict[str, int] = {}
+                for entry in no_pos:
+                    net = entry.get("network", "unknown")
+                    by_network[net] = by_network.get(net, 0) + 1
+                status["nodes_without_position"] = {
+                    "total": len(no_pos),
+                    "by_network": by_network,
+                }
+            except Exception as e:
+                logger.debug(f"Failed to summarize nodes_without_position: {e}")
+
+        # Include radio connection status + LOCAL radio config
+        # (helps operators diff heterogeneous fleet boxes — e.g. LongFast vs SHORT_TURBO)
         status["radio"] = self._get_radio_status_summary()
+        status["radio_config"] = self._get_local_radio_config()
 
         data = json.dumps(status).encode()
         self.send_response(200)
@@ -613,6 +637,40 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
             "usb_available": usb_available,
             "usb_devices": usb_devices if usb_available else [],
         }
+
+    def _get_local_radio_config(self) -> Dict[str, Any]:
+        """Read the LOCAL Meshtastic HAT's LoRa config via meshtasticd HTTP /json/report.
+
+        Surfaced in /api/status so operators can diff two fleet boxes on incompatible
+        presets (e.g. fleet-host-3 on SHORT_TURBO vs fleet-host on LongFast) without SSHing to
+        each to query meshtasticd — they legitimately can't hear each other over RF.
+
+        Returns a dict with frequency_hz / lora_channel / region / modem_preset
+        (whatever meshtasticd exposes) plus an 'available' bool.
+        """
+        try:
+            from utils.meshtastic_http import get_http_client
+            client = get_http_client()
+            if not client.is_available:
+                return {"available": False, "reason": "meshtasticd HTTP not reachable"}
+            raw = client.get_report_raw()
+            if not raw:
+                return {"available": False, "reason": "no /json/report response"}
+            radio = raw.get("radio", {}) or {}
+            config = raw.get("config", {}) or {}
+            lora = config.get("lora", {}) or {}
+            return {
+                "available": True,
+                "frequency_hz": radio.get("frequency"),
+                "lora_channel": radio.get("lora_channel"),
+                "region": radio.get("region") or lora.get("region"),
+                "modem_preset": radio.get("modem_preset") or lora.get("modem_preset"),
+                "channel_num": lora.get("channel_num"),
+                "hw_model": (raw.get("device", {}) or {}).get("hw_model"),
+            }
+        except Exception as e:
+            logger.debug(f"Local radio config lookup failed: {e}")
+            return {"available": False, "reason": str(e)[:120]}
 
     def _serve_history_stats(self):
         """Serve node history summary and unique nodes list."""
