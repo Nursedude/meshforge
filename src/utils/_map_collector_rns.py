@@ -70,7 +70,7 @@ class RNSDataCollectorMixin:
             ]
             rpc_key = ReticulumPaths.get_shared_rpc_key()
             if rpc_key:
-                lines.append(f"  shared_instance_rpc_key = {rpc_key}")
+                lines.append(f"  rpc_key = {rpc_key}")
             client_config_file.write_text("\n".join(lines) + "\n")
             reticulum = _RNS.Reticulum(configdir=str(client_config_dir))
 

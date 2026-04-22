@@ -175,8 +175,8 @@ class UnifiedNodeTracker:
                 client_config_file = client_config_dir / "config"
 
                 # Write minimal client-only config (no interfaces, just shared transport).
-                # Propagate rnsd's shared_instance_rpc_key when pinned (Issue #37/#40)
-                # so our RPC digests match rnsd's.
+                # Propagate rnsd's rpc_key when pinned (Issue #37/#40/#41) so
+                # our RPC digests match rnsd's.
                 from utils.paths import ReticulumPaths
                 cfg = [
                     "# MeshForge RNS Client Config (auto-generated)",
@@ -189,7 +189,7 @@ class UnifiedNodeTracker:
                 ]
                 rpc_key = ReticulumPaths.get_shared_rpc_key()
                 if rpc_key:
-                    cfg.append(f"shared_instance_rpc_key = {rpc_key}")
+                    cfg.append(f"rpc_key = {rpc_key}")
                 client_config_file.write_text("\n".join(cfg) + "\n")
 
                 # Pre-flight: check if shared instance port is listening

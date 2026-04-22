@@ -264,7 +264,7 @@ class ReticulumPaths:
 
     @classmethod
     def get_shared_rpc_key(cls) -> Optional[str]:
-        """Read ``shared_instance_rpc_key`` from the active RNS config, if set.
+        """Read the ``rpc_key`` option from the active RNS config, if set.
 
         rnsd derives its RPC key from the transport identity's private bytes by
         default. Any client using a different configdir (e.g. the gateway's
@@ -272,9 +272,15 @@ class ReticulumPaths:
         different key — every RPC to rnsd then fails with
         ``AuthenticationError: digest sent was rejected`` (Issue #37, #40).
 
-        Pinning ``shared_instance_rpc_key`` explicitly in both configs makes
-        the key deterministic and identity-independent. This helper returns
-        the pinned key so client-only config writers can propagate it.
+        Pinning ``rpc_key`` explicitly in both configs makes the key
+        deterministic and identity-independent. This helper returns the
+        pinned key so client-only config writers can propagate it.
+
+        Note: the RNS 1.1.x option name is literally ``rpc_key``
+        (``Reticulum.py`` line ~477). An earlier helper variant used
+        ``shared_instance_rpc_key`` which RNS silently ignores, causing
+        the pin to be a no-op and the AuthenticationError to recur on
+        boxes with identity-split between rnsd and clients.
 
         Returns the 64-char hex string if present, else None.
         """
@@ -290,7 +296,7 @@ class ReticulumPaths:
             if '=' not in line:
                 continue
             name, _, value = line.partition('=')
-            if name.strip() != 'shared_instance_rpc_key':
+            if name.strip() != 'rpc_key':
                 continue
             key = value.strip()
             if len(key) == 64 and all(c in '0123456789abcdefABCDEF' for c in key):

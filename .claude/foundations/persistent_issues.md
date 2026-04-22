@@ -463,8 +463,10 @@ TUI if the version marker changed.
    rnsd is older than `/etc/reticulum/config`, it loaded a pre-edit key.
 2. `sudo systemctl status rnsd` — confirm it's the systemd-managed one, not a
    leftover. Start time here vs. file mtime of `/etc/reticulum/config` is the tell.
-3. `grep -r rpc_key /etc/reticulum ~/.reticulum 2>/dev/null` — any explicit
-   `shared_instance_rpc_key` entries? If present and different, that's the proof.
+3. `grep -rE '^\s*rpc_key|^\s*shared_instance_rpc_key' /etc/reticulum ~/.reticulum 2>/dev/null` —
+   any explicit `rpc_key` entries? If different between rnsd's and the client's config,
+   that's the proof. Legacy `shared_instance_rpc_key` lines (silently ignored by RNS)
+   also flagged — rename them to `rpc_key`.
 4. `ls -la /home/*/.reticulum/config 2>/dev/null` — are there competing per-user
    configs any fleet script might race with?
 5. `lsof 2>/dev/null | grep '@rns/default'` — identify which PID currently owns the
@@ -746,8 +748,8 @@ Proof-by-parts of the Issue #40 fix in the interim:
 **Prevention / future work**:
 - **Unblock full end-to-end**: fix Issue #37 for the gateway. Either (a) make
   the gateway use `configdir=/etc/reticulum` so it shares rnsd's identity, or
-  (b) pin `shared_instance_rpc_key` explicitly in both configs. NomadNet
-  already uses pattern (a) via `--rnsconfig /etc/reticulum`.
+  (b) pin `rpc_key` explicitly in both configs. NomadNet already uses
+  pattern (a) via `--rnsconfig /etc/reticulum`.
 - **Defensive catch for `AuthenticationError`** around the Issue #38 side
   observation is now doubly warranted — both in
   `gateway._rns_bridge_connection` (first_hop_timeout) AND in whatever owns
@@ -777,8 +779,8 @@ RPC to rnsd (`get_packet_rssi`, `first_hop_timeout`, etc.) fails
 `AuthenticationError: digest sent was rejected`. On the gateway this
 aborts inbound link-packet processing before LXMF delivery.
 
-**Fix**: propagate rnsd's `shared_instance_rpc_key` into each client config
-when pinned. Completes Issue #40's "Prevention / future work" option (b).
+**Fix**: propagate rnsd's `rpc_key` into each client config when pinned.
+Completes Issue #40's "Prevention / future work" option (b).
 
 - `src/utils/paths.py` — `ReticulumPaths.get_shared_rpc_key()`: strict
   64-hex reader, lowercase-normalized, rejects malformed / commented-out
@@ -787,11 +789,19 @@ when pinned. Completes Issue #40's "Prevention / future work" option (b).
   `src/utils/_map_collector_rns.py` — each appends the key when available.
   The `node_tracker.py` site is the R→M=0 unblocker.
 
-**Operator preflight**: `grep shared_instance_rpc_key /etc/reticulum/config`.
-If absent, generate (`python3 -c "import os; print(os.urandom(32).hex())"`)
-and add under `[reticulum]`, then `sudo systemctl restart rnsd` and any
-MeshForge consumers. Verify:
-`grep shared_instance_rpc_key /tmp/meshforge_rns_client/config` matches.
+**Operator preflight**: `grep '^  rpc_key' /etc/reticulum/config`. If absent,
+generate (`openssl rand -hex 32`) and add under `[reticulum]`, then
+`sudo systemctl restart rnsd` and any MeshForge consumers. Verify:
+`grep '^  rpc_key\|^rpc_key' /tmp/meshforge_rns_client/config` matches.
+
+**Correction (2026-04-21)**: initial implementation shipped with option name
+`shared_instance_rpc_key`, which RNS 1.1.x silently ignores — only literal
+`rpc_key` is parsed (see `RNS/Reticulum.py` line ~477). The helper and all
+three callsites were renamed to write `rpc_key`. Any fleet box carrying the
+old option name is equivalent to unpinned — apply `sed -i
+s/shared_instance_rpc_key/rpc_key/` to every RNS config on the box (both
+`/etc/reticulum/config` and, on split-identity boxes, `/root/.reticulum/config`
+and `/home/*/.reticulum/config`) and restart rnsd.
 
 **Prevention**: future client-config writers should call
 `get_shared_rpc_key()` rather than hand-rolling a stanza. Worth adding a
