@@ -41,12 +41,22 @@ class RNSDataCollectorMixin:
             from utils.service_check import check_rns_shared_instance
             if not check_rns_shared_instance():
                 logger.debug("rnsd shared instance not available")
+                self._record_diagnostic(
+                    "rns_direct", attempted=0, yielded=0,
+                    reason_if_zero="not_configured",
+                    notes="rnsd shared instance unavailable — start rnsd.service",
+                )
                 return []
         except ImportError:
             pass  # Proceed without pre-check
 
         if not _HAS_RNS:
             logger.debug("RNS module not available for direct query")
+            self._record_diagnostic(
+                "rns_direct", attempted=0, yielded=0,
+                reason_if_zero="source_disabled",
+                notes="RNS python module not installed",
+            )
             return []
 
         # Load RNS position cache for coordinate lookup
@@ -115,19 +125,41 @@ class RNSDataCollectorMixin:
                 if feature:
                     features.append(feature)
 
+            # Compute path_table size for diagnostic notes (visible in /api/status).
+            path_count = 0
+            if hasattr(_RNS.Transport, 'path_table') and _RNS.Transport.path_table:
+                path_count = len(_RNS.Transport.path_table)
+
             if features:
                 logger.debug(f"RNS direct: {len(features)} nodes with position")
+                self._record_diagnostic(
+                    "rns_direct",
+                    attempted=path_count,
+                    yielded=len(features),
+                    notes=f"{path_count} path_table entries, {len(rns_positions)} cached positions",
+                )
             else:
-                # Log how many RNS destinations we found (even without position)
-                path_count = len(_RNS.Transport.path_table) if hasattr(_RNS.Transport, 'path_table') and _RNS.Transport.path_table else 0
-                if path_count:
-                    logger.debug(
-                        f"RNS: {path_count} destinations in path table, "
-                        f"{len(rns_positions)} have cached positions"
-                    )
+                # Differentiate: zero destinations (RNS isolated) vs. destinations
+                # exist but none have cached GPS.
+                if path_count == 0:
+                    reason = "unreachable"
+                    notes = "rnsd path_table empty — no RNS peers announced yet"
+                else:
+                    reason = "no_positions"
+                    notes = f"{path_count} destinations in path_table but 0 have cached GPS"
+                logger.debug(f"RNS direct: {notes}")
+                self._record_diagnostic(
+                    "rns_direct", attempted=path_count, yielded=0,
+                    reason_if_zero=reason, notes=notes,
+                )
 
         except Exception as e:
             logger.debug(f"RNS direct query error: {e}")
+            self._record_diagnostic(
+                "rns_direct", attempted=0, yielded=len(features),
+                reason_if_zero="unreachable" if not features else None,
+                notes=str(e)[:160],
+            )
 
         return features
 

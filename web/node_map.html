@@ -523,13 +523,43 @@
             padding-top: 10px;
             border-top: 1px solid #2a3a4a;
         }
-        .planning-section .section-title {
+        .planning-section .section-title,
+        .weather-section .section-title {
             font-size: 11px;
             font-weight: 600;
             color: #4fc3f7;
             text-transform: uppercase;
             letter-spacing: 0.5px;
             margin-bottom: 8px;
+        }
+        /* Space weather widget — live inside the right sidebar; keep content
+           inside the panel border so longer values (e.g. "G3-Strong",
+           "Severe LoRa degradation") don't clip past the right edge. */
+        .weather-section {
+            box-sizing: border-box;
+            width: 100%;
+            overflow: hidden;
+            min-width: 0;
+        }
+        .weather-section .section-title {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 4px;
+        }
+        .weather-section #weather-toggle {
+            float: none !important;  /* override inline style */
+            flex-shrink: 0;
+        }
+        .weather-section #weather-body {
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .weather-section .stat-row {
+            min-width: 0;
+        }
+        .weather-section .stat-row .value {
+            max-width: 60%;
         }
         .planning-mode-active {
             background: rgba(79, 195, 247, 0.1) !important;
