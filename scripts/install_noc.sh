@@ -499,11 +499,18 @@ fi
 apt-get update -qq
 apt-get install -y -qq \
     python3 python3-pip python3-venv \
+    python3-msgpack \
     git wget curl gnupg \
     libusb-1.0-0 \
     mosquitto mosquitto-clients \
     tmux \
     &>/dev/null
+# python3-msgpack is needed for NomadNet peer cache reading in
+# src/utils/_map_collector_rns.py. Without it, meshforge-map logs
+# "msgpack not available for NomadNet peer reading" every collect
+# cycle and silently skips the peer-cache code path. Installed via
+# apt (not pip) so the venv — which uses include-system-site-packages
+# — picks it up without needing --break-system-packages in the venv.
 
 echo -e "  ${GREEN}✓ System dependencies installed${NC}"
 
