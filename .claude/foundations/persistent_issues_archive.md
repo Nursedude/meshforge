@@ -344,3 +344,78 @@ Requires `python3 -c 'import meshtastic'` from rnsd's interpreter (Issue #24).
 ### Status
 Stable decision; do not re-enable casually. The plugin is complementary
 infrastructure, not a gateway replacement.
+
+
+---
+
+## Issue #30: NomadNet RPC ConnectionRefusedError (2026-03-11, archived 2026-04-21)
+
+NomadNet crashes on startup when `get_interface_stats()` can't connect to rnsd's RPC socket.
+
+**Root causes**: RNS version mismatch (pipx venv vs system rnsd), user mismatch
+(root rnsd vs user NomadNet), rnsd still initializing, or stale state.
+
+**Fix**: Pre-launch check in `_nomadnet_rns_checks.py` uses NomadNet's own Python
+interpreter to test RPC (not system rnstatus). Detects version mismatches and
+suggests `pipx upgrade nomadnet`. Auto-restarts rnsd if needed.
+
+Post-failure diagnosis in `nomadnet.py:_diagnose_nomadnet_error` detects
+`ConnectionRefusedError` / `Errno 111` patterns in NomadNet logfile.
+
+### Status: RESOLVED
+
+
+---
+
+## Issue #31: No Silent Persistent System Changes on Startup (2026-03-12, archived 2026-04-21)
+
+**Rule**: NEVER make persistent system changes silently on startup.
+
+MeshForge's `auto_lock_port()` was silently adding iptables REJECT rules on port 9443
+every TUI launch, persisting after exit. This broke the Meshtastic web UI.
+
+**Prohibited on startup**: iptables rules, cron jobs, udev rules, systemd unit mods,
+config file overwrites (see also Issue #22).
+
+MeshForge **observes and assists** — it does not take over infrastructure.
+Explicit user actions (e.g., service_menu lock/unlock) are acceptable.
+
+**Cleanup for affected users**: `sudo iptables -D INPUT -p tcp --dport 9443 ! -s 127.0.0.1 -j REJECT`
+
+### Status: RESOLVED (behavioral design principle)
+
+
+---
+
+## Issue #32: NomadNet "Enabled but Disconnected" Interfaces (2026-03-13, archived 2026-04-21)
+
+**Symptoms**: NomadNet shows interfaces as "enabled" but disconnected with no RX/TX.
+MeshForge status says "rnsd: RUNNING (shared instance available)" when rnsd is actually dead.
+
+**Root causes** (3 bugs):
+
+1. **pgrep false positive**: `check_process_running('rnsd')` fallback used `pgrep -f 'python.*rnsd'`
+   which matched any process mentioning "rnsd" (shell invocations, test runners, editors).
+
+2. **Blind status display**: NomadNet status printed "(shared instance available)" without calling
+   `check_rns_shared_instance()` — it assumed shared instance from process detection alone.
+
+3. **No diagnostics when down**: Interface health checks (rnstatus, blocking interfaces) only
+   ran when rnsd was detected as "running". When detection was wrong or rnsd was genuinely
+   down, user got zero actionable diagnostic info.
+
+**Fixes** (2026-03-13):
+
+- `_port_detection.py`: Tightened pgrep regex, added `/proc/{pid}/cmdline` verification
+  via `_verify_process_cmdline()` to eliminate self-matches. Same fix for `check_process_with_pid()`.
+- `nomadnet.py`: Status display now calls `get_rns_shared_instance_info()` to verify shared
+  instance. Shows three states: verified connected (with method), running but no shared instance,
+  or not running (with systemd fix hint). Blocking interface diagnostics now shown even when
+  rnsd is down.
+
+**Prevention**:
+- `check_process_running()` now verifies all pgrep hits via `/proc/cmdline`
+- Status display always distinguishes process detection from shared instance availability
+- `find_blocking_interfaces()` runs regardless of rnsd state for pre-startup diagnostics
+
+### Status: RESOLVED
