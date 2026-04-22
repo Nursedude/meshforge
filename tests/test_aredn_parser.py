@@ -113,6 +113,24 @@ class TestTopLevelLocation:
         assert node is not None
         assert node.has_location() is False
 
+    def test_qualified_hostname_not_double_appended(self):
+        """Regression: AREDNClient("localnode.local.mesh") used to produce
+        http://localnode.local.mesh.local.mesh:8080 which doesn't resolve."""
+        c = AREDNClient("localnode.local.mesh")
+        assert c.base_url == "http://localnode.local.mesh:8080"
+
+        c2 = AREDNClient("wh6gxz-6-bi-ecom.local.mesh")
+        assert c2.base_url == "http://wh6gxz-6-bi-ecom.local.mesh:8080"
+
+    def test_bare_short_name_gets_local_mesh_appended(self):
+        c = AREDNClient("localnode")
+        assert c.base_url == "http://localnode.local.mesh:8080"
+
+    def test_ip_address_not_appended(self):
+        c = AREDNClient("10.162.93.242")
+        assert c.base_url == "http://10.162.93.242:8080"
+        assert c.ip == "10.162.93.242"
+
     def test_nested_wins_over_top_level_when_both_present(self):
         """If some future firmware re-introduces nested location AND top-level,
         nested fields win (they're applied first; our new code only fills gaps)."""
