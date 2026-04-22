@@ -186,10 +186,19 @@ class AREDNClient:
         self.timeout = timeout
         self.port = port
 
-        # Determine base URL — AREDN uses port 8080
+        # Determine base URL — AREDN uses port 8080. Accept three shapes:
+        #   - IP address             → use as-is
+        #   - bare short name ("foo") → append .local.mesh
+        #   - already-qualified name ("localnode.local.mesh", "foo.local.mesh",
+        #     any name containing a dot) → use as-is; do NOT re-append
+        # The old code re-appended ".local.mesh" unconditionally for non-IPs,
+        # producing "localnode.local.mesh.local.mesh" which doesn't resolve.
         if self._is_ip(hostname_or_ip):
             self.base_url = f"http://{hostname_or_ip}:{port}"
             self.ip = hostname_or_ip
+        elif "." in hostname_or_ip:
+            self.base_url = f"http://{hostname_or_ip}:{port}"
+            self.ip = None
         else:
             self.base_url = f"http://{hostname_or_ip}.local.mesh:{port}"
             self.ip = None
