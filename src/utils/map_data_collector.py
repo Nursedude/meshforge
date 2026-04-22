@@ -581,10 +581,25 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                     "last_seen": last_seen,
                 })
 
+            # Distinguish three zero-yield cases for operator legibility:
+            #   all_nodes=[], features=[]    → tracker simply empty (boot, no peers yet)
+            #   all_nodes>0, features=0      → tracked peers exist but none have GPS
+            #   (exception path below)       → tracker actually unreachable
+            if not all_nodes:
+                reason = "no_data"
+                notes = "unified tracker empty — no peers known to this box"
+            elif not features:
+                reason = "no_positions"
+                notes = f"{len(all_nodes)} tracked nodes, 0 have GPS"
+            else:
+                reason = None  # "ok" computed by _record_diagnostic
+                notes = f"{len(all_nodes)} tracked total"
             self._record_diagnostic(
                 "unified_tracker",
                 attempted=len(all_nodes),
                 yielded=len(features),
+                reason_if_zero=reason,
+                notes=notes,
             )
             return features
 
