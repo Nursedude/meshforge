@@ -3,9 +3,9 @@ MeshForge - LoRa Mesh Network Development & Operations Suite
 Version information and changelog
 """
 
-__version__ = "0.5.5-beta"
-__version_info__ = (0, 5, 5, 'beta')
-__release_date__ = "2026-03-09"
+__version__ = "0.5.6-beta"
+__version_info__ = (0, 5, 6, 'beta')
+__release_date__ = "2026-04-21"
 __app_name__ = "MeshForge"
 __app_description__ = "Mesh Network Operations Center & Development Ecosystem"
 __app_tagline__ = "Build. Test. Deploy. Monitor."
@@ -20,6 +20,26 @@ ALPHA_VERSION = "0.6.0-alpha"
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "0.5.6-beta",
+        "date": "2026-04-21",
+        "status": "beta",
+        "changes": [
+            "GATEWAY: Identifying, two-way-directable Meshtastic↔RNS bridge — originating mesh node surfaced in LXMF title + fields dict, @!id/@shortname from RNS parses to directed Meshtastic DM (Issue #39)",
+            "GATEWAY: RNS→Mesh R→M path end-to-end unblocked — bytes content decoded, HTTP TX route forced, persistent queue carries directed destinations (Issue #40; loopback validated 2026-04-21)",
+            "GATEWAY: MQTT bridge topic shape now matches meshtasticd 2.7.x publishes (region-less + region-ful both subscribed; region='' default) (Issue #34)",
+            "GATEWAY: `rpc_key` propagation into gateway client configs closes AuthenticationError on identity-split fleet boxes (Issue #41) — RNS-native option name (renamed from shared_instance_rpc_key which RNS silently ignores)",
+            "GATEWAY: Delivery Audit + Test Gateway RX TUI entries surface bridged-message conversation paths without filesystem spelunking (Issue #35)",
+            "NOMADNET: Single-identity tmux-detached systemd-user pattern for fleet rollout — gateway and operator now share one conversation thread (Issue #38)",
+            "NOMADNET: AuthenticationError wrapper so rnsd/NomadNet rpc_key drift no longer crashes the TUI on startup (Issue #37)",
+            "MAP: meshforge-map.service binds 0.0.0.0 for fleet-wide access",
+            "TEST: e2e integration pipeline harness — mock meshtasticd captures HTTP PUTs, persistent queue + MQTTBridgeHandler exercised without mocks below the LXMF receive boundary",
+            "TEST: test_connect_rns_import_error_is_permanent fixed (patches _HAS_* flags directly per CLAUDE.md Issue #29)",
+            "TOOLS: scripts/validate_rns_to_mesh.py — shell-runnable LXMF sender for RNS→Mesh end-to-end acceptance without needing the NomadNet TUI",
+            "QUIET: event_bus no longer emits per-call DEBUG lines (gateway journal was spamming 5×/sec with 'no subscribers')",
+            "TESTS: 3229 collected (was 2975 at 0.5.5-beta)",
+        ]
+    },
     {
         "version": "0.5.5-beta",
         "date": "2026-03-09",
