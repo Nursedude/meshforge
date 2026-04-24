@@ -28,6 +28,7 @@ systemctl bridging and works on every fleet box (Issue #45).
 import logging
 import os
 import pwd
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -447,15 +448,56 @@ class NomadNetServiceOpsMixin:
             pass
         clear_screen()
 
-    def _install_user_unit(self, force: bool = False) -> None:
-        """Copy the unit template into the user's systemd dir + activate it.
+    def _apt_install(
+        self, package: str, timeout: int = 180,
+    ) -> Tuple[bool, str]:
+        """sudo apt-get install -y <package>; returns (ok, combined_output).
 
-        Steps:
-          1. Ensure ``~/.config/systemd/user`` exists (owned by the real user).
-          2. Copy the template (refuse if exists and not ``force``).
-          3. ``daemon-reload`` + ``enable --now``.
-          4. Best-effort ``loginctl enable-linger`` so the service survives
-             operator logout on headless boxes.
+        Mirrors the apt-install pattern used by ``scripts/install_noc.sh``.
+        When MeshForge is already root (`sudo python3 …`), we skip the
+        ``sudo`` prefix — that keeps the call working cleanly under the
+        Admin Mode privilege separation documented in CLAUDE.md.
+        """
+        argv = (
+            ['apt-get', 'install', '-y', package]
+            if os.geteuid() == 0
+            else ['sudo', 'apt-get', 'install', '-y', package]
+        )
+        try:
+            proc = subprocess.run(
+                argv, capture_output=True, text=True, timeout=timeout,
+            )
+            out = (proc.stdout or '') + (proc.stderr or '')
+            return proc.returncode == 0, out.strip()
+        except subprocess.TimeoutExpired:
+            return False, f"apt-get install -y {package} timed out"
+        except (subprocess.SubprocessError, OSError,
+                FileNotFoundError) as e:
+            return False, f"apt-get install failed: {e}"
+
+    def _install_user_unit(self, force: bool = False) -> None:
+        """Render the unit template for THIS box's install layout and activate it.
+
+        Steps (must all succeed for a fresh MeshForge install to produce
+        a working service):
+          1. Ensure ``tmux`` is available — apt-install via yesno when missing.
+          2. Ensure ``nomadnet`` binary is discoverable (via
+             ``_find_nomadnet_binary`` — covers pipx venv AND pip --user).
+          3. Ensure the RPC-degradation wrapper exists
+             (``_create_nomadnet_wrapper`` — idempotent).
+          4. Compute the per-box ExecStart argv via
+             ``_get_wrapper_command`` and substitute it into
+             ``__NOMADNET_EXEC__`` in the template. The template's outer
+             `tmux new-session ... '<exec>'` single-quoting is preserved
+             by ``shlex.join`` on the inner argv.
+          5. Write the rendered unit (confirm overwrite when present
+             and not ``force``); chown to the real user.
+          6. ``daemon-reload`` + ``enable --now`` (user scope); best-effort
+             ``loginctl enable-linger`` so the service survives logout.
+
+        Fails closed at each prerequisite so we never produce a unit
+        that references a path that doesn't exist (the Issue #45 +
+        follow-up regression on fleet-host).
         """
         if not _UNIT_TEMPLATE.exists():
             self.ctx.dialog.msgbox(
@@ -465,6 +507,43 @@ class NomadNetServiceOpsMixin:
             )
             return
 
+        # 1. tmux — required by the unit's ExecStart
+        if not shutil.which('tmux'):
+            if not self.ctx.dialog.yesno(
+                "Install tmux?",
+                "tmux is required by the NomadNet user unit but is not\n"
+                "installed on this box.\n\n"
+                "Run: sudo apt-get install -y tmux ?",
+            ):
+                return
+            tmux_ok, tmux_out = self._apt_install('tmux')
+            if not tmux_ok or not shutil.which('tmux'):
+                self.ctx.dialog.msgbox(
+                    "tmux install failed",
+                    f"Could not install tmux:\n\n{tmux_out}\n\n"
+                    f"Install manually and re-run Install systemd user unit.",
+                )
+                return
+
+        # 2. nomadnet binary — must be discoverable
+        nn_path = self._find_nomadnet_binary()
+        if not nn_path:
+            # _find_nomadnet_binary already surfaced its own msgbox
+            return
+
+        # 3. wrapper — idempotent; covers transient rnsd unavailability
+        wrapper_path = None
+        try:
+            wrapper_path = self._create_nomadnet_wrapper()
+        except (OSError, PermissionError) as e:
+            logger.warning("nomadnet wrapper creation failed: %s", e)
+
+        # 4. compute argv + substitute into template
+        argv = self._get_wrapper_command(
+            nn_path, ['--rnsconfig', '/etc/reticulum'],
+        )
+        exec_str = shlex.join(argv)
+
         user_home = get_real_user_home()
         unit_dir = user_home / ".config" / "systemd" / "user"
         unit_path = unit_dir / _UNIT_FILENAME
@@ -473,13 +552,26 @@ class NomadNetServiceOpsMixin:
             if not self.ctx.dialog.yesno(
                 "Unit already installed",
                 f"Unit file already exists:\n\n  {unit_path}\n\n"
-                f"Overwrite from template?",
+                f"Overwrite from template "
+                f"(path substitution will be refreshed)?",
             ):
                 return
 
+        template_text = _UNIT_TEMPLATE.read_text()
+        if '__NOMADNET_EXEC__' not in template_text:
+            self.ctx.dialog.msgbox(
+                "Template Broken",
+                f"Template is missing the __NOMADNET_EXEC__ placeholder:\n\n"
+                f"  {_UNIT_TEMPLATE}\n\n"
+                f"Refusing to install a unit that would ignore per-box paths.",
+            )
+            return
+        unit_text = template_text.replace('__NOMADNET_EXEC__', exec_str)
+
+        # 5. write unit
         try:
             unit_dir.mkdir(parents=True, exist_ok=True)
-            unit_path.write_text(_UNIT_TEMPLATE.read_text())
+            unit_path.write_text(unit_text)
             self._chown_real_user(unit_dir)
         except (OSError, PermissionError) as e:
             self.ctx.dialog.msgbox(
@@ -488,7 +580,7 @@ class NomadNetServiceOpsMixin:
             )
             return
 
-        # Reload + enable --now
+        # 6. reload + enable --now
         reload_ok, reload_out = self._systemctl_user("daemon-reload")
         enable_ok, enable_out = self._systemctl_user("enable")
         start_ok, start_out = self._systemctl_user("start")
@@ -513,8 +605,13 @@ class NomadNetServiceOpsMixin:
             except (subprocess.SubprocessError, OSError) as e:
                 linger_note = f"linger FAILED: {e}"
 
+        wrapper_status = "OK" if wrapper_path else "skipped"
         summary_lines = [
             f"Unit:          {unit_path}",
+            f"tmux:          {'OK' if shutil.which('tmux') else 'MISSING'}",
+            f"nomadnet:      {nn_path}",
+            f"wrapper:       {wrapper_status}",
+            f"ExecStart:     {exec_str}",
             f"daemon-reload: {'OK' if reload_ok else 'FAILED'}",
             f"enable:        {'OK' if enable_ok else 'FAILED'}",
             f"start:         {'OK' if start_ok else 'FAILED'}",
