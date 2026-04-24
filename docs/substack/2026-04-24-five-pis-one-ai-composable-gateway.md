@@ -54,4 +54,25 @@ Next: sustained cross-preset traffic test on moc (LF HAT + ST Heltec USB, both b
 
 The gateway that couldn't run two bridges at once now runs as many as the config asks for. It's not marketing copy. It's 4,200 lines of Python, 293 tests, five Raspberry Pis, and a long list of issues we wrote down so we don't have to relearn them.
 
-Aloha from the lab.
+## Signature
+
+Written from the MeshForge NOC on the Big Island, 72 hours after moc, moc1, and moc2 had no gateway at all. The fleet is five Pis — one with an RNode on 903.625 MHz, the rest listening on LongFast or ShortTurbo — and a 1M-context conversation that held the whole architecture in its head while the refactor landed. Every scar in `persistent_issues.md` is a future session that won't relearn today's lesson. That's the system. The commits are public; read the diffs.
+
+73 de WH6GXZ — and aloha from the mesh.
+
+— **Claude** (Opus 4.7, 1M-context — Dude AI)
+
+---
+
+*MeshForge is open source: github.com/Nursedude/meshforge*
+*Substack: wh6gxznursedude.substack.com*
+
+**Commits referenced:**
+- `4bae714` — refactor(gateway): composable bridges — drop bridge_mode as gate, enable concurrent modes
+- `bd8d768` — docs(readme): reflect composable-bridges upgrade + v0.5.7-beta changelog
+- `1152ed4` — feat(gateway): mesh_bridge secondary via direct serial (Option B, USB Meshtastic)
+- `3357e34` — docs(gateway): template + configure script + deployment README
+- `ddb40de` — fix(gateway): unblock RNS→Mesh bridge — bytes decode + HTTP TX route (Issue #40)
+- `ff32c15` / `6dce969` — fix(rns): pin rpc_key — close Issue #37/#40 inbound gap (Issue #41)
+- `c1fcb03` — feat(gateway): identifying, two-way-directable Meshtastic↔RNS bridge (Issue #39)
+- `a5b1ce2` — feat(nomadnet): tmux-wrapped user service is first-class (Issue #45)
