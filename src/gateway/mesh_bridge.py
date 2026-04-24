@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 # Import meshtastic library (optional - graceful fallback)
 _meshtastic, _HAS_MESHTASTIC = safe_import('meshtastic')
 _meshtastic_tcp, _HAS_MESHTASTIC_TCP = safe_import('meshtastic.tcp_interface')
+_meshtastic_serial, _HAS_MESHTASTIC_SERIAL = safe_import('meshtastic.serial_interface')
 _pub, _HAS_PUBSUB = safe_import('pubsub', 'pub')
 
 # Optional MQTT client (for MQTT mode)
@@ -676,14 +677,63 @@ class MeshtasticPresetBridge:
     def _connect_interface(self, config: MeshtasticConfig, name: str,
                            callback: Callable) -> tuple:
         """
-        Connect to a Meshtastic interface using TCP or MQTT mode.
+        Connect to a Meshtastic interface using TCP, MQTT, or direct serial.
 
-        When config.use_mqtt is True, uses MQTTMeshInterface (zero-interference).
-        Otherwise falls back to TCP (legacy, blocks web client).
+        Dispatch order:
+          1. connection_type="serial"  → SerialInterface to a USB Meshtastic
+             device (no meshtasticd involved; used when the secondary radio
+             is a USB-attached Heltec/etc. with no dedicated meshtasticd
+             instance).
+          2. connection_type="mqtt" OR use_mqtt=True → MQTTMeshInterface
+             (zero-interference; preferred when meshtasticd is running
+             and mosquitto is available).
+          3. Fallback → TCPInterface (legacy; contends with :9443).
         """
-        if config.use_mqtt:
+        ctype = (config.connection_type or "").lower()
+        if ctype == "serial":
+            return self._connect_serial(config, name, callback)
+        if ctype == "mqtt" or config.use_mqtt:
             return self._connect_mqtt(config, name, callback)
         return self._connect_tcp(config, name, callback)
+
+    def _connect_serial(self, config: MeshtasticConfig, name: str,
+                        callback: Callable) -> tuple:
+        """Connect directly to a USB Meshtastic device via SerialInterface.
+
+        Used for dual-radio gateways where the secondary radio is a USB
+        Meshtastic device (e.g. Heltec V3) with no second meshtasticd
+        instance. meshtasticd 2.7.x has no USB-relay mode, so this is the
+        supported path for that topology.
+        """
+        if not _HAS_MESHTASTIC or not _HAS_MESHTASTIC_SERIAL or not _HAS_PUBSUB:
+            logger.error(
+                "meshtastic library or serial_interface not importable; "
+                "install with: pip install meshtastic"
+            )
+            return None, False
+        device = config.serial_device or None
+        try:
+            logger.info(
+                f"Connecting to {name} via serial ({device or 'auto-detect'})"
+            )
+            if device:
+                interface = _meshtastic_serial.SerialInterface(devPath=device)
+            else:
+                interface = _meshtastic_serial.SerialInterface()
+
+            def on_receive(packet, interface):
+                callback(packet)
+
+            _pub.subscribe(on_receive, "meshtastic.receive")
+            logger.info(
+                f"Connected to {name} via serial "
+                f"({config.preset or 'unknown preset'})"
+            )
+            self._notify_status(f"{name}_connected")
+            return interface, True
+        except Exception as e:
+            logger.error(f"Failed to connect to {name} via serial: {e}")
+            return None, False
 
     def _connect_mqtt(self, config: MeshtasticConfig, name: str,
                       callback: Callable) -> tuple:

@@ -72,14 +72,26 @@ def preflight_checks(config: GatewayConfig) -> bool:
     # Check second Meshtastic if mesh_bridge mode
     if bridge_mode == "mesh_bridge" and config and config.mesh_bridge.enabled:
         sec = config.mesh_bridge.secondary
-        print(f"Checking secondary meshtasticd ({sec.host}:{sec.port})...", end=" ")
-        if check_port(sec.port, sec.host, timeout=2.0):
-            print("✓ Available")
+        if (sec.connection_type or "").lower() == "serial":
+            device = sec.serial_device or "(auto-detect)"
+            print(f"Checking secondary Meshtastic (serial {device})...", end=" ")
+            import os
+            if not sec.serial_device or os.path.exists(sec.serial_device):
+                print("✓ Available")
+            else:
+                print("✗ NOT AVAILABLE")
+                print(f"  Device path missing: {sec.serial_device}")
+                print(f"  Fix: attach USB Meshtastic device; confirm /dev path")
+                all_ok = False
         else:
-            print("✗ NOT AVAILABLE")
-            print(f"  Secondary Meshtastic daemon not reachable")
-            print(f"  Fix: Start second meshtasticd on port {sec.port}")
-            all_ok = False
+            print(f"Checking secondary meshtasticd ({sec.host}:{sec.port})...", end=" ")
+            if check_port(sec.port, sec.host, timeout=2.0):
+                print("✓ Available")
+            else:
+                print("✗ NOT AVAILABLE")
+                print(f"  Secondary Meshtastic daemon not reachable")
+                print(f"  Fix: Start second meshtasticd on port {sec.port}")
+                all_ok = False
 
     print("-------------------------\n")
     return all_ok
@@ -152,7 +164,19 @@ def main():
             bridge_mode = "message_bridge"
         else:
             sec = config.mesh_bridge.secondary
-            if not check_port(sec.port, sec.host, timeout=2.0):
+            if (sec.connection_type or "").lower() == "serial":
+                import os
+                if sec.serial_device and not os.path.exists(sec.serial_device):
+                    logger.warning(
+                        "bridge_mode is 'mesh_bridge' but secondary serial "
+                        "device %s is not present", sec.serial_device
+                    )
+                    logger.warning("Auto-correcting to 'message_bridge'")
+                    print(f"\nWARNING: bridge_mode='mesh_bridge' but secondary serial device")
+                    print(f"         {sec.serial_device} is not present.")
+                    print(f"         Falling back to 'message_bridge' mode.\n")
+                    bridge_mode = "message_bridge"
+            elif not check_port(sec.port, sec.host, timeout=2.0):
                 logger.warning(
                     "bridge_mode is 'mesh_bridge' but secondary meshtasticd "
                     "(%s:%d) is not reachable", sec.host, sec.port

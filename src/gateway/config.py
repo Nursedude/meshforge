@@ -225,6 +225,12 @@ class MeshtasticConfig:
     preset: str = ""
     # Friendly name for this connection
     name: str = "primary"
+    # Connection type: "" (auto — tcp unless use_mqtt set), "tcp", "mqtt", "serial"
+    # "serial" talks directly to a USB-attached Meshtastic device via
+    # meshtastic.serial_interface.SerialInterface — no second meshtasticd needed.
+    connection_type: str = ""
+    # Serial device path when connection_type="serial". Empty = auto-detect.
+    serial_device: str = ""
 
 
 @dataclass
