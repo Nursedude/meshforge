@@ -13,8 +13,8 @@
 #
 # Install (MeshForge TUI — recommended):
 #   NomadNet > Service Control > Install systemd user unit
-#   The installer substitutes __NOMADNET_EXEC__ below with the argv
-#   computed from _get_wrapper_command() for this box, so the unit
+#   The installer substitutes the ExecStart placeholder below with the
+#   argv computed from _get_wrapper_command() for this box, so the unit
 #   works whether nomadnet came from pipx, pip --user, or apt.
 #   Do NOT hand-edit ~/.config/systemd/user/nomadnet.service;
 #   re-run the Service Control install to refresh it.
@@ -23,9 +23,8 @@
 #   sudo apt-get install -y tmux
 #   pipx install nomadnet        (or pip install --user nomadnet)
 #   mkdir -p ~/.config/systemd/user
-#   # Edit the ExecStart line below and replace __NOMADNET_EXEC__ with
-#   # the actual nomadnet invocation (pipx venv + wrapper, or the
-#   # bare ~/.local/bin/nomadnet path).
+#   # Edit the ExecStart line below and replace the placeholder token
+#   # (see ExecStart comment) with the actual nomadnet invocation.
 #   cp nomadnet-user.service ~/.config/systemd/user/nomadnet.service
 #
 # Enable + start:
@@ -59,10 +58,10 @@ Environment=TERM=xterm-256color
 # `-` tells systemd to ignore failure when no session exists.
 ExecStartPre=-/usr/bin/tmux kill-session -t nomadnet
 
-# Launch the real TUI wrapped in a detached tmux session.
-# __NOMADNET_EXEC__ is substituted at install time by the MeshForge TUI
-# (handlers/_nomadnet_service_ops.py::_install_user_unit). The value
-# comes from _get_wrapper_command() and will be either:
+# Launch the real TUI wrapped in a detached tmux session. The ExecStart
+# line below contains a placeholder that the MeshForge TUI substitutes
+# at install time — see handlers/_nomadnet_service_ops.py::_install_user_unit.
+# The value comes from _get_wrapper_command() and will be either:
 #   <pipx-venv>/bin/python3 ~/.config/meshforge/nomadnet_wrapper.py --rnsconfig /etc/reticulum
 # or (when no pipx venv exists next to the binary):
 #   ~/.local/bin/nomadnet --rnsconfig /etc/reticulum

@@ -374,8 +374,14 @@ class TestNomadNetStopFlow:
 
     def test_stop_not_running(self):
         h = _make_nomadnet()
-        with patch.object(h, '_is_nomadnet_running', return_value=False):
-            h._stop_nomadnet()
+        # Issue #45: _stop_nomadnet now consults _nomadnet_service_state
+        # before the pkill path; mock it so the test doesn't pick up
+        # live `systemctl --user is-active` state on the dev box.
+        with patch.object(h, '_nomadnet_service_state',
+                          return_value=_service_state(active=False)):
+            with patch.object(h, '_is_nomadnet_running',
+                              return_value=False):
+                h._stop_nomadnet()
         msgbox_calls = [c for c in h.ctx.dialog.calls if c[0] == 'msgbox']
         assert any('Not Running' in str(c) for c in msgbox_calls)
 
@@ -384,14 +390,20 @@ class TestNomadNetStopFlow:
         mock_run.return_value = MagicMock(returncode=0)
         h = _make_nomadnet()
         h.ctx.dialog._yesno_returns = [True]
-        with patch.object(h, '_is_nomadnet_running', side_effect=[True, False]):
-            h._stop_nomadnet()
+        with patch.object(h, '_nomadnet_service_state',
+                          return_value=_service_state(active=False)):
+            with patch.object(h, '_is_nomadnet_running',
+                              side_effect=[True, False]):
+                h._stop_nomadnet()
 
     def test_stop_running_cancelled(self):
         h = _make_nomadnet()
         h.ctx.dialog._yesno_returns = [False]
-        with patch.object(h, '_is_nomadnet_running', return_value=True):
-            h._stop_nomadnet()
+        with patch.object(h, '_nomadnet_service_state',
+                          return_value=_service_state(active=False)):
+            with patch.object(h, '_is_nomadnet_running',
+                              return_value=True):
+                h._stop_nomadnet()
 
 
 # ======================================================================
@@ -1179,6 +1191,50 @@ class TestNomadNetServiceOpsSudoBridging:
         # Graceful fallback: plain systemctl --user
         assert argv == ['systemctl', '--user', 'is-active', 'nomadnet']
 
+    def test_daemon_reload_omits_unit_name(self):
+        """Manager-scoped verbs must NOT append the unit (systemd rejects it)."""
+        h = _make_nomadnet()
+        captured = []
+
+        def fake_run(argv, **kw):
+            captured.append(argv)
+            rv = MagicMock()
+            rv.returncode = 0
+            rv.stdout = ""
+            rv.stderr = ""
+            return rv
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('SUDO_USER', None)
+            with patch('subprocess.run', side_effect=fake_run):
+                ok, _ = h._systemctl_user('daemon-reload')
+        assert ok is True
+        assert captured, "subprocess.run never called"
+        argv = captured[0]
+        assert argv == ['systemctl', '--user', 'daemon-reload']
+        assert 'nomadnet' not in argv
+
+    def test_unit_scoped_verb_appends_unit_name(self):
+        """start/stop/restart still take the unit name as argv[-1]."""
+        h = _make_nomadnet()
+        captured = []
+
+        def fake_run(argv, **kw):
+            captured.append(argv)
+            rv = MagicMock()
+            rv.returncode = 0
+            rv.stdout = ""
+            rv.stderr = ""
+            return rv
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('SUDO_USER', None)
+            with patch('subprocess.run', side_effect=fake_run):
+                h._systemctl_user('restart')
+        assert captured[0] == [
+            'systemctl', '--user', 'restart', 'nomadnet',
+        ]
+
 
 class TestInstallUserUnit:
     """_install_user_unit prereq chain + path substitution.
@@ -1458,6 +1514,24 @@ class TestInstallUserUnit:
             h._install_user_unit()
         # Message box shown, no exception
         assert "Template" in (h.ctx.dialog.last_msgbox_title or "")
+
+    def test_real_template_has_exactly_one_placeholder_token(self):
+        """The shipped template must contain the placeholder exactly once.
+
+        A stray ``__NOMADNET_EXEC__`` in a comment would race the real
+        ExecStart substitution and land an unsubstituted unit on disk —
+        exactly the bug the rephrased template comment block fixes.
+        """
+        from handlers._nomadnet_service_ops import _UNIT_TEMPLATE
+        assert _UNIT_TEMPLATE.exists(), (
+            f"template missing: {_UNIT_TEMPLATE}"
+        )
+        text = _UNIT_TEMPLATE.read_text()
+        occurrences = text.count('__NOMADNET_EXEC__')
+        assert occurrences == 1, (
+            f"Expected __NOMADNET_EXEC__ exactly once in {_UNIT_TEMPLATE}, "
+            f"got {occurrences} occurrences"
+        )
 
     def test_install_refuses_when_binary_not_found(self, tmp_path):
         """_find_nomadnet_binary returning None aborts before unit write."""
