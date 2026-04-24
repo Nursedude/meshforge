@@ -223,4 +223,8 @@ def get_all_handlers() -> List[Type]:
     from handlers.test_gateway_rx import TestGatewayRxHandler
     handlers.append(TestGatewayRxHandler)
 
+    # Batch 20 — Config Doctor (read-only per-box config drift audit)
+    from handlers.config_doctor import ConfigDoctorHandler
+    handlers.append(ConfigDoctorHandler)
+
     return handlers

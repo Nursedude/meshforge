@@ -796,7 +796,8 @@ class MeshForgeLauncher:
 
     def _system_menu(self):
         """System - Hardware, logs, Linux tools."""
-        _ORDERING = ["hardware", "logs", "network", "discover", "diagnose", "daemon",
+        _ORDERING = ["hardware", "logs", "network", "discover", "diagnose",
+                      "run", "details", "daemon",
                       "review", "status", "shell", "reboot"]
         while True:
             # Legacy items — removed automatically as handlers take over their tags
