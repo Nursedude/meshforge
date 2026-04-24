@@ -308,6 +308,268 @@ class NomadNetIOOpsMixin:
             except (subprocess.SubprocessError, OSError) as e:
                 logger.debug("chown after edit failed: %s", e)
 
+    # ------------------------------------------------------------------
+    # Unified logs menu (Issue #45) — journal + tmux + logfile + rnsd
+    # ------------------------------------------------------------------
+
+    def _unified_logs_menu(self):
+        """Dispatcher for the new Logs submenu.
+
+        Combines the systemd user-unit journal, tmux capture-pane
+        snapshot, NomadNet logfile and rnsd system journal under one
+        picker. The snapshot view renders all four at once.
+
+        Expects these mixin methods:
+            self._default_identity_config_dir()
+            self._nomadnet_service_state()
+            self._service_state_line(state)
+            self._view_nomadnet_logs_for(cfg_dir)
+        """
+        while True:
+            cfg_dir = self._default_identity_config_dir()
+            svc = self._nomadnet_service_state()
+            unit_label = (
+                "installed" if svc["unit_installed"] else "not installed"
+            )
+            tmux_label = "up" if svc["tmux_session"] else "down"
+
+            choices = [
+                ("snapshot", "Health snapshot (all sources)"),
+                ("journal", f"systemd journal (user unit, {unit_label})"),
+                ("tmux", f"tmux capture-pane (session: {tmux_label})"),
+                ("logfile", "NomadNet logfile (default identity)"),
+                ("rnsd", "rnsd journal (system scope)"),
+                ("errors", "Errors only (logfile last 200 lines)"),
+                ("follow", "Follow logfile live (Ctrl+C to stop)"),
+                ("back", "Back"),
+            ]
+            choice = self.ctx.dialog.menu(
+                "NomadNet Logs",
+                f"Config dir: {cfg_dir}\n{self._service_state_line(svc)}",
+                choices,
+            )
+            if choice is None or choice == "back":
+                return
+
+            if choice == "snapshot":
+                self.ctx.safe_call(
+                    "Health snapshot",
+                    lambda: self._show_unified_log_snapshot(cfg_dir, svc),
+                )
+            elif choice == "journal":
+                self.ctx.safe_call(
+                    "User journal", self._show_user_journal)
+            elif choice == "tmux":
+                self.ctx.safe_call(
+                    "tmux capture", self._show_tmux_capture)
+            elif choice == "logfile":
+                self.ctx.safe_call(
+                    "Logfile",
+                    lambda: self._view_nomadnet_logs_for(cfg_dir))
+            elif choice == "rnsd":
+                self.ctx.safe_call(
+                    "rnsd journal", self._show_rnsd_journal_quick)
+            elif choice == "errors":
+                self.ctx.safe_call(
+                    "Errors only",
+                    lambda: self._show_logfile_errors(cfg_dir))
+            elif choice == "follow":
+                self.ctx.safe_call(
+                    "Follow",
+                    lambda: self._follow_logfile(cfg_dir))
+
+    # ------------------------------------------------------------------
+    # Individual view helpers for the unified logs menu
+    # ------------------------------------------------------------------
+
+    def _show_unified_log_snapshot(self, cfg_dir: Path, svc: dict) -> None:
+        """Render a single screen with journal + tmux pane + logfile + errors."""
+        clear_screen()
+        print("=== NomadNet Health Snapshot ===\n")
+
+        # Service state line
+        try:
+            print(self._service_state_line(svc))
+        except Exception:
+            pass
+        print()
+
+        # Service journal (last 20)
+        print("--- systemd --user -u nomadnet (last 20) ---")
+        journal = self._capture_user_journal(tail=20)
+        if journal:
+            for line in journal.splitlines():
+                print(f"  {line}")
+        else:
+            print("  (journal unavailable — unit may not be installed)")
+        print()
+
+        # tmux capture-pane (last 40)
+        print("--- tmux capture-pane -t nomadnet (last 40) ---")
+        pane = self._capture_tmux_pane(tail=40) if svc.get("tmux_session") else ""
+        if pane:
+            for line in pane.splitlines():
+                print(f"  {line.rstrip()}")
+        elif svc.get("tmux_session"):
+            print("  (capture failed)")
+        else:
+            print("  (no tmux session)")
+        print()
+
+        # NomadNet logfile (last 20)
+        print(f"--- {cfg_dir}/logfile (last 20) ---")
+        logfile = cfg_dir / "logfile"
+        if logfile.exists():
+            try:
+                with open(logfile, 'r') as f:
+                    lines = list(collections.deque(f, maxlen=20))
+                for line in lines:
+                    print(f"  {line.rstrip()}")
+            except OSError as e:
+                print(f"  (read failed: {e})")
+        else:
+            print("  (no logfile yet)")
+        print()
+
+        self.ctx.wait_for_enter()
+
+    def _show_user_journal(self) -> None:
+        """Render ``journalctl --user -u nomadnet -n 50``."""
+        clear_screen()
+        print("=== journalctl --user -u nomadnet (last 50) ===\n")
+        out = self._capture_user_journal(tail=50)
+        if out:
+            print(out)
+        else:
+            print("  (no entries — unit may not be installed / linger off)")
+        self.ctx.wait_for_enter()
+
+    def _show_tmux_capture(self) -> None:
+        """Render ``tmux capture-pane -p -t nomadnet`` last 100 lines."""
+        clear_screen()
+        print("=== tmux capture-pane -t nomadnet (last 100) ===\n")
+        out = self._capture_tmux_pane(tail=100)
+        if out:
+            print(out)
+        else:
+            print("  (no session or capture failed)")
+        self.ctx.wait_for_enter()
+
+    def _show_rnsd_journal_quick(self) -> None:
+        """Render ``journalctl -u rnsd -n 50``."""
+        clear_screen()
+        print("=== journalctl -u rnsd (last 50) ===\n")
+        try:
+            res = subprocess.run(
+                ['journalctl', '-u', 'rnsd', '-n', '50', '--no-pager'],
+                capture_output=True, text=True, timeout=15,
+            )
+            out = (res.stdout or "").strip()
+            print(out if out else "  (no entries)")
+        except (subprocess.SubprocessError, OSError,
+                FileNotFoundError) as e:
+            print(f"  (journalctl failed: {e})")
+        self.ctx.wait_for_enter()
+
+    def _show_logfile_errors(self, cfg_dir: Path) -> None:
+        """Errors-only tail from the default-identity logfile."""
+        logfile = cfg_dir / "logfile"
+        clear_screen()
+        if not logfile.exists():
+            print(f"No logfile yet: {logfile}")
+            self.ctx.wait_for_enter()
+            return
+        patterns = ('Error', 'Exception', 'CRITICAL', 'WARNING',
+                    'AuthenticationError', 'PermissionError', 'Traceback')
+        try:
+            with open(logfile, 'r') as f:
+                lines = list(collections.deque(f, maxlen=200))
+            matches = [
+                line for line in lines if any(p in line for p in patterns)
+            ]
+            print(f"=== {logfile} — errors ({len(matches)}) ===\n")
+            if matches:
+                for line in matches:
+                    print(line.rstrip())
+            else:
+                print("  (no errors in last 200 lines)")
+        except OSError as e:
+            print(f"Read failed: {e}")
+        self.ctx.wait_for_enter()
+
+    def _follow_logfile(self, cfg_dir: Path) -> None:
+        """``tail -f`` wrapper for the default-identity logfile."""
+        logfile = cfg_dir / "logfile"
+        if not logfile.exists():
+            self.ctx.dialog.msgbox(
+                "No logfile",
+                f"NomadNet logfile not found yet:\n\n  {logfile}",
+            )
+            return
+        clear_screen()
+        print(f"=== follow {logfile} (Ctrl+C to stop) ===\n")
+        try:
+            subprocess.run(
+                ['tail', '-f', '-n', '30', str(logfile)], timeout=None,
+            )
+        except KeyboardInterrupt:
+            pass
+
+    def _capture_user_journal(self, tail: int = 50) -> str:
+        """Return ``journalctl --user -u nomadnet -n <tail>`` stdout.
+
+        Honors sudo context via the service-ops mixin so the journal
+        comes from the real user's session bus.
+        """
+        # Delegate to service_ops if available (preferred — handles sudo).
+        capture_fn = getattr(self, '_capture_journal_via_service_ops', None)
+        if capture_fn is not None:
+            return capture_fn(tail=tail)
+        try:
+            res = subprocess.run(
+                ['journalctl', '--user', '-u', 'nomadnet',
+                 '-n', str(tail), '--no-pager'],
+                capture_output=True, text=True, timeout=15,
+            )
+            return (res.stdout or "").strip()
+        except (subprocess.SubprocessError, OSError,
+                FileNotFoundError):
+            return ""
+
+    def _capture_tmux_pane(self, tail: int = 40) -> str:
+        """Return ``tmux capture-pane -p -t nomadnet`` last N lines.
+
+        Honors sudo context: tmux sessions belong to the real user on
+        fleet boxes.
+        """
+        tmux_bin = shutil.which("tmux")
+        if not tmux_bin:
+            return ""
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user and sudo_user != 'root':
+            try:
+                import pwd as _pwd
+                uid = _pwd.getpwnam(sudo_user).pw_uid
+            except KeyError:
+                return ""
+            argv = [
+                'sudo', '-u', sudo_user, '-H',
+                'env', f'XDG_RUNTIME_DIR=/run/user/{uid}',
+                tmux_bin, 'capture-pane', '-p', '-t', 'nomadnet',
+            ]
+        else:
+            argv = [tmux_bin, 'capture-pane', '-p', '-t', 'nomadnet']
+        try:
+            res = subprocess.run(
+                argv, capture_output=True, text=True, timeout=10,
+            )
+            out = res.stdout or ""
+            lines = out.splitlines()
+            return "\n".join(lines[-tail:])
+        except (subprocess.SubprocessError, OSError,
+                FileNotFoundError):
+            return ""
+
     def _edit_nomadnet_config(self):
         """Edit default NomadNet config, generating it first if missing."""
         config_path = self._get_nomadnet_config_path()

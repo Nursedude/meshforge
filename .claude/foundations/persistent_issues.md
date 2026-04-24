@@ -636,4 +636,117 @@ nearest enforcement point; if this becomes a second source of bugs,
 extend MF009 to also flag calls outside known main-thread init sites.
 
 
+---
+
+## Issue #45: NomadNet TUI — tmux-wrapped service is first-class (2026-04-23)
+
+**Background**: Issue #38 consolidated NomadNet onto a tmux-wrapped
+systemd user unit (`templates/systemd/nomadnet-user.service` →
+`~/.config/systemd/user/nomadnet.service`). On every fleet box the
+operator attaches with `tmux attach -t nomadnet` and that's been stable.
+The TUI menu, however, still exposed the pre-#38 world: Default
+Identity / Interactive Client each offered "Launch Text UI / Start
+Daemon / Stop" that went *directly* to the nomadnet binary via pkill +
+subprocess, with no knowledge that a supervised process might already
+own the identity.
+
+**Three concrete failure modes this produced**:
+
+1. **pkill vs `Restart=on-failure`**: `_stop_nomadnet()` without a
+   `config_dir` ran `pkill -f bin/nomadnet`. If the systemd user unit
+   was supervising the process, systemd's `Restart=on-failure` respawned
+   it within `RestartSec=5`. MeshForge reported "Stopped." The operator
+   walked away thinking it was off.
+2. **Double-bound LXMF identity**: `_launch_nomadnet_textui()` /
+   `_launch_nomadnet_daemon()` spawned a second nomadnet against
+   `~/.nomadnetwork/` when the service was already using it. The LXMF
+   exclusivity lock on port 37428 flapped; the tmux-wrapped instance
+   often lost its delivery socket.
+3. **Fragmented logs**: the NomadNet logfile only. `journalctl --user
+   -u nomadnet` (service-level ImportError, wrapper crash, pipx venv
+   drift) and `tmux capture-pane -p -t nomadnet` (live TUI state, which
+   tells you whether the client actually rendered) were invisible. A
+   crash-loop was undetectable from the TUI.
+
+**Fix**:
+
+* **SSOT**: `NomadNetServiceOpsMixin._nomadnet_service_state()` returns
+  `{unit_installed, active, enabled, sub_state, main_pid, n_restarts,
+  tmux_session, error}`. Every guard consults it; no ad-hoc
+  `systemctl --user` checks.
+* **Top-level menu**: Status + Attach + Service Control + Logs + Config
+  + Advanced (holds the old Default Identity / Interactive Client
+  submenus unchanged).
+* **Never pkill a supervised process**: `_stop_nomadnet(config_dir=None)`
+  short-circuits with a msgbox when `service_state.active` is true.
+  Identity-scoped stop still pkills (correct for Interactive Client).
+* **Raw launch guards**: `_launch_nomadnet_textui`/`_launch_nomadnet_daemon`
+  yesno-warn when the service is active; operator must explicitly opt in.
+* **Unified logs**: `_unified_logs_menu` in `_nomadnet_io_ops.py`. Health
+  Snapshot = service state + journal-tail-20 + tmux-pane-tail-40 +
+  logfile-tail-20 on one screen.
+* **Sudo → real-user bridging**: `_user_systemctl_argv()` builds
+  `sudo -u <user> -H env XDG_RUNTIME_DIR=/run/user/<uid>
+  DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus systemctl
+  --user <verb> nomadnet` — the documented root-to-user incantation.
+  Falls back to plain `systemctl --user` when not sudo.
+* **Unit installer**: copy template → `daemon-reload` + `enable --now`
+  + `loginctl enable-linger $USER` for headless survival.
+* **Inline config toggles**: yesno-flip for `enable_node`,
+  `enable_client`, `announce_at_start`; inputbox setters for
+  `display_name`, `node_name`. Existing `_configure_propagation_node`
+  moved into the config_ops mixin.
+* **`service_check.py` extension**: `user=False` kwarg across 9 helpers.
+  User scope skips sudo and the Meshtastic placeholder heuristics.
+
+**Files**:
+- `src/launcher_tui/handlers/_nomadnet_service_ops.py` **NEW** — SSOT + service control + tmux attach + unit installer
+- `src/launcher_tui/handlers/_nomadnet_config_ops.py` **NEW** — inline toggles + `_configure_propagation_node` (moved)
+- `src/launcher_tui/handlers/nomadnet.py` — MRO, top-level menu, status block, stop/launch guards
+- `src/launcher_tui/handlers/_nomadnet_io_ops.py` — unified logs menu + 5 focused views + journal/tmux capture helpers
+- `src/launcher_tui/handlers/_nomadnet_submenus.py` — `_advanced_menu` + `_reset_identity_dir`
+- `src/utils/service_check.py` — `user=False` kwarg across 9 helpers; `_systemctl_argv()` chooser
+- `src/utils/_port_detection.py` — `check_systemd_service(user=False)`
+
+**Tests** (33 new assertions): `TestServiceStateDetection`,
+`TestWarnIfServiceActive`, `TestStopRefusesWhenServiceManaged`,
+`TestLaunchRefusesWhenServiceManaged`, `TestConfigToggles`,
+`TestNomadNetServiceOpsSudoBridging`, `TestInstallUserUnit` in
+`tests/test_nomadnet_handler.py`. `TestUserScopeSystemctl` (10
+assertions) in `tests/test_service_check.py`.
+
+**Operator recipe — install the user unit on a fleet box**:
+```
+sudo python3 src/launcher_tui/main.py
+# NomadNet Client > Service Control > Install systemd user unit
+# Afterward: NomadNet Client > Attach tmux session
+```
+
+**Operator recipe — diagnose "I stopped it but it's still running"**:
+```
+sudo python3 src/launcher_tui/main.py
+# NomadNet Client > Status — look for `Unit: ACTIVE / enabled`
+# and `Restarts: N` under --- Service State ---.
+# If Restarts > 0, Logs > Health snapshot shows journal + tmux pane.
+```
+
+**Prevention**:
+- **Rule**: Never `pkill` NomadNet when `systemctl --user is-active
+  nomadnet` returns `active`. `_stop_nomadnet()` enforces this at the
+  TUI layer; CLI operators should use `systemctl --user stop
+  nomadnet` for the service and reserve `pkill` for the Interactive
+  Client (not service-managed).
+- **Rule**: future code that needs to know "is NomadNet running" must
+  call `_nomadnet_service_state()` before falling back to
+  `find_competing_clients()`. The fallback is only valid when
+  `unit_installed` is `False`.
+- The `NomadNetServiceOpsMixin._user_systemctl_argv()` helper is the
+  single choke point for root→user-scope bridging; don't build
+  `['sudo', '-u', ..., 'systemctl', '--user', ...]` at call sites.
+- File-size compliance: `nomadnet.py` sits at ~1,447 lines after the
+  refactor; the new service_ops / config_ops mixins keep the main
+  file under the 1,500-line cap. Future new functionality should
+  land in the appropriate mixin, not in `nomadnet.py`.
+
+
 

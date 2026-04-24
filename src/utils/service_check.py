@@ -58,6 +58,23 @@ def _sudo_cmd(cmd: List[str]) -> List[str]:
         return ['sudo'] + cmd
     return cmd
 
+
+def _systemctl_argv(verbs: List[str], user: bool = False) -> List[str]:
+    """Build a systemctl argv, picking system vs user scope.
+
+    User-scope systemctl never needs sudo — the caller's own session bus
+    authorizes the operation. System-scope falls through ``_sudo_cmd``.
+    The NomadNet user unit (Issue #38 / Issue #45) is the primary caller.
+
+    Args:
+        verbs: systemctl subcommand and its args, e.g. ['is-active', 'nomadnet'].
+        user: When True, emit ``systemctl --user``; otherwise ``systemctl``
+              (sudo-prefixed if needed).
+    """
+    if user:
+        return ['systemctl', '--user'] + verbs
+    return _sudo_cmd(['systemctl'] + verbs)
+
 # Public API - these are the functions/classes intended for external use
 __all__ = [
     # Main entry points
@@ -166,7 +183,12 @@ from utils._port_detection import (  # noqa: F401, E402
 )
 
 
-def check_service(name: str, port: Optional[int] = None, host: str = 'localhost') -> ServiceStatus:
+def check_service(
+    name: str,
+    port: Optional[int] = None,
+    host: str = 'localhost',
+    user: bool = False,
+) -> ServiceStatus:
     """
     Check if a service is available and provide actionable feedback.
 
@@ -179,6 +201,10 @@ def check_service(name: str, port: Optional[int] = None, host: str = 'localhost'
         name: Service name (e.g., 'meshtasticd', 'rnsd', 'mosquitto')
         port: Override port to check (uses known default if not specified)
         host: Host to check (default localhost)
+        user: When True, query ``systemctl --user`` (user-scope unit).
+              Skips the Meshtastic hardware / placeholder heuristics since
+              those only apply to system-scope meshtasticd. Use for the
+              NomadNet user unit (Issue #38 / Issue #45).
 
     Returns:
         ServiceStatus with availability info and fix hints
@@ -195,7 +221,9 @@ def check_service(name: str, port: Optional[int] = None, host: str = 'localhost'
     systemd_name = config.get('systemd_name', name)
     description = config.get('description', name)
     fix_hint = config.get('fix_hint', f'Start {name} service')
-    is_systemd = config.get('is_systemd', True)  # Default to systemd
+    # User-scope callers are always systemd (there is no non-systemd
+    # user-scope NomadNet path). System-scope still honors KNOWN_SERVICES.
+    is_systemd = True if user else config.get('is_systemd', True)
 
     # =========================================================================
     # SYSTEMD SERVICES: Trust systemctl ONLY
@@ -204,7 +232,7 @@ def check_service(name: str, port: Optional[int] = None, host: str = 'localhost'
         try:
             # Single source of truth: systemctl is-active
             result = subprocess.run(
-                ['systemctl', 'is-active', systemd_name],
+                _systemctl_argv(['is-active', systemd_name], user=user),
                 capture_output=True,
                 text=True,
                 timeout=5
@@ -217,7 +245,10 @@ def check_service(name: str, port: Optional[int] = None, host: str = 'localhost'
             sub_state = ""
             if is_active:
                 state_result = subprocess.run(
-                    ['systemctl', 'show', systemd_name, '--property=SubState'],
+                    _systemctl_argv(
+                        ['show', systemd_name, '--property=SubState'],
+                        user=user,
+                    ),
                     capture_output=True,
                     text=True,
                     timeout=5
@@ -225,6 +256,27 @@ def check_service(name: str, port: Optional[int] = None, host: str = 'localhost'
                 # Output is like "SubState=running" or "SubState=exited"
                 if '=' in state_result.stdout:
                     sub_state = state_result.stdout.strip().split('=')[1]
+
+            # Hardware/placeholder heuristics below are system-scope
+            # meshtasticd specific. User-scope units skip them entirely.
+            if user and is_active and sub_state == "running":
+                return ServiceStatus(
+                    name=name,
+                    available=True,
+                    state=ServiceState.AVAILABLE,
+                    message=f"{description} is running (user unit)",
+                    port=check_port_num,
+                    detection_method="systemctl --user"
+                )
+            if user and is_active:
+                return ServiceStatus(
+                    name=name,
+                    available=True,
+                    state=ServiceState.AVAILABLE,
+                    message=f"{description} is active ({sub_state or 'transitioning'}, user unit)",
+                    port=check_port_num,
+                    detection_method="systemctl --user"
+                )
 
             # Check for placeholder services (active but exited = not a real daemon)
             if is_active and sub_state == "exited":
@@ -326,19 +378,26 @@ def check_service(name: str, port: Optional[int] = None, host: str = 'localhost'
                 )
 
             if status_text == "failed":
+                journal_hint = (
+                    f"journalctl --user -u {systemd_name}"
+                    if user else f"journalctl -u {systemd_name}"
+                )
                 return ServiceStatus(
                     name=name,
                     available=False,
                     state=ServiceState.FAILED,
                     message=f"{description} has failed",
-                    fix_hint=f"Check logs: journalctl -u {systemd_name}",
+                    fix_hint=f"Check logs: {journal_hint}",
                     port=check_port_num,
-                    detection_method="systemctl"
+                    detection_method="systemctl --user" if user else "systemctl"
                 )
 
             # Check if service unit exists
             check_result = subprocess.run(
-                ['systemctl', 'list-unit-files', f'{systemd_name}.service'],
+                _systemctl_argv(
+                    ['list-unit-files', f'{systemd_name}.service'],
+                    user=user,
+                ),
                 capture_output=True,
                 text=True,
                 timeout=5
@@ -560,7 +619,9 @@ def _wait_for_tcp_ready(port: int, host: str = 'localhost', max_wait: int = 15) 
     return False
 
 
-def is_service_unit_installed(service_name: str, timeout: int = 5) -> bool:
+def is_service_unit_installed(
+    service_name: str, timeout: int = 5, user: bool = False
+) -> bool:
     """Return True iff the systemd unit FILE exists on this box.
 
     Orthogonal to active/enabled state — answers the question
@@ -587,9 +648,18 @@ def is_service_unit_installed(service_name: str, timeout: int = 5) -> bool:
     Returns:
         True if the unit file exists, False otherwise (including errors).
     """
+    # ``systemctl cat`` is read-only and never needs sudo — build argv
+    # directly so we don't regress the "plain systemctl" contract the
+    # TUI's auto-start checks depend on (Issue #45 keeps user=True
+    # opt-in while preserving the original system-scope behavior).
+    argv = (
+        ['systemctl', '--user', 'cat', service_name]
+        if user
+        else ['systemctl', 'cat', service_name]
+    )
     try:
         result = subprocess.run(
-            ['systemctl', 'cat', service_name],
+            argv,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -600,7 +670,7 @@ def is_service_unit_installed(service_name: str, timeout: int = 5) -> bool:
         return False
 
 
-def daemon_reload(timeout: int = 30) -> Tuple[bool, str]:
+def daemon_reload(timeout: int = 30, user: bool = False) -> Tuple[bool, str]:
     """
     Reload the systemd daemon to pick up service file changes.
 
@@ -624,7 +694,7 @@ def daemon_reload(timeout: int = 30) -> Tuple[bool, str]:
     """
     try:
         result = subprocess.run(
-            _sudo_cmd(['systemctl', 'daemon-reload']),
+            _systemctl_argv(['daemon-reload'], user=user),
             capture_output=True,
             text=True,
             timeout=timeout
@@ -648,7 +718,12 @@ def daemon_reload(timeout: int = 30) -> Tuple[bool, str]:
         return False, f"Error: {e}"
 
 
-def enable_service(service_name: str, start: bool = False, timeout: int = 30) -> Tuple[bool, str]:
+def enable_service(
+    service_name: str,
+    start: bool = False,
+    timeout: int = 30,
+    user: bool = False,
+) -> Tuple[bool, str]:
     """
     Enable a systemd service to start at boot.
 
@@ -677,7 +752,7 @@ def enable_service(service_name: str, start: bool = False, timeout: int = 30) ->
     try:
         # Step 1: Reload systemd daemon to pick up service file changes
         reload_result = subprocess.run(
-            _sudo_cmd(['systemctl', 'daemon-reload']),
+            _systemctl_argv(['daemon-reload'], user=user),
             capture_output=True,
             text=True,
             timeout=timeout
@@ -689,7 +764,7 @@ def enable_service(service_name: str, start: bool = False, timeout: int = 30) ->
 
         # Step 2: Enable the service
         enable_result = subprocess.run(
-            _sudo_cmd(['systemctl', 'enable', service_name]),
+            _systemctl_argv(['enable', service_name], user=user),
             capture_output=True,
             text=True,
             timeout=timeout
@@ -702,7 +777,7 @@ def enable_service(service_name: str, start: bool = False, timeout: int = 30) ->
         # Step 3: Optionally start the service
         if start:
             start_result = subprocess.run(
-                _sudo_cmd(['systemctl', 'start', service_name]),
+                _systemctl_argv(['start', service_name], user=user),
                 capture_output=True,
                 text=True,
                 timeout=timeout
@@ -729,7 +804,9 @@ def enable_service(service_name: str, start: bool = False, timeout: int = 30) ->
         return False, f"Error: {e}"
 
 
-def disable_service(service_name: str, timeout: int = 30) -> Tuple[bool, str]:
+def disable_service(
+    service_name: str, timeout: int = 30, user: bool = False
+) -> Tuple[bool, str]:
     """
     Disable a systemd service from starting at boot.
 
@@ -749,7 +826,7 @@ def disable_service(service_name: str, timeout: int = 30) -> Tuple[bool, str]:
     """
     try:
         result = subprocess.run(
-            _sudo_cmd(['systemctl', 'disable', service_name]),
+            _systemctl_argv(['disable', service_name], user=user),
             capture_output=True,
             text=True,
             timeout=timeout
@@ -773,7 +850,9 @@ def disable_service(service_name: str, timeout: int = 30) -> Tuple[bool, str]:
         return False, f"Error: {e}"
 
 
-def start_service(service_name: str, timeout: int = 30) -> Tuple[bool, str]:
+def start_service(
+    service_name: str, timeout: int = 30, user: bool = False
+) -> Tuple[bool, str]:
     """
     Start a systemd service.
 
@@ -793,7 +872,7 @@ def start_service(service_name: str, timeout: int = 30) -> Tuple[bool, str]:
     """
     try:
         result = subprocess.run(
-            _sudo_cmd(['systemctl', 'start', service_name]),
+            _systemctl_argv(['start', service_name], user=user),
             capture_output=True,
             text=True,
             timeout=timeout
@@ -817,7 +896,9 @@ def start_service(service_name: str, timeout: int = 30) -> Tuple[bool, str]:
         return False, f"Error: {e}"
 
 
-def stop_service(service_name: str, timeout: int = 30) -> Tuple[bool, str]:
+def stop_service(
+    service_name: str, timeout: int = 30, user: bool = False
+) -> Tuple[bool, str]:
     """
     Stop a systemd service.
 
@@ -837,7 +918,7 @@ def stop_service(service_name: str, timeout: int = 30) -> Tuple[bool, str]:
     """
     try:
         result = subprocess.run(
-            _sudo_cmd(['systemctl', 'stop', service_name]),
+            _systemctl_argv(['stop', service_name], user=user),
             capture_output=True,
             text=True,
             timeout=timeout
@@ -861,7 +942,9 @@ def stop_service(service_name: str, timeout: int = 30) -> Tuple[bool, str]:
         return False, f"Error: {e}"
 
 
-def restart_service(service_name: str, timeout: int = 30) -> Tuple[bool, str]:
+def restart_service(
+    service_name: str, timeout: int = 30, user: bool = False
+) -> Tuple[bool, str]:
     """
     Restart a systemd service.
 
@@ -885,7 +968,7 @@ def restart_service(service_name: str, timeout: int = 30) -> Tuple[bool, str]:
     """
     try:
         result = subprocess.run(
-            _sudo_cmd(['systemctl', 'restart', service_name]),
+            _systemctl_argv(['restart', service_name], user=user),
             capture_output=True,
             text=True,
             timeout=timeout
