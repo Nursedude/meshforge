@@ -383,6 +383,21 @@ if [[ -d "$EXTRACT_DIR/etc/reticulum" ]]; then
         cp -a "$EXTRACT_DIR/etc/reticulum/config" /etc/reticulum/config
         echo -e "  ${GREEN}+${NC} /etc/reticulum/config"
         RESTORED=$((RESTORED + 1))
+
+        # Never overwrite a restored rpc_key (that would break the
+        # box's existing shared-instance auth). But if the restored
+        # config somehow lacks one — pre-Issue-#41 snapshot, hand-rolled
+        # by the operator, or a leftover __RPC_KEY__ placeholder — fill
+        # in a fresh unique value so rnsd boots cleanly.
+        if grep -q '__RPC_KEY__' /etc/reticulum/config 2>/dev/null; then
+            RPC_KEY=$(openssl rand -hex 32)
+            sed -i "s/__RPC_KEY__/$RPC_KEY/" /etc/reticulum/config
+            echo -e "  ${GREEN}+${NC} rpc_key substituted (placeholder in restore)"
+        elif ! grep -Eq '^\s*rpc_key\s*=\s*[0-9a-fA-F]{64}\s*$' /etc/reticulum/config 2>/dev/null; then
+            RPC_KEY=$(openssl rand -hex 32)
+            sed -i "/^\[reticulum\]/a\\  rpc_key = $RPC_KEY" /etc/reticulum/config
+            echo -e "  ${GREEN}+${NC} rpc_key added (restore lacked one)"
+        fi
     fi
 
     # Transport identity (CRITICAL)

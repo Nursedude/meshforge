@@ -1339,6 +1339,25 @@ if $INSTALL_RNS; then
         fi
     fi
 
+    # rpc_key invariant (Issue #41 + rpc_key guard).
+    # Every box MUST have its own unique 64-hex rpc_key. Substitute the
+    # template's __RPC_KEY__ placeholder (fresh-install path) OR insert a
+    # new line under [reticulum] if the config was hand-rolled without one.
+    # Never overwrite an existing valid key.
+    if [[ -f /etc/reticulum/config ]]; then
+        if grep -q '__RPC_KEY__' /etc/reticulum/config 2>/dev/null; then
+            RPC_KEY=$(openssl rand -hex 32)
+            sed -i "s/__RPC_KEY__/$RPC_KEY/" /etc/reticulum/config
+            echo -e "  ${GREEN}✓ Generated unique rpc_key for this box${NC}"
+        elif ! grep -Eq '^\s*rpc_key\s*=\s*[0-9a-fA-F]{64}\s*$' /etc/reticulum/config 2>/dev/null; then
+            RPC_KEY=$(openssl rand -hex 32)
+            sed -i "/^\[reticulum\]/a\\  rpc_key = $RPC_KEY" /etc/reticulum/config
+            echo -e "  ${GREEN}✓ Added missing rpc_key (unique per box)${NC}"
+        else
+            echo -e "  Existing rpc_key preserved"
+        fi
+    fi
+
     # Create systemd service (deploy from template or create inline)
     echo "  Setting up rnsd systemd service..."
 

@@ -64,6 +64,9 @@ class RNSConfigHandler(BaseHandler):
 
         Copies the config to /etc/reticulum/config (system-wide, preferred location),
         sets world-readable permissions, and renames the old file to avoid confusion.
+        Also ensures the migrated config carries a valid per-box ``rpc_key`` —
+        fleet boxes that pre-date Issue #41 may be missing one (we fill it in
+        without overwriting an existing valid value).
 
         Returns True if migration succeeded.
         """
@@ -79,6 +82,7 @@ class RNSConfigHandler(BaseHandler):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(source), str(target))
             target.chmod(0o644)
+            self._ensure_rpc_key_on(target)
             # Rename old config so rnsd picks up the /etc/ one
             backup = source.with_suffix('.migrated')
             source.rename(backup)
@@ -90,13 +94,18 @@ class RNSConfigHandler(BaseHandler):
     def _deploy_rns_template(self) -> Optional[Path]:
         """Deploy RNS template to /etc/reticulum/config (system-wide).
 
+        Reads the template into memory, renders it with a freshly-generated
+        per-box ``rpc_key`` (so ``__RPC_KEY__`` never lands on disk), and
+        writes the rendered text to /etc/reticulum/config.
+
         Returns the path where the config was deployed, or None on failure.
         """
+        from utils.rns_config_setup import render_template
+
         template = Path(__file__).parent.parent.parent.parent / 'templates' / 'reticulum.conf'
         if not template.exists():
             return None
 
-        # Always deploy to /etc/reticulum/ (system-wide, first in search order)
         target = Path('/etc/reticulum/config')
         if target.exists():
             self.ctx.dialog.msgbox(
@@ -107,12 +116,28 @@ class RNSConfigHandler(BaseHandler):
             return None
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(template), str(target))
-            target.chmod(0o644)  # World-readable so all users and rnsd can read it
+            rendered = render_template(template.read_text())
+            target.write_text(rendered)
+            target.chmod(0o644)
             return target
         except (OSError, PermissionError) as e:
             self.ctx.dialog.msgbox("Error", f"Failed to deploy config:\n{e}")
             return None
+
+    def _ensure_rpc_key_on(self, config_path: Path) -> None:
+        """Ensure ``config_path`` carries a valid 64-hex per-box ``rpc_key``.
+
+        Thin wrapper around ``utils.rns_config_setup.ensure_rpc_key`` that
+        swallows errors and surfaces a dialog only on OSError — the migrate
+        and deploy flows call this at config-landing time.
+        """
+        from utils.rns_config_setup import ensure_rpc_key
+        try:
+            _key, generated = ensure_rpc_key(config_path)
+            if generated:
+                logger.info("Pinned fresh rpc_key into %s", config_path)
+        except OSError as e:
+            logger.warning("rpc_key pin skipped for %s: %s", config_path, e)
 
     def _view_rns_config(self):
         """View current Reticulum config."""
