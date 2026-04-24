@@ -234,6 +234,8 @@ These features have been used in actual mesh deployments with physical radios an
 | **Service Management** | systemd integration via `service_check.py` (single source of truth), health monitoring |
 | **First-Run Wizard** | Hardware auto-detect templates, region selection, service verification |
 | **Standalone RF Tools** | Zero-dependency RF calculator, works without sudo or radio hardware |
+| **Multi-Mesh Gateway** | Meshtastic ↔ RNS/LXMF bridge via MQTT, composable-bridges model, refusal-on-inconsistency preflight, persistent SQLite queue. Field-deployed on moc / fleet-host-1 / fleet-host-2 / fleet-host-3 / fleet-host 2026-04-24 |
+| **Gateway + RNode** | rnsd RNodeInterface on USB LoRa radio alongside Meshtastic HAT; RNS-LoRa egress at 903.625 MHz / SF7 — validated on fleet-host-3 |
 
 ### Beta (Automated Tests Pass, Needs Field Validation)
 
@@ -241,8 +243,8 @@ Code works in testing but hasn't been validated in real-world deployments with a
 
 | Category | Capabilities | Notes |
 |----------|-------------|-------|
-| **Multi-Mesh Gateway** | Meshtastic <> RNS bridge via MQTT, persistent SQLite queue, circuit breaker | **Priority QA target** — core mission feature |
 | **Radio Failover** | Dual-radio state machine, automatic TX switchover at >25% channel utilization, anti-flap, HTTP health polling | Needs dual meshtasticd |
+| **Dual-radio mesh_bridge serial** | Cross-preset bridge (LF HAT + ST USB) via `connection_type: "serial"` on secondary — code merged + unit-tested, live-probed on moc's Heltec | Needs sustained cross-preset traffic to validate |
 | **MQTT Monitoring** | Nodeless mesh observation, protobuf decode, telemetry tracking, congestion alerts | Needs real MQTT traffic |
 | **Coverage Maps** | Interactive Folium maps, SNR-based link quality, offline tile caching | **Priority QA target** — needs GPS position data |
 | **Live NOC Map** | Browser view with WebSocket updates, node markers, signal heatmap | **Priority QA target** — needs running bridge |
@@ -485,6 +487,8 @@ sudo apt install mosquitto                     # MQTT broker
 - Gateway Bridge: `Mesh Networks → Gateway Config → Templates → mqtt_bridge`
 - MQTT Monitor: `Mesh Networks → MQTT Monitor → Configure → Use Local Broker`
 - MQTT Settings: `Gateway Config → MQTT Bridge Settings → Run Setup Guide`
+
+For the end-to-end gateway deployment recipe, which bridge flags control what, and the refusal-on-inconsistency contract, see **[Gateway Deployments](#gateway-deployments)** below and the detailed **[docs/GATEWAY_DEPLOYMENT.md](docs/GATEWAY_DEPLOYMENT.md)**.
 
 ### Dual-Radio Failover
 
@@ -993,13 +997,60 @@ For upgrade paths see [Upgrading MeshForge](#upgrading-meshforge).
 
 ### Gateway Deployments
 
-Active gateway nodes: **MOC1** (Pi5 + Meshtoad, LongFast, MQTT broker),
-**MOC2** (Pi HAT, ShortTurbo, RNS/NomadNet), **MOC3**, **VolcanoAI**.
+Canonical deployment guide: **[docs/GATEWAY_DEPLOYMENT.md](docs/GATEWAY_DEPLOYMENT.md)** — architecture diagram, prereqs, per-box recipe, fleet truth table, known gotchas.
 
-Templates for multi-node setups:
-- `templates/gateway-pair/` — dual-gateway preset bridging
-- `templates/meshforge-presets/` — per-node presets (MOC1 broker, etc.)
-- `templates/gateway-pair/moc-mqtt-bridge.md` — MQTT-bridged topology guide
+Active gateway fleet (as of 2026-04-24): **moc**, **fleet-host-1**, **fleet-host-2**, **fleet-host-3**, **fleet-host** — all on the composable-bridges model below.
+
+#### Deploy a new gateway box
+
+Two idempotent scripts. Re-running either is safe.
+
+```bash
+# 1. Config side: install deps, derive LXMF hash, enable meshforge channel
+#    MQTT flags, verify rpc_key pinning, render gateway.json from template.
+sudo scripts/configure_gateway.sh            # uses $SUDO_USER
+sudo DRY_RUN=1 scripts/configure_gateway.sh  # preview only, no writes
+
+# 2. Systemd side: render + install + enable meshforge-gateway.service
+sudo scripts/install_gateway_service.sh
+
+# Watch first startup
+sudo journalctl -u meshforge-gateway -f
+```
+
+#### Composable bridges — configure what you actually need
+
+As of commit `4bae714` (2026-04-24), **`bridge_mode` is an advisory display label**, not a selector. Each bridge starts based on its own `enabled` flag, and any combination runs concurrently in one service:
+
+| Flag in `gateway.json` | Default | What it runs | Typical use |
+|------------------------|---------|--------------|-------------|
+| `rns_bridge_enabled` | `true` | `RNSMeshtasticBridge` — Meshtastic ↔ RNS/LXMF | The common case. Bridges mesh messages to NomadNet. |
+| `mesh_bridge.enabled` | `false` | `MeshtasticPresetBridge` — cross-preset mesh ↔ mesh | Dual-radio boxes bridging e.g. LongFast HAT with a ShortTurbo USB device via `connection_type: "serial"` |
+| `rns_transport.enabled` | `false` | `RNSMeshtasticTransport` — RNS-over-Meshtastic transport | Specialist: use Meshtastic's LoRa as the physical layer for RNS packets |
+
+A dual-radio gateway that also bridges to NomadNet sets both `rns_bridge_enabled: true` and `mesh_bridge.enabled: true` — two bridges run side-by-side with independent queues, threads, and connections. A pure cross-preset testbed with no NomadNet sets `rns_bridge_enabled: false` and `mesh_bridge.enabled: true`.
+
+#### Refusal on inconsistency (no silent fallback)
+
+The service runs `validate_bridge_conflicts()` before constructing any bridge. If the config is inconsistent it prints `CONFIG ERRORS` and exits with code 2 — the gateway will **not** silently "auto-correct to a different mode" the way the old single-enum code did. Current refusal conditions:
+
+- No bridges enabled at all
+- `mesh_bridge` primary + secondary both point to the same serial device
+- Both `mesh_bridge.enabled` and `rns_transport.enabled` true (they both claim the Meshtastic radio's data path)
+- `mesh_bridge.secondary.connection_type="serial"` with a `serial_device` path that does not exist on the box
+
+On refusal, fix `gateway.json` and restart the service. Errors point at the exact key to change.
+
+#### Legacy config migration
+
+Gateways deployed before 2026-04-24 that used the single-enum pattern (e.g. `bridge_mode="mesh_bridge"` with `mesh_bridge.enabled=false`) are auto-migrated in-place at startup with a `MIGRATION:` journal warning — the section gets enabled and the gateway proceeds. Set the `enabled` flag explicitly in `gateway.json` to silence the warning.
+
+#### Templates
+
+- `templates/gateway/gateway.json.template` — rendered by `configure_gateway.sh` with per-box placeholders
+- `templates/gateway-pair/` — dual-gateway preset bridging reference material
+- `templates/meshforge-presets/` — per-node meshtasticd presets (channel PSK, etc.)
+- `contrib/systemd/meshforge-gateway.service.in` — systemd unit template (rendered by `install_gateway_service.sh`)
 
 ---
 
@@ -1098,8 +1149,9 @@ file integrity, and radio hardware detection without modifying anything.
 | Config file conflicts | Restore from `~/meshforge-backup-*` or regenerate via TUI |
 | `meshtastic` module not found | See "Python Library Conflicts" below |
 | Stale `.pyc` files | Clean reinstall handles this automatically |
-| Wrong bridge mode after upgrade | New installs default to `mqtt_bridge`. Existing configs are preserved — check with `grep bridge_mode ~/.config/meshforge/gateway.json` (or `/root/.config/...` if run as root). If it says `message_bridge`, the gateway will hold `:4403` persistently and starve the meshtasticd `:9443` web UI. Change to `mqtt_bridge` and add an `mqtt_bridge` section (see `src/gateway/config.py::MQTTBridgeConfig`). Leave `mqtt_bridge.region` empty unless your meshtasticd build includes region in the MQTT topic path. |
-| `:9443` web UI can't send messages / empty reply | Usually `bridge_mode=message_bridge` holding the single-client TCP slot. Check `ss -tnp \| grep :4403`. Fix: migrate to `mqtt_bridge` (see row above). |
+| Wrong bridge mode after upgrade | As of 0.5.7-beta, `bridge_mode` is an advisory label only — each bridge is gated by its own `.enabled` flag. Legacy configs auto-migrate in-place at startup with a `MIGRATION:` journal warning. If the gateway exits with a `CONFIG ERRORS` block, read the message and fix the named key in `gateway.json`; see `docs/GATEWAY_DEPLOYMENT.md` → "Refusal on inconsistency". |
+| `:9443` web UI can't send messages / empty reply | Legacy TCP-mode bridges held the single-client slot on `:4403`. Check `ss -tnp \| grep :4403`. Fix: ensure `mqtt_bridge.enabled=true` and `bridge_mode="mqtt_bridge"` (or run `scripts/configure_gateway.sh` to re-render the config). |
+| Gateway exits immediately with `CONFIG ERRORS` | The new refusal-on-inconsistency preflight caught a config bug — e.g. both `mesh_bridge.enabled` and `rns_transport.enabled` true, or `mesh_bridge` primary + secondary sharing a serial device. The error block names the exact key to change. This is by design: the gateway will not silently run a different mode than you asked for. |
 
 #### Python Library Conflicts
 
