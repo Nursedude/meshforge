@@ -3,9 +3,9 @@ MeshForge - LoRa Mesh Network Development & Operations Suite
 Version information and changelog
 """
 
-__version__ = "0.5.6-beta"
-__version_info__ = (0, 5, 6, 'beta')
-__release_date__ = "2026-04-21"
+__version__ = "0.5.7-beta"
+__version_info__ = (0, 5, 7, 'beta')
+__release_date__ = "2026-04-24"
 __app_name__ = "MeshForge"
 __app_description__ = "Mesh Network Operations Center & Development Ecosystem"
 __app_tagline__ = "Build. Test. Deploy. Monitor."
@@ -20,6 +20,22 @@ ALPHA_VERSION = "0.6.0-alpha"
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "0.5.7-beta",
+        "date": "2026-04-24",
+        "status": "beta",
+        "changes": [
+            "GATEWAY: Composable bridges — `bridge_mode` is now an advisory display label, not a selector. Each bridge gated by its own .enabled flag (`rns_bridge_enabled`, `mesh_bridge.enabled`, `rns_transport.enabled`); any combination runs concurrently in one service.",
+            "GATEWAY: Refusal-on-inconsistency contract — `validate_bridge_conflicts()` runs before any bridge construction; inconsistent configs exit code 2 with a CONFIG ERRORS block instead of silently auto-correcting to a different mode.",
+            "GATEWAY: Legacy `bridge_mode=mesh_bridge` deployments auto-migrate in-place at startup with a MIGRATION: warning (preserves existing behavior without requiring config changes).",
+            "GATEWAY: `connection_type=\"serial\"` on `MeshtasticConfig` — dual-radio gateways now bridge a HAT-attached primary with a USB-attached Meshtastic secondary (no second meshtasticd needed). Live-probed against moc's Heltec V3.",
+            "GATEWAY: New `scripts/configure_gateway.sh` idempotent deployment helper — derives LXMF destination hash, detects meshforge channel index, enables MQTT uplink/downlink flags, installs lxmf/rns/paho-mqtt/meshtastic to system python for the service user, verifies rpc_key pinning, renders `gateway.json` from `templates/gateway/gateway.json.template`. DRY_RUN=1 preview supported.",
+            "GATEWAY: Fleet deployment — moc, moc1, moc2 gateways installed and field-validated; moc3 confirmed running with RNodeInterface on 903.625 MHz LoRa egress (gateway → rnsd → RNode pipeline).",
+            "DOCS: `docs/GATEWAY_DEPLOYMENT.md` — canonical deployment guide with architecture diagram, prereqs, composable-bridges model, RNode variant, fleet truth table, and known gotchas from the 2026-04-24 rollout.",
+            "DEAD-END DOCUMENTED: meshtasticd 2.7.x has no USB-Meshtastic relay mode — the `heltec-usb.yaml` available.d template is for flashing firmware via esptool, not for running meshtasticd as a USB proxy. Verified empirically; documented to prevent future retry.",
+            "TESTS: +29 (test_composable_bridges.py 17 assertions, test_mesh_bridge_serial.py 12 assertions) — dispatch routing, conflict detection, legacy migration, config round-trip, SerialInterface construction paths.",
+        ],
+    },
     {
         "version": "0.5.6-beta",
         "date": "2026-04-21",
