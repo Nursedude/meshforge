@@ -1181,39 +1181,272 @@ class TestNomadNetServiceOpsSudoBridging:
 
 
 class TestInstallUserUnit:
-    """_install_user_unit copies template + runs daemon-reload/enable/start."""
+    """_install_user_unit prereq chain + path substitution.
+
+    The installer must work on a fresh box whether nomadnet came from
+    pipx, pip --user, or apt. These tests exercise the prerequisite
+    layer (tmux, wrapper, binary discovery) and the ExecStart
+    substitution that replaces the `__NOMADNET_EXEC__` placeholder.
+    """
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _template_with_placeholder(path: Path) -> None:
+        """Write a minimal unit file containing the substitution token."""
+        path.write_text(
+            "[Unit]\nDescription=Fake\n\n[Service]\n"
+            "ExecStart=/usr/bin/tmux new-session -d -s nomadnet "
+            "'__NOMADNET_EXEC__'\n"
+        )
+
+    def _install_env(self, h, fake_template, fake_home,
+                     wrapper_argv=None):
+        """Context-manager stack of patches common to every install test.
+
+        Caller supplies optional ``wrapper_argv`` to drive the
+        path-substitution assertions; default mimics a pip-user install.
+        """
+        if wrapper_argv is None:
+            wrapper_argv = [
+                '/home/pi/.local/bin/nomadnet',
+                '--rnsconfig', '/etc/reticulum',
+            ]
+        patches = [
+            patch(
+                'handlers._nomadnet_service_ops._UNIT_TEMPLATE',
+                fake_template,
+            ),
+            patch(
+                'handlers._nomadnet_service_ops.get_real_user_home',
+                return_value=fake_home,
+            ),
+            patch.object(h, '_systemctl_user',
+                         return_value=(True, "OK")),
+            patch.object(h, '_chown_real_user'),
+            patch.object(h, '_find_nomadnet_binary',
+                         return_value='/home/pi/.local/bin/nomadnet'),
+            patch.object(h, '_create_nomadnet_wrapper',
+                         return_value=Path('/home/pi/.config/meshforge/nomadnet_wrapper.py')),
+            patch.object(h, '_get_wrapper_command',
+                         return_value=wrapper_argv),
+        ]
+        return patches
+
+    @staticmethod
+    def _enter_all(patches):
+        mgr = []
+        for p in patches:
+            mgr.append(p.__enter__())
+        return patches
+
+    @staticmethod
+    def _exit_all(patches):
+        for p in reversed(patches):
+            p.__exit__(None, None, None)
+
+    # ------------------------------------------------------------------
+    # Happy path + placeholder substitution
+    # ------------------------------------------------------------------
 
     def test_install_writes_unit_and_activates(self, tmp_path):
+        """Default pip-user argv substitutes into ExecStart; unit goes active."""
         h = _make_nomadnet()
         fake_home = tmp_path / "home"
         (fake_home / ".config" / "systemd" / "user").mkdir(parents=True)
-
-        # Fake template path
         fake_template = tmp_path / "nomadnet-user.service"
-        fake_template.write_text("[Unit]\nDescription=Fake\n")
+        self._template_with_placeholder(fake_template)
 
-        with patch(
-            'handlers._nomadnet_service_ops._UNIT_TEMPLATE',
-            fake_template,
-        ):
-            with patch(
-                'handlers._nomadnet_service_ops.get_real_user_home',
-                return_value=fake_home,
-            ):
+        patches = self._enter_all(self._install_env(h, fake_template,
+                                                     fake_home))
+        try:
+            with patch('shutil.which', return_value='/usr/bin/tmux'):
+                with patch('subprocess.run') as mock_run:
+                    mock_run.return_value.returncode = 0
+                    mock_run.return_value.stdout = ""
+                    mock_run.return_value.stderr = ""
+                    h._install_user_unit(force=True)
+        finally:
+            self._exit_all(patches)
+
+        unit = (fake_home / ".config" / "systemd" / "user" /
+                "nomadnet.service")
+        assert unit.exists()
+        text = unit.read_text()
+        assert "Description=Fake" in text
+        # Placeholder must be gone; substituted argv present
+        assert '__NOMADNET_EXEC__' not in text
+        assert '/home/pi/.local/bin/nomadnet' in text
+        assert '--rnsconfig /etc/reticulum' in text
+
+    def test_install_substitutes_pipx_venv_command(self, tmp_path):
+        """Pipx install: venv python + wrapper path land in ExecStart."""
+        h = _make_nomadnet()
+        fake_home = tmp_path / "home"
+        fake_template = tmp_path / "nomadnet-user.service"
+        self._template_with_placeholder(fake_template)
+
+        pipx_argv = [
+            '/home/pi/.local/share/pipx/venvs/nomadnet/bin/python3',
+            '/home/pi/.config/meshforge/nomadnet_wrapper.py',
+            '--rnsconfig', '/etc/reticulum',
+        ]
+
+        patches = self._enter_all(self._install_env(
+            h, fake_template, fake_home, wrapper_argv=pipx_argv,
+        ))
+        try:
+            with patch('shutil.which', return_value='/usr/bin/tmux'):
+                with patch('subprocess.run') as mock_run:
+                    mock_run.return_value.returncode = 0
+                    mock_run.return_value.stdout = ""
+                    mock_run.return_value.stderr = ""
+                    h._install_user_unit(force=True)
+        finally:
+            self._exit_all(patches)
+
+        unit = (fake_home / ".config" / "systemd" / "user" /
+                "nomadnet.service")
+        text = unit.read_text()
+        assert 'pipx/venvs/nomadnet/bin/python3' in text
+        assert 'nomadnet_wrapper.py' in text
+        assert '__NOMADNET_EXEC__' not in text
+        # shlex.join should keep the argv parts space-separated for tmux
+        import shlex as _shlex
+        assert _shlex.join(pipx_argv) in text
+
+    # ------------------------------------------------------------------
+    # Prerequisite guards
+    # ------------------------------------------------------------------
+
+    def test_install_refuses_when_tmux_missing_and_declined(self, tmp_path):
+        """Operator declines tmux apt-install → no unit written, no apt call."""
+        h = _make_nomadnet()
+        fake_home = tmp_path / "home"
+        fake_template = tmp_path / "nomadnet-user.service"
+        self._template_with_placeholder(fake_template)
+
+        patches = self._enter_all(self._install_env(h, fake_template,
+                                                     fake_home))
+        try:
+            h.ctx.dialog._yesno_returns = [False]  # decline install
+            with patch('shutil.which', return_value=None):
+                with patch.object(h, '_apt_install') as mock_apt:
+                    h._install_user_unit(force=True)
+                    mock_apt.assert_not_called()
+        finally:
+            self._exit_all(patches)
+
+        unit = (fake_home / ".config" / "systemd" / "user" /
+                "nomadnet.service")
+        assert not unit.exists()
+
+    def test_install_apt_installs_tmux_when_confirmed(self, tmp_path):
+        """Operator confirms → _apt_install('tmux') runs before unit write."""
+        h = _make_nomadnet()
+        fake_home = tmp_path / "home"
+        fake_template = tmp_path / "nomadnet-user.service"
+        self._template_with_placeholder(fake_template)
+
+        # shutil.which returns None on the first call (gate), then
+        # '/usr/bin/tmux' on the summary recheck after apt install.
+        which_results = [None, '/usr/bin/tmux', '/usr/bin/tmux']
+
+        def fake_which(_name):
+            return (which_results.pop(0) if which_results
+                    else '/usr/bin/tmux')
+
+        patches = self._enter_all(self._install_env(h, fake_template,
+                                                     fake_home))
+        try:
+            h.ctx.dialog._yesno_returns = [True]  # accept install
+            with patch('shutil.which', side_effect=fake_which):
                 with patch.object(
-                    h, '_systemctl_user',
-                    return_value=(True, "OK"),
-                ):
-                    with patch.object(h, '_chown_real_user'):
+                    h, '_apt_install',
+                    return_value=(True, "tmux installed"),
+                ) as mock_apt:
+                    with patch('subprocess.run') as mock_run:
+                        mock_run.return_value.returncode = 0
+                        mock_run.return_value.stdout = ""
+                        mock_run.return_value.stderr = ""
+                        h._install_user_unit(force=True)
+                    mock_apt.assert_called_once_with('tmux')
+        finally:
+            self._exit_all(patches)
+
+        unit = (fake_home / ".config" / "systemd" / "user" /
+                "nomadnet.service")
+        assert unit.exists()
+
+    def test_install_creates_wrapper_before_writing_unit(self, tmp_path):
+        """_create_nomadnet_wrapper must run before the unit file is written."""
+        h = _make_nomadnet()
+        fake_home = tmp_path / "home"
+        fake_template = tmp_path / "nomadnet-user.service"
+        self._template_with_placeholder(fake_template)
+
+        call_log: list = []
+
+        def fake_wrapper():
+            call_log.append('wrapper')
+            return Path('/home/pi/.config/meshforge/nomadnet_wrapper.py')
+
+        real_write_text = Path.write_text
+
+        def recording_write_text(self, *args, **kwargs):
+            if self.name == 'nomadnet.service':
+                call_log.append('unit_write')
+            return real_write_text(self, *args, **kwargs)
+
+        patches = self._enter_all(self._install_env(h, fake_template,
+                                                     fake_home))
+        try:
+            with patch('shutil.which', return_value='/usr/bin/tmux'):
+                with patch.object(h, '_create_nomadnet_wrapper',
+                                  side_effect=fake_wrapper):
+                    with patch.object(Path, 'write_text',
+                                      recording_write_text):
                         with patch('subprocess.run') as mock_run:
                             mock_run.return_value.returncode = 0
                             mock_run.return_value.stdout = ""
                             mock_run.return_value.stderr = ""
                             h._install_user_unit(force=True)
+        finally:
+            self._exit_all(patches)
 
-        unit = fake_home / ".config" / "systemd" / "user" / "nomadnet.service"
-        assert unit.exists()
-        assert "Description=Fake" in unit.read_text()
+        assert call_log == ['wrapper', 'unit_write'], (
+            f"Expected wrapper before unit_write, got: {call_log}"
+        )
+
+    def test_install_refuses_when_placeholder_missing(self, tmp_path):
+        """Template without __NOMADNET_EXEC__ triggers the Template Broken guard."""
+        h = _make_nomadnet()
+        fake_home = tmp_path / "home"
+        fake_template = tmp_path / "nomadnet-user.service"
+        # Deliberately NO placeholder — should refuse
+        fake_template.write_text(
+            "[Unit]\nDescription=Fake\n\n[Service]\n"
+            "ExecStart=/usr/bin/nomadnet\n"
+        )
+
+        patches = self._enter_all(self._install_env(h, fake_template,
+                                                     fake_home))
+        try:
+            with patch('shutil.which', return_value='/usr/bin/tmux'):
+                with patch('subprocess.run') as mock_run:
+                    mock_run.return_value.returncode = 0
+                    mock_run.return_value.stdout = ""
+                    mock_run.return_value.stderr = ""
+                    h._install_user_unit(force=True)
+        finally:
+            self._exit_all(patches)
+
+        unit = (fake_home / ".config" / "systemd" / "user" /
+                "nomadnet.service")
+        assert not unit.exists()
+        assert "Template" in (h.ctx.dialog.last_msgbox_title or "")
 
     def test_install_refuses_when_template_missing(self, tmp_path):
         h = _make_nomadnet()
@@ -1225,3 +1458,27 @@ class TestInstallUserUnit:
             h._install_user_unit()
         # Message box shown, no exception
         assert "Template" in (h.ctx.dialog.last_msgbox_title or "")
+
+    def test_install_refuses_when_binary_not_found(self, tmp_path):
+        """_find_nomadnet_binary returning None aborts before unit write."""
+        h = _make_nomadnet()
+        fake_home = tmp_path / "home"
+        fake_template = tmp_path / "nomadnet-user.service"
+        self._template_with_placeholder(fake_template)
+
+        with patch(
+            'handlers._nomadnet_service_ops._UNIT_TEMPLATE',
+            fake_template,
+        ):
+            with patch(
+                'handlers._nomadnet_service_ops.get_real_user_home',
+                return_value=fake_home,
+            ):
+                with patch('shutil.which', return_value='/usr/bin/tmux'):
+                    with patch.object(h, '_find_nomadnet_binary',
+                                      return_value=None):
+                        h._install_user_unit(force=True)
+
+        unit = (fake_home / ".config" / "systemd" / "user" /
+                "nomadnet.service")
+        assert not unit.exists()
