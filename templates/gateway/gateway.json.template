@@ -3,6 +3,7 @@
   "enabled": true,
   "auto_start": false,
   "bridge_mode": "mqtt_bridge",
+  "rns_bridge_enabled": true,
   "meshtastic": {
     "host": "localhost",
     "port": 4403,

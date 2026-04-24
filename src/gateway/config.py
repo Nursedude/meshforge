@@ -452,15 +452,21 @@ class GatewayConfig:
     enabled: bool = False
     auto_start: bool = False
 
-    # Bridge mode: "mqtt_bridge", "message_bridge", "rns_transport",
-    #              "mesh_bridge", "meshcore_bridge", or "tri_bridge"
-    # - mqtt_bridge: MQTT-based bridge (recommended - zero interference with web client)
-    # - message_bridge: TCP-based message bridge (legacy - blocks web client)
-    # - rns_transport: RNS uses Meshtastic as network transport layer
-    # - mesh_bridge: Bridges two Meshtastic networks with different presets
-    # - meshcore_bridge: MeshCore ↔ Meshtastic/RNS bridge via companion radio
-    # - tri_bridge: All three protocols (Meshtastic + MeshCore + RNS)
+    # Bridge mode: advisory label only since the composable-bridges refactor.
+    # Each bridge's ``.enabled`` field (or ``rns_bridge_enabled`` below) is
+    # what actually gates startup — bridge_mode is kept for back-compat and
+    # for the "Mode:" line printed at startup. Legacy values still parse.
+    # - mqtt_bridge / message_bridge: implies rns_bridge_enabled=True
+    # - rns_transport: implies rns_transport.enabled=True
+    # - mesh_bridge: implies mesh_bridge.enabled=True
+    # - meshcore_bridge / tri_bridge: implies meshcore.enabled=True
     bridge_mode: str = "mqtt_bridge"
+
+    # Explicit gate for the default RNS <-> Meshtastic bridge
+    # (RNSMeshtasticBridge). True by default — the common deployment.
+    # Set False only for specialized boxes (e.g. a pure cross-preset
+    # mesh_bridge testbed that does not carry RNS/NomadNet traffic).
+    rns_bridge_enabled: bool = True
 
     # Network configurations
     meshtastic: MeshtasticConfig = field(default_factory=MeshtasticConfig)
@@ -593,6 +599,7 @@ class GatewayConfig:
                 enabled=data.get('enabled', False),
                 auto_start=data.get('auto_start', False),
                 bridge_mode=data.get('bridge_mode', 'mqtt_bridge'),
+                rns_bridge_enabled=data.get('rns_bridge_enabled', True),
                 meshtastic=MeshtasticConfig(**data.get('meshtastic', {})),
                 rns=RNSConfig(**data.get('rns', {})),
                 mqtt_bridge=mqtt_bridge,
@@ -654,6 +661,7 @@ class GatewayConfig:
                 'enabled': self.enabled,
                 'auto_start': self.auto_start,
                 'bridge_mode': self.bridge_mode,
+                'rns_bridge_enabled': self.rns_bridge_enabled,
                 'meshtastic': asdict(self.meshtastic),
                 'rns': asdict(self.rns),
                 'mqtt_bridge': asdict(self.mqtt_bridge),
