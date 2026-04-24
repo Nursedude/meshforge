@@ -88,16 +88,27 @@ class NomadNetServiceOpsMixin:
             'systemctl', '--user',
         ] + verbs
 
+    # Verbs that operate on the whole user manager, not on a specific
+    # unit. ``daemon-reload`` / ``daemon-reexec`` / ``reset-failed``
+    # (no arg) refuse "Too many arguments" when given a unit name.
+    _MANAGER_VERBS = frozenset({"daemon-reload", "daemon-reexec"})
+
     def _systemctl_user(
         self, verb: str, timeout: int = 15,
     ) -> Tuple[bool, str]:
         """Run a single-verb systemctl --user call against nomadnet.
 
+        For unit-scoped verbs (start/stop/restart/enable/disable/…),
+        appends ``nomadnet`` as the target. For manager-scoped verbs
+        (``daemon-reload``/``daemon-reexec``) the unit name is omitted
+        — systemd rejects those with "Too many arguments" otherwise.
+
         Returns ``(success, combined_output)`` where success is ``True``
         iff the command exited 0. Output has stderr appended to stdout
         so dialog rendering gets the whole story.
         """
-        argv = self._user_systemctl_argv([verb, 'nomadnet'])
+        verbs = [verb] if verb in self._MANAGER_VERBS else [verb, 'nomadnet']
+        argv = self._user_systemctl_argv(verbs)
         try:
             proc = subprocess.run(
                 argv, capture_output=True, text=True, timeout=timeout,
