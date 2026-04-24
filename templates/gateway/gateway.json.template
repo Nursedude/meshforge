@@ -1,0 +1,55 @@
+{
+  "__doc__": "Rendered by scripts/configure_gateway.sh — single-radio HAT + MQTT + RNS. Field-proven on moc, moc1, moc2, moc3 (2026-04-24).",
+  "enabled": true,
+  "auto_start": false,
+  "bridge_mode": "mqtt_bridge",
+  "meshtastic": {
+    "host": "localhost",
+    "port": 4403,
+    "channel": @MESHFORGE_CHANNEL_INDEX@,
+    "use_mqtt": false,
+    "mqtt_topic": "",
+    "mqtt_broker": "localhost",
+    "mqtt_port": 1883,
+    "mqtt_channel": "meshforge",
+    "mqtt_region": "US",
+    "http_port": 443,
+    "preset": "",
+    "name": "primary"
+  },
+  "rns": {
+    "config_dir": "",
+    "identity_name": "meshforge_gateway",
+    "announce_interval": 300,
+    "propagation_node": "",
+    "default_lxmf_destination": "@LXMF_DESTINATION@"
+  },
+  "mqtt_bridge": {
+    "broker": "localhost",
+    "port": 1883,
+    "use_tls": false,
+    "username": "",
+    "password": "",
+    "root_topic": "msh",
+    "region": "US",
+    "channel": "meshforge",
+    "json_enabled": true
+  },
+  "rns_transport": { "enabled": false },
+  "mesh_bridge": { "enabled": false },
+  "meshcore": { "enabled": false },
+  "routing_rules": [],
+  "default_route": "bidirectional",
+  "telemetry": {
+    "share_position": true,
+    "share_battery": true,
+    "share_environment": true,
+    "position_precision": 5,
+    "update_interval": 60
+  },
+  "log_level": "INFO",
+  "log_messages": true,
+  "ai_diagnostics_enabled": false,
+  "snr_analysis": true,
+  "anomaly_detection": false
+}
