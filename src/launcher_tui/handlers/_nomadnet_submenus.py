@@ -167,6 +167,99 @@ class NomadNetSubmenusMixin:
     # Show LXMF hash for interactive identity (out-of-launch)
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Advanced submenu (Issue #45)
+    # Legacy Default/Interactive access + destructive reset actions.
+    # ------------------------------------------------------------------
+
+    def _advanced_menu(self):
+        """Legacy identity menus + destructive reset actions."""
+        while True:
+            choices = [
+                ("default", "Default Identity   (~/.nomadnetwork)"),
+                ("interactive",
+                 "Interactive Client (~/.nomadnetwork-interactive)"),
+                ("reset_default",
+                 "Reset default identity  (deletes ~/.nomadnetwork)"),
+                ("reset_interactive",
+                 "Reset interactive identity  "
+                 "(deletes ~/.nomadnetwork-interactive)"),
+                ("back", "Back"),
+            ]
+            choice = self.ctx.dialog.menu(
+                "NomadNet — Advanced",
+                "Legacy paths: raw TUI / daemon launch and per-identity\n"
+                "management. Reset actions are destructive — NomadNet\n"
+                "generates a new identity on next start.",
+                choices,
+            )
+            if choice is None or choice == "back":
+                return
+            dispatch = {
+                "default": ("Default Identity",
+                            self._default_identity_menu),
+                "interactive": ("Interactive Client",
+                                self._interactive_client_menu),
+                "reset_default": (
+                    "Reset default identity",
+                    lambda: self._reset_identity_dir(
+                        self._default_identity_config_dir(), "default"),
+                ),
+                "reset_interactive": (
+                    "Reset interactive identity",
+                    lambda: self._reset_identity_dir(
+                        self._interactive_config_dir(), "interactive"),
+                ),
+            }
+            entry = dispatch.get(choice)
+            if entry:
+                self.ctx.safe_call(*entry)
+
+    def _reset_identity_dir(self, path: Path, label: str) -> None:
+        """Confirm + rm -rf a NomadNet identity directory.
+
+        ``nomadnet`` regenerates the identity on next launch. Kept
+        behind a yesno so the operator can't nuke their LXMF hash on
+        autopilot. Refuses when the tmux-wrapped user service is
+        active and the target is the default identity.
+        """
+        import shutil as _shutil
+        if not path.exists():
+            self.ctx.dialog.msgbox(
+                "Nothing to reset",
+                f"{label} identity dir does not exist:\n\n  {path}",
+            )
+            return
+        svc = self._nomadnet_service_state()
+        if label == "default" and svc["active"]:
+            self.ctx.dialog.msgbox(
+                "Service active",
+                "Cannot reset the default identity while the NomadNet\n"
+                "user service is active. Stop it first:\n\n"
+                "  Service Control > Stop service",
+            )
+            return
+        if not self.ctx.dialog.yesno(
+            f"Reset {label} identity",
+            f"This will delete:\n\n  {path}\n\n"
+            f"NomadNet will generate a NEW identity (and a NEW LXMF hash)\n"
+            f"on next launch. Peers will need to re-learn your hash.\n\n"
+            f"Proceed?",
+        ):
+            return
+        try:
+            _shutil.rmtree(path)
+            self.ctx.dialog.msgbox(
+                f"{label.capitalize()} identity reset",
+                f"Deleted {path}\n\nStart the service (or launch) to\n"
+                f"regenerate identity + config.",
+            )
+        except OSError as e:
+            self.ctx.dialog.msgbox(
+                "Reset failed",
+                f"Could not delete {path}:\n\n{e}",
+            )
+
     def _show_interactive_hash_dialog(self, config_dir: Path):
         """Render the interactive identity's LXMF hash after the client has
         created one. Useful when the operator wants to copy the hash

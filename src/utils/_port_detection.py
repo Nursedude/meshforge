@@ -520,12 +520,15 @@ def check_process_with_pid(process_name: str) -> Tuple[bool, Optional[str]]:
         return False, None
 
 
-def check_systemd_service(service_name: str) -> Tuple[bool, bool]:
+def check_systemd_service(
+    service_name: str, user: bool = False
+) -> Tuple[bool, bool]:
     """
     Check if a systemd service is running and enabled.
 
     Args:
         service_name: Name of the systemd service
+        user: When True, query the user-scope manager (``systemctl --user``).
 
     Returns:
         Tuple of (is_running, is_enabled)
@@ -533,9 +536,11 @@ def check_systemd_service(service_name: str) -> Tuple[bool, bool]:
     is_running = False
     is_enabled = False
 
+    base = ['systemctl', '--user'] if user else ['systemctl']
+
     try:
         result = subprocess.run(
-            ['systemctl', 'is-active', service_name],
+            base + ['is-active', service_name],
             capture_output=True,
             text=True,
             timeout=5
@@ -546,7 +551,7 @@ def check_systemd_service(service_name: str) -> Tuple[bool, bool]:
 
     try:
         result = subprocess.run(
-            ['systemctl', 'is-enabled', service_name],
+            base + ['is-enabled', service_name],
             capture_output=True,
             text=True,
             timeout=5

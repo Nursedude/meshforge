@@ -67,8 +67,15 @@ from handlers._nomadnet_submenus import NomadNetSubmenusMixin
 # Log viewer + config IO + launch-error diagnosis extracted for file size (#6)
 from handlers._nomadnet_io_ops import NomadNetIOOpsMixin
 
+# Issue #45 — tmux-wrapped systemd user unit as a first-class concern.
+from handlers._nomadnet_service_ops import NomadNetServiceOpsMixin
+
+# Issue #45 — inline toggles for the common config knobs.
+from handlers._nomadnet_config_ops import NomadNetConfigOpsMixin
+
 
 class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
+                      NomadNetServiceOpsMixin, NomadNetConfigOpsMixin,
                       NomadNetIfaceChecksMixin,
                       NomadNetInstallUtilsMixin, NomadNetRNSChecksMixin,
                       BaseHandler):
@@ -348,35 +355,64 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
     # ------------------------------------------------------------------
 
     def _nomadnet_menu(self):
-        """NomadNet top-level menu — install + per-identity submenus."""
+        """NomadNet top-level menu — service-first, with legacy paths under Advanced.
+
+        Issue #45: the tmux-wrapped systemd user unit
+        (``nomadnet-user.service``) is the canonical NomadNet on every
+        fleet box. The menu surfaces Attach / Service Control as the
+        hot path; Default Identity / Interactive Client / raw launch
+        live under Advanced for back-compat.
+        """
         while True:
             installed = self._is_nomadnet_installed()
-            default_running = (self._is_default_identity_running()
-                               if installed else False)
-            interactive_running = (self._is_interactive_identity_running()
-                                   if installed else False)
 
-            state_line = (
-                "NomadNet is NOT INSTALLED" if not installed
-                else "Default: {} | Interactive: {}".format(
-                    "RUNNING" if default_running else "stopped",
-                    "RUNNING" if interactive_running else "stopped",
+            if not installed:
+                choice = self.ctx.dialog.menu(
+                    "NomadNet Client",
+                    "NomadNet is NOT INSTALLED.\n"
+                    "RNS client with page browser & LXMF messaging.",
+                    [
+                        ("status", "NomadNet Status (global overview)"),
+                        ("install", "Install NomadNet (pipx)"),
+                        ("back", "Back"),
+                    ],
                 )
+                if choice is None or choice == "back":
+                    break
+                dispatch = {
+                    "status": ("NomadNet Status", self._nomadnet_status),
+                    "install": ("Install NomadNet", self._install_nomadnet),
+                }
+                entry = dispatch.get(choice)
+                if entry:
+                    self.ctx.safe_call(*entry)
+                continue
+
+            service_state = self._nomadnet_service_state()
+            service_line = self._service_state_line(service_state)
+            mesh_line = self._mesh_iface_subtitle_state()
+            subtitle = service_line + (f"\n{mesh_line}" if mesh_line else "")
+
+            choices: list = [
+                ("status", "Status          overview, service, interfaces"),
+            ]
+            if service_state["tmux_session"]:
+                choices.append(
+                    ("attach", "Attach tmux     enter live NomadNet TUI"),
+                )
+            choices.append(
+                ("service", "Service Control start / stop / install unit"),
             )
-            mesh_line = self._mesh_iface_subtitle_state() if installed else ""
-            subtitle = state_line + (f"\n{mesh_line}" if mesh_line else "")
-
-            choices = [("status", "NomadNet Status (global overview)")]
-
-            if installed:
-                choices.append(("default", "Default Identity  ›  start/stop/logs/edit"))
-                choices.append(("interactive", "Interactive Client  ›  separate identity"))
-                choices.append(("propnode", "Set Propagation Node (default identity)"))
-                choices.append(("view_config", "View Default Config"))
-                choices.append(("uninstall", "Disable NomadNet"))
-            else:
-                choices.append(("install", "Install NomadNet"))
-
+            choices.append(
+                ("logs", "Logs            journal / tmux / logfile / rnsd"),
+            )
+            choices.append(
+                ("config", "Configuration   toggles / propagation node"),
+            )
+            choices.append(
+                ("advanced", "Advanced        default / interactive / reset"),
+            )
+            choices.append(("uninstall", "Disable NomadNet"))
             choices.append(("back", "Back"))
 
             choice = self.ctx.dialog.menu(
@@ -391,13 +427,11 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
 
             dispatch = {
                 "status": ("NomadNet Status", self._nomadnet_status),
-                "default": ("Default Identity", self._default_identity_menu),
-                "interactive": ("Interactive Client", self._interactive_client_menu),
-                "propnode": ("Set Propagation Node",
-                             self._configure_propagation_node),
-                "view_config": ("View Default Config",
-                                self._view_nomadnet_config),
-                "install": ("Install NomadNet", self._install_nomadnet),
+                "attach": ("Attach tmux", self._attach_tmux_session),
+                "service": ("Service Control", self._service_control_menu),
+                "logs": ("Logs", self._unified_logs_menu),
+                "config": ("Configuration", self._config_menu),
+                "advanced": ("Advanced", self._advanced_menu),
                 "uninstall": ("Disable NomadNet", self._uninstall_nomadnet),
             }
             entry = dispatch.get(choice)
@@ -458,6 +492,11 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
                 logger.debug("NomadNet process check failed: %s", e)
         else:
             print("  Process:   not running")
+
+        # Service (Issue #45): tmux-wrapped systemd user unit state
+        print()
+        print("--- Service State ---")
+        self._print_service_state_block()
 
         # Config file
         print()
@@ -812,6 +851,19 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
         When running via sudo, launches as the real user so NomadNet
         uses their config (~/.nomadnetwork) instead of root's.
         """
+        # Issue #45: refuse to launch a raw TUI when the tmux-wrapped
+        # systemd user unit owns the default identity. Spawning a
+        # second nomadnet on the same config dir breaks LXMF / the
+        # tmux session, and the right answer is Attach, not Launch.
+        if not self._warn_if_service_active(
+            "Launch Text UI (Advanced)",
+            "The NomadNet user service is currently active.\n\n"
+            "Use NomadNet > Attach tmux session to interact with the\n"
+            "running instance, or stop the service from Service Control\n"
+            "before launching a raw TUI.",
+        ):
+            return
+
         nn_path = self._find_nomadnet_binary()
         if not nn_path:
             return
@@ -1116,6 +1168,18 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
         When running via sudo, launches as the real user so NomadNet
         uses their config (~/.nomadnetwork) instead of root's.
         """
+        # Issue #45: the canonical NomadNet is the tmux-wrapped systemd
+        # user unit. Starting a bare --daemon alongside it double-binds
+        # the LXMF identity and causes the exclusivity lock to flap.
+        if not self._warn_if_service_active(
+            "Start Daemon (Advanced)",
+            "The NomadNet user service is already active.\n\n"
+            "Running a second nomadnet --daemon against the same\n"
+            "identity causes exclusivity conflicts. Use Service\n"
+            "Control instead, or stop the service first.",
+        ):
+            return
+
         nn_path = self._find_nomadnet_binary()
         if not nn_path:
             return
@@ -1284,7 +1348,23 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
                 )
             return
 
-        # Global stop — original behavior.
+        # Global stop — original behavior, guarded against fighting
+        # the tmux-wrapped systemd user service (Issue #45). If the
+        # service is active and supervising the process, pkill will
+        # just trigger Restart=on-failure, leaving us in a confused
+        # "we reported Stopped but it's still running" state.
+        svc = self._nomadnet_service_state()
+        if svc["active"]:
+            self.ctx.dialog.msgbox(
+                "Managed by systemd",
+                "The NomadNet user service is active and supervising\n"
+                "the running process. pkill would fight its\n"
+                "Restart=on-failure loop.\n\n"
+                "Use:  Service Control > Stop service\n"
+                "(systemctl --user stop nomadnet)",
+            )
+            return
+
         if not self._is_nomadnet_running():
             self.ctx.dialog.msgbox("Not Running", "NomadNet is not currently running.")
             return
@@ -1354,119 +1434,7 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
     # Propagation node configuration
     # ------------------------------------------------------------------
 
-    def _configure_propagation_node(self):
-        """Configure the LXMF propagation node for store-and-forward messaging.
-
-        Writes/updates the propagation_node setting in the NomadNet config
-        file under the [client] section. This tells LXMF where to sync
-        messages for offline destinations.
-        """
-        config_path = self._get_nomadnet_config_path()
-        if not config_path or not config_path.exists():
-            self.ctx.dialog.msgbox(
-                "No Config",
-                "NomadNet config not found.\n\n"
-                "Launch NomadNet once first to generate it,\n"
-                "then set the propagation node.",
-            )
-            return
-
-        # Read current value if set
-        current_value = ""
-        try:
-            content = config_path.read_text()
-            for line in content.splitlines():
-                stripped = line.strip()
-                if stripped.startswith("propagation_node"):
-                    parts = stripped.split("=", 1)
-                    if len(parts) == 2:
-                        current_value = parts[1].strip()
-                        break
-        except (OSError, PermissionError) as e:
-            logger.warning("Cannot read NomadNet config: %s", e)
-
-        prompt = (
-            "Enter the LXMF propagation node hash (32 hex characters).\n\n"
-            "This enables store-and-forward messaging for offline nodes.\n"
-            "You can find propagation nodes via 'rnstatus' or NomadNet's\n"
-            "network browser.\n\n"
-            "Leave empty to clear the current setting."
-        )
-
-        result = self.ctx.dialog.inputbox(
-            "Propagation Node", prompt, current_value
-        )
-        if result is None:
-            return
-
-        node_hash = result.strip()
-
-        # Validate if non-empty
-        if node_hash:
-            if len(node_hash) != 32:
-                self.ctx.dialog.msgbox(
-                    "Invalid Hash",
-                    f"Expected 32 hex characters, got {len(node_hash)}.\n\n"
-                    f"Input: {node_hash}",
-                )
-                return
-            try:
-                bytes.fromhex(node_hash)
-            except ValueError:
-                self.ctx.dialog.msgbox(
-                    "Invalid Hex",
-                    f"Not valid hexadecimal:\n  {node_hash}",
-                )
-                return
-
-        # Update NomadNet config
-        try:
-            content = config_path.read_text()
-            lines = content.splitlines()
-            found = False
-            new_lines = []
-
-            for line in lines:
-                if line.strip().startswith("propagation_node"):
-                    if node_hash:
-                        new_lines.append(f"  propagation_node = {node_hash}")
-                    # else: drop the line to clear the setting
-                    found = True
-                else:
-                    new_lines.append(line)
-
-            # If not found and we have a value, add under [client]
-            if not found and node_hash:
-                final_lines = []
-                added = False
-                for line in new_lines:
-                    final_lines.append(line)
-                    if line.strip() == "[client]" and not added:
-                        final_lines.append(f"  propagation_node = {node_hash}")
-                        added = True
-                if not added:
-                    # No [client] section — append one
-                    final_lines.append("")
-                    final_lines.append("[client]")
-                    final_lines.append(f"  propagation_node = {node_hash}")
-                new_lines = final_lines
-
-            config_path.write_text("\n".join(new_lines) + "\n")
-
-            if node_hash:
-                self.ctx.dialog.msgbox(
-                    "Propagation Node Set",
-                    f"Propagation node configured:\n  {node_hash}\n\n"
-                    "Restart NomadNet for the change to take effect.",
-                )
-            else:
-                self.ctx.dialog.msgbox(
-                    "Propagation Node Cleared",
-                    "Propagation node setting removed.\n\n"
-                    "Restart NomadNet for the change to take effect.",
-                )
-        except (OSError, PermissionError) as e:
-            self.ctx.dialog.msgbox("Error", f"Failed to update config:\n{e}")
+    # _configure_propagation_node provided by NomadNetConfigOpsMixin
 
     # Install/upgrade utilities provided by NomadNetInstallUtilsMixin:
     #   _install_nomadnet, _find_pipx, _upgrade_nomadnet,

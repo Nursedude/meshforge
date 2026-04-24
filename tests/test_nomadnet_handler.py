@@ -872,3 +872,356 @@ class TestMeshIfaceSubtitleState:
                 result = h._mesh_iface_subtitle_state()
         assert result.startswith("Meshtastic iface: BLOCKED")
         assert "meshtasticd not running" in result
+
+
+# ======================================================================
+# Issue #45 — tmux-wrapped systemd user service awareness
+# ======================================================================
+
+
+def _service_state(**overrides):
+    """Default service-state dict; override keys per-test."""
+    base = {
+        "unit_installed": False,
+        "active": False,
+        "enabled": False,
+        "sub_state": "",
+        "main_pid": 0,
+        "n_restarts": 0,
+        "tmux_session": False,
+        "error": None,
+    }
+    base.update(overrides)
+    return base
+
+
+class TestServiceStateDetection:
+    """_nomadnet_service_state() single source of truth."""
+
+    def test_state_not_installed(self):
+        h = _make_nomadnet()
+        with patch('pathlib.Path.exists', return_value=False):
+            with patch.object(h, '_user_systemctl_text',
+                              return_value=(4, "")):
+                with patch.object(h, '_tmux_has_session',
+                                  return_value=False):
+                    state = h._nomadnet_service_state()
+        assert state["unit_installed"] is False
+        assert state["active"] is False
+        assert state["tmux_session"] is False
+
+    def test_state_active_with_tmux(self):
+        h = _make_nomadnet()
+
+        def fake_text(verbs, timeout=10):
+            if verbs[:2] == ['is-active', 'nomadnet']:
+                return 0, "active"
+            if verbs[:2] == ['is-enabled', 'nomadnet']:
+                return 0, "enabled"
+            if verbs[:2] == ['show', 'nomadnet']:
+                return 0, (
+                    "SubState=running\nMainPID=12345\nNRestarts=0"
+                )
+            return 4, ""
+
+        with patch('pathlib.Path.exists', return_value=True):
+            with patch.object(h, '_user_systemctl_text',
+                              side_effect=fake_text):
+                with patch.object(h, '_tmux_has_session',
+                                  return_value=True):
+                    state = h._nomadnet_service_state()
+        assert state["unit_installed"] is True
+        assert state["active"] is True
+        assert state["enabled"] is True
+        assert state["sub_state"] == "running"
+        assert state["main_pid"] == 12345
+        assert state["n_restarts"] == 0
+        assert state["tmux_session"] is True
+
+    def test_state_crash_loop_signals(self):
+        h = _make_nomadnet()
+
+        def fake_text(verbs, timeout=10):
+            if verbs[:2] == ['is-active', 'nomadnet']:
+                return 3, "activating"
+            if verbs[:2] == ['is-enabled', 'nomadnet']:
+                return 0, "enabled"
+            if verbs[:2] == ['show', 'nomadnet']:
+                return 0, (
+                    "SubState=auto-restart\nMainPID=0\nNRestarts=5"
+                )
+            return 4, ""
+
+        with patch('pathlib.Path.exists', return_value=True):
+            with patch.object(h, '_user_systemctl_text',
+                              side_effect=fake_text):
+                with patch.object(h, '_tmux_has_session',
+                                  return_value=False):
+                    state = h._nomadnet_service_state()
+        assert state["active"] is False
+        assert state["n_restarts"] == 5
+        assert state["sub_state"] == "auto-restart"
+
+    def test_service_state_line_inactive(self):
+        h = _make_nomadnet()
+        line = h._service_state_line(
+            _service_state(unit_installed=True, enabled=True),
+        )
+        assert "inactive" in line.lower()
+        assert "enabled" in line.lower()
+
+    def test_service_state_line_active(self):
+        h = _make_nomadnet()
+        line = h._service_state_line(_service_state(
+            unit_installed=True, active=True, sub_state="running",
+            main_pid=42, tmux_session=True,
+        ))
+        assert "active" in line.lower()
+        assert "42" in line
+        assert "tmux" in line.lower()
+
+
+class TestWarnIfServiceActive:
+    """_warn_if_service_active returns True when caller may proceed."""
+
+    def test_proceeds_when_service_inactive(self):
+        h = _make_nomadnet()
+        with patch.object(h, '_nomadnet_service_state',
+                          return_value=_service_state(active=False)):
+            assert h._warn_if_service_active("t", "b") is True
+        # No dialog emitted when service is inactive
+        kinds = [c[0] for c in h.ctx.dialog.calls]
+        assert "yesno" not in kinds
+
+    def test_prompts_when_service_active(self):
+        h = _make_nomadnet()
+        h.ctx.dialog._yesno_returns = [False]
+        with patch.object(h, '_nomadnet_service_state',
+                          return_value=_service_state(active=True)):
+            assert h._warn_if_service_active("t", "b") is False
+        kinds = [c[0] for c in h.ctx.dialog.calls]
+        assert "yesno" in kinds
+
+    def test_proceeds_when_operator_confirms(self):
+        h = _make_nomadnet()
+        h.ctx.dialog._yesno_returns = [True]
+        with patch.object(h, '_nomadnet_service_state',
+                          return_value=_service_state(active=True)):
+            assert h._warn_if_service_active("t", "b") is True
+
+
+class TestStopRefusesWhenServiceManaged:
+    """_stop_nomadnet short-circuits when the user unit is active."""
+
+    def test_global_stop_refuses_when_active(self):
+        h = _make_nomadnet()
+        # config_dir=None triggers the "global stop" pkill path.
+        with patch.object(h, '_nomadnet_service_state',
+                          return_value=_service_state(
+                              unit_installed=True, active=True,
+                              sub_state="running",
+                          )):
+            with patch('subprocess.run') as mock_run:
+                h._stop_nomadnet()
+                # pkill must NOT have been called
+                for call in mock_run.call_args_list:
+                    args = call.args[0] if call.args else []
+                    assert 'pkill' not in args
+        # Operator was told to use Service Control
+        text = (h.ctx.dialog.last_msgbox_text or "").lower()
+        assert "systemd" in text or "service control" in text
+
+    def test_global_stop_runs_when_inactive(self):
+        h = _make_nomadnet()
+        with patch.object(h, '_nomadnet_service_state',
+                          return_value=_service_state(active=False)):
+            with patch.object(h, '_is_nomadnet_running',
+                              return_value=True):
+                h.ctx.dialog._yesno_returns = [True]
+                with patch('subprocess.run') as mock_run:
+                    mock_run.return_value.returncode = 0
+                    with patch('time.sleep'):
+                        h._stop_nomadnet()
+                # At least one subprocess.run invocation
+                assert mock_run.called
+
+
+class TestLaunchRefusesWhenServiceManaged:
+    """Raw launches abort early when the tmux-wrapped service is up."""
+
+    def test_textui_refuses_without_proceed(self):
+        h = _make_nomadnet()
+        with patch.object(h, '_nomadnet_service_state',
+                          return_value=_service_state(active=True)):
+            h.ctx.dialog._yesno_returns = [False]  # decline "Proceed anyway?"
+            with patch.object(h, '_find_nomadnet_binary') as mock_find:
+                h._launch_nomadnet_textui()
+                mock_find.assert_not_called()
+
+    def test_daemon_refuses_without_proceed(self):
+        h = _make_nomadnet()
+        with patch.object(h, '_nomadnet_service_state',
+                          return_value=_service_state(active=True)):
+            h.ctx.dialog._yesno_returns = [False]
+            with patch.object(h, '_find_nomadnet_binary') as mock_find:
+                h._launch_nomadnet_daemon()
+                mock_find.assert_not_called()
+
+
+class TestConfigToggles:
+    """_toggle_config_bool + _write_config_value + section append."""
+
+    def test_toggle_flips_yes_to_no(self, tmp_path):
+        h = _make_nomadnet()
+        cfg = tmp_path / "config"
+        cfg.write_text(
+            "[node]\n  enable_node = yes\n  announce_at_start = yes\n"
+        )
+        with patch.object(h, '_default_config_path', return_value=cfg):
+            h.ctx.dialog._yesno_returns = [True]
+            h._toggle_config_bool("enable_node")
+        out = cfg.read_text()
+        assert "enable_node = no" in out
+        # Other key untouched
+        assert "announce_at_start = yes" in out
+
+    def test_toggle_flips_no_to_yes(self, tmp_path):
+        h = _make_nomadnet()
+        cfg = tmp_path / "config"
+        cfg.write_text("[node]\n  enable_node = no\n")
+        with patch.object(h, '_default_config_path', return_value=cfg):
+            h.ctx.dialog._yesno_returns = [True]
+            h._toggle_config_bool("enable_node")
+        assert "enable_node = yes" in cfg.read_text()
+
+    def test_toggle_appends_under_section_when_missing(self, tmp_path):
+        h = _make_nomadnet()
+        cfg = tmp_path / "config"
+        cfg.write_text("[node]\n  display_name = test\n")
+        with patch.object(h, '_default_config_path', return_value=cfg):
+            h.ctx.dialog._yesno_returns = [True]
+            h._toggle_config_bool("enable_node")
+        out = cfg.read_text()
+        assert "enable_node = yes" in out
+        # Appended inside [node] section
+        lines = out.splitlines()
+        node_idx = next(i for i, line in enumerate(lines)
+                        if line.strip() == "[node]")
+        # The new line is somewhere after [node] and before EOF
+        assert any(
+            "enable_node = yes" in line
+            for line in lines[node_idx:]
+        )
+
+    def test_toggle_refuses_when_config_missing(self, tmp_path):
+        h = _make_nomadnet()
+        cfg = tmp_path / "config"  # never created
+        with patch.object(h, '_default_config_path', return_value=cfg):
+            h._toggle_config_bool("enable_node")
+        # msgbox issued, no file created
+        assert not cfg.exists()
+        assert h.ctx.dialog.last_msgbox_title == "No Config"
+
+    def test_toggle_cancel_leaves_config_unchanged(self, tmp_path):
+        h = _make_nomadnet()
+        cfg = tmp_path / "config"
+        cfg.write_text("[node]\n  enable_node = yes\n")
+        original = cfg.read_text()
+        with patch.object(h, '_default_config_path', return_value=cfg):
+            h.ctx.dialog._yesno_returns = [False]  # decline
+            h._toggle_config_bool("enable_node")
+        assert cfg.read_text() == original
+
+    def test_read_key_values_skips_comments_and_sections(self, tmp_path):
+        h = _make_nomadnet()
+        cfg = tmp_path / "config"
+        cfg.write_text(
+            "# comment line\n[node]\n  enable_node = yes\n"
+            "  # display_name = ignored\n  node_name = MyNode\n"
+        )
+        result = h._read_key_values(cfg)
+        assert result["enable_node"] == "yes"
+        assert result["node_name"] == "MyNode"
+        assert "display_name" not in result
+
+
+class TestNomadNetServiceOpsSudoBridging:
+    """_user_systemctl_argv bridges root→real-user for user-scope systemctl."""
+
+    def test_direct_when_no_sudo_user(self):
+        h = _make_nomadnet()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('SUDO_USER', None)
+            argv = h._user_systemctl_argv(['is-active', 'nomadnet'])
+        assert argv == ['systemctl', '--user', 'is-active', 'nomadnet']
+
+    def test_wraps_with_sudo_u_when_sudo_user_set(self):
+        h = _make_nomadnet()
+        fake_pwent = MagicMock()
+        fake_pwent.pw_uid = 1000
+        with patch.dict(os.environ, {'SUDO_USER': 'pi'}, clear=False):
+            with patch('pwd.getpwnam', return_value=fake_pwent):
+                argv = h._user_systemctl_argv(['start', 'nomadnet'])
+        assert argv[0] == 'sudo'
+        assert '-u' in argv and 'pi' in argv
+        assert any(
+            a == 'XDG_RUNTIME_DIR=/run/user/1000' for a in argv
+        )
+        assert 'systemctl' in argv and '--user' in argv
+        assert argv[-2:] == ['start', 'nomadnet']
+
+    def test_falls_back_when_pwent_lookup_fails(self):
+        h = _make_nomadnet()
+        with patch.dict(os.environ, {'SUDO_USER': 'ghost'},
+                        clear=False):
+            with patch('pwd.getpwnam', side_effect=KeyError('ghost')):
+                argv = h._user_systemctl_argv(['is-active', 'nomadnet'])
+        # Graceful fallback: plain systemctl --user
+        assert argv == ['systemctl', '--user', 'is-active', 'nomadnet']
+
+
+class TestInstallUserUnit:
+    """_install_user_unit copies template + runs daemon-reload/enable/start."""
+
+    def test_install_writes_unit_and_activates(self, tmp_path):
+        h = _make_nomadnet()
+        fake_home = tmp_path / "home"
+        (fake_home / ".config" / "systemd" / "user").mkdir(parents=True)
+
+        # Fake template path
+        fake_template = tmp_path / "nomadnet-user.service"
+        fake_template.write_text("[Unit]\nDescription=Fake\n")
+
+        with patch(
+            'handlers._nomadnet_service_ops._UNIT_TEMPLATE',
+            fake_template,
+        ):
+            with patch(
+                'handlers._nomadnet_service_ops.get_real_user_home',
+                return_value=fake_home,
+            ):
+                with patch.object(
+                    h, '_systemctl_user',
+                    return_value=(True, "OK"),
+                ):
+                    with patch.object(h, '_chown_real_user'):
+                        with patch('subprocess.run') as mock_run:
+                            mock_run.return_value.returncode = 0
+                            mock_run.return_value.stdout = ""
+                            mock_run.return_value.stderr = ""
+                            h._install_user_unit(force=True)
+
+        unit = fake_home / ".config" / "systemd" / "user" / "nomadnet.service"
+        assert unit.exists()
+        assert "Description=Fake" in unit.read_text()
+
+    def test_install_refuses_when_template_missing(self, tmp_path):
+        h = _make_nomadnet()
+        missing = tmp_path / "nope.service"
+        with patch(
+            'handlers._nomadnet_service_ops._UNIT_TEMPLATE',
+            missing,
+        ):
+            h._install_user_unit()
+        # Message box shown, no exception
+        assert "Template" in (h.ctx.dialog.last_msgbox_title or "")

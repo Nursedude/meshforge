@@ -752,3 +752,106 @@ class TestRNSSharedInstanceExports:
         """Verify get_rns_shared_instance_info is in __all__."""
         from src.utils import service_check
         assert 'get_rns_shared_instance_info' in service_check.__all__
+
+
+# ======================================================================
+# Issue #45 — user-scope systemctl support
+# ======================================================================
+
+
+class TestUserScopeSystemctl:
+    """``user=True`` threads ``--user`` through every systemctl helper."""
+
+    def test_systemctl_argv_system_scope(self):
+        """Default argv is system-scope, sudo-wrapped when non-root."""
+        from src.utils.service_check import _systemctl_argv
+        with patch('os.geteuid', return_value=1000):
+            argv = _systemctl_argv(['is-active', 'meshtasticd'])
+        assert argv == ['sudo', 'systemctl', 'is-active', 'meshtasticd']
+
+    def test_systemctl_argv_user_scope_never_sudo(self):
+        """user=True never prefixes sudo — user manager owns the bus."""
+        from src.utils.service_check import _systemctl_argv
+        with patch('os.geteuid', return_value=1000):
+            argv = _systemctl_argv(['is-active', 'nomadnet'], user=True)
+        assert argv == ['systemctl', '--user', 'is-active', 'nomadnet']
+
+    def test_systemctl_argv_system_root(self):
+        """Running as root skips the sudo prefix in system scope."""
+        from src.utils.service_check import _systemctl_argv
+        with patch('os.geteuid', return_value=0):
+            argv = _systemctl_argv(['restart', 'rnsd'])
+        assert argv == ['systemctl', 'restart', 'rnsd']
+
+    def test_check_service_user_scope_active(self):
+        """check_service(user=True) short-circuits Meshtastic heuristics."""
+        from src.utils.service_check import check_service, ServiceState
+        with patch('subprocess.run') as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="active"),
+                MagicMock(returncode=0, stdout="SubState=running"),
+            ]
+            status = check_service("nomadnet", user=True)
+        assert status.available is True
+        assert status.state == ServiceState.AVAILABLE
+        assert "--user" in status.detection_method
+
+    def test_check_service_user_scope_inactive(self):
+        """Inactive user unit reports NOT_RUNNING with user-scope hint."""
+        from src.utils.service_check import check_service
+        with patch('subprocess.run') as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=3, stdout="inactive"),
+                # list-unit-files — unit present
+                MagicMock(returncode=0, stdout="nomadnet.service  disabled"),
+            ]
+            status = check_service("nomadnet", user=True)
+        assert status.available is False
+
+    def test_start_service_user_scope_argv(self):
+        """start_service(user=True) emits `systemctl --user start <name>`."""
+        from src.utils.service_check import start_service
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stderr="")
+            start_service("nomadnet", user=True)
+        argv = mock_run.call_args.args[0]
+        assert argv[0] == "systemctl"
+        assert "--user" in argv
+        assert "start" in argv and "nomadnet" in argv
+
+    def test_stop_service_user_scope_argv(self):
+        from src.utils.service_check import stop_service
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stderr="")
+            stop_service("nomadnet", user=True)
+        argv = mock_run.call_args.args[0]
+        assert argv[0] == "systemctl"
+        assert "--user" in argv and "stop" in argv
+
+    def test_daemon_reload_user_scope_argv(self):
+        from src.utils.service_check import daemon_reload
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stderr="")
+            daemon_reload(user=True)
+        argv = mock_run.call_args.args[0]
+        assert argv == ['systemctl', '--user', 'daemon-reload']
+
+    def test_enable_service_user_scope_argv(self):
+        """enable_service(user=True, start=True) runs three user-scope cmds."""
+        from src.utils.service_check import enable_service
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stderr="")
+            enable_service("nomadnet", start=True, user=True)
+        # daemon-reload → enable → start, all user-scope
+        argvs = [call.args[0] for call in mock_run.call_args_list]
+        assert len(argvs) == 3
+        for argv in argvs:
+            assert argv[0] == "systemctl" and "--user" in argv
+
+    def test_is_service_unit_installed_user_scope_argv(self):
+        from src.utils.service_check import is_service_unit_installed
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            is_service_unit_installed("nomadnet", user=True)
+        argv = mock_run.call_args.args[0]
+        assert argv == ['systemctl', '--user', 'cat', 'nomadnet']
