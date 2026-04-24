@@ -212,15 +212,43 @@ handled by `configure_gateway.sh` or documented below.
    local user's NomadNet hash. See Issue #35 for the UX gap and Issue
    #39 for the envelope-identity fix.
 
-## Known limits
+## Enabling multiple bridges on one box (composable-bridges model)
 
-- **`bridge_mode` is a single-choice enum**. `mesh_bridge` (dual-Meshtastic
-  cross-preset) and `mqtt_bridge` (Meshtastic ↔ RNS) cannot run on the same
-  gateway instance today. Option B support (`connection_type=serial` in
-  `MeshtasticConfig`) is merged and unit-tested, but field-deploying
-  dual-radio on a box that also bridges to NomadNet needs either (a) a
-  second gateway service instance running its own config, or (b) a
-  concurrent-modes refactor in `bridge_cli.py`. Tracked as future work.
+`bridge_mode` in `gateway.json` is now an **advisory display label only**.
+Each bridge's startup is gated by its own `enabled` flag:
+
+| Config setting | What it enables |
+|----------------|-----------------|
+| `rns_bridge_enabled: true` (default) | `RNSMeshtasticBridge` — the RNS ↔ Meshtastic message bridge (mqtt_bridge / message_bridge behavior) |
+| `mesh_bridge.enabled: true` | `MeshtasticPresetBridge` — cross-preset Meshtastic ↔ Meshtastic (e.g. LF HAT + ST USB) |
+| `rns_transport.enabled: true` | `RNSMeshtasticTransport` — RNS over Meshtastic as a transport layer |
+
+Any combination is valid. The common deployment (`rns_bridge_enabled=true`,
+everything else `false`) runs exactly what the fleet runs today. A
+dual-radio gateway also bridging to NomadNet enables both the RNS bridge
+and `mesh_bridge`, and both run in the same process with independent
+queues, threads, and connections.
+
+**Refusal-on-inconsistency, not silent fallback** (per operator request
+— "don't let the user config their way into a broken app"): the gateway
+runs `validate_bridge_conflicts()` at startup and exits with a clear
+error message if the config is inconsistent. Current refusal conditions:
+
+- No bridges enabled (need at least one)
+- `mesh_bridge.primary.serial_device == mesh_bridge.secondary.serial_device` (both radios can't share one serial port)
+- `mesh_bridge.enabled` and `rns_transport.enabled` both true (both claim the Meshtastic radio's data path)
+- `mesh_bridge.secondary.connection_type="serial"` with a `serial_device` path that doesn't exist
+
+On refusal the service exits with code 2 and prints what to fix. There
+is no auto-correction that would leave the gateway running in a different
+mode than the operator asked for.
+
+**Legacy-config migration**: deployments with `bridge_mode="mesh_bridge"`
+but `mesh_bridge.enabled=false` (the pattern the old single-enum code
+used) are auto-migrated in-place at startup with a `MIGRATION:` warning —
+set `mesh_bridge.enabled: true` explicitly in `gateway.json` to silence.
+
+## Known limits
 
 - The **RNSSniffer** throws `TypeError: received_announce() got an
   unexpected keyword argument 'destination_hash'` in a background thread on

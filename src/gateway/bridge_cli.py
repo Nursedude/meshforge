@@ -34,6 +34,143 @@ logger = get_logger('gateway.cli')
 _metrics_server = None
 
 
+def migrate_legacy_bridge_mode(config: GatewayConfig) -> list:
+    """Reconcile a legacy bridge_mode-as-gate config to the composable-bridges model.
+
+    Pre-refactor, ``bridge_mode`` was a single-choice selector that the CLI
+    used to pick which bridge to instantiate. The post-refactor model gates
+    each bridge on its own section (``mesh_bridge.enabled`` etc.) plus
+    ``rns_bridge_enabled`` for the default RNS<->Meshtastic bridge.
+
+    Existing deployments have e.g. ``bridge_mode="mesh_bridge"`` with
+    ``mesh_bridge.enabled=False`` — previously the CLI auto-corrected at
+    runtime. This helper migrates forward: if the user's stated mode
+    implies a section they haven't explicitly enabled, enable it in-place
+    and return a human-readable warning so they see the migration happened.
+
+    Returns a list of warning strings (empty if nothing to migrate).
+    """
+    warnings_out = []
+    mode = (config.bridge_mode or "").lower()
+
+    # Legacy "mesh_bridge" mode: the user meant to run the Meshtastic preset
+    # bridge. If they haven't flipped mesh_bridge.enabled, do it for them.
+    if mode == "mesh_bridge" and not config.mesh_bridge.enabled:
+        config.mesh_bridge.enabled = True
+        warnings_out.append(
+            "bridge_mode='mesh_bridge' but mesh_bridge.enabled=false — "
+            "auto-enabled. (Composable-bridges migration: prefer setting "
+            "mesh_bridge.enabled=true explicitly in gateway.json.)"
+        )
+
+    # Legacy "rns_transport" mode: same pattern.
+    if mode == "rns_transport" and not config.rns_transport.enabled:
+        config.rns_transport.enabled = True
+        warnings_out.append(
+            "bridge_mode='rns_transport' but rns_transport.enabled=false — "
+            "auto-enabled. (Set rns_transport.enabled=true explicitly in "
+            "gateway.json to silence this warning.)"
+        )
+
+    # Pure mesh_bridge deployments that want to run WITHOUT the RNS bridge
+    # have to opt out explicitly via rns_bridge_enabled=false. We don't
+    # infer that from bridge_mode because "mesh_bridge" alone doesn't say
+    # whether the user also wants RNS — keep both enabled by default.
+
+    return warnings_out
+
+
+def resolve_bridges(config: GatewayConfig) -> list:
+    """Return the ordered list of bridges this gateway should run.
+
+    Each entry is a dict ``{name, label, builder}`` where ``builder`` is a
+    zero-arg callable returning a started-ready bridge instance. The order
+    matters for startup (we start earlier entries first) and for shutdown
+    (we stop in reverse).
+    """
+    bridges = []
+
+    if config.rns_bridge_enabled:
+        bridges.append({
+            "name": "rns_bridge",
+            "label": "RNS <-> Meshtastic Message Bridge",
+            "builder": lambda cfg=config: RNSMeshtasticBridge(cfg),
+        })
+
+    if config.mesh_bridge.enabled:
+        bridges.append({
+            "name": "mesh_bridge",
+            "label": "Meshtastic Preset Bridge (cross-preset)",
+            "builder": lambda cfg=config: create_mesh_bridge(cfg),
+        })
+
+    if config.rns_transport.enabled:
+        bridges.append({
+            "name": "rns_transport",
+            "label": "RNS Over Meshtastic Transport",
+            "builder": lambda cfg=config: create_rns_transport(cfg.rns_transport),
+        })
+
+    return bridges
+
+
+def validate_bridge_conflicts(config: GatewayConfig, bridges: list) -> list:
+    """Return list of human-readable config-error strings — empty list means OK.
+
+    Design goal (per operator request): the gateway refuses to start if the
+    config is internally inconsistent. No silent fallback, no "auto-correct
+    to message_bridge" surprises — the operator either fixes the config or
+    the service exits.
+    """
+    errs = []
+
+    if not bridges:
+        errs.append(
+            "No bridges enabled. At least one of: rns_bridge_enabled=true, "
+            "mesh_bridge.enabled=true, or rns_transport.enabled=true must "
+            "be set in gateway.json."
+        )
+        return errs  # nothing else to validate
+
+    # Self-conflict inside mesh_bridge: two serial interfaces on the same
+    # device path would try to open /dev/ttyUSB0 twice and the second fails.
+    if config.mesh_bridge.enabled:
+        p = config.mesh_bridge.primary
+        s = config.mesh_bridge.secondary
+        p_ct = (p.connection_type or "").lower()
+        s_ct = (s.connection_type or "").lower()
+        if (p_ct == "serial" and s_ct == "serial"
+                and p.serial_device and p.serial_device == s.serial_device):
+            errs.append(
+                f"mesh_bridge primary and secondary both point to "
+                f"serial_device={p.serial_device}. Each radio must have a "
+                "distinct device path."
+            )
+
+    # mesh_bridge and rns_transport both expect to own the meshtasticd
+    # radio's data path — running both concurrently is ambiguous and untested.
+    if config.mesh_bridge.enabled and config.rns_transport.enabled:
+        errs.append(
+            "mesh_bridge.enabled and rns_transport.enabled are both true. "
+            "These two bridges both claim the Meshtastic radio's data "
+            "path and cannot run concurrently — enable at most one."
+        )
+
+    # Secondary serial device that does not exist: caught here as a hard
+    # refusal rather than at runtime.
+    if config.mesh_bridge.enabled:
+        import os
+        s = config.mesh_bridge.secondary
+        s_ct = (s.connection_type or "").lower()
+        if s_ct == "serial" and s.serial_device and not os.path.exists(s.serial_device):
+            errs.append(
+                f"mesh_bridge.secondary.serial_device={s.serial_device} does "
+                "not exist. Attach the USB Meshtastic device or fix the path."
+            )
+
+    return errs
+
+
 def preflight_checks(config: GatewayConfig) -> bool:
     """
     Run pre-flight service checks before starting the bridge.
@@ -127,6 +264,57 @@ def print_status(status: dict):
     print("Press Ctrl+C to stop and return to menu\n")
 
 
+def _bridge_is_ready(instance) -> bool:
+    """Return True when an instance reports both meshtastic + RNS sides up.
+
+    Bridges that don't expose a status dict with these keys (e.g. pure
+    MeshtasticPresetBridge without an RNS side) count as "ready" as soon
+    as their meshtastic flag flips, so startup doesn't wait for an RNS
+    connection that bridge doesn't need.
+    """
+    if not hasattr(instance, "get_status"):
+        return True
+    status = instance.get_status() or {}
+    mesh_ok = status.get("meshtastic_connected")
+    if "rns_connected" in status or "rns_via_rnsd" in status:
+        rns_ok = status.get("rns_connected") or status.get("rns_via_rnsd")
+        return bool(mesh_ok and rns_ok)
+    return bool(mesh_ok)
+
+
+def print_multi_status(instances):
+    """Print per-bridge status block(s). Falls back to the legacy
+    print_status() when only one bridge is running to keep existing
+    log consumers/field-testing tooling working."""
+    if len(instances) == 1:
+        print_status(instances[0].get_status())
+        return
+
+    print(f"\n{'='*50}")
+    print(f"Gateway Status: RUNNING ({len(instances)} bridges)")
+    for inst in instances:
+        status = inst.get_status() if hasattr(inst, "get_status") else {}
+        label = getattr(inst, "_bridge_label", getattr(inst, "_bridge_name", "bridge"))
+        print(f"  [{label}]")
+        mesh = "connected" if status.get("meshtastic_connected") else "disconnected"
+        if status.get("rns_connected"):
+            rns = "connected"
+        elif status.get("rns_via_rnsd"):
+            rns = "via rnsd"
+        elif "rns_connected" in status or "rns_via_rnsd" in status:
+            rns = "disconnected"
+        else:
+            rns = "n/a"
+        print(f"    Meshtastic: {mesh}   RNS: {rns}")
+        stats = status.get("statistics", {}) or {}
+        if stats:
+            m2r = stats.get("messages_mesh_to_rns", 0)
+            r2m = stats.get("messages_rns_to_mesh", 0)
+            print(f"    Messages bridged: {m2r + r2m} (M->R: {m2r}, R->M: {r2m})")
+    print(f"{'='*50}")
+    print("Press Ctrl+C to stop and return to menu\n")
+
+
 def on_message(msg):
     """Callback for bridged messages."""
     source = msg.source_network
@@ -152,70 +340,59 @@ def main():
         print(f"\nWarning: Could not load config, using defaults: {e}")
         config = GatewayConfig()  # Use default config, not None
 
-    bridge_mode = config.bridge_mode
+    # Migrate legacy bridge_mode-as-gate configs to the composable-bridges
+    # model in-place, announcing any rewrites so operators see them.
+    for warn_msg in migrate_legacy_bridge_mode(config):
+        logger.warning(warn_msg)
+        print(f"\nMIGRATION: {warn_msg}")
 
-    # Auto-fix: validate bridge_mode against available resources
-    if bridge_mode == "mesh_bridge":
-        if not config.mesh_bridge.enabled:
-            logger.warning("bridge_mode is 'mesh_bridge' but mesh_bridge.enabled is False")
-            logger.warning("Auto-correcting to 'message_bridge'")
-            print("\nWARNING: bridge_mode='mesh_bridge' but mesh_bridge is not enabled.")
-            print("         Falling back to 'message_bridge' mode.\n")
-            bridge_mode = "message_bridge"
-        else:
-            sec = config.mesh_bridge.secondary
-            if (sec.connection_type or "").lower() == "serial":
-                import os
-                if sec.serial_device and not os.path.exists(sec.serial_device):
-                    logger.warning(
-                        "bridge_mode is 'mesh_bridge' but secondary serial "
-                        "device %s is not present", sec.serial_device
-                    )
-                    logger.warning("Auto-correcting to 'message_bridge'")
-                    print(f"\nWARNING: bridge_mode='mesh_bridge' but secondary serial device")
-                    print(f"         {sec.serial_device} is not present.")
-                    print(f"         Falling back to 'message_bridge' mode.\n")
-                    bridge_mode = "message_bridge"
-            elif not check_port(sec.port, sec.host, timeout=2.0):
-                logger.warning(
-                    "bridge_mode is 'mesh_bridge' but secondary meshtasticd "
-                    "(%s:%d) is not reachable", sec.host, sec.port
-                )
-                logger.warning("Auto-correcting to 'message_bridge'")
-                print(f"\nWARNING: bridge_mode='mesh_bridge' but secondary meshtasticd")
-                print(f"         ({sec.host}:{sec.port}) is not reachable.")
-                print(f"         Falling back to 'message_bridge' mode.\n")
-                bridge_mode = "message_bridge"
+    # Resolve which bridges to start, validate conflicts before spinning
+    # up any threads. Per operator request, refuse to start on any
+    # inconsistency — no silent fallback.
+    bridge_specs = resolve_bridges(config)
+    conflicts = validate_bridge_conflicts(config, bridge_specs)
+    if conflicts:
+        print("\nCONFIG ERRORS — gateway will not start:")
+        for c in conflicts:
+            print(f"  - {c}")
+        print("\nEdit ~/.config/meshforge/gateway.json and restart.")
+        sys.exit(2)
 
-    mode_labels = {
-        "message_bridge": "RNS <-> Meshtastic Message Bridge",
-        "rns_transport": "RNS Over Meshtastic Transport",
-        "mesh_bridge": "Meshtastic Preset Bridge",
-    }
-    print(f"  Mode: {mode_labels.get(bridge_mode, bridge_mode)}")
+    bridge_names = [b["name"] for b in bridge_specs]
+    print(f"  Bridges enabled: {', '.join(bridge_names)}")
+    for spec in bridge_specs:
+        print(f"    - {spec['label']}")
 
-    # Pre-flight service checks (use resolved bridge_mode)
-    # Persist the auto-corrected mode so downstream code sees the right value
-    config.bridge_mode = bridge_mode
+    # Pre-flight service checks (honors all enabled sections)
     if not preflight_checks(config):
         print("Pre-flight checks FAILED")
         print("Please start required services and try again.")
         sys.exit(1)
 
-    # Create bridge based on resolved mode
-    if bridge_mode == "mesh_bridge":
-        bridge = create_mesh_bridge(config)
-        logger.info("Created MeshtasticPresetBridge (mesh_bridge mode)")
-    elif bridge_mode == "rns_transport":
-        bridge = create_rns_transport(config.rns_transport)
-        logger.info("Created RNSMeshtasticTransport (rns_transport mode)")
-    else:
-        bridge = RNSMeshtasticBridge(config)
-        logger.info("Created RNSMeshtasticBridge (message_bridge mode)")
+    # Instantiate all bridges. Short-circuit on any builder failure so we
+    # don't end up with a half-built gateway where one bridge starts and
+    # another crashed.
+    instances = []
+    for spec in bridge_specs:
+        try:
+            inst = spec["builder"]()
+            inst._bridge_name = spec["name"]
+            inst._bridge_label = spec["label"]
+            instances.append(inst)
+            logger.info(f"Created bridge: {spec['name']} ({spec['label']})")
+        except Exception as e:
+            logger.error(f"Failed to construct bridge {spec['name']}: {e}")
+            print(f"\nERROR: could not construct bridge '{spec['name']}': {e}")
+            sys.exit(1)
 
-    # Register message callback (only for bridges that support it)
-    if hasattr(bridge, 'register_message_callback'):
-        bridge.register_message_callback(on_message)
+    # Register message callback on any bridge that supports it
+    for inst in instances:
+        if hasattr(inst, 'register_message_callback'):
+            inst.register_message_callback(on_message)
+
+    # Alias so the rest of main() (status / shutdown loops) can still
+    # reference a single "bridge" when operating on the primary.
+    bridge = instances[0]
 
     # Handle Ctrl+C
     import threading
@@ -231,18 +408,28 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Start bridge
-    print("Starting gateway bridge...")
-    bridge_started = False
+    # Start every enabled bridge. If any fails, unwind and exit — we never
+    # leave the process running with a partial bridge set.
+    print("Starting gateway bridges...")
+    started = []
     try:
-        success = bridge.start()
-        if not success:
-            print("Failed to start gateway bridge")
-            print("Pre-flight passed but bridge failed - check logs for details")
-            sys.exit(1)
+        for inst in instances:
+            if inst.start():
+                started.append(inst)
+                logger.info(f"Bridge started: {inst._bridge_name}")
+            else:
+                logger.error(f"Bridge failed to start: {inst._bridge_name}")
+                print(f"Failed to start bridge: {inst._bridge_name}")
+                print("Pre-flight passed but bridge failed - check logs for details")
+                # Unwind the already-started ones before exiting
+                for prev in reversed(started):
+                    try:
+                        prev.stop()
+                    except Exception:
+                        pass
+                sys.exit(1)
 
-        bridge_started = True
-        print("Gateway started successfully!")
+        print(f"Gateway started successfully! ({len(started)} bridge(s) running)")
 
         # Auto-start metrics server for Grafana integration
         try:
@@ -255,22 +442,21 @@ def main():
 
         print("Press Ctrl+C to stop\n")
 
-        # Wait for connections before showing initial status
+        # Wait for connections before showing initial status. We're ready
+        # as soon as ANY bridge reports both its meshtastic and RNS sides
+        # up — waiting for every bridge can hang startup on a slow radio.
         print("Waiting for connections...", end="", flush=True)
         for _ in range(10):
             if not running:
                 break
-            status = bridge.get_status()
-            mesh_ok = status.get('meshtastic_connected')
-            rns_ok = status.get('rns_connected') or status.get('rns_via_rnsd')
-            if mesh_ok and rns_ok:
+            if any(_bridge_is_ready(inst) for inst in started):
                 break
             time.sleep(1)
             print(".", end="", flush=True)
         print()
 
-        # Print initial status
-        print_status(bridge.get_status())
+        # Print initial status for every bridge
+        print_multi_status(started)
 
         # Main loop - print status every 30 seconds
         last_status = time.time()
@@ -279,9 +465,8 @@ def main():
             if _stop_event.is_set():
                 break
 
-            # Print status periodically
             if time.time() - last_status > 30:
-                print_status(bridge.get_status())
+                print_multi_status(started)
                 last_status = time.time()
 
     except Exception as e:
@@ -299,10 +484,15 @@ def main():
                 pass
             _metrics_server = None
 
-        # Only stop if we successfully started
-        if bridge_started:
-            print("Stopping gateway...")
-            bridge.stop()
+        # Stop all bridges that successfully started, in reverse order.
+        if started:
+            print("Stopping gateway bridges...")
+            for inst in reversed(started):
+                try:
+                    inst.stop()
+                    logger.info(f"Bridge stopped: {inst._bridge_name}")
+                except Exception as e:
+                    logger.debug(f"stop({inst._bridge_name}) error: {e}")
             print("Gateway stopped.")
         else:
             print("Gateway was not started.")
