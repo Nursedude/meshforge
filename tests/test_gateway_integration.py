@@ -839,10 +839,19 @@ class TestMeshtasticConnectionStability:
         assert h.test_connection() is False
 
     def test_bridge_starts_in_degraded_mode(self):
-        """Bridge should start even when meshtasticd is unavailable."""
+        """Bridge should start even when meshtasticd is unavailable —
+        but only when no bridge channel name is configured. With a
+        non-empty mqtt_bridge.channel, refuse-loud kicks in (separately
+        covered by test_start_returns_false_on_channel_resolution_error
+        in test_rns_bridge.py)."""
         config = GatewayConfig()
         config.enabled = True
         config.bridge_mode = "mqtt_bridge"
+        # No channel name = no refuse-loud; this exercises the
+        # genuine "meshtasticd flaky, but no strict channel pinning"
+        # path. With the default "LongFast" name set, the bridge
+        # would (correctly) refuse to start under refuse-loud.
+        config.mqtt_bridge.channel = ""
 
         from gateway.rns_bridge import RNSMeshtasticBridge
         bridge = RNSMeshtasticBridge(config=config)

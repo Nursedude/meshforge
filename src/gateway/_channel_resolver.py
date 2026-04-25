@@ -25,6 +25,19 @@ logger = get_logger(__name__)
 Status = str  # one of the literals below
 
 
+class ChannelResolutionError(RuntimeError):
+    """Bridge TX channel cannot be confirmed against the live radio.
+
+    Raised by ``apply_resolved_channel`` when ``mqtt_bridge.channel`` is
+    set to a non-empty name but the radio either cannot be queried or
+    does not advertise that name. Refuse-loud per
+    ``feedback_refuse_broken_configs``: a silent fallback to whatever
+    integer ``meshtastic.channel`` happens to hold can land bridged TX
+    on the wrong channel (e.g. a statewide channel reserved for an
+    unrelated bot).
+    """
+
+
 def resolve_tx_channel_index(
     channel_name: str,
     fallback_index: int,
@@ -117,13 +130,24 @@ def apply_resolved_channel(config) -> None:
         )
         config.meshtastic.channel = resolved
     elif status == "unreachable":
-        logger.warning(
-            f"Could not query meshtasticd for channel list; "
-            f"TX will use configured meshtastic.channel={fallback}"
+        raise ChannelResolutionError(
+            f"Cannot confirm bridge TX channel: meshtasticd channel-list "
+            f"query failed and mqtt_bridge.channel={bridge_name!r} is set. "
+            f"Refusing to start with an unverified channel index "
+            f"(meshtastic.channel={fallback}) — bridged TX could land on "
+            f"the wrong channel. "
+            f"Fix: ensure meshtasticd is reachable on its TCP port, then "
+            f"restart the gateway. If this persists, run "
+            f"scripts/configure_gateway.sh to re-derive the index."
         )
     elif status == "not_found":
-        logger.warning(
-            f"Bridge channel {bridge_name!r} not found on radio; "
-            f"TX will use configured meshtastic.channel={fallback}. "
-            f"Verify the channel name matches one on the radio."
+        raise ChannelResolutionError(
+            f"Bridge channel {bridge_name!r} is not present on the radio's "
+            f"channel list. Refusing to start: configured "
+            f"meshtastic.channel={fallback} is unverified and could point "
+            f"at any other channel. "
+            f"Fix: add a channel named {bridge_name!r} to the radio "
+            f"(meshtastic --ch-set name {bridge_name} --ch-index N), or "
+            f"update mqtt_bridge.channel in gateway.json to match an "
+            f"existing channel name, or run scripts/configure_gateway.sh."
         )

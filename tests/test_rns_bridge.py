@@ -1350,7 +1350,8 @@ class TestStartStop:
 
     def test_start_sets_running(self, bridge):
         with patch.object(bridge, '_start_websocket_server'), \
-             patch.object(bridge, '_init_rns_main_thread'):
+             patch.object(bridge, '_init_rns_main_thread'), \
+             patch("gateway._channel_resolver.apply_resolved_channel"):
             bridge.start()
         assert bridge._running is True
         assert bridge.stats['start_time'] is not None
@@ -1362,7 +1363,8 @@ class TestStartStop:
 
     def test_start_returns_true(self, bridge):
         with patch.object(bridge, '_start_websocket_server'), \
-             patch.object(bridge, '_init_rns_main_thread'):
+             patch.object(bridge, '_init_rns_main_thread'), \
+             patch("gateway._channel_resolver.apply_resolved_channel"):
             result = bridge.start()
         assert result is True
 
@@ -1384,7 +1386,8 @@ class TestStartStop:
 
     def test_start_starts_node_tracker(self, bridge):
         with patch.object(bridge, '_start_websocket_server'), \
-             patch.object(bridge, '_init_rns_main_thread'):
+             patch.object(bridge, '_init_rns_main_thread'), \
+             patch("gateway._channel_resolver.apply_resolved_channel"):
             bridge.start()
         bridge.node_tracker.start.assert_called_once()
 
@@ -1834,3 +1837,37 @@ class TestWebSocketServer:
     def test_stop_websocket_when_not_started(self, bridge):
         bridge._websocket_started = False
         bridge._stop_websocket_server()  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# start() — refuse-loud on channel resolution error
+# ---------------------------------------------------------------------------
+
+class TestBridgeStartRefuses:
+    """start() must refuse when bridge TX channel cannot be confirmed."""
+
+    def test_start_returns_false_on_channel_resolution_error(self, bridge, caplog):
+        """Per feedback_refuse_broken_configs: an unverifiable bridge channel
+        must not silently fall through. Bridge refuses to start; service exits;
+        operator sees the failure in journalctl. Prevents a recurrence of the
+        2026-04-24 vail/Regional leak."""
+        from gateway._channel_resolver import ChannelResolutionError
+
+        with patch(
+            "gateway._channel_resolver.apply_resolved_channel",
+            side_effect=ChannelResolutionError(
+                "Bridge channel 'meshforge' is not present on the radio's "
+                "channel list. Refusing to start."
+            ),
+        ):
+            with caplog.at_level("ERROR"):
+                result = bridge.start()
+
+        assert result is False
+        assert bridge._running is False
+        # No worker threads spawned
+        assert getattr(bridge, "_mesh_thread", None) is None
+        assert getattr(bridge, "_rns_thread", None) is None
+        # Operator-visible error with fix-hint hook
+        assert any("Refusing to start bridge" in rec.message for rec in caplog.records)
+        assert any("meshforge" in rec.message for rec in caplog.records)

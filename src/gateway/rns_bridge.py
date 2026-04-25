@@ -538,10 +538,14 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin, MessageTransf
         # In mqtt_bridge mode, RX arrives via MQTT topic .../<name>/# and TX
         # uses a numeric index. If the two disagree, RNS→Mesh lands on the
         # wrong channel. Resolve once at startup from the radio's own channel
-        # list; non-fatal if meshtasticd is unreachable.
+        # list. Refuse-loud (ChannelResolutionError) when a bridge name is
+        # configured but cannot be confirmed — see Issue #46.
+        from ._channel_resolver import apply_resolved_channel, ChannelResolutionError
         try:
-            from ._channel_resolver import apply_resolved_channel
             apply_resolved_channel(self.config)
+        except ChannelResolutionError as e:
+            logger.error(f"Refusing to start bridge: {e}")
+            return False
         except Exception as e:
             logger.warning(f"TX channel resolution failed: {e}")
 

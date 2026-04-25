@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from gateway._channel_resolver import (
+    ChannelResolutionError,
     apply_resolved_channel,
     resolve_tx_channel_index,
 )
@@ -97,23 +98,36 @@ def test_apply_leaves_config_when_matches(mock_q):
 
 
 @patch("gateway._channel_resolver._query_channels")
-def test_apply_leaves_config_when_unreachable(mock_q):
+def test_apply_raises_on_unreachable_when_name_set(mock_q):
+    """Refuse-loud: an unverifiable bridge name must NOT silently fall
+    through to a stale index — that's how RNS→Mesh leaks onto the wrong
+    channel (e.g. Regional on fleet-host)."""
     mock_q.return_value = None
     cfg = _make_config("meshforge", 0)
-    apply_resolved_channel(cfg)
-    assert cfg.meshtastic.channel == 0
+    with pytest.raises(ChannelResolutionError) as excinfo:
+        apply_resolved_channel(cfg)
+    assert "meshforge" in str(excinfo.value)
+    assert "configure_gateway.sh" in str(excinfo.value) or "meshtasticd" in str(excinfo.value)
 
 
 @patch("gateway._channel_resolver._query_channels")
-def test_apply_leaves_config_when_name_missing(mock_q):
-    mock_q.return_value = [{"index": 0, "name": ""}]
+def test_apply_raises_on_not_found_when_name_set(mock_q):
+    """Bridge name configured but missing from the radio's channel list."""
+    mock_q.return_value = [
+        {"index": 0, "name": "LongFast"},
+        {"index": 1, "name": "Regional"},
+    ]
     cfg = _make_config("meshforge", 0)
-    apply_resolved_channel(cfg)
-    assert cfg.meshtastic.channel == 0
+    with pytest.raises(ChannelResolutionError) as excinfo:
+        apply_resolved_channel(cfg)
+    assert "meshforge" in str(excinfo.value)
+    assert "not present" in str(excinfo.value) or "not found" in str(excinfo.value).lower()
 
 
 @patch("gateway._channel_resolver._query_channels")
 def test_apply_skips_when_bridge_name_empty(mock_q):
+    """No bridge name configured = legitimate 'no bridge channel' case;
+    keep silent fallback for back-compat."""
     cfg = _make_config("", 0)
     apply_resolved_channel(cfg)
     assert cfg.meshtastic.channel == 0
