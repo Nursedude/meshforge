@@ -69,6 +69,11 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
     DEFAULT_NODE_CACHE_MAX_AGE_HOURS = 48
     DEFAULT_RNS_CACHE_MAX_AGE_HOURS = 24  # Increased from 1 hour
     DEFAULT_ONLINE_THRESHOLD_MINUTES = 15
+    # MeshCore public map (~12 MB / 30 k nodes / 30 s timeout) is the dominant
+    # collect() cost. Public API contract is "changes hourly", so caching the
+    # parsed feature list for 10 min keeps the map fresh enough while sparing
+    # every cache-miss collect() the 12 MB refetch.
+    DEFAULT_MESHCORE_PUBLIC_CACHE_TTL_SECONDS = 600
     # Per-source online thresholds (minutes) — configurable via map_settings.json
     DEFAULT_MESHTASTIC_THRESHOLD_MINUTES = 15
     DEFAULT_MQTT_THRESHOLD_MINUTES = 15
@@ -133,9 +138,17 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                 # because local MeshCoreHandler yields no GPS and without this
                 # MeshCore is invisible on the map.
                 "enable_meshcore_public": True,
+                "meshcore_public_cache_ttl_seconds": self.DEFAULT_MESHCORE_PUBLIC_CACHE_TTL_SECONDS,
                 "selected_region": None,
             }
         )
+
+        # MeshCore public per-source cache. The 30 s outer cache (`collect()`'s
+        # `max_age_seconds`) prevents within-burst refetches; this second tier
+        # absorbs the cache-miss case so a slow MeshCore fetch doesn't block
+        # `_collect_lock` for 30 s on every cache-miss collect.
+        self._meshcore_public_cache: Optional[List[Dict]] = None
+        self._meshcore_public_cache_ts: Optional[float] = None
 
         # Track nodes without GPS for reporting
         self._nodes_without_position: List[Dict] = []
@@ -343,17 +356,60 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
         reason_if_zero: Optional[str] = None,
         notes: Optional[str] = None,
     ) -> None:
-        """Record diagnostic for a single source during collect()."""
+        """Record diagnostic for a single source during collect().
+
+        Preserves any `latency_ms` previously written by `_timed_collect`.
+        Sources that call `_record_diagnostic` directly (without the timing
+        wrapper) keep their existing behavior; their latency_ms field is
+        absent rather than zero so consumers can distinguish "untimed" from
+        "instantaneous".
+        """
         if yielded > 0 and reason_if_zero is None:
             reason_if_zero = "ok"
         elif yielded == 0 and reason_if_zero is None:
             reason_if_zero = "no_positions" if attempted > 0 else "unreachable"
-        self._source_diagnostics[source] = {
+        existing = self._source_diagnostics.get(source, {})
+        entry = {
             "attempted": attempted,
             "yielded": yielded,
             "reason_if_zero": reason_if_zero,
             "notes": notes,
         }
+        if "latency_ms" in existing:
+            entry["latency_ms"] = existing["latency_ms"]
+        self._source_diagnostics[source] = entry
+
+    def _timed_collect(self, source: str, fn, *args, **kwargs):
+        """Run `fn` and record its wall-time latency under `source`.
+
+        The collector function still calls `_record_diagnostic` itself; this
+        wrapper just stamps `latency_ms` into the diagnostic dict before AND
+        after, so the value survives the diagnostic's overwrite. On exception,
+        records a synthetic `unreachable` diagnostic with the latency that was
+        spent before the exception, then re-raises.
+        """
+        start = time.perf_counter()
+        # Pre-stamp so _record_diagnostic preserves it via the existing-entry
+        # carry-over; if the source raises before recording, _collect_locked's
+        # except block catches and we still have the timing.
+        self._source_diagnostics[source] = {"latency_ms": 0}
+        try:
+            result = fn(*args, **kwargs)
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            entry = self._source_diagnostics.get(source, {})
+            entry["latency_ms"] = elapsed_ms
+            self._source_diagnostics[source] = entry
+            return result
+        except Exception:
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            entry = self._source_diagnostics.get(source, {})
+            entry.setdefault("attempted", 0)
+            entry.setdefault("yielded", 0)
+            entry.setdefault("reason_if_zero", "unreachable")
+            entry.setdefault("notes", "exception during collect")
+            entry["latency_ms"] = elapsed_ms
+            self._source_diagnostics[source] = entry
+            raise
 
     def _info_log_rate_limited(self, source: str, message: str, cooldown_s: float = 300.0) -> None:
         """Emit an INFO log for `source` at most once per cooldown window.
@@ -402,18 +458,19 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
         self._source_diagnostics = {}
 
         features: Dict[str, Dict] = {}  # id -> feature (dedup by id)
+        collect_start = time.perf_counter()
 
         # Source 0: UnifiedNodeTracker (richest data — includes RNS + Meshtastic)
         # This is the same data source the topology view uses (378 nodes).
         # It includes nodes from RNS path table, meshtasticd, and gateway bridge.
-        tracker_unified_features = self._collect_unified_tracker()
+        tracker_unified_features = self._timed_collect("unified_tracker", self._collect_unified_tracker)
         for f in tracker_unified_features:
             fid = f["properties"].get("id", "")
             if fid:
                 features[fid] = f
 
         # Source 1: meshtasticd TCP
-        tcp_features = self._collect_meshtasticd()
+        tcp_features = self._timed_collect("meshtasticd", self._collect_meshtasticd)
         for f in tcp_features:
             fid = f["properties"].get("id", "")
             if fid:
@@ -423,14 +480,14 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
         # Only try this if TCP returned nothing (avoids double-connection)
         direct_radio_features = []
         if not tcp_features:
-            direct_radio_features = self._collect_direct_radio()
+            direct_radio_features = self._timed_collect("direct_radio", self._collect_direct_radio)
             for f in direct_radio_features:
                 fid = f["properties"].get("id", "")
                 if fid:
                     features[fid] = f
 
         # Source 2: MQTT subscriber (if running)
-        mqtt_features = self._collect_mqtt()
+        mqtt_features = self._timed_collect("mqtt", self._collect_mqtt)
         for f in mqtt_features:
             fid = f["properties"].get("id", "")
             if fid and fid not in features:
@@ -440,14 +497,14 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                 self._merge_feature(features[fid], f)
 
         # Source 3: Node tracker cache files
-        tracker_features = self._collect_node_tracker()
+        tracker_features = self._timed_collect("node_tracker", self._collect_node_tracker)
         for f in tracker_features:
             fid = f["properties"].get("id", "")
             if fid and fid not in features:
                 features[fid] = f
 
         # Source 4: AREDN mesh network (local scan via sysinfo API)
-        aredn_features = self._collect_aredn()
+        aredn_features = self._timed_collect("aredn", self._collect_aredn)
         for f in aredn_features:
             fid = f["properties"].get("id", "")
             if fid and fid not in features:
@@ -456,14 +513,14 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
         # Source 4.5: AREDN worldmap (public CSV, always runs when enabled —
         # NOT threshold-gated. Provides geographic context alongside local
         # Meshtastic/RNS, not a fill-when-sparse fallback.)
-        aredn_worldmap_features = self._collect_aredn_worldmap()
+        aredn_worldmap_features = self._timed_collect("aredn_worldmap", self._collect_aredn_worldmap)
         for f in aredn_worldmap_features:
             fid = f["properties"].get("id", "")
             if fid and fid not in features:
                 features[fid] = f
 
         # Source 5: RNS direct query (from rnsd path table)
-        rns_direct_features = self._collect_rns_direct()
+        rns_direct_features = self._timed_collect("rns_direct", self._collect_rns_direct)
         for f in rns_direct_features:
             fid = f["properties"].get("id", "")
             if fid and fid not in features:
@@ -471,14 +528,16 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
 
         # Source 5.5: MeshCore public map (always runs when enabled — NOT gated by
         # feature count threshold, because this is the primary MeshCore visibility path).
-        meshcore_public_features = self._collect_meshcore_public()
+        meshcore_public_features = self._timed_collect("meshcore_public", self._collect_meshcore_public)
         for f in meshcore_public_features:
             fid = f["properties"].get("id", "")
             if fid and fid not in features:
                 features[fid] = f
 
         # Source 6: Public data fallbacks (conditional — only when local data sparse)
-        public_features = self._collect_public_fallbacks(
+        public_features = self._timed_collect(
+            "public_fallback",
+            self._collect_public_fallbacks,
             current_feature_count=len(features),
         )
         for f in public_features:
@@ -538,6 +597,25 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
             f"operator_positions:{promoted}) "
             f"no_position:{len(self._nodes_without_position)}"
         )
+
+        # Per-source latency summary — lets operators see which source is the
+        # tall pole on a given box without having to instrument by hand.
+        total_ms = int((time.perf_counter() - collect_start) * 1000)
+        latency_parts = []
+        for src in (
+            "unified_tracker", "meshtasticd", "direct_radio", "mqtt",
+            "node_tracker", "aredn", "aredn_worldmap", "rns_direct",
+            "meshcore_public", "public_fallback",
+        ):
+            diag = self._source_diagnostics.get(src) or {}
+            if "latency_ms" not in diag:
+                continue
+            note = diag.get("notes") or ""
+            cached = "cached" in note.lower() or "stale" in note.lower()
+            latency_parts.append(
+                f"{src}:{diag['latency_ms']}ms{' (cached)' if cached else ''}"
+            )
+        logger.info(f"MapDataCollector latencies: total={total_ms}ms — {', '.join(latency_parts)}")
 
         # Cache result
         self._cached_geojson = geojson
@@ -1472,17 +1550,14 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
     _MESHCORE_MAP_URL = "https://map.meshcore.dev/api/v1/nodes"
 
     def _collect_meshcore_public(self) -> List[Dict]:
-        """Fetch MeshCore nodes from the public map API (map.meshcore.dev).
+        """Return MeshCore public-map features, served from cache when fresh.
 
-        MeshCore advertisements carry no GPS locally (MeshCoreHandler adds nodes
-        to UnifiedNodeTracker without position → they get filtered out of the map),
-        so the only way to render MeshCore with GPS is to pull the public map API.
-        ~30k nodes globally, validated coordinates, network='meshcore'.
-
-        Disabled via `enable_meshcore_public=False` in map_settings.json.
-
-        Operator-assigned positions (map_settings.json `meshcore_positions`) still
-        take precedence for specific local nodes — see `_apply_operator_positions`.
+        Caching wrapper around `_fetch_meshcore_public_uncached`. The public API
+        is large (~12 MB / 30 k nodes) and "changes hourly" by contract, so we
+        cache the parsed feature list for `meshcore_public_cache_ttl_seconds`
+        (default 600 s) to avoid blocking `_collect_lock` on every cache-miss
+        collect. On fetch error within the TTL, serve the stale cache with a
+        `stale_cached` diagnostic instead of going dark.
         """
         if not self._settings or not self._settings.get("enable_meshcore_public", True):
             self._record_diagnostic(
@@ -1493,10 +1568,77 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
             )
             return []
 
+        ttl = int(self._settings.get(
+            "meshcore_public_cache_ttl_seconds",
+            self.DEFAULT_MESHCORE_PUBLIC_CACHE_TTL_SECONDS,
+        ))
+        now = time.time()
+        cached = self._meshcore_public_cache
+        cached_ts = self._meshcore_public_cache_ts
+        if cached is not None and cached_ts is not None and now - cached_ts < ttl:
+            age = int(now - cached_ts)
+            self._record_diagnostic(
+                "meshcore_public",
+                attempted=len(cached), yielded=len(cached),
+                reason_if_zero=None if cached else "no_positions",
+                notes=f"cached ({age}s old, ttl {ttl}s)",
+            )
+            return cached
+
+        features, attempted, ok, fetch_notes = self._fetch_meshcore_public_uncached()
+        if ok:
+            self._meshcore_public_cache = features
+            self._meshcore_public_cache_ts = now
+            reason = None
+            if not features:
+                # `attempted > 0` and `yielded == 0` would naturally produce
+                # "no_positions" via _record_diagnostic, but the API list itself
+                # was empty when attempted == 0 — call that "unreachable" so
+                # operators can distinguish "API down" from "API healthy, no
+                # parseable nodes".
+                reason = "no_positions" if attempted > 0 else "unreachable"
+            self._record_diagnostic(
+                "meshcore_public",
+                attempted=attempted, yielded=len(features),
+                reason_if_zero=reason,
+                notes=fetch_notes,
+            )
+            return features
+
+        # Fetch failed. Serve stale cache if we have one (otherwise empty).
+        if cached is not None:
+            stale_age = int(now - cached_ts) if cached_ts else -1
+            self._record_diagnostic(
+                "meshcore_public",
+                attempted=len(cached), yielded=len(cached),
+                reason_if_zero="stale_cached",
+                notes=f"fetch failed, serving stale ({stale_age}s old): {fetch_notes}",
+            )
+            return cached
+        self._record_diagnostic(
+            "meshcore_public",
+            attempted=0, yielded=0,
+            reason_if_zero="unreachable",
+            notes=fetch_notes,
+        )
+        return []
+
+    def _fetch_meshcore_public_uncached(self) -> tuple:
+        """Fetch + parse MeshCore public map without consulting the cache.
+
+        Returns (features, attempted, ok, notes).
+          * `features` — parsed GeoJSON features (post-filter).
+          * `attempted` — count of raw API entries the response contained
+            (pre-filter); preserved separately so diagnostics distinguish
+            "API returned 30 k, we kept 28 k" from "API returned 0".
+          * `ok=True` — HTTP fetch succeeded AND response had expected shape,
+            even if parsed feature count is zero (legitimate empty list).
+          * `ok=False` — caller should consider serving cached data.
+        """
         import urllib.request
         import urllib.error
+
         features: List[Dict] = []
-        attempted = 0
         try:
             req = urllib.request.Request(
                 self._MESHCORE_MAP_URL,
@@ -1510,12 +1652,7 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                 data = json.loads(raw.decode("utf-8", errors="replace"))
 
             if not isinstance(data, list):
-                self._record_diagnostic(
-                    "meshcore_public", attempted=0, yielded=0,
-                    reason_if_zero="unreachable",
-                    notes="unexpected response shape (not a list)",
-                )
-                return []
+                return [], 0, False, "unexpected response shape (not a list)"
 
             attempted = len(data)
             for node in data:
@@ -1525,26 +1662,11 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
 
             if features:
                 logger.info(f"MeshCore public map: {len(features)}/{attempted} nodes")
+            return features, attempted, True, self._MESHCORE_MAP_URL
 
         except (urllib.error.URLError, OSError, json.JSONDecodeError, ValueError) as e:
             logger.debug(f"MeshCore public map unavailable: {e}")
-            self._record_diagnostic(
-                "meshcore_public", attempted=attempted, yielded=len(features),
-                reason_if_zero="unreachable" if not features else None,
-                notes=str(e)[:120],
-            )
-            return features
-
-        reason = None
-        if not features:
-            reason = "no_positions"
-        self._record_diagnostic(
-            "meshcore_public",
-            attempted=attempted, yielded=len(features),
-            reason_if_zero=reason,
-            notes=self._MESHCORE_MAP_URL,
-        )
-        return features
+            return features, len(features), False, str(e)[:120]
 
     def _parse_meshcore_public_node(self, node: Dict) -> Optional[Dict]:
         """Parse one node from map.meshcore.dev into a GeoJSON feature."""

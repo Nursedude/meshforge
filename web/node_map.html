@@ -1808,6 +1808,10 @@
         userHasPanned: false,
         linkAnimationsEnabled: true,
         nodesWithoutPosition: [],  // Nodes without GPS that can't be mapped
+        // Chunked-render token: each updateDisplay() captures this value;
+        // a chunk that finds it stale (token bumped by a later call) bails
+        // so two render passes don't trample each other's accumulators.
+        updateToken: 0,
         // Phase 4 additions
         currentView: 'map',      // 'map' or 'topology'
         topology: null,          // D3 force simulation
@@ -2900,137 +2904,130 @@
         updateDisplay();
     }
 
+    // Chunked-render constants. 250 features/frame keeps each chunk under
+    // ~16 ms on Pi-class hardware (the rAF budget) so the map stays
+    // interactive while large datasets stream in. Anything materially larger
+    // produces visible scroll/pan stutter on a 38k-feature load.
+    const RENDER_CHUNK_SIZE = 250;
+
     function updateDisplay() {
         if (!state.currentGeoJSON) return;
 
-        const showMeshtastic = document.getElementById('filter-meshtastic').checked;
-        const showRNS = document.getElementById('filter-rns').checked;
-        const showAREDN = document.getElementById('filter-aredn').checked;
-        const showMeshCore = document.getElementById('filter-meshcore').checked;
-        const onlineOnly = document.getElementById('filter-online-only').checked;
-        const showCoverage = document.getElementById('filter-coverage').checked;
-        const showLinks = document.getElementById('filter-links').checked;
-        const roleFilter = document.getElementById('filter-role').value;
+        // Snapshot filter values once so the chunked iteration sees a
+        // consistent view even if the operator toggles checkboxes mid-render.
+        const ctx = {
+            showMeshtastic: document.getElementById('filter-meshtastic').checked,
+            showRNS: document.getElementById('filter-rns').checked,
+            showAREDN: document.getElementById('filter-aredn').checked,
+            showMeshCore: document.getElementById('filter-meshcore').checked,
+            onlineOnly: document.getElementById('filter-online-only').checked,
+            showCoverage: document.getElementById('filter-coverage').checked,
+            showLinks: document.getElementById('filter-links').checked,
+            roleFilter: document.getElementById('filter-role').value,
+            useClustering: document.getElementById('filter-clustering').checked,
+            features: state.currentGeoJSON.features,
+            activeIds: new Set(),
+            counts: { total: 0, meshtastic: 0, rns: 0, aredn: 0, meshcore: 0, online: 0 },
+            index: 0,
+            token: ++state.updateToken,
+        };
 
-        // Track which nodes are in this update
-        const activeIds = new Set();
-        let total = 0, meshtastic = 0, rns = 0, aredn = 0, meshcore = 0, online = 0;
+        // Drive the first chunk synchronously so small datasets feel
+        // instant; subsequent chunks (if any) yield via rAF.
+        _processFeatureChunk(ctx);
+    }
 
-        // Process each feature
-        state.currentGeoJSON.features.forEach(feature => {
-            const props = feature.properties;
-            const coords = feature.geometry.coordinates;
-            const id = props.id || `${coords[0]}_${coords[1]}`;
+    function _processFeatureChunk(ctx) {
+        if (ctx.token !== state.updateToken) {
+            // Newer updateDisplay() call superseded us; abandon this chunk
+            // chain. The newer call's chunks will run cleanup/finalize.
+            return;
+        }
 
-            // Stats (count all regardless of filter)
-            total++;
-            if (props.network === 'meshtastic' || props.network === 'both') meshtastic++;
-            if (props.network === 'rns' || props.network === 'both') rns++;
-            if (props.network === 'aredn') aredn++;
-            if (props.network === 'meshcore') meshcore++;
-            if (props.is_online) online++;
+        const features = ctx.features;
+        const end = Math.min(ctx.index + RENDER_CHUNK_SIZE, features.length);
+        for (let i = ctx.index; i < end; i++) {
+            _processOneFeature(features[i], ctx);
+        }
+        ctx.index = end;
 
-            // Apply filters
-            if (onlineOnly && !props.is_online) return;
-            if (props.network === 'meshtastic' && !showMeshtastic) return;
-            if (props.network === 'rns' && !showRNS) return;
-            if (props.network === 'aredn' && !showAREDN) return;
-            if (props.network === 'meshcore' && !showMeshCore) return;
-            // Role filter (RMAP-inspired node type filtering).
-            // Three selector shapes:
-            //   'rns'              — show only RNS-network nodes
-            //   'meshcore:<role>'  — network-qualified MeshCore role match (case-insensitive)
-            //   bare uppercase     — Meshtastic role match (legacy, uppercase)
-            if (roleFilter) {
-                if (roleFilter === 'rns') {
-                    if (props.network !== 'rns') return;
-                } else if (roleFilter.startsWith('meshcore:')) {
-                    const want = roleFilter.slice('meshcore:'.length).toLowerCase();
-                    if (props.network !== 'meshcore') return;
-                    if ((props.role || '').toLowerCase() !== want) return;
-                } else {
-                    // Meshtastic role: restrict to meshtastic network so MeshCore's
-                    // lowercase 'client' doesn't collide with Meshtastic's 'CLIENT'.
-                    if (props.network !== 'meshtastic') return;
-                    const nodeRole = (props.role || '').toUpperCase();
-                    if (nodeRole !== roleFilter) return;
+        if (end < features.length) {
+            // Surface progress for large datasets — silent on small loads.
+            if (features.length > RENDER_CHUNK_SIZE * 2) {
+                const txt = document.getElementById('update-text');
+                if (txt) {
+                    txt.textContent = `Rendering ${end.toLocaleString()} / ${features.length.toLocaleString()} nodes…`;
                 }
             }
+            requestAnimationFrame(() => _processFeatureChunk(ctx));
+            return;
+        }
 
-            activeIds.add(id);
+        _finalizeUpdate(ctx);
+    }
 
-            // Check if marker already exists
-            const existing = state.markers.get(id);
+    function _processOneFeature(feature, ctx) {
+        const props = feature.properties;
+        const coords = feature.geometry.coordinates;
+        const id = props.id || `${coords[0]}_${coords[1]}`;
 
-            if (existing) {
-                // Update existing marker (incremental)
-                const oldProps = existing.feature.properties;
-                const propsChanged = (
-                    oldProps.is_online !== props.is_online ||
-                    oldProps.snr !== props.snr ||
-                    oldProps.battery !== props.battery ||
-                    oldProps.last_seen !== props.last_seen
-                );
+        // Stats (count all regardless of filter)
+        ctx.counts.total++;
+        if (props.network === 'meshtastic' || props.network === 'both') ctx.counts.meshtastic++;
+        if (props.network === 'rns' || props.network === 'both') ctx.counts.rns++;
+        if (props.network === 'aredn') ctx.counts.aredn++;
+        if (props.network === 'meshcore') ctx.counts.meshcore++;
+        if (props.is_online) ctx.counts.online++;
 
-                if (propsChanged) {
-                    // Update icon if state changed
-                    existing.marker.setIcon(createMarkerIcon(props, false));
-                    existing.marker.setPopupContent(createPopupContent(props, coords));
-                }
-
-                // Update position if moved
-                const oldCoords = existing.feature.geometry.coordinates;
-                if (oldCoords[0] !== coords[0] || oldCoords[1] !== coords[1]) {
-                    existing.marker.setLatLng([coords[1], coords[0]]);
-                }
-
-                // Update coverage circle
-                if (showCoverage) {
-                    if (!existing.coverageCircle) {
-                        const radius = estimateCoverageRadius(props);
-                        const color = getNodeColor(props);
-                        existing.coverageCircle = L.circle([coords[1], coords[0]], {
-                            radius: radius,
-                            color: color,
-                            fillColor: color,
-                            fillOpacity: 0.06,
-                            weight: 1,
-                            opacity: 0.25,
-                            interactive: false
-                        }).addTo(coverageLayer);
-                    }
-                } else if (existing.coverageCircle) {
-                    coverageLayer.removeLayer(existing.coverageCircle);
-                    existing.coverageCircle = null;
-                }
-
-                existing.feature = feature;
+        // Apply filters
+        if (ctx.onlineOnly && !props.is_online) return;
+        if (props.network === 'meshtastic' && !ctx.showMeshtastic) return;
+        if (props.network === 'rns' && !ctx.showRNS) return;
+        if (props.network === 'aredn' && !ctx.showAREDN) return;
+        if (props.network === 'meshcore' && !ctx.showMeshCore) return;
+        // Role filter (RMAP-inspired node type filtering).
+        // Three selector shapes:
+        //   'rns'              — show only RNS-network nodes
+        //   'meshcore:<role>'  — network-qualified MeshCore role match (case-insensitive)
+        //   bare uppercase     — Meshtastic role match (legacy, uppercase)
+        if (ctx.roleFilter) {
+            if (ctx.roleFilter === 'rns') {
+                if (props.network !== 'rns') return;
+            } else if (ctx.roleFilter.startsWith('meshcore:')) {
+                const want = ctx.roleFilter.slice('meshcore:'.length).toLowerCase();
+                if (props.network !== 'meshcore') return;
+                if ((props.role || '').toLowerCase() !== want) return;
             } else {
-                // Create new marker
-                const isNew = !state.firstLoad;
-                const marker = L.marker([coords[1], coords[0]], {
-                    icon: createMarkerIcon(props, isNew)
-                });
-                marker.bindPopup(createPopupContent(props, coords));
-                marker.on('click', () => selectNodeForTerrain(feature));
+                if (props.network !== 'meshtastic') return;
+                const nodeRole = (props.role || '').toUpperCase();
+                if (nodeRole !== ctx.roleFilter) return;
+            }
+        }
 
-                // Determine network for clustering
-                const network = props.is_gateway ? 'gateway' : (props.network || 'meshtastic');
-                const useClustering = document.getElementById('filter-clustering').checked;
+        ctx.activeIds.add(id);
 
-                // Add to appropriate layer
-                if (useClustering && clusterGroups[network]) {
-                    clusterGroups[network].addLayer(marker);
-                } else {
-                    nodeLayer.addLayer(marker);
-                }
-
-                // Coverage circle
-                let coverageCircle = null;
-                if (showCoverage) {
+        const existing = state.markers.get(id);
+        if (existing) {
+            const oldProps = existing.feature.properties;
+            const propsChanged = (
+                oldProps.is_online !== props.is_online ||
+                oldProps.snr !== props.snr ||
+                oldProps.battery !== props.battery ||
+                oldProps.last_seen !== props.last_seen
+            );
+            if (propsChanged) {
+                existing.marker.setIcon(createMarkerIcon(props, false));
+                existing.marker.setPopupContent(createPopupContent(props, coords));
+            }
+            const oldCoords = existing.feature.geometry.coordinates;
+            if (oldCoords[0] !== coords[0] || oldCoords[1] !== coords[1]) {
+                existing.marker.setLatLng([coords[1], coords[0]]);
+            }
+            if (ctx.showCoverage) {
+                if (!existing.coverageCircle) {
                     const radius = estimateCoverageRadius(props);
                     const color = getNodeColor(props);
-                    coverageCircle = L.circle([coords[1], coords[0]], {
+                    existing.coverageCircle = L.circle([coords[1], coords[0]], {
                         radius: radius,
                         color: color,
                         fillColor: color,
@@ -3040,17 +3037,49 @@
                         interactive: false
                     }).addTo(coverageLayer);
                 }
-
-                state.markers.set(id, { marker, feature, coverageCircle, network });
+            } else if (existing.coverageCircle) {
+                coverageLayer.removeLayer(existing.coverageCircle);
+                existing.coverageCircle = null;
             }
-        });
+            existing.feature = feature;
+        } else {
+            const isNew = !state.firstLoad;
+            const marker = L.marker([coords[1], coords[0]], {
+                icon: createMarkerIcon(props, isNew)
+            });
+            marker.bindPopup(createPopupContent(props, coords));
+            marker.on('click', () => selectNodeForTerrain(feature));
+            const network = props.is_gateway ? 'gateway' : (props.network || 'meshtastic');
+            if (ctx.useClustering && clusterGroups[network]) {
+                clusterGroups[network].addLayer(marker);
+            } else {
+                nodeLayer.addLayer(marker);
+            }
+            let coverageCircle = null;
+            if (ctx.showCoverage) {
+                const radius = estimateCoverageRadius(props);
+                const color = getNodeColor(props);
+                coverageCircle = L.circle([coords[1], coords[0]], {
+                    radius: radius,
+                    color: color,
+                    fillColor: color,
+                    fillOpacity: 0.06,
+                    weight: 1,
+                    opacity: 0.25,
+                    interactive: false
+                }).addTo(coverageLayer);
+            }
+            state.markers.set(id, { marker, feature, coverageCircle, network });
+        }
+    }
+
+    function _finalizeUpdate(ctx) {
+        if (ctx.token !== state.updateToken) return;
 
         // Remove markers no longer in data
-        const useClustering = document.getElementById('filter-clustering').checked;
         for (const [id, entry] of state.markers) {
-            if (!activeIds.has(id)) {
+            if (!ctx.activeIds.has(id)) {
                 nodeLayer.removeLayer(entry.marker);
-                // Also remove from cluster groups
                 if (entry.network && clusterGroups[entry.network]) {
                     clusterGroups[entry.network].removeLayer(entry.marker);
                 }
@@ -3062,33 +3091,39 @@
         }
 
         // Manage cluster layer visibility
-        if (useClustering) {
+        if (ctx.useClustering) {
             Object.keys(clusterGroups).forEach(net => {
                 if (!map.hasLayer(clusterGroups[net])) {
                     map.addLayer(clusterGroups[net]);
                 }
             });
         } else {
-            // Hide cluster groups when not clustering
             Object.keys(clusterGroups).forEach(net => map.removeLayer(clusterGroups[net]));
         }
 
         // Draw link lines between nodes that have SNR data (implies they can hear each other)
         linkLayer.clearLayers();
-        if (showLinks && state.currentGeoJSON.features.length > 1) {
-            drawNodeLinks(state.currentGeoJSON.features, activeIds);
+        if (ctx.showLinks && state.currentGeoJSON.features.length > 1) {
+            drawNodeLinks(state.currentGeoJSON.features, ctx.activeIds);
         }
 
-        // Update signal strength heatmap
         updateSignalHeatmap(state.currentGeoJSON.features);
 
         // Update stats
-        document.getElementById('stat-total').textContent = total;
-        document.getElementById('stat-meshtastic').textContent = meshtastic;
-        document.getElementById('stat-rns').textContent = rns;
-        document.getElementById('stat-aredn').textContent = aredn;
-        document.getElementById('stat-meshcore').textContent = meshcore;
-        document.getElementById('stat-online').textContent = online;
+        document.getElementById('stat-total').textContent = ctx.counts.total;
+        document.getElementById('stat-meshtastic').textContent = ctx.counts.meshtastic;
+        document.getElementById('stat-rns').textContent = ctx.counts.rns;
+        document.getElementById('stat-aredn').textContent = ctx.counts.aredn;
+        document.getElementById('stat-meshcore').textContent = ctx.counts.meshcore;
+        document.getElementById('stat-online').textContent = ctx.counts.online;
+
+        // Restore the standard "Live" indicator after a chunked render finishes.
+        const txt = document.getElementById('update-text');
+        if (txt && state.currentGeoJSON) {
+            const props = state.currentGeoJSON.properties || {};
+            const totalSeen = props.total_nodes || state.currentGeoJSON.features.length;
+            txt.textContent = `Live · ${state.currentGeoJSON.features.length} mapped / ${totalSeen} total`;
+        }
 
         // Fit bounds only on first load
         if (state.firstLoad && nodeLayer.getLayers().length > 0) {

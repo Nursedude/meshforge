@@ -350,6 +350,126 @@ class TestMeshCorePublicCollector:
         assert result is None
 
 
+class TestMeshCorePublicCache:
+    """T1.1 — per-source cache wrapping the MeshCore public fetch.
+
+    The 30 s outer collect() cache prevents within-burst refetches; this
+    second tier absorbs the cache-miss case so a slow MeshCore fetch
+    doesn't pay the 12 MB / 30 s timeout cost more than once per ttl.
+    """
+
+    @staticmethod
+    def _stub_feature(pubkey: str = "abc"):
+        return {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [0.1, 0.2]},
+            "properties": {
+                "id": f"meshcore:{pubkey}",
+                "name": "stub",
+                "network": "meshcore",
+            },
+        }
+
+    def test_cache_within_ttl_returns_cached_without_refetch(self, collector):
+        collector._settings.set("enable_meshcore_public", True)
+        collector._settings.set("meshcore_public_cache_ttl_seconds", 600)
+        feat = self._stub_feature()
+        call_count = {"n": 0}
+
+        def fake_fetch():
+            call_count["n"] += 1
+            return [feat], 1, True, "live"
+
+        collector._fetch_meshcore_public_uncached = fake_fetch
+        # First call populates cache.
+        first = collector._collect_meshcore_public()
+        assert first == [feat]
+        assert call_count["n"] == 1
+        # Second call (well within TTL) must NOT refetch.
+        second = collector._collect_meshcore_public()
+        assert second == [feat]
+        assert call_count["n"] == 1, "cache-hit refetched"
+        d = collector.get_source_diagnostics()
+        assert d["meshcore_public"]["reason_if_zero"] == "ok"
+        assert "cached" in (d["meshcore_public"]["notes"] or "")
+
+    def test_cache_expired_refetches(self, collector):
+        collector._settings.set("enable_meshcore_public", True)
+        collector._settings.set("meshcore_public_cache_ttl_seconds", 600)
+        feat = self._stub_feature()
+        call_count = {"n": 0}
+
+        def fake_fetch():
+            call_count["n"] += 1
+            return [feat], 1, True, "live"
+
+        collector._fetch_meshcore_public_uncached = fake_fetch
+        collector._collect_meshcore_public()
+        # Force the cache stamp to be older than the TTL.
+        collector._meshcore_public_cache_ts -= 700
+        collector._collect_meshcore_public()
+        assert call_count["n"] == 2, "expired cache failed to refetch"
+
+    def test_fetch_error_serves_stale_cache_with_diagnostic(self, collector):
+        collector._settings.set("enable_meshcore_public", True)
+        collector._settings.set("meshcore_public_cache_ttl_seconds", 600)
+        feat = self._stub_feature()
+        # First, populate the cache via a successful fetch.
+        collector._fetch_meshcore_public_uncached = lambda: ([feat], 1, True, "live")
+        collector._collect_meshcore_public()
+        # Now simulate the cache expiring AND the next fetch failing.
+        collector._meshcore_public_cache_ts -= 700
+        collector._fetch_meshcore_public_uncached = lambda: ([], 0, False, "no network")
+        result = collector._collect_meshcore_public()
+        assert result == [feat], "stale cache must be served on fetch error"
+        d = collector.get_source_diagnostics()
+        assert d["meshcore_public"]["reason_if_zero"] == "stale_cached"
+        assert "no network" in (d["meshcore_public"]["notes"] or "")
+
+    def test_fetch_error_with_no_cache_records_unreachable(self, collector):
+        collector._settings.set("enable_meshcore_public", True)
+        collector._fetch_meshcore_public_uncached = lambda: ([], 0, False, "no network")
+        result = collector._collect_meshcore_public()
+        assert result == []
+        d = collector.get_source_diagnostics()
+        assert d["meshcore_public"]["reason_if_zero"] == "unreachable"
+
+
+class TestTimedCollectLatency:
+    """T1.3 — every source's diagnostic carries latency_ms after collect()."""
+
+    def test_timed_collect_records_latency(self, collector):
+        def slow():
+            import time
+            time.sleep(0.01)
+            collector._record_diagnostic("test_src", attempted=2, yielded=2)
+            return []
+
+        collector._timed_collect("test_src", slow)
+        d = collector.get_source_diagnostics()
+        assert "latency_ms" in d["test_src"]
+        assert d["test_src"]["latency_ms"] >= 5  # at least ~5 ms
+
+    def test_timed_collect_records_latency_on_exception(self, collector):
+        def boom():
+            import time
+            time.sleep(0.005)
+            raise RuntimeError("source went sideways")
+
+        with pytest.raises(RuntimeError):
+            collector._timed_collect("test_src", boom)
+        d = collector.get_source_diagnostics()
+        assert "latency_ms" in d["test_src"]
+        assert d["test_src"]["reason_if_zero"] == "unreachable"
+
+    def test_record_diagnostic_preserves_latency_across_calls(self, collector):
+        # Pre-stamp simulates _timed_collect's pre-write.
+        collector._source_diagnostics["src"] = {"latency_ms": 42}
+        collector._record_diagnostic("src", attempted=1, yielded=1)
+        d = collector.get_source_diagnostics()
+        assert d["src"]["latency_ms"] == 42  # not clobbered by _record_diagnostic
+
+
 class TestTCPInterfaceDoesNotClobberNoPositionList:
     """Regression: _collect_via_tcp_interface used to `=` overwrite too."""
 

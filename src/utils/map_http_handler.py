@@ -39,6 +39,7 @@ Radio Control API (MeshForge-owned):
 - POST /api/radio/message -> send message via radio
 """
 
+import gzip
 import json
 import ipaddress
 import logging
@@ -699,12 +700,43 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
         geojson = history.get_trajectory_geojson(node_id, hours=24)
         self._serve_json(geojson)
 
+    # gzip threshold: payloads smaller than this aren't worth the CPU cost
+    # (ratio is poor on small JSON, latency win is sub-millisecond). 10 KB
+    # cuts in below /api/status (~50 KB) and well above /api/region-presets
+    # (~2 KB) — sized for the actual endpoints in this file.
+    _GZIP_MIN_BYTES = 10 * 1024
+
+    def _client_accepts_gzip(self) -> bool:
+        """True iff the request's Accept-Encoding header includes gzip."""
+        accept = self.headers.get('Accept-Encoding', '') or ''
+        # Tokens are comma-separated; quality values may be present (e.g.
+        # "gzip;q=0.5"). Treat "identity;q=0, *;q=0" or "gzip;q=0" as opt-out.
+        for token in accept.split(','):
+            token = token.strip().lower()
+            if token.startswith('gzip'):
+                if 'q=0' in token and 'q=0.' not in token:
+                    return False
+                return True
+        return False
+
     def _serve_json(self, obj: Any, status: int = 200):
-        """Helper to serve a JSON response."""
+        """Helper to serve a JSON response, gzip-compressed when client supports it."""
         data = json.dumps(obj).encode()
+        encoding: Optional[str] = None
+        if len(data) >= self._GZIP_MIN_BYTES and self._client_accepts_gzip():
+            # compresslevel=6 is the urllib default — ~30–80 ms for 20 MB on
+            # Pi-class CPU, yielding ~5–10× shrink for GeoJSON-shaped data.
+            data = gzip.compress(data, compresslevel=6)
+            encoding = 'gzip'
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(data)))
+        if encoding:
+            self.send_header('Content-Encoding', encoding)
+        # Vary advertises that response varies by Accept-Encoding so any
+        # intermediate cache keys correctly. Send it whether or not we
+        # gzipped this specific response.
+        self.send_header('Vary', 'Accept-Encoding')
         self._send_cors_header()
         self.send_header('Cache-Control', 'no-cache')
         self.end_headers()

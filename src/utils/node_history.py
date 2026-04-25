@@ -83,6 +83,12 @@ class NodeHistoryDB:
         self.retention_seconds = retention_seconds
         self._lock = threading.Lock()
         self._last_recorded: Dict[str, float] = {}  # node_id -> last record time
+        # Hourly auto-prune cadence. Without this, the DB+WAL grow unbounded
+        # — see Issue #44 follow-up where a 14 GB WAL accumulated over 4 days
+        # and wedged the service in `jbd2_log_wait_commit` on next startup.
+        # 0 disables; tests that want deterministic timing override.
+        self._last_prune_ts: float = 0.0
+        self._prune_interval_seconds: int = 3600
         self._init_db()
 
     def _init_db(self) -> None:
@@ -184,6 +190,7 @@ class NodeHistoryDB:
             }
 
         if not to_insert:
+            self._maybe_prune(now)
             return 0
 
         with self._lock:
@@ -197,10 +204,47 @@ class NodeHistoryDB:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, to_insert)
                 conn.commit()
-                return len(to_insert)
+                inserted = len(to_insert)
             except sqlite3.Error as e:
                 logger.error(f"Failed to record observations: {e}")
-                return 0
+                inserted = 0
+            finally:
+                conn.close()
+
+        # Run pruning OUTSIDE the insert lock — it's a separate transaction
+        # and holding the insert lock longer just slows the next writer.
+        self._maybe_prune(now)
+        return inserted
+
+    def _maybe_prune(self, now: float) -> None:
+        """Delete observations older than retention if hourly cadence reached.
+
+        Called from record_observations on every cycle; the cadence check
+        ensures the actual DELETE runs at most once per hour. Skips VACUUM
+        (the routine path) — VACUUM rewrites the entire DB which on a Pi
+        with a many-hundred-MB DB is multi-minute and not necessary for
+        correctness; SQLite reuses freed pages on subsequent inserts.
+        Operators wanting full reclaim can still call cleanup() explicitly.
+        """
+        if self._prune_interval_seconds <= 0 or self.retention_seconds <= 0:
+            return
+        if now - self._last_prune_ts < self._prune_interval_seconds:
+            return
+        cutoff = now - self.retention_seconds
+        with self._lock:
+            conn = sqlite3.connect(str(self.db_path))
+            try:
+                cursor = conn.execute(
+                    "DELETE FROM node_observations WHERE timestamp < ?",
+                    (cutoff,),
+                )
+                conn.commit()
+                deleted = cursor.rowcount
+                self._last_prune_ts = now
+                if deleted > 0:
+                    logger.info(f"Node history auto-prune: deleted {deleted} rows older than {self.retention_seconds // 86400}d")
+            except sqlite3.Error as e:
+                logger.error(f"Auto-prune failed: {e}")
             finally:
                 conn.close()
 
