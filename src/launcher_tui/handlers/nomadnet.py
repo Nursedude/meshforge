@@ -783,7 +783,6 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
         # have issues and loglevel is too low for troubleshooting
         if has_issues:
             try:
-                from utils.paths import ReticulumPaths
                 rns_config = ReticulumPaths.get_config_file()
                 if rns_config.exists():
                     import re as _re
