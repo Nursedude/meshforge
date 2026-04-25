@@ -116,9 +116,21 @@ class LXMFParser(ServiceParser):
     def parse(app_data: bytes, aspect: str) -> ServiceInfo:
         """Parse LXMF app_data format.
 
-        LXMF app_data structure:
-        - Display name as UTF-8 string (variable length, usually < 128 bytes)
-        - Optional msgpack-encoded telemetry dict after the name
+        LXMF (LXMRouter.announce) framing — verified against real wire
+        bytes captured on the fleet 2026-04-25:
+
+            byte 0      : uint8 length of the display-name field
+            bytes 1..L  : display name (UTF-8, no null terminator)
+            bytes L+1..: optional msgpack-encoded telemetry dict
+                          (Sideband-style; absent for plain LXMF clients)
+
+        It is NOT a single msgpack object at the top level — older
+        versions of this parser assumed it was, and the length-prefix
+        byte (which happens to be a printable ASCII int for typical
+        name lengths, e.g. 33 = '!', 34 = '"') leaked into the rendered
+        display name as a leading garbage character. Hence the
+        fleet-wide ``!MeshForge Gateway (...)`` and ``"MeshForge
+        Gateway (...)`` symptoms before this fix.
 
         Msgpack telemetry keys (Sideband format):
         - latitude/lat, longitude/lon/lng, altitude/alt
@@ -133,26 +145,57 @@ class LXMFParser(ServiceParser):
         if not app_data or len(app_data) == 0:
             return info
 
-        # Find msgpack boundary
-        msgpack_start = LXMFParser._find_msgpack_start(app_data)
+        name_bytes, telemetry_offset = LXMFParser._extract_name_and_telemetry(app_data)
 
-        # Extract display name (before msgpack or entire data)
-        name_bytes = app_data[:msgpack_start] if msgpack_start > 0 else app_data
         if 0 < len(name_bytes) < 128:
             try:
                 decoded = name_bytes.decode('utf-8', errors='ignore').strip('\x00').strip()
-                if decoded and len(decoded) >= 1:
+                if decoded:
                     clean_name = ''.join(c for c in decoded if c.isprintable())
                     if clean_name:
                         info.display_name = clean_name[:64]
             except UnicodeDecodeError:
                 pass
 
-        # Parse msgpack telemetry if found
-        if msgpack_start >= 0:
-            LXMFParser._parse_msgpack_telemetry(app_data[msgpack_start:], info)
+        # Parse msgpack telemetry if any bytes remain after the name.
+        if telemetry_offset is not None and telemetry_offset < len(app_data):
+            LXMFParser._parse_msgpack_telemetry(app_data[telemetry_offset:], info)
 
         return info
+
+    @staticmethod
+    def _extract_name_and_telemetry(app_data: bytes) -> tuple:
+        """Split app_data into (name_bytes, telemetry_offset).
+
+        Strategy:
+          1. Treat byte 0 as a uint8 length prefix. If ``app_data[1:1+L]``
+             decodes cleanly to a printable UTF-8 string, that's the name
+             and telemetry begins at ``1+L``.
+          2. Otherwise fall back to the legacy heuristic: scan for the
+             first msgpack map marker (fixmap/map16/map32) and treat
+             everything before it as the raw name. This preserves
+             compatibility with any non-LXMF announce that happens to
+             share the lxmf.delivery aspect.
+
+        Returns ``(name_bytes, telemetry_offset_or_None)``.
+        """
+        # Strategy 1: 1-byte length prefix (LXMRouter.announce framing)
+        prefix_len = app_data[0]
+        if 1 <= prefix_len <= 127 and 1 + prefix_len <= len(app_data):
+            candidate = app_data[1:1 + prefix_len]
+            try:
+                decoded = candidate.decode('utf-8')
+            except UnicodeDecodeError:
+                decoded = None
+            if decoded and all(c.isprintable() or c.isspace() for c in decoded):
+                telemetry_offset = 1 + prefix_len
+                return candidate, telemetry_offset
+
+        # Strategy 2: legacy fallback — scan for msgpack map marker
+        msgpack_start = LXMFParser._find_msgpack_start(app_data)
+        if msgpack_start > 0:
+            return app_data[:msgpack_start], msgpack_start
+        return app_data, None
 
     @staticmethod
     def _find_msgpack_start(app_data: bytes) -> int:

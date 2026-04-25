@@ -732,6 +732,44 @@ class TestRNSAnnounceHandling:
             assert len(tracker._nodes) == 0
 
 
+class TestAnnounceHandlerRegistration:
+    """Regression guard: announce handlers must NOT include a None
+    catch-all alongside aspect-specific handlers.
+
+    Pre-fix the tracker registered both, so RNS fired every announce
+    twice — once via the aspect-scoped handler (correct service type)
+    and once via the catch-all (UNKNOWN). Symptoms: doubled
+    ``Parsed announce ...`` log lines and node service_type flapping.
+    Captured 2026-04-25 across the fleet.
+    """
+
+    def test_no_catchall_alongside_aspect_handlers(self):
+        """The known_aspects loop should NOT be followed by a None registration."""
+        import inspect
+        from gateway import node_tracker
+
+        src = inspect.getsource(node_tracker)
+        # Locate the aspect-handler registration block.
+        assert 'known_aspects = [' in src, (
+            "expected the known_aspects list to be the registration site"
+        )
+        # The fix removed `register_announce_handler(... None)` from
+        # the connection block. If a future refactor reintroduces a
+        # None-aspect handler, we want the test to scream.
+        # Strip comments before scanning so doc-strings explaining
+        # *why* the catch-all is absent don't false-positive.
+        non_comment_lines = [
+            line for line in src.splitlines()
+            if not line.lstrip().startswith('#')
+        ]
+        joined = '\n'.join(non_comment_lines)
+        assert 'AspectAnnounceHandler(self, None)' not in joined, (
+            "do not register a None catch-all announce handler — it "
+            "duplicates every announce already covered by the aspect-"
+            "scoped handlers (see node_tracker.py comment)"
+        )
+
+
 class TestGeoJSON:
     """Tests for GeoJSON export."""
 

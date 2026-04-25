@@ -72,6 +72,65 @@ class TestLXMFParser(unittest.TestCase):
         idx = LXMFParser._find_msgpack_start(b'JustAName')
         self.assertEqual(idx, -1)
 
+    def test_strips_lxmrouter_length_prefix(self):
+        """Real LXMRouter.announce() framing: <uint8 len><name>.
+
+        Pre-fix the parser leaked the length-prefix byte into
+        display_name (e.g. ``!MeshForge Gateway (...)`` because byte 0
+        was 0x21 = ASCII ``!`` = 33 = the actual name length). Captured
+        from moc/fleet-host-1/fleet-host-3 announces 2026-04-25.
+        """
+        from gateway.rns_services import LXMFParser
+
+        # 33-char name → length byte 0x21 (which renders as `!`)
+        name = b'MeshForge Gateway (fleet-host-0)'
+        assert len(name) == 33
+        app_data = bytes([len(name)]) + name
+
+        info = LXMFParser.parse(app_data, 'lxmf.delivery')
+        self.assertEqual(info.display_name, 'MeshForge Gateway (fleet-host-0)')
+        # No leading `!`, `"`, etc.
+        self.assertFalse(info.display_name.startswith('!'))
+        self.assertFalse(info.display_name.startswith('"'))
+
+    def test_strips_lxmrouter_length_prefix_34_chars(self):
+        """34-char name → length byte 0x22 (`"`). Matches fleet-host-1/fleet-host-3."""
+        from gateway.rns_services import LXMFParser
+
+        name = b'MeshForge Gateway (meshforge-fleet-host-1)'
+        assert len(name) == 34
+        app_data = bytes([len(name)]) + name
+
+        info = LXMFParser.parse(app_data, 'lxmf.delivery')
+        self.assertEqual(info.display_name, 'MeshForge Gateway (meshforge-fleet-host-1)')
+
+    def test_lxmrouter_framing_with_msgpack_telemetry(self):
+        """``<len><name>`` followed by msgpack telemetry — Sideband shape."""
+        from gateway.rns_services import LXMFParser
+
+        name = b'TestNode'
+        # Minimal msgpack fixmap with one float key (lat). Even without
+        # msgpack installed the parser must still extract the name
+        # cleanly and not crash.
+        telemetry = b'\x81\xa3lat\xcb@F\x80\x00\x00\x00\x00\x00'
+        app_data = bytes([len(name)]) + name + telemetry
+
+        info = LXMFParser.parse(app_data, 'lxmf.delivery')
+        self.assertEqual(info.display_name, 'TestNode')
+
+    def test_length_prefix_falls_back_when_decode_fails(self):
+        """If byte 0 isn't a real length prefix (e.g. random binary
+        before a name), fall back to scanning for msgpack markers."""
+        from gateway.rns_services import LXMFParser
+
+        # Strategy-1 prefix would point past EOF or into garbage.
+        # Strategy-2 fallback (legacy heuristic) finds no msgpack
+        # marker and returns the whole thing.
+        app_data = b'PlainNameNoPrefix'
+        info = LXMFParser.parse(app_data, 'lxmf.delivery')
+        # Either strategy succeeds; the name should land cleanly.
+        self.assertIn('Plain', info.display_name)
+
 
 class TestNomadParser(unittest.TestCase):
     """Test Nomad Network parser"""

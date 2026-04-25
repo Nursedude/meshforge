@@ -232,7 +232,20 @@ class UnifiedNodeTracker:
                         except Exception as e:
                             logger.error(f"Error handling RNS announce: {e}")
 
-                # Register handlers for known service aspects
+                # Register handlers for known service aspects.
+                #
+                # IMPORTANT: do NOT also register a None/catch-all handler.
+                # RNS aspect filters are NOT exclusive — a None handler
+                # receives every announce already covered by the aspect-
+                # specific ones, so each LXMF announce was being parsed
+                # twice (once with the correct aspect → LXMF_DELIVERY,
+                # once via catch-all without aspect → UNKNOWN). The
+                # symptom was duplicated `Parsed announce ...` log lines
+                # and the node's service_type flapping between
+                # LXMF_DELIVERY and UNKNOWN as the second handler
+                # overwrote the first. Adding a new aspect to this list
+                # is the correct way to broaden coverage; the catch-all
+                # is intentionally absent.
                 known_aspects = [
                     "lxmf.delivery",       # LXMF messaging (Sideband, NomadNet)
                     "lxmf.propagation",    # LXMF propagation nodes
@@ -242,10 +255,7 @@ class UnifiedNodeTracker:
                 for aspect in known_aspects:
                     RNS.Transport.register_announce_handler(AspectAnnounceHandler(self, aspect))
                     logger.debug(f"Registered announce handler for aspect: {aspect}")
-
-                # Also register a catch-all handler for unknown services
-                RNS.Transport.register_announce_handler(AspectAnnounceHandler(self, None))
-                logger.info(f"Registered {len(known_aspects) + 1} announce handlers with rnsd")
+                logger.info(f"Registered {len(known_aspects)} aspect-scoped announce handlers with rnsd")
 
                 # Load known destinations from rnsd (may be empty initially)
                 self._load_known_rns_destinations(RNS)
