@@ -43,6 +43,7 @@ Full history in `persistent_issues_archive.md`.
 | #36 Meshtastic_Interface plugin | Keep rnsd's plugin disabled; MeshForge gateway owns text-bridging | Decision record |
 | #37 rnsd AuthenticationError on startup | Authkey derives from identity; `systemctl restart rnsd` after `/etc/reticulum/config` changes | Wrapper catch + Issue #41 pin |
 | #38 NomadNet single-identity consolidation | One `~/.nomadnetwork/` per box; tmux-wrapped `nomadnet.service` systemd-user unit | `templates/systemd/nomadnet-user.service` |
+| #39 Gateway bridge identifying + directable (2026-04-21) | Mesh→RNS shows long_name in subject; `@id`/`@short_name` parses for directed downlink; `meshforge_*` LXMF fields namespace | Body in archive |
 | GTK Issues (#2, #11, #13–#15) | GTK4 removed in v0.5.x | — |
 
 ---
@@ -251,102 +252,6 @@ lists recent `Message bridged` / `LXMF delivery confirmed` log lines along with 
 LXMF source hash and the NomadNet conversation path, so operators can navigate to the right
 thread without filesystem spelunking. See `src/launcher_tui/handlers/gateway.py` → `_show_delivery_audit`.
 
-
----
-
-## Issue #39: Gateway bridge becomes identifying and two-way directable (2026-04-21)
-
-**Background**: until this change, the Meshtastic↔RNS bridge was half-duplex
-in both directions — RNS peers saw every bridged mesh message as coming from
-the gateway's single LXMF identity with only `[Mesh:xxxx]` (last 4 hex of the
-node id) in the body, and had no way to reply to a specific Meshtastic node.
-Everything sent by an RNS peer went out as `!ffffffff` broadcast. Extends
-Issue #35 (which documented the gateway-hash conversation indexing) with a
-real fix for identity + addressability rather than just a UI workaround.
-
-**What changed** (single commit, `src/gateway/rns_bridge.py` +
-`src/gateway/mqtt_bridge_handler.py` + `src/gateway/node_tracker.py`):
-
-1. **Mesh → RNS identity surfaces in the LXMF envelope, not the body.**
-   `_process_mesh_to_rns` now consults `node_tracker.get_node_by_mesh_id()`
-   (which has had the `long_name`/`short_name` since forever — it was simply
-   never queried, see `rns_bridge.py:1442` standing TODO) and builds:
-   - `title = "<long_name> (<!id>) via Meshtastic"` when name is known,
-     else `"<!id> via Meshtastic"`.
-   - `fields` dict with namespaced keys so future LXMF clients can parse
-     without guessing which string is which:
-     ```
-     meshforge_from_id       e.g. "!ebfa1b11"
-     meshforge_from_long     e.g. "HAT-fleet-host-3"
-     meshforge_from_short    e.g. "HAT3"
-     meshforge_channel       e.g. "meshforge"
-     meshforge_source_network "meshtastic"
-     ```
-   - Body is now the clean original text — no `[Mesh:xxxx]` prefix.
-
-2. **RNS → Mesh supports `@address` directed downlink.**
-   `_process_rns_to_mesh` parses the leading token of the LXMF body:
-   - `@!ebfa1b11 roger` → DM to node `!ebfa1b11`, body `[RNS:xxxx] roger`.
-   - `@HAT3 roger`     → short_name resolved via
-     `node_tracker.get_node_by_short_name()` (new helper); DM to resolved id.
-   - `plain text`      → broadcast on the bridge channel (unchanged).
-   - Unresolvable `@foo …` → logged, falls through to broadcast with the
-     original content preserved (no silent drop, no accidental misdelivery).
-   - The `destination` is threaded through the persistent-queue payload as
-     a new `destination` key.
-
-3. **MQTT publish honors the directed `to` field.** `publish_to_mqtt` in
-   `mqtt_bridge_handler.py` converts a `!xxxxxxxx` destination to its
-   numeric form (`int(hex, 16)`) and adds `"to": <numeric>` to the outbound
-   JSON only when present. No destination = no `"to"` field (meshtasticd
-   treats that as broadcast, preserving the current semantic).
-
-**Operator recipe** (what this looks like from NomadNet):
-- A mesh message from the HAT now shows with subject line
-  `HAT-fleet-host-3 (!ebfa1b11) via Meshtastic` and body `<just the text>`. The
-  conversation is still indexed under the gateway's LXMF source hash
-  (`f68c2f56…` on fleet-host-3), because that is who LXMF thinks the sender is —
-  but the subject line resolves Issue #35's "who actually sent this" gap.
-- To reply DM to a specific Meshtastic node, type
-  `@!ebfa1b11 <text>` or `@HAT3 <text>` in the NomadNet message box. The
-  gateway sends it as a Meshtastic DM (not broadcast). Verify with
-  `mosquitto_sub -v -t 'msh/#'` — the published JSON will contain
-  `"to": 3958611729` (decimal of `0xebfa1b11`).
-- To broadcast, send a plain message with no `@` prefix — same as before.
-
-**Backward compatibility**:
-- Existing LXMF clients that did not parse the old `[Mesh:xxxx]` body prefix
-  (which is every client we know of on the fleet — grep confirmed nothing
-  in meshforge or meshanchor code depends on the old prefix) see a cleaner
-  body and a richer title. No regression.
-- Tests that asserted on the old body prefix have been rewritten to assert
-  title + clean body instead. Plain-broadcast reply semantics unchanged.
-- `send_to_rns` gained optional `title=` and `fields=` kwargs; the
-  persistent-queue retry path (`rns_bridge.py:810`) uses defaults and is
-  unchanged.
-
-**Known limits (deferred to a later plan)**:
-- No per-Meshtastic-node RNS identities. Meshtastic nodes still do not
-  appear as first-class peers in NomadNet's Known Nodes page. The single
-  gateway identity is still the sender of every bridged message; the
-  `[Mesh:…]` era just got replaced by a richer LXMF envelope. If we want
-  distinct RNS peers per mesh node we'd need announces-per-node plus
-  inbound routing-by-destination — larger architectural ship, held for
-  field-feedback on Issue #39's `@address` convention first.
-
-**Prevention / where future work hooks in**:
-- The `meshforge_*` fields-dict namespace is intentionally reserved for
-  gateway-authored metadata. Any future sidecar data (hops, SNR, RSSI,
-  position, portnum) should use this namespace, not collide with LXMF's
-  own `FIELD_*` reserved keys.
-- When a future plan introduces per-node identities, the `@address`
-  resolution helper `_resolve_mesh_destination` is the single choke point
-  to extend — callers do not care whether a destination came from hex-id
-  parsing, short-name resolution, or future RNS-identity-to-mesh-node
-  routing.
-
-
----
 
 ## Issue #40: RNS→Mesh bridge — bytes payload crash + wrong-topic MQTT downlink (2026-04-21)
 
@@ -747,6 +652,69 @@ sudo python3 src/launcher_tui/main.py
   refactor; the new service_ops / config_ops mixins keep the main
   file under the 1,500-line cap. Future new functionality should
   land in the appropriate mixin, not in `nomadnet.py`.
+
+
+---
+
+## Issue #46: Fleet-wide RNS config alignment (2026-04-25)
+
+**Background**: Issue #41 introduced `rpc_key` pinning to fix
+AuthenticationError between rnsd and clients on a single box. This
+session's fleet audit (`scripts/rns_alignment.py audit --fleet`)
+showed only 1 of 5 boxes was even close to canonical: rnsd running
+from `/root/.reticulum/`, NomadNet pointing at empty
+`/etc/reticulum/`, MeshForge clients writing root-owned
+`/tmp/meshforge_rns_client/config` with no rpc_key. fleet-host-1 had been in
+a NomadNet 392-restart loop for five days. Issue #41 only ratchets
+when configs already share a directory — the fleet-wide reality was
+worse than that.
+
+**Symptom shape**:
+- NomadNet user-unit fails to stay up; "Restarts: N" climbs into the
+  hundreds with no actionable signal in the journal.
+- `/home/<user>/.cache/meshforge/logs/tui_errors.log`:
+  `multiprocessing.context.AuthenticationError: digest sent was rejected`.
+- TUI Status panel: "RPC auth failure (identity mismatch)".
+
+**Canonical layout (enforced by tooling)**:
+- `rnsd.service` ExecStart drop-in: `--config /etc/reticulum`.
+- `/etc/reticulum/config`: exists, root:root, contains
+  `rpc_key = <64-hex>` pinned.
+- NomadNet user-unit: `--rnsconfig /etc/reticulum`.
+- MeshForge clients: `/tmp/meshforge_rns_client/config` inherits
+  `rpc_key` + `instance_name` via the Issue #41 helpers.
+- `/home/<user>/.reticulum/` (if present): user-owned, NOT root.
+
+**Tools shipped**:
+- `src/utils/rns_alignment.py` — `probe_local()` snapshots a host
+  without carrying the rpc_key VALUE in any dataclass (only `bool`
+  presence — safe to log). `analyze_drift()` renders human reasons.
+  `plan_normalize()` is idempotent: aligned host → empty plan.
+- `scripts/rns_alignment.py` CLI:
+  `probe | audit | audit --fleet | normalize [--dry-run|--yes]`.
+- TUI: NomadNet → Service Control → Repair RNS alignment.
+- `nomadnet_wrapper.py` v7: **refuses-loud** on AuthenticationError
+  (exit 87 + repair instructions to stderr). Previously swallowed
+  it and booted NomadNet with empty stats — hiding the bug for days.
+- `templates/systemd/nomadnet-user.service`: `StartLimitBurst=5`,
+  `StartLimitIntervalSec=300`. After 5 wrapper-87 exits in 5 min the
+  unit parks in failed state — no more 392-restart silent loops.
+
+**Operator recipe**:
+```bash
+python3 /opt/meshforge/scripts/rns_alignment.py audit --fleet
+ssh <box> "sudo python3 /opt/meshforge/scripts/rns_alignment.py normalize"
+```
+Or via TUI on the box: `NomadNet → Service Control → Repair RNS alignment`.
+
+**Prevention**:
+- Audit catches drift before NomadNet enters a restart-loop.
+- Wrapper exit-87 surfaces the actual failure in the journal.
+- `StartLimitBurst` caps journal noise; failure becomes loud.
+- `TestPlanNormalize::test_idempotent_on_already_normalized` guards
+  the planner so re-running normalize on an aligned host is a no-op.
+- Library/CLI never carry the rpc_key value in any field or log line;
+  verified by `TestRpcKeyScriptDoesNotLeakViaDescription`.
 
 
 

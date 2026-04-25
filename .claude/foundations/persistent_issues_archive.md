@@ -682,3 +682,99 @@ MeshForge status says "rnsd: RUNNING (shared instance available)" when rnsd is a
 - `find_blocking_interfaces()` runs regardless of rnsd state for pre-startup diagnostics
 
 ### Status: RESOLVED
+---
+
+## Issue #39: Gateway bridge becomes identifying and two-way directable (2026-04-21)
+
+**Background**: until this change, the Meshtastic↔RNS bridge was half-duplex
+in both directions — RNS peers saw every bridged mesh message as coming from
+the gateway's single LXMF identity with only `[Mesh:xxxx]` (last 4 hex of the
+node id) in the body, and had no way to reply to a specific Meshtastic node.
+Everything sent by an RNS peer went out as `!ffffffff` broadcast. Extends
+Issue #35 (which documented the gateway-hash conversation indexing) with a
+real fix for identity + addressability rather than just a UI workaround.
+
+**What changed** (single commit, `src/gateway/rns_bridge.py` +
+`src/gateway/mqtt_bridge_handler.py` + `src/gateway/node_tracker.py`):
+
+1. **Mesh → RNS identity surfaces in the LXMF envelope, not the body.**
+   `_process_mesh_to_rns` now consults `node_tracker.get_node_by_mesh_id()`
+   (which has had the `long_name`/`short_name` since forever — it was simply
+   never queried, see `rns_bridge.py:1442` standing TODO) and builds:
+   - `title = "<long_name> (<!id>) via Meshtastic"` when name is known,
+     else `"<!id> via Meshtastic"`.
+   - `fields` dict with namespaced keys so future LXMF clients can parse
+     without guessing which string is which:
+     ```
+     meshforge_from_id       e.g. "!ebfa1b11"
+     meshforge_from_long     e.g. "HAT-fleet-host-3"
+     meshforge_from_short    e.g. "HAT3"
+     meshforge_channel       e.g. "meshforge"
+     meshforge_source_network "meshtastic"
+     ```
+   - Body is now the clean original text — no `[Mesh:xxxx]` prefix.
+
+2. **RNS → Mesh supports `@address` directed downlink.**
+   `_process_rns_to_mesh` parses the leading token of the LXMF body:
+   - `@!ebfa1b11 roger` → DM to node `!ebfa1b11`, body `[RNS:xxxx] roger`.
+   - `@HAT3 roger`     → short_name resolved via
+     `node_tracker.get_node_by_short_name()` (new helper); DM to resolved id.
+   - `plain text`      → broadcast on the bridge channel (unchanged).
+   - Unresolvable `@foo …` → logged, falls through to broadcast with the
+     original content preserved (no silent drop, no accidental misdelivery).
+   - The `destination` is threaded through the persistent-queue payload as
+     a new `destination` key.
+
+3. **MQTT publish honors the directed `to` field.** `publish_to_mqtt` in
+   `mqtt_bridge_handler.py` converts a `!xxxxxxxx` destination to its
+   numeric form (`int(hex, 16)`) and adds `"to": <numeric>` to the outbound
+   JSON only when present. No destination = no `"to"` field (meshtasticd
+   treats that as broadcast, preserving the current semantic).
+
+**Operator recipe** (what this looks like from NomadNet):
+- A mesh message from the HAT now shows with subject line
+  `HAT-fleet-host-3 (!ebfa1b11) via Meshtastic` and body `<just the text>`. The
+  conversation is still indexed under the gateway's LXMF source hash
+  (`f68c2f56…` on fleet-host-3), because that is who LXMF thinks the sender is —
+  but the subject line resolves Issue #35's "who actually sent this" gap.
+- To reply DM to a specific Meshtastic node, type
+  `@!ebfa1b11 <text>` or `@HAT3 <text>` in the NomadNet message box. The
+  gateway sends it as a Meshtastic DM (not broadcast). Verify with
+  `mosquitto_sub -v -t 'msh/#'` — the published JSON will contain
+  `"to": 3958611729` (decimal of `0xebfa1b11`).
+- To broadcast, send a plain message with no `@` prefix — same as before.
+
+**Backward compatibility**:
+- Existing LXMF clients that did not parse the old `[Mesh:xxxx]` body prefix
+  (which is every client we know of on the fleet — grep confirmed nothing
+  in meshforge or meshanchor code depends on the old prefix) see a cleaner
+  body and a richer title. No regression.
+- Tests that asserted on the old body prefix have been rewritten to assert
+  title + clean body instead. Plain-broadcast reply semantics unchanged.
+- `send_to_rns` gained optional `title=` and `fields=` kwargs; the
+  persistent-queue retry path (`rns_bridge.py:810`) uses defaults and is
+  unchanged.
+
+**Known limits (deferred to a later plan)**:
+- No per-Meshtastic-node RNS identities. Meshtastic nodes still do not
+  appear as first-class peers in NomadNet's Known Nodes page. The single
+  gateway identity is still the sender of every bridged message; the
+  `[Mesh:…]` era just got replaced by a richer LXMF envelope. If we want
+  distinct RNS peers per mesh node we'd need announces-per-node plus
+  inbound routing-by-destination — larger architectural ship, held for
+  field-feedback on Issue #39's `@address` convention first.
+
+**Prevention / where future work hooks in**:
+- The `meshforge_*` fields-dict namespace is intentionally reserved for
+  gateway-authored metadata. Any future sidecar data (hops, SNR, RSSI,
+  position, portnum) should use this namespace, not collide with LXMF's
+  own `FIELD_*` reserved keys.
+- When a future plan introduces per-node identities, the `@address`
+  resolution helper `_resolve_mesh_destination` is the single choke point
+  to extend — callers do not care whether a destination came from hex-id
+  parsing, short-name resolution, or future RNS-identity-to-mesh-node
+  routing.
+
+
+---
+

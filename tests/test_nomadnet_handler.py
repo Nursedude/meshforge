@@ -1638,3 +1638,57 @@ class TestRepairRnsAlignment:
             for argv in captured_argv
         ), f"expected sudo normalize --yes invocation, got {captured_argv}"
 
+
+class TestNomadnetWrapperHardening:
+    """The wrapper must refuse-loud on AuthenticationError (Issue #46)."""
+
+    def test_wrapper_v7_writes_authentication_error_branch(self, tmp_path):
+        """Wrapper script must contain a refuse-loud handler for AuthenticationError."""
+        h = _make_nomadnet()
+        with patch(
+            'handlers._nomadnet_install_utils.get_real_user_home',
+            return_value=tmp_path,
+        ):
+            wrapper = h._create_nomadnet_wrapper()
+        assert wrapper is not None
+        text = wrapper.read_text()
+        # Refuse-loud branch:
+        assert 'except AuthenticationError' in text, (
+            "wrapper must catch AuthenticationError separately from "
+            "transient errors"
+        )
+        # Must point at the alignment script:
+        assert 'rns_alignment.py' in text, (
+            "wrapper must direct operators to scripts/rns_alignment.py"
+        )
+        # Sentinel exit code:
+        assert '_EXIT_AUTH_MISMATCH = 87' in text
+        # Must NOT include AuthenticationError in the swallow tuple anymore
+        # (else it would silently degrade and never refuse-loud)
+        # Locate the _TRANSIENT_EXC tuple body:
+        m_start = text.find('_TRANSIENT_EXC = (')
+        m_end = text.find(')', m_start)
+        transient = text[m_start:m_end]
+        assert 'AuthenticationError' not in transient, (
+            "AuthenticationError must NOT be in the transient swallow tuple"
+        )
+
+    def test_wrapper_version_bumped_to_7(self, tmp_path):
+        """Version marker forces re-creation on existing fleet hosts."""
+        from handlers._nomadnet_install_utils import (
+            NomadNetInstallUtilsMixin,
+        )
+        assert NomadNetInstallUtilsMixin._WRAPPER_VERSION == "7"
+
+    def test_systemd_template_has_start_limit_burst(self):
+        """Unit template must cap restart loops via StartLimitBurst."""
+        from pathlib import Path as _P
+        template = _P(__file__).parents[1] / 'templates' / 'systemd' / 'nomadnet-user.service'
+        text = template.read_text()
+        assert 'StartLimitBurst=' in text, (
+            "unit template must set StartLimitBurst to cap restart loops"
+        )
+        assert 'StartLimitIntervalSec=' in text, (
+            "StartLimitIntervalSec must scope the burst window"
+        )
+

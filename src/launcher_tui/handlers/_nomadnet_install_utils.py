@@ -414,18 +414,29 @@ class NomadNetInstallUtilsMixin:
     # NomadNet wrapper (monkey-patch broken RPC)
     # ------------------------------------------------------------------
 
-    _WRAPPER_VERSION = "6"  # bump to force re-creation
+    _WRAPPER_VERSION = "7"  # bump to force re-creation
 
     def _create_nomadnet_wrapper(self) -> Optional[Path]:
-        """Create a wrapper script that patches get_interface_stats.
+        """Create a wrapper script that hardens NomadNet startup.
 
-        NomadNet's TextUI.MainDisplay.__init__() calls
-        RNS.Reticulum.get_interface_stats() which uses the RPC management
-        socket (multiprocessing.connection). When rnsd's RPC listener is
-        broken, this crashes NomadNet with ConnectionRefusedError.
+        Two failure modes the wrapper guards against:
 
-        The wrapper monkey-patches get_interface_stats to catch the error
-        and return an empty stats dict (graceful degradation — no stats shown).
+        1. **Transient RPC failure**: rnsd is briefly unreachable while
+           NomadNet boots. Swallow ConnectionRefusedError /
+           BrokenPipeError / OSError on get_interface_stats(); return
+           an empty stats dict.
+        2. **Authkey mismatch (Issue #41/#46)**: rnsd's rpc_key differs
+           from the one our RNS config derived. Every RPC handshake
+           raises AuthenticationError. Silently swallowing this hides
+           the real problem and produces an infinite restart-loop with
+           no actionable signal in the journal — so the wrapper now
+           **refuses-loud** on the very first AuthenticationError:
+           prints a clear 'RUN: scripts/rns_alignment.py normalize'
+           hint to stderr and exits with sentinel code 87.
+
+        The unit's StartLimitBurst then trips after a few retries and
+        systemd parks the unit in failed state — operator sees it in
+        the TUI Status panel + journalctl, runs Repair, done.
 
         Returns the wrapper path, or None if creation failed.
         """
@@ -434,27 +445,30 @@ class NomadNetInstallUtilsMixin:
         wrapper_path = wrapper_dir / 'nomadnet_wrapper.py'
 
         wrapper_content = '''\
-"""MeshForge NomadNet wrapper — patches RPC failures during startup.
+"""MeshForge NomadNet wrapper — refuses-loud on rpc_key mismatch.
 
 Version: {version}
 
 NomadNet's TextUI startup calls RNS.Reticulum.get_interface_stats(),
 which opens a multiprocessing.connection.Client to rnsd's RPC socket.
-When rnsd is unreachable OR when its rpc_key differs from the one our
-RNS config derived, NomadNet crashes before any UI appears. This
-wrapper monkey-patches get_interface_stats to swallow those failures
-and return an empty stats dict so NomadNet at least starts.
+Two distinct failures arrive through that codepath:
 
-Error classes caught:
-  - ConnectionRefusedError / BrokenPipeError / OSError: rnsd RPC down.
-  - AuthenticationError: rnsd running, but rpc_key mismatch — usually
-    config-dir drift (rnsd loaded a different /etc/reticulum/config
-    than NomadNet did, or ~/.reticulum vs /etc/reticulum split).
-  - TypeError / KeyError: malformed stats structure from upstream.
+  - Transient (rnsd not yet up, or briefly down): swallow + degrade
+    (empty interface stats, NomadNet UI still renders).
+  - AuthenticationError: rpc_key mismatch — rnsd and NomadNet are using
+    different config dirs / different identities / different rpc_keys.
+    This is the Issue #46 fleet-wide failure mode. Swallowing it just
+    hides the bug behind an empty stats panel and keeps the underlying
+    "every RPC fails" condition unresolved. Refuse-loud, exit 87,
+    and let the operator fix the alignment via:
 
-NOT fixed by this wrapper: the underlying authkey mismatch. NomadNet
-will start but interface stats stay empty. See Issue #37 in
-.claude/foundations/persistent_issues.md for the diagnostic checklist.
+      MeshForge TUI > NomadNet > Service Control > Repair RNS alignment
+    or
+      sudo /opt/meshforge/scripts/rns_alignment.py normalize
+
+The systemd unit pairs this with StartLimitBurst to park the service
+in failed state after a few retries, so the journal carries one clear
+diagnostic line instead of 392 silent restarts.
 """
 import sys
 from multiprocessing.context import AuthenticationError
@@ -464,20 +478,38 @@ _orig_get_interface_stats = RNS.Reticulum.get_interface_stats
 
 _FALLBACK = dict(interfaces=[])
 
-_SAFE_EXC = (
+# Transient RPC failures: degrade to empty stats, keep UI alive.
+_TRANSIENT_EXC = (
     ConnectionRefusedError,
     BrokenPipeError,
     TypeError,
     KeyError,
     OSError,
-    AuthenticationError,
 )
+
+# Sentinel exit code so systemd + the TUI can recognise this failure.
+_EXIT_AUTH_MISMATCH = 87
 
 
 def _safe_get_interface_stats(self):
     try:
         result = _orig_get_interface_stats(self)
-    except _SAFE_EXC:
+    except AuthenticationError as e:
+        # Refuse-loud — this is the actual root cause (Issue #46).
+        sys.stderr.write(
+            "\\n[meshforge nomadnet_wrapper] RNS rpc_key MISMATCH detected.\\n"
+            f"  Underlying error: {{type(e).__name__}}: {{e}}\\n"
+            "  rnsd and NomadNet are using different identities / rpc_keys.\\n"
+            "  FIX:\\n"
+            "    MeshForge TUI > NomadNet > Service Control > Repair RNS alignment\\n"
+            "  or:\\n"
+            "    sudo python3 /opt/meshforge/scripts/rns_alignment.py normalize\\n"
+            "\\n"
+        )
+        sys.stderr.flush()
+        # Hard-exit before NomadNet's TUI loop starts crash-spinning.
+        sys.exit(_EXIT_AUTH_MISMATCH)
+    except _TRANSIENT_EXC:
         return _FALLBACK
     if not isinstance(result, dict) or 'interfaces' not in result:
         return _FALLBACK

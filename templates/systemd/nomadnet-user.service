@@ -40,13 +40,21 @@
 # rnsd on this fleet is a SYSTEM service running as root (not a user
 # service). We don't Require= a user rnsd.service — the wrapper script
 # (nomadnet_wrapper.py, created by MeshForge's TUI first-run) tolerates
-# transient rnsd unavailability and AuthenticationError on startup
-# (see Issue #37).
+# transient rnsd unavailability and refuses-loud on rpc_key mismatch
+# (Issue #37, #41, #46).
+#
+# StartLimitBurst caps the restart-loop: if the wrapper exits 87
+# (AuthenticationError / rpc_key mismatch) repeatedly, systemd parks
+# the unit in failed state after 5 attempts inside StartLimitIntervalSec.
+# The operator then sees a single clear failure in the journal + TUI,
+# rather than 392 silent restarts.
 
 [Unit]
 Description=NomadNet LXMF Client (tmux-detached, consolidated)
 After=default.target network-online.target rnsd.service
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=forking
@@ -69,7 +77,12 @@ ExecStart=/usr/bin/tmux new-session -d -s nomadnet '__NOMADNET_EXEC__'
 
 ExecStop=/usr/bin/tmux kill-session -t nomadnet
 
-Restart=on-failure
+# Restart on transient failures (rnsd briefly unreachable, etc.).
+# The wrapper's exit-87 path (rpc_key mismatch) trips StartLimitBurst
+# above and the unit enters failed state — that's the desired refuse-
+# loud behaviour. Use Restart=always so we also recover from the case
+# where nomadnet exits 0 due to an unhandled internal condition.
+Restart=always
 RestartSec=5
 
 # Logging — tmux itself goes silent after daemonising, but ExecStart*
