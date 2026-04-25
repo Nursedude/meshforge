@@ -120,6 +120,34 @@ class TestScanConfigFile:
         f = _scan_config_file(cfg)
         assert f.has_instance_name is False
 
+    def test_detects_indented_rpc_key(self, tmp_path):
+        """RNS commonly indents rpc_key inside [reticulum]; must still detect.
+
+        The original ^rpc_key anchor missed indented entries and caused
+        the normalize planner to insert a duplicate at column 0, which
+        ConfigObj rejects with "Could not parse the configuration".
+        Caught the hard way in production on all 4 satellite Pis (2026-04-25).
+        """
+        cfg = tmp_path / "config"
+        cfg.write_text(
+            "[reticulum]\n"
+            "  enable_transport = Yes\n"
+            "  share_instance = Yes\n"
+            "  instance_name = default\n"
+            "  rpc_key = " + ("a" * 64) + "\n"
+            "[interfaces]\n"
+        )
+        f = _scan_config_file(cfg)
+        assert f.has_rpc_key is True, (
+            "indented rpc_key under [reticulum] must still be detected"
+        )
+
+    def test_indented_rpc_key_with_short_value_rejected(self, tmp_path):
+        cfg = tmp_path / "config"
+        cfg.write_text("[reticulum]\n  rpc_key = abcd\n")
+        f = _scan_config_file(cfg)
+        assert f.has_rpc_key is False
+
     def test_does_not_leak_rpc_key_value(self, tmp_path):
         """The dataclass must NEVER carry the rpc_key value, only its presence."""
         cfg = tmp_path / "config"

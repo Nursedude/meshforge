@@ -169,8 +169,14 @@ def _scan_config_file(path: Path, sudo: bool = False) -> ConfigFileFacts:
         f.exists = True
         f.owner = _stat_owner(path, sudo=True)
         try:
+            # Match rpc_key whether at column 0 OR indented under a
+            # sub-section (RNS configs often indent under [reticulum]).
+            # The earlier `^rpc_key` anchor missed indented entries and
+            # caused the planner to insert duplicate keys that ConfigObj
+            # rejected. See rns_alignment regression test.
             res = subprocess.run(
-                ['sudo', '-n', 'grep', '-cE', '^rpc_key', str(path)],
+                ['sudo', '-n', 'grep', '-cE', r'^[[:space:]]*rpc_key',
+                 str(path)],
                 capture_output=True, text=True, timeout=5,
             )
             f.has_rpc_key = res.returncode == 0 and res.stdout.strip() != '0'
@@ -198,7 +204,12 @@ def _scan_config_file(path: Path, sudo: bool = False) -> ConfigFileFacts:
     try:
         text = path.read_text()
         for raw in text.splitlines():
-            line = raw.strip()
+            # Lstrip so we detect rpc_key whether it's at column 0 or
+            # indented inside a sub-section (RNS configs commonly
+            # indent under [reticulum]). Without this, the planner would
+            # think rpc_key is missing and insert a duplicate, which
+            # ConfigObj rejects with "Could not parse the configuration".
+            line = raw.lstrip().rstrip()
             if not line or line.startswith('#') or '=' not in line:
                 continue
             name, _, value = line.partition('=')
@@ -468,7 +479,11 @@ def _build_rpc_key_insert_script(key: str) -> str:
     return f"""
 set -e
 CFG=/etc/reticulum/config
-if grep -qE '^rpc_key' "$CFG"; then exit 0; fi
+# Belt-and-suspenders: detect rpc_key whether at column 0 or indented
+# inside [reticulum]. RNS commonly stores it indented, and a column-0
+# anchor (`^rpc_key`) misses those — producing a duplicate-key insert
+# that ConfigObj rejects with "Could not parse the configuration".
+if grep -qE '^[[:space:]]*rpc_key' "$CFG"; then exit 0; fi
 if grep -qE '^\\[reticulum\\]' "$CFG"; then
   awk -v k='{key}' '
     {{ print }}
