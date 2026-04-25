@@ -116,21 +116,20 @@ class LXMFParser(ServiceParser):
     def parse(app_data: bytes, aspect: str) -> ServiceInfo:
         """Parse LXMF app_data format.
 
-        LXMF (LXMRouter.announce) framing — verified against real wire
-        bytes captured on the fleet 2026-04-25:
+        Verified against ``LXMF/LXMRouter.py::get_announce_app_data``
+        (LXMF >= 0.6, present in pipx venvs across the fleet
+        2026-04-25): the app_data is msgpack-packed
+        ``[display_name_utf8_bytes, stamp_cost_or_None]``. Older
+        versions of this parser treated app_data as a free-form blob
+        and let leading msgpack header bytes (``0x92`` fixarray-2,
+        ``0xc4`` bin8 marker, ``0x22`` = 34 = name length) leak into
+        the rendered display name — the fleet-wide ``"MeshForge
+        Gateway (...)`` and ``!MeshForge Gateway (...)`` symptoms.
 
-            byte 0      : uint8 length of the display-name field
-            bytes 1..L  : display name (UTF-8, no null terminator)
-            bytes L+1..: optional msgpack-encoded telemetry dict
-                          (Sideband-style; absent for plain LXMF clients)
-
-        It is NOT a single msgpack object at the top level — older
-        versions of this parser assumed it was, and the length-prefix
-        byte (which happens to be a printable ASCII int for typical
-        name lengths, e.g. 33 = '!', 34 = '"') leaked into the rendered
-        display name as a leading garbage character. Hence the
-        fleet-wide ``!MeshForge Gateway (...)`` and ``"MeshForge
-        Gateway (...)`` symptoms before this fix.
+        Newer Sideband variants append a msgpack telemetry dict after
+        the name within the same outer list; we keep the legacy
+        msgpack-marker scan as a fallback for any non-LXMRouter
+        announce that happens to share the ``lxmf.delivery`` aspect.
 
         Msgpack telemetry keys (Sideband format):
         - latitude/lat, longitude/lon/lng, altitude/alt
@@ -145,9 +144,9 @@ class LXMFParser(ServiceParser):
         if not app_data or len(app_data) == 0:
             return info
 
-        name_bytes, telemetry_offset = LXMFParser._extract_name_and_telemetry(app_data)
+        name_bytes, telemetry_bytes = LXMFParser._extract_name_and_telemetry(app_data)
 
-        if 0 < len(name_bytes) < 128:
+        if name_bytes and 0 < len(name_bytes) < 128:
             try:
                 decoded = name_bytes.decode('utf-8', errors='ignore').strip('\x00').strip()
                 if decoded:
@@ -157,29 +156,62 @@ class LXMFParser(ServiceParser):
             except UnicodeDecodeError:
                 pass
 
-        # Parse msgpack telemetry if any bytes remain after the name.
-        if telemetry_offset is not None and telemetry_offset < len(app_data):
-            LXMFParser._parse_msgpack_telemetry(app_data[telemetry_offset:], info)
+        if telemetry_bytes:
+            LXMFParser._parse_msgpack_telemetry(telemetry_bytes, info)
 
         return info
 
     @staticmethod
-    def _extract_name_and_telemetry(app_data: bytes) -> tuple:
-        """Split app_data into (name_bytes, telemetry_offset).
+    def _extract_name_and_telemetry(app_data: bytes):
+        """Return ``(name_bytes, telemetry_bytes_or_None)``.
 
-        Strategy:
-          1. Treat byte 0 as a uint8 length prefix. If ``app_data[1:1+L]``
-             decodes cleanly to a printable UTF-8 string, that's the name
-             and telemetry begins at ``1+L``.
-          2. Otherwise fall back to the legacy heuristic: scan for the
-             first msgpack map marker (fixmap/map16/map32) and treat
-             everything before it as the raw name. This preserves
-             compatibility with any non-LXMF announce that happens to
-             share the lxmf.delivery aspect.
+        Strategy ladder (first match wins):
 
-        Returns ``(name_bytes, telemetry_offset_or_None)``.
+          1. **msgpack-list shape** — the canonical LXMRouter format
+             ``msgpack.packb([display_name_bytes, stamp_cost])``. Use
+             ``msgpack.unpackb`` to extract element 0 as the name and
+             element 2+ (if present) as telemetry.
+          2. **Legacy uint8 length prefix** — ``<L><name>``. Some
+             non-LXMRouter peers (or ancient builds) emit this shape;
+             keep it as a fallback so we don't regress them.
+          3. **Msgpack-marker heuristic** — scan for the first fixmap /
+             map16 / map32 marker and treat preceding bytes as the
+             raw name. Last-resort path for unknown encodings.
+
+        Never returns the msgpack header bytes as part of the name —
+        that was the pre-fix bug.
         """
-        # Strategy 1: 1-byte length prefix (LXMRouter.announce framing)
+        # Strategy 1: msgpack-packed list (LXMRouter canonical)
+        if _HAS_MSGPACK:
+            try:
+                unpacked = msgpack.unpackb(
+                    app_data, raw=True, strict_map_key=False,
+                )
+                if isinstance(unpacked, (list, tuple)) and len(unpacked) >= 1:
+                    head = unpacked[0]
+                    if isinstance(head, (bytes, bytearray)):
+                        name = bytes(head)
+                    elif isinstance(head, str):
+                        name = head.encode('utf-8')
+                    else:
+                        name = b''
+                    telemetry = None
+                    # Sideband-style: a trailing dict is telemetry.
+                    for elem in unpacked[1:]:
+                        if isinstance(elem, dict):
+                            try:
+                                telemetry = msgpack.packb(elem)
+                            except Exception:
+                                telemetry = None
+                            break
+                    if name:
+                        return name, telemetry
+            except Exception:
+                # Not msgpack-decodable, malformed, or doesn't match
+                # the LXMRouter list shape — fall through to legacy.
+                pass
+
+        # Strategy 2: <uint8 len><name> (legacy fallback)
         prefix_len = app_data[0]
         if 1 <= prefix_len <= 127 and 1 + prefix_len <= len(app_data):
             candidate = app_data[1:1 + prefix_len]
@@ -188,13 +220,13 @@ class LXMFParser(ServiceParser):
             except UnicodeDecodeError:
                 decoded = None
             if decoded and all(c.isprintable() or c.isspace() for c in decoded):
-                telemetry_offset = 1 + prefix_len
-                return candidate, telemetry_offset
+                tail = app_data[1 + prefix_len:]
+                return candidate, tail if tail else None
 
-        # Strategy 2: legacy fallback — scan for msgpack map marker
+        # Strategy 3: msgpack-marker heuristic (last resort)
         msgpack_start = LXMFParser._find_msgpack_start(app_data)
         if msgpack_start > 0:
-            return app_data[:msgpack_start], msgpack_start
+            return app_data[:msgpack_start], app_data[msgpack_start:]
         return app_data, None
 
     @staticmethod
