@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
-# Roll `git pull && systemctl restart meshforge-gateway` across the fleet.
+# Roll `git pull` + service restarts across the fleet for BOTH MeshForge repos:
+#   /opt/meshforge          (this repo) → restart meshforge-gateway.service
+#   /opt/meshforge-maps     (sister)    → restart meshforge-maps.service
+#
+# A box without one of the repos still updates the other (skip-if-absent).
+# Without this, /opt/meshforge-maps drifts on boxes where it isn't manually
+# pulled — observed Apr 24 2026 on fleet-host, where a 14 GB sqlite WAL
+# accumulated because the WAL-cap fix shipped Apr 20 had never landed.
 #
 # Reads a host list from the first file found:
 #   $MESHFORGE_FLEET_HOSTS (if set)
@@ -14,11 +21,12 @@
 #   # jump-host syntax is supported via ~/.ssh/config
 #   moc.via-volcano
 #
-# Per-host sequence: verify repo + branch + unit, git pull --ff-only,
-# sudo systemctl restart meshforge-gateway, print PASS/FAIL.
+# Per-host: verify each present repo + branch, git pull --ff-only, restart
+# the matching unit if installed, print one summary line per repo. A repo
+# missing on a host is reported as `skip_no_repo`, not a failure.
 #
-# A host failing does NOT abort the rest. Exit code is the number of hosts
-# that failed (0 = all ok).
+# A host failing does NOT abort the rest. Exit code is the number of host
+# x repo failures (0 = all ok).
 
 set -uo pipefail
 
@@ -49,52 +57,81 @@ EOF
     exit 2
 fi
 
-# Remote recipe. Runs on each target Pi. Prints a single tagged summary
-# line at the end so the driver can grep it cleanly.
+# Remote recipe. Runs on each target Pi. Prints one tagged summary line per
+# (repo, unit) pair so the driver can attribute each result independently.
+# Format: TAG <repo_short> <head_or_status> [unit_status]
+#   PASS meshforge a48ff82 restarted
+#   PASS meshforge-maps 222265e no_unit
+#   SKIP meshforge-maps no_repo
 REMOTE_SCRIPT='
 set -u
-REPO="/opt/meshforge"
-if [ ! -d "$REPO/.git" ]; then
-    echo "FAIL repo_missing $REPO"
-    exit 1
-fi
-cd "$REPO" || { echo "FAIL cd_failed"; exit 1; }
 
-branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "DETACHED")
-if [ "$branch" != "main" ]; then
-    echo "FAIL wrong_branch $branch"
-    exit 1
-fi
+# sync_repo <short_name> <repo_path> <unit_name>
+# Emits exactly one summary line. Returns 0 on PASS/SKIP, 1 on FAIL so the
+# overall exit code reflects how many things broke.
+sync_repo() {
+    local short="$1" repo="$2" unit="$3"
 
-# Pull — require fast-forward only, never merge
-if ! git pull --ff-only origin main >/dev/null 2>pull.err; then
-    echo "FAIL git_pull $(tr "\n" "|" < pull.err | head -c 200)"
-    rm -f pull.err
-    exit 1
-fi
-rm -f pull.err
-new_head=$(git rev-parse --short HEAD)
-
-# Only restart if the unit is installed; otherwise just report the sync
-if systemctl list-unit-files meshforge-gateway.service 2>/dev/null | grep -q meshforge-gateway; then
-    if sudo -n systemctl restart meshforge-gateway.service >/dev/null 2>restart.err; then
-        rm -f restart.err
-        echo "PASS $new_head restarted"
-    else
-        msg=$(tr "\n" "|" < restart.err | head -c 200)
-        rm -f restart.err
-        echo "FAIL restart $msg"
-        exit 1
+    if [ ! -d "$repo/.git" ]; then
+        echo "SKIP $short no_repo"
+        return 0
     fi
-else
-    echo "PASS $new_head no_unit"
-fi
+    if ! cd "$repo" 2>/dev/null; then
+        echo "FAIL $short cd_failed"
+        return 1
+    fi
+
+    local branch
+    branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "DETACHED")
+    if [ "$branch" != "main" ]; then
+        echo "FAIL $short wrong_branch $branch"
+        return 1
+    fi
+
+    if ! git pull --ff-only origin main >/dev/null 2>pull.err; then
+        local msg
+        msg=$(tr "\n" "|" < pull.err | head -c 200)
+        rm -f pull.err
+        echo "FAIL $short git_pull $msg"
+        return 1
+    fi
+    rm -f pull.err
+    local new_head
+    new_head=$(git rev-parse --short HEAD)
+
+    if systemctl list-unit-files "${unit}.service" 2>/dev/null | grep -q "$unit"; then
+        if sudo -n systemctl restart "${unit}.service" >/dev/null 2>restart.err; then
+            rm -f restart.err
+            echo "PASS $short $new_head restarted"
+        else
+            local emsg
+            emsg=$(tr "\n" "|" < restart.err | head -c 200)
+            rm -f restart.err
+            echo "FAIL $short restart $emsg"
+            return 1
+        fi
+    else
+        echo "PASS $short $new_head no_unit"
+    fi
+    return 0
+}
+
+# Run both syncs even if one fails so a broken meshforge-maps does not mask
+# a successful meshforge update.
+sync_repo meshforge       /opt/meshforge       meshforge-gateway || rc1=$?
+sync_repo meshforge-maps  /opt/meshforge-maps  meshforge-maps    || rc2=$?
+exit $(( ${rc1:-0} + ${rc2:-0} ))
 '
 
-# Iterate hosts
+# Iterate hosts. Each host produces multiple summary lines (one per repo);
+# we track host-level pass/fail counts (any FAIL on a host = host failed)
+# AND per-action counts so the operator sees both views.
 fail_count=0
 pass_count=0
 skip_count=0
+action_pass=0
+action_fail=0
+action_skip=0
 
 while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     # strip leading/trailing whitespace, skip blank + comment
@@ -108,26 +145,37 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
                   "$host" "bash -s" <<< "$REMOTE_SCRIPT" 2>&1)"
     rc=$?
 
-    summary="$(echo "$result" | grep -E '^(PASS|FAIL) ' | tail -1)"
-    if [[ $rc -ne 0 && -z "$summary" ]]; then
+    # Pull all summary lines (PASS/FAIL/SKIP), one per repo.
+    summaries="$(echo "$result" | grep -E '^(PASS|FAIL|SKIP) ')"
+    if [[ -z "$summaries" ]]; then
         printf '[%-30s] SKIP unreachable (ssh rc=%d)\n' "$host" "$rc"
         skip_count=$((skip_count + 1))
         continue
     fi
 
-    if [[ "$summary" =~ ^PASS ]]; then
-        printf '[%-30s] %s\n' "$host" "$summary"
-        pass_count=$((pass_count + 1))
-    else
-        printf '[%-30s] %s\n' "$host" "${summary:-FAIL unknown}"
+    host_failed=0
+    while IFS= read -r line; do
+        printf '[%-30s] %s\n' "$host" "$line"
+        case "$line" in
+            PASS*) action_pass=$((action_pass + 1)) ;;
+            SKIP*) action_skip=$((action_skip + 1)) ;;
+            FAIL*) action_fail=$((action_fail + 1)); host_failed=1 ;;
+        esac
+    done <<< "$summaries"
+
+    if [[ $host_failed -eq 1 ]]; then
         fail_count=$((fail_count + 1))
+    else
+        pass_count=$((pass_count + 1))
     fi
 done < "$FLEET_FILE"
 
 echo
-printf 'Summary: %d ok, %d failed, %d unreachable\n' \
+printf 'Hosts:   %d ok, %d failed, %d unreachable\n' \
     "$pass_count" "$fail_count" "$skip_count"
+printf 'Actions: %d ok, %d failed, %d skipped (no_repo)\n' \
+    "$action_pass" "$action_fail" "$action_skip"
 
-# Exit non-zero if anything went wrong (fail OR unreachable) — operators
-# scripting this want a reliable signal, not a silent partial rollout
-exit "$((fail_count + skip_count))"
+# Exit non-zero if any action failed or any host was unreachable. SKIP from
+# no_repo is fine (idempotent install pattern); SKIP from ssh failure is not.
+exit "$((action_fail + skip_count))"
