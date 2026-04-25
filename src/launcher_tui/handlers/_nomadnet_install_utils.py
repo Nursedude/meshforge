@@ -369,23 +369,40 @@ class NomadNetInstallUtilsMixin:
             return False
 
     def _find_nomadnet_binary(self) -> str:
-        """Find NomadNet binary path, or show error and return None."""
-        nn_path = shutil.which('nomadnet')
-        if not nn_path:
-            user_home = get_real_user_home()
-            candidate = user_home / '.local' / 'bin' / 'nomadnet'
-            if candidate.exists():
-                nn_path = str(candidate)
+        """Find NomadNet binary, restricted to the canonical pipx layout.
 
-        if not nn_path:
-            self.ctx.dialog.msgbox(
-                "Not Installed",
-                "NomadNet is not installed.\n\n"
-                "Install with: pipx install nomadnet\n"
-                "Or use the Install option from this menu.",
-            )
-            return None
-        return nn_path
+        Issue #46 follow-up: we used to fall back to ``shutil.which`` and
+        any ``~/.local/bin/nomadnet``; pip-user / apt installs would
+        satisfy this and silently produce a unit that referenced a binary
+        whose adjacent python3 didn't exist. The canonical installer
+        (``scripts/install_nomadnet.sh``) standardizes on pipx, so the
+        canonical layout is:
+
+            ~/.local/bin/nomadnet -> <pipx-venv>/bin/nomadnet
+            <pipx-venv>/bin/python3   (used to run the wrapper)
+
+        If that layout isn't present we refuse and tell the operator to
+        run the canonical installer. No silent degradation.
+        """
+        user_home = get_real_user_home()
+        candidate = user_home / '.local' / 'bin' / 'nomadnet'
+        if candidate.exists():
+            try:
+                resolved = candidate.resolve()
+                if (resolved.parent / 'python3').exists():
+                    return str(candidate)
+            except OSError:
+                pass
+
+        self.ctx.dialog.msgbox(
+            "NomadNet not canonically installed",
+            "NomadNet is not installed via pipx in the canonical layout.\n\n"
+            "Install/repair with:\n"
+            "  bash /opt/meshforge/scripts/install_nomadnet.sh\n\n"
+            "Or via TUI:\n"
+            "  NomadNet > Service Control > Reinstall NomadNet (idempotent)",
+        )
+        return None
 
     def _get_nomadnet_config_path(self):
         """Find the NomadNet config file.
@@ -414,130 +431,63 @@ class NomadNetInstallUtilsMixin:
     # NomadNet wrapper (monkey-patch broken RPC)
     # ------------------------------------------------------------------
 
-    _WRAPPER_VERSION = "7"  # bump to force re-creation
+    # Bump alongside the ``Version:`` marker in
+    # ``templates/python/nomadnet_wrapper.py``. Bumping here forces every
+    # box's wrapper to be regenerated on the next install/refresh.
+    _WRAPPER_VERSION = "8"
+
+    # Path to the shared wrapper template — same source of truth used by
+    # ``scripts/install_nomadnet.sh`` so bash and Python install paths
+    # converge on identical wrapper bytes.
+    _WRAPPER_TEMPLATE = (
+        Path(__file__).resolve().parents[3]
+        / "templates" / "python" / "nomadnet_wrapper.py"
+    )
 
     def _create_nomadnet_wrapper(self) -> Optional[Path]:
-        """Create a wrapper script that hardens NomadNet startup.
+        """Copy the canonical wrapper template into the user config dir.
 
-        Two failure modes the wrapper guards against:
+        The wrapper guards two failure modes:
 
-        1. **Transient RPC failure**: rnsd is briefly unreachable while
-           NomadNet boots. Swallow ConnectionRefusedError /
-           BrokenPipeError / OSError on get_interface_stats(); return
-           an empty stats dict.
-        2. **Authkey mismatch (Issue #41/#46)**: rnsd's rpc_key differs
-           from the one our RNS config derived. Every RPC handshake
-           raises AuthenticationError. Silently swallowing this hides
-           the real problem and produces an infinite restart-loop with
-           no actionable signal in the journal — so the wrapper now
-           **refuses-loud** on the very first AuthenticationError:
-           prints a clear 'RUN: scripts/rns_alignment.py normalize'
-           hint to stderr and exits with sentinel code 87.
+        1. **Transient RPC failure**: rnsd briefly unreachable. Swallow
+           ConnectionRefusedError / BrokenPipeError / OSError on
+           ``get_interface_stats()``; return empty stats so the UI renders.
+        2. **Authkey mismatch (Issue #41/#46)**: refuse-loud on the first
+           AuthenticationError, exit 87. The unit's StartLimitBurst caps
+           retries so the journal carries one clear diagnostic line.
 
-        The unit's StartLimitBurst then trips after a few retries and
-        systemd parks the unit in failed state — operator sees it in
-        the TUI Status panel + journalctl, runs Repair, done.
-
-        Returns the wrapper path, or None if creation failed.
+        Returns the wrapper path, or None on failure.
         """
+        if not self._WRAPPER_TEMPLATE.is_file():
+            logger.warning(
+                "Wrapper template missing: %s — has the repo been installed correctly?",
+                self._WRAPPER_TEMPLATE,
+            )
+            return None
+
         user_home = get_real_user_home()
         wrapper_dir = user_home / '.config' / 'meshforge'
         wrapper_path = wrapper_dir / 'nomadnet_wrapper.py'
 
-        wrapper_content = '''\
-"""MeshForge NomadNet wrapper — refuses-loud on rpc_key mismatch.
+        try:
+            template_bytes = self._WRAPPER_TEMPLATE.read_bytes()
+        except OSError as e:
+            logger.warning("Failed to read wrapper template: %s", e)
+            return None
 
-Version: {version}
-
-NomadNet's TextUI startup calls RNS.Reticulum.get_interface_stats(),
-which opens a multiprocessing.connection.Client to rnsd's RPC socket.
-Two distinct failures arrive through that codepath:
-
-  - Transient (rnsd not yet up, or briefly down): swallow + degrade
-    (empty interface stats, NomadNet UI still renders).
-  - AuthenticationError: rpc_key mismatch — rnsd and NomadNet are using
-    different config dirs / different identities / different rpc_keys.
-    This is the Issue #46 fleet-wide failure mode. Swallowing it just
-    hides the bug behind an empty stats panel and keeps the underlying
-    "every RPC fails" condition unresolved. Refuse-loud, exit 87,
-    and let the operator fix the alignment via:
-
-      MeshForge TUI > NomadNet > Service Control > Repair RNS alignment
-    or
-      sudo /opt/meshforge/scripts/rns_alignment.py normalize
-
-The systemd unit pairs this with StartLimitBurst to park the service
-in failed state after a few retries, so the journal carries one clear
-diagnostic line instead of 392 silent restarts.
-"""
-import sys
-from multiprocessing.context import AuthenticationError
-import RNS
-
-_orig_get_interface_stats = RNS.Reticulum.get_interface_stats
-
-_FALLBACK = dict(interfaces=[])
-
-# Transient RPC failures: degrade to empty stats, keep UI alive.
-_TRANSIENT_EXC = (
-    ConnectionRefusedError,
-    BrokenPipeError,
-    TypeError,
-    KeyError,
-    OSError,
-)
-
-# Sentinel exit code so systemd + the TUI can recognise this failure.
-_EXIT_AUTH_MISMATCH = 87
-
-
-def _safe_get_interface_stats(self):
-    try:
-        result = _orig_get_interface_stats(self)
-    except AuthenticationError as e:
-        # Refuse-loud — this is the actual root cause (Issue #46).
-        sys.stderr.write(
-            "\\n[meshforge nomadnet_wrapper] RNS rpc_key MISMATCH detected.\\n"
-            f"  Underlying error: {{type(e).__name__}}: {{e}}\\n"
-            "  rnsd and NomadNet are using different identities / rpc_keys.\\n"
-            "  FIX:\\n"
-            "    MeshForge TUI > NomadNet > Service Control > Repair RNS alignment\\n"
-            "  or:\\n"
-            "    sudo python3 /opt/meshforge/scripts/rns_alignment.py normalize\\n"
-            "\\n"
-        )
-        sys.stderr.flush()
-        # Hard-exit before NomadNet's TUI loop starts crash-spinning.
-        sys.exit(_EXIT_AUTH_MISMATCH)
-    except _TRANSIENT_EXC:
-        return _FALLBACK
-    if not isinstance(result, dict) or 'interfaces' not in result:
-        return _FALLBACK
-    return result
-
-RNS.Reticulum.get_interface_stats = _safe_get_interface_stats
-
-from nomadnet.nomadnet import main
-sys.exit(main())
-'''.format(version=self._WRAPPER_VERSION)
-
-        # Check if wrapper already exists with correct version
-        version_marker = f"Version: {self._WRAPPER_VERSION}"
+        # Idempotent: skip the write if bytes already match.
         if wrapper_path.exists():
             try:
-                existing = wrapper_path.read_text()
-                if version_marker in existing:
+                if wrapper_path.read_bytes() == template_bytes:
                     return wrapper_path
             except OSError:
                 pass
 
-        # Create/update the wrapper
         try:
             wrapper_dir.mkdir(parents=True, exist_ok=True)
-            wrapper_path.write_text(wrapper_content)
+            wrapper_path.write_bytes(template_bytes)
             logger.debug("Created NomadNet wrapper at %s", wrapper_path)
 
-            # Fix ownership if running under sudo
             sudo_user = os.environ.get('SUDO_USER')
             if sudo_user and sudo_user != 'root':
                 import pwd
@@ -553,22 +503,27 @@ sys.exit(main())
             logger.warning("Failed to create NomadNet wrapper: %s", e)
             return None
 
-    def _get_wrapper_command(self, nn_path: str, nn_args: list) -> list:
-        """Build launch command using wrapper if possible.
+    def _get_wrapper_command(self, nn_path: str, nn_args: list) -> Optional[list]:
+        """Build the canonical wrapped-launch argv.
 
-        Returns [venv_python, wrapper, ...args] if wrapper is available,
-        otherwise [nn_path, ...args] as fallback.
+        Issue #46 closure: refuses to fall back to the bare ``nn_path``
+        when the pipx venv python is missing. Silent fallback was the
+        wrapper-bypass hole — it produced a unit that booted nomadnet
+        with no rpc_key handling, then quietly crashed under
+        AuthenticationError. Return None so callers fail loud.
         """
         venv_python = self._get_nomadnet_venv_python(nn_path)
         if not venv_python:
-            return [nn_path] + nn_args
+            logger.warning(
+                "Refusing to build launch command without pipx venv: %s",
+                nn_path,
+            )
+            return None
 
         wrapper_path = self._create_nomadnet_wrapper()
         if not wrapper_path:
-            return [nn_path] + nn_args
+            return None
 
-        # sys.argv[0] will be the wrapper path, remaining args are
-        # forwarded to NomadNet's main() via sys.argv
         return [venv_python, str(wrapper_path)] + nn_args
 
     def _uninstall_nomadnet(self):

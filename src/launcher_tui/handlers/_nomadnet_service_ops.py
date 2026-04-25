@@ -359,6 +359,8 @@ class NomadNetServiceOpsMixin:
                                "Reinstall unit from template"))
             choices.append(("repair_align",
                             "Repair RNS alignment   audit + sudo normalize"))
+            choices.append(("reinstall_nomadnet",
+                            "Reinstall NomadNet (idempotent)"))
             choices.append(("back", "Back"))
 
             choice = self.ctx.dialog.menu(
@@ -387,6 +389,8 @@ class NomadNetServiceOpsMixin:
                 "linger": ("Enable linger", self._enable_linger),
                 "repair_align": ("Repair RNS alignment",
                                  self._repair_rns_alignment),
+                "reinstall_nomadnet": ("Reinstall NomadNet",
+                                       self._reinstall_nomadnet),
             }
             entry = dispatch.get(choice)
             if entry:
@@ -480,6 +484,86 @@ class NomadNetServiceOpsMixin:
         # Truncate for the dialog if it's huge
         body_out = out[-2400:] if len(out) > 2400 else out
         self.ctx.dialog.msgbox(title, body_out or "(no output)")
+
+    def _reinstall_nomadnet(self) -> None:
+        """Run the canonical pipx-first installer (idempotent).
+
+        Companion to ``_repair_rns_alignment`` for the install-method
+        side of the equation (Issue #46 sister concern). Refuses to run
+        if RNS alignment is drifted — the installer's precondition.
+        """
+        from utils.rns_alignment import analyze_drift, probe_local
+
+        # Precondition: alignment must be OK
+        try:
+            state = probe_local()
+        except Exception as e:  # pragma: no cover — defensive
+            self.ctx.dialog.msgbox(
+                "Probe failed",
+                f"Could not probe RNS alignment state:\n{e}",
+            )
+            return
+        state.drift_reasons = analyze_drift(state)
+        if not state.aligned:
+            self.ctx.dialog.msgbox(
+                "Repair RNS alignment first",
+                "RNS alignment is drifted. The NomadNet installer\n"
+                "cannot proceed until rnsd is normalized:\n\n"
+                + "\n".join(f"  - {r}" for r in state.drift_reasons[:5])
+                + "\n\nFix via:\n"
+                "  Service Control > Repair RNS alignment\n"
+                "Then return here.",
+            )
+            return
+
+        # Confirm
+        if not self.ctx.dialog.yesno(
+            "Reinstall NomadNet (idempotent)",
+            "Run the canonical installer:\n\n"
+            "  bash /opt/meshforge/scripts/install_nomadnet.sh\n\n"
+            "This refreshes the pipx install (if needed), the wrapper,\n"
+            "and the systemd user unit. Identity at ~/.nomadnetwork/\n"
+            "is preserved.\n\n"
+            "Run a no-op when the install is already canonical.\n\n"
+            "Proceed?",
+        ):
+            return
+
+        # Locate + run the installer. The script handles the sudo→user
+        # bridging itself, so we shell it directly.
+        repo_root = Path(__file__).resolve().parents[3]
+        installer = repo_root / 'scripts' / 'install_nomadnet.sh'
+        if not installer.is_file():
+            self.ctx.dialog.msgbox(
+                "Installer missing",
+                f"{installer} not found. Update MeshForge and try again.",
+            )
+            return
+
+        proc = subprocess.run(
+            ['bash', str(installer)],
+            capture_output=True, text=True, timeout=600,
+        )
+        out = (proc.stdout or '') + (
+            f"\n[stderr]\n{proc.stderr}" if proc.stderr else ''
+        )
+        title = (
+            "NomadNet reinstall: OK"
+            if proc.returncode == 0
+            else f"NomadNet reinstall returned {proc.returncode}"
+        )
+        body_out = out[-2400:] if len(out) > 2400 else out
+        self.ctx.dialog.msgbox(title, body_out or "(no output)")
+
+        # On success, surface a follow-up offer to restart so the new
+        # unit definition replaces any prior tmux session cleanly.
+        if proc.returncode == 0:
+            if self.ctx.dialog.yesno(
+                "Restart service?",
+                "Installer succeeded. Restart the nomadnet user service\n"
+                "now to pick up the refreshed unit?",
+            ):
+                self._run_systemctl_and_report("restart")
 
     def _attach_tmux_session(self) -> None:
         """Drop the operator into ``tmux attach -t nomadnet``.
@@ -633,6 +717,19 @@ class NomadNetServiceOpsMixin:
         argv = self._get_wrapper_command(
             nn_path, ['--rnsconfig', '/etc/reticulum'],
         )
+        if argv is None:
+            # Issue #46: refuse to install a unit pointing at a non-canonical
+            # install. The canonical installer is the repair path.
+            self.ctx.dialog.msgbox(
+                "Unit install refused",
+                "Cannot derive a canonical ExecStart — pipx venv python\n"
+                "is missing next to ~/.local/bin/nomadnet.\n\n"
+                "Repair with:\n"
+                "  bash /opt/meshforge/scripts/install_nomadnet.sh\n\n"
+                "That installer writes the unit on its own, so re-running\n"
+                "this menu after it succeeds is not strictly required.",
+            )
+            return
         exec_str = shlex.join(argv)
 
         user_home = get_real_user_home()

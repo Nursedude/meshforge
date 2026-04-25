@@ -118,6 +118,22 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
             return self.ctx.registry.get_handler("rns_diagnostics")
         return None
 
+    def _show_canonical_installer_msg(self) -> None:
+        """Tell the operator how to repair a non-canonical NomadNet install.
+
+        Surfaced when ``_get_wrapper_command`` refuses because the pipx
+        venv python isn't where the canonical layout expects (Issue #46).
+        """
+        self.ctx.dialog.msgbox(
+            "NomadNet not canonically installed",
+            "NomadNet's pipx venv layout is missing or non-canonical, so\n"
+            "MeshForge refuses to launch it (Issue #46 wrapper-bypass guard).\n\n"
+            "Repair with the canonical installer:\n"
+            "  bash /opt/meshforge/scripts/install_nomadnet.sh\n\n"
+            "Or via TUI:\n"
+            "  NomadNet > Service Control > Reinstall NomadNet (idempotent)",
+        )
+
     def _get_rnsd_user(self) -> Optional[str]:
         """Get the OS user running the rnsd process, or None if not running.
 
@@ -909,6 +925,9 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
 
             # Build command — use wrapper to patch RPC if possible
             cmd = self._get_wrapper_command(nn_path, nn_args)
+            if cmd is None:
+                self._show_canonical_installer_msg()
+                return
 
             if sudo_user and sudo_user != 'root':
                 # Run as real user using 'sudo -u' with explicit PATH
@@ -1016,6 +1035,9 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
                 nn_args = ['--rnsconfig', rns_config_path] + nn_args
 
             cmd = self._get_wrapper_command(nn_path, nn_args)
+            if cmd is None:
+                self._show_canonical_installer_msg()
+                return
 
             if sudo_user and sudo_user != 'root':
                 user_home = get_real_user_home()
@@ -1226,6 +1248,9 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
 
         # Build command — use wrapper to patch RPC if possible
         base_cmd = self._get_wrapper_command(nn_path, nn_args)
+        if base_cmd is None:
+            self._show_canonical_installer_msg()
+            return
 
         if sudo_user and sudo_user != 'root':
             # Run as real user with -H to set HOME correctly

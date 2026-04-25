@@ -716,5 +716,42 @@ Or via TUI on the box: `NomadNet → Service Control → Repair RNS alignment`.
 - Library/CLI never carry the rpc_key value in any field or log line;
   verified by `TestRpcKeyScriptDoesNotLeakViaDescription`.
 
+**Sister concern — install-method coherence (2026-04-25)**: alignment
+fixes rnsd/NomadNet identity + rpc_key match, but a parallel failure
+mode is install-method drift on the NomadNet client itself (pip-user
+vs pipx vs apt). Non-pipx installs put the binary where
+`_get_wrapper_command()` cannot derive the venv python, so the unit
+silently fell back to bare `nomadnet` — bypassing the refuse-loud
+wrapper entirely and reproducing the exact "392 silent restarts"
+mode that alignment was meant to kill.
+
+Fix: `scripts/install_nomadnet.sh` is the canonical, idempotent,
+pipx-first installer (modes: default | --check | --refresh |
+--reinstall [--wipe-identity]). Exposed in TUI as
+`NomadNet > Service Control > Reinstall NomadNet (idempotent)`.
+Preconditions on `rns_alignment.py audit` returning OK; refreshes
+the wrapper from `templates/python/nomadnet_wrapper.py` (now the
+single source of truth shared with `_create_nomadnet_wrapper` —
+wrapper bumped to v8); renders the user unit by substituting
+`__NOMADNET_EXEC__` with `<venv-python> <wrapper> --rnsconfig
+/etc/reticulum`; then `loginctl enable-linger` + `systemctl --user
+enable --now nomadnet`. Re-running on a canonical install is a no-op.
+
+Wrapper-bypass closure: `_get_wrapper_command` now returns `None`
+when the pipx venv python isn't found, and every callsite refuses-
+loud with a msgbox steering to the canonical installer. The pre-
+fix silent fallback to `[nn_path]` is gone. `_find_nomadnet_binary`
+similarly refuses anything that isn't `~/.local/bin/nomadnet` with
+an adjacent venv `python3`. Tests in
+`TestCanonicalNomadnetInstaller`.
+
+**Operator recipe — install-method drift on a fleet box**:
+```bash
+ssh <box> "bash /opt/meshforge/scripts/install_nomadnet.sh --check"
+# RESULT: drifted → run the installer (idempotent):
+ssh <box> "bash /opt/meshforge/scripts/install_nomadnet.sh"
+```
+Or via TUI on the box: NomadNet → Service Control → Reinstall NomadNet.
+
 
 
