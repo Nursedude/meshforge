@@ -74,6 +74,11 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
     # parsed feature list for 10 min keeps the map fresh enough while sparing
     # every cache-miss collect() the 12 MB refetch.
     DEFAULT_MESHCORE_PUBLIC_CACHE_TTL_SECONDS = 600
+    # Cap on any single HTTP-fetching source. With T1.1 caching, MeshCore's
+    # original 30 s budget is no longer needed — a 15 s ceiling keeps total
+    # collect() worst-case predictable, and a slow MeshCore fetch falls back
+    # to stale cache rather than holding _collect_lock for 30 s.
+    DEFAULT_SOURCE_TIMEOUT_SECONDS = 15
     # Per-source online thresholds (minutes) — configurable via map_settings.json
     DEFAULT_MESHTASTIC_THRESHOLD_MINUTES = 15
     DEFAULT_MQTT_THRESHOLD_MINUTES = 15
@@ -139,6 +144,7 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
                 # MeshCore is invisible on the map.
                 "enable_meshcore_public": True,
                 "meshcore_public_cache_ttl_seconds": self.DEFAULT_MESHCORE_PUBLIC_CACHE_TTL_SECONDS,
+                "source_timeout_seconds": self.DEFAULT_SOURCE_TIMEOUT_SECONDS,
                 "selected_region": None,
             }
         )
@@ -1639,12 +1645,16 @@ class MapDataCollector(RNSDataCollectorMixin, PublicDataFallbackMixin):
         import urllib.error
 
         features: List[Dict] = []
+        timeout = int(self._settings.get(
+            "source_timeout_seconds",
+            self.DEFAULT_SOURCE_TIMEOUT_SECONDS,
+        )) if self._settings else self.DEFAULT_SOURCE_TIMEOUT_SECONDS
         try:
             req = urllib.request.Request(
                 self._MESHCORE_MAP_URL,
                 headers={"Accept": "application/json", "User-Agent": "MeshForge/1.0"},
             )
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 # Cap at 64 MB — current global MeshCore map is ~12 MB for ~30k nodes.
                 # An 8 MB cap truncates mid-JSON and leaves an "Unterminated string"
                 # parse error rather than complete data.

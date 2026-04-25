@@ -435,6 +435,38 @@ class TestMeshCorePublicCache:
         assert d["meshcore_public"]["reason_if_zero"] == "unreachable"
 
 
+class TestSourceTimeout:
+    """T2.1 — per-source HTTP timeout reads from settings, defaults to 15s."""
+
+    @patch("urllib.request.urlopen")
+    def test_meshcore_fetch_uses_settings_timeout(self, mock_urlopen, collector):
+        collector._settings.set("enable_meshcore_public", True)
+        collector._settings.set("source_timeout_seconds", 7)
+        # Force cache miss so the fetch path runs.
+        collector._meshcore_public_cache = None
+        collector._meshcore_public_cache_ts = None
+
+        resp = MagicMock()
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.return_value = b"[]"
+        mock_urlopen.return_value = resp
+
+        collector._fetch_meshcore_public_uncached()
+        # urlopen should have been called with timeout=7 (overriding the default).
+        _, kwargs = mock_urlopen.call_args
+        assert kwargs.get("timeout") == 7
+
+    def test_public_mixin_get_source_timeout_default(self, collector):
+        # No setting → default 15 (DEFAULT_SOURCE_TIMEOUT_SECONDS).
+        collector._settings._settings.pop("source_timeout_seconds", None)
+        assert collector._get_source_timeout() == 15
+
+    def test_public_mixin_get_source_timeout_setting_wins(self, collector):
+        collector._settings.set("source_timeout_seconds", 9)
+        assert collector._get_source_timeout() == 9
+
+
 class TestTimedCollectLatency:
     """T1.3 — every source's diagnostic carries latency_ms after collect()."""
 

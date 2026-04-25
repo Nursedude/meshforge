@@ -51,6 +51,20 @@ RNS_NODE_TYPES = {
 class PublicDataFallbackMixin:
     """Mixin providing public data source fallbacks for MapDataCollector."""
 
+    # Default fallback when settings are unavailable. The host class overrides
+    # via `source_timeout_seconds` in map_settings.json — see
+    # MapDataCollector.DEFAULT_SOURCE_TIMEOUT_SECONDS.
+    _DEFAULT_PUBLIC_TIMEOUT = 15
+
+    def _get_source_timeout(self) -> int:
+        """Read configured per-source HTTP timeout (seconds), defaulting safely."""
+        if not getattr(self, "_settings", None):
+            return self._DEFAULT_PUBLIC_TIMEOUT
+        try:
+            return int(self._settings.get("source_timeout_seconds", self._DEFAULT_PUBLIC_TIMEOUT))
+        except (TypeError, ValueError):
+            return self._DEFAULT_PUBLIC_TIMEOUT
+
     def _collect_public_fallbacks(self, current_feature_count: int = 0) -> List[Dict]:
         """Collect nodes from public data sources when local data is sparse.
 
@@ -102,7 +116,7 @@ class PublicDataFallbackMixin:
                     "User-Agent": "MeshForge/1.0",
                 },
             )
-            with urlopen(req, timeout=15) as resp:
+            with urlopen(req, timeout=self._get_source_timeout()) as resp:
                 data = json.loads(resp.read().decode())
 
             for num_id, node in data.items():
@@ -226,7 +240,7 @@ class PublicDataFallbackMixin:
                 )
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
-            with urlopen(req, timeout=15, context=ctx) as resp:
+            with urlopen(req, timeout=self._get_source_timeout(), context=ctx) as resp:
                 data = json.loads(resp.read().decode())
 
             nodes = data.get("nodes", []) if isinstance(data, dict) else []
@@ -289,7 +303,7 @@ class PublicDataFallbackMixin:
                     "User-Agent": "MeshForge/1.0",
                 },
             )
-            with urlopen(req, timeout=20) as resp:
+            with urlopen(req, timeout=self._get_source_timeout()) as resp:
                 text = resp.read().decode("utf-8", errors="replace")
 
             reader = csv.DictReader(io.StringIO(text))

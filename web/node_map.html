@@ -307,6 +307,63 @@
         .control-panel.collapsed .panel-body {
             display: none;
         }
+        /* Data Sources section (T2.3) — collapsible per-source health row.
+           Status dot color encodes reason_if_zero from /api/status diagnostics.
+        */
+        .sources-section {
+            margin-top: 6px;
+            padding-top: 6px;
+            border-top: 1px solid #1a2a3a;
+        }
+        .sources-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            font-size: 10px;
+            color: #888;
+            user-select: none;
+        }
+        .sources-header:hover { color: #b0b0b0; }
+        .sources-list {
+            display: none;
+            margin-top: 4px;
+            padding: 4px 6px;
+            background: #0a1622;
+            border-radius: 6px;
+            font-size: 10px;
+            line-height: 1.4;
+        }
+        .sources-list.expanded { display: block; }
+        .source-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 2px 0;
+        }
+        .source-row .source-name { color: #b0b0b0; font-family: monospace; }
+        .source-row .source-meta { color: #6e7e8e; font-size: 9px; }
+        .source-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+        .source-dot.ok          { background: #4caf50; }
+        .source-dot.stale       { background: #ffb74d; }   /* stale_cached */
+        .source-dot.no_positions{ background: #ffb74d; }
+        .source-dot.unreachable { background: #f44336; }
+        .source-dot.not_configured,
+        .source-dot.source_disabled,
+        .source-dot.no_data     { background: #607d8b; }   /* gray = inactive by design */
+        .data-age {
+            font-size: 9px;
+            color: #6e7e8e;
+            margin-left: 6px;
+        }
+        .data-age.stale { color: #ffb74d; }
         .panel-header {
             display: flex;
             align-items: center;
@@ -1473,6 +1530,15 @@
             <div class="stat-row">
                 <span class="label">MeshCore:</span>
                 <span class="value" id="stat-meshcore" title="MeshCore public directory + operator-assigned positions">0<span class="health-badge" id="health-meshcore"></span></span>
+            </div>
+
+            <!-- Data Sources (T2.3): per-source health from /api/status diagnostics -->
+            <div class="sources-section">
+                <div class="sources-header" onclick="toggleSourcesList()">
+                    <span><span id="sources-summary">Data sources</span><span id="sources-age" class="data-age"></span></span>
+                    <span id="sources-toggle">▸</span>
+                </div>
+                <div id="sources-list" class="sources-list"></div>
             </div>
 
             <div class="filter-section">
@@ -5105,9 +5171,109 @@
             for (const [network, sources] of Object.entries(SOURCE_MAP)) {
                 applyHealthBadge(network, computeHealth(diagnostics, sources));
             }
+            renderSourcesList(diagnostics, data);
         } catch (e) {
             console.debug('Source health fetch failed:', e);
         }
+    }
+
+    // T2.3: render the collapsible Data Sources list. Always update the
+    // summary header (visible) so operators see degradation even when the
+    // list itself is collapsed.
+    function renderSourcesList(diagnostics, statusData) {
+        const list = document.getElementById('sources-list');
+        const summary = document.getElementById('sources-summary');
+        const ageEl = document.getElementById('sources-age');
+        if (!list || !summary) return;
+
+        // Render order matches collect()'s execution order so latency reads
+        // chronologically — the operator scans top-to-bottom and sees what
+        // ran when, with each source's contribution to total time.
+        const ORDER = [
+            'unified_tracker', 'meshtasticd', 'mqtt', 'node_tracker',
+            'aredn', 'aredn_worldmap', 'rns_direct', 'meshcore_public',
+            'public_fallback', 'direct_radio',
+        ];
+        const known = new Set(ORDER);
+        const extras = Object.keys(diagnostics).filter(k => !known.has(k));
+        const allSources = [...ORDER, ...extras];
+
+        let warnCount = 0;
+        let okCount = 0;
+        let html = '';
+        for (const src of allSources) {
+            const d = diagnostics[src];
+            if (!d) continue;
+            const reason = d.reason_if_zero || 'ok';
+            const dotClass = ['ok', 'stale_cached', 'no_positions', 'unreachable',
+                              'not_configured', 'source_disabled', 'no_data']
+                              .includes(reason) ? reason : 'ok';
+            // stale_cached uses .stale dot class
+            const dotKey = dotClass === 'stale_cached' ? 'stale' : dotClass;
+            if (reason === 'unreachable') warnCount++;
+            else if (reason === 'ok' || reason === 'stale_cached') okCount++;
+            const lat = d.latency_ms != null ? `${d.latency_ms}ms` : '—';
+            const yieldedTxt = d.yielded != null
+                ? (d.attempted != null && d.attempted !== d.yielded
+                    ? `${d.yielded}/${d.attempted}` : `${d.yielded}`)
+                : '';
+            const notesTxt = d.notes ? ` · ${d.notes}` : '';
+            const tooltip = `${reason}${notesTxt}`;
+            html += `<div class="source-row" title="${escapeHtml(tooltip)}">`
+                + `<span class="source-name"><span class="source-dot ${dotKey}"></span>${src}</span>`
+                + `<span class="source-meta">${yieldedTxt} · ${lat}</span>`
+                + `</div>`;
+        }
+        list.innerHTML = html || '<span style="color:#6e7e8e">no diagnostics</span>';
+
+        // Header summary: count warnings (unreachable) so operators see at a
+        // glance "X of N sources degraded" without expanding.
+        const total = allSources.filter(s => diagnostics[s]).length;
+        if (warnCount > 0) {
+            summary.textContent = `Data sources · ${warnCount} degraded / ${total}`;
+        } else {
+            summary.textContent = `Data sources · ${okCount}/${total} ok`;
+        }
+
+        // Data age — derived from the newest latency observation. We don't
+        // get a server-side `last_collect` timestamp in /api/status today,
+        // so age is implicit: page-load-relative wall clock since fetch.
+        if (ageEl) {
+            const now = Date.now();
+            if (!window._lastStatusTs) window._lastStatusTs = now;
+            window._lastStatusTs = now;
+            // Show "fetched Ns ago" only after first successful fetch.
+            ageEl.textContent = ` · fetched 0s ago`;
+            // The setInterval below ticks the age display every 5s.
+        }
+    }
+
+    // Tick the "fetched Ns ago" display without re-fetching /api/status.
+    function tickSourcesAge() {
+        const ageEl = document.getElementById('sources-age');
+        if (!ageEl || !window._lastStatusTs) return;
+        const sec = Math.round((Date.now() - window._lastStatusTs) / 1000);
+        ageEl.textContent = ` · fetched ${sec}s ago`;
+        // Mark stale if it's been over 90 s (3x the 30 s poll interval).
+        ageEl.classList.toggle('stale', sec > 90);
+    }
+    setInterval(tickSourcesAge, 5000);
+
+    function toggleSourcesList() {
+        const list = document.getElementById('sources-list');
+        const toggle = document.getElementById('sources-toggle');
+        if (!list || !toggle) return;
+        const expanded = list.classList.toggle('expanded');
+        toggle.textContent = expanded ? '▾' : '▸';
+    }
+
+    // Light-touch HTML escape used only for tooltip values; not exposed
+    // to user-typed content but defended against /api/status notes that
+    // could one day include angle brackets.
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, ch => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[ch]));
     }
 
     // ============================================
