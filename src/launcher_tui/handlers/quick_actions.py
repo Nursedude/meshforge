@@ -19,6 +19,7 @@ from utils.service_check import (
     check_rns_shared_instance,
     apply_config_and_restart, restart_service,
 )
+from utils.paths import ReticulumPaths
 
 # First-party modules for quick actions
 from utils.report_generator import generate_report
@@ -116,7 +117,9 @@ class QuickActionsHandler(BaseHandler):
                     warnings.append(svc)
 
                 if status == 'active':
-                    if svc == 'rnsd' and not check_rns_shared_instance():
+                    if svc == 'rnsd' and not check_rns_shared_instance(
+                        ReticulumPaths.get_configured_instance_name()
+                    ):
                         print(f"  ! {svc:<18} running (shared instance not available)")
                     else:
                         print(f"  * {svc:<18} running{boot_info}")
@@ -238,7 +241,9 @@ class QuickActionsHandler(BaseHandler):
         for port, desc in ports:
             try:
                 if port == _rns_port:
-                    port_open = check_rns_shared_instance()
+                    port_open = check_rns_shared_instance(
+                        ReticulumPaths.get_configured_instance_name()
+                    )
                 else:
                     port_open = check_port(port, host='127.0.0.1', timeout=1.0)
 

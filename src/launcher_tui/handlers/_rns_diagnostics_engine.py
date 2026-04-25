@@ -219,8 +219,9 @@ def run_rns_diagnostics(handler):
     # RNS uses abstract Unix domain sockets on Linux (\0rns/default),
     # NOT UDP port 37428. check_rns_shared_instance() checks both.
     instance_ok = False
+    instance_name = ReticulumPaths.get_configured_instance_name()
     try:
-        si_info = get_rns_shared_instance_info()
+        si_info = get_rns_shared_instance_info(instance_name)
         instance_ok = si_info['available']
         if running and not instance_ok:
             # rnsd may still be initializing — wait before declaring failure
@@ -228,7 +229,7 @@ def run_rns_diagnostics(handler):
             print("  Waiting for rnsd to finish initializing...")
             instance_ok = handler._wait_for_rns_shared_instance(max_wait=10)
             if instance_ok:
-                si_info = get_rns_shared_instance_info()
+                si_info = get_rns_shared_instance_info(instance_name)
                 print(f"  Shared instance: available (slow startup)")
                 print(f"    Method: {si_info['detail']}")
             else:

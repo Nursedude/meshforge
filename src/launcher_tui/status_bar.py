@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Import centralized service checking
 from utils.service_check import check_systemd_service, check_process_running, check_udp_port, check_rns_shared_instance
+from utils.paths import ReticulumPaths
 
 # Import startup checker for enhanced status
 from startup_checks import StartupChecker, EnvironmentState, ServiceRunState
@@ -202,7 +203,9 @@ class StatusBar:
                 return SYM_STOPPED
             # rnsd zombie detection: systemd active but shared instance not available
             if service == 'rnsd':
-                if not check_rns_shared_instance():
+                if not check_rns_shared_instance(
+                    ReticulumPaths.get_configured_instance_name()
+                ):
                     logger.debug("rnsd active but shared instance not available")
                     return SYM_STOPPED
             return SYM_RUNNING

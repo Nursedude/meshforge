@@ -32,7 +32,7 @@ from utils._service_iptables import (
 )
 
 # Sudo-safe home directory — first-party, always available (MF001)
-from utils.paths import get_real_user_home
+from utils.paths import get_real_user_home, ReticulumPaths
 
 # Import RNS identity helpers
 from commands.rns import get_identity_path
@@ -493,7 +493,9 @@ class ServiceMenuHandler(BaseHandler):
                     warnings.append(svc)
 
                 if svc_status.available:
-                    if svc == 'rnsd' and not check_rns_shared_instance():
+                    if svc == 'rnsd' and not check_rns_shared_instance(
+                        ReticulumPaths.get_configured_instance_name()
+                    ):
                         print(f"  \033[0;33m●\033[0m {svc:<18} running (shared instance not available)")
                     else:
                         print(f"  \033[0;32m●\033[0m {svc:<18} running{boot_info}")

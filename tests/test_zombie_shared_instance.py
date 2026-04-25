@@ -474,3 +474,79 @@ class TestCheckRnsSharedInstance:
         """Custom instance name reaches _check_proc_net_unix correctly."""
         check_rns_shared_instance(instance_name='test')
         mock_unix.assert_called_with('rns/test')
+
+
+# =============================================================================
+# TUI callsites must honor the configured instance_name (fleet-host regression).
+# Six TUI handlers default-called check_rns_shared_instance() / get_rns_
+# shared_instance_info() with instance_name='default', which produced false
+# "shared instance NOT available" warnings on fleet-host (instance_name =
+# "volcano ai rns"). Each callsite must now pull the configured name from
+# ReticulumPaths.get_configured_instance_name() and pass it explicitly.
+# =============================================================================
+
+
+class TestTUIHandlersHonorConfiguredInstanceName:
+    """Regression: TUI handlers must pass configured instance_name."""
+
+    @patch('src.launcher_tui.status_bar.check_rns_shared_instance', return_value=True)
+    @patch('src.launcher_tui.status_bar.check_systemd_service', return_value=(True, None))
+    @patch('src.utils.paths.ReticulumPaths.get_configured_instance_name',
+           return_value='volcano ai rns')
+    def test_status_bar_passes_configured_name(
+            self, mock_inst, mock_systemd, mock_check):
+        from src.launcher_tui.status_bar import StatusBar
+        sb = StatusBar.__new__(StatusBar)
+        sb._check_systemd_active('rnsd')
+        mock_check.assert_called_with('volcano ai rns')
+
+    @patch('src.launcher_tui.handlers.quick_actions.check_rns_shared_instance',
+           return_value=True)
+    @patch('src.utils.paths.ReticulumPaths.get_configured_instance_name',
+           return_value='volcano ai rns')
+    def test_quick_actions_port_check_passes_configured_name(
+            self, mock_inst, mock_check):
+        # Import the module and reach the call indirectly is heavy; assert
+        # the module-level imports are wired such that a direct call site
+        # uses the helper. Smoke-test by re-importing and inspecting the
+        # source for the configured-name wiring (cheap structural check).
+        import src.launcher_tui.handlers.quick_actions as qa
+        src = open(qa.__file__).read()
+        assert 'ReticulumPaths.get_configured_instance_name()' in src, \
+            "quick_actions must call get_configured_instance_name() before check_rns_shared_instance"
+
+    @patch('src.launcher_tui.handlers.service_menu.check_rns_shared_instance',
+           return_value=True)
+    @patch('src.utils.paths.ReticulumPaths.get_configured_instance_name',
+           return_value='volcano ai rns')
+    def test_service_menu_passes_configured_name(self, mock_inst, mock_check):
+        import src.launcher_tui.handlers.service_menu as sm
+        src = open(sm.__file__).read()
+        assert 'ReticulumPaths.get_configured_instance_name()' in src, \
+            "service_menu must pass configured instance_name to check_rns_shared_instance"
+
+    def test_nomadnet_passes_configured_name(self):
+        import src.launcher_tui.handlers.nomadnet as nm
+        src = open(nm.__file__).read()
+        assert 'ReticulumPaths.get_configured_instance_name()' in src, \
+            "nomadnet must pass configured instance_name to get_rns_shared_instance_info"
+
+    def test_rns_diagnostics_passes_configured_name(self):
+        import src.launcher_tui.handlers.rns_diagnostics as rd
+        src = open(rd.__file__).read()
+        assert 'ReticulumPaths.get_configured_instance_name()' in src, \
+            "rns_diagnostics must pass configured instance_name to get_rns_shared_instance_info"
+
+    def test_rns_diagnostics_engine_passes_configured_name(self):
+        import src.launcher_tui.handlers._rns_diagnostics_engine as rde
+        src = open(rde.__file__).read()
+        assert 'ReticulumPaths.get_configured_instance_name()' in src, \
+            "_rns_diagnostics_engine must pass configured instance_name"
+
+    @patch(f'{_PD}._check_proc_net_unix')
+    def test_multi_word_instance_name_threads_through_to_socket_check(
+            self, mock_unix):
+        """fleet-host's 'volcano ai rns' must reach _check_proc_net_unix verbatim."""
+        mock_unix.return_value = True
+        check_rns_shared_instance(instance_name='volcano ai rns')
+        mock_unix.assert_called_with('rns/volcano ai rns')

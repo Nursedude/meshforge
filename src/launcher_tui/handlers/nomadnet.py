@@ -532,7 +532,8 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
             if _HAS_SERVICE_CHECK:
                 rnsd_running = check_process_running('rnsd')
                 if get_rns_shared_instance_info:
-                    si_info = get_rns_shared_instance_info()
+                    instance_name = ReticulumPaths.get_configured_instance_name()
+                    si_info = get_rns_shared_instance_info(instance_name)
                     shared_available = (si_info or {}).get(
                         'available', False
                     )

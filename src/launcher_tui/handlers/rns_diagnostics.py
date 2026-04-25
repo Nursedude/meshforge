@@ -281,7 +281,9 @@ class RNSDiagnosticsHandler(BaseHandler):
         instance_ready = self._wait_for_rns_shared_instance(max_wait=15)
 
         if instance_ready:
-            si_info = get_rns_shared_instance_info()
+            si_info = get_rns_shared_instance_info(
+                ReticulumPaths.get_configured_instance_name()
+            )
             print(f"  Shared instance: available ({si_info['detail']})")
 
             # Re-run drift detection to confirm fix
