@@ -357,6 +357,8 @@ class NomadNetServiceOpsMixin:
                 choices.append(("linger", "Enable linger (survives logout)"))
                 choices.append(("reinstall_unit",
                                "Reinstall unit from template"))
+            choices.append(("repair_align",
+                            "Repair RNS alignment   audit + sudo normalize"))
             choices.append(("back", "Back"))
 
             choice = self.ctx.dialog.menu(
@@ -383,6 +385,8 @@ class NomadNetServiceOpsMixin:
                 "disable": ("Disable service",
                             lambda: self._run_systemctl_and_report("disable")),
                 "linger": ("Enable linger", self._enable_linger),
+                "repair_align": ("Repair RNS alignment",
+                                 self._repair_rns_alignment),
             }
             entry = dispatch.get(choice)
             if entry:
@@ -400,6 +404,82 @@ class NomadNetServiceOpsMixin:
             _, active = self._user_systemctl_text(['is-active', 'nomadnet'])
             body += f"\n\nis-active: {active or '(empty)'}"
         self.ctx.dialog.msgbox(title, body)
+
+    def _repair_rns_alignment(self) -> None:
+        """Run the RNS alignment audit; if drift, offer to normalize.
+
+        Wraps ``scripts/rns_alignment.py`` so operators don't need shell
+        access to apply the canonical layout (rnsd reads /etc/reticulum,
+        rpc_key pinned, NomadNet --rnsconfig matches, file ownership
+        repaired). Issue #46.
+        """
+        from utils.rns_alignment import (
+            analyze_drift, plan_normalize, probe_local,
+        )
+
+        # Phase 1: read-only probe
+        try:
+            state = probe_local()
+        except Exception as e:  # pragma: no cover — defensive
+            self.ctx.dialog.msgbox(
+                "Probe failed",
+                f"Could not probe RNS alignment state:\n{e}",
+            )
+            return
+        state.drift_reasons = analyze_drift(state)
+
+        if state.aligned:
+            self.ctx.dialog.msgbox(
+                "RNS Alignment: ALIGNED",
+                f"Host {state.hostname} matches the canonical layout.\n\n"
+                f"  rnsd configdir:  {state.rnsd_configdir}\n"
+                f"  /etc/reticulum/config: rpc_key pinned, instance_name="
+                f"{state.etc_config.instance_name or '(default)'}\n"
+                f"  NomadNet --rnsconfig: "
+                f"{state.nomadnet_unit_rnsconfig or '(unit not installed)'}",
+            )
+            return
+
+        # Phase 2: present the drift + planned actions
+        plan = plan_normalize(state)
+        plan_lines = "\n".join(f"  {i+1}. {a.description}"
+                                for i, a in enumerate(plan))
+        drift_lines = "\n".join(f"  - {r}" for r in state.drift_reasons)
+        body = (
+            f"Host: {state.hostname}\n\n"
+            f"Drift reasons ({len(state.drift_reasons)}):\n{drift_lines}\n\n"
+            f"Planned actions ({len(plan)}):\n{plan_lines}\n\n"
+            f"This will modify /etc/reticulum/config, install an rnsd\n"
+            f"systemd drop-in, and restart rnsd. The change preserves\n"
+            f"rnsd's existing identity (storage is copied, not regenerated).\n\n"
+            f"Apply now? (sudo password may be required)"
+        )
+        if not self.ctx.dialog.yesno("Repair RNS alignment", body):
+            return
+
+        # Phase 3: invoke the CLI with sudo so the script writes /etc/reticulum
+        repo_root = Path(__file__).resolve().parents[3]
+        cli = repo_root / 'scripts' / 'rns_alignment.py'
+        if not cli.is_file():
+            self.ctx.dialog.msgbox(
+                "Script missing",
+                f"{cli} not found. Update MeshForge and try again.",
+            )
+            return
+        proc = subprocess.run(
+            ['sudo', 'python3', str(cli), 'normalize', '--yes'],
+            capture_output=True, text=True, timeout=120,
+        )
+        out = (proc.stdout or '') + (
+            f"\n[stderr]\n{proc.stderr}" if proc.stderr else ''
+        )
+        title = (
+            "Repair OK" if proc.returncode == 0 else
+            f"Repair returned {proc.returncode}"
+        )
+        # Truncate for the dialog if it's huge
+        body_out = out[-2400:] if len(out) > 2400 else out
+        self.ctx.dialog.msgbox(title, body_out or "(no output)")
 
     def _attach_tmux_session(self) -> None:
         """Drop the operator into ``tmux attach -t nomadnet``.

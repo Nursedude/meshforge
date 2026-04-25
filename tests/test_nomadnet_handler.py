@@ -1556,3 +1556,85 @@ class TestInstallUserUnit:
         unit = (fake_home / ".config" / "systemd" / "user" /
                 "nomadnet.service")
         assert not unit.exists()
+
+
+# ======================================================================
+# Issue #46: NomadNet Service Control > Repair RNS alignment
+# ======================================================================
+
+
+class TestRepairRnsAlignment:
+    """Repair RNS alignment dialog flow (Issue #46)."""
+
+    def _aligned_state(self):
+        from utils.rns_alignment import (
+            CANONICAL_CONFIGDIR, ConfigFileFacts, RNSAlignmentState,
+        )
+        return RNSAlignmentState(
+            hostname='fleet-host-1-test',
+            rnsd_active=True,
+            rnsd_user='root',
+            rnsd_exec_start='/usr/local/bin/rnsd --config /etc/reticulum --service',
+            rnsd_configdir=CANONICAL_CONFIGDIR,
+            etc_config=ConfigFileFacts(
+                path=Path('/etc/reticulum/config'),
+                exists=True, owner='root:root', has_rpc_key=True,
+                has_instance_name=False,
+            ),
+            nomadnet_unit_installed=True,
+            nomadnet_unit_rnsconfig=CANONICAL_CONFIGDIR,
+        )
+
+    def _drifted_state(self):
+        from utils.rns_alignment import ConfigFileFacts
+        s = self._aligned_state()
+        s.rnsd_configdir = Path('/root/.reticulum')
+        s.rnsd_exec_start = '/usr/local/bin/rnsd --service'
+        s.etc_config = ConfigFileFacts(
+            path=Path('/etc/reticulum/config'), exists=False,
+        )
+        return s
+
+    def test_aligned_host_short_circuits_with_msgbox(self):
+        h = _make_nomadnet()
+        with patch('utils.rns_alignment.probe_local',
+                   return_value=self._aligned_state()):
+            h._repair_rns_alignment()
+        assert "ALIGNED" in (h.ctx.dialog.last_msgbox_title or "")
+
+    def test_drifted_host_offers_yesno_with_plan(self):
+        """Drift triggers a confirm dialog listing planned actions."""
+        h = _make_nomadnet()
+        h.ctx.dialog._yesno_returns = [False]
+        called_subprocess = []
+        with patch('utils.rns_alignment.probe_local',
+                   return_value=self._drifted_state()):
+            with patch('subprocess.run',
+                       side_effect=lambda *a, **k: called_subprocess.append(a)):
+                h._repair_rns_alignment()
+        assert called_subprocess == [], "decline must not invoke normalize"
+
+    def test_yes_to_normalize_invokes_sudo_cli(self):
+        """Accepting the dialog runs sudo python3 scripts/rns_alignment.py normalize --yes."""
+        h = _make_nomadnet()
+        h.ctx.dialog._yesno_returns = [True]
+        captured_argv = []
+
+        def fake_run(argv, **kwargs):
+            captured_argv.append(argv)
+            class R:
+                returncode = 0
+                stdout = "Plan applied.\n"
+                stderr = ""
+            return R()
+
+        with patch('utils.rns_alignment.probe_local',
+                   return_value=self._drifted_state()):
+            with patch('subprocess.run', side_effect=fake_run):
+                h._repair_rns_alignment()
+
+        assert any(
+            'sudo' in argv and 'normalize' in argv and '--yes' in argv
+            for argv in captured_argv
+        ), f"expected sudo normalize --yes invocation, got {captured_argv}"
+
