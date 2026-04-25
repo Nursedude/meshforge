@@ -376,8 +376,8 @@ class RNSSniffer:
                     self.aspect_filter = None  # Capture all aspects
                     self.sniffer = sniffer
 
-                def received_announce(self, dest_hash, announced_identity, app_data):
-                    self.sniffer._on_rns_announce(dest_hash, announced_identity, app_data)
+                def received_announce(self, destination_hash, announced_identity, app_data):
+                    self.sniffer._on_rns_announce(destination_hash, announced_identity, app_data)
 
             self._announce_handler = SnifferAnnounceHandler(self)
             RNS.Transport.register_announce_handler(self._announce_handler)

@@ -1252,9 +1252,9 @@ def discover_nodes(timeout: int = 30) -> CommandResult:
                 self.aspect_filter = None  # All aspects
                 self.nodes = []
 
-            def received_announce(self, dest_hash, announced_identity, app_data):
+            def received_announce(self, destination_hash, announced_identity, app_data):
                 try:
-                    hash_hex = dest_hash.hex()
+                    hash_hex = destination_hash.hex()
                     name = ""
                     if app_data:
                         try:

@@ -442,3 +442,35 @@ class TestNomadNetPrelaunchContract:
             f"_nomadnet_rns_checks.py is {line_count} lines (limit: 300). "
             f"Move complex logic to _nomadnet_prelaunch.py or _rns_repair.py."
         )
+
+
+class TestRNSAnnounceHandlerContract:
+    """RNS.Transport calls handler.received_announce(destination_hash=..., ...)
+    with keyword arguments. Handlers that name the parameter anything other
+    than 'destination_hash' (e.g. legacy 'dest_hash') raise TypeError on
+    every announce — the gateway loses peer-discovery hits, M->R bridging
+    silently fails to track new senders.
+    """
+
+    def test_received_announce_param_name(self):
+        """Every received_announce() must use 'destination_hash' as first arg."""
+        import re
+        pattern = re.compile(r'def\s+received_announce\s*\(\s*self\s*,\s*(\w+)')
+        violations = []
+        for root, _dirs, files in os.walk(SRC_DIR):
+            for fname in files:
+                if not fname.endswith('.py'):
+                    continue
+                path = os.path.join(root, fname)
+                with open(path) as f:
+                    text = f.read()
+                for m in pattern.finditer(text):
+                    if m.group(1) != 'destination_hash':
+                        rel = os.path.relpath(path, SRC_DIR)
+                        violations.append(f"{rel}: param={m.group(1)}")
+        assert not violations, (
+            "RNS calls received_announce(destination_hash=..., "
+            "announced_identity=..., app_data=...) with kwargs. The "
+            "first parameter MUST be named 'destination_hash'. "
+            "Violations: " + "; ".join(violations)
+        )

@@ -298,8 +298,8 @@ class RNSConnectionMixin:
                 self.aspect_filter = "lxmf.delivery"
                 self.bridge = bridge
 
-            def received_announce(self, dest_hash, announced_identity, app_data):
-                self.bridge._on_rns_announce(dest_hash, announced_identity, app_data)
+            def received_announce(self, destination_hash, announced_identity, app_data):
+                self.bridge._on_rns_announce(destination_hash, announced_identity, app_data)
 
         RNS.Transport.register_announce_handler(AnnounceHandler(self))
 
