@@ -20,9 +20,10 @@
 ## Open Work
 
 ### File Size Compliance (1,500-line cap)
-- [ ] **Split `utils/map_data_collector.py`** (1,974 lines) — extract per-source collectors
-- [ ] **Split `handlers/ai_tools.py`** (1,953 lines) — separate orchestration from menu wiring
-- [ ] **Split `gateway/rns_bridge.py`** (1,632 lines) — further extract LXMF transport / link mgmt
+- [x] **Split `utils/map_data_collector.py`** 1,974→1,088 — extracted Meshtastic/AREDN/MeshCore collector mixins (b8268dc, 2026-04-24)
+- [x] **Split `handlers/ai_tools.py`** 1,953→670 — extracted MeshForge Maps / diagnostics / coverage / tile-cache mixins (b8268dc, 2026-04-24)
+- [x] **Split `gateway/rns_bridge.py`** 1,632→1,405 — extracted bidirectional Mesh↔RNS transformation mixin (b8268dc, 2026-04-24)
+- [ ] **Monitor `handlers/nomadnet.py`** (1,447 lines) — Issue #45 noted near-cap; landing zone is the existing `_nomadnet_*_ops.py` mixins
 
 ### Service Pre-flight Expansion (Issue #3) — MOSTLY COMPLETE
 - [x] **TCPInterface pre-flight**: device_controller, connections, rns_transport, node_monitor, mesh_bridge
@@ -51,6 +52,13 @@
 ---
 
 ## Recently Completed
+
+### 2026-04-24: File-Size Compliance Sweep + Doc Drift Sync (b8268dc)
+- [x] **map_data_collector.py** 1,974→1,088 — extracted `_map_collector_meshtastic.py` (501), `_map_collector_aredn.py` (222), `_map_collector_meshcore.py` (207)
+- [x] **ai_tools.py** 1,953→670 — extracted `_ai_tools_mfmaps.py` (520), `_ai_tools_diagnostics.py` (279), `_ai_tools_coverage.py` (289), `_ai_tools_tilecache.py` (228)
+- [x] **rns_bridge.py** 1,632→1,405 — extracted `_rns_bridge_xform.py` (264) covering bidirectional Mesh↔RNS transformation
+- [x] **Doc drift sync** across 14 `.claude/foundations/` + `.claude/plans/` + `INDEX.md` files: version refs (0.5.4→0.5.7), test count (2,954→3,460), branch model (dual-branch→solo-dev direct-to-main), MeshCore status, mixin-era→handler-registry references; rewrote `ui_design_decisions.md` to drop GTK roadmap
+- [x] **Test fix** — `test_get_config_path` accepted system path `/etc/reticulum/config` (post Issues #37/#40/#41 shared-config behavior)
 
 ### 2026-03-03: Session 4 — v0.5.5 Medium-Term Completions (PRs #1036-#1037)
 - [x] **File Splits (1400-line threshold)**: 3 files split (PR #1036)
@@ -106,19 +114,27 @@
 
 **Threshold: 1,400 lines proactive split / 1,500 hard max** (updated 2026-04-24)
 
-Three files currently over the hard cap (see Open Work above). Largest files:
+All source files under the 1,500-line hard cap as of b8268dc. Largest files:
 
 | File | Lines | Status |
 |------|-------|--------|
-| utils/map_data_collector.py | 1,974 | OVER — split pending |
-| handlers/ai_tools.py | 1,953 | OVER — split pending |
-| utils/knowledge_content.py | 1,993 | OK — content/data file by design (Issue #6 exemption) |
-| gateway/rns_bridge.py | 1,632 | OVER — further extraction pending |
-| utils/meshtastic_protobuf_client.py | 1,433 | Monitor — approaching cap |
+| launcher_tui/handlers/nomadnet.py | 1,447 | Monitor — approaching cap (Issue #45 note) |
+| gateway/rns_bridge.py | 1,405 | OK — extracted xform mixin (b8268dc) |
+| launcher_tui/handlers/service_menu.py | 1,401 | Monitor — approaching cap |
 | utils/prometheus_exporter.py | 1,399 | OK |
+| launcher_tui/handlers/mqtt.py | 1,361 | OK |
+| core/orchestrator.py | 1,353 | OK |
+| launcher_tui/handlers/system_tools.py | 1,342 | OK |
+| config/lora.py | 1,340 | OK |
 | utils/map_http_handler.py | 1,335 | OK |
-| utils/service_check.py | 1,061 | OK — single source of truth |
+| gateway/message_queue.py | 1,324 | OK |
+| utils/config_api.py | 1,316 | OK |
+| commands/rns.py | 1,314 | OK |
+| utils/knowledge_content.py | 1,281 | OK — content/data file (Issue #6 exemption) |
+| gateway/radio_failover.py | 1,264 | OK |
+| utils/map_data_collector.py | 1,088 | OK — extracted 3 collector mixins (b8268dc) |
 | launcher_tui/main.py | 1,075 | OK — handler registry migration complete |
+| launcher_tui/handlers/ai_tools.py | 670 | OK — extracted 4 mixins (b8268dc) |
 
 Session 4 splits: meshtastic_protobuf_client (1,457→915, extracted `_protobuf_admin.py`),
 service_check (1,410→941, extracted `_port_detection.py`),

@@ -437,7 +437,8 @@ class TestRNSCommands:
         from commands import rns
         path = rns.get_config_path()
         assert path.name == 'config'
-        assert '.reticulum' in str(path)
+        # ReticulumPaths resolves /etc/reticulum/ -> ~/.config/reticulum/ -> ~/.reticulum/
+        assert 'reticulum' in str(path)
 
     def test_get_status(self):
         """Test RNS status check."""
