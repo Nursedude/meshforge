@@ -1,9 +1,16 @@
 # Branch Convergence Guide: main ↔ alpha/meshcore-bridge
 
+> **STATUS (2026-04-24): HISTORICAL.** The convergence path documented below was not
+> executed. Instead the team chose to (a) **split** the MeshCore-primary work into a
+> sister repo `Nursedude/meshanchor` (2026-04-01), and (b) archive the alpha branch
+> as the tag `alpha-archived` (2026-04-19). MeshCore lives on `main` as an optional
+> gateway handler. This file is preserved for the divergence analysis and conflict
+> resolution patterns, which are still useful reference for any future merge work.
+>
 > **Purpose**: Technical reference for merging the two parallel development tracks
 > **Created**: 2026-03-03
 > **Merge-base**: Commit `f5521af` (PR #1000)
-> **Target**: Execute in a dedicated Claude Code session after field testing passes
+> **Original target**: Execute in a dedicated Claude Code session after field testing passes
 
 ---
 

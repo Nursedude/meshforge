@@ -3,8 +3,8 @@
 > **Operator**: WH6GXZ (Nursedude)
 > **Lab**: 8+ Raspberry Pis, 2x Mikrotik routers, cloud DDNS
 > **Created**: 2026-01-19
-> **Updated**: 2026-02-27 — Aligned with TUI-only interface (GTK removed in v0.5.x)
-> **Branch**: `main` (v0.5.4-beta)
+> **Updated**: 2026-04-24 — version sync; TUI-only interface (GTK removed in v0.5.x)
+> **Branch**: `main` (v0.5.7-beta)
 
 ---
 

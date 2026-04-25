@@ -10,8 +10,8 @@
 ## Pre-Test Setup
 
 ### Environment Verification
-- [ ] MeshForge version: `python3 -c "from src.__version__ import __version__; print(__version__)"` → 0.5.4-beta
-- [ ] All tests passing: `python3 -m pytest tests/ -v --tb=short` → ~1,986 passed
+- [ ] MeshForge version: `python3 -c "from src.__version__ import __version__; print(__version__)"` → 0.5.7-beta
+- [ ] All tests passing: `python3 -m pytest tests/ -v --tb=short` → ~3,460 passed
 - [ ] Branch: `git branch` → main (or feature branch)
 
 ### Services Running

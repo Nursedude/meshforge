@@ -1,7 +1,8 @@
 # MeshForge UI Design Decisions
 
-> **Status:** ACTIVE - This document guides all UI development
-> **Date:** 2026-01-18
+> **Status:** ACTIVE — guides all UI development
+> **Originally drafted:** 2026-01-18
+> **Last updated:** 2026-04-24 (GTK removed in v0.5.x — TUI is the sole interface)
 > **Authors:** WH6GXZ (Nursedude) + Dude AI
 
 ## Core Principle
@@ -21,19 +22,20 @@ No Ctrl+C to escape. Every menu has a cancel/back option.
 
 | Environment | Primary UI | Why |
 |-------------|-----------|-----|
-| **Headless (SSH/Pi)** | Launcher TUI (dialog) | Reliable, works as root, raspi-config familiar |
-| **Desktop** | GTK Desktop | Maps, visual monitoring |
+| **Headless / Desktop / SSH / Pi** | Launcher TUI (whiptail/dialog) | Sole interface — works as root, raspi-config familiar, identical experience everywhere |
+| **Visual mapping** | Browser-rendered map (`http://localhost:5000`) | Leaflet map served by `meshforge-map` systemd service |
 | **Advanced/Scripting** | CLI commands | `meshtastic`, `rnsd`, direct control |
 
 ### UI Status
 
 | UI | Status | Action |
 |----|--------|--------|
-| **Launcher TUI** | C - Core | Primary CLI interface, enhance navigation |
-| **GTK Desktop** | N - Maintenance | Keep working, stop adding features |
-| **Textual TUI** | N - Nice | Lower priority than Launcher TUI |
-| **Rich CLI configs** | N - Advanced | Keep for power users, add questionary for escape handling |
-| **Web UI** | X - Cut | Don't invest time here |
+| **Launcher TUI** | C — Core | Primary interface, only interface |
+| **Browser map (`:5000`)** | C — Core | Folium/Leaflet served by `map_data_service.py` |
+| **External `:8808` map (`meshforge-maps` repo)** | C — Core | Sister visualization repo, optional plugin |
+| **Rich CLI configs** | N — Advanced | Keep for power users |
+| **Web UI (full)** | X — Cut | Don't invest time here |
+| **GTK Desktop** | X — Removed in v0.5.x | Historical only; do not resurrect |
 
 ---
 
@@ -60,35 +62,31 @@ No Ctrl+C to escape. Every menu has a cancel/back option.
 ### Setup Wizard Flow
 
 ```
-1. Environment Detection
-   └── Headless? → Launcher TUI
-   └── Desktop?  → Offer GTK or TUI choice
-
-2. Hardware Detection
+1. Hardware Detection
    └── Detect SPI devices
    └── Identify HAT type (if possible)
    └── Offer hardware config selection
 
-3. Node Identity
+2. Node Identity
    └── Set Owner Name (long name)
    └── Set Short Name (4 char)
 
-4. Region Selection
+3. Region Selection
    └── Select regulatory region (US, EU, etc.)
 
-5. Radio Preset
+4. Radio Preset
    └── Choose modem preset (LONG_FAST default)
    └── Explain tradeoffs
 
-6. Channel Setup
+5. Channel Setup
    └── Primary channel name
    └── PSK (generate or use default)
 
-7. Service Start
+6. Service Start
    └── Start meshtasticd?
    └── Enable on boot?
 
-8. Complete
+7. Complete
    └── Summary of configuration
    └── "Run 'meshforge' to access full interface"
 ```
@@ -99,9 +97,9 @@ No Ctrl+C to escape. Every menu has a cancel/back option.
 
 ### Every Menu Must Have
 
-1. **Clear title** - Where am I?
-2. **Back/Cancel option** - Always visible, always works
-3. **Keyboard shortcuts** - q=quit, b=back, Enter=select
+1. **Clear title** — Where am I?
+2. **Back/Cancel option** — Always visible, always works
+3. **Keyboard shortcuts** — q=quit, b=back, Enter=select
 
 ### Dialog Menu Template
 
@@ -139,17 +137,18 @@ Configure custom channel slot? [y/n/c] (n):
 |---------|-----------|--------|
 | Meshtastic ↔ RNS Bridge | `gateway/rns_bridge.py` | Working |
 | Node Tracking | `gateway/node_tracker.py` | Working |
-| SPI HAT Detection | `config/spi_hats.py` | Needs work |
+| SPI HAT Detection | `config/spi_hats.py` | Working |
 | Radio Presets | `config/lora.py` | Working |
-| Channel Config | `launcher_tui/channel_config_mixin.py` | Working |
-| Owner Name | `commands/meshtastic.py` | Added |
+| Channel Config | `launcher_tui/handlers/channel_config.py` | Working |
+| Owner Name | `commands/meshtastic.py` | Working |
 | Region Selection | `config/lora.py` | Working |
-| Node List/Telemetry | Multiple panels | Working |
-| MQTT Dashboard | `gtk_ui/panels/mqtt_dashboard.py` | Working |
-| Diagnostics Panel | `utils/diagnostic_engine.py` | Working |
+| Node List/Telemetry | TUI handlers + map | Working |
+| MQTT Dashboard | `launcher_tui/handlers/mqtt.py` | Working |
+| Diagnostics | `utils/diagnostic_engine.py` | Working |
 | Coverage Maps | `utils/coverage_map.py` | Working |
+| Live network map | `utils/map_data_service.py` (port 5000) | Working |
 | RF Calculator | `utils/rf.py` | Working, tested |
-| Launcher TUI | `launcher_tui/` | Primary CLI |
+| Launcher TUI | `launcher_tui/` | Sole interface |
 
 ### Nice-to-Have (Can Be Rough)
 
@@ -157,110 +156,81 @@ Configure custom channel slot? [y/n/c] (n):
 |---------|-------|
 | Message Queue | SQLite queue exists, works |
 | Webhooks | Implemented, low maintenance |
-| Textual TUI | Works but lower priority |
-| GTK Desktop | Maintenance only |
 
-### Nice-to-Have (Revised)
+### Kept (Strategic)
 
 | Feature | Notes |
 |---------|-------|
-| AREDN Panel | **KEEP** - User is part of AREDN network |
-| AI Assistant | **KEEP** - Differentiator, future of mesh NOC |
-| Message Queue | SQLite queue exists, works |
-| Webhooks | Implemented, low maintenance |
-| Textual TUI | Works but lower priority than Launcher TUI |
-
-### Experimental (Deferred)
-
-| Feature | Reason |
-|---------|--------|
-| GTK Messaging Panel | TX/RX unreliable, use Meshtastic Web Client instead |
+| AREDN Panel | User is part of AREDN network |
+| AI Assistant | Differentiator, future of mesh NOC |
 
 ### Cut/Deferred
 
 | Feature | Reason |
 |---------|--------|
-| Web UI | Not used, adds complexity |
-| HamClock Integration | Nice but not core NOC (defer) |
+| Web UI (full) | TUI + browser map cover the need |
+| HamClock Integration | Defer beyond service start/stop |
 
 ---
 
 ## Maps Strategy
 
-Maps are **Core** - essential for NOC visualization. Must be DYNAMIC, showing all networks.
+Maps are **Core** — essential for NOC visualization. Two surfaces:
+
+1. **In-process `:5000`** — `utils/map_data_service.py` + `utils/map_data_collector.py` aggregate Meshtastic, RNS, MeshCore, AREDN into one Folium/Leaflet map. ThreadingHTTPServer; RNS pre-warmed on main thread (Issue #44).
+2. **External `:8808`** — `meshforge-maps` sibling repo (optional plugin, separate systemd service), consumes the same `/api/nodes/geojson`.
 
 ### Unified Map Vision
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  🗺️ MeshForge Network Map                                   │
+│  MeshForge Network Map                                      │
 │                                                             │
 │  Legend:                                                    │
-│    ● Meshtastic Node (circle) - from meshtasticd           │
-│    ◆ RNS Destination (diamond) - from rnsd                 │
-│    ⬡ AREDN Node (hexagon) - from AREDN API                 │
-│    ★ Gateway/Repeater (star)                               │
-│    ▲ Router (triangle)                                      │
-│    ■ MQTT Node (square)                                     │
+│    ● Meshtastic Node (circle) — from meshtasticd / MQTT     │
+│    ◆ RNS Destination (diamond) — from rnsd path table       │
+│    ⬡ AREDN Node (hexagon) — from AREDN sysinfo API          │
+│    ▼ MeshCore Node (operator-positioned)                    │
+│    ★ Gateway/Repeater (star)                                │
 │                                                             │
 │  Data Sources:                                              │
-│    - meshtasticd (localhost:4403)                          │
-│    - rnsd (UDP 37428)                                       │
-│    - AREDN sysinfo API (*.local.mesh)                      │
+│    - meshtasticd (localhost:443/9443 HTTPS)                 │
+│    - rnsd (shared instance via /tmp/meshforge_rns_client/)  │
+│    - AREDN sysinfo API (*.local.mesh)                       │
+│    - meshcore_positions (operator-set in map_settings.json) │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Implementation Status:** COMPLETE (P2)
-- GTK panel shows unified statistics for all three networks
-- Web map (Leaflet) displays nodes with network-specific icons
-- Each network type has distinct color and shape for easy identification
-- Filter controls to show/hide specific network types
-
-### Current Implementation
+### Implementation
 - Folium generates HTML with Leaflet.js
-- WebKitGTK embeds in GTK (has root sandbox issues)
-- Fallback: Open in external browser
+- Served by `meshforge-map.service` (systemd) on `:5000`
+- Per-source diagnostics surfaced via `/api/status` (Issue #43)
+- Headless: open in external browser via SSH port forward or LAN IP
 
-### Decision
-1. **Primary:** Generate map HTML, open in system browser (`xdg-open`)
-2. **GTK:** Try WebKit, fall back to browser if fails
-3. **Headless:** Generate HTML file, user opens on another device
-
-### Map Features (Priority Order)
-1. Node positions with icons (per-network type)
+### Map Features
+1. Node positions with per-network icons
 2. Link lines between nodes (RF, tunnel, IP)
 3. AREDN integration (query *.local.mesh nodes)
-4. Coverage circles (optional, can be toggled)
-5. Real-time updates (poll every 30s)
+4. Coverage circles (toggle)
+5. Auto-refresh
 
 ### AREDN Map Integration
 Reference: https://worldmap.arednmesh.org/
 - AREDN nodes report location to AREDN servers
-- MeshForge can query local AREDN nodes via API
+- MeshForge queries local AREDN nodes via API
 - See `.claude/research/aredn_integration.md` for API details
 
 ---
 
 ## Implementation Priorities
 
-### Phase 1: First-Run Experience
-1. Create setup wizard in Launcher TUI
-2. Add post-install prompt to installer
-3. Environment detection (headless vs desktop)
+### Active Workstreams
+1. Field validation of gateway, MeshCore handler, coverage maps
+2. Per-source map diagnostics (Issue #43, ongoing)
+3. NomadNet TUI service-mgmt parity (Issue #45, shipped — monitoring)
 
-### Phase 2: Navigation Fixes
-1. Add questionary to Rich CLI configs (escape handling)
-2. Audit all menus for Back/Cancel options
-3. Standardize keyboard shortcuts
-
-### Phase 3: Core Reliability
-1. Ensure all Core features work 100%
-2. Add tests for critical paths
-3. Fix any SPI HAT detection gaps
-
-### Phase 4: Cleanup
-1. Remove/hide Cut features from UI
-2. Mark Nice-to-have clearly in menus
-3. Update documentation
+### Reliability
+1. Ensure all Core features work 100% across the fleet (5 Pis)
+2. Maintain regression-guard tests + lint MF001-MF012
 
 ---
 
@@ -277,30 +247,17 @@ Reference: https://worldmap.arednmesh.org/
 - Escape to cancel
 - Only where Rich CLI is still needed
 
-### GTK Threading
-- All UI updates via `GLib.idle_add()`
-- Background work in threads with `daemon=True`
-- See `.claude/rules/gtk_threading.md`
-
 ### Service Detection
 - Single source of truth: `utils/service_check.py`
-- Systemd services: trust `systemctl` only
-- Non-systemd (rnsd): port + process check
-- See Issue #17 redesign
-
----
-
-## Open Questions
-
-1. **WebKit alternative?** - Need to evaluate options for embedded browser
-2. **Map caching?** - Should we cache map tiles for offline use?
-3. **Mobile/tablet?** - Any consideration for touch-friendly UI?
+- Systemd services: trust `systemctl` only (lint MF008)
+- Non-systemd / user-scope: explicit `user=True` kwarg
+- See Issue #17, #20 redesigns
 
 ---
 
 ## References
 
-- `.claude/foundations/persistent_issues.md` - Known bugs and fixes
-- `.claude/foundations/domain_architecture.md` - Core vs Plugin model
-- `.claude/rules/gtk_threading.md` - GTK threading rules
-- `.claude/rules/security.md` - Security rules (Path.home, shell=True, etc.)
+- `.claude/foundations/persistent_issues.md` — Known bugs and fixes
+- `.claude/foundations/domain_architecture.md` — Core vs Plugin model
+- `.claude/foundations/tui_architecture.md` — Handler registry pattern
+- `.claude/rules/security.md` — Security rules (Path.home, shell=True, etc.)

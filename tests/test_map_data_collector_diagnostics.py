@@ -217,7 +217,7 @@ class TestMeshtasticDoesNotClobberNoPositionList:
     """Regression: _collect_via_http used to = (overwrite) the no-position list,
     wiping MeshCore entries captured earlier by _collect_unified_tracker."""
 
-    @patch("utils.map_data_collector.get_http_client")
+    @patch("utils._map_collector_meshtastic.get_http_client")
     def test_http_extend_not_overwrite(self, mock_http, collector):
         # Pre-populate as _collect_unified_tracker would
         collector._nodes_without_position = [

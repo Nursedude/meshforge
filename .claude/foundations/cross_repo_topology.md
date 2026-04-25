@@ -11,9 +11,9 @@
 ```
 ┌─────────────────────────────────────────────────────────┐
 │               MeshForge NOC (Core Hub)                  │
-│           /opt/meshforge · v0.5.5-beta                  │
+│           /opt/meshforge · v0.5.7-beta                  │
 │    Gateway · TUI · RF Tools · Service Management        │
-│    99 .claude/ files · 2,954 tests · Custom linter      │
+│    63 .claude/ files · 3,460 tests · Custom linter      │
 └───────────┬─────────────────────────┬───────────────────┘
             │                         │
    Plugin discovery          safe_import bridge
@@ -124,7 +124,7 @@ meshforge/alerts/{sev}   Severity-filtered alerts
 
 | Repo | Tests | Framework | CI |
 |------|-------|-----------|-----|
-| meshforge | 2,954 | pytest + regression guards + custom linter | Pre-commit hooks |
+| meshforge | 3,460 | pytest + regression guards + custom linter | Pre-commit hooks |
 | meshforge-maps | 982 | pytest + ruff | GitHub Actions |
 | meshing_around | 768 | pytest + flake8/black/isort | GitHub Actions |
 

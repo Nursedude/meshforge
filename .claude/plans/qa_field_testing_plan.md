@@ -3,7 +3,7 @@
 > **Purpose**: Structured QA protocol for features with unit tests but no real-world validation
 > **Author**: WH6GXZ + Claude Code
 > **Created**: 2026-03-03
-> **Branch**: `main` (v0.5.4-beta) for gateway/maps, `alpha/meshcore-bridge` for MeshCore
+> **Branch**: `main` (v0.5.7-beta) — MeshCore is an optional gateway handler on `main`; sister NOC `MeshAnchor` for MeshCore-primary work
 > **Related**: `.claude/plans/noc_test_plan.md` (lab infrastructure), `README.md` (status table)
 
 ---
@@ -139,7 +139,7 @@ Real hardware testing requires a companion radio.
 
 ### Prerequisites
 
-- [ ] Switch to alpha: `git checkout alpha/meshcore-bridge`
+- [ ] On `main` (MeshCore handler ships on main as of split; alpha branch archived as tag `alpha-archived`)
 - [ ] MeshCore companion radio (Heltec/T-Beam with MeshCore firmware)
 - [ ] meshcore_py installed: `pip install meshcore` (requires Python 3.10+)
 - [ ] Companion radio connected via USB (note device path, e.g., `/dev/ttyUSB1`)
@@ -200,9 +200,9 @@ Real hardware testing requires a companion radio.
 2. **PASS**: Message truncated with `...` indicator, full message logged
 3. **FAIL**: Crash, garbled message, or silent truncation without indicator
 
-### Key Files (Alpha Branch)
+### Key Files (on `main`)
 - `src/gateway/meshcore_handler.py` — Async handler
-- `src/gateway/canonical_message.py` — Multi-protocol message format
+- `src/gateway/canonical_message.py` — Multi-protocol message format (shared with MeshAnchor)
 - `src/gateway/message_routing.py` — 3-way routing classifier
 - `src/gateway/meshcore_bridge_mixin.py` — Bridge processing
 - `src/core/radio_mode.py` — RadioMode abstraction
@@ -217,7 +217,7 @@ Use this template to record results for each test:
 ```
 ## Test: [ID] — [Name]
 Date: YYYY-MM-DD
-Branch: main / alpha/meshcore-bridge
+Branch: main
 Hardware: [describe Pi model, radio, firmware version]
 
 Result: PASS / FAIL / PARTIAL
@@ -236,7 +236,7 @@ Issues Filed: #[issue number] (if applicable)
 1. **Gateway (GW-01 through GW-06)** — Validate core mission first
 2. **Maps (MAP-01 through MAP-03)** — Needs position data from GW testing
 3. **Live NOC Map (MAP-04, MAP-05)** — Needs running bridge from GW testing
-4. **MeshCore (MC-01 through MC-09)** — Switch to alpha branch, needs companion radio
+4. **MeshCore (MC-01 through MC-09)** — On `main`; needs companion radio
 5. **Soak test (GW-07)** — Run last, requires 24+ hours
 
 ---

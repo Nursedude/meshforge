@@ -40,8 +40,8 @@ src/launcher_tui/
 │   ├── conflict_resolver.py  # Interactive port conflict resolution
 │   └── status_bar.py         # Persistent status line
 │
-├── Handlers (60 registered classes across 12 batches)
-│   ├── __init__.py               # get_all_handlers() — all 60 imports
+├── Handlers (~70 registered classes across 12+ batches)
+│   ├── __init__.py               # get_all_handlers() — all imports
 │   │
 │   ├── Batch 1 — Pilot handlers
 │   │   ├── latency.py            # Network latency testing
@@ -265,7 +265,7 @@ class EnvironmentState:
 Persistent status shown at top of every dialog:
 
 ```
-MeshForge v0.5.5 | meshtasticd: ● | rnsd: ○ | mqtt: ○ | Conflicts: 0
+MeshForge v0.5.7 | meshtasticd: ● | rnsd: ○ | mqtt: ○ | Conflicts: 0
 ```
 
 ---

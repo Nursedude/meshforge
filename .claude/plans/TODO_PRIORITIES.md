@@ -1,43 +1,34 @@
 # MeshForge Development Priorities
 
-> **Last Updated:** 2026-03-03
+> **Last Updated:** 2026-04-24
 > **Maintainer:** WH6GXZ / Dude AI
 
 ---
 
 ## Branch Strategy
 
-**Dual-branch model** as of v0.5.4 (alpha restored for MeshCore development).
+**Solo-dev direct-to-main** as of 2026-04-19. Alpha branch archived as tag `alpha-archived`.
 
 | Branch | Version | Purpose |
 |--------|---------|---------|
-| `main` | `0.5.4-beta` | Stable beta — gateway bridge, TUI, monitoring, RF tools |
-| `alpha/meshcore-bridge` | `0.6.0-alpha` | MeshCore integration — 3-way routing, companion radio mgmt |
+| `main` | `0.5.7-beta` | Sole branch — gateway bridge, TUI, monitoring, RF tools, optional MeshCore handler |
 
-**Alpha branch contents** (16 commits ahead of main, PRs #847-#851):
-- `meshcore_handler.py` — MeshCore protocol handler (796 lines)
-- `canonical_message.py` — Multi-protocol canonical message format (437 lines)
-- `meshcore_bridge_mixin.py` — Bridge integration mixin (169 lines)
-- `meshcore_mixin.py` — TUI menu for MeshCore operations (391 lines)
-- `rns_config_mixin.py` + `rns_diagnostics_mixin.py` — Extracted from rns_menu_mixin
-- `message_routing.py` — Enhanced with 3-way routing (MeshCore source)
-- 1,839 lines of new tests (canonical_message, meshcore_handler, tribridge)
+**Sister NOC**: `Nursedude/meshanchor` (split from main 2026-04-01) is the MeshCore-primary NOC. `CanonicalMessage` in `src/gateway/canonical_message.py` is the shared bridge contract — keep compatible across both repos.
 
 ---
 
 ## Open Work
 
-### TUI-Bridge API Wiring (Alpha)
-- [ ] **MeshCore node listing** — Wire `_meshcore_nodes()` to live node tracker (filter `meshcore:` prefix)
-- [ ] **MeshCore stats** — Wire `_meshcore_stats()` to bridge stats API (`meshcore_rx/tx/acks`)
-- [ ] **Classifier MeshCore 3-way routing** — Verify `BRIDGE_MESHCORE` end-to-end
-- [ ] **Auto-review reliability triage** — Review 64 reliability issues: real vs false positive
+### File Size Compliance (1,500-line cap)
+- [ ] **Split `utils/map_data_collector.py`** (1,974 lines) — extract per-source collectors
+- [ ] **Split `handlers/ai_tools.py`** (1,953 lines) — separate orchestration from menu wiring
+- [ ] **Split `gateway/rns_bridge.py`** (1,632 lines) — further extract LXMF transport / link mgmt
 
-### Service Pre-flight Expansion (Issue #3) — MOSTLY COMPLETE (2026-02-27)
+### Service Pre-flight Expansion (Issue #3) — MOSTLY COMPLETE
 - [x] **TCPInterface pre-flight**: device_controller, connections, rns_transport, node_monitor, mesh_bridge
 - [x] **MQTT pre-flight**: mqtt_bridge plugin, mqtt_subscriber, mesh_bridge (localhost only)
-- [x] **Raw systemctl migration**: diagnose.py (direct import), handlers/metrics.py (check_service)
-- [ ] **Display-only systemctl calls**: system_tools_mixin, service_menu_mixin (acceptable — showing info, not deciding state)
+- [x] **Raw systemctl migration**: diagnose.py, handlers/metrics.py (check_service)
+- [ ] **Display-only systemctl calls**: a few handlers still use raw systemctl for info-only display (acceptable — showing info, not deciding state)
 
 ### Plugins
 - [ ] **NanoVNA plugin** — Antenna tuning integration
@@ -113,19 +104,21 @@
 
 ## Technical Debt
 
-**Threshold: 1,400 lines proactive split / 1,500 hard max** (updated 2026-03-03)
+**Threshold: 1,400 lines proactive split / 1,500 hard max** (updated 2026-04-24)
 
-All files now under threshold. Largest files after Session 4 splits:
+Three files currently over the hard cap (see Open Work above). Largest files:
 
 | File | Lines | Status |
 |------|-------|--------|
-| knowledge_content.py | 1,281 | OK — content/data file by design |
-| handlers/service_menu.py | 1,381 | OK — monitor |
-| rns_bridge.py | 1,381 | OK — monitor |
-| message_queue.py | 1,324 | OK |
-| meshtastic_protobuf_client.py | 915 | Split in Session 4 |
-| service_check.py | 941 | Split in Session 4 |
-| handlers/rns_diagnostics.py | 859 | Split in Session 4 |
+| utils/map_data_collector.py | 1,974 | OVER — split pending |
+| handlers/ai_tools.py | 1,953 | OVER — split pending |
+| utils/knowledge_content.py | 1,993 | OK — content/data file by design (Issue #6 exemption) |
+| gateway/rns_bridge.py | 1,632 | OVER — further extraction pending |
+| utils/meshtastic_protobuf_client.py | 1,433 | Monitor — approaching cap |
+| utils/prometheus_exporter.py | 1,399 | OK |
+| utils/map_http_handler.py | 1,335 | OK |
+| utils/service_check.py | 1,061 | OK — single source of truth |
+| launcher_tui/main.py | 1,075 | OK — handler registry migration complete |
 
 Session 4 splits: meshtastic_protobuf_client (1,457→915, extracted `_protobuf_admin.py`),
 service_check (1,410→941, extracted `_port_detection.py`),

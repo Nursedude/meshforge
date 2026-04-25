@@ -2,9 +2,9 @@
 
 > **Purpose**: Track features that exist in code but aren't accessible via TUI
 > **Created**: 2026-01-30
-> **Last verified**: 2026-02-27
-> **For**: Alpha release planning
-> **Note**: Most items now have TUI mixins — verify field functionality at QTH
+> **Last verified**: 2026-04-24
+> **For**: Beta release tracking
+> **Note**: All listed items now have registered handlers — verify field functionality at QTH
 
 ---
 
@@ -146,16 +146,16 @@ def _message_history_menu(self):
 
 ## Tracking
 
-| Feature | TUI Mixin | Handler | Menu Path | Verified |
-|---------|-----------|---------|-----------|----------|
-| Device Backup | `device_backup_mixin.py` | `handlers/device_backup.py` ✓ | Config → Device Backup | 2026-02-27 ✓ |
-| Message History | `messaging_mixin.py` | `handlers/messaging.py` ✓ | Mesh → Messaging | 2026-02-27 ✓ |
-| Propagation Data | `propagation_mixin.py` | `handlers/propagation.py` ✓ | RF & SDR → Space Weather | 2026-02-27 ✓ |
-| RNode Config | `rnode_mixin.py` | `handlers/rnode.py` ✓ | Config → RNode Setup | 2026-02-27 ✓ |
-| Advanced Diagnostics | `system_tools_mixin.py` | Not migrated (legacy OK) | System → Diagnostics | 2026-02-27 ✓ |
-| Network Health | `dashboard_mixin.py` | Not migrated (legacy OK) | Dashboard → Node Health | 2026-02-27 ✓ |
+| Feature | Handler | Menu Path | Verified |
+|---------|---------|-----------|----------|
+| Device Backup | `handlers/device_backup.py` ✓ | Config → Device Backup | 2026-02-27 ✓ |
+| Message History | `handlers/messaging.py` ✓ | Mesh → Messaging | 2026-02-27 ✓ |
+| Propagation Data | `handlers/propagation.py` ✓ | RF & SDR → Space Weather | 2026-02-27 ✓ |
+| RNode Config | `handlers/rnode.py` ✓ | Config → RNode Setup | 2026-02-27 ✓ |
+| Advanced Diagnostics | `handlers/system_tools.py` ✓ | System → Diagnostics | 2026-02-27 ✓ |
+| Network Health | `handlers/dashboard.py` ✓ | Dashboard → Node Health | 2026-02-27 ✓ |
 
-**All 6 features verified**: Wiring intact, menu paths reachable, command modules connected.
+**All 6 features verified**: Wiring intact, menu paths reachable, all migrated to handler registry.
 **Next step**: QTH field testing to verify end-to-end with hardware.
 
 ---

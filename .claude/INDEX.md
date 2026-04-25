@@ -15,7 +15,7 @@ Quick navigation for AI assistants. Load only what you need.
 |------|---------|
 | `foundations/domain_architecture.md` | Core vs Plugin, privilege separation |
 | `foundations/meshforge_ecosystem.md` | All 5 repos, boundaries, APIs |
-| `foundations/tui_architecture.md` | Mixin pattern, DialogBackend, adding features |
+| `foundations/tui_architecture.md` | Handler registry pattern, DialogBackend, adding features |
 | `foundations/ui_design_decisions.md` | TUI design principles |
 | `foundations/persistent_issues.md` | Recurring bugs & resolution patterns |
 | `foundations/persistent_issues_archive.md` | Resolved issues (historical) |
@@ -37,7 +37,7 @@ Quick navigation for AI assistants. Load only what you need.
 | `research/gateway_setup_guide.md` | Gateway configuration guide |
 | `research/gateway_scenario_analysis.md` | Gateway deployment scenarios |
 
-### MeshCore (Alpha Branch)
+### MeshCore (now an optional gateway handler on `main`; sister NOC: MeshAnchor)
 | File | Purpose |
 |------|---------|
 | `research/dual_protocol_meshcore.md` | MeshCore bridge research |
@@ -77,7 +77,7 @@ Quick navigation for AI assistants. Load only what you need.
 | `plans/TODO_PRIORITIES.md` | **Current task priorities & branch strategy** | Active — start here |
 | `plans/v1.0_roadmap.md` | v1.0 definition, criteria & phased roadmap | Active |
 | `plans/strategic_improvements.md` | Tiered improvement roadmap (Sprints A-C done) | Active |
-| `plans/missing_features.md` | TUI features gap tracker (most now have mixins) | Needs QTH testing |
+| `plans/missing_features.md` | TUI features gap tracker (most now have handlers) | Needs QTH testing |
 | `plans/noc_test_plan.md` | Lab infrastructure & testing procedures | Reference |
 | `plans/qth_test_checklist.md` | Field testing checklist (updated for TUI) | Reference |
 | `plans/deferred-issues.md` | Deferred GitHub issues (1 of 3 completed) | Active |
@@ -93,9 +93,9 @@ Quick navigation for AI assistants. Load only what you need.
 - **archive/** - Historical documents (postmortems, articles, session notes, old audits). Not loaded by default.
 - **commands/** - Slash command definitions (6 files)
 - **export/** - Integration guides (1 file)
-- **foundations/** - Core principles (7 files)
+- **foundations/** - Core principles (9 files)
 - **hardware/** - Device-specific docs (1 file)
-- **plans/** - Implementation plans (7 files)
+- **plans/** - Implementation plans (10 files)
 - **research/** - Technical research (21 files)
 - **rules/** - Security & testing rules (2 files)
 - **skills/** - Custom skill definitions (1 dir)
@@ -110,5 +110,5 @@ Quick navigation for AI assistants. Load only what you need.
 **safe_import rules?** -> `foundations/persistent_issues.md#issue-5`
 
 ---
-*Updated: 2026-02-27. ~48 active files after dedup audit. ~30 files archived.*
-*Plans organized: GTK refs removed, metrics synced, completed work marked.*
+*Updated: 2026-04-24. 63 active files; ~30 archived. Project at v0.5.7-beta, 3,460 tests.*
+*GTK refs preserved as historical context only — TUI is the sole interface.*

@@ -276,5 +276,5 @@ If the answer is unclear, don't build it.
 ---
 
 *Created: 2026-01-17*
-*Updated: 2026-02-27 — Removed GTK references (TUI is sole interface), updated metrics*
-*MeshForge v0.5.4-beta*
+*Updated: 2026-04-24 — version sync, branch model updated to solo-dev direct-to-main*
+*MeshForge v0.5.7-beta*

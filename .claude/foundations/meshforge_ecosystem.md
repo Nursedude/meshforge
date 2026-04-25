@@ -14,7 +14,7 @@ MeshForge is not a single repository — it's a **domain** spanning five repos t
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    MeshForge NOC (Core Hub)                      │
-│            Nursedude/meshforge · v0.5.4-beta                    │
+│            Nursedude/meshforge · v0.5.7-beta                    │
 │       Gateway bridge · TUI · RF tools · Diagnostics             │
 └────────┬──────────┬───────────────┬─────────────────────────────┘
          │          │               │
@@ -40,10 +40,10 @@ MeshForge is not a single repository — it's a **domain** spanning five repos t
 
 ### Nursedude/meshforge (Core NOC)
 - **Role**: Central hub — the NOC itself
-- **Status**: Beta (v0.5.4), Alpha branch (v0.6.0-alpha with MeshCore)
+- **Status**: Beta (v0.5.7). MeshCore is an optional gateway handler on `main`; sister repo MeshAnchor is the MeshCore-primary NOC (split 2026-04-01).
 - **Stack**: Python 3.9+, TUI (whiptail/dialog), MQTT, systemd
 - **Owns**: Gateway bridge, node tracker, RF tools, diagnostics, TUI, service management
-- **Branch model**: `alpha/meshcore-bridge` → `main` (beta) → releases
+- **Branch model**: solo-dev direct-to-`main`. Alpha branch archived as tag `alpha-archived` (2026-04-19).
 
 ### Nursedude/meshforge-maps (Maps Plugin)
 - **Role**: Multi-source mesh network visualization
@@ -241,7 +241,7 @@ pyopenssl>=25.3.0  → SSL/cryptography
 meshtastic>=2.3.0  → Meshtastic Python API (optional in NOC, used in maps for protobuf)
 ```
 
-### MeshCore (NOC alpha branch only)
+### MeshCore (optional gateway handler on `main`)
 ```
 meshcore_py        → MeshCore companion radio protocol
 ```
@@ -251,29 +251,27 @@ meshcore_py        → MeshCore companion radio protocol
 ## 8. Branch Strategy Across Repos
 
 ### meshforge (NOC)
-- `main` — Stable beta releases (v0.5.4-beta)
-- `alpha/meshcore-bridge` — MeshCore 3-way routing (v0.6.0-alpha target)
-- `claude/*` — AI-generated feature branches
-- `feat/*`, `fix/*` — Human feature/fix branches
+- `main` — Stable beta (currently v0.5.7-beta). Solo-dev direct-to-main; PR/feature-branch flow retired 2026-04-19.
+- `alpha-archived` — Tag preserving the historical `alpha/meshcore-bridge` work.
+- Sister repo: `Nursedude/meshanchor` (MeshCore-primary NOC, split 2026-04-01).
 
 ### Other Repos
 Each repo manages its own versioning independently. Cross-repo releases are NOT synchronized — each ships when ready.
 
 ---
 
-## 9. MeshCore Alpha Context (v0.6.0)
+## 9. MeshCore on `main` (optional gateway handler)
 
-The `alpha/meshcore-bridge` branch adds **MeshCore as a third protocol** alongside Meshtastic and RNS:
+`main` carries MeshCore as an **optional gateway handler** alongside Meshtastic and RNS. The MeshCore-primary NOC (`MeshAnchor`) was extracted to its own repo on 2026-04-01.
 
-### New Components (alpha only)
-| File | Lines | Purpose |
-|------|-------|---------|
-| `gateway/meshcore_handler.py` | 796 | MeshCore bridge logic via meshcore_py |
-| `gateway/canonical_message.py` | 437 | Normalized message format (all 3 protocols) |
-| `gateway/meshcore_bridge_mixin.py` | 169 | TUI wiring for MeshCore stats |
-| `launcher_tui/meshcore_mixin.py` | 467 | MeshCore menu and config UI |
-| `plugins/meshcore.py` | refactored | Plugin → handler delegation |
-| `gateway/message_routing.py` | +143 | 3-way routing tables |
+### Components
+| File | Purpose |
+|------|---------|
+| `gateway/meshcore_handler.py` | MeshCore bridge logic via meshcore_py |
+| `gateway/canonical_message.py` | Normalized message format (shared with MeshAnchor — keep compatible) |
+| `gateway/meshcore_bridge_mixin.py` | TUI wiring for MeshCore stats |
+| `plugins/meshcore.py` | Plugin → handler delegation |
+| `gateway/message_routing.py` | 3-way routing tables |
 
 ### 3-Way Routing Architecture
 ```
