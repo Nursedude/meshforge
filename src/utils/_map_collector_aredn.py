@@ -50,9 +50,9 @@ class ARENDataCollectorMixin:
             else:
                 reason = "not_configured"
                 msg = (
-                    "AREDN: no local node reachable (tried localnode.local.mesh + "
-                    "defaults). Configure aredn_node_ips in "
-                    "~/.config/meshforge/map_settings.json to add a specific IP."
+                    "AREDN: integration disabled (no aredn_node_ips configured). "
+                    "Set aredn_node_ips=[\"10.x.y.z\", ...] in "
+                    "~/.config/meshforge/map_settings.json to enable."
                 )
             self._info_log_rate_limited("aredn", msg)
             self._record_diagnostic(
@@ -151,9 +151,15 @@ class ARENDataCollectorMixin:
         return features
 
     def _get_aredn_node_ip(self) -> Optional[str]:
-        """Find AREDN node on local network.
+        """Find AREDN node on configured IPs.
 
-        Checks user-configured IPs first, then common AREDN defaults.
+        Only probes when `aredn_node_ips` is configured. On a non-AREDN
+        box (the 95% case) the previous default-host walk
+        (`localnode.local.mesh`, `10.0.0.1`, `10.1.0.1`, `localnode`)
+        burned 4-5 s per cache-miss collect for zero yield — opt-in
+        is the right default for the NOC view. Operators on AREDN-
+        equipped LANs set `aredn_node_ips=["10.x.y.z", ...]` to enable.
+
         Validates with HTTP API response (not just socket test) to confirm
         the host is actually an AREDN node, not some other service on 8080.
         """
@@ -163,9 +169,10 @@ class ARENDataCollectorMixin:
             if isinstance(custom_ips, str):
                 custom_ips = [custom_ips]
 
-        default_hosts = ['localnode.local.mesh', '10.0.0.1', '10.1.0.1', 'localnode']
+        if not custom_ips:
+            return None
 
-        for host in custom_ips + default_hosts:
+        for host in custom_ips:
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(2)

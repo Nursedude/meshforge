@@ -170,6 +170,32 @@ class TestArednReasonIfZero:
         d = collector.get_source_diagnostics()
         assert d["aredn"]["reason_if_zero"] == "unreachable"
 
+    def test_get_aredn_node_ip_skips_socket_when_no_custom_ips(self, collector):
+        """Empty aredn_node_ips → no socket calls. Returns None immediately.
+
+        Without this fast-skip, the previous default-host walk burned 4-5 s
+        per cache-miss collect on non-AREDN boxes (the 95% case) probing
+        localnode.local.mesh + 10.0.0.1 + 10.1.0.1 + localnode.
+        """
+        with patch("socket.socket") as mock_sock:
+            result = collector._get_aredn_node_ip()
+        assert result is None
+        assert mock_sock.call_count == 0, (
+            "socket.socket was called despite aredn_node_ips=[]; "
+            "fast-skip regression — see _map_collector_aredn.py docstring."
+        )
+
+    def test_get_aredn_node_ip_probes_only_custom_ips(self, collector):
+        """Configured aredn_node_ips → probe ONLY those. No default-host fallback."""
+        collector._settings.set("aredn_node_ips", ["10.55.66.77"])
+        with patch("socket.socket") as mock_sock:
+            mock_sock.return_value.connect_ex.return_value = 1  # nonzero = unreachable
+            collector._get_aredn_node_ip()
+        # Exactly one socket per custom IP, no defaults appended
+        assert mock_sock.call_count == 1, (
+            f"expected 1 socket call (custom IP only), got {mock_sock.call_count}"
+        )
+
 
 class TestCollectExposesDiagnostics:
     @staticmethod

@@ -136,11 +136,14 @@ class MapDataCollector(
                 # matches meshforge-maps :8808 behavior. ~2500 global AREDN nodes.
                 "enable_aredn_worldmap_fallback": True,
                 "public_fallback_threshold": 3,
-                # MeshCore public map (https://map.meshcore.dev) — first-class source,
-                # not a fallback. ~30k global MeshCore nodes with GPS. Default ON
-                # because local MeshCoreHandler yields no GPS and without this
-                # MeshCore is invisible on the map.
-                "enable_meshcore_public": True,
+                # MeshCore public map (https://map.meshcore.dev) — global
+                # directory of ~40k MeshCore nodes. Default OFF on :5000 because
+                # the NOC view is fleet-focused; pulling 40k external nodes adds
+                # ~10 s + ~20 MB to every cold collect on Pi-class hardware.
+                # Operators wanting global context flip this to true in
+                # ~/.config/meshforge/map_settings.json. Local MeshCore nodes
+                # without GPS still surface via meshcore_positions overrides.
+                "enable_meshcore_public": False,
                 "meshcore_public_cache_ttl_seconds": self.DEFAULT_MESHCORE_PUBLIC_CACHE_TTL_SECONDS,
                 "source_timeout_seconds": self.DEFAULT_SOURCE_TIMEOUT_SECONDS,
                 "selected_region": None,
