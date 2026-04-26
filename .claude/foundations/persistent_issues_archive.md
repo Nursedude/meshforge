@@ -778,3 +778,40 @@ real fix for identity + addressability rather than just a UI workaround.
 
 ---
 
+
+
+## Issue #3: Services Not Started/Verified — MOSTLY RESOLVED (archived 2026-04-25)
+
+**Rule**: Always call `check_service()` before connecting to services.
+
+- **Advisory** (daemons): Warn + continue — service may run outside systemd
+- **Blocking** (TUI actions): Show error + fix hint, don't proceed
+
+**Note**: Gateway checks are ADVISORY. Blocking checks caused "waiting for delivery"
+regression when mosquitto wasn't detectable via systemctl.
+
+**Remaining** (acceptable): `system_tools_mixin.py` and `service_menu_mixin.py` use
+`systemctl status` for display only, not state decisions.
+
+| Service | Port | systemd name |
+|---------|------|--------------|
+| meshtasticd | 4403 | meshtasticd |
+| rnsd | None | rnsd |
+| hamclock | 8080 | hamclock |
+| mosquitto | 1883 | mosquitto |
+
+
+## Issue #6: Large Files — ALL UNDER THRESHOLD (archived 2026-04-25)
+
+Only `knowledge_content.py` (1,993 lines) exceeds 1,500 — acceptable as content file.
+Monitor files approaching 1,400 lines. Split proactively at 1,000 lines when adding features.
+
+Top files: `meshtastic_protobuf_client.py` (1,433), `service_check.py` (1,410),
+`map_http_handler.py` (1,404), `prometheus_exporter.py` (1,399).
+
+
+## Issue #21: Meshtastic CLI Preset Bug (Upstream) (archived 2026-04-25)
+
+**Not a MeshForge bug.** The Python meshtastic CLI doesn't always apply modem preset
+changes correctly. Always verify in browser at `http://localhost:9443` after CLI changes.
+Consider direct meshtasticd API calls instead of CLI.

@@ -44,6 +44,9 @@ Full history in `persistent_issues_archive.md`.
 | #37 rnsd AuthenticationError on startup | Authkey derives from identity; `systemctl restart rnsd` after `/etc/reticulum/config` changes | Wrapper catch + Issue #41 pin |
 | #38 NomadNet single-identity consolidation | One `~/.nomadnetwork/` per box; tmux-wrapped `nomadnet.service` systemd-user unit | `templates/systemd/nomadnet-user.service` |
 | #39 Gateway bridge identifying + directable (2026-04-21) | Mesh→RNS shows long_name in subject; `@id`/`@short_name` parses for directed downlink; `meshforge_*` LXMF fields namespace | Body in archive |
+| #3 Services Not Started/Verified | `check_service()` before connect; advisory (daemons) vs blocking (TUI). Body in archive | — |
+| #6 Large Files — all under 1,500-line threshold | `knowledge_content.py` (1,993) is the only acceptable exception. Body in archive | — |
+| #21 Meshtastic CLI Preset Bug (upstream) | Not a MeshForge bug; verify presets in `:9443` browser after CLI. Body in archive | — |
 | GTK Issues (#2, #11, #13–#15) | GTK4 removed in v0.5.x | — |
 
 ---
@@ -93,38 +96,6 @@ def test_rns(self): ...
 
 ---
 
-## Issue #3: Services Not Started/Verified — MOSTLY RESOLVED
-
-**Rule**: Always call `check_service()` before connecting to services.
-
-- **Advisory** (daemons): Warn + continue — service may run outside systemd
-- **Blocking** (TUI actions): Show error + fix hint, don't proceed
-
-**Note**: Gateway checks are ADVISORY. Blocking checks caused "waiting for delivery"
-regression when mosquitto wasn't detectable via systemctl.
-
-**Remaining** (acceptable): `system_tools_mixin.py` and `service_menu_mixin.py` use
-`systemctl status` for display only, not state decisions.
-
-| Service | Port | systemd name |
-|---------|------|--------------|
-| meshtasticd | 4403 | meshtasticd |
-| rnsd | None | rnsd |
-| hamclock | 8080 | hamclock |
-| mosquitto | 1883 | mosquitto |
-
----
-
-## Issue #6: Large Files — ALL UNDER THRESHOLD
-
-Only `knowledge_content.py` (1,993 lines) exceeds 1,500 — acceptable as content file.
-Monitor files approaching 1,400 lines. Split proactively at 1,000 lines when adding features.
-
-Top files: `meshtastic_protobuf_client.py` (1,433), `service_check.py` (1,410),
-`map_http_handler.py` (1,404), `prometheus_exporter.py` (1,399).
-
----
-
 ## Issue #12: RNS "Address Already in Use"
 
 **Rule**: Never call `RNS.Reticulum()` without `configdir=` when rnsd is running.
@@ -134,14 +105,6 @@ MeshForge creates a client-only config in `/tmp/meshforge_rns_client/` with
 rnsd without binding ports.
 
 Location: `src/gateway/node_tracker.py` — `_init_rns_main_thread()`
-
----
-
-## Issue #21: Meshtastic CLI Preset Bug (Upstream)
-
-**Not a MeshForge bug.** The Python meshtastic CLI doesn't always apply modem preset
-changes correctly. Always verify in browser at `http://localhost:9443` after CLI changes.
-Consider direct meshtasticd API calls instead of CLI.
 
 ---
 
@@ -752,6 +715,55 @@ ssh <box> "bash /opt/meshforge/scripts/install_nomadnet.sh --check"
 ssh <box> "bash /opt/meshforge/scripts/install_nomadnet.sh"
 ```
 Or via TUI on the box: NomadNet → Service Control → Reinstall NomadNet.
+
+
+---
+
+## Issue #47: NomadNet operator confusion — two kinds of conversation in a gateway-equipped fleet (2026-04-25)
+
+**Symptom**: After single-gateway topology + multi-recipient deploy,
+operators report "fleet-host-1/fleet-host-2/fleet-host-3 NomadNets don't see each other."
+Mesh↔NomadNet gateway path is healthy, `rnpath` resolves peer LXMF
+hashes, every box's `~/.nomadnetwork/storage/directory` has the current
+peer hashes. Substrate is fine.
+
+**Root cause — UX, not transport.** NomadNet's **Conversations** panel
+populates only when an LXMF *message* arrives/sends; **Network / Known
+Nodes** populates from `lxmf.delivery` *announces*. Peers that have
+only exchanged announces show under Known Nodes but not Conversations.
+The peer is one keystroke away, not missing.
+
+**Two-conversation rubric** in a gateway-equipped fleet:
+
+- **MeshForge Gateway (\<hostname\>)** — single thread indexed by the
+  gateway's hash (e.g. `f68c2f56…`). All Mesh-bridged content,
+  `[Mesh:xxxx]` prefixed (Issue #35). One per gateway.
+- **Peer-NomadNet conversations** — one per operator, indexed by their
+  `lxmf.delivery` hash (e.g. `522c4ac1…`). Direct LXMF over RNS
+  Transport, no gateway, no `[Mesh:]` prefix.
+
+Both coexist; neither replaces the other.
+
+**Operator seeding flow** — Known-Nodes → Conversations:
+1. `ssh <box> -t 'tmux attach -t nomadnet'`
+2. Navigate to Network/Known Nodes panel (help bar shows the keybind).
+3. Highlight peer ("meshforge fleet-host-2 nomad"); press "Converse" key.
+4. Send a one-line hello. Recipient's Conversations panel auto-creates
+   within ~30s. One round trip per pair seeds both directions.
+
+**Verification — peer LXMF didn't accidentally route via gateway**:
+```bash
+ssh fleet-host-3 'sudo journalctl -u meshforge-gateway --since "5 min ago" \
+  --no-pager | grep -E "Bridge|delivery confirmed"'
+```
+Should stay quiet during peer-to-peer sends. Gateway in the data path
+for peer NomadNet would be a topology bug.
+
+**Future**: TUI helper to walk Known-Nodes and seed conversations
+(matches `feedback_user_audience_ux_bar.md`). Add to
+`docs/GATEWAY_DEPLOYMENT.md`. Open question: drop legacy
+`[[Regional RNS]]` TCPClient on fleet-host-1/fleet-host-2 to force the fleet-host-3 hub
+path; today both interfaces work, RNS picks whichever responds first.
 
 
 
