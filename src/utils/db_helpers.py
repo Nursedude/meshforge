@@ -35,12 +35,18 @@ DEFAULT_JOURNAL_SIZE_LIMIT = 67_108_864
 DEFAULT_BUSY_TIMEOUT_SECONDS = 30.0
 
 
+# Sentinel for "use sqlite3's default isolation_level (deferred autocommit)".
+_DEFAULT_ISOLATION = object()
+
+
 def connect_tuned(
     path: Union[str, Path],
     *,
     busy_timeout_seconds: float = DEFAULT_BUSY_TIMEOUT_SECONDS,
     journal_size_limit: int = DEFAULT_JOURNAL_SIZE_LIMIT,
     check_same_thread: bool = True,
+    isolation_level=_DEFAULT_ISOLATION,
+    uri: bool = False,
 ) -> sqlite3.Connection:
     """Open a SQLite connection with the MeshForge-standard pragmas.
 
@@ -60,15 +66,23 @@ def connect_tuned(
         journal_size_limit: Cap on WAL file size in bytes.
         check_same_thread: Pass-through to sqlite3.connect. Set False
             when sharing the connection across threads with external locking.
+        isolation_level: Pass-through. Default keeps sqlite3's default
+            (auto-begin DEFERRED transactions). Pass None for autocommit
+            or "DEFERRED"/"IMMEDIATE"/"EXCLUSIVE" for explicit modes.
+        uri: Pass-through. Set True when path is a URI like
+            "file:/.../db?mode=ro" (read-only readers).
 
     Returns:
         A tuned sqlite3.Connection. Caller owns lifecycle (close it).
     """
-    conn = sqlite3.connect(
-        str(path),
+    kwargs = dict(
         timeout=busy_timeout_seconds,
         check_same_thread=check_same_thread,
+        uri=uri,
     )
+    if isolation_level is not _DEFAULT_ISOLATION:
+        kwargs["isolation_level"] = isolation_level
+    conn = sqlite3.connect(str(path), **kwargs)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute(f"PRAGMA journal_size_limit={int(journal_size_limit)}")

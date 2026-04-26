@@ -39,6 +39,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from utils.db_helpers import connect_tuned
 from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)
@@ -158,6 +159,11 @@ class SharedHealthState:
     # History retention: 7 days
     HISTORY_RETENTION_DAYS = 7
 
+    # Hourly auto-purge cadence — purge_old_data was manual-only before;
+    # mirrors the fleet-host-2026-04-26 closure for messages.db /
+    # diagnostic_history.db / node_history.db.
+    PURGE_INTERVAL_SECONDS = 3600
+
     def __init__(
         self,
         db_path: Optional[Path] = None,
@@ -181,22 +187,24 @@ class SharedHealthState:
         self.process_id = process_id or f"pid-{os.getpid()}"
         self.stale_threshold = stale_threshold
         self._local = threading.local()
+        self._last_purge_ts: float = 0.0
 
         self._init_db()
 
     @contextmanager
     def _get_connection(self):
-        """Get thread-local database connection."""
+        """Get thread-local database connection.
+
+        Tuned via utils.db_helpers.connect_tuned (WAL + sync=NORMAL +
+        64MB journal_size_limit). Phase 1 follow-up to the fleet-host
+        2026-04-26 wedge — this DB had WAL+sync but no size cap, and
+        purge_old_data was manual-only."""
         if not hasattr(self._local, 'conn') or self._local.conn is None:
-            self._local.conn = sqlite3.connect(
-                str(self.db_path),
-                timeout=30,
+            self._local.conn = connect_tuned(
+                self.db_path,
                 isolation_level="DEFERRED",
             )
             self._local.conn.row_factory = sqlite3.Row
-            # Enable WAL mode for better concurrent access
-            self._local.conn.execute("PRAGMA journal_mode=WAL")
-            self._local.conn.execute("PRAGMA synchronous=NORMAL")
 
         conn = self._local.conn
         try:
@@ -365,7 +373,26 @@ class SharedHealthState:
                     VALUES (?, ?, ?)
                 """, (service, latency_ms, now))
 
+        self._maybe_purge(now)
         return state_changed
+
+    def _maybe_purge(self, now: Optional[float] = None) -> None:
+        """Hourly auto-purge of events + latency samples past retention.
+
+        Same cadence pattern as NodeHistoryDB._maybe_prune. Idempotent
+        and cheap when the cadence window hasn't elapsed; closes the
+        gap that left purge_old_data callable but never called."""
+        if self.PURGE_INTERVAL_SECONDS <= 0 or self.HISTORY_RETENTION_DAYS <= 0:
+            return
+        if now is None:
+            now = time.time()
+        if now - self._last_purge_ts < self.PURGE_INTERVAL_SECONDS:
+            return
+        self._last_purge_ts = now
+        try:
+            self.purge_old_data(days=self.HISTORY_RETENTION_DAYS)
+        except Exception as e:
+            logger.debug(f"Health-state auto-purge failed: {e}")
 
     def get_service(self, service: str) -> Optional[ServiceHealthRecord]:
         """
