@@ -36,6 +36,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+from utils.db_helpers import connect_tuned
 from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)
@@ -228,11 +229,15 @@ class OfflineSyncQueue:
         concurrent access.
         """
         if self._conn is None:
-            self._conn = sqlite3.connect(
-                str(self._db_path), timeout=5.0,
-                check_same_thread=False)
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
+            # connect_tuned applies WAL + sync=NORMAL + the missing
+            # journal_size_limit (closes the bloat-cap gap flagged in
+            # the post-fleet-host-2026-04-26 audit). 5s busy_timeout
+            # preserved; this queue's external _lock already serializes.
+            self._conn = connect_tuned(
+                self._db_path,
+                busy_timeout_seconds=5.0,
+                check_same_thread=False,
+            )
         return self._conn
 
     def close(self) -> None:

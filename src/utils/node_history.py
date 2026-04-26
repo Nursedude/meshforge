@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from utils.db_helpers import connect_tuned
 from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)
@@ -92,21 +93,15 @@ class NodeHistoryDB:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        """Open a tuned SQLite connection.
+        """Open a tuned SQLite connection via the shared helper.
 
-        WAL mode + synchronous=NORMAL is the right tradeoff for telemetry:
-        a crash may lose the last commit's observations, but commits stop
-        blocking on a full DB-file fsync. journal_size_limit caps WAL growth
-        so a long-running writer can't balloon it to multi-GB on Pi-class
-        SD cards. Matches /opt/meshforge-maps' maps_node_history.db treatment
-        (Apr 20). Without this, a prune-time fsync of the rollback journal
-        wedges the service in jbd2_log_wait_commit (fleet-host, 2026-04-26).
+        See utils.db_helpers.connect_tuned for the WAL + synchronous=NORMAL
+        + journal_size_limit + busy_timeout policy. Centralizing here
+        ensures every MeshForge SQLite consumer gets the same treatment
+        and one place enforces the post-mortem of the fleet-host 2026-04-26
+        wedge.
         """
-        conn = sqlite3.connect(str(self.db_path), timeout=30)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA journal_size_limit=67108864")
-        return conn
+        return connect_tuned(self.db_path)
 
     def _init_db(self) -> None:
         """Create tables and indexes if they don't exist."""

@@ -374,6 +374,10 @@ class DiagnosticEngine:
     # Correlation window for related symptoms
     CORRELATION_WINDOW = timedelta(minutes=5)
 
+    # Auto-prune retention for diagnostic_history.db.
+    DIAGNOSTIC_RETENTION_DAYS = 30
+    DIAGNOSTIC_PRUNE_INTERVAL_SECONDS = 3600
+
     def __init__(self, persist_history: bool = True):
         """Initialize the diagnostic engine.
 
@@ -392,6 +396,10 @@ class DiagnosticEngine:
         # Persistent DB connection (reused to avoid open/close per operation)
         self._db_conn = None
         self._db_lock = threading.Lock()
+        # Auto-prune cadence — diagnostic_history.db had no retention before
+        # this; would grow unbounded over months. Hourly prune of rows older
+        # than 30 days mirrors the messages.db / node_history.db pattern.
+        self._last_diagnostic_prune_ts: float = 0.0
 
         # Load built-in rules
         from . import diagnostic_rules
@@ -419,14 +427,15 @@ class DiagnosticEngine:
     def _get_connection(self):
         """Get persistent SQLite connection (creates if needed).
 
-        Uses a single connection to avoid open/close churn under load.
+        Tuned via utils.db_helpers.connect_tuned (WAL + sync=NORMAL +
+        64MB journal cap). Phase 1 of post-fleet-host-2026-04-26 closure.
         All access is serialized via _db_lock.
         """
-        import sqlite3
         if self._db_conn is None:
-            self._db_conn = sqlite3.connect(
-                str(self._get_db_path()),
-                check_same_thread=False
+            from utils.db_helpers import connect_tuned
+            self._db_conn = connect_tuned(
+                self._get_db_path(),
+                check_same_thread=False,
             )
         return self._db_conn
 
@@ -494,6 +503,39 @@ class DiagnosticEngine:
                 conn.commit()
         except Exception as e:
             logger.debug(f"Failed to save diagnosis: {e}")
+        # Outside the DB lock — _maybe_prune_diagnoses re-acquires it.
+        self._maybe_prune_diagnoses()
+
+    def _maybe_prune_diagnoses(self, now: Optional[float] = None) -> None:
+        """Hourly auto-prune of diagnoses older than retention.
+
+        Same pattern as NodeHistoryDB._maybe_prune. Idempotent and cheap
+        when the cadence window hasn't elapsed."""
+        if not self._persist_history:
+            return
+        if self.DIAGNOSTIC_PRUNE_INTERVAL_SECONDS <= 0:
+            return
+        if now is None:
+            import time
+            now = time.time()
+        if now - self._last_diagnostic_prune_ts < self.DIAGNOSTIC_PRUNE_INTERVAL_SECONDS:
+            return
+        try:
+            with self._db_lock:
+                conn = self._get_connection()
+                cursor = conn.execute(
+                    "DELETE FROM diagnoses WHERE timestamp < datetime('now', ? || ' days')",
+                    (f'-{self.DIAGNOSTIC_RETENTION_DAYS}',),
+                )
+                conn.commit()
+                deleted = cursor.rowcount or 0
+            self._last_diagnostic_prune_ts = now
+            if deleted > 0:
+                logger.info(
+                    f"Diagnostic history auto-prune: deleted {deleted} rows older than {self.DIAGNOSTIC_RETENTION_DAYS}d"
+                )
+        except Exception as e:
+            logger.debug(f"Diagnostic auto-prune failed: {e}")
 
     def get_history(self, limit: int = 50, category: Optional[Category] = None,
                     since_hours: int = 24) -> List[Dict]:

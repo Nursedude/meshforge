@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
+from utils.db_helpers import connect_tuned
 from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)
@@ -73,10 +74,17 @@ class AnalyticsStore:
         self._last_cleanup = 0.0  # epoch time of last auto-cleanup
         self._init_db()
 
+    def _connect(self) -> sqlite3.Connection:
+        """Tuned SQLite connection (WAL + sync=NORMAL + 64MB journal cap).
+
+        See utils.db_helpers.connect_tuned. Phase 1 of post-fleet-host
+        DB-bloat closure (2026-04-26)."""
+        return connect_tuned(self.db_path)
+
     def _init_db(self):
         """Initialize database schema."""
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._connect()
             try:
                 cursor = conn.cursor()
 
@@ -164,7 +172,7 @@ class AnalyticsStore:
         """Record a link budget measurement."""
         self._maybe_cleanup()
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._connect()
             try:
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -185,7 +193,7 @@ class AnalyticsStore:
         """Record network health snapshot."""
         self._maybe_cleanup()
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._connect()
             try:
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -206,7 +214,7 @@ class AnalyticsStore:
         """Record coverage snapshot."""
         self._maybe_cleanup()
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._connect()
             try:
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -240,7 +248,7 @@ class AnalyticsStore:
         cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
 
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._connect()
             try:
                 cursor = conn.cursor()
                 query = "SELECT * FROM link_budget_history WHERE timestamp > ?"
@@ -293,7 +301,7 @@ class AnalyticsStore:
         cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
 
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._connect()
             try:
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -399,7 +407,7 @@ class AnalyticsStore:
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()
 
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._connect()
             try:
                 cursor = conn.cursor()
                 cursor.execute(
@@ -504,7 +512,7 @@ class CoverageAnalyzer:
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()
 
         with self.store._lock:
-            conn = sqlite3.connect(self.store.db_path)
+            conn = self.store._connect()
             try:
                 cursor = conn.cursor()
                 cursor.execute("""

@@ -35,6 +35,7 @@ from .packet_dissectors import (
 )
 
 # Sudo-safe home directory — first-party, always available (MF001)
+from utils.db_helpers import connect_tuned
 from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)
@@ -62,9 +63,15 @@ class TrafficCapture:
 
     DEFAULT_MAX_PACKETS = 10000
     CLEANUP_INTERVAL = 3600  # 1 hour
+    # Time-based retention complements the row-count cap. Without this,
+    # a quiet mesh that never hits MAX_PACKETS could still hoard
+    # multi-month-old traffic. 24h is enough for "what happened this
+    # session" forensics; longer-term archival is PacketArchive's job.
+    DEFAULT_RETENTION_HOURS = 24
 
     def __init__(self, db_path: Optional[str] = None,
-                 max_packets: int = DEFAULT_MAX_PACKETS):
+                 max_packets: int = DEFAULT_MAX_PACKETS,
+                 retention_hours: float = DEFAULT_RETENTION_HOURS):
         if db_path is None:
             config_dir = get_real_user_home() / ".config" / "meshforge"
             config_dir.mkdir(parents=True, exist_ok=True)
@@ -72,6 +79,7 @@ class TrafficCapture:
 
         self._db_path = db_path
         self._max_packets = max_packets
+        self._retention_hours = retention_hours
         self._lock = threading.Lock()
         self._callbacks: List[Callable[[MeshPacket], None]] = []
         self._running = False
@@ -95,8 +103,11 @@ class TrafficCapture:
 
     @contextmanager
     def _get_connection(self):
-        """Get database connection with context management."""
-        conn = sqlite3.connect(self._db_path, timeout=30)
+        """Get database connection with context management.
+
+        Tuned via utils.db_helpers.connect_tuned (WAL + sync=NORMAL +
+        64MB journal cap). Phase 1 of post-fleet-host-2026-04-26 closure."""
+        conn = connect_tuned(self._db_path)
         conn.row_factory = sqlite3.Row
         try:
             yield conn
@@ -402,26 +413,36 @@ class TrafficCapture:
         self._cleanup_old_packets()
 
     def _cleanup_old_packets(self) -> int:
-        """Remove oldest packets if over limit."""
+        """Remove packets older than retention OR over the row-count cap.
+
+        Two-pass: time-based DELETE first (a quiet mesh could otherwise
+        hoard month-old packets indefinitely under just the row cap),
+        then count-based DELETE if still over MAX_PACKETS. Returns total
+        deleted across both passes."""
+        deleted = 0
         with self._get_connection() as conn:
-            cursor = conn.execute("SELECT COUNT(*) FROM packets")
-            count = cursor.fetchone()[0]
-
-            if count <= self._max_packets:
-                return 0
-
-            # Delete oldest packets
-            to_delete = count - self._max_packets
-            conn.execute("""
-                DELETE FROM packets WHERE id IN (
-                    SELECT id FROM packets
-                    ORDER BY timestamp ASC
-                    LIMIT ?
+            if self._retention_hours and self._retention_hours > 0:
+                cutoff_iso = (
+                    datetime.now() - timedelta(hours=self._retention_hours)
+                ).isoformat()
+                cursor = conn.execute(
+                    "DELETE FROM packets WHERE timestamp < ?", (cutoff_iso,)
                 )
-            """, (to_delete,))
-
-            logger.debug(f"Cleaned up {to_delete} old packets")
-            return to_delete
+                deleted += cursor.rowcount or 0
+            count = conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0]
+            if count > self._max_packets:
+                to_delete = count - self._max_packets
+                conn.execute("""
+                    DELETE FROM packets WHERE id IN (
+                        SELECT id FROM packets
+                        ORDER BY timestamp ASC
+                        LIMIT ?
+                    )
+                """, (to_delete,))
+                deleted += to_delete
+        if deleted:
+            logger.debug(f"Cleaned up {deleted} old packets")
+        return deleted
 
     def clear_all(self) -> int:
         """Clear all captured packets."""
@@ -805,8 +826,11 @@ class PacketArchive:
 
     @contextmanager
     def _get_connection(self):
-        """Get database connection with context management."""
-        conn = sqlite3.connect(self._db_path, timeout=30)
+        """Get database connection with context management.
+
+        Tuned via utils.db_helpers.connect_tuned (WAL + sync=NORMAL +
+        64MB journal cap). Phase 1 of post-fleet-host-2026-04-26 closure."""
+        conn = connect_tuned(self._db_path)
         conn.row_factory = sqlite3.Row
         try:
             yield conn
