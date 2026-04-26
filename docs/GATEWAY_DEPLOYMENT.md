@@ -260,14 +260,101 @@ set `mesh_bridge.enabled: true` explicitly in `gateway.json` to silence.
   Harmless; the log just disables. Fix:
   `sudo chown -R $(id -un):$(id -gn) ~/.cache/meshforge`.
 
-## Fleet truth table (2026-04-24)
+## Fleet truth table (2026-04-26 — consolidated to single canonical gateway)
 
-| Box | Gateway LXMF hash | RNode attached? | Gateway bridging live |
-|-----|-------------------|-----------------|----------------------|
-| moc | `3dfbdb5d24c6de195ae4f3c0f56b5ea5` | no | yes |
-| fleet-host-1 | `f5bb192d77191232032c5a6e9fc154f1` | no | yes |
-| fleet-host-2 | `b185b0de9b53398ef9957e686e67855a` | no | yes |
-| fleet-host-3 | `0123456789abcdef0123456789abcdef` | yes (903.625 MHz, SF7) | yes |
+| Box | Role | Gateway LXMF hash | RNode | Bridging live |
+|-----|------|-------------------|-------|---------------|
+| fleet-host | manager / NomadNet | — (no gateway) | no | n/a |
+| moc | NomadNet client | (was `3dfbdb5d…`, disabled) | no | no |
+| fleet-host-1 | NomadNet client (LongFast HAT) | (was `f5bb192d…`, disabled) | no | no |
+| fleet-host-2 | NomadNet client (SHORT_TURBO HAT) | (was `b185b0de…`, disabled) | no | no |
+| **fleet-host-3** | **canonical gateway** | `0123456789abcdef0123456789abcdef` | yes (903.625 MHz, SF7) | **yes** |
+
+The disabled hashes still show up in older `node_cache.json` entries but no
+fleet box is announcing them anymore. If you see them in fresh
+`journalctl -u rnsd` announces, it means a gateway service got started on
+a non-canonical box — `scripts/fleet_sync.sh` after `8899ae8` uses
+`systemctl try-restart` so a stopped+disabled gateway stays down through
+syncs.
+
+## Topology & data flow — where each message lands
+
+The **single-gateway** topology has a deliberate asymmetry that confuses
+first-time operators. Documenting it here so the design intent is
+explicit rather than feeling like a workaround.
+
+```
+                    ┌──────────────────────┐
+                    │  fleet-host-3 (gateway box)  │
+                    │  ─────────────────── │
+                    │  meshforge-gateway   │
+                    │  meshtasticd ─── HAT │ ──RF── SHORT_TURBO meshforge
+                    │  rnsd  ── hub :4242  │
+                    │  NomadNet  6b1a0120… │
+                    └──────────┬───────────┘
+                               │ RNS Transport (TCP)
+                  ┌────────────┼────────────┐
+                  │            │            │
+              ┌───┴────┐   ┌───┴────┐   ┌──────────┐
+              │ fleet-host-1   │   │ fleet-host-2   │   │  moc     │
+              │ NomNet │   │ NomNet │   │  (idle)  │
+              │ 522c…  │   │ d1df…  │   │          │
+              │ HAT:LF │   │ HAT:ST │   │  HAT:LF  │
+              └────────┘   └────────┘   └──────────┘
+```
+
+**Where does a message appear?** Roles in **boldface** are the canonical
+display surface for that direction:
+
+| Direction | Source | Lands at fleet-host-3 :9443 (Mesh UI) | Lands at fleet-host-3 NomadNet | Lands at fleet-host-1/fleet-host-2 NomadNet | Lands at fleet-host-2 HAT (RF) |
+|-----------|--------|-------------------------------|------------------------|------------------------------|------------------------|
+| **Mesh→RNS** (someone TXes on `meshforge` channel) | A SHORT_TURBO Meshtastic node OR fleet-host-3 :9443 web UI | as **outgoing** if you typed it; as **incoming** if it came from a peer node | **as incoming** under "MeshForge Gateway (fleet-host-3)" thread, `[Mesh:xxxx]` prefixed | **as incoming** under same thread (multi-recipient) | depends on RF: only if it came from another node and fleet-host-2 was in range |
+| **RNS→Mesh** (NomadNet types into the gateway thread) | fleet-host-1 / fleet-host-2 / fleet-host-3 NomadNet → gateway hash `f68c2f56…` | as **outgoing** in :9443 message log (the gateway just told fleet-host-3's HAT to TX) | **does NOT auto-appear** in fleet-host-3 NomadNet's gateway thread (it's the transmit side, not receive — see "echo filter" below) | depends on what's in the gateway thread already; usually not, since the bridge is one-shot, not echoed back | **as incoming** over RF (this is the whole point — fleet-host-2 hears it on SHORT_TURBO `meshforge`) |
+
+**The "fleet-host-3 :9443 doesn't show incoming RNS messages" question.** This is
+the asymmetry. fleet-host-3's HAT is the **transmitter** for RNS→Mesh. From
+its own RF perspective it has nothing to receive — its own outbound TX
+isn't returned over the air. meshtasticd's web UI may or may not list
+that outbound TX as a message-log entry depending on which page you're
+on (recent firmware shows it under "Messages" as your own send; some
+builds only show it in the packet log). For the **operator-canonical
+view** of bridged content from fleet-host-3's seat, use **fleet-host-3's NomadNet** and
+look at the "MeshForge Gateway (fleet-host-3)" conversation — that's where
+Mesh→RNS-bridged content lands.
+
+**Why the gateway box doesn't loop its own RNS→Mesh sends back into
+NomadNet (the "echo filter").** When the gateway TXes a `[RNS:xxxx]
+…` message, meshtasticd republishes it on MQTT. Without filtering,
+the gateway's MQTT subscriber would see its own outbound TX and
+re-bridge it back to RNS as a fresh "incoming Mesh message." Every
+RNS-originated send would land twice in every NomadNet inbox. The
+filter (`meshtastic.gateway_node_id` in `gateway.json`) drops only
+messages where `sender == own_id` AND text starts with `[RNS:` —
+the unambiguous loopback signature. Plain web-UI / CLI sends from
+the gateway box (no `[RNS:]` prefix) are NOT filtered and DO bridge
+to RNS, so the operator's own sends still reach the fleet's NomadNets.
+
+**Why this is topology, not a workaround.** A single-gateway design
+deliberately collapses the role: the gateway box is *both* a Meshtastic
+TX/RX endpoint AND an RNS LXMF endpoint. The price is that traffic
+appears in different places depending on direction and where you're
+looking from. It's the same asymmetry that exists in any IRC↔Slack
+bridge or email gateway. Multiple gateways would split the load but
+also split conversations (Issue #35) — operators expect a single
+canonical thread, not N parallel threads. Single-gateway is the
+trade-off we picked; this section names it explicitly.
+
+**Operator viewing recipe.** "Where do I look for bridged messages?":
+
+| You are at | You want to see | Open this |
+|-----------|-----------------|-----------|
+| fleet-host-3 (gateway box) | Mesh content bridged to RNS | `fleet-host-3` NomadNet → "MeshForge Gateway (fleet-host-3)" conversation |
+| fleet-host-3 (gateway box) | RNS content the gateway just sent over RF | `fleet-host-3` :9443 → Messages tab (your own outgoing) |
+| fleet-host-3 (gateway box) | Your own NomadNet outbound | `fleet-host-3` NomadNet → recipient's conversation |
+| fleet-host-1 / fleet-host-2 (NomadNet client) | Mesh content from anywhere on `meshforge` | NomadNet → "MeshForge Gateway (fleet-host-3)" conversation |
+| fleet-host-1 / fleet-host-2 (NomadNet client) | Direct chat with another NomadNet operator | NomadNet → that peer's conversation (Issue #47 seeding flow) |
+| fleet-host-2 (SHORT_TURBO HAT) | Anything bridged from RNS into Mesh | fleet-host-2 :9443 → meshforge channel (incoming RF) |
+| fleet-host-1 (LongFast HAT) | Anything bridged from RNS into Mesh | **n/a** — fleet-host-1's HAT is preset-incompatible with fleet-host-3's TX. RNS-bridged content reaches fleet-host-1 only via NomadNet, not RF |
 
 ## Verifying end-to-end
 
