@@ -100,9 +100,17 @@ sync_repo() {
     new_head=$(git rev-parse --short HEAD)
 
     if systemctl list-unit-files "${unit}.service" 2>/dev/null | grep -q "$unit"; then
-        if sudo -n systemctl restart "${unit}.service" >/dev/null 2>restart.err; then
+        # try-restart only acts if the unit is already active. A disabled+stopped
+        # unit stays stopped — operator's intent is honored. Without this, every
+        # sync would resurrect services we explicitly disabled (e.g. extra
+        # gateways on non-canonical boxes). See Issue #47 follow-up 2026-04-26.
+        if sudo -n systemctl try-restart "${unit}.service" >/dev/null 2>restart.err; then
             rm -f restart.err
-            echo "PASS $short $new_head restarted"
+            if systemctl is-active "${unit}.service" >/dev/null 2>&1; then
+                echo "PASS $short $new_head restarted"
+            else
+                echo "PASS $short $new_head not_running"
+            fi
         else
             local emsg
             emsg=$(tr "\n" "|" < restart.err | head -c 200)
