@@ -29,6 +29,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from utils.db_helpers import connect_tuned
 from utils.paths import get_real_user_home
 
 from tactical.models import (
@@ -106,10 +107,13 @@ class TacticalTimeline:
 
     @contextmanager
     def _get_conn(self):
-        """Get a SQLite connection with proper settings."""
-        conn = sqlite3.connect(
-            str(self._db_path),
-            timeout=10,
+        """Get a SQLite connection with tuned pragmas.
+
+        WAL + sync=NORMAL + 64MB journal cap via connect_tuned. 10s
+        busy_timeout preserved (deliberate — short for UI responsiveness)."""
+        conn = connect_tuned(
+            self._db_path,
+            busy_timeout_seconds=10.0,
             check_same_thread=False,
         )
         conn.row_factory = sqlite3.Row

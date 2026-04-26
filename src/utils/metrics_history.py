@@ -41,6 +41,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, Iterator
 
+from utils.db_helpers import connect_tuned
 from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)
@@ -182,17 +183,17 @@ class MetricsHistory:
         self._start_cleanup_thread()
 
     def _get_connection(self) -> sqlite3.Connection:
-        """Get a thread-local database connection."""
+        """Get a thread-local database connection.
+
+        Tuned via utils.db_helpers.connect_tuned (WAL + sync=NORMAL +
+        64MB journal_size_limit cap added in post-fleet-host-2026-04-26
+        closure — was missing from this DB before)."""
         if not hasattr(self._local, 'connection') or self._local.connection is None:
-            self._local.connection = sqlite3.connect(
+            self._local.connection = connect_tuned(
                 self._db_path,
                 check_same_thread=False,
-                timeout=30.0
             )
             self._local.connection.row_factory = sqlite3.Row
-            # Enable WAL mode for better concurrency
-            self._local.connection.execute("PRAGMA journal_mode=WAL")
-            self._local.connection.execute("PRAGMA synchronous=NORMAL")
         return self._local.connection
 
     @contextmanager

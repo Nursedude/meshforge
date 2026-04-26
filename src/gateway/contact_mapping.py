@@ -36,6 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from utils.db_helpers import connect_tuned
 from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)
@@ -82,10 +83,13 @@ class ContactMappingTable:
 
     @contextmanager
     def _get_connection(self):
-        """Get database connection with WAL mode."""
-        conn = sqlite3.connect(self._db_path, timeout=30)
+        """Get database connection with tuned pragmas + foreign keys.
+
+        WAL + sync=NORMAL + 64MB journal cap come from connect_tuned;
+        foreign_keys=ON preserved here (per-connection, must be set
+        outside the helper)."""
+        conn = connect_tuned(self._db_path)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         try:
             yield conn

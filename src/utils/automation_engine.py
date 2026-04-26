@@ -42,6 +42,7 @@ from typing import Dict, List, Optional, Set
 
 from utils.safe_import import safe_import
 from utils.common import SettingsManager
+from utils.db_helpers import connect_tuned
 from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)
@@ -229,7 +230,7 @@ class TracerouteStore:
         """Initialize database schema and prune old entries."""
         with self._lock:
             try:
-                conn = sqlite3.connect(self._db_path, timeout=5)
+                conn = connect_tuned(self._db_path, busy_timeout_seconds=5.0)
                 try:
                     conn.execute("""
                         CREATE TABLE IF NOT EXISTS traceroute_results (
@@ -266,7 +267,7 @@ class TracerouteStore:
         """Persist a traceroute result."""
         with self._lock:
             try:
-                conn = sqlite3.connect(self._db_path, timeout=5)
+                conn = connect_tuned(self._db_path, busy_timeout_seconds=5.0)
                 try:
                     conn.execute(
                         """INSERT INTO traceroute_results
@@ -298,7 +299,7 @@ class TracerouteStore:
         """Get most recent traceroute results."""
         with self._lock:
             try:
-                conn = sqlite3.connect(self._db_path, timeout=5)
+                conn = connect_tuned(self._db_path, busy_timeout_seconds=5.0)
                 conn.row_factory = sqlite3.Row
                 try:
                     rows = conn.execute(
@@ -317,7 +318,7 @@ class TracerouteStore:
         """Get traceroute history for a specific node."""
         with self._lock:
             try:
-                conn = sqlite3.connect(self._db_path, timeout=5)
+                conn = connect_tuned(self._db_path, busy_timeout_seconds=5.0)
                 conn.row_factory = sqlite3.Row
                 try:
                     rows = conn.execute(
@@ -337,7 +338,7 @@ class TracerouteStore:
         """Get per-node summary: success rate, avg hops, last seen."""
         with self._lock:
             try:
-                conn = sqlite3.connect(self._db_path, timeout=5)
+                conn = connect_tuned(self._db_path, busy_timeout_seconds=5.0)
                 conn.row_factory = sqlite3.Row
                 try:
                     rows = conn.execute("""
@@ -379,7 +380,7 @@ class TracerouteStore:
         """Remove entries older than N days. Returns count removed."""
         cutoff = (datetime.now() - timedelta(days=days)).timestamp()
         try:
-            conn = sqlite3.connect(self._db_path, timeout=5)
+            conn = connect_tuned(self._db_path, busy_timeout_seconds=5.0)
             try:
                 cursor = conn.execute(
                     "DELETE FROM traceroute_results WHERE timestamp < ?",
