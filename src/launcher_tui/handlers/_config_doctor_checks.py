@@ -352,37 +352,58 @@ def check_gateway_default_lxmf_destination() -> CheckResult:
             details=[str(cfg_path)],
         )
 
-    dest = (cfg.get("rns", {}) or {}).get("default_lxmf_destination", "")
-    if not dest:
+    raw = (cfg.get("rns", {}) or {}).get("default_lxmf_destination", "")
+    # Accept either a single 32-hex string (legacy) or a list of strings (multi-recipient).
+    if isinstance(raw, str):
+        dest_list = [raw] if raw else []
+    elif isinstance(raw, list):
+        dest_list = [d for d in raw if isinstance(d, str) and d]
+    else:
+        return CheckResult(
+            name="gateway_default_lxmf_destination",
+            status=FAIL,
+            message=f"rns.default_lxmf_destination has wrong type: {type(raw).__name__}",
+            fix_hint="Must be a 32-hex string or a list of 32-hex strings.",
+            route_hint="Mesh Networks > Gateway Preflight",
+            details=[str(cfg_path), f"value: {raw!r}"],
+        )
+
+    if not dest_list:
         return CheckResult(
             name="gateway_default_lxmf_destination",
             status=WARN,
             message="rns.default_lxmf_destination is empty",
             fix_hint=(
-                "Set it to NomadNet's LXMF identity hash (32 hex chars).\n"
+                "Set it to NomadNet's LXMF identity hash (32 hex chars), or a\n"
+                "list of hashes for multi-recipient broadcast.\n"
                 "Get the hash: grep -A1 'LXMF Address' ~/.nomadnetwork/logfile"
             ),
             route_hint="Mesh Networks > Gateway Preflight",
             details=[str(cfg_path)],
         )
 
-    if not _HEX32.match(dest.lower()):
+    bad = [d for d in dest_list if not _HEX32.match(d.lower())]
+    if bad:
         return CheckResult(
             name="gateway_default_lxmf_destination",
             status=FAIL,
-            message=f"rns.default_lxmf_destination is not 32-hex: {dest!r}",
+            message=f"rns.default_lxmf_destination is not 32-hex: {bad[0]!r}",
             fix_hint=(
                 "LXMF destination hashes are exactly 32 lowercase hex "
-                "characters. Edit gateway.json and correct the value."
+                "characters. Edit gateway.json and correct the value(s)."
             ),
             route_hint="Mesh Networks > Gateway Preflight",
-            details=[str(cfg_path), f"value: {dest!r}"],
+            details=[str(cfg_path), f"bad entries: {bad!r}"],
         )
 
+    if len(dest_list) == 1:
+        msg = f"rns.default_lxmf_destination format OK ({dest_list[0][:8]}…)"
+    else:
+        msg = f"rns.default_lxmf_destination format OK ({len(dest_list)} recipients)"
     return CheckResult(
         name="gateway_default_lxmf_destination",
         status=OK,
-        message=f"rns.default_lxmf_destination format OK ({dest[:8]}…)",
+        message=msg,
         details=[str(cfg_path)],
     )
 

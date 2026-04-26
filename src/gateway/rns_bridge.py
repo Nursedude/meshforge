@@ -756,7 +756,8 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin, MessageTransf
                 # Broadcast not directly supported in LXMF
                 logger.info(
                     "Broadcast to RNS dropped: set rns.default_lxmf_destination "
-                    "in gateway config to route broadcasts to a specific LXMF peer"
+                    "in gateway config to route broadcasts to one (string) or "
+                    "many (list) LXMF peer(s)"
                 )
                 return False
 

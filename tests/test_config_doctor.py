@@ -297,6 +297,49 @@ class TestCheckGatewayDefaultLxmfDestination:
             r = checks.check_gateway_default_lxmf_destination()
         assert r.status == FAIL
 
+    def test_ok_when_list_of_valid_32_hex(self, tmp_path):
+        """Multi-recipient list form: every entry must be 32-hex."""
+        cfg_dir = tmp_path / ".config" / "meshforge"
+        cfg_dir.mkdir(parents=True)
+        body = '{"rns": {"default_lxmf_destination": ["' + VALID_LXMF + '", "' + ("b" * 32) + '"]}}'
+        (cfg_dir / "gateway.json").write_text(body)
+        with self._with_home(tmp_path):
+            r = checks.check_gateway_default_lxmf_destination()
+        assert r.status == OK
+        assert "2 recipients" in r.message
+
+    def test_warn_when_empty_list(self, tmp_path):
+        """Empty list normalizes the same as empty string."""
+        cfg_dir = tmp_path / ".config" / "meshforge"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "gateway.json").write_text(
+            '{"rns": {"default_lxmf_destination": []}}')
+        with self._with_home(tmp_path):
+            r = checks.check_gateway_default_lxmf_destination()
+        assert r.status == WARN
+
+    def test_fail_when_list_contains_bad_entry(self, tmp_path):
+        """One bad entry in the list fails the whole check."""
+        cfg_dir = tmp_path / ".config" / "meshforge"
+        cfg_dir.mkdir(parents=True)
+        body = '{"rns": {"default_lxmf_destination": ["' + VALID_LXMF + '", "not-hex"]}}'
+        (cfg_dir / "gateway.json").write_text(body)
+        with self._with_home(tmp_path):
+            r = checks.check_gateway_default_lxmf_destination()
+        assert r.status == FAIL
+        assert "not 32-hex" in r.message
+
+    def test_fail_when_wrong_type(self, tmp_path):
+        """Integer/dict types are explicitly rejected."""
+        cfg_dir = tmp_path / ".config" / "meshforge"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "gateway.json").write_text(
+            '{"rns": {"default_lxmf_destination": 42}}')
+        with self._with_home(tmp_path):
+            r = checks.check_gateway_default_lxmf_destination()
+        assert r.status == FAIL
+        assert "wrong type" in r.message
+
 
 # ---------------------------------------------------------------------------
 # NomadNet unit tmux binary

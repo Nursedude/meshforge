@@ -67,32 +67,45 @@ class MessageTransformMixin:
                 "meshforge_source_network": "meshtastic",
             }
 
-            destination_hash = None
+            # Build destination list. Direct DM short-circuits to a single recipient;
+            # broadcast fans out to every default_lxmf_destination configured.
+            destinations: list = []
             if msg.destination_id and not msg.is_broadcast:
-                destination_hash = self._get_rns_destination(msg.destination_id)
+                direct = self._get_rns_destination(msg.destination_id)
+                if direct:
+                    destinations.append(direct)
 
-            # Broadcast → default LXMF destination (e.g., NomadNet)
-            default_dest = getattr(self.config.rns, 'default_lxmf_destination', '')
-            if destination_hash is None and isinstance(default_dest, str) and default_dest:
-                try:
-                    destination_hash = bytes.fromhex(default_dest)
-                except ValueError:
-                    logger.warning("Invalid default_lxmf_destination hex in config")
+            if not destinations:
+                for hex_str in self.config.rns.get_lxmf_destinations():
+                    try:
+                        destinations.append(bytes.fromhex(hex_str))
+                    except ValueError:
+                        logger.warning(f"Invalid default_lxmf_destination hex: {hex_str!r}")
 
-            if self.send_to_rns(content, destination_hash, title=title, fields=fields):
-                logger.info(f"Bridge Mesh→RNS: {title} — {content[:50]}")
+            sent_count = 0
+            for dest_hash in destinations:
+                if self.send_to_rns(content, dest_hash, title=title, fields=fields):
+                    sent_count += 1
+
+            if sent_count:
+                if len(destinations) > 1:
+                    logger.info(f"Bridge Mesh→RNS: {title} → {sent_count}/{len(destinations)} dest(s) — {content[:50]}")
+                else:
+                    logger.info(f"Bridge Mesh→RNS: {title} — {content[:50]}")
                 with self._stats_lock:
                     self.stats['messages_mesh_to_rns'] += 1
                 self.health.record_message_sent("mesh_to_rns")
+            elif msg.is_broadcast:
+                # Broadcast that didn't land — debug-only, not an error. Could be no
+                # default_lxmf_destination configured, or all configured peers were
+                # unreachable; either way, broadcast best-effort delivery is fine.
+                logger.debug(f"Mesh→RNS broadcast not delivered: {content[:30]}...")
             else:
-                if msg.is_broadcast:
-                    logger.debug(f"Mesh→RNS broadcast not sent (no propagation node): {content[:30]}...")
-                else:
-                    logger.warning(f"Failed to bridge Mesh→RNS: {content[:30]}...")
-                    with self._stats_lock:
-                        self.stats['errors'] += 1
-                    requeued = self._requeue_failed_message(msg, "rns")
-                    self.health.record_message_failed("mesh_to_rns", requeued=requeued)
+                logger.warning(f"Failed to bridge Mesh→RNS: {content[:30]}...")
+                with self._stats_lock:
+                    self.stats['errors'] += 1
+                requeued = self._requeue_failed_message(msg, "rns")
+                self.health.record_message_failed("mesh_to_rns", requeued=requeued)
 
         except Exception as e:
             logger.error(f"Error bridging Mesh→RNS: {e}")

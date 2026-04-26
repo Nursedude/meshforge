@@ -231,6 +231,12 @@ class MeshtasticConfig:
     connection_type: str = ""
     # Serial device path when connection_type="serial". Empty = auto-detect.
     serial_device: str = ""
+    # The gateway's own Meshtastic node ID (e.g., "!ebfa1b11"). When set, inbound
+    # MQTT messages with `sender == gateway_node_id` are dropped to break the
+    # echo loop where meshtasticd republishes the gateway's own outbound TX as
+    # an incoming JSON/protobuf message — which would otherwise re-bridge back
+    # to RNS. Empty disables the filter (no echo dropping).
+    gateway_node_id: str = ""
 
 
 @dataclass
@@ -360,7 +366,20 @@ class RNSConfig:
     gateway_name: str = ""  # Announced LXMF display_name; empty = "MeshForge Gateway ({hostname})"
     announce_interval: int = 300  # seconds
     propagation_node: str = ""  # Optional propagation node address
-    default_lxmf_destination: str = ""  # Hex hash — broadcast messages route here
+    # Hex hash(es) where broadcast Mesh→RNS is delivered. Accepts either a single
+    # 32-hex string (legacy) or a list of 32-hex strings (multi-recipient — gateway
+    # broadcasts the same Meshtastic message to each LXMF destination). Use the
+    # list form when multiple NomadNet operators want to see the same bridged feed.
+    default_lxmf_destination: Any = ""
+
+    def get_lxmf_destinations(self) -> List[str]:
+        """Return default_lxmf_destination normalized to a list of non-empty hex strings."""
+        raw = self.default_lxmf_destination
+        if isinstance(raw, str):
+            return [raw] if raw else []
+        if isinstance(raw, (list, tuple)):
+            return [d for d in raw if isinstance(d, str) and d]
+        return []
 
 
 @dataclass

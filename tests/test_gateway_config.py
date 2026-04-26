@@ -81,6 +81,47 @@ class TestRNSConfig:
         assert config.config_dir == "/custom/rns"
         assert config.identity_name == "custom_gateway"
 
+    def test_get_lxmf_destinations_empty_string(self):
+        """Default empty string yields empty list."""
+        assert RNSConfig().get_lxmf_destinations() == []
+
+    def test_get_lxmf_destinations_legacy_string(self):
+        """Single-string default (legacy) becomes a one-element list."""
+        config = RNSConfig(default_lxmf_destination="6b1a0120941444587d7d1dc1bf6d64d7")
+        assert config.get_lxmf_destinations() == ["6b1a0120941444587d7d1dc1bf6d64d7"]
+
+    def test_get_lxmf_destinations_list(self):
+        """List form returns the list verbatim."""
+        config = RNSConfig(default_lxmf_destination=[
+            "522c4ac1d2f9964e03e3782ef5b0224c",
+            "d1df31d352ede66eac819a577da22b75",
+            "6b1a0120941444587d7d1dc1bf6d64d7",
+        ])
+        result = config.get_lxmf_destinations()
+        assert len(result) == 3
+        assert "522c4ac1d2f9964e03e3782ef5b0224c" in result
+
+    def test_get_lxmf_destinations_filters_empty_and_non_strings(self):
+        """Empty strings and non-string entries are dropped."""
+        config = RNSConfig(default_lxmf_destination=[
+            "6b1a0120941444587d7d1dc1bf6d64d7",
+            "",
+            None,
+            123,
+            "d1df31d352ede66eac819a577da22b75",
+        ])
+        assert config.get_lxmf_destinations() == [
+            "6b1a0120941444587d7d1dc1bf6d64d7",
+            "d1df31d352ede66eac819a577da22b75",
+        ]
+
+    def test_get_lxmf_destinations_unknown_type_returns_empty(self):
+        """Unknown types (int, dict) return empty list rather than crashing."""
+        config = RNSConfig(default_lxmf_destination=42)
+        assert config.get_lxmf_destinations() == []
+        config2 = RNSConfig(default_lxmf_destination={"a": 1})
+        assert config2.get_lxmf_destinations() == []
+
 
 class TestRoutingRule:
     """Tests for RoutingRule dataclass."""

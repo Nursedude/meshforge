@@ -362,6 +362,15 @@ class MQTTBridgeHandler(BaseMessageHandler):
         if not text:
             return
 
+        # Self-echo filter: meshtasticd republishes the gateway's own outbound
+        # TX back through MQTT, which (without this filter) loops straight back
+        # into Mesh→RNS as a fresh message. Drop messages whose sender matches
+        # our own configured node id.
+        own_id = getattr(self.config.meshtastic, 'gateway_node_id', '') if self.config else ''
+        if own_id and sender == own_id:
+            logger.debug(f"Self-echo filtered: {sender} → {text[:30]}")
+            return
+
         # Determine destination
         to_id = f"!{to_num:08x}" if to_num else None
         is_broadcast = to_num == 0xFFFFFFFF

@@ -105,3 +105,72 @@ class TestPublishToMqttDirectedReply:
         handler = _make_handler()
         assert handler.publish_to_mqtt({"message": "", "channel": 0}) is False
         handler._client.publish.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Self-echo filter — _bridge_text_message must drop the gateway's own TX
+# rebroadcast that meshtasticd republishes via MQTT (otherwise it loops back
+# to RNS as a fresh Mesh→RNS message).
+# ---------------------------------------------------------------------------
+
+
+def _make_bridge_handler(own_id: str = "") -> MQTTBridgeHandler:
+    """Construct a handler with just enough wiring for _bridge_text_message."""
+    config = MagicMock()
+    config.meshtastic.gateway_node_id = own_id
+    handler = MQTTBridgeHandler.__new__(MQTTBridgeHandler)
+    handler.config = config
+    handler._message_queue = MagicMock()
+    handler._stats_lock = MagicMock()
+    handler._stats_lock.__enter__ = lambda _self: None
+    handler._stats_lock.__exit__ = lambda _self, *a: False
+    handler.stats = {"errors": 0}
+    handler._should_bridge = None
+    handler._message_callback = None
+    handler._is_duplicate = MagicMock(return_value=False)
+    return handler
+
+
+class TestSelfEchoFilter:
+    """gateway_node_id, when set, drops self-echoed inbound MQTT JSON."""
+
+    def test_self_sender_dropped(self):
+        handler = _make_bridge_handler(own_id="!ebfa1b11")
+        handler._bridge_text_message(
+            {
+                "sender": "!ebfa1b11",
+                "to": 0xFFFFFFFF,
+                "payload": {"text": "echo"},
+                "channel": 2,
+            },
+            topic="msh/US/2/json/meshforge/!ebfa1b11",
+        )
+        handler._message_queue.put_nowait.assert_not_called()
+
+    def test_other_sender_passes_through(self):
+        handler = _make_bridge_handler(own_id="!ebfa1b11")
+        handler._bridge_text_message(
+            {
+                "sender": "!aabb0042",
+                "to": 0xFFFFFFFF,
+                "payload": {"text": "real msg"},
+                "channel": 2,
+            },
+            topic="msh/US/2/json/meshforge/!aabb0042",
+        )
+        handler._message_queue.put_nowait.assert_called_once()
+
+    def test_filter_disabled_when_unset(self):
+        """gateway_node_id='' (default) means no filter; everything passes."""
+        handler = _make_bridge_handler(own_id="")
+        handler._bridge_text_message(
+            {
+                "sender": "!ebfa1b11",
+                "to": 0xFFFFFFFF,
+                "payload": {"text": "would-be-echo"},
+                "channel": 2,
+            },
+            topic="msh/US/2/json/meshforge/!ebfa1b11",
+        )
+        # No filter configured → message goes through (preserves legacy behavior)
+        handler._message_queue.put_nowait.assert_called_once()

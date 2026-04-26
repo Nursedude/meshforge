@@ -685,6 +685,9 @@ class TestProcessMeshToRNS:
 
     def test_success_updates_stats(self, bridge):
         from gateway.rns_bridge import BridgedMessage
+        bridge.config.rns.get_lxmf_destinations.return_value = [
+            "6b1a0120941444587d7d1dc1bf6d64d7",
+        ]
         msg = BridgedMessage(
             source_network="meshtastic", source_id="!aabb0042",
             destination_id=None, content="test msg",
@@ -697,7 +700,9 @@ class TestProcessMeshToRNS:
         bridge.health.record_message_sent.assert_called_once_with("mesh_to_rns")
 
     def test_failure_broadcast_no_error(self, bridge):
+        """Broadcast with no default_lxmf_destination configured logs DEBUG, no error."""
         from gateway.rns_bridge import BridgedMessage
+        bridge.config.rns.get_lxmf_destinations.return_value = []
         msg = BridgedMessage(
             source_network="meshtastic", source_id="!aabb0042",
             destination_id=None, content="broadcast",
@@ -739,6 +744,9 @@ class TestProcessMeshToRNS:
     def test_body_is_clean_identity_in_title(self, bridge):
         """Mesh→RNS carries the body verbatim; identity lives in the title."""
         from gateway.rns_bridge import BridgedMessage
+        bridge.config.rns.get_lxmf_destinations.return_value = [
+            "6b1a0120941444587d7d1dc1bf6d64d7",
+        ]
         bridge.node_tracker.get_node_by_mesh_id.return_value = None
         msg = BridgedMessage(
             source_network="meshtastic", source_id="!aabb0042",
@@ -762,6 +770,9 @@ class TestProcessMeshToRNS:
     def test_title_includes_long_name_when_known(self, bridge):
         """node_tracker hit produces '<long_name> (<id>) via Meshtastic'."""
         from gateway.rns_bridge import BridgedMessage
+        bridge.config.rns.get_lxmf_destinations.return_value = [
+            "6b1a0120941444587d7d1dc1bf6d64d7",
+        ]
         mock_node = MagicMock()
         mock_node.name = "HAT-fleet-host-3"
         mock_node.short_name = "HAT3"
@@ -790,6 +801,9 @@ class TestProcessMeshToRNS:
     def test_fields_present_even_when_node_unknown(self, bridge):
         """Identity fallback still emits the fields dict with empty name slots."""
         from gateway.rns_bridge import BridgedMessage
+        bridge.config.rns.get_lxmf_destinations.return_value = [
+            "6b1a0120941444587d7d1dc1bf6d64d7",
+        ]
         bridge.node_tracker.get_node_by_mesh_id.return_value = None
         msg = BridgedMessage(
             source_network="meshtastic", source_id="!deadbeef",
@@ -811,6 +825,103 @@ class TestProcessMeshToRNS:
         assert fields["meshforge_from_long"] == ""
         assert fields["meshforge_from_short"] == ""
         assert fields["meshforge_channel"] == "meshforge"
+
+    def test_broadcast_fans_out_to_multi_recipient_default(self, bridge):
+        """When default_lxmf_destination is a list, broadcast Mesh→RNS sends to each."""
+        from gateway.rns_bridge import BridgedMessage
+        bridge.config.rns.get_lxmf_destinations.return_value = [
+            "522c4ac1d2f9964e03e3782ef5b0224c",
+            "d1df31d352ede66eac819a577da22b75",
+            "6b1a0120941444587d7d1dc1bf6d64d7",
+        ]
+        msg = BridgedMessage(
+            source_network="meshtastic", source_id="!aabb0042",
+            destination_id=None, content="hello fleet", is_broadcast=True,
+        )
+        sent_to = []
+
+        def capture(content, dest_hash=None, title=None, fields=None):
+            sent_to.append(dest_hash)
+            return True
+
+        with patch.object(bridge, 'send_to_rns', side_effect=capture):
+            bridge._process_mesh_to_rns(msg)
+
+        assert len(sent_to) == 3
+        assert bytes.fromhex("522c4ac1d2f9964e03e3782ef5b0224c") in sent_to
+        assert bytes.fromhex("d1df31d352ede66eac819a577da22b75") in sent_to
+        assert bytes.fromhex("6b1a0120941444587d7d1dc1bf6d64d7") in sent_to
+        # One source message → one stats increment, regardless of fan-out count
+        assert bridge.stats['messages_mesh_to_rns'] == 1
+
+    def test_broadcast_partial_failure_still_counts_as_sent(self, bridge):
+        """If at least one recipient succeeds, the bridge counts as delivered."""
+        from gateway.rns_bridge import BridgedMessage
+        bridge.config.rns.get_lxmf_destinations.return_value = [
+            "522c4ac1d2f9964e03e3782ef5b0224c",
+            "6b1a0120941444587d7d1dc1bf6d64d7",
+        ]
+        msg = BridgedMessage(
+            source_network="meshtastic", source_id="!aabb0042",
+            destination_id=None, content="hi", is_broadcast=True,
+        )
+        # First send fails, second succeeds
+        with patch.object(bridge, 'send_to_rns', side_effect=[False, True]):
+            bridge._process_mesh_to_rns(msg)
+
+        assert bridge.stats['messages_mesh_to_rns'] == 1
+        assert bridge.stats['errors'] == 0
+
+    def test_broadcast_skips_invalid_hex_destinations(self, bridge):
+        """Bad hex entries log a warning and are skipped, valid ones still send."""
+        from gateway.rns_bridge import BridgedMessage
+        bridge.config.rns.get_lxmf_destinations.return_value = [
+            "not-hex-at-all",
+            "6b1a0120941444587d7d1dc1bf6d64d7",
+        ]
+        msg = BridgedMessage(
+            source_network="meshtastic", source_id="!aabb0042",
+            destination_id=None, content="ping", is_broadcast=True,
+        )
+        sent_to = []
+
+        def capture(content, dest_hash=None, title=None, fields=None):
+            sent_to.append(dest_hash)
+            return True
+
+        with patch.object(bridge, 'send_to_rns', side_effect=capture):
+            bridge._process_mesh_to_rns(msg)
+
+        assert sent_to == [bytes.fromhex("6b1a0120941444587d7d1dc1bf6d64d7")]
+        assert bridge.stats['messages_mesh_to_rns'] == 1
+
+    def test_directed_dm_short_circuits_default_list(self, bridge):
+        """Directed Mesh→RNS DMs go only to the resolved destination, not the default list."""
+        from gateway.rns_bridge import BridgedMessage
+        # node_tracker resolves the directed dest to a known RNS hash
+        resolved = bytes.fromhex("11851af8e6d95c6f4735727e513d15d8")
+        bridge.node_tracker.get_node_by_mesh_id.return_value = MagicMock(
+            rns_hash=resolved, name="fleet-host-1", short_name="m1",
+        )
+        # Default list also configured — must NOT be hit when DM resolves
+        bridge.config.rns.get_lxmf_destinations.return_value = [
+            "6b1a0120941444587d7d1dc1bf6d64d7",
+        ]
+        msg = BridgedMessage(
+            source_network="meshtastic", source_id="!aabb0042",
+            destination_id="!c0ffee01", content="dm",
+            is_broadcast=False,
+        )
+        sent_to = []
+
+        def capture(content, dest_hash=None, title=None, fields=None):
+            sent_to.append(dest_hash)
+            return True
+
+        with patch.object(bridge, 'send_to_rns', side_effect=capture):
+            bridge._process_mesh_to_rns(msg)
+
+        assert sent_to == [resolved]
 
 
 # ---------------------------------------------------------------------------

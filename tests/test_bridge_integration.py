@@ -42,6 +42,8 @@ def bridge_config():
     config.enabled = True
     config.bridge_mode = "message_bridge"  # Use TCP mode for direct packet tests
     config.default_route = "bidirectional"
+    # Mesh→RNS broadcasts need a default LXMF destination to land somewhere.
+    config.rns.default_lxmf_destination = "6b1a0120941444587d7d1dc1bf6d64d7"
     config.routing_rules = [
         RoutingRule(
             name="allow_all",

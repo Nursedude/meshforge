@@ -294,13 +294,26 @@ def _check_one(
                 f"{label}: gateway.json has no default_lxmf_destination",
                 None,
             )
-        matches = nomad_hash == default_dest
+        # Accept either a single hash (legacy) or a list (multi-recipient). The
+        # local NomadNet just needs to be in the recipient set for Mesh→RNS to
+        # land in its inbox.
+        if isinstance(default_dest, str):
+            dest_list = [default_dest] if default_dest else []
+        elif isinstance(default_dest, list):
+            dest_list = [d for d in default_dest if isinstance(d, str) and d]
+        else:
+            dest_list = []
+        matches = nomad_hash in dest_list
+        if matches == expected:
+            if len(dest_list) > 1:
+                detail = f"nomadnet={nomad_hash[:12]}… is one of {len(dest_list)} recipients"
+            else:
+                detail = f"nomadnet={nomad_hash[:12]}…, gateway={dest_list[0][:12] if dest_list else '?'}…"
+            return (_OK, f"{label}: match ({detail})", None)
         return (
-            _OK if matches == expected else fail_glyph,
-            f"{label}: {'match' if matches else 'drift'} "
-            f"(nomadnet={nomad_hash[:12]}…, gateway={default_dest[:12]}…)",
-            None if matches == expected
-            else "update rns.default_lxmf_destination in ~/.config/meshforge/gateway.json",
+            fail_glyph,
+            f"{label}: drift (nomadnet={nomad_hash[:12]}… not in gateway recipient list)",
+            "add this NomadNet's hash to rns.default_lxmf_destination in ~/.config/meshforge/gateway.json",
         )
 
     # Simple scalar comparison for everything else
