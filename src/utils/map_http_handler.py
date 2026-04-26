@@ -740,7 +740,14 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
         self._send_cors_header()
         self.send_header('Cache-Control', 'no-cache')
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as e:
+            # Client abandoned the request before we finished writing — common
+            # when a slow collect made the browser time out. Logging at DEBUG
+            # keeps the journal clean; the bare exception used to surface as
+            # a noisy traceback per abandoned request.
+            logger.debug(f"Client disconnected during _serve_json: {e}")
 
     def _serve_coverage(self, parts: List[str]):
         """Serve terrain-aware coverage prediction for a location.

@@ -91,10 +91,27 @@ class NodeHistoryDB:
         self._prune_interval_seconds: int = 3600
         self._init_db()
 
+    def _connect(self) -> sqlite3.Connection:
+        """Open a tuned SQLite connection.
+
+        WAL mode + synchronous=NORMAL is the right tradeoff for telemetry:
+        a crash may lose the last commit's observations, but commits stop
+        blocking on a full DB-file fsync. journal_size_limit caps WAL growth
+        so a long-running writer can't balloon it to multi-GB on Pi-class
+        SD cards. Matches /opt/meshforge-maps' maps_node_history.db treatment
+        (Apr 20). Without this, a prune-time fsync of the rollback journal
+        wedges the service in jbd2_log_wait_commit (fleet-host, 2026-04-26).
+        """
+        conn = sqlite3.connect(str(self.db_path), timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA journal_size_limit=67108864")
+        return conn
+
     def _init_db(self) -> None:
         """Create tables and indexes if they don't exist."""
         with self._lock:
-            conn = sqlite3.connect(str(self.db_path))
+            conn = self._connect()
             try:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS node_observations (
@@ -194,7 +211,7 @@ class NodeHistoryDB:
             return 0
 
         with self._lock:
-            conn = sqlite3.connect(str(self.db_path))
+            conn = self._connect()
             try:
                 conn.executemany("""
                     INSERT INTO node_observations
@@ -232,7 +249,7 @@ class NodeHistoryDB:
             return
         cutoff = now - self.retention_seconds
         with self._lock:
-            conn = sqlite3.connect(str(self.db_path))
+            conn = self._connect()
             try:
                 cursor = conn.execute(
                     "DELETE FROM node_observations WHERE timestamp < ?",
@@ -263,7 +280,7 @@ class NodeHistoryDB:
         cutoff = time.time() - (hours * 3600)
 
         with self._lock:
-            conn = sqlite3.connect(str(self.db_path))
+            conn = self._connect()
             conn.row_factory = sqlite3.Row
             try:
                 rows = conn.execute("""
@@ -293,7 +310,7 @@ class NodeHistoryDB:
         window_start = timestamp - window_seconds
 
         with self._lock:
-            conn = sqlite3.connect(str(self.db_path))
+            conn = self._connect()
             conn.row_factory = sqlite3.Row
             try:
                 # Get latest observation per node within the window
@@ -324,7 +341,7 @@ class NodeHistoryDB:
         cutoff = time.time() - (hours * 3600)
 
         with self._lock:
-            conn = sqlite3.connect(str(self.db_path))
+            conn = self._connect()
             conn.row_factory = sqlite3.Row
             try:
                 rows = conn.execute("""
@@ -383,7 +400,7 @@ class NodeHistoryDB:
             Dict with total_observations, unique_nodes, oldest_record, newest_record, db_size_kb.
         """
         with self._lock:
-            conn = sqlite3.connect(str(self.db_path))
+            conn = self._connect()
             try:
                 total = conn.execute(
                     "SELECT COUNT(*) FROM node_observations"
@@ -424,7 +441,7 @@ class NodeHistoryDB:
         cutoff = time.time() - self.retention_seconds
 
         with self._lock:
-            conn = sqlite3.connect(str(self.db_path))
+            conn = self._connect()
             try:
                 cursor = conn.execute(
                     "DELETE FROM node_observations WHERE timestamp < ?",

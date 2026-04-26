@@ -107,3 +107,47 @@ class TestAutoPrune:
         hist.record_observations([_feature("!fresh")])
         traj_aged = hist.get_trajectory("!aged", hours=72)
         assert len(traj_aged) == 1, "prune ran despite interval=0 disable"
+
+
+class TestConnectionPragmas:
+    """Lock in WAL + tuned pragmas — regression guard for the fleet-host
+    2026-04-26 wedge where rollback-journal mode caused multi-minute
+    fdatasync stalls that blocked /api/nodes/geojson responses."""
+
+    def test_journal_mode_is_wal(self, hist):
+        # WAL is persistent on the DB header — first connect converts it.
+        conn = hist._connect()
+        try:
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            assert mode.lower() == "wal", f"expected WAL, got {mode!r}"
+        finally:
+            conn.close()
+
+    def test_synchronous_is_normal(self, hist):
+        conn = hist._connect()
+        try:
+            # synchronous values: 0=OFF, 1=NORMAL, 2=FULL, 3=EXTRA
+            sync = conn.execute("PRAGMA synchronous").fetchone()[0]
+            assert sync == 1, f"expected synchronous=NORMAL (1), got {sync}"
+        finally:
+            conn.close()
+
+    def test_journal_size_limit_is_capped(self, hist):
+        conn = hist._connect()
+        try:
+            limit = conn.execute("PRAGMA journal_size_limit").fetchone()[0]
+            assert limit == 67108864, f"expected 64 MB cap, got {limit}"
+        finally:
+            conn.close()
+
+    def test_wal_persists_across_connections(self, hist):
+        # Once one connection sets WAL, subsequent connections inherit it
+        # from the DB header — no re-conversion needed.
+        c1 = hist._connect()
+        c1.close()
+        c2 = hist._connect()
+        try:
+            mode = c2.execute("PRAGMA journal_mode").fetchone()[0]
+            assert mode.lower() == "wal"
+        finally:
+            c2.close()
