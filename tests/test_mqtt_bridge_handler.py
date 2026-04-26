@@ -132,20 +132,56 @@ def _make_bridge_handler(own_id: str = "") -> MQTTBridgeHandler:
 
 
 class TestSelfEchoFilter:
-    """gateway_node_id, when set, drops self-echoed inbound MQTT JSON."""
+    """gateway_node_id, when set, drops the RNS→Mesh loopback (own sender +
+    [RNS:xxxx] prefix). Other own-sender traffic — web UI sends, CLI sends,
+    fresh user messages — must still bridge so operators see their own
+    activity in NomadNet."""
 
-    def test_self_sender_dropped(self):
+    def test_rns_loopback_dropped(self):
+        """[RNS:xxxx]-prefixed text from own_id is the RNS→Mesh echo — drop."""
         handler = _make_bridge_handler(own_id="!ebfa1b11")
         handler._bridge_text_message(
             {
                 "sender": "!ebfa1b11",
                 "to": 0xFFFFFFFF,
-                "payload": {"text": "echo"},
+                "payload": {"text": "[RNS:d1df] hello fleet"},
                 "channel": 2,
             },
             topic="msh/US/2/json/meshforge/!ebfa1b11",
         )
         handler._message_queue.put_nowait.assert_not_called()
+
+    def test_own_sender_no_rns_prefix_passes(self):
+        """Web UI / CLI sends from the gateway box have no [RNS:] prefix —
+        these are legitimate operator traffic that must bridge to RNS so
+        their own NomadNet inbox sees them."""
+        handler = _make_bridge_handler(own_id="!ebfa1b11")
+        handler._bridge_text_message(
+            {
+                "sender": "!ebfa1b11",
+                "to": 0xFFFFFFFF,
+                "payload": {"text": "typed from web UI"},
+                "channel": 2,
+            },
+            topic="msh/US/2/json/meshforge/!ebfa1b11",
+        )
+        handler._message_queue.put_nowait.assert_called_once()
+
+    def test_other_sender_with_rns_prefix_passes(self):
+        """A different node forwarding [RNS:] content is real mesh traffic
+        we did NOT originate — bridge it normally. (Multi-hop / repeater
+        scenarios where another gateway in the area also injects RNS text.)"""
+        handler = _make_bridge_handler(own_id="!ebfa1b11")
+        handler._bridge_text_message(
+            {
+                "sender": "!aabb0042",
+                "to": 0xFFFFFFFF,
+                "payload": {"text": "[RNS:abcd] from elsewhere"},
+                "channel": 2,
+            },
+            topic="msh/US/2/json/meshforge/!aabb0042",
+        )
+        handler._message_queue.put_nowait.assert_called_once()
 
     def test_other_sender_passes_through(self):
         handler = _make_bridge_handler(own_id="!ebfa1b11")
@@ -161,16 +197,16 @@ class TestSelfEchoFilter:
         handler._message_queue.put_nowait.assert_called_once()
 
     def test_filter_disabled_when_unset(self):
-        """gateway_node_id='' (default) means no filter; everything passes."""
+        """gateway_node_id='' (default) means no filter; everything passes,
+        including [RNS:]-prefixed echoes (legacy behavior)."""
         handler = _make_bridge_handler(own_id="")
         handler._bridge_text_message(
             {
                 "sender": "!ebfa1b11",
                 "to": 0xFFFFFFFF,
-                "payload": {"text": "would-be-echo"},
+                "payload": {"text": "[RNS:d1df] would-be-echo"},
                 "channel": 2,
             },
             topic="msh/US/2/json/meshforge/!ebfa1b11",
         )
-        # No filter configured → message goes through (preserves legacy behavior)
         handler._message_queue.put_nowait.assert_called_once()

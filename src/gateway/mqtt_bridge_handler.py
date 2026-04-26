@@ -363,12 +363,16 @@ class MQTTBridgeHandler(BaseMessageHandler):
             return
 
         # Self-echo filter: meshtasticd republishes the gateway's own outbound
-        # TX back through MQTT, which (without this filter) loops straight back
-        # into Mesh→RNS as a fresh message. Drop messages whose sender matches
-        # our own configured node id.
+        # TX back through MQTT. The only loopback we want to drop is the
+        # RNS→Mesh path — those messages were transformed by the gateway with
+        # a [RNS:xxxx] prefix before going to TX, so the same prefix coming
+        # back as "incoming Meshtastic" is unambiguously our own echo.
+        # Genuine Meshtastic content from the gateway box (web UI sends,
+        # `meshtastic --sendtext`, etc.) has no [RNS:] prefix and must still
+        # bridge to RNS so operators see their own activity.
         own_id = getattr(self.config.meshtastic, 'gateway_node_id', '') if self.config else ''
-        if own_id and sender == own_id:
-            logger.debug(f"Self-echo filtered: {sender} → {text[:30]}")
+        if own_id and sender == own_id and text.startswith('[RNS:'):
+            logger.debug(f"Self-echo filtered (RNS→Mesh loopback): {text[:40]}")
             return
 
         # Determine destination
