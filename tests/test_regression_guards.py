@@ -474,3 +474,34 @@ class TestRNSAnnounceHandlerContract:
             "first parameter MUST be named 'destination_hash'. "
             "Violations: " + "; ".join(violations)
         )
+
+
+class TestSqliteConnectContract:
+    """Enforce: No bare sqlite3.connect() outside db_helpers.py (MF013).
+
+    Closes the fleet-host 2026-04-26 wedge class — every SQLite consumer
+    must go through utils.db_helpers.connect_tuned for WAL + sync=NORMAL
+    + 64 MB journal_size_limit. The lint rule catches at editor /
+    pre-commit; this test catches in CI even if lint is bypassed."""
+
+    def test_no_bare_sqlite_connect(self):
+        matches = _scan_python_files(
+            r'sqlite3\.connect\(',
+            exclude_files=['db_helpers.py'],
+        )
+
+        violations = []
+        for filepath, lineno, line in matches:
+            basename = os.path.basename(filepath)
+            if 'test_' in basename or '/tests/' in filepath:
+                continue
+            violations.append(f"{filepath}:{lineno}: {line.strip()}")
+
+        assert len(violations) == 0, (
+            f"Found {len(violations)} bare sqlite3.connect() violations.\n"
+            f"Use connect_tuned() from utils.db_helpers instead (MF013).\n"
+            f"Reason: WAL + synchronous=NORMAL + journal_size_limit=64MB "
+            f"prevent the rollback-journal fdatasync wedge that took out "
+            f"fleet-host's :5000 service for 16 minutes (2026-04-26).\n\n"
+            f"Violations:\n" + "\n".join(violations)
+        )

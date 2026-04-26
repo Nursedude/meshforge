@@ -18,6 +18,7 @@
 - **NEVER** use raw `systemctl is-active` — use `check_service()` from `service_check.py`
 - **NEVER** use `Path.home()` directly — use `utils.paths.get_real_user_home()` (MF001)
 - **NEVER** use `safe_import` for first-party modules — external deps only
+- **NEVER** call `sqlite3.connect()` directly — use `connect_tuned()` from `utils.db_helpers` (MF013). Every new SQLite DB also needs a `DBSpec` entry in `utils.db_inventory`. Run `python3 scripts/db_audit.py` to verify.
 - **NEVER** use `shell=True`, bare `except:`, or skip input validation / subprocess timeouts
 - **ALWAYS** use `_stop_event.wait()` instead of `time.sleep()` in daemon loops
 - **ALWAYS** split files exceeding 1,500 lines

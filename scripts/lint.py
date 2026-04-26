@@ -15,6 +15,7 @@ Checks:
 - MF010: time.sleep() in daemon loops (must use _stop_event.wait(), H1)
 - MF011: Repair logic in _nomadnet_rns_checks.py (must be in _rns_repair.py/diagnostics)
 - MF012: Context-loaded doc size (persistent_issues.md must stay under 40k chars)
+- MF013: Bare sqlite3.connect() outside db_helpers.py (must use connect_tuned)
 
 Usage:
     python3 scripts/lint.py [files...]
@@ -310,6 +311,24 @@ class MeshForgeLinter:
                                 f"move to _rns_repair.py or diagnostics handler"
                             ))
                             break
+
+        # MF013: bare sqlite3.connect() must go through utils.db_helpers.connect_tuned
+        # — closes the fleet-host 2026-04-26 wedge class (1.95 GB rollback-journal
+        # DB stalled the service 16+ minutes in jbd2_log_wait_commit). The helper
+        # itself uses sqlite3.connect (allowed); test fixtures may also.
+        if 'sqlite3.connect(' in line:
+            is_string = stripped.startswith('"') or stripped.startswith("'")
+            is_comment = stripped.startswith('#')
+            basename = os.path.basename(filepath)
+            allowlisted_files = {'db_helpers.py'}
+            in_tests = '/tests/' in filepath or basename.startswith('test_')
+            if (not is_string and not is_comment and basename not in allowlisted_files
+                    and not in_tests):
+                issues.append(LintIssue(
+                    filepath, lineno, Severity.ERROR, "MF013",
+                    "Bare sqlite3.connect() — use utils.db_helpers.connect_tuned "
+                    "(WAL + sync=NORMAL + 64MB journal cap)"
+                ))
 
         # MF010: time.sleep() in daemon loops (should use _stop_event.wait())
         if 'time.sleep(' in line:
