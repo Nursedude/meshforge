@@ -16,6 +16,7 @@ Checks:
 - MF011: Repair logic in _nomadnet_rns_checks.py (must be in _rns_repair.py/diagnostics)
 - MF012: Context-loaded doc size (persistent_issues.md must stay under 40k chars)
 - MF013: Bare sqlite3.connect() outside db_helpers.py (must use connect_tuned)
+- MF014: Operator-specific values (hostnames, personal email, /home/<user>/) — break repo portability
 
 Usage:
     python3 scripts/lint.py [files...]
@@ -372,6 +373,131 @@ def get_staged_files() -> List[str]:
         return []
 
 
+def get_staged_files_all_types() -> List[str]:
+    """Get list of staged text-like files (any extension that MF014 scans)."""
+    try:
+        result = subprocess.run(
+            ['git', 'diff', '--cached', '--name-only', '--diff-filter=ACM'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        files = []
+        for f in result.stdout.strip().split('\n'):
+            if not f:
+                continue
+            ext = os.path.splitext(f)[1].lower()
+            if ext in MF014_SCAN_EXTENSIONS:
+                files.append(f)
+        return files
+    except Exception:
+        return []
+
+
+# MF014: Operator-specific value blocklist.
+# Catches hardcoded fleet-specific values that break repo portability for new
+# users. Drove the 2026-04-26 source scrub (commit 155a74d) and Path B history
+# rewrite. These values must NEVER land in source, templates, scripts, or root
+# docs. Allowed in: this file (defines them), the regression test that asserts
+# them, and the .claude/ subtree (operator-private context, intentionally
+# non-portable per project_repo_portability_scrub.md).
+MF014_PATTERNS = [
+    (re.compile(r'shawnmfarley@gmail\.com'),
+     "personal email — use noreply form 177804819+Nursedude@users.noreply.github.com"),
+    (re.compile(r'wh6gxz\s+nurse\s+dude', re.IGNORECASE),
+     "old git author 'wh6gxz nurse dude' — use Nursedude"),
+    (re.compile(r'\bnursedude@meshforge\b', re.IGNORECASE),
+     "placeholder email 'nursedude@meshforge' — use noreply form"),
+    (re.compile(r'\bvolcanoai\b', re.IGNORECASE),
+     "fleet hostname 'volcanoai' — use placeholder or read from config"),
+    (re.compile(r'\bmeshforge-moc[0-9]?\b', re.IGNORECASE),
+     "fleet hostname 'meshforge-moc*' — use placeholder or read from config"),
+    (re.compile(r'\bhawaiinet\b', re.IGNORECASE),
+     "regional name 'hawaiinet' — use 'regional' placeholder"),
+    (re.compile(r'\bf68c2f56cb61527b6c9ad603b9a5009a\b'),
+     "specific LXMF gateway hash — use placeholder"),
+    (re.compile(r'/home/wh6gxz/'),
+     "user-specific home path — use /home/<user>/ or get_real_user_home()"),
+]
+
+MF014_ALLOWED_FILES = {
+    'scripts/lint.py',
+    'tests/test_regression_guards.py',
+}
+
+MF014_ALLOWED_DIRS = {
+    '.claude',  # operator-private context, non-portable by design
+}
+
+MF014_SCAN_EXTENSIONS = {
+    '.py', '.sh', '.bash', '.yaml', '.yml', '.json', '.toml', '.ini', '.cfg',
+    '.conf', '.service', '.md', '.txt', '.rst', '.html', '.js', '.css', '.tmpl',
+    '.example', '.j2',
+}
+
+MF014_SCAN_EXCLUDE_DIRS = {
+    '.git', 'venv', '.venv', '__pycache__', 'node_modules', '.pytest_cache',
+    '.tox', '.cache', '.mypy_cache', '.ruff_cache', 'dist', 'build', '.eggs',
+}
+
+
+def _check_operator_values_in_file(filepath: str, rel_path: str) -> List[LintIssue]:
+    issues: List[LintIssue] = []
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            for lineno, line in enumerate(f, 1):
+                for pattern, message in MF014_PATTERNS:
+                    if pattern.search(line):
+                        issues.append(LintIssue(
+                            rel_path, lineno, Severity.ERROR, "MF014", message,
+                        ))
+                        break  # one violation per line is enough
+    except (IOError, OSError):
+        pass
+    return issues
+
+
+def check_operator_values_in_files(files: List[str], repo_root: str = '.') -> List[LintIssue]:
+    """MF014: scan a specific set of files (e.g. staged) for operator values."""
+    issues: List[LintIssue] = []
+    for f in files:
+        rel_path = os.path.relpath(f, repo_root) if os.path.isabs(f) else f
+        first_seg = rel_path.split(os.sep)[0]
+        if first_seg in MF014_ALLOWED_DIRS:
+            continue
+        if rel_path in MF014_ALLOWED_FILES:
+            continue
+        ext = os.path.splitext(rel_path)[1].lower()
+        if ext not in MF014_SCAN_EXTENSIONS:
+            continue
+        if not os.path.isfile(f):
+            continue
+        issues.extend(_check_operator_values_in_file(f, rel_path))
+    return issues
+
+
+def check_operator_values_full_tree(repo_root: str = '.') -> List[LintIssue]:
+    """MF014: scan the whole repo tree for operator values."""
+    issues: List[LintIssue] = []
+    for root, dirs, files in os.walk(repo_root):
+        dirs[:] = [d for d in dirs if d not in MF014_SCAN_EXCLUDE_DIRS]
+        rel_root = os.path.relpath(root, repo_root)
+        first_seg = rel_root.split(os.sep)[0] if rel_root != '.' else ''
+        if first_seg in MF014_ALLOWED_DIRS:
+            dirs[:] = []
+            continue
+        for filename in files:
+            rel_path = os.path.normpath(os.path.join(rel_root, filename)) if rel_root != '.' else filename
+            if rel_path in MF014_ALLOWED_FILES:
+                continue
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in MF014_SCAN_EXTENSIONS:
+                continue
+            filepath = os.path.join(root, filename)
+            issues.extend(_check_operator_values_in_file(filepath, rel_path))
+    return issues
+
+
 def get_all_python_files(directory: str = 'src') -> List[str]:
     """Get all Python files in directory."""
     files = []
@@ -444,6 +570,12 @@ def main():
     # MF012: doc-size cap (skip in --staged mode — only relevant to whole-repo checks)
     if not args.staged:
         issues.extend(check_context_doc_sizes())
+
+    # MF014: operator-value blocklist (broader than .py — scans templates/scripts/docs too)
+    if args.staged:
+        issues.extend(check_operator_values_in_files(get_staged_files_all_types()))
+    else:
+        issues.extend(check_operator_values_full_tree())
 
     # Filter by severity
     severity_order = {'error': 0, 'warning': 1, 'info': 2}

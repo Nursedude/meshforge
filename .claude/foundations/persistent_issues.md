@@ -48,6 +48,7 @@ Full history in `persistent_issues_archive.md`.
 | #6 Large Files — all under 1,500-line threshold | `knowledge_content.py` (1,993) is the only acceptable exception. Body in archive | — |
 | #21 Meshtastic CLI Preset Bug (upstream) | Not a MeshForge bug; verify presets in `:9443` browser after CLI. Body in archive | — |
 | GTK Issues (#2, #11, #13–#15) | GTK4 removed in v0.5.x | — |
+| #35 Gateway LXMF indexing (2026-04-20) | Bridged messages aggregate under gateway's source hash, prefixed `[Mesh:xxxx]`. Body in archive | TUI Delivery Audit menu |
 
 ---
 
@@ -148,6 +149,7 @@ Also available via `meshforge --verify-install`.
 | MF008 | Raw `systemctl` for service state (use `service_check`) |
 | MF009 | `RNS.Reticulum()` without `configdir=` |
 | MF010 | `time.sleep()` in daemon loops |
+| MF014 | Operator-specific values (hostnames, personal email, `/home/<user>/`) — break repo portability |
 
 ### Layer 2: Regression Guard Tests (`tests/test_regression_guards.py`)
 - `TestTCPConnectionContract` — No new direct TCPInterface
@@ -156,6 +158,7 @@ Also available via `meshforge --verify-install`.
 - `TestPathHomeContract` — No `Path.home()` violations
 - `TestNoShellTrue` — No `shell=True` in subprocess
 - `TestKnownServicesConsistency` — KNOWN_SERVICES stays correct
+- `TestOperatorValueContract` — No operator-specific values in source/templates/scripts/docs (MF014)
 
 ### Layer 3: Pre-Commit Hook (`.githooks/pre-commit`)
 Setup: `git config core.hooksPath .githooks`
@@ -182,39 +185,6 @@ if MESHTASTIC_CONNECTION_LOCK.acquire(timeout=10):
 3. Acquire `MESHTASTIC_CONNECTION_LOCK` before creating
 
 ---
-
-## Issue #35: Gateway-delivered LXMF lands under GATEWAY's hash, not receiver's (2026-04-20)
-
-**Symptom**: operator sends from local Meshtastic HAT on channel `meshforge`, gateway logs
-`Message bridged: meshtastic -> !ffffffff` and `LXMF delivery confirmed`, but NomadNet appears
-not to show the message. Classic "I sent it, where did it go?"
-
-**Root cause (not a bug)**: the receiving NomadNet indexes the conversation by the LXMF
-**sender** identity — which is the **gateway's own** source hash (`f68c2f56…` on fleet-host-3) —
-NOT by the `default_lxmf_destination` (which is the RECEIVING NomadNet's own hash) or by the
-original Meshtastic node id. Operators looking for a new "inbox" under their own identity, or a
-new conversation per-Meshtastic-node, will not find one.
-
-**Verification recipe**:
-```
-ls -lt ~/.nomadnetwork/storage/conversations/<gateway_lxmf_source_hash>/ | head
-```
-The newest file's mtime should match the send time. Content check:
-```
-strings -n 6 <that_file> | grep -E '^\[Mesh:'
-```
-Look for `[Mesh:<last-4-of-sender-nodeid>] <your text>`.
-
-**Operator guidance**: open the conversation indexed by the GATEWAY's hash in NomadNet.
-The text body is prefixed with `[Mesh:xxxx]` where `xxxx` is the last 4 hex chars of the
-originating Meshtastic node id. All bridged traffic for a given gateway aggregates into that
-single conversation — one-to-many from the NomadNet user's perspective.
-
-**Prevention**: the TUI now has a **Delivery Audit** entry under the Gateway Bridge menu that
-lists recent `Message bridged` / `LXMF delivery confirmed` log lines along with the gateway's
-LXMF source hash and the NomadNet conversation path, so operators can navigate to the right
-thread without filesystem spelunking. See `src/launcher_tui/handlers/gateway.py` → `_show_delivery_audit`.
-
 
 ## Issue #40: RNS→Mesh bridge — bytes payload crash + wrong-topic MQTT downlink (2026-04-21)
 

@@ -815,3 +815,36 @@ Top files: `meshtastic_protobuf_client.py` (1,433), `service_check.py` (1,410),
 **Not a MeshForge bug.** The Python meshtastic CLI doesn't always apply modem preset
 changes correctly. Always verify in browser at `http://localhost:9443` after CLI changes.
 Consider direct meshtasticd API calls instead of CLI.
+## Issue #35: Gateway-delivered LXMF lands under GATEWAY's hash, not receiver's (2026-04-20)
+
+**Symptom**: operator sends from local Meshtastic HAT on channel `meshforge`, gateway logs
+`Message bridged: meshtastic -> !ffffffff` and `LXMF delivery confirmed`, but NomadNet appears
+not to show the message. Classic "I sent it, where did it go?"
+
+**Root cause (not a bug)**: the receiving NomadNet indexes the conversation by the LXMF
+**sender** identity — which is the **gateway's own** source hash (`f68c2f56…` on fleet-host-3) —
+NOT by the `default_lxmf_destination` (which is the RECEIVING NomadNet's own hash) or by the
+original Meshtastic node id. Operators looking for a new "inbox" under their own identity, or a
+new conversation per-Meshtastic-node, will not find one.
+
+**Verification recipe**:
+```
+ls -lt ~/.nomadnetwork/storage/conversations/<gateway_lxmf_source_hash>/ | head
+```
+The newest file's mtime should match the send time. Content check:
+```
+strings -n 6 <that_file> | grep -E '^\[Mesh:'
+```
+Look for `[Mesh:<last-4-of-sender-nodeid>] <your text>`.
+
+**Operator guidance**: open the conversation indexed by the GATEWAY's hash in NomadNet.
+The text body is prefixed with `[Mesh:xxxx]` where `xxxx` is the last 4 hex chars of the
+originating Meshtastic node id. All bridged traffic for a given gateway aggregates into that
+single conversation — one-to-many from the NomadNet user's perspective.
+
+**Prevention**: the TUI now has a **Delivery Audit** entry under the Gateway Bridge menu that
+lists recent `Message bridged` / `LXMF delivery confirmed` log lines along with the gateway's
+LXMF source hash and the NomadNet conversation path, so operators can navigate to the right
+thread without filesystem spelunking. See `src/launcher_tui/handlers/gateway.py` → `_show_delivery_audit`.
+
+

@@ -96,7 +96,7 @@ No terminal switching. No lost context.
 
 ### Remote Diagnostics
 
-Real example from today: the map server on fleet-host-1 wasn't showing live nodes. From VolcanoAI, Claude:
+Real example from today: the map server on fleet-host-1 wasn't showing live nodes. From fleet-host, Claude:
 
 1. SSH'd into fleet-host-1
 2. Hit `/api/status` — server running, collector active

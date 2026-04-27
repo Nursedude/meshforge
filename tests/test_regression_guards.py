@@ -21,6 +21,7 @@ import pytest
 
 # Source directory
 SRC_DIR = os.path.join(os.path.dirname(__file__), '..', 'src')
+REPO_ROOT = os.path.join(os.path.dirname(__file__), '..')
 
 
 def _scan_python_files(pattern, exclude_files=None, exclude_dirs=None,
@@ -504,4 +505,62 @@ class TestSqliteConnectContract:
             f"prevent the rollback-journal fdatasync wedge that took out "
             f"fleet-host's :5000 service for 16 minutes (2026-04-26).\n\n"
             f"Violations:\n" + "\n".join(violations)
+        )
+
+
+class TestOperatorValueContract:
+    """Enforce: no operator-specific values in source/templates/scripts/docs (MF014).
+
+    Drove the 2026-04-26 source scrub (commit 155a74d) and Path B history
+    rewrite. New users must be able to clone the repo and run it without
+    inheriting fleet-specific hostnames, personal emails, or user-home paths.
+    Operator-private context lives in .claude/ (allowlisted).
+    """
+
+    def test_lint_rule_runs_clean_on_repo(self):
+        sys.path.insert(0, os.path.join(REPO_ROOT, 'scripts'))
+        try:
+            import importlib
+            lint_mod = importlib.import_module('lint')
+        finally:
+            sys.path.pop(0)
+
+        issues = lint_mod.check_operator_values_full_tree(REPO_ROOT)
+        violations = [
+            f"{i.file}:{i.line}: MF014: {i.message}"
+            for i in issues
+        ]
+        assert len(violations) == 0, (
+            f"Found {len(violations)} MF014 operator-value violations.\n"
+            f"These break repo portability for new users. Replace with "
+            f"placeholders or read from config.\n"
+            f"Allowlisted: scripts/lint.py, this test file, .claude/ subtree.\n\n"
+            f"Violations:\n" + "\n".join(violations)
+        )
+
+    def test_lint_rule_catches_known_pattern(self):
+        """Self-test: feed the rule a synthetic line and confirm it fires."""
+        sys.path.insert(0, os.path.join(REPO_ROOT, 'scripts'))
+        try:
+            import importlib
+            lint_mod = importlib.import_module('lint')
+        finally:
+            sys.path.pop(0)
+
+        # Each pattern must match its canonical leak example
+        canon = [
+            ('shawnmfarley@gmail.com', 'personal email'),
+            ('volcanoai', 'fleet hostname'),
+            ('meshforge-moc1', 'fleet hostname'),
+            ('hawaiinet', 'regional name'),
+            ('/home/wh6gxz/foo', 'user-specific home'),
+            ('f68c2f56cb61527b6c9ad603b9a5009a', 'LXMF gateway hash'),
+        ]
+        unmatched = []
+        for sample, label in canon:
+            hit = any(p.search(sample) for p, _ in lint_mod.MF014_PATTERNS)
+            if not hit:
+                unmatched.append(f"{label}: {sample!r} — NO PATTERN MATCHED")
+        assert not unmatched, (
+            "MF014 patterns failed self-test:\n" + "\n".join(unmatched)
         )
