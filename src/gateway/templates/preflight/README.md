@@ -42,7 +42,7 @@ Fields with `severity: "warn"` surface drift but don't fail.
 
 | File | Use case |
 |------|----------|
-| `shortturbo_slot8_meshforge.json` | MeshForge fleet-host-3 reference config: HAT on US/SHORT_TURBO/slot 8 bridged via a dedicated 'meshforge' MQTT channel. First field-validated 2026-04-18. |
+| `shortturbo_slot8_meshforge.json` | MeshForge reference config: HAT on US/SHORT_TURBO/slot 8 bridged via a dedicated 'meshforge' MQTT channel. First field-validated 2026-04-18. |
 
 ## Exporting a template from a live node
 

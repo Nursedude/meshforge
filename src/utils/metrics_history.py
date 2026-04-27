@@ -186,7 +186,7 @@ class MetricsHistory:
         """Get a thread-local database connection.
 
         Tuned via utils.db_helpers.connect_tuned (WAL + sync=NORMAL +
-        64MB journal_size_limit cap added in post-fleet-host-2026-04-26
+        64MB journal_size_limit cap added in post-2026-04-26 fleet
         closure — was missing from this DB before)."""
         if not hasattr(self._local, 'connection') or self._local.connection is None:
             self._local.connection = connect_tuned(

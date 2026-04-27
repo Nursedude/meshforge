@@ -231,7 +231,7 @@ class OfflineSyncQueue:
         if self._conn is None:
             # connect_tuned applies WAL + sync=NORMAL + the missing
             # journal_size_limit (closes the bloat-cap gap flagged in
-            # the post-fleet-host-2026-04-26 audit). 5s busy_timeout
+            # the post-2026-04-26 fleet audit). 5s busy_timeout
             # preserved; this queue's external _lock already serializes.
             self._conn = connect_tuned(
                 self._db_path,

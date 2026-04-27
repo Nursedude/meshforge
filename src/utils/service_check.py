@@ -638,8 +638,8 @@ def is_service_unit_installed(
     systemd owns :5000 on this box. If it does, the TUI should NOT fall
     back to an in-process HTTP server — that races systemd's Restart=always
     loop and leaves :5000 pinned by the TUI while the service unit keeps
-    failing (see fleet-host-3 incident 2026-04-22). No unit installed → in-process
-    fallback is fine.
+    failing (2026-04-22 service-supervision incident). No unit installed →
+    in-process fallback is fine.
 
     Args:
         service_name: Service unit name (with or without .service suffix).

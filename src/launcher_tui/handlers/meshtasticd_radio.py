@@ -198,7 +198,7 @@ class MeshtasticdRadioHandler(BaseHandler):
             "Frequency Slot",
             f"Set frequency slot (channel_num) for {preset}:\n\n"
             "Slot determines the center frequency.\n"
-            "US: 0=903.875 MHz (default), 12=903.625 (Regional)\n"
+            "US: 0=903.875 MHz (default), 12=903.625 (regional/custom)\n"
             "Must match your mesh network's slot.\n\n"
             "Leave empty or 0 for default:",
             "0"

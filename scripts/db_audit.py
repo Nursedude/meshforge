@@ -11,7 +11,7 @@ Reads from src/utils/db_inventory.py and reports per-DB:
 Exit code 1 if any DB has a FAIL verdict (size > cap, pragmas wrong,
 world-writable, etc.). Suitable for cron / CI / pre-merge.
 
-Why this exists: 2026-04-26 the fleet-host :5000 service wedged 16+
+Why this exists: on 2026-04-26 a fleet box's :5000 service wedged 16+
 minutes in jbd2_log_wait_commit because node_history.db had grown to
 1.95 GB in rollback-journal mode. Manual audit on each new DB has
 already missed once (health_state.db in Phase 1). This script is the

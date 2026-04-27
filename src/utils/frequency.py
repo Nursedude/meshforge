@@ -108,7 +108,7 @@ US_SLOT_MAP: Dict[int, int] = {
     10: 924_125_000,
     11: 926_375_000,
     # Extended/custom slots
-    12: 903_625_000,  # Regional
+    12: 903_625_000,  # Regional/custom
     13: 905_875_000,
     14: 907_125_000,
     15: 909_375_000,
@@ -250,11 +250,6 @@ def freq_to_slot(frequency: int, region: str = "US") -> Optional[int]:
 def validate_frequency(frequency: int, region: str = "US") -> bool:
     """Quick frequency validation."""
     return FrequencyCalculator(region).validate_frequency(frequency)
-
-
-def get_regional_frequency() -> int:
-    """Get Regional frequency (903.625 MHz)."""
-    return 903_625_000
 
 
 def get_default_frequency(region: str = "US") -> int:

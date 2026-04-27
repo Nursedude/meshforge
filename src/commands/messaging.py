@@ -50,7 +50,7 @@ MAX_MESSAGE_LENGTH = 160
 
 # Auto-prune cadence for messages.db. Without this the DB grew unbounded
 # because clear_messages() is manual-only — same class of bug as the
-# fleet-host 2026-04-26 node_history wedge.
+# 2026-04-26 fleet node_history wedge.
 _MESSAGE_RETENTION_DAYS = 30
 _MESSAGE_PRUNE_INTERVAL_SECONDS = 3600
 _last_message_prune_ts: float = 0.0

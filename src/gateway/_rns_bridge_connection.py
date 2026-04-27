@@ -262,9 +262,9 @@ class RNSConnectionMixin:
         self._lxmf_router.register_delivery_callback(self._on_lxmf_receive)
 
         # Resolve announced display name. Empty config = hostname-tagged default
-        # so fleet Pis (fleet-host-3, fleet-host, etc.) are distinguishable in peers'
-        # contact lists without operator config. Hex hash (routable address) is
-        # cryptographically fixed by the identity file and unaffected by this.
+        # so multiple fleet Pis are distinguishable in peers' contact lists
+        # without operator config. Hex hash (routable address) is cryptographically
+        # fixed by the identity file and unaffected by this.
         configured = self.config.rns.gateway_name.strip()
         display_name = configured or f"MeshForge Gateway ({socket.gethostname()})"
 

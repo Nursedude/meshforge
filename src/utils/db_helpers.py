@@ -1,7 +1,7 @@
 """SQLite connection helpers — single source of truth for tuned pragmas.
 
 Why this exists: a 1.95 GB rollback-journal-mode node_history.db wedged the
-:5000 map service on fleet-host (2026-04-26) for 16+ minutes during a prune.
+:5000 map service on a fleet box (2026-04-26) for 16+ minutes during a prune.
 The fix was WAL + synchronous=NORMAL + journal_size_limit; this module
 guarantees every SQLite consumer in MeshForge gets the same treatment.
 

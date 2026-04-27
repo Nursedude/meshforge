@@ -98,7 +98,7 @@ class NodeHistoryDB:
         See utils.db_helpers.connect_tuned for the WAL + synchronous=NORMAL
         + journal_size_limit + busy_timeout policy. Centralizing here
         ensures every MeshForge SQLite consumer gets the same treatment
-        and one place enforces the post-mortem of the fleet-host 2026-04-26
+        and one place enforces the post-mortem of the 2026-04-26 fleet
         wedge.
         """
         return connect_tuned(self.db_path)

@@ -15,7 +15,7 @@ Usage:
     )
 
     # Generate a check-in QR code for terminal display
-    qr_text = generate_checkin_qr("WH6GXZ", latitude=21.3, longitude=-157.8)
+    qr_text = generate_checkin_qr("N0CALL", latitude=0.0, longitude=0.0)
     print(qr_text)
 
     # Decode QR text content back to message

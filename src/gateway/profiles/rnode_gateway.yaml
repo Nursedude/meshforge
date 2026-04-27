@@ -8,9 +8,10 @@
 # - Serial connection required for control
 # - Ideal for headless gateway operation
 #
-# Regional Configuration:
+# Regional/custom slot example:
 #   Frequency: 903.625 MHz (slot 12)
 #   Modulation: SF7, BW250, CR5 (LONG_FAST equivalent)
+#   Replace with whatever your local mesh is using.
 
 device:
   role: ROUTER_CLIENT
@@ -25,7 +26,7 @@ lora:
   tx_enabled: true
   tx_power: 22  # RNode max varies by hardware (17-27 dBm)
   # For specific frequency slot, use channel_num:
-  # channel_num: 12  # 903.625 MHz for Regional
+  # channel_num: 12  # 903.625 MHz (regional/custom slot example)
 
 bluetooth:
   enabled: false  # RNode has no BLE

@@ -1,6 +1,6 @@
 """DB Health Handler — runs scripts/db_audit.py and shows results in TUI.
 
-Closes the operator-side gap from the fleet-host 2026-04-26 wedge: HAMs
+Closes the operator-side gap from the 2026-04-26 fleet wedge: HAMs
 shouldn't need to remember a script path. One keystroke from the
 System menu → table dump of every DB's health, size, permissions,
 and PRAGMA state.

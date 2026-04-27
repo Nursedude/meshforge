@@ -171,8 +171,8 @@ class AIToolsHandler(
         # to an in-process server even if systemd fails to start — an
         # in-process bind would race systemd's Restart=always loop forever,
         # leaving :5000 pinned to this TUI process while the service unit
-        # keeps failing (fleet-host-3 incident 2026-04-22). If systemd is broken,
-        # the operator needs to see it — not be quietly papered over.
+        # keeps failing (2026-04-22 service-supervision incident). If systemd
+        # is broken, the operator needs to see it — not be quietly papered over.
         if is_service_unit_installed(MAP_SERVER_SERVICE):
             self._try_start_map_service_quiet()
             return

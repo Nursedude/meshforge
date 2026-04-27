@@ -313,7 +313,7 @@ class MeshForgeLinter:
                             break
 
         # MF013: bare sqlite3.connect() must go through utils.db_helpers.connect_tuned
-        # — closes the fleet-host 2026-04-26 wedge class (1.95 GB rollback-journal
+        # — closes the 2026-04-26 fleet wedge class (1.95 GB rollback-journal
         # DB stalled the service 16+ minutes in jbd2_log_wait_commit). The helper
         # itself uses sqlite3.connect (allowed); test fixtures may also.
         if 'sqlite3.connect(' in line:

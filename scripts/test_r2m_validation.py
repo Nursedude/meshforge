@@ -15,8 +15,9 @@ Usage (on a Pi running rnsd + meshforge-gateway):
   # In another terminal: subscribe to the MQTT bridge topic
   mosquitto_sub -h 127.0.0.1 -t 'msh/US/2/json/meshforge/#' -v
 
-  # Then run this script
-  python3 scripts/test_r2m_validation.py 0123456789abcdef0123456789abcdef
+  # Then run this script (substitute your gateway's LXMF source hash;
+  # find it via: journalctl -u meshforge-gateway | grep 'Gateway LXMF destination')
+  python3 scripts/test_r2m_validation.py "$MESHFORGE_GATEWAY_HASH"
 
 Pass/fail criteria:
   - Script exits 0 if LXMF dispatch reports DELIVERED within 30s

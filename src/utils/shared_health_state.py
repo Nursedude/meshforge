@@ -160,7 +160,7 @@ class SharedHealthState:
     HISTORY_RETENTION_DAYS = 7
 
     # Hourly auto-purge cadence — purge_old_data was manual-only before;
-    # mirrors the fleet-host-2026-04-26 closure for messages.db /
+    # mirrors the 2026-04-26 fleet closure for messages.db /
     # diagnostic_history.db / node_history.db.
     PURGE_INTERVAL_SECONDS = 3600
 
@@ -196,8 +196,8 @@ class SharedHealthState:
         """Get thread-local database connection.
 
         Tuned via utils.db_helpers.connect_tuned (WAL + sync=NORMAL +
-        64MB journal_size_limit). Phase 1 follow-up to the fleet-host
-        2026-04-26 wedge — this DB had WAL+sync but no size cap, and
+        64MB journal_size_limit). Phase 1 follow-up to the 2026-04-26
+        fleet wedge — this DB had WAL+sync but no size cap, and
         purge_old_data was manual-only."""
         if not hasattr(self._local, 'conn') or self._local.conn is None:
             self._local.conn = connect_tuned(

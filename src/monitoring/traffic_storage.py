@@ -106,7 +106,7 @@ class TrafficCapture:
         """Get database connection with context management.
 
         Tuned via utils.db_helpers.connect_tuned (WAL + sync=NORMAL +
-        64MB journal cap). Phase 1 of post-fleet-host-2026-04-26 closure."""
+        64MB journal cap). Phase 1 of post-2026-04-26 fleet closure."""
         conn = connect_tuned(self._db_path)
         conn.row_factory = sqlite3.Row
         try:
@@ -829,7 +829,7 @@ class PacketArchive:
         """Get database connection with context management.
 
         Tuned via utils.db_helpers.connect_tuned (WAL + sync=NORMAL +
-        64MB journal cap). Phase 1 of post-fleet-host-2026-04-26 closure."""
+        64MB journal cap). Phase 1 of post-2026-04-26 fleet closure."""
         conn = connect_tuned(self._db_path)
         conn.row_factory = sqlite3.Row
         try:

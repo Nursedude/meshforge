@@ -428,7 +428,7 @@ class DiagnosticEngine:
         """Get persistent SQLite connection (creates if needed).
 
         Tuned via utils.db_helpers.connect_tuned (WAL + sync=NORMAL +
-        64MB journal cap). Phase 1 of post-fleet-host-2026-04-26 closure.
+        64MB journal cap). Phase 1 of post-2026-04-26 fleet closure.
         All access is serialized via _db_lock.
         """
         if self._db_conn is None:

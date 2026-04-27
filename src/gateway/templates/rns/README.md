@@ -38,7 +38,7 @@ Copy to your config location and edit as needed.
 | Template | Use Case |
 |----------|----------|
 | `regional_server.conf` | Primary gateway with TCP server + RNode |
-| `regional_client.conf` | Node connecting to Regional server |
+| `regional_client.conf` | Node connecting to a regional gateway server |
 | `basic_rnode.conf` | Simple RNode-only setup |
 | `meshtastic_bridge.conf` | Bridge between RNS and Meshtastic |
 
@@ -165,7 +165,7 @@ Connection options: `port` (USB serial), `ble_port` (Bluetooth LE), `tcp_port` (
 | 2 | 906.125 | |
 | 6 | 915.125 | |
 | 8 | 919.625 | |
-| 12 | 903.625 | Regional |
+| 12 | 903.625 | Regional/custom |
 
 ## Modulation Presets
 

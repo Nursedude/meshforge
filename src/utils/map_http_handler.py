@@ -643,7 +643,7 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
         """Read the LOCAL Meshtastic HAT's LoRa config via meshtasticd HTTP /json/report.
 
         Surfaced in /api/status so operators can diff two fleet boxes on incompatible
-        presets (e.g. fleet-host-3 on SHORT_TURBO vs fleet-host on LongFast) without SSHing to
+        presets (e.g. one on SHORT_TURBO vs another on LongFast) without SSHing to
         each to query meshtasticd — they legitimately can't hear each other over RF.
 
         Returns a dict with frequency_hz / lora_channel / region / modem_preset

@@ -29,7 +29,11 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-DEFAULT_MESHCHAT_PATH = Path("/home/<user>/reticulum-meshchat/meshchat.py")
+# scripts/patches/ → repo root → src/utils/paths.py
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from utils.paths import get_real_user_home  # noqa: E402
+
+DEFAULT_MESHCHAT_PATH = get_real_user_home() / "reticulum-meshchat" / "meshchat.py"
 
 # Pattern: datetime.strptime(some_obj.some_field, "format_string")
 # Captures: (indent)(varname) = datetime.strptime((obj.field), (format))

@@ -2,20 +2,24 @@
 """Send an LXMF message to a gateway's LXMF destination for RNS→Mesh validation.
 
 Purpose: close the Issue #40 acceptance leg that otherwise requires an operator
-at the NomadNet TUI. Runs from any fleet box as ``wh6gxz``, connects to the
-local rnsd as a shared-instance client (using Issue #41's pinned rpc_key if
+at the NomadNet TUI. Runs from any fleet box as the operator user, connects to
+the local rnsd as a shared-instance client (using Issue #41's pinned rpc_key if
 present), sends an LXMF text message to the target destination hash, and waits
 for delivery confirmation. The gateway then bridges to Meshtastic — verify by
 tailing ``journalctl -u meshforge-gateway`` on the gateway host for a matching
 ``Message bridged`` line.
 
+The target gateway hash is your gateway's LXMF source hash. Find it via:
+    journalctl -u meshforge-gateway | grep 'Gateway LXMF destination'
+Or set ``MESHFORGE_GATEWAY_HASH`` in the environment to skip ``--to``.
+
 Usage:
-    # Send to fleet-host-3's gateway LXMF source hash, default text
-    python3 scripts/validate_rns_to_mesh.py --to 0123456789abcdef0123456789abcdef
+    # Default text, hash from $MESHFORGE_GATEWAY_HASH or --to
+    python3 scripts/validate_rns_to_mesh.py --to <gateway_lxmf_hash>
 
     # Custom text + longer path-request window + delivery wait
     python3 scripts/validate_rns_to_mesh.py \\
-        --to 0123456789abcdef0123456789abcdef \\
+        --to <gateway_lxmf_hash> \\
         --text "@!ffffffff ping from validator" \\
         --path-timeout 10 --delivery-timeout 20
 
@@ -108,8 +112,9 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--to",
-        required=True,
-        help="Target LXMF destination hash (32 hex chars / 16 bytes)",
+        default=os.environ.get("MESHFORGE_GATEWAY_HASH"),
+        help="Target LXMF destination hash (32 hex chars / 16 bytes). "
+             "Defaults to $MESHFORGE_GATEWAY_HASH if set.",
     )
     parser.add_argument(
         "--text",
@@ -140,6 +145,15 @@ def main(argv=None) -> int:
              "(default ~/.config/meshforge/lxmf_validator_identity)",
     )
     args = parser.parse_args(argv)
+
+    if not args.to:
+        print(
+            "error: --to is required (or set $MESHFORGE_GATEWAY_HASH). "
+            "Find your gateway hash via: "
+            "journalctl -u meshforge-gateway | grep 'Gateway LXMF destination'",
+            file=sys.stderr,
+        )
+        return 2
 
     target_hex = args.to.strip().lower()
     try:

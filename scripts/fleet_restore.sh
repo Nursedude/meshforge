@@ -15,10 +15,10 @@
 #
 # Usage:
 #   # From local archive (SCP'd from another Pi):
-#   sudo bash fleet_restore.sh /path/to/fleet-host-20260416-120000.tar.gz
+#   sudo bash fleet_restore.sh /path/to/<hostname>-<timestamp>.tar.gz
 #
 #   # Pull latest backup from a peer Pi:
-#   sudo bash fleet_restore.sh --pull-from 192.0.2.38 --hostname fleet-host
+#   sudo bash fleet_restore.sh --pull-from <peer_ip> --hostname <hostname>
 #
 #   # Dry run (show what would be restored):
 #   sudo bash fleet_restore.sh backup.tar.gz --dry-run
@@ -44,7 +44,9 @@ PULL_FROM=""
 RESTORE_HOSTNAME=""
 SET_HOSTNAME=""
 NO_CONFIRM=false
-TARGET_USER="wh6gxz"
+# Default target user: $MESHFORGE_TARGET_USER, then $SUDO_USER, then current user.
+# Override with --user.
+TARGET_USER="${MESHFORGE_TARGET_USER:-${SUDO_USER:-${USER:-pi}}}"
 
 # ─────────────────────────────────────────────────────────────────
 # Parse arguments
@@ -63,7 +65,7 @@ show_help() {
     echo "  --hostname NAME    Hostname to restore (required with --pull-from)"
     echo "  --set-hostname     Set this Pi's hostname from the backup"
     echo "  --branch BRANCH    MeshForge branch to install (default: main)"
-    echo "  --user USER        Target user account (default: wh6gxz)"
+    echo "  --user USER        Target user account (default: \$MESHFORGE_TARGET_USER, \$SUDO_USER, or \$USER)"
     echo "  --dry-run          Show what would be restored without doing it"
     echo "  --no-confirm, -y   Skip confirmation prompt"
     echo "  --help, -h         Show this help"

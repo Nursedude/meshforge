@@ -672,7 +672,7 @@ class NomadNetServiceOpsMixin:
 
         Fails closed at each prerequisite so we never produce a unit
         that references a path that doesn't exist (the Issue #45 +
-        follow-up regression on fleet-host).
+        follow-up regression seen on a fleet box).
         """
         if not _UNIT_TEMPLATE.exists():
             self.ctx.dialog.msgbox(

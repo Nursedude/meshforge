@@ -5,8 +5,8 @@
 #
 # A box without one of the repos still updates the other (skip-if-absent).
 # Without this, /opt/meshforge-maps drifts on boxes where it isn't manually
-# pulled — observed Apr 24 2026 on fleet-host, where a 14 GB sqlite WAL
-# accumulated because the WAL-cap fix shipped Apr 20 had never landed.
+# pulled — a real-world incident left a 14 GB sqlite WAL on an unsynced box
+# because a WAL-cap fix had never landed there.
 #
 # Reads a host list from the first file found:
 #   $MESHFORGE_FLEET_HOSTS (if set)
@@ -15,11 +15,11 @@
 #
 # Host list format:
 #   # comments and blank lines are ignored
-#   fleet-host-1
-#   fleet-host-2
-#   wh6gxz@fleet-host
+#   pi-node-1
+#   pi-node-2
+#   operator@gateway-host
 #   # jump-host syntax is supported via ~/.ssh/config
-#   moc.via-volcano
+#   inner-host.via-bastion
 #
 # Per-host: verify each present repo + branch, git pull --ff-only, restart
 # the matching unit if installed, print one summary line per repo. A repo

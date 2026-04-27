@@ -12,8 +12,8 @@ Usage:
 
     msg = TacticalMessage(
         tactical_type=TacticalType.CHECKIN,
-        sender_id="WH6GXZ",
-        content=CheckIn(callsign="WH6GXZ", status="ok").to_dict(),
+        sender_id="N0CALL",
+        content=CheckIn(callsign="N0CALL", status="ok").to_dict(),
     )
 """
 

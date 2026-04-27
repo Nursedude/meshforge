@@ -77,8 +77,8 @@ class AnalyticsStore:
     def _connect(self) -> sqlite3.Connection:
         """Tuned SQLite connection (WAL + sync=NORMAL + 64MB journal cap).
 
-        See utils.db_helpers.connect_tuned. Phase 1 of post-fleet-host
-        DB-bloat closure (2026-04-26)."""
+        See utils.db_helpers.connect_tuned. Phase 1 of post-2026-04-26
+        fleet DB-bloat closure."""
         return connect_tuned(self.db_path)
 
     def _init_db(self):

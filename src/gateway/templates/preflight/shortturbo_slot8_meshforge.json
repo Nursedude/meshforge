@@ -2,9 +2,9 @@
   "$schema_version": 1,
   "name": "shortturbo-slot8-meshforge-bridge",
   "description": "MeshForge NOC bridge: Meshtastic HAT on US/SHORT_TURBO/channel_num=8 ↔ MeshForge Gateway (mqtt_bridge mode, 'meshforge' channel) ↔ RNS/NomadNet. First validated end-to-end on 2026-04-18 (see persistent_issues.md Issue #33).",
-  "maintainer": "WH6GXZ",
+  "maintainer": "MeshForge",
   "validated_date": "2026-04-18",
-  "validated_on": "meshforge-fleet-host-3",
+  "validated_on": "meshforge-reference-fleet",
   "region_compliance": "US (FCC ISM 902-928 MHz)",
 
   "meshtastic": {

@@ -54,7 +54,7 @@ class RNSAlignmentState:
     hostname: str
     # rnsd unit
     rnsd_active: bool = False
-    rnsd_user: Optional[str] = None  # "root", "wh6gxz", etc.
+    rnsd_user: Optional[str] = None  # e.g. "root", "<operator>"
     rnsd_exec_start: Optional[str] = None
     rnsd_configdir: Optional[Path] = None  # what configdir rnsd is *actually* using
     # config files at known locations
@@ -350,9 +350,15 @@ def analyze_drift(state: RNSAlignmentState) -> List[str]:
     if state.user_home_config and state.user_home_config.exists:
         owner = state.user_home_config.owner or ''
         if owner.startswith('root:'):
+            # Derive the expected owner from the path: /home/<user>/.reticulum/...
+            path_parts = state.user_home_config.path.parts
+            home_user = (
+                path_parts[2] if len(path_parts) >= 3 and path_parts[1] == 'home'
+                else '<user>'
+            )
             reasons.append(
                 f"{state.user_home_config.path} is owned by {owner} — "
-                f"should be user-owned (chown wh6gxz:wh6gxz)"
+                f"should be user-owned (chown {home_user}:{home_user})"
             )
 
     return reasons

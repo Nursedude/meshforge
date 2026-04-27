@@ -12,7 +12,7 @@ Usage:
         name="Regional RNS",
         port=4242,
         rnode_port="/dev/ttyACM0",
-        frequency=903625000
+        frequency=906125000
     )
     gen.write_config(config, "~/.reticulum/config")
 """
@@ -44,7 +44,7 @@ US_FREQUENCY_SLOTS = {
     10: 924_125_000,
     11: 926_375_000,
     # Extended slots
-    12: 903_625_000,  # Regional frequency
+    12: 903_625_000,  # Regional/custom frequency
     13: 905_875_000,
     14: 907_125_000,
 }
@@ -331,7 +331,6 @@ class RNSConfigGenerator:
         Generate RNS server configuration.
 
         This is for the primary gateway that other nodes connect to.
-        Example: Regional RNS server on RPi-A.
         """
         config = RNSConfig(
             enable_transport=True,
@@ -374,7 +373,6 @@ class RNSConfigGenerator:
         Generate RNS client configuration.
 
         This is for nodes that connect to a gateway server.
-        Example: wh6gxzpi3 connecting to Regional.
         """
         config = RNSConfig(
             enable_transport=False,  # Client doesn't need transport
@@ -403,40 +401,6 @@ class RNSConfigGenerator:
             )
 
         return config
-
-    def generate_regional_server(self) -> RNSConfig:
-        """
-        Generate Regional server configuration.
-
-        Based on RPi-A (RNSmeshgate) setup from user notes.
-        """
-        return self.generate_server_config(
-            name="Regional RNS",
-            port=4242,
-            rnode_port="/dev/ttyACM0",
-            frequency=903_625_000,
-            txpower=22,
-            modulation="long_fast"
-        )
-
-    def generate_regional_client(
-        self,
-        server_ip: str = "192.0.2.38"
-    ) -> RNSConfig:
-        """
-        Generate Regional client configuration.
-
-        Based on RPi-B (wh6gxzpi3) setup from user notes.
-        """
-        return self.generate_client_config(
-            server_name="Regional RNS",
-            server_host=server_ip,
-            server_port=4242,
-            rnode_port="/dev/ttyACM0",
-            frequency=903_625_000,
-            txpower=22,
-            modulation="long_fast"
-        )
 
     def write_config(
         self,

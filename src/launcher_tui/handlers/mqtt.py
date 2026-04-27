@@ -1072,7 +1072,7 @@ class MQTTHandler(BaseHandler):
             "Channel Name",
             "Meshtastic channel to subscribe to:\n\n"
             "  LongFast   = Default Meshtastic channel\n"
-            "  Regional  = Regional channel\n"
+            "  <regional> = Your regional/community channel name\n"
             "  meshforge  = Private MeshForge channel\n\n"
             "Must match your radio's channel configuration.",
             init=config.get('channel', 'LongFast')
