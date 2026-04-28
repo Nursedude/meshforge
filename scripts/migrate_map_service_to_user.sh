@@ -289,19 +289,34 @@ if ! curl -fs --max-time 5 http://localhost:5000/api/status >/dev/null 2>&1; the
 fi
 
 ACTIVE_USER="$(systemctl show meshforge-map.service -p User --value)"
-DB_PATH="$(curl -s --max-time 5 http://localhost:5000/api/status | python3 -c 'import sys,json; print(json.load(sys.stdin).get("history",{}).get("db_path",""))' 2>/dev/null)"
-
-ok "systemd User=:           $ACTIVE_USER"
-ok "Service db_path:         $DB_PATH"
+MAIN_PID="$(systemctl show meshforge-map.service -p MainPID --value)"
+PROC_USER=""
+if [[ -n "$MAIN_PID" && "$MAIN_PID" != "0" ]]; then
+    PROC_USER="$(ps -o user= -p "$MAIN_PID" 2>/dev/null | tr -d ' ' || echo)"
+fi
 
 EXPECTED_DB="$OP_HOME/.local/share/meshforge/node_history.db"
-if [[ "$DB_PATH" != "$EXPECTED_DB" ]]; then
-    warn "db_path mismatch: got '$DB_PATH', expected '$EXPECTED_DB'"
-    warn "Service may have started before file system propagated; restart and re-check."
-    exit 3
+# /api/status doesn't expose db_path directly, but the running service's
+# open files reveal which sqlite file it's writing. lsof needs root.
+OPEN_DB=""
+if [[ -n "$MAIN_PID" && "$MAIN_PID" != "0" ]]; then
+    OPEN_DB="$(lsof -p "$MAIN_PID" 2>/dev/null | awk '/node_history\.db/ && !/-wal|-shm|\.bak\./ {print $NF; exit}')"
 fi
+
+ok "systemd User=:           $ACTIVE_USER"
+ok "MainPID running as:      ${PROC_USER:-?}"
+ok "Open SQLite file:        ${OPEN_DB:-(not yet opened — service may be cold-starting)}"
+
 if [[ "$ACTIVE_USER" != "$OP_USER" ]]; then
     die "systemd User=$ACTIVE_USER, expected $OP_USER"
+fi
+if [[ -n "$PROC_USER" && "$PROC_USER" != "$OP_USER" ]]; then
+    die "Process owner is $PROC_USER, expected $OP_USER"
+fi
+if [[ -n "$OPEN_DB" && "$OPEN_DB" != "$EXPECTED_DB" ]]; then
+    warn "Service has $OPEN_DB open, expected $EXPECTED_DB"
+    warn "DB drift would mean WAL writes go to the wrong place — investigate."
+    exit 3
 fi
 
 if [[ -n "$BACKUP_UNIT" ]]; then
