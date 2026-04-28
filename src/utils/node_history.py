@@ -35,8 +35,10 @@ from utils.paths import get_real_user_home
 logger = logging.getLogger(__name__)
 
 
-# Default retention: 7 days
-DEFAULT_RETENTION_SECONDS = 7 * 24 * 3600
+# Observation-stream retention: 48h. The `nodes` directory takes over the
+# "did we ever hear this node" question, so observations only need to support
+# trajectory + playback windows. Cut from 7d on 2026-04-28 (Issue #49).
+DEFAULT_RETENTION_SECONDS = 48 * 3600
 
 # Minimum interval between recording the same node (avoid flooding)
 MIN_RECORD_INTERVAL = 60  # 1 minute
@@ -52,6 +54,53 @@ DEFAULT_HEARTBEAT_SECONDS = 3600
 # Lat/lon comparison precision (decimal degrees). 6 dp ≈ 11 cm — anything
 # tighter is GPS noise, anything looser smears co-sited repeaters into one.
 _LAT_LON_PRECISION = 6
+
+# Directory-table tiered retention (Issue #49). External-bulk sources
+# (MeshCore-public global directory, AREDN worldmap CSV, regional MQTT)
+# can flood the table with tens of thousands of rows; locally-RX'd sources
+# (own radios, RNS path table) are bounded by what's actually heard.
+DEFAULT_DIRECTORY_RETENTION_LOCAL = 30 * 24 * 3600     # 30 days
+DEFAULT_DIRECTORY_RETENTION_EXTERNAL = 7 * 24 * 3600   # 7 days
+DEFAULT_DIRECTORY_MAX_ROWS = 50_000                    # hard cap, LRU evict
+
+# source_origin tags. The writer derives these from the feature properties;
+# the prune query filters on them. Single source of truth so prune SQL and
+# tagging logic can't drift.
+EXTERNAL_BULK_ORIGINS = frozenset({
+    "meshcore_public",   # https://map.meshcore.dev — 40k global
+    "aredn_worldmap",    # AREDN worldmap CSV — global
+    "mqtt_global",       # MQTT region-wide aggregator (firehose)
+})
+
+# Sticky promotion priority — higher number wins on UPSERT collision.
+# A node first seen via meshcore_public stays in the 7d tier until the
+# local radio actually hears it (origin promotes to local_radio, tier
+# becomes 30d). Reverse demotion does NOT happen.
+_ORIGIN_PRIORITY: Dict[str, int] = {
+    "local_radio": 100,
+    "rns_path_table": 90,
+    "aredn_local": 80,
+    "mqtt_local": 70,
+    "node_tracker": 60,    # local cache replay
+    "meshcore_public": 30,
+    "aredn_worldmap": 30,
+    "mqtt_global": 30,
+    "public_fallback": 20,
+    "operator_positions": 50,  # operator-overridden coords
+    "":  0,
+    None: 0,
+}
+
+# Hard cap on protocol_meta JSON blob size — prevents a misbehaving source
+# from writing a 1 MB row. 4 KB is generous for any single advert/sysinfo.
+_PROTOCOL_META_MAX_BYTES = 4 * 1024
+
+
+def _origin_priority(origin: Optional[str]) -> int:
+    """Lookup table for source_origin sticky-promotion ordering."""
+    if origin is None:
+        return 0
+    return _ORIGIN_PRIORITY.get(origin, 10)  # unknown origin: low priority
 
 
 @dataclass
@@ -81,16 +130,30 @@ class NodeHistoryDB:
 
     def __init__(self, db_path: Optional[Path] = None,
                  retention_seconds: int = DEFAULT_RETENTION_SECONDS,
-                 heartbeat_seconds: int = DEFAULT_HEARTBEAT_SECONDS):
+                 heartbeat_seconds: int = DEFAULT_HEARTBEAT_SECONDS,
+                 directory_retention_local: int = DEFAULT_DIRECTORY_RETENTION_LOCAL,
+                 directory_retention_external: int = DEFAULT_DIRECTORY_RETENTION_EXTERNAL,
+                 directory_max_rows: int = DEFAULT_DIRECTORY_MAX_ROWS):
         """Initialize node history database.
 
         Args:
             db_path: Path to SQLite database file.
                      Defaults to ~/.local/share/meshforge/node_history.db
-            retention_seconds: How long to keep observations (default 7 days).
+            retention_seconds: How long to keep observations (default 48h).
+                Trajectories rarely matter beyond the last day; the `nodes`
+                directory table answers the "did we ever hear this node"
+                question on a longer horizon.
             heartbeat_seconds: Skip insert when (lat, lon, network) match the
                 last recorded value AND we're inside this window. 0 disables
                 the value-dedup path (legacy time-only throttle).
+            directory_retention_local: Retention for locally-RX'd directory
+                rows (own radios, RNS path table, etc.). Default 30d.
+            directory_retention_external: Retention for external-bulk
+                directory rows (meshcore_public, aredn_worldmap, mqtt_global).
+                Default 7d. Bounds firehose sources independently.
+            directory_max_rows: Hard count cap on the `nodes` directory
+                table. Default 50_000. LRU eviction by last_seen kicks in
+                whenever count exceeds the cap.
         """
         if db_path is None:
             db_path = get_real_user_home() / ".local" / "share" / "meshforge" / "node_history.db"
@@ -99,6 +162,9 @@ class NodeHistoryDB:
         self.db_path = db_path
         self.retention_seconds = retention_seconds
         self._heartbeat_seconds = max(0, heartbeat_seconds)
+        self.directory_retention_local = max(0, directory_retention_local)
+        self.directory_retention_external = max(0, directory_retention_external)
+        self.directory_max_rows = max(0, directory_max_rows)
         self._lock = threading.Lock()
         self._last_recorded: Dict[str, float] = {}  # node_id -> last record time
         # Last (round(lat,6), round(lon,6), network) per node. Pruned in
@@ -158,9 +224,215 @@ class NodeHistoryDB:
                     CREATE INDEX IF NOT EXISTS idx_obs_node_time
                     ON node_observations(node_id, timestamp)
                 """)
+                # Directory table — one row per (network, node_id). Long-retention,
+                # tier-aware (Issue #49). Survives observation-stream eviction so
+                # nodes "stay cached" between long quiet stretches.
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS nodes (
+                        network        TEXT NOT NULL,
+                        node_id        TEXT NOT NULL,
+                        first_seen     REAL NOT NULL,
+                        last_seen      REAL NOT NULL,
+                        last_lat       REAL,
+                        last_lon       REAL,
+                        last_altitude  REAL,
+                        name           TEXT DEFAULT '',
+                        role           TEXT DEFAULT '',
+                        hardware       TEXT DEFAULT '',
+                        source_origin  TEXT DEFAULT '',
+                        protocol_meta  TEXT DEFAULT '',
+                        obs_count      INTEGER DEFAULT 1,
+                        PRIMARY KEY (network, node_id)
+                    )
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_nodes_last_seen
+                    ON nodes(last_seen)
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_nodes_network
+                    ON nodes(network)
+                """)
                 conn.commit()
             finally:
                 conn.close()
+
+    @staticmethod
+    def _build_directory_row(feature: Dict[str, Any], now: float) -> Optional[
+        Tuple[str, str, float, Optional[float], Optional[float],
+              Optional[float], str, str, str, str, str]
+    ]:
+        """Distill one GeoJSON feature into a directory-table row tuple.
+
+        Returns None if the feature lacks (network, node_id) — those are
+        the only required fields. Position is optional so MeshCore adverts
+        and RNS announces still produce a directory row with NULL lat/lon.
+
+        Tuple shape matches the ON CONFLICT UPSERT below:
+          (network, node_id, last_seen, last_lat, last_lon, last_altitude,
+           name, role, hardware, source_origin, protocol_meta_json)
+        """
+        props = feature.get("properties", {}) or {}
+        node_id = props.get("id", "") or ""
+        if not node_id:
+            return None
+        network = props.get("network", "meshtastic") or "meshtastic"
+
+        # Position is optional in the directory.
+        last_lat: Optional[float] = None
+        last_lon: Optional[float] = None
+        last_altitude: Optional[float] = None
+        geom = feature.get("geometry") or {}
+        coords = geom.get("coordinates") if isinstance(geom, dict) else None
+        if coords and len(coords) >= 2:
+            try:
+                last_lon = float(coords[0])
+                last_lat = float(coords[1])
+            except (TypeError, ValueError):
+                last_lon = last_lat = None
+            if len(coords) >= 3:
+                try:
+                    last_altitude = float(coords[2])
+                except (TypeError, ValueError):
+                    last_altitude = None
+
+        # protocol_meta — operator-supplied passthrough. The map collector
+        # may stuff per-protocol enrichment here (MeshCore flags + pubkey,
+        # AREDN sysinfo blob, RNS hops/iface). Cap at 4 KB to keep one
+        # misbehaving source from writing megabyte rows.
+        meta = props.get("protocol_meta")
+        if meta is None:
+            meta_json = ""
+        else:
+            try:
+                meta_json = json.dumps(meta, default=str, separators=(",", ":"))
+            except (TypeError, ValueError):
+                meta_json = ""
+        if len(meta_json.encode("utf-8")) > _PROTOCOL_META_MAX_BYTES:
+            # Drop oversized blobs entirely — preserving a truncated JSON
+            # produces invalid syntax, and the directory row's other
+            # columns already carry the operator-relevant fields.
+            meta_json = ""
+
+        return (
+            network,
+            node_id,
+            now,
+            last_lat,
+            last_lon,
+            last_altitude,
+            props.get("name", "") or "",
+            props.get("role", "") or "",
+            props.get("hardware", "") or "",
+            props.get("source_origin", "") or "",
+            meta_json,
+        )
+
+    def _apply_features_to_directory(self, features: List[Dict[str, Any]],
+                                     now: float) -> int:
+        """UPSERT every feature into the `nodes` directory table.
+
+        Sticky-promotion: source_origin is overwritten only when the
+        incoming origin has equal-or-higher priority. A node first seen
+        via meshcore_public stays in the 7d tier until the local radio
+        actually hears it, at which point the row promotes to local_radio
+        (30d tier).
+
+        Position fields update only when the incoming feature carries a
+        position. A position-less observation (MeshCore advert) doesn't
+        wipe out a previously-recorded GPS fix.
+
+        Returns:
+            Number of rows touched (insert + update). Cheap stat for
+            telemetry; does not affect the function's primary contract.
+        """
+        if not features:
+            return 0
+
+        # Precompute priority per row in Python — simpler than nesting a
+        # CASE WHEN tree in SQL for every known origin. Tuple shape
+        # matches the executemany INSERT below.
+        rows: List[Tuple[Any, ...]] = []
+        for feat in features:
+            built = self._build_directory_row(feat, now)
+            if built is None:
+                continue
+            (network, node_id, last_seen, last_lat, last_lon, last_altitude,
+             name, role, hardware, source_origin, protocol_meta) = built
+            new_priority = _origin_priority(source_origin)
+            rows.append((
+                network, node_id,
+                last_seen,           # first_seen for INSERT
+                last_seen,           # last_seen
+                last_lat, last_lon, last_altitude,
+                name, role, hardware,
+                source_origin, protocol_meta,
+                new_priority,        # used by ON CONFLICT branch
+            ))
+        if not rows:
+            return 0
+
+        # Single batched UPSERT. ON CONFLICT branch:
+        #   - last_seen / position / metadata fields update unconditionally
+        #     (with COALESCE preserving previously-known position when the
+        #     incoming feature lacks one).
+        #   - source_origin updates only when the incoming origin has
+        #     equal-or-higher priority than the row's existing origin.
+        #     We compute the existing priority in SQL via a CASE expression
+        #     over the known origin tags (kept short — unknown origins map
+        #     to 10, the same fallback as _origin_priority()).
+        existing_case = (
+            "CASE nodes.source_origin "
+            "WHEN 'local_radio' THEN 100 "
+            "WHEN 'rns_path_table' THEN 90 "
+            "WHEN 'aredn_local' THEN 80 "
+            "WHEN 'mqtt_local' THEN 70 "
+            "WHEN 'node_tracker' THEN 60 "
+            "WHEN 'operator_positions' THEN 50 "
+            "WHEN 'meshcore_public' THEN 30 "
+            "WHEN 'aredn_worldmap' THEN 30 "
+            "WHEN 'mqtt_global' THEN 30 "
+            "WHEN 'public_fallback' THEN 20 "
+            "WHEN '' THEN 0 "
+            "ELSE 10 END"
+        )
+        sql = f"""
+            INSERT INTO nodes (
+                network, node_id, first_seen, last_seen,
+                last_lat, last_lon, last_altitude,
+                name, role, hardware,
+                source_origin, protocol_meta, obs_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            ON CONFLICT(network, node_id) DO UPDATE SET
+                last_seen = excluded.last_seen,
+                last_lat = COALESCE(excluded.last_lat, nodes.last_lat),
+                last_lon = COALESCE(excluded.last_lon, nodes.last_lon),
+                last_altitude = COALESCE(excluded.last_altitude, nodes.last_altitude),
+                name = CASE WHEN excluded.name != '' THEN excluded.name ELSE nodes.name END,
+                role = CASE WHEN excluded.role != '' THEN excluded.role ELSE nodes.role END,
+                hardware = CASE WHEN excluded.hardware != '' THEN excluded.hardware ELSE nodes.hardware END,
+                source_origin = CASE
+                    WHEN ? >= ({existing_case})
+                    THEN excluded.source_origin
+                    ELSE nodes.source_origin
+                END,
+                protocol_meta = CASE WHEN excluded.protocol_meta != '' THEN excluded.protocol_meta ELSE nodes.protocol_meta END,
+                obs_count = nodes.obs_count + 1
+        """
+
+        touched = 0
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.executemany(sql, rows)
+                conn.commit()
+                touched = len(rows)
+            except sqlite3.Error as e:
+                logger.error(f"Directory UPSERT failed: {e}")
+                touched = 0
+            finally:
+                conn.close()
+        return touched
 
     def record_observations(self, features: List[Dict[str, Any]]) -> int:
         """Record a batch of node observations from GeoJSON features.
@@ -168,13 +440,29 @@ class NodeHistoryDB:
         Skips nodes that were recorded less than MIN_RECORD_INTERVAL ago
         to prevent database flooding from rapid collection cycles.
 
+        Also UPSERTs into the long-retention `nodes` directory table
+        (Issue #49) — every feature contributes one directory row,
+        independent of the observation-stream throttle. Position-less
+        features (MeshCore adverts without GPS, RNS announces) DO write
+        a directory row with NULL lat/lon. The directory survives the
+        observations table's 48h retention and gives the map a stable
+        per-node record across long quiet stretches.
+
         Args:
             features: List of GeoJSON Feature dicts with node properties.
+                Optional `properties.source_origin` selects the retention
+                tier; missing tags fall through to a generic priority.
 
         Returns:
-            Number of observations actually recorded.
+            Number of observations actually recorded into the time-series
+            table. (Directory writes are not counted here — the directory
+            is a separate persistence layer; query get_directory_stats().)
         """
         now = time.time()
+        # Apply directory writes first — even features that fail the
+        # observation throttle still represent "we heard from this node",
+        # and the directory should reflect that.
+        self._apply_features_to_directory(features, now)
         to_insert = []
 
         for feature in features:
@@ -272,7 +560,7 @@ class NodeHistoryDB:
         return inserted
 
     def _maybe_prune(self, now: float) -> None:
-        """Delete observations older than retention if hourly cadence reached.
+        """Delete observations + tier-prune directory if hourly cadence reached.
 
         Called from record_observations on every cycle; the cadence check
         ensures the actual DELETE runs at most once per hour. Skips VACUUM
@@ -280,24 +568,101 @@ class NodeHistoryDB:
         with a many-hundred-MB DB is multi-minute and not necessary for
         correctness; SQLite reuses freed pages on subsequent inserts.
         Operators wanting full reclaim can still call cleanup() explicitly.
+
+        Two retention bands run inside the same prune cycle:
+          1. node_observations — single-tier retention (default 48h),
+             driven by self.retention_seconds.
+          2. nodes (directory) — tiered retention. External-bulk origins
+             prune at directory_retention_external (default 7d); all
+             other origins prune at directory_retention_local (default
+             30d). After time-based prune, count-cap LRU evicts the
+             oldest-last_seen rows until count <= directory_max_rows.
         """
-        if self._prune_interval_seconds <= 0 or self.retention_seconds <= 0:
+        if self._prune_interval_seconds <= 0:
             return
         if now - self._last_prune_ts < self._prune_interval_seconds:
             return
-        cutoff = now - self.retention_seconds
+
+        # Cadence reached — even if individual prune phases are no-ops
+        # (e.g. retention=0), advance the timer so we don't re-enter on
+        # every record_observations call this hour.
+        self._last_prune_ts = now
+
         with self._lock:
             conn = self._connect()
             try:
-                cursor = conn.execute(
-                    "DELETE FROM node_observations WHERE timestamp < ?",
-                    (cutoff,),
-                )
+                # Phase 1 — observation-stream prune.
+                if self.retention_seconds > 0:
+                    cutoff = now - self.retention_seconds
+                    cursor = conn.execute(
+                        "DELETE FROM node_observations WHERE timestamp < ?",
+                        (cutoff,),
+                    )
+                    deleted_obs = cursor.rowcount
+                    if deleted_obs > 0:
+                        logger.info(
+                            f"Node history auto-prune: deleted {deleted_obs} "
+                            f"observation rows older than {self.retention_seconds // 3600}h"
+                        )
+
+                # Phase 2 — directory tiered time prune.
+                external_origins = list(EXTERNAL_BULK_ORIGINS)
+                deleted_dir = 0
+                if self.directory_retention_local > 0 or self.directory_retention_external > 0:
+                    placeholders = ",".join("?" * len(external_origins))
+                    # Single DELETE with two cutoffs by origin tier.
+                    cursor = conn.execute(
+                        f"""
+                        DELETE FROM nodes
+                        WHERE
+                            (source_origin IN ({placeholders})
+                                AND last_seen < ?)
+                            OR
+                            (source_origin NOT IN ({placeholders})
+                                AND last_seen < ?)
+                        """,
+                        [
+                            *external_origins,
+                            now - self.directory_retention_external,
+                            *external_origins,
+                            now - self.directory_retention_local,
+                        ],
+                    )
+                    deleted_dir = cursor.rowcount
+
+                # Phase 3 — count cap LRU. After time prune, if the
+                # directory is still over the hard ceiling, drop the
+                # oldest-last_seen rows. Protects against a configuration
+                # that turns on every external bulk source at once.
+                cap_evicted = 0
+                if self.directory_max_rows > 0:
+                    total = conn.execute(
+                        "SELECT COUNT(*) FROM nodes"
+                    ).fetchone()[0]
+                    if total > self.directory_max_rows:
+                        excess = total - self.directory_max_rows
+                        cursor = conn.execute(
+                            """
+                            DELETE FROM nodes
+                            WHERE rowid IN (
+                                SELECT rowid FROM nodes
+                                ORDER BY last_seen ASC
+                                LIMIT ?
+                            )
+                            """,
+                            (excess,),
+                        )
+                        cap_evicted = cursor.rowcount
+
                 conn.commit()
-                deleted = cursor.rowcount
-                self._last_prune_ts = now
-                if deleted > 0:
-                    logger.info(f"Node history auto-prune: deleted {deleted} rows older than {self.retention_seconds // 86400}d")
+
+                if deleted_dir > 0 or cap_evicted > 0:
+                    logger.info(
+                        f"Node directory auto-prune: deleted {deleted_dir} "
+                        f"by-tier (local>{self.directory_retention_local // 86400}d, "
+                        f"external>{self.directory_retention_external // 86400}d), "
+                        f"evicted {cap_evicted} by count-cap (max={self.directory_max_rows})"
+                    )
             except sqlite3.Error as e:
                 logger.error(f"Auto-prune failed: {e}")
             finally:
@@ -469,6 +834,125 @@ class NodeHistoryDB:
                 }
             finally:
                 conn.close()
+
+    def get_directory_stats(self) -> Dict[str, Any]:
+        """Aggregate stats for the `nodes` directory table.
+
+        Surfaced in /api/status so operators can see the cached node
+        population at a glance: total count, per-network breakdown,
+        per-origin breakdown, and the oldest/newest last_seen
+        timestamps. Cheap aggregate queries — runs on every status poll.
+        """
+        with self._lock:
+            conn = self._connect()
+            conn.row_factory = sqlite3.Row
+            try:
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM nodes"
+                ).fetchone()[0]
+
+                by_network: Dict[str, int] = {}
+                for row in conn.execute(
+                    "SELECT network, COUNT(*) AS n FROM nodes GROUP BY network"
+                ).fetchall():
+                    by_network[row["network"]] = row["n"]
+
+                by_source_origin: Dict[str, int] = {}
+                for row in conn.execute(
+                    "SELECT source_origin, COUNT(*) AS n FROM nodes "
+                    "GROUP BY source_origin"
+                ).fetchall():
+                    by_source_origin[row["source_origin"] or ""] = row["n"]
+
+                with_position = conn.execute(
+                    "SELECT COUNT(*) FROM nodes "
+                    "WHERE last_lat IS NOT NULL AND last_lon IS NOT NULL"
+                ).fetchone()[0]
+
+                time_range = conn.execute(
+                    "SELECT MIN(last_seen), MAX(last_seen) FROM nodes"
+                ).fetchone()
+                oldest = time_range[0]
+                newest = time_range[1]
+
+                return {
+                    "total": total,
+                    "with_position": with_position,
+                    "without_position": total - with_position,
+                    "by_network": by_network,
+                    "by_source_origin": by_source_origin,
+                    "oldest_last_seen": oldest,
+                    "newest_last_seen": newest,
+                    "retention_local_days": self.directory_retention_local // 86400,
+                    "retention_external_days": self.directory_retention_external // 86400,
+                    "max_rows": self.directory_max_rows,
+                }
+            finally:
+                conn.close()
+
+    def get_directory_snapshot(self,
+                               include_position_less: bool = True
+                               ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Read the entire `nodes` directory table.
+
+        Returns a tuple `(features, position_less)` where:
+          - features: GeoJSON Feature dicts for nodes with positions.
+          - position_less: dicts (id/name/network/last_seen/source_origin/...)
+            for nodes without GPS, mirroring the existing
+            `nodes_without_position` shape used elsewhere in /api/status.
+
+        Used by the new GET /api/nodes/directory endpoint. Includes nodes
+        whose last_seen is older than the observation-stream retention
+        — that's the whole point of the directory.
+        """
+        features: List[Dict[str, Any]] = []
+        position_less: List[Dict[str, Any]] = []
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            conn.row_factory = sqlite3.Row
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT network, node_id, first_seen, last_seen,
+                           last_lat, last_lon, last_altitude,
+                           name, role, hardware,
+                           source_origin, protocol_meta, obs_count
+                    FROM nodes
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+        for row in rows:
+            base = {
+                "id": row["node_id"],
+                "network": row["network"],
+                "name": row["name"] or row["node_id"],
+                "role": row["role"] or "",
+                "hardware": row["hardware"] or "",
+                "source_origin": row["source_origin"] or "",
+                "first_seen": row["first_seen"],
+                "last_seen": row["last_seen"],
+                "last_seen_age_s": max(0.0, now - row["last_seen"]) if row["last_seen"] else None,
+                "obs_count": row["obs_count"] or 0,
+            }
+            if row["last_lat"] is not None and row["last_lon"] is not None:
+                feature = {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [
+                            row["last_lon"],
+                            row["last_lat"],
+                            row["last_altitude"] if row["last_altitude"] is not None else 0,
+                        ],
+                    },
+                    "properties": dict(base),
+                }
+                features.append(feature)
+            elif include_position_less:
+                position_less.append(base)
+        return features, position_less
 
     def cleanup(self) -> int:
         """Remove observations older than retention period.

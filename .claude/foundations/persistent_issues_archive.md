@@ -848,3 +848,64 @@ LXMF source hash and the NomadNet conversation path, so operators can navigate t
 thread without filesystem spelunking. See `src/launcher_tui/handlers/gateway.py` → `_show_delivery_audit`.
 
 
+
+
+---
+
+## Issue #40: RNS→Mesh bridge — bytes payload crash + wrong-topic MQTT downlink (2026-04-21)
+
+**Symptom**: Since Issue #33's first-green-end-to-end (2026-04-18), the bridge
+stat was stuck at `R→M: 0` across every gateway restart. Meshtastic clients
+never received messages sent by NomadNet/RNS peers. The broken path was
+simultaneously hiding two independent defects; both had to fall to unblock TX.
+
+**Root cause 1 — `_process_rns_to_mesh()` crashed on bytes LXMF content.**
+LXMF delivers `message.content` as `bytes`. `_on_lxmf_receive` at
+`src/gateway/rns_bridge.py:1191` stored it into `BridgedMessage.content` without
+decoding. Then `_process_rns_to_mesh()` did `body = msg.content or ""` followed
+by str operations (`body.startswith('@')`, `prefix + body`). On any real LXMF
+message this raised `TypeError: can only concatenate str (not "bytes") to str`;
+the `except` branch tried to `_requeue_failed_message()` but that serialized
+bytes to JSON and raised `Object of type bytes is not JSON serializable`. Net
+effect: every RNS-inbound message crashed twice and was dropped without trace
+in the persistent queue.
+
+**Root cause 2 — `publish_to_mqtt()` used an uplink-shaped topic meshtasticd
+never subscribes to.** `src/gateway/mqtt_bridge_handler.py:746–750` published
+to `msh/{REGION}/2/json/{CHANNEL_NAME}/meshforge`. Meshtasticd 2.7.x subscribes
+to `msh/{REGION}/2/json/mqtt/#` — the channel segment is literally the string
+`"mqtt"` (firmware PR #3183 convention), never the actual channel name. The
+daemon's own log confirmed it was dropping our publishes with
+`WARN | [mqtt] JSON downlink received on channel not called 'mqtt' or without
+downlink enabled`. Even with cause #1 fixed, every message queued for MQTT
+downlink would have been silently dropped by the daemon.
+
+**Fix**:
+
+1. **Decode bytes→str at function entry** in both `_process_rns_to_mesh()` and
+   `_requeue_failed_message()`. Handle `bytes`, `str`, and None uniformly with
+   `errors="replace"` to survive non-UTF-8 payloads.
+
+2. **Reroute the MQTT-bridge-mode enqueue from `destination="mqtt"` to
+   `destination="meshtastic"`.** The persistent queue already has a registered
+   handler for `"meshtastic"` (`rns_bridge.py:384`) that dispatches to
+   `MQTTBridgeHandler.queue_send()` → `send_text()` → `send_text_direct()` —
+   the HTTP `/api/v1/toradio` path that is the Issue #29 blessed single-writer
+   TX contract.
+
+3. **`publish_to_mqtt()` is now dead code on the live TX path** and has been
+   left in place for potential future resurrection (a true MQTT-only gateway
+   with no `:9443` / :443 HTTP access).
+
+**Tests added** (`tests/test_rns_bridge.py`):
+`test_bytes_content_is_decoded`, `test_bytes_content_with_at_prefix`,
+`test_invalid_utf8_uses_replacement`, `test_mqtt_bridge_mode_enqueues_to_meshtastic`,
+`test_bytes_content_serializes_as_str`.
+
+**Field-validation note**: Issue #37 manifests on the gateway side
+(divergent rnsd/client identity → divergent rpc_key → AuthenticationError
+in `__update_phy_stats()` → `get_packet_rssi()` RPC). Closed by Issue #41.
+
+**Prevention**:
+- Never regress the LXMF bytes assumption — `test_bytes_content_is_decoded`.
+- Never regress away from the HTTP TX path — `test_mqtt_bridge_mode_enqueues_to_meshtastic`.

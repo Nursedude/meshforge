@@ -60,8 +60,12 @@ INVENTORY: List[DBSpec] = [
         path_factory=lambda: _meshforge_data_dir() / "node_history.db",
         creator_module="utils.node_history",
         has_auto_prune=True,
-        retention_days=7,
-        notes="Per-node trajectory observations. Hourly auto-prune.",
+        retention_days=2,  # observations 48h; directory tier is 30d/7d separately
+        notes=(
+            "Two tables: node_observations (time-series, 48h retention) "
+            "and nodes (directory, tiered: 30d local / 7d external, "
+            "50k row cap). Hourly auto-prune."
+        ),
     ),
     DBSpec(
         name="messages",

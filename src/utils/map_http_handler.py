@@ -11,6 +11,9 @@ Endpoints:
 - GET /api/settings      -> current map settings (selected_region)
 - POST /api/settings     -> save map settings (selected_region)
 - GET /api/nodes/history  -> node history stats + unique nodes (24h)
+- GET /api/nodes/directory -> persistent node directory (Issue #49) — every
+                              cached node across protocols, including those
+                              older than the observations retention window
 - GET /api/nodes/trajectory/<id> -> trajectory GeoJSON for a node
 - GET /api/nodes/snapshot -> historical network snapshot for playback
 - GET /api/messages/queue -> pending OUTBOUND messages from gateway queue
@@ -234,6 +237,7 @@ class MapRequestHandler(
         if path_only in (
             "", "/index.html", "/healthz", "/metrics",
             "/api/status", "/api/nodes/geojson", "/api/nodes/history",
+            "/api/nodes/directory",
             "/api/messages/queue", "/api/messages/rx-status",
             "/api/network/topology", "/api/region-presets",
             "/api/settings", "/api/websocket/status", "/api/weather",
@@ -297,6 +301,8 @@ class MapRequestHandler(
             self._serve_settings()
         elif path_only == '/api/status':
             self._serve_status()
+        elif path_only == '/api/nodes/directory':
+            self._serve_directory()
         elif path_only == '/api/nodes/history':
             self._serve_history_stats()
         elif self.path.startswith('/api/nodes/trajectory/'):
@@ -678,6 +684,17 @@ class MapRequestHandler(
             except Exception:
                 status["history"] = None
 
+            # Directory stats (Issue #49) — persistent per-node cache
+            # across protocols, with tiered retention. Surfaces total
+            # count, by-network, by-source-origin, last-seen range so
+            # operators can see at a glance how many MeshCore/AREDN/RNS
+            # nodes are cached and which retention tier they fall into.
+            try:
+                status["directory"] = self.collector._history.get_directory_stats()
+            except Exception as e:
+                logger.debug(f"directory stats lookup failed: {e}")
+                status["directory"] = None
+
         # Per-source collection diagnostics from the most recent collect() call.
         # Operators use this to answer "why is source X empty" without a code reader.
         if self.collector:
@@ -798,6 +815,64 @@ class MapRequestHandler(
             "nodes": history.get_unique_nodes(hours=24),
         }
         self._serve_json(result)
+
+    def _serve_directory(self):
+        """Serve the persistent node directory as a GeoJSON FeatureCollection.
+
+        Returns every node ever heard (within tier retention) — superset
+        of `/api/nodes/geojson`, which only covers what the latest
+        collect cycle saw. Position-less nodes (MeshCore adverts without
+        GPS, RNS announces) surface in the sibling `nodes_without_position`
+        array, mirroring the convention from Issue #43.
+
+        Reuses the gzip + JSON helper used by /api/nodes/geojson — same
+        threshold (10 KB) applies. With ~50k nodes at the count cap, the
+        directory dump is ~5 MB raw / ~700 KB gzipped.
+        """
+        if not self.collector or not self.collector._history:
+            self._serve_json({
+                "type": "FeatureCollection",
+                "features": [],
+                "properties": {"error": "history not available"},
+                "nodes_without_position": [],
+            })
+            return
+
+        try:
+            features, position_less = (
+                self.collector._history.get_directory_snapshot(
+                    include_position_less=True
+                )
+            )
+        except Exception as e:
+            logger.error(f"directory snapshot failed: {e}")
+            self._serve_json({
+                "type": "FeatureCollection",
+                "features": [],
+                "properties": {"error": str(e)[:200]},
+                "nodes_without_position": [],
+            }, status=500)
+            return
+
+        # Per-network breakdown alongside the full list — same shape
+        # /api/status uses, so dashboards can consume either.
+        by_network: Dict[str, int] = {}
+        for entry in position_less:
+            net = entry.get("network", "unknown")
+            by_network[net] = by_network.get(net, 0) + 1
+
+        body = {
+            "type": "FeatureCollection",
+            "features": features,
+            "properties": {
+                "generated_at": datetime.now().isoformat(),
+                "total_features": len(features),
+                "total_position_less": len(position_less),
+            },
+            "nodes_without_position": position_less,
+            "nodes_without_position_by_network": by_network,
+        }
+        self._serve_json(body)
 
     def _serve_trajectory(self, node_id: str):
         """Serve trajectory GeoJSON for a specific node."""

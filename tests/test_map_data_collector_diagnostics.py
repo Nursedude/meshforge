@@ -20,6 +20,43 @@ def collector(tmp_path):
     return MapDataCollector(cache_dir=tmp_path, enable_history=False)
 
 
+class TestSourceOriginTagging:
+    """Issue #49 — directory tier retention is driven by source_origin
+    set on each feature. _tag_source_origin stamps it post-collect."""
+
+    def test_tags_unstamped_features(self, collector):
+        feats = [
+            {"properties": {"id": "!a"}},
+            {"properties": {"id": "!b"}},
+        ]
+        out = collector._tag_source_origin(feats, "local_radio")
+        assert out is feats  # in-place modification
+        assert all(
+            f["properties"]["source_origin"] == "local_radio" for f in feats
+        )
+
+    def test_does_not_overwrite_existing_origin(self, collector):
+        # Higher-trust source already tagged this feature earlier in the
+        # collect cycle; later tagger must NOT overwrite (sticky).
+        feats = [
+            {"properties": {"id": "!a", "source_origin": "local_radio"}},
+            {"properties": {"id": "!b"}},
+        ]
+        collector._tag_source_origin(feats, "meshcore_public")
+        assert feats[0]["properties"]["source_origin"] == "local_radio"
+        assert feats[1]["properties"]["source_origin"] == "meshcore_public"
+
+    def test_skips_malformed_features(self, collector):
+        feats = [
+            {"properties": "not_a_dict"},   # broken — must not crash
+            {"no_properties_key": True},
+            {"properties": {"id": "!ok"}},
+        ]
+        # Must not raise.
+        collector._tag_source_origin(feats, "rns_path_table")
+        assert feats[2]["properties"]["source_origin"] == "rns_path_table"
+
+
 class TestRecordDiagnostic:
     def test_ok_when_yielded(self, collector):
         collector._record_diagnostic("mqtt", attempted=5, yielded=3)
