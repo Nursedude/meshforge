@@ -1,0 +1,22 @@
+# Grafana dashboard provider — Phase E of the map-domain audit arc.
+#
+# Tells grafana-server to load any *.json dashboards from
+# /etc/grafana/provisioning/dashboards/meshforge/ at startup.
+# install_grafana.sh copies the dashboards out of the repo template
+# dir into that path during deploy.
+
+apiVersion: 1
+
+providers:
+  - name: meshforge
+    folder: MeshForge NOC
+    type: file
+    disableDeletion: false
+    # Update interval — re-scan for dashboard JSON changes on disk.
+    # 60s is enough; operators usually edit via UI (which writes back
+    # to the JSON when allowUiUpdates is true).
+    updateIntervalSeconds: 60
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/meshforge
+      foldersFromFilesStructure: false

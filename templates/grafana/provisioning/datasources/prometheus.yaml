@@ -1,0 +1,27 @@
+# Grafana datasource provisioning — Prometheus on moc1.
+#
+# This file is read by grafana-server at startup (Phase E of the
+# map-domain audit arc). Co-located with Prometheus on moc1; the
+# default URL points at localhost:9090.
+#
+# Re-deploys are idempotent: the `name` field is the unique key, and
+# `editable: true` lets operators tune query timeouts in the UI
+# without those edits being lost on restart.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://localhost:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      # 30s scrape interval (Phase D-4 default) → 30s default step
+      # for queries; Grafana auto-bumps for wider time ranges.
+      timeInterval: "30s"
+      # Generous query timeout — moc1 Pi 5 4GB can answer most
+      # queries in <1s, but a wide range across all-fleet labels
+      # can spike to several seconds.
+      queryTimeout: "60s"
