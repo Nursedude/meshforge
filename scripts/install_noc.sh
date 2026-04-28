@@ -98,6 +98,23 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
+# Resolve operator login for systemd User= placeholders.
+# Refuses root and users not in /etc/passwd — loud-fail rather than
+# silently install a unit that drifts from the TUI's $SUDO_USER home.
+resolve_operator_user() {
+    local u="${SUDO_USER:-$USER}"
+    if [[ -z "$u" || "$u" == "root" ]]; then
+        echo -e "${RED}✗ Cannot resolve operator user (SUDO_USER='$SUDO_USER' USER='$USER')${NC}" >&2
+        echo -e "${YELLOW}  Run via: sudo bash scripts/install_noc.sh${NC}" >&2
+        exit 1
+    fi
+    if ! getent passwd "$u" >/dev/null 2>&1; then
+        echo -e "${RED}✗ User '$u' not in /etc/passwd${NC}" >&2
+        exit 1
+    fi
+    echo "$u"
+}
+
 # ─────────────────────────────────────────────────────────────────
 # Radio Type Detection Functions
 # ─────────────────────────────────────────────────────────────────
@@ -1656,12 +1673,18 @@ MAP_CMD
 chmod +x /usr/local/bin/meshforge-map
 
 # Install MeshForge Map Server systemd service
+# Map server runs as the operator (not root) so it reads/writes
+# ~/.config/meshforge/map_settings.json + ~/.local/share/meshforge/node_history.db
+# — same paths the TUI (sudo, $SUDO_USER) uses, eliminating drift.
+MESHFORGE_MAP_USER="$(resolve_operator_user)"
 if [[ -f "$INSTALL_DIR/scripts/meshforge-map.service" ]]; then
-    cp "$INSTALL_DIR/scripts/meshforge-map.service" /etc/systemd/system/
-    echo -e "  ${GREEN}✓ meshforge-map.service installed${NC}"
+    sed "s/__MESHFORGE_USER__/${MESHFORGE_MAP_USER}/g" \
+        "$INSTALL_DIR/scripts/meshforge-map.service" \
+        > /etc/systemd/system/meshforge-map.service
+    echo -e "  ${GREEN}✓ meshforge-map.service installed (User=${MESHFORGE_MAP_USER})${NC}"
 else
-    # Inline service definition (fallback)
-    cat > /etc/systemd/system/meshforge-map.service << 'MAP_SERVICE'
+    # Inline service definition (fallback) — heredoc unquoted so $MESHFORGE_MAP_USER expands
+    cat > /etc/systemd/system/meshforge-map.service << MAP_SERVICE
 [Unit]
 Description=MeshForge Map Server - NOC Web Interface
 Documentation=https://github.com/Nursedude/meshforge
@@ -1670,11 +1693,11 @@ Wants=meshtasticd.service
 
 [Service]
 Type=simple
-User=root
+User=${MESHFORGE_MAP_USER}
 WorkingDirectory=/opt/meshforge/src
 RuntimeDirectory=meshforge
 ExecStart=/bin/bash -c 'if [ -x /opt/meshforge/venv/bin/python ]; then exec /opt/meshforge/venv/bin/python -m utils.map_data_service --daemon --host 0.0.0.0 --port 5000; else exec python3 -m utils.map_data_service --daemon --host 0.0.0.0 --port 5000; fi'
-ExecStop=/bin/kill -TERM $MAINPID
+ExecStop=/bin/kill -TERM \$MAINPID
 TimeoutStopSec=10
 Restart=on-failure
 RestartSec=5
@@ -1686,7 +1709,7 @@ SyslogIdentifier=meshforge-map
 [Install]
 WantedBy=multi-user.target
 MAP_SERVICE
-    echo -e "  ${GREEN}✓ meshforge-map.service created${NC}"
+    echo -e "  ${GREEN}✓ meshforge-map.service created (User=${MESHFORGE_MAP_USER})${NC}"
 fi
 
 # Update systemd service to use orchestrator

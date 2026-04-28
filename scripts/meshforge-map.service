@@ -10,7 +10,11 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
-User=root
+# __MESHFORGE_USER__ is substituted at install time by install_noc.sh
+# or migrate_map_service_to_user.sh. Falls back to operator's login name
+# (never 'root'). Fixes config/DB drift between TUI (sudo, $SUDO_USER) and
+# the service (was running as root → /root/.config/, /root/.local/share/).
+User=__MESHFORGE_USER__
 WorkingDirectory=/opt/meshforge/src
 RuntimeDirectory=meshforge
 
