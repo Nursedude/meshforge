@@ -197,6 +197,50 @@ class TestArednReasonIfZero:
         )
 
 
+class TestArednFeatureSourceField:
+    """AREDN local-collector features must carry source='aredn'.
+
+    Sibling worldmap path sets source='aredn_worldmap'. Frontend currently
+    filters on `network`, but a future Data-Sources UI filter (and any
+    cross-source dedup logic) needs the provenance tag set consistently.
+    """
+
+    def _make_aredn_node(self, hostname="bi-ecom"):
+        """Minimal AREDNNode-like object with a location."""
+        node = MagicMock()
+        node.has_location.return_value = True
+        node.hostname = hostname
+        node.latitude = 19.42
+        node.longitude = -155.28
+        node.model = "MikroTik hAP"
+        node.tunnel_count = 0
+        node.mesh_status = "AREDN"
+        node.links = []
+        return node
+
+    def test_aredn_feature_has_source_aredn(self, collector):
+        node = self._make_aredn_node()
+        feature = collector._aredn_node_to_feature(node)
+        assert feature is not None, "valid AREDN node should produce a feature"
+        assert feature["properties"].get("source") == "aredn", (
+            "AREDN local-collector feature must carry source='aredn' "
+            "(matches the provenance pattern used by worldmap, meshmap_net, "
+            "rmap_world, meshtasticd_http, meshcore_public_map paths)."
+        )
+
+    def test_aredn_feature_network_unchanged(self, collector):
+        """Adding `source` must not regress the existing `network` tag."""
+        node = self._make_aredn_node()
+        feature = collector._aredn_node_to_feature(node)
+        assert feature["properties"].get("network") == "aredn"
+
+    def test_aredn_feature_no_location_returns_none(self, collector):
+        """Source-tag change must not change the no-location skip behavior."""
+        node = self._make_aredn_node()
+        node.has_location.return_value = False
+        assert collector._aredn_node_to_feature(node) is None
+
+
 class TestCollectExposesDiagnostics:
     @staticmethod
     def _patched(coll):

@@ -214,7 +214,7 @@ class ARENDataCollectorMixin:
         except (TypeError, ValueError):
             is_gateway = False
 
-        return self._make_feature(
+        feature = self._make_feature(
             node_id=f"aredn_{node.hostname}",
             name=node.hostname,
             lat=node.latitude,
@@ -227,3 +227,8 @@ class ARENDataCollectorMixin:
             role=node.mesh_status or "AREDN",
             last_seen="online",
         )
+        # Tag provenance — sibling worldmap path sets "aredn_worldmap";
+        # this is the local sysinfo path. Frontend filters on `network`
+        # today, but a future Data-Sources filter needs `source` set.
+        feature["properties"]["source"] = "aredn"
+        return feature
