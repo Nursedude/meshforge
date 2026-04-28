@@ -19,12 +19,17 @@ def hist(tmp_path: Path) -> NodeHistoryDB:
     return NodeHistoryDB(db_path=db_path, retention_seconds=86400)
 
 
-def _feature(node_id: str, ts_offset: float = 0.0):
+def _feature(node_id: str, ts_offset: float = 0.0,
+             lat: float = 0.2, lon: float = 0.1,
+             network: str = "meshtastic"):
     """Build a minimal GeoJSON feature for record_observations."""
     return {
         "type": "Feature",
-        "geometry": {"type": "Point", "coordinates": [0.1, 0.2]},
-        "properties": {"id": node_id, "name": node_id, "is_online": True},
+        "geometry": {"type": "Point", "coordinates": [lon, lat]},
+        "properties": {
+            "id": node_id, "name": node_id, "is_online": True,
+            "network": network,
+        },
     }
 
 
@@ -151,3 +156,82 @@ class TestConnectionPragmas:
             assert mode.lower() == "wal"
         finally:
             c2.close()
+
+
+class TestValueDedup:
+    """Heartbeat + value-change dedup. Stationary nodes must not flood the
+    DB with identical-position rows after the time-throttle has elapsed.
+    Mirrors the meshforge-maps Phase 1 fix (commit b264b60)."""
+
+    def _hist(self, tmp_path: Path, **kwargs):
+        return NodeHistoryDB(
+            db_path=tmp_path / "value_dedup.db",
+            retention_seconds=86400,
+            **kwargs,
+        )
+
+    def test_skips_when_position_unchanged_within_heartbeat(self, tmp_path):
+        h = self._hist(tmp_path, heartbeat_seconds=3600)
+        # Bypass MIN_RECORD_INTERVAL by aging the first record's last_recorded.
+        assert h.record_observations([_feature("!s")]) == 1
+        h._last_recorded["!s"] -= 120  # past time-throttle, inside heartbeat
+        assert h.record_observations([_feature("!s")]) == 0
+
+    def test_records_when_position_changes(self, tmp_path):
+        h = self._hist(tmp_path, heartbeat_seconds=3600)
+        assert h.record_observations([_feature("!m", lat=0.2, lon=0.1)]) == 1
+        h._last_recorded["!m"] -= 120
+        assert h.record_observations([_feature("!m", lat=0.21, lon=0.1)]) == 1
+
+    def test_records_when_heartbeat_elapses_even_unchanged(self, tmp_path):
+        h = self._hist(tmp_path, heartbeat_seconds=60)
+        assert h.record_observations([_feature("!s")]) == 1
+        # Within heartbeat — skipped.
+        h._last_recorded["!s"] -= 30
+        assert h.record_observations([_feature("!s")]) == 0
+        # Past heartbeat — recorded.
+        h._last_recorded["!s"] -= 90
+        assert h.record_observations([_feature("!s")]) == 1
+
+    def test_first_observation_always_records(self, tmp_path):
+        h = self._hist(tmp_path, heartbeat_seconds=3600)
+        assert h.record_observations([_feature("!fresh")]) == 1
+
+    def test_round_trip_at_6_decimals_is_treated_as_unchanged(self, tmp_path):
+        h = self._hist(tmp_path, heartbeat_seconds=3600)
+        assert h.record_observations([
+            _feature("!noise", lat=35.123456, lon=139.0)
+        ]) == 1
+        h._last_recorded["!noise"] -= 120
+        # 1e-7 delta — below 6dp threshold — should NOT trigger.
+        assert h.record_observations([
+            _feature("!noise", lat=35.1234561, lon=139.0)
+        ]) == 0
+
+    def test_batch_path_applies_value_dedup(self, tmp_path):
+        h = self._hist(tmp_path, heartbeat_seconds=3600)
+        h.record_observations([_feature("!a"), _feature("!b")])
+        h._last_recorded["!a"] -= 120
+        h._last_recorded["!b"] -= 120
+        # Same positions for !a and !b → dedup. !c is fresh → recorded.
+        n = h.record_observations([
+            _feature("!a"), _feature("!b"),
+            _feature("!c", lat=0.5, lon=0.5),
+        ])
+        assert n == 1
+
+    def test_heartbeat_zero_disables_value_dedup(self, tmp_path):
+        h = self._hist(tmp_path, heartbeat_seconds=0)
+        h.record_observations([_feature("!s")])
+        h._last_recorded["!s"] -= 120
+        # Time-throttle satisfied; no value-dedup → write happens.
+        assert h.record_observations([_feature("!s")]) == 1
+
+    def test_network_change_triggers_record(self, tmp_path):
+        h = self._hist(tmp_path, heartbeat_seconds=3600)
+        h.record_observations([_feature("!multi", network="meshtastic")])
+        h._last_recorded["!multi"] -= 120
+        # Same position, different network → different observation.
+        assert h.record_observations([
+            _feature("!multi", network="aredn")
+        ]) == 1

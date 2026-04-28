@@ -41,6 +41,18 @@ DEFAULT_RETENTION_SECONDS = 7 * 24 * 3600
 # Minimum interval between recording the same node (avoid flooding)
 MIN_RECORD_INTERVAL = 60  # 1 minute
 
+# Stationary-node heartbeat. When (round(lat,6), round(lon,6), network) match
+# the last recorded value, skip the insert until this interval has elapsed.
+# Mirrors the meshforge-maps Phase 1 fix (commit b264b60). Stationary nodes
+# drop from ~720 rows/day to 24 with the meshcore_public + aredn local sources
+# enabled — was ballooning /root/.local/share/meshforge/node_history.db
+# at 42K nodes/cycle. Set heartbeat_seconds=0 in ctor to disable (legacy).
+DEFAULT_HEARTBEAT_SECONDS = 3600
+
+# Lat/lon comparison precision (decimal degrees). 6 dp ≈ 11 cm — anything
+# tighter is GPS noise, anything looser smears co-sited repeaters into one.
+_LAT_LON_PRECISION = 6
+
 
 @dataclass
 class NodeObservation:
@@ -68,13 +80,17 @@ class NodeHistoryDB:
     """
 
     def __init__(self, db_path: Optional[Path] = None,
-                 retention_seconds: int = DEFAULT_RETENTION_SECONDS):
+                 retention_seconds: int = DEFAULT_RETENTION_SECONDS,
+                 heartbeat_seconds: int = DEFAULT_HEARTBEAT_SECONDS):
         """Initialize node history database.
 
         Args:
             db_path: Path to SQLite database file.
                      Defaults to ~/.local/share/meshforge/node_history.db
             retention_seconds: How long to keep observations (default 7 days).
+            heartbeat_seconds: Skip insert when (lat, lon, network) match the
+                last recorded value AND we're inside this window. 0 disables
+                the value-dedup path (legacy time-only throttle).
         """
         if db_path is None:
             db_path = get_real_user_home() / ".local" / "share" / "meshforge" / "node_history.db"
@@ -82,8 +98,12 @@ class NodeHistoryDB:
 
         self.db_path = db_path
         self.retention_seconds = retention_seconds
+        self._heartbeat_seconds = max(0, heartbeat_seconds)
         self._lock = threading.Lock()
         self._last_recorded: Dict[str, float] = {}  # node_id -> last record time
+        # Last (round(lat,6), round(lon,6), network) per node. Pruned in
+        # lockstep with _last_recorded.
+        self._last_value: Dict[str, Tuple[float, float, str]] = {}
         # Hourly auto-prune cadence. Without this, the DB+WAL grow unbounded
         # — see Issue #44 follow-up where a 14 GB WAL accumulated over 4 days
         # and wedged the service in `jbd2_log_wait_commit` on next startup.
@@ -175,6 +195,18 @@ class NodeHistoryDB:
                 continue
 
             lon, lat = coords[0], coords[1]
+            network = props.get("network", "meshtastic")
+
+            # Value-dedup: skip when (lat, lon, network) match the last
+            # recorded value AND we're still inside the heartbeat window.
+            # Disabled when heartbeat_seconds == 0.
+            if self._heartbeat_seconds > 0:
+                rounded = (round(lat, _LAT_LON_PRECISION),
+                           round(lon, _LAT_LON_PRECISION),
+                           network)
+                if (self._last_value.get(node_id) == rounded
+                        and (now - last) < self._heartbeat_seconds):
+                    continue
 
             to_insert.append((
                 node_id,
@@ -185,13 +217,19 @@ class NodeHistoryDB:
                 props.get("snr"),
                 props.get("battery"),
                 1 if props.get("is_online", True) else 0,
-                props.get("network", "meshtastic"),
+                network,
                 props.get("hardware", ""),
                 props.get("role", ""),
                 1 if props.get("via_mqtt", False) else 0,
                 props.get("name", ""),
             ))
             self._last_recorded[node_id] = now
+            if self._heartbeat_seconds > 0:
+                self._last_value[node_id] = (
+                    round(lat, _LAT_LON_PRECISION),
+                    round(lon, _LAT_LON_PRECISION),
+                    network,
+                )
 
         # Prune stale entries to prevent unbounded memory growth
         if len(self._last_recorded) > 10000:
@@ -199,6 +237,11 @@ class NodeHistoryDB:
             self._last_recorded = {
                 k: v for k, v in self._last_recorded.items()
                 if v > cutoff
+            }
+            # Mirror the cull on the value cache so it doesn't outgrow.
+            self._last_value = {
+                k: v for k, v in self._last_value.items()
+                if k in self._last_recorded
             }
 
         if not to_insert:
