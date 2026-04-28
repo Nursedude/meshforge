@@ -63,6 +63,15 @@ DEFAULT_DIRECTORY_RETENTION_LOCAL = 30 * 24 * 3600     # 30 days
 DEFAULT_DIRECTORY_RETENTION_EXTERNAL = 7 * 24 * 3600   # 7 days
 DEFAULT_DIRECTORY_MAX_ROWS = 50_000                    # hard cap, LRU evict
 
+# Cap rows deleted per prune cycle. Without this, a retention shrink
+# (e.g. observation-stream cut 7d → 48h) on a fleet box that's been
+# accumulating for weeks does ONE giant DELETE → multi-hundred-MB WAL →
+# multi-minute checkpoint stall on Pi-class hardware. Caught live on
+# moc3 (790 MB DB, Pi 3B): first prune after the cutover ran for 10+
+# minutes with a 465 MB WAL. Capping per-cycle means rebalance happens
+# over ~hours of hourly prunes — the box stays responsive throughout.
+DEFAULT_PRUNE_BATCH_LIMIT = 10_000
+
 # source_origin tags. The writer derives these from the feature properties;
 # the prune query filters on them. Single source of truth so prune SQL and
 # tagging logic can't drift.
@@ -134,7 +143,8 @@ class NodeHistoryDB:
                  heartbeat_seconds: int = DEFAULT_HEARTBEAT_SECONDS,
                  directory_retention_local: int = DEFAULT_DIRECTORY_RETENTION_LOCAL,
                  directory_retention_external: int = DEFAULT_DIRECTORY_RETENTION_EXTERNAL,
-                 directory_max_rows: int = DEFAULT_DIRECTORY_MAX_ROWS):
+                 directory_max_rows: int = DEFAULT_DIRECTORY_MAX_ROWS,
+                 prune_batch_limit: int = DEFAULT_PRUNE_BATCH_LIMIT):
         """Initialize node history database.
 
         Args:
@@ -166,6 +176,8 @@ class NodeHistoryDB:
         self.directory_retention_local = max(0, directory_retention_local)
         self.directory_retention_external = max(0, directory_retention_external)
         self.directory_max_rows = max(0, directory_max_rows)
+        # 0 disables the per-cycle cap (legacy unbounded prune).
+        self.prune_batch_limit = max(0, prune_batch_limit)
         self._lock = threading.Lock()
         self._last_recorded: Dict[str, float] = {}  # node_id -> last record time
         # Last (round(lat,6), round(lon,6), network) per node. Pruned in
@@ -592,43 +604,93 @@ class NodeHistoryDB:
         with self._lock:
             conn = self._connect()
             try:
-                # Phase 1 — observation-stream prune.
+                # Phase 1 — observation-stream prune. Batch-capped via
+                # rowid subquery so a retention shrink on a long-lived
+                # DB doesn't generate hundreds of MB of WAL in one shot.
+                # When prune_batch_limit > 0 and rows-needing-deletion
+                # exceed the cap, the excess gets cleaned up by the next
+                # hourly prune cycle. Acceptable trade — the rebalance
+                # converges over ~N hours instead of stalling the
+                # service for minutes mid-cycle.
+                deleted_obs = 0
                 if self.retention_seconds > 0:
                     cutoff = now - self.retention_seconds
-                    cursor = conn.execute(
-                        "DELETE FROM node_observations WHERE timestamp < ?",
-                        (cutoff,),
-                    )
+                    if self.prune_batch_limit > 0:
+                        cursor = conn.execute(
+                            """
+                            DELETE FROM node_observations
+                            WHERE rowid IN (
+                                SELECT rowid FROM node_observations
+                                WHERE timestamp < ?
+                                LIMIT ?
+                            )
+                            """,
+                            (cutoff, self.prune_batch_limit),
+                        )
+                    else:
+                        cursor = conn.execute(
+                            "DELETE FROM node_observations WHERE timestamp < ?",
+                            (cutoff,),
+                        )
                     deleted_obs = cursor.rowcount
                     if deleted_obs > 0:
                         logger.info(
                             f"Node history auto-prune: deleted {deleted_obs} "
                             f"observation rows older than {self.retention_seconds // 3600}h"
+                            + (f" (capped at {self.prune_batch_limit})"
+                               if self.prune_batch_limit > 0 and deleted_obs == self.prune_batch_limit
+                               else "")
                         )
 
-                # Phase 2 — directory tiered time prune.
+                # Phase 2 — directory tiered time prune. Same batch cap.
                 external_origins = list(EXTERNAL_BULK_ORIGINS)
                 deleted_dir = 0
                 if self.directory_retention_local > 0 or self.directory_retention_external > 0:
                     placeholders = ",".join("?" * len(external_origins))
-                    # Single DELETE with two cutoffs by origin tier.
-                    cursor = conn.execute(
-                        f"""
-                        DELETE FROM nodes
-                        WHERE
-                            (source_origin IN ({placeholders})
-                                AND last_seen < ?)
-                            OR
-                            (source_origin NOT IN ({placeholders})
-                                AND last_seen < ?)
-                        """,
-                        [
-                            *external_origins,
-                            now - self.directory_retention_external,
-                            *external_origins,
-                            now - self.directory_retention_local,
-                        ],
-                    )
+                    # rowid subquery picks at most prune_batch_limit
+                    # candidate rows; if cap is 0 we fall back to the
+                    # unbounded form.
+                    if self.prune_batch_limit > 0:
+                        cursor = conn.execute(
+                            f"""
+                            DELETE FROM nodes
+                            WHERE rowid IN (
+                                SELECT rowid FROM nodes
+                                WHERE
+                                    (source_origin IN ({placeholders})
+                                        AND last_seen < ?)
+                                    OR
+                                    (source_origin NOT IN ({placeholders})
+                                        AND last_seen < ?)
+                                LIMIT ?
+                            )
+                            """,
+                            [
+                                *external_origins,
+                                now - self.directory_retention_external,
+                                *external_origins,
+                                now - self.directory_retention_local,
+                                self.prune_batch_limit,
+                            ],
+                        )
+                    else:
+                        cursor = conn.execute(
+                            f"""
+                            DELETE FROM nodes
+                            WHERE
+                                (source_origin IN ({placeholders})
+                                    AND last_seen < ?)
+                                OR
+                                (source_origin NOT IN ({placeholders})
+                                    AND last_seen < ?)
+                            """,
+                            [
+                                *external_origins,
+                                now - self.directory_retention_external,
+                                *external_origins,
+                                now - self.directory_retention_local,
+                            ],
+                        )
                     deleted_dir = cursor.rowcount
 
                 # Phase 3 — count cap LRU. After time prune, if the

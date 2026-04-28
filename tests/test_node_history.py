@@ -484,6 +484,76 @@ class TestDirectoryRetention:
         # long-tail "did we hear this node" question.
         assert DEFAULT_RETENTION_SECONDS == 48 * 3600
 
+    def test_prune_batch_cap_caps_observation_delete(self, tmp_path):
+        """Defensive bound — caught live on moc3 (790MB DB on Pi 3B,
+        first prune after 7d→48h cutover generated 465MB WAL and stalled
+        the service 10+ minutes). With prune_batch_limit=10000, the
+        excess rolls over to the next hourly prune so the box stays
+        responsive during a one-time rebalance."""
+        from utils.node_history import NodeHistoryDB
+        h = NodeHistoryDB(
+            db_path=tmp_path / "batch.db",
+            retention_seconds=3600,            # 1h
+            prune_batch_limit=5,               # tiny cap for the test
+        )
+        # Seed 12 aged-out observations directly so we can prove the cap.
+        import sqlite3, time as _t
+        old = _t.time() - 7200
+        with sqlite3.connect(str(h.db_path)) as conn:
+            for i in range(12):
+                conn.execute(
+                    "INSERT INTO node_observations "
+                    "(node_id, timestamp, latitude, longitude, network) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (f"!n{i}", old, 1.0, 2.0, "meshtastic"),
+                )
+            conn.commit()
+        h._last_prune_ts = 0.0
+        h._maybe_prune(_t.time())
+        # First prune deleted exactly 5 (the cap).
+        with sqlite3.connect(str(h.db_path)) as conn:
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM node_observations"
+            ).fetchone()[0]
+        assert remaining == 7, f"expected 7 rows after capped prune, got {remaining}"
+        # Second prune cycle picks up the next batch of 5.
+        h._last_prune_ts = 0.0
+        h._maybe_prune(_t.time())
+        with sqlite3.connect(str(h.db_path)) as conn:
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM node_observations"
+            ).fetchone()[0]
+        assert remaining == 2, (
+            f"expected 2 rows after second capped prune, got {remaining}"
+        )
+
+    def test_prune_batch_cap_zero_means_unbounded(self, tmp_path):
+        # Operators can opt out (legacy behavior): one giant DELETE.
+        from utils.node_history import NodeHistoryDB
+        h = NodeHistoryDB(
+            db_path=tmp_path / "unbounded.db",
+            retention_seconds=3600,
+            prune_batch_limit=0,
+        )
+        import sqlite3, time as _t
+        old = _t.time() - 7200
+        with sqlite3.connect(str(h.db_path)) as conn:
+            for i in range(50):
+                conn.execute(
+                    "INSERT INTO node_observations "
+                    "(node_id, timestamp, latitude, longitude, network) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (f"!n{i}", old, 1.0, 2.0, "meshtastic"),
+                )
+            conn.commit()
+        h._last_prune_ts = 0.0
+        h._maybe_prune(_t.time())
+        with sqlite3.connect(str(h.db_path)) as conn:
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM node_observations"
+            ).fetchone()[0]
+        assert remaining == 0, f"unbounded prune should clear all 50; left {remaining}"
+
     def test_public_fallback_is_external_bulk(self, tmp_path):
         # public_fallback (meshmap.net / rmap.world global Meshtastic
         # firehose) IS external bulk and must use the 7d tier — caught
