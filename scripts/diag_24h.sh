@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # diag_24h.sh — 24-hour RF + MQTT + node-role diagnostic capture
 #
-# Captures a 24-hour observation window for the LongFast Hawaii state Meshtastic
-# network. Designed to run on multiple boxes (volcanoai, moc, moc1) so that
-# cross-box analysis can detect flood-algorithm failures (packet seen on box A
-# but never propagates to box C) and correlate RF receptions with MQTT uplinks.
+# Captures a 24-hour observation window for a regional LongFast Meshtastic
+# network. Designed to run on multiple boxes simultaneously (any 3+ fleet hosts)
+# so cross-box analysis can detect flood-algorithm failures (packet seen on
+# box A but never propagates to box C) and correlate RF receptions with MQTT
+# uplinks.
 #
 # Subcommands:
 #   start    Plant T0 marker, begin journalctl + mosquitto tail captures,
