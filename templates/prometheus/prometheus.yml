@@ -1,7 +1,8 @@
 # MeshForge Prometheus scrape config (Phase D-4 of map-domain audit arc).
 #
 # Hosted on moc1 (per the locked-in arc decision: Prometheus + Grafana
-# co-locate on moc1; moc2 is the test bed and first scrape target).
+# co-locate on moc1, which is also the map-domain test bed; moc2 is
+# the first fleet box scraped, not the test bed).
 # Add more scrape targets to the `meshforge-map` static_configs as
 # additional fleet boxes get validated (operator hostname-agnostic).
 #
@@ -28,9 +29,17 @@ scrape_configs:
       - targets: ["localhost:9090"]
 
   # MeshForge map service (:5000/metrics on each fleet box).
-  # Phase D-4 starts with moc2 only — the test bed; add other hosts
-  # after validating they don't false-alarm during the warming window
-  # (F3 + the warming-503 contract handles cold start gracefully).
+  # Phase D-4 starts with moc2 only — the first scrape target after
+  # the local Prometheus came up; add other hosts after validating
+  # they don't false-alarm during the warming window (F3 + the
+  # warming-503 contract handles cold start gracefully).
+  #
+  # NOTE on the `fleet_role: test_bed` label: this label was set
+  # under the original (wrong) framing that moc2 was the test bed.
+  # The actual map-domain test bed is moc1 (the Prometheus host
+  # itself; Pi 5, full stack). The label is left as-is here to
+  # avoid breaking existing Grafana queries; redesign the label
+  # scheme when adding fleet hosts (project_test_bed_moc1).
   - job_name: meshforge-map
     metrics_path: /metrics
     scrape_interval: 30s

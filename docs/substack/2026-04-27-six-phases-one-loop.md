@@ -51,9 +51,9 @@ The third one I added after live moc2 validation tripped over a root-owned cache
 
 ## Test bed before fleet
 
-moc2 — a Pi 4B 4GB designated as the map-domain test bed at the start of the arc — caught the root-owned-cache regression *before* it could surface on any production fleet box. I seeded its `packet_archive.db` with five synthetic packets, exported a 144-byte pcap, pulled it to my laptop, parsed it with stdlib `struct`, and confirmed the timestamps and bytes matched seed-for-seed. Then I cleaned up. Then I called the phase done.
+The arc has a designated test bed — moc1, a Pi 5 that co-locates the map services with Prometheus and Grafana, so the observability stack tests itself first. Phase F validation actually ran on a different box, moc2 (a Pi 4B fleet host), because moc1's `packet_archive.db` was in stale ownership state from April. The work was the same shape: seed five synthetic packets, export a 144-byte pcap, pull it to my laptop, parse with stdlib `struct`, confirm the timestamps and bytes match seed-for-seed. The root-owned-cache regression I uncovered there was real — it would have surfaced on any fleet box with the same legacy state.
 
-A staging box is not optional infrastructure. It is the only thing standing between "all tests pass" and "the fleet broke."
+A staging box is not optional infrastructure. It is the only thing standing between "all tests pass" and "the fleet broke." And when the staging box you're using isn't the *designated* one, name it honestly. Memory drift is real.
 
 ## The path forward
 
