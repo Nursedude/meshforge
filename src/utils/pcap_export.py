@@ -169,16 +169,32 @@ def export_pcap(
             get_real_user_home() / ".cache" / "meshforge" / f"capture-{ts_tag}.pcap"
         )
     output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError as e:
+        raise PcapExportError(
+            f"Cannot write to {output_path.parent}: {e}. "
+            "On fleet boxes this often means the dir is root-owned from a "
+            "prior sudo install. Fix: "
+            f"sudo chown -R $(id -un):$(id -gn) {output_path.parent.parent} "
+            "(or pass --output to a writable path)."
+        ) from None
 
     # Atomic write: build into tempfile in same dir, rename on success.
     # Avoids leaving partial pcaps on disk if SIGINT mid-export.
-    tmp = tempfile.NamedTemporaryFile(
-        prefix=output_path.stem + ".",
-        suffix=".pcap.tmp",
-        dir=str(output_path.parent),
-        delete=False,
-    )
+    try:
+        tmp = tempfile.NamedTemporaryFile(
+            prefix=output_path.stem + ".",
+            suffix=".pcap.tmp",
+            dir=str(output_path.parent),
+            delete=False,
+        )
+    except PermissionError as e:
+        raise PcapExportError(
+            f"Cannot create tempfile in {output_path.parent}: {e}. "
+            "Fix: sudo chown -R $(id -un):$(id -gn) "
+            f"{output_path.parent.parent} (or pass --output to a writable path)."
+        ) from None
     tmp_path = Path(tmp.name)
     count = 0
     try:

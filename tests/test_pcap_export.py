@@ -333,6 +333,28 @@ class TestErrorPaths:
         assert leftovers == [], f"tempfile leak: {leftovers}"
 
 
+class TestPermissionDenied:
+    def test_unwritable_output_parent_raises_actionable(self, tmp_path: Path) -> None:
+        """Mirror the moc2 fleet failure: ~/.cache/meshforge root-owned."""
+        import os
+
+        db = tmp_path / "archive.db"
+        conn = _make_archive(db)
+        _insert(conn, pid="p1", ts=datetime(2026, 4, 27, 14, 0), raw_data=b"\xaa")
+        conn.close()
+
+        readonly = tmp_path / "readonly"
+        readonly.mkdir()
+        os.chmod(readonly, 0o555)
+        try:
+            with pytest.raises(PcapExportError) as excinfo:
+                export_pcap(db_path=db, output_path=readonly / "out.pcap")
+            msg = str(excinfo.value)
+            assert "chown" in msg or "writable path" in msg
+        finally:
+            os.chmod(readonly, 0o755)
+
+
 class TestSnaplenCap:
     def test_oversized_packet_is_truncated_but_orig_len_recorded(
         self, tmp_path: Path
