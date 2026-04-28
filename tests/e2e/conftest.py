@@ -9,6 +9,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
+from tests.e2e.harness.map_server import MapServerHarness
 from tests.e2e.harness.mock_meshtasticd import MockMeshtasticDaemon
 
 
@@ -18,6 +19,26 @@ def mock_meshtasticd():
     daemon.start()
     yield daemon
     daemon.stop()
+
+
+@pytest.fixture(scope="module")
+def map_server():
+    """Real MapServer on an ephemeral loopback port.
+
+    Module-scoped so the slow `_prewarm_collector()` runs once per
+    file, not per test — the prewarm hits real network (MQTT, RNS,
+    AREDN, MeshCore) and is the F3 cold-start latency we already know
+    about. Tests should treat the server as immutable shared fixture.
+
+    WebSocket + message listener are disabled so the fixture doesn't
+    need rnsd / mosquitto / meshtasticd. Use this for HTTP-shape
+    contract tests; for collector behavior assertions, prefer the
+    unit tests in tests/test_map_data_collector_diagnostics.py.
+    """
+    harness = MapServerHarness()
+    harness.start()
+    yield harness
+    harness.stop()
 
 
 @pytest.fixture

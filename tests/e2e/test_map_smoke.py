@@ -1,0 +1,201 @@
+"""End-to-end smoke tests for the map domain HTTP service.
+
+Exercises the real `MapServer` HTTP wiring against an in-process
+ephemeral instance. These are the foundation for Phase D Prometheus
+exporter validation: any future `/metrics` endpoint should be
+testable here without standing up rnsd / mosquitto.
+
+Scope:
+- HTTP shape contract for the endpoints Prometheus / Grafana will
+  scrape (`/api/status`, `/api/nodes/geojson`).
+- Issue #43 fields are present (`source_diagnostics`,
+  `nodes_without_position`, `radio_config`).
+- Issue #44 main-thread RNS init invariant: the server can be
+  hammered concurrently without the worker-thread `signal.signal`
+  trap firing (validated by sending parallel requests in a thread
+  pool — collector lock + prewarm are exercised together).
+
+Out of scope (covered elsewhere):
+- Collector content correctness — see
+  `tests/test_map_data_collector_diagnostics.py`.
+- Migration / WAL behavior — see `tests/test_migrate_map_service.py`.
+- HTML rendering — not part of the metric/data contract.
+"""
+
+from __future__ import annotations
+
+import concurrent.futures
+import json
+import urllib.error
+import urllib.request
+
+
+def _get_json(url: str, timeout: float = 10.0) -> dict:
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        assert resp.status == 200, f"{url} returned {resp.status}"
+        return json.loads(resp.read().decode("utf-8"))
+
+
+class TestStatusEndpoint:
+    """Contract tests for /api/status — Prometheus's primary scrape target."""
+
+    def test_status_returns_running(self, map_server):
+        data = _get_json(f"{map_server.url}/api/status")
+        # Top-level keys the dashboard / scraper depend on. If any of
+        # these go missing, the dashboard breaks silently — lock the
+        # contract here.
+        assert data.get("status") == "running"
+        assert "time" in data
+        assert "history" in data
+
+    def test_status_has_issue43_diagnostic_fields(self, map_server):
+        """Issue #43 added per-source diagnostics + radio_config so
+        operators can answer 'why is my node missing on box X but
+        visible on box Y' without grepping source. The fields must
+        be present even when no sources have run yet (empty values
+        are fine; missing keys break dashboards)."""
+        data = _get_json(f"{map_server.url}/api/status")
+        assert "source_diagnostics" in data, (
+            "source_diagnostics is the Phase E 'what's healthy' panel "
+            "source; it must always be present"
+        )
+        assert "nodes_without_position" in data, (
+            "nodes_without_position drives the 'MeshCore visible without "
+            "GPS' Phase E panel; must always be present"
+        )
+        assert "radio_config" in data, (
+            "radio_config exposes local HAT preset + region so cross-box "
+            "fleet diffs are possible without SSHing"
+        )
+
+    def test_status_radio_config_shape(self, map_server):
+        """radio_config is bimodal:
+        - meshtasticd reachable → {modem_preset, region, channel_num, ...}
+        - unreachable → {available: False, reason: "..."}
+
+        Phase E dashboards must handle both. Lock the contract here so
+        future changes don't add a third shape that silently breaks
+        the dashboard fallback rendering.
+        """
+        data = _get_json(f"{map_server.url}/api/status")
+        radio = data.get("radio_config")
+        assert isinstance(radio, dict), "radio_config must be a dict"
+        if radio.get("available") is False:
+            # Unreachable shape: must include a reason for operator UX
+            assert "reason" in radio, (
+                "radio_config={available:False} must include a 'reason' "
+                "string so dashboards can surface the cause to operators"
+            )
+            assert isinstance(radio["reason"], str)
+            assert radio["reason"], "reason must be non-empty"
+        else:
+            # Reachable shape: keys Phase E will diff across fleet boxes
+            for required in ("modem_preset", "region", "channel_num"):
+                assert required in radio, (
+                    f"radio_config (reachable) must include '{required}' "
+                    f"— missing keys break per-box diff workflows"
+                )
+
+    def test_status_nodes_without_position_shape(self, map_server):
+        """nodes_without_position is `{total: int, by_network: {...}}`."""
+        data = _get_json(f"{map_server.url}/api/status")
+        nwp = data.get("nodes_without_position")
+        assert isinstance(nwp, dict)
+        assert "total" in nwp
+        assert isinstance(nwp["total"], int)
+        assert "by_network" in nwp
+        assert isinstance(nwp["by_network"], dict)
+
+
+class TestGeoJSONEndpoint:
+    """Contract tests for /api/nodes/geojson — main map data feed."""
+
+    def test_geojson_returns_feature_collection(self, map_server):
+        data = _get_json(f"{map_server.url}/api/nodes/geojson")
+        assert data.get("type") == "FeatureCollection", (
+            "leaflet/openlayers + our map.html depend on the "
+            "FeatureCollection wrapper; renaming it would break clients"
+        )
+        assert "features" in data
+        assert isinstance(data["features"], list)
+
+    def test_geojson_features_have_required_properties(self, map_server):
+        """If any features come back (depends on local fleet state),
+        they must have at minimum `id`, `network`, and a Point geometry.
+        Empty list is acceptable when no sources have data."""
+        data = _get_json(f"{map_server.url}/api/nodes/geojson")
+        for feat in data.get("features", []):
+            assert feat.get("type") == "Feature"
+            assert "geometry" in feat
+            assert feat["geometry"].get("type") == "Point"
+            assert "coordinates" in feat["geometry"]
+            props = feat.get("properties", {})
+            assert "id" in props, "feature missing id"
+            assert "network" in props, "feature missing network"
+
+
+class TestConcurrentRequests:
+    """Issue #44 invariant: ThreadingHTTPServer + main-thread RNS init.
+
+    With ThreadingHTTPServer, every request runs on a worker thread.
+    If RNS isn't pre-warmed on the main thread, the first cache-miss
+    `/api/status` hits `RNS.Reticulum()` from a worker → `signal.signal`
+    raises ValueError → collector marks RNS as 'unreachable' and the
+    half-initialized singleton corrupts subsequent requests.
+
+    `MapServer.start_background()` calls `_prewarm_collector()` on the
+    main thread before binding. This test confirms the prewarm worked
+    by hammering with parallel requests; if the invariant were
+    violated, source_diagnostics would race-leak 'main thread'
+    AuthenticationError reasons across runs.
+    """
+
+    def test_parallel_status_requests_dont_corrupt_diagnostics(self, map_server):
+        url = f"{map_server.url}/api/status"
+
+        def _hit() -> dict:
+            return _get_json(url, timeout=15.0)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(_hit) for _ in range(16)]
+            results = [f.result() for f in futures]
+
+        # All requests succeeded
+        assert len(results) == 16
+        # No request observed an RNS-thread-init error in diagnostics
+        for r in results:
+            for source, diag in (r.get("source_diagnostics") or {}).items():
+                notes = (diag.get("notes") or "").lower()
+                assert "main thread" not in notes, (
+                    f"source {source} reported a worker-thread RNS init "
+                    f"error: {diag} — Issue #44 invariant is violated"
+                )
+
+    def test_parallel_geojson_requests_serve_consistent_shape(self, map_server):
+        """Concurrent /api/nodes/geojson calls all return valid
+        FeatureCollections (the collect-lock contract from Issue #44)."""
+        url = f"{map_server.url}/api/nodes/geojson"
+
+        def _hit() -> dict:
+            return _get_json(url, timeout=15.0)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            results = [f.result() for f in [pool.submit(_hit) for _ in range(8)]]
+
+        for r in results:
+            assert r.get("type") == "FeatureCollection"
+            assert isinstance(r.get("features"), list)
+
+
+class TestNotFoundIsSane:
+    """Spot-check the request handler doesn't 500 on unknown paths."""
+
+    def test_unknown_api_path_returns_404(self, map_server):
+        try:
+            urllib.request.urlopen(
+                f"{map_server.url}/api/this-does-not-exist", timeout=5
+            )
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
+        else:
+            raise AssertionError("expected HTTP 404 for unknown path")
