@@ -94,8 +94,38 @@ import json, sys
 data = json.load(sys.stdin)
 for t in data.get('data', {}).get('activeTargets', []):
     labels = t.get('labels', {})
-    print(f\"  {labels.get('job','?'):20s} {labels.get('instance','?'):25s} health={t.get('health','?')}\")
+    err = (t.get('lastError') or '')[:60]
+    print(f\"  {labels.get('job','?'):20s} {labels.get('instance','?'):22s} health={t.get('health','?'):5s} {err}\")
 " 2>/dev/null || echo "  (could not parse target list)"
+
+# --- Step 7: hostname resolution check ---
+# The scrape config uses fleet hostnames (moc2, moc1, etc.) which
+# operators set up as SSH aliases — but the prometheus daemon does
+# NOT read ~/.ssh/config. If a target shows health=down with a
+# "lookup ... no such host" error, the fix is /etc/hosts entries.
+echo
+echo "Hostname resolution check:"
+miss=0
+for t in $(grep -oE '"[a-zA-Z0-9_.-]+:[0-9]+"' /etc/prometheus/prometheus.yml | tr -d '"'); do
+    host="${t%:*}"
+    [[ "$host" == "localhost" ]] && continue
+    if ! getent hosts "$host" >/dev/null 2>&1; then
+        echo "  MISS  $host — add to /etc/hosts so prometheus can scrape it"
+        miss=$((miss + 1))
+    fi
+done
+if [[ "$miss" -gt 0 ]]; then
+    cat <<EOF
+
+  Operator action: $miss scrape host(s) need /etc/hosts entries.
+  Example:
+    echo "192.168.86.41 moc2" | sudo tee -a /etc/hosts
+    sudo systemctl restart prometheus
+
+  ssh-config aliases work for ssh + scp but NOT for prometheus —
+  the daemon runs under a system user with no shell config.
+EOF
+fi
 
 echo
 echo "Done. Prometheus UI: http://localhost:9090/"
