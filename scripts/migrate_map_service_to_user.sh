@@ -198,6 +198,30 @@ if [[ -f "$ROOT_DB" ]]; then
         run "mv '$USER_DB' '$DB_BAK'"
         ok "Set aside existing user DB → $DB_BAK"
     fi
+    # Drain the WAL into the main DB BEFORE copy. Without this, the new
+    # service inherits whatever WAL the old service left (observed up to
+    # 350 MB in the field → 3-min ext4_sync_file D-state stall on first
+    # open). With wal_checkpoint(TRUNCATE), the WAL goes to 0 bytes and
+    # the new service's first open is fast. Idempotent: a clean DB
+    # checkpoints to "0 0 0" and we proceed.
+    if $DRY_RUN; then
+        echo -e "  ${CYAN}[dry-run] would PRAGMA wal_checkpoint(TRUNCATE) on $ROOT_DB${NC}"
+    else
+        python3 - "$ROOT_DB" <<'WAL_DRAIN' || warn "wal_checkpoint failed (non-fatal — proceeding with copy as-is)"
+import sqlite3, sys
+path = sys.argv[1]
+conn = sqlite3.connect(path)
+try:
+    busy, log_pages, checkpointed = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    print(f"  wal_checkpoint(TRUNCATE): busy={busy} log={log_pages} checkpointed={checkpointed}")
+    if busy:
+        # busy=1 means a reader still held the WAL (shouldn't happen — service was stopped)
+        sys.exit(2)
+finally:
+    conn.close()
+WAL_DRAIN
+        ok "Drained WAL on $ROOT_DB"
+    fi
     run "cp -p '$ROOT_DB' '$USER_DB'"
     run "chown '$OP_USER:$OP_USER' '$USER_DB'"
     # Also any -wal / -shm sidecars (live WAL state).
