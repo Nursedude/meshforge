@@ -132,3 +132,120 @@ def test_apply_skips_when_bridge_name_empty(mock_q):
     apply_resolved_channel(cfg)
     assert cfg.meshtastic.channel == 0
     mock_q.assert_not_called()
+
+
+# ---------- Hardening A: bridge channel deployment diagnostic ----------
+#
+# The decision logic for "should we emit a one-shot stall warning?" is
+# extracted as a static helper on RNSMeshtasticBridge so it's testable
+# without spinning up the full bridge fixture or wrestling with the
+# diagnostic thread's stop_event/sleep cadence.
+
+
+def test_stall_warning_silent_when_uplink_seen():
+    """Any timestamp on _last_uplink_at means at least one fleet client
+    is on the bridge channel — silence the diagnostic."""
+    from gateway.rns_bridge import RNSMeshtasticBridge
+    assert RNSMeshtasticBridge._should_emit_channel_stall_warning(
+        last_uplink_at=1234567890.0,
+        already_emitted=False,
+        elapsed_sec=3600,
+        threshold_sec=1800,
+    ) is False
+
+
+def test_stall_warning_silent_below_threshold():
+    """Mid-rollout — operators are still provisioning fleet devices.
+    Don't spam the journal until past the configured grace window."""
+    from gateway.rns_bridge import RNSMeshtasticBridge
+    assert RNSMeshtasticBridge._should_emit_channel_stall_warning(
+        last_uplink_at=None,
+        already_emitted=False,
+        elapsed_sec=600,    # 10 min
+        threshold_sec=1800, # 30 min
+    ) is False
+
+
+def test_stall_warning_fires_past_threshold_with_no_uplink():
+    """The moc3 stall shape: bridge running for hours, zero uplinks
+    on the configured channel, no surface error. This is the moment
+    we want a journal WARNING."""
+    from gateway.rns_bridge import RNSMeshtasticBridge
+    assert RNSMeshtasticBridge._should_emit_channel_stall_warning(
+        last_uplink_at=None,
+        already_emitted=False,
+        elapsed_sec=1800,
+        threshold_sec=1800,
+    ) is True
+
+
+def test_stall_warning_only_fires_once():
+    """One-shot per bridge run. Repeated WARNs every 30s would just
+    paper over the journal and de-train operators from caring."""
+    from gateway.rns_bridge import RNSMeshtasticBridge
+    assert RNSMeshtasticBridge._should_emit_channel_stall_warning(
+        last_uplink_at=None,
+        already_emitted=True,
+        elapsed_sec=7200,  # well past threshold
+        threshold_sec=1800,
+    ) is False
+
+
+def test_handler_records_uplink_timestamp_on_json_message():
+    """Hardening A: any well-formed JSON arrival proves a fleet client
+    is publishing on the bridge channel. The timestamp must update on
+    EVERY JSON arrival (not just text), since nodeinfo/telemetry/
+    position broadcasts all prove channel deployment."""
+    from gateway.mqtt_bridge_handler import MQTTBridgeHandler
+    h = MQTTBridgeHandler.__new__(MQTTBridgeHandler)
+    h._last_uplink_at = None
+    h._stale_warning_emitted = False
+    h._recent_ids = {}
+    h._dedup_window = 60
+    h._mqtt_lock = __import__("threading").Lock()
+    # _update_node_from_mqtt and the dispatch helpers are out-of-scope
+    # for the timestamp test; stub them so _handle_json_message reaches
+    # the timestamp update without exploding.
+    h._update_node_from_mqtt = lambda data: None
+    h._update_telemetry = lambda data: None
+    h._update_position = lambda data: None
+    h._update_nodeinfo = lambda data: None
+    h._bridge_text_message = lambda data, topic: None
+
+    payload = b'{"type":"nodeinfo","from":1234,"id":"x1","sender":"!aabb"}'
+    h._handle_json_message("msh/US/2/json/meshforge/!aabb", payload)
+
+    assert h._last_uplink_at is not None
+    assert h._last_uplink_at > 0
+
+
+def test_handler_timestamp_persists_across_message_types():
+    """Successive uplinks bump the timestamp; the diagnostic uses the
+    most recent observation, not just the first."""
+    import time
+    from gateway.mqtt_bridge_handler import MQTTBridgeHandler
+    h = MQTTBridgeHandler.__new__(MQTTBridgeHandler)
+    h._last_uplink_at = None
+    h._stale_warning_emitted = False
+    h._recent_ids = {}
+    h._dedup_window = 60
+    h._mqtt_lock = __import__("threading").Lock()
+    h._update_node_from_mqtt = lambda data: None
+    h._update_telemetry = lambda data: None
+    h._update_position = lambda data: None
+    h._update_nodeinfo = lambda data: None
+    h._bridge_text_message = lambda data, topic: None
+
+    h._handle_json_message(
+        "msh/US/2/json/meshforge/!a",
+        b'{"type":"telemetry","from":1,"id":"a"}',
+    )
+    first = h._last_uplink_at
+    time.sleep(0.01)
+    h._handle_json_message(
+        "msh/US/2/json/meshforge/!b",
+        b'{"type":"position","from":2,"id":"b"}',
+    )
+    second = h._last_uplink_at
+
+    assert second > first

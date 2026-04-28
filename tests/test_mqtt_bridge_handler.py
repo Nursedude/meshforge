@@ -1,14 +1,15 @@
 """
 Tests for gateway.mqtt_bridge_handler.MQTTBridgeHandler.
 
-Focus: publish_to_mqtt's payload shape, specifically the directed-downlink
-path where payload['destination'] is a !xxxxxxxx Meshtastic node id and
-should surface as a numeric 'to' field in the outbound MQTT JSON.
+Focus: self-echo filter for the gateway's own RX rebroadcast (the bridge
+must drop messages it just sent, otherwise R→M loops back to RNS as a
+fresh M→R), the regression guard for Hardening E (deleted dead
+publish_to_mqtt — see Issue #40), and Hardening B's persistent SQLite
+spill on in-memory queue overflow.
 
 Run: python3 -m pytest tests/test_mqtt_bridge_handler.py -v
 """
 
-import json
 import os
 import sys
 from unittest.mock import MagicMock
@@ -20,91 +21,91 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 from gateway.mqtt_bridge_handler import MQTTBridgeHandler
 
 
-def _make_handler(region: str = "") -> MQTTBridgeHandler:
-    """Construct a handler wired up only enough for publish_to_mqtt."""
-    config = MagicMock()
-    config.mqtt_bridge.root_topic = "msh"
-    config.mqtt_bridge.region = region
-    config.mqtt_bridge.channel = "meshforge"
-    handler = MQTTBridgeHandler.__new__(MQTTBridgeHandler)
-    handler.config = config
-    handler._connected = True
-    handler._client = MagicMock()
-    handler._client.publish.return_value = MagicMock(rc=0)
-    handler._mqtt_lock = MagicMock()
-    handler._mqtt_lock.__enter__ = lambda _self: None
-    handler._mqtt_lock.__exit__ = lambda _self, *a: False
-    return handler
+class TestPublishToMqttDeleted:
+    """Hardening E regression guard: the dead publish_to_mqtt path that
+    used a wrong-shape downlink topic (Issue #40) was removed. R→M now
+    routes exclusively through send_text_direct() via destination="meshtastic".
+    """
+
+    def test_publish_to_mqtt_symbol_absent(self):
+        assert not hasattr(MQTTBridgeHandler, "publish_to_mqtt"), (
+            "publish_to_mqtt was deleted as dead code (Hardening E). "
+            "Reinstating it requires fixing the downlink topic shape "
+            "(msh/{region}/2/json/mqtt/{node_id}) and the from-field at "
+            "the same time, not just resurrecting the old version."
+        )
 
 
-def _published_body(handler: MQTTBridgeHandler) -> dict:
-    """Extract the JSON body from the handler's last .publish call."""
-    args, _ = handler._client.publish.call_args
-    return json.loads(args[1])
+class TestHardeningBSpillOnFull:
+    """Hardening B: when the in-memory M→R queue overflows, the message
+    must land in the persistent SQLite queue (destination='rns_xform')
+    rather than being silently dropped. Verifies the spill helper
+    contract — not the full dispatch path (which is exercised by
+    test_rns_bridge.py through _dispatch_rns_xform_spill)."""
 
+    def _make_minimal_handler(self, persistent_queue=None):
+        h = MQTTBridgeHandler.__new__(MQTTBridgeHandler)
+        h._persistent_queue = persistent_queue
+        return h
 
-class TestPublishToMqttDirectedReply:
-    """publish_to_mqtt threads payload['destination'] into an MQTT 'to' field."""
+    def test_spill_persists_under_rns_xform_destination(self):
+        from gateway.rns_bridge import BridgedMessage
+        pq = MagicMock()
+        pq.enqueue.return_value = "msg-id-99"
+        h = self._make_minimal_handler(persistent_queue=pq)
 
-    def test_no_destination_omits_to_field(self):
-        handler = _make_handler()
-        assert handler.publish_to_mqtt(
-            {"message": "hello", "channel": 2, "source_id": "abc"}
-        ) is True
+        msg = BridgedMessage(
+            source_network="meshtastic",
+            source_id="!aabb0042",
+            destination_id=None,
+            content="overflow content",
+            metadata={"channel": 2},
+        )
+        result = h._spill_to_persistent_queue(msg)
 
-        body = _published_body(handler)
-        assert "to" not in body
-        assert body["payload"]["text"] == "hello"
+        assert result is True
+        pq.enqueue.assert_called_once()
+        kwargs = pq.enqueue.call_args.kwargs
+        assert kwargs["destination"] == "rns_xform"
+        assert kwargs["payload"]["source_id"] == "!aabb0042"
+        assert kwargs["payload"]["content"] == "overflow content"
+        assert kwargs["payload"]["is_broadcast"] is False
+        assert kwargs["payload"]["metadata"] == {"channel": 2}
 
-    def test_hex_destination_converts_to_numeric_to(self):
-        handler = _make_handler()
-        assert handler.publish_to_mqtt(
-            {
-                "message": "roger",
-                "channel": 2,
-                "source_id": "abc",
-                "destination": "!ebfa1b11",
-            }
-        ) is True
+    def test_spill_returns_false_when_queue_unwired(self):
+        from gateway.rns_bridge import BridgedMessage
+        h = self._make_minimal_handler(persistent_queue=None)
+        msg = BridgedMessage(
+            source_network="meshtastic", source_id="!a",
+            destination_id=None, content="x",
+        )
+        assert h._spill_to_persistent_queue(msg) is False
 
-        body = _published_body(handler)
-        assert body["to"] == int("ebfa1b11", 16)
+    def test_spill_returns_false_when_enqueue_returns_none(self):
+        """Persistent queue dedup or shed-on-overflow returns None;
+        caller should treat that as drop, not silent success."""
+        from gateway.rns_bridge import BridgedMessage
+        pq = MagicMock()
+        pq.enqueue.return_value = None
+        h = self._make_minimal_handler(persistent_queue=pq)
+        msg = BridgedMessage(
+            source_network="meshtastic", source_id="!a",
+            destination_id=None, content="dup",
+        )
+        assert h._spill_to_persistent_queue(msg) is False
 
-    def test_null_destination_omits_to_field(self):
-        """A None destination is treated as broadcast; no 'to' leaks in."""
-        handler = _make_handler()
-        assert handler.publish_to_mqtt(
-            {
-                "message": "broadcast",
-                "channel": 2,
-                "source_id": "abc",
-                "destination": None,
-            }
-        ) is True
-
-        body = _published_body(handler)
-        assert "to" not in body
-
-    def test_malformed_destination_falls_back_to_broadcast(self):
-        """Bad hex is logged and the message still publishes as broadcast."""
-        handler = _make_handler()
-        assert handler.publish_to_mqtt(
-            {
-                "message": "keepgoing",
-                "channel": 2,
-                "source_id": "abc",
-                "destination": "!notvalidhex",
-            }
-        ) is True
-
-        body = _published_body(handler)
-        assert "to" not in body
-        assert body["payload"]["text"] == "keepgoing"
-
-    def test_empty_message_rejected(self):
-        handler = _make_handler()
-        assert handler.publish_to_mqtt({"message": "", "channel": 0}) is False
-        handler._client.publish.assert_not_called()
+    def test_spill_swallows_persistent_queue_exception(self):
+        """A persistent-queue failure mid-burst should not crash the MQTT
+        thread; the caller falls through to the dropped counter."""
+        from gateway.rns_bridge import BridgedMessage
+        pq = MagicMock()
+        pq.enqueue.side_effect = RuntimeError("disk full")
+        h = self._make_minimal_handler(persistent_queue=pq)
+        msg = BridgedMessage(
+            source_network="meshtastic", source_id="!a",
+            destination_id=None, content="x",
+        )
+        assert h._spill_to_persistent_queue(msg) is False
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +150,7 @@ class TestSelfEchoFilter:
             },
             topic="msh/US/2/json/meshforge/!ebfa1b11",
         )
-        handler._message_queue.put_nowait.assert_not_called()
+        handler._message_queue.put.assert_not_called()
 
     def test_own_sender_no_rns_prefix_passes(self):
         """Web UI / CLI sends from the gateway box have no [RNS:] prefix —
@@ -165,7 +166,7 @@ class TestSelfEchoFilter:
             },
             topic="msh/US/2/json/meshforge/!ebfa1b11",
         )
-        handler._message_queue.put_nowait.assert_called_once()
+        handler._message_queue.put.assert_called_once()
 
     def test_other_sender_with_rns_prefix_passes(self):
         """A different node forwarding [RNS:] content is real mesh traffic
@@ -181,7 +182,7 @@ class TestSelfEchoFilter:
             },
             topic="msh/US/2/json/meshforge/!aabb0042",
         )
-        handler._message_queue.put_nowait.assert_called_once()
+        handler._message_queue.put.assert_called_once()
 
     def test_other_sender_passes_through(self):
         handler = _make_bridge_handler(own_id="!ebfa1b11")
@@ -194,7 +195,7 @@ class TestSelfEchoFilter:
             },
             topic="msh/US/2/json/meshforge/!aabb0042",
         )
-        handler._message_queue.put_nowait.assert_called_once()
+        handler._message_queue.put.assert_called_once()
 
     def test_filter_disabled_when_unset(self):
         """gateway_node_id='' (default) means no filter; everything passes,
@@ -209,4 +210,4 @@ class TestSelfEchoFilter:
             },
             topic="msh/US/2/json/meshforge/!ebfa1b11",
         )
-        handler._message_queue.put_nowait.assert_called_once()
+        handler._message_queue.put.assert_called_once()

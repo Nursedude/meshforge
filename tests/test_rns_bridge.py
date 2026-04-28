@@ -119,6 +119,50 @@ class TestBridgedMessage:
         msg = self._make_msg(via_internet=False, origin=MessageOrigin.RADIO)
         assert msg.should_bridge(filter_mqtt=True) is True
 
+    # Hardening C: bytes→str centralized at construction
+    # LXMF delivers message.content as bytes; if a code path forgets to
+    # decode, str ops (.startswith, json.dumps in requeue) crash. Issue #40
+    # patched xform-side; this guard moves it to BridgedMessage so any
+    # construction site is safe.
+
+    def test_bytes_content_normalized_at_construction(self):
+        msg = self._make_msg(content=b"hello from RNS")
+        assert isinstance(msg.content, str)
+        assert msg.content == "hello from RNS"
+
+    def test_bytes_content_invalid_utf8_uses_replacement(self):
+        msg = self._make_msg(content=b"\xff\xfe\xfdbroken")
+        assert isinstance(msg.content, str)
+        # errors=replace yields U+FFFD for each invalid byte; assert no crash
+        # and that the trailing valid suffix survives.
+        assert msg.content.endswith("broken")
+
+    def test_bytes_title_normalized_at_construction(self):
+        msg = self._make_msg(title=b"Subject Line")
+        assert isinstance(msg.title, str)
+        assert msg.title == "Subject Line"
+
+    def test_none_content_normalized_to_empty_string(self):
+        msg = self._make_msg(content=None)
+        assert msg.content == ""
+
+    def test_str_content_passthrough(self):
+        msg = self._make_msg(content="already str")
+        assert msg.content == "already str"
+
+    def test_at_prefix_works_after_bytes_normalize(self):
+        # Regression: _process_rns_to_mesh does body.startswith('@'); if
+        # bytes leaked through __post_init__, that crashes with TypeError.
+        msg = self._make_msg(content=b"@!aabb0042 directed downlink")
+        assert msg.content.startswith("@")  # would TypeError on bytes
+
+    def test_bridged_message_serializes_after_bytes_normalize(self):
+        # Regression: _requeue_failed_message JSON-serializes content. If
+        # still bytes, json.dumps raises and the message is lost twice.
+        import json
+        msg = self._make_msg(content=b"requeue me", metadata={"a": 1})
+        json.dumps({"message": msg.content, "metadata": msg.metadata})
+
 
 # ---------------------------------------------------------------------------
 # Helpers for bridge construction with full mocking
@@ -697,6 +741,10 @@ class TestProcessMeshToRNS:
             bridge._process_mesh_to_rns(msg)
 
         assert bridge.stats['messages_mesh_to_rns'] == 1
+        # Hardening D: triplet must agree with legacy counter on success
+        assert bridge.stats['mesh_to_rns_attempted'] == 1
+        assert bridge.stats['mesh_to_rns_delivered'] == 1
+        assert bridge.stats['mesh_to_rns_dropped'] == 0
         bridge.health.record_message_sent.assert_called_once_with("mesh_to_rns")
 
     def test_failure_broadcast_no_error(self, bridge):
@@ -713,6 +761,12 @@ class TestProcessMeshToRNS:
             bridge._process_mesh_to_rns(msg)
 
         assert bridge.stats['errors'] == 0
+        # Hardening D: broadcast-not-delivered counts as dropped (operator
+        # signal that the bridge tried but had no peer to land on),
+        # without escalating to an error.
+        assert bridge.stats['mesh_to_rns_attempted'] == 1
+        assert bridge.stats['mesh_to_rns_delivered'] == 0
+        assert bridge.stats['mesh_to_rns_dropped'] == 1
 
     def test_failure_unicast_increments_errors(self, bridge):
         from gateway.rns_bridge import BridgedMessage
@@ -726,6 +780,9 @@ class TestProcessMeshToRNS:
             bridge._process_mesh_to_rns(msg)
 
         assert bridge.stats['errors'] == 1
+        assert bridge.stats['mesh_to_rns_attempted'] == 1
+        assert bridge.stats['mesh_to_rns_delivered'] == 0
+        assert bridge.stats['mesh_to_rns_dropped'] == 1
 
     def test_exception_requeues_and_tracks(self, bridge):
         from gateway.rns_bridge import BridgedMessage
@@ -739,6 +796,10 @@ class TestProcessMeshToRNS:
             bridge._process_mesh_to_rns(msg)
 
         assert bridge.stats['errors'] == 1
+        # Hardening D: exception path also marks dropped
+        assert bridge.stats['mesh_to_rns_attempted'] == 1
+        assert bridge.stats['mesh_to_rns_delivered'] == 0
+        assert bridge.stats['mesh_to_rns_dropped'] == 1
         bridge.health.record_message_failed.assert_called_once_with("mesh_to_rns", requeued=True)
 
     def test_body_is_clean_identity_in_title(self, bridge):
@@ -923,6 +984,42 @@ class TestProcessMeshToRNS:
 
         assert sent_to == [resolved]
 
+    def test_rns_xform_spill_dispatch_runs_full_xform(self, bridge):
+        """Hardening B: persistent-queue worker calls
+        _dispatch_rns_xform_spill with the spilled payload; that helper
+        must reconstruct the BridgedMessage and run the full
+        _process_mesh_to_rns pipeline (so spill messages get fan-out
+        and stats accounting just like in-memory ones)."""
+        bridge.config.rns.get_lxmf_destinations.return_value = [
+            "6b1a0120941444587d7d1dc1bf6d64d7",
+        ]
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
+        payload = {
+            'source_id': "!aabb0042",
+            'destination_id': None,
+            'content': "spilled overflow",
+            'title': None,
+            'is_broadcast': False,
+            'metadata': {"channel": 2},
+        }
+
+        sent = {}
+
+        def capture(content, dest_hash=None, title=None, fields=None):
+            sent["content"] = content
+            sent["dest_hash"] = dest_hash
+            return True
+
+        with patch.object(bridge, 'send_to_rns', side_effect=capture):
+            assert bridge._dispatch_rns_xform_spill(payload) is True
+
+        assert sent["content"] == "spilled overflow"
+        assert sent["dest_hash"] == bytes.fromhex(
+            "6b1a0120941444587d7d1dc1bf6d64d7"
+        )
+        assert bridge.stats['mesh_to_rns_attempted'] == 1
+        assert bridge.stats['mesh_to_rns_delivered'] == 1
+
 
 # ---------------------------------------------------------------------------
 # _process_rns_to_mesh
@@ -942,6 +1039,10 @@ class TestProcessRNSToMesh:
             bridge._process_rns_to_mesh(msg)
 
         assert bridge.stats['messages_rns_to_mesh'] == 1
+        # Hardening D triplet
+        assert bridge.stats['rns_to_mesh_attempted'] == 1
+        assert bridge.stats['rns_to_mesh_delivered'] == 1
+        assert bridge.stats['rns_to_mesh_dropped'] == 0
         bridge.health.record_message_sent.assert_called_once_with("rns_to_mesh")
 
     def test_failure_increments_errors(self, bridge):
@@ -956,6 +1057,9 @@ class TestProcessRNSToMesh:
             bridge._process_rns_to_mesh(msg)
 
         assert bridge.stats['errors'] == 1
+        assert bridge.stats['rns_to_mesh_attempted'] == 1
+        assert bridge.stats['rns_to_mesh_delivered'] == 0
+        assert bridge.stats['rns_to_mesh_dropped'] == 1
 
     def test_exception_requeues(self, bridge):
         from gateway.rns_bridge import BridgedMessage
@@ -969,6 +1073,10 @@ class TestProcessRNSToMesh:
             bridge._process_rns_to_mesh(msg)
 
         assert bridge.stats['errors'] == 1
+        # Exception path also marks dropped
+        assert bridge.stats['rns_to_mesh_attempted'] == 1
+        assert bridge.stats['rns_to_mesh_delivered'] == 0
+        assert bridge.stats['rns_to_mesh_dropped'] == 1
         bridge.health.record_message_failed.assert_called_once_with("rns_to_mesh", requeued=True)
 
     def test_prefix_includes_rns_source(self, bridge):
@@ -1156,7 +1264,6 @@ class TestProcessRNSToMesh:
             MockQueue.return_value = mock_queue
 
             mock_handler = MagicMock()
-            mock_handler.publish_to_mqtt = MagicMock()
             MockMQTT.return_value = mock_handler
 
             from gateway.rns_bridge import RNSMeshtasticBridge, BridgedMessage

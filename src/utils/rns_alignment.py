@@ -304,6 +304,115 @@ def probe_local() -> RNSAlignmentState:
     return state
 
 
+# ----- gateway-startup preflight ---------------------------------------------
+
+
+def _read_rpc_key_value(path: Path, sudo: bool = False) -> Optional[str]:
+    """Return the lowercased 64-hex rpc_key from path, or None.
+
+    Strict: rejects malformed/commented/missing. Used by the gateway
+    startup preflight (Hardening F) to compare rnsd's pinned key against
+    the gateway's client-config copy and detect divergence — the silent
+    Issue #41 failure where rnsd and the gateway have different keys
+    and every inbound link-packet RPC AuthError-aborts before LXMF
+    delivery.
+
+    The full 64-hex value never appears in any returned dataclass or
+    log line; callers fingerprint or compare-equal in-memory only.
+    """
+    if sudo:
+        try:
+            res = subprocess.run(
+                ['sudo', '-n', 'cat', str(path)],
+                capture_output=True, text=True, timeout=5,
+            )
+            if res.returncode != 0:
+                return None
+            text = res.stdout
+        except subprocess.SubprocessError:
+            return None
+    else:
+        try:
+            text = path.read_text()
+        except (OSError, PermissionError):
+            return None
+
+    for raw in text.splitlines():
+        line = raw.lstrip().rstrip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        name, _, value = line.partition('=')
+        if name.strip() != 'rpc_key':
+            continue
+        v = value.strip()
+        if len(v) == 64 and all(c in '0123456789abcdefABCDEF' for c in v):
+            return v.lower()
+        return None
+    return None
+
+
+def check_gateway_rpc_key_alignment(
+    etc_path: Path = Path('/etc/reticulum/config'),
+    client_path: Path = Path('/tmp/meshforge_rns_client/config'),
+) -> Optional[str]:
+    """Hardening F: gateway preflight — refuse-loud on rpc_key drift.
+
+    Returns None when the two configs are aligned (either both have the
+    same key, or rnsd has no key pinned — the unpinned-but-aligned
+    mode the project documents). Returns a human-readable reason string
+    when the gateway must refuse to start because inbound RNS traffic
+    will silently AuthError.
+
+    Three failure modes:
+
+      1. rnsd has rpc_key, client config exists but has none →
+         every inbound link-packet RPC fails (Issue #41 shape).
+      2. rnsd has rpc_key K1, client config has rpc_key K2 (drift after
+         rnsd identity regen, or after a partial Issue #41 rollout).
+      3. Client config exists but is unreadable (permissions wrong) and
+         rnsd has a key — same effective failure as case 1.
+
+    Aligned cases (return None):
+      - Both have the same key (canonical Issue #46 layout).
+      - rnsd has no key (legacy unpinned mode); client copy doesn't matter.
+      - Client config doesn't exist yet (first start; gateway will write
+        it after this check, propagating the key — covered upstream).
+
+    The full 64-hex key value is never returned in any field. The
+    reason string only mentions presence/absence and divergence.
+    """
+    # Sudo is needed to read /etc/reticulum/config when the gateway
+    # service runs as a non-root user; harmless if already root.
+    rnsd_key = _read_rpc_key_value(etc_path, sudo=True)
+    if rnsd_key is None:
+        return None  # rnsd unpinned ⇒ no preflight to enforce
+
+    if not client_path.exists():
+        return None  # First start; client config will be written downstream
+
+    client_key = _read_rpc_key_value(client_path, sudo=False)
+    if client_key is None:
+        return (
+            f"rnsd has rpc_key pinned in {etc_path}, but {client_path} has "
+            f"no readable rpc_key. The gateway's RNS client and rnsd will "
+            f"derive different RPC authkeys, causing every inbound link "
+            f"packet to AuthError-abort before LXMF delivery (Issue #41). "
+            f"Fix: regenerate the client config (gateway restart usually "
+            f"does this), or run scripts/rns_alignment.py normalize."
+        )
+
+    if rnsd_key != client_key:
+        return (
+            f"rpc_key drift: {etc_path} and {client_path} have different "
+            f"keys. RPC handshake will fail every time. Fix: delete "
+            f"{client_path} and restart gateway so it's regenerated from "
+            f"the canonical /etc/reticulum/config, or run "
+            f"scripts/rns_alignment.py normalize."
+        )
+
+    return None
+
+
 # ----- analyze ---------------------------------------------------------------
 
 

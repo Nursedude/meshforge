@@ -124,6 +124,19 @@ class BridgedMessage:
             self.timestamp = datetime.now()
         if self.metadata is None:
             self.metadata = {}
+        # Normalize bytes→str at construction so downstream code (xform,
+        # requeue→JSON, str ops like .startswith('@')) cannot trip on
+        # LXMF's bytes payload. Issue #40 fix was xform-local; centralizing
+        # here closes the requeue double-crash window for any future code
+        # path that builds a BridgedMessage directly from an LXMF callback.
+        if isinstance(self.content, bytes):
+            self.content = self.content.decode("utf-8", errors="replace")
+        elif self.content is None:
+            self.content = ""
+        elif not isinstance(self.content, str):
+            self.content = str(self.content)
+        if isinstance(self.title, bytes):
+            self.title = self.title.decode("utf-8", errors="replace")
 
     def should_bridge(self, filter_mqtt: bool = False) -> bool:
         """
@@ -212,9 +225,27 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin, MessageTransf
         self._meshcore_handler = None
 
         # Statistics
+        # Hardening D: the historical messages_* counters are kept (consumed
+        # by launcher.py, gateway_cli.py, bridge_cli.py, commands/gateway.py)
+        # and remain wire-equivalent to *_delivered. The new attempted/
+        # delivered/dropped triplets are surfaced in status output so
+        # operators can see "tried 100, radio accepted 95, lost 5" instead
+        # of the single legacy success count which masked dropped paths
+        # entirely. Delivered semantics:
+        #   M→R delivered = LXMF send_to_rns returned True (link established
+        #     and handed to LXMF Router; closer to "delivered" than HTTP).
+        #   R→M delivered = persistent queue accepted enqueue OR direct
+        #     send_text_direct() POST returned True (radio accepted packet,
+        #     not LoRa-ack confirmed — wiring true acks is deferred).
         self.stats = {
-            'messages_mesh_to_rns': 0,
-            'messages_rns_to_mesh': 0,
+            'messages_mesh_to_rns': 0,    # legacy alias for mesh_to_rns_delivered
+            'messages_rns_to_mesh': 0,    # legacy alias for rns_to_mesh_delivered
+            'mesh_to_rns_attempted': 0,
+            'mesh_to_rns_delivered': 0,
+            'mesh_to_rns_dropped': 0,
+            'rns_to_mesh_attempted': 0,
+            'rns_to_mesh_delivered': 0,
+            'rns_to_mesh_dropped': 0,
             'errors': 0,
             'bounced': 0,
             'start_time': None,
@@ -354,6 +385,7 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin, MessageTransf
                 status_callback=lambda status: self._notify_status(status),
                 should_bridge=self._router.should_bridge,
                 load_balancer=self._load_balancer,
+                persistent_queue=self._persistent_queue,
             )
         elif HAS_MESHTASTIC_LIB:
             if self.config.bridge_mode == "mqtt_bridge" and not HAS_MQTT_BRIDGE:
@@ -378,19 +410,21 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin, MessageTransf
                 "(recommended) or meshtastic Python library for legacy TCP bridge."
             )
 
-        # Register Meshtastic sender now that handler exists
+        # Register Meshtastic sender now that handler exists.
+        # NOTE: Issue #40 (2026-04-21) routed R→M through send_text_direct()
+        # via destination="meshtastic"; the historical destination="mqtt"
+        # path (publish_to_mqtt) was deleted as Hardening E.
         if self._persistent_queue:
             self._persistent_queue.register_sender(
                 "meshtastic", self._mesh_handler.queue_send
             )
-
-            # Register MQTT sender for persistent queue (mqtt_bridge mode)
-            if (self.config.bridge_mode == "mqtt_bridge"
-                    and hasattr(self._mesh_handler, 'publish_to_mqtt')):
-                self._persistent_queue.register_sender(
-                    "mqtt", self._mesh_handler.publish_to_mqtt
-                )
-                logger.info("Registered 'mqtt' sender for persistent queue")
+            # Hardening B: M→R in-memory overflow spills here under
+            # destination="rns_xform"; the worker re-runs the message
+            # through _process_mesh_to_rns so it gets fan-out to all
+            # configured LXMF destinations and proper stats accounting.
+            self._persistent_queue.register_sender(
+                "rns_xform", self._dispatch_rns_xform_spill
+            )
 
         # Initialize MeshCore handler if configured and available
         meshcore_config = getattr(self.config, 'meshcore', None)
@@ -549,6 +583,22 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin, MessageTransf
         except Exception as e:
             logger.warning(f"TX channel resolution failed: {e}")
 
+        # Hardening F: refuse-loud on rpc_key drift between rnsd and the
+        # gateway's RNS client config. Issue #41 was field-discovered after
+        # weeks of silent inbound-AuthError loss; catching the misalignment
+        # at startup turns it into a 5-second failure instead of a 5-week
+        # mystery. Pure config-file read; no service-level side effects.
+        try:
+            from utils.rns_alignment import check_gateway_rpc_key_alignment
+            drift = check_gateway_rpc_key_alignment()
+            if drift:
+                logger.error(f"Refusing to start bridge: {drift}")
+                return False
+        except Exception as e:
+            # Don't let the preflight itself crash bridge startup — a
+            # missing helper or unreadable file should warn, not refuse.
+            logger.warning(f"rpc_key preflight check failed (continuing): {e}")
+
         logger.info("Starting RNS-Meshtastic bridge...")
         self._running = True
         self.stats['start_time'] = datetime.now()
@@ -609,6 +659,19 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin, MessageTransf
                 logger.info("RNS packet sniffer started for traffic capture")
             except Exception as e:
                 logger.warning(f"Could not start RNS sniffer: {e}")
+
+        # Hardening A: bridge channel deployment diagnostic. Watches the
+        # MQTT handler's _last_uplink_at and logs a one-shot WARN if no
+        # uplink ever arrives within the configured window — the silent
+        # symptom shape behind moc3's 8h frozen-stats stall (channel
+        # exists on the radio but fleet clients are publishing on a
+        # different channel).
+        self._channel_diagnostic_thread = threading.Thread(
+            target=self._channel_diagnostic_loop,
+            daemon=True,
+            name="ChannelDiagnostic",
+        )
+        self._channel_diagnostic_thread.start()
 
         logger.info("Bridge started")
         self._notify_status("started")
@@ -846,6 +909,33 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin, MessageTransf
             logger.error(f"Queue send to RNS failed: {e}")
             return False
 
+    def _dispatch_rns_xform_spill(self, payload: Dict) -> bool:
+        """Persistent-queue sender for Hardening B's M→R spill.
+
+        Reconstructs a BridgedMessage from the spilled payload and runs it
+        through the standard _process_mesh_to_rns pipeline so it gets
+        proper fan-out + attempted/delivered/dropped accounting. Returns
+        True so the queue marks the row delivered after dispatch (the
+        underlying xform will re-spill or count drops on its own failure
+        paths — we don't re-loop overflow back into rns_xform).
+        """
+        try:
+            metadata = payload.get('metadata') or {}
+            msg = BridgedMessage(
+                source_network="meshtastic",
+                source_id=payload.get('source_id', '') or '',
+                destination_id=payload.get('destination_id') or None,
+                content=payload.get('content', '') or '',
+                title=payload.get('title'),
+                is_broadcast=bool(payload.get('is_broadcast', False)),
+                metadata=dict(metadata),
+            )
+            self._process_mesh_to_rns(msg)
+            return True
+        except Exception as e:
+            logger.error(f"rns_xform spill dispatch failed: {e}")
+            return False
+
     def enqueue_message(self, message: str, destination: str, dest_type: str = "meshtastic",
                         priority: str = "normal", **kwargs) -> Optional[str]:
         """
@@ -957,6 +1047,77 @@ class RNSMeshtasticBridge(RNSConnectionMixin, MeshCoreBridgeMixin, MessageTransf
         """Main loop for Meshtastic connection - delegates to handler."""
         if self._mesh_handler:
             self._mesh_handler.run_loop()
+
+    @staticmethod
+    def _should_emit_channel_stall_warning(
+        last_uplink_at: Optional[float],
+        already_emitted: bool,
+        elapsed_sec: float,
+        threshold_sec: float,
+    ) -> bool:
+        """Pure decision: should we emit the deployment-gap warning now?
+
+        True iff (a) we've never seen an uplink, (b) the elapsed time
+        since startup exceeds the threshold, and (c) we haven't already
+        emitted (one-shot to avoid journal spam).
+        """
+        return (
+            last_uplink_at is None
+            and elapsed_sec >= threshold_sec
+            and not already_emitted
+        )
+
+    def _channel_diagnostic_loop(self):
+        """Hardening A: surface bridge channel deployment gaps.
+
+        Watches the MQTT handler's _last_uplink_at and emits a one-shot
+        WARNING when no uplink has been observed on the configured bridge
+        channel within the threshold window. Fleet clients on a different
+        channel name (the moc3 stall, 2026-04-27) leave the bridge stats
+        frozen with no surface error; this turns the gap into a journal
+        signal an operator can grep for.
+
+        Threshold: 30 min default, override via MESHFORGE_BRIDGE_RX_STALE_SEC.
+        """
+        import os
+        try:
+            threshold = max(60, int(
+                os.environ.get("MESHFORGE_BRIDGE_RX_STALE_SEC", "1800")
+            ))
+        except ValueError:
+            threshold = 1800
+
+        # Sleep in 30s slices so stop_event wakes us promptly on shutdown.
+        slice_sec = 30
+        elapsed = 0
+        bridge_channel = getattr(
+            getattr(self.config, 'mqtt_bridge', None), 'channel', None
+        )
+        while self._running and not self._stop_event.is_set():
+            if self._stop_event.wait(slice_sec):
+                return
+            elapsed += slice_sec
+
+            handler = self._mesh_handler
+            if handler is None or not hasattr(handler, '_last_uplink_at'):
+                continue
+
+            if self._should_emit_channel_stall_warning(
+                last_uplink_at=handler._last_uplink_at,
+                already_emitted=getattr(handler, '_stale_warning_emitted', False),
+                elapsed_sec=elapsed,
+                threshold_sec=threshold,
+            ):
+                logger.warning(
+                    "Bridge channel deployment gap: no MQTT uplink "
+                    "observed on channel %r in %d min since startup. "
+                    "Fleet clients may be transmitting on a different "
+                    "channel — verify with `journalctl -u meshtasticd "
+                    "| grep 'JSON publish' | head -3` to see the "
+                    "actual channel name(s) meshtasticd is publishing.",
+                    bridge_channel, elapsed // 60,
+                )
+                handler._stale_warning_emitted = True
 
     # _meshcore_loop() inherited from MeshCoreBridgeMixin
 

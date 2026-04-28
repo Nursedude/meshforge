@@ -96,6 +96,7 @@ class MQTTBridgeHandler(BaseMessageHandler):
         status_callback: Optional[Callable] = None,
         should_bridge: Optional[Callable] = None,
         load_balancer=None,
+        persistent_queue=None,
     ):
         super().__init__(
             config=config,
@@ -113,6 +114,14 @@ class MQTTBridgeHandler(BaseMessageHandler):
         # TX load balancer (optional, for dual-radio setups)
         self._load_balancer = load_balancer
 
+        # Persistent SQLite queue for M→R overflow durability (Hardening B).
+        # When the in-memory _message_queue.put_nowait() fails with Full,
+        # the message gets persisted here under destination="rns_xform"
+        # for the bridge worker to drain through _process_mesh_to_rns
+        # later. Survives crash mid-burst; bounded by the queue's own
+        # max-depth + auto-cleanup of delivered/dead-letter rows.
+        self._persistent_queue = persistent_queue
+
         # MQTT client (handler-specific)
         self._client = None
         self._mqtt_lock = threading.Lock()
@@ -123,6 +132,17 @@ class MQTTBridgeHandler(BaseMessageHandler):
         # Deduplication: track recent message IDs to avoid loops
         self._recent_ids: Dict[str, float] = {}
         self._dedup_window = 60  # seconds
+
+        # Hardening A: bridge channel deployment diagnostic. Set on the
+        # first MQTT JSON message received that matches the configured
+        # channel. Stays None when fleet clients haven't been provisioned
+        # with the bridge channel — a state today's bridge can't detect.
+        # The gateway main loop polls this past a configurable window
+        # (default 30 min, override MESHFORGE_BRIDGE_RX_STALE_SEC) to
+        # surface the deployment gap as a journal WARNING + TUI status
+        # signal instead of silently frozen counters.
+        self._last_uplink_at: Optional[float] = None
+        self._stale_warning_emitted: bool = False
 
     def run_loop(self) -> None:
         """
@@ -307,6 +327,12 @@ class MQTTBridgeHandler(BaseMessageHandler):
             logger.debug(f"Failed to parse MQTT JSON: {e}")
             return
 
+        # Hardening A: any well-formed JSON arrival proves a fleet client
+        # is publishing on the bridge channel. Recorded BEFORE the
+        # type-specific dispatch so even nodeinfo/telemetry/position
+        # broadcasts (not just text) count as deployment evidence.
+        self._last_uplink_at = time.time()
+
         msg_type = data.get('type', '')
         sender = data.get('sender', '')
         msg_id = str(data.get('id', ''))
@@ -415,11 +441,26 @@ class MQTTBridgeHandler(BaseMessageHandler):
                 logger.debug(f"Message from {sender} blocked by routing rules")
             else:
                 try:
-                    self._message_queue.put_nowait(msg)
+                    # Hardening B: short timeout backpressure absorbs typical
+                    # bursts; persistent spill catches sustained overload so
+                    # we don't lose traffic on a slow consumer.
+                    self._message_queue.put(msg, timeout=0.5)
                 except Full:
-                    logger.warning("Mesh->RNS queue full, dropping message")
-                    with self._stats_lock:
-                        self.stats['errors'] += 1
+                    persisted = self._spill_to_persistent_queue(msg)
+                    if persisted:
+                        logger.warning(
+                            "Mesh→RNS in-memory queue full; persisted to "
+                            "SQLite spill for later xform"
+                        )
+                    else:
+                        logger.error(
+                            "Mesh→RNS queue full and persistent spill "
+                            "unavailable — message dropped: %r",
+                            text[:50] if text else "",
+                        )
+                        with self._stats_lock:
+                            self.stats['errors'] += 1
+                            self.stats['mesh_to_rns_dropped'] += 1
 
         # Notify callback
         if self._message_callback:
@@ -709,72 +750,6 @@ class MQTTBridgeHandler(BaseMessageHandler):
         channel = payload.get('channel', 0)
         return self.send_text(message, destination, channel)
 
-    def publish_to_mqtt(self, payload: Dict) -> bool:
-        """
-        Publish a message to the MQTT broker.
-
-        Used as persistent queue sender callback for destination="mqtt".
-        Publishes bridged messages (from RNS) to the Meshtastic MQTT
-        topic so meshtasticd picks them up for radio transmission.
-
-        Args:
-            payload: Dictionary with 'message', 'channel', 'source_id' keys
-
-        Returns:
-            True if published successfully, False otherwise.
-        """
-        if not self._connected or not self._client:
-            return False
-
-        message = payload.get('message', '')
-        channel = payload.get('channel', 0)
-        source_id = payload.get('source_id', 'meshforge')
-        destination = payload.get('destination')
-
-        if not message:
-            return False
-
-        mqtt_cfg = self.config.mqtt_bridge
-
-        mqtt_body = {
-            "from": 0,
-            "payload": {"text": message},
-            "sender": source_id,
-            "type": "text",
-            "channel": channel,
-        }
-        if isinstance(destination, str) and destination.startswith('!'):
-            try:
-                mqtt_body["to"] = int(destination[1:], 16)
-            except ValueError:
-                logger.warning(
-                    f"Invalid destination hex in payload, sending as broadcast: "
-                    f"{destination!r}"
-                )
-
-        mqtt_payload = json.dumps(mqtt_body)
-
-        # Publish to the JSON topic. Match meshtasticd's publish shape:
-        # include region only when configured (some daemon builds omit it).
-        if mqtt_cfg.region:
-            topic = (f"{mqtt_cfg.root_topic}/{mqtt_cfg.region}/2/json/"
-                     f"{mqtt_cfg.channel}/meshforge")
-        else:
-            topic = f"{mqtt_cfg.root_topic}/2/json/{mqtt_cfg.channel}/meshforge"
-
-        try:
-            with self._mqtt_lock:
-                result = self._client.publish(topic, mqtt_payload, qos=1)
-            if result.rc == 0:
-                logger.info(f"Published to MQTT: {message[:50]}...")
-                return True
-            else:
-                logger.warning(f"MQTT publish failed with rc={result.rc}")
-                return False
-        except Exception as e:
-            logger.error(f"MQTT publish error: {e}")
-            return False
-
     def test_connection(self) -> bool:
         """Test MQTT broker connectivity."""
         import socket
@@ -837,6 +812,41 @@ class MQTTBridgeHandler(BaseMessageHandler):
         """Check if a file exists at path."""
         import os
         return os.path.isfile(path) and os.access(path, os.X_OK)
+
+    def _spill_to_persistent_queue(self, msg) -> bool:
+        """Persist a M→R BridgedMessage when the in-memory queue is full.
+
+        Hardening B (Issue #29 derivative): the in-memory queue used to
+        silently drop on Full. Now we serialize the BridgedMessage's
+        salient fields and enqueue under destination="rns_xform"; the
+        bridge's registered "rns_xform" sender (rns_bridge.py) re-runs
+        _process_mesh_to_rns on the persisted payload, so the message
+        gets a second chance through the proper xform pipeline.
+
+        Returns True on successful persist, False if no persistent queue
+        is wired (caller falls through to the dropped counter).
+        """
+        if not self._persistent_queue:
+            return False
+        try:
+            from gateway.message_queue import MessagePriority
+            payload = {
+                'source_id': getattr(msg, 'source_id', '') or '',
+                'destination_id': getattr(msg, 'destination_id', '') or '',
+                'content': msg.content,
+                'title': getattr(msg, 'title', None),
+                'is_broadcast': bool(getattr(msg, 'is_broadcast', False)),
+                'metadata': dict(getattr(msg, 'metadata', None) or {}),
+            }
+            msg_id = self._persistent_queue.enqueue(
+                payload=payload,
+                destination="rns_xform",
+                priority=MessagePriority.NORMAL,
+            )
+            return msg_id is not None
+        except Exception as e:
+            logger.error("Persistent spill failed: %s", e)
+            return False
 
     def _is_duplicate(self, msg_id: str) -> bool:
         """Check if message ID was seen recently (dedup)."""

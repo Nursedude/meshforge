@@ -333,9 +333,23 @@ def launch_gateway_bridge(src_dir):
                 while bridge.is_running:
                     time.sleep(5)
                     stats = bridge.get_routing_stats()
-                    print(f"\r{Colors.DIM}M->R:{stats.get('messages_mesh_to_rns', 0)} "
-                          f"R->M:{stats.get('messages_rns_to_mesh', 0)} "
-                          f"Bounced:{stats.get('bounced', 0)}{Colors.NC}", end='', flush=True)
+                    m2r = (
+                        stats.get('mesh_to_rns_attempted', 0),
+                        stats.get('mesh_to_rns_delivered', 0),
+                        stats.get('mesh_to_rns_dropped', 0),
+                    )
+                    r2m = (
+                        stats.get('rns_to_mesh_attempted', 0),
+                        stats.get('rns_to_mesh_delivered', 0),
+                        stats.get('rns_to_mesh_dropped', 0),
+                    )
+                    print(
+                        f"\r{Colors.DIM}M->R:{m2r[0]}/{m2r[1]}/{m2r[2]} "
+                        f"R->M:{r2m[0]}/{r2m[1]}/{r2m[2]} "
+                        f"(att/del/drop) "
+                        f"Bounced:{stats.get('bounced', 0)}{Colors.NC}",
+                        end='', flush=True,
+                    )
             except KeyboardInterrupt:
                 print(f"\n\n{Colors.YELLOW}Stopping bridge...{Colors.NC}")
                 bridge.stop()

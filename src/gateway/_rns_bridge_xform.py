@@ -39,6 +39,8 @@ class MessageTransformMixin:
         On send failure for non-broadcast messages, attempts to persist
         to the persistent queue for later retry.
         """
+        with self._stats_lock:
+            self.stats['mesh_to_rns_attempted'] += 1
         try:
             content = msg.content
 
@@ -94,16 +96,20 @@ class MessageTransformMixin:
                     logger.info(f"Bridge Mesh→RNS: {title} — {content[:50]}")
                 with self._stats_lock:
                     self.stats['messages_mesh_to_rns'] += 1
+                    self.stats['mesh_to_rns_delivered'] += 1
                 self.health.record_message_sent("mesh_to_rns")
             elif msg.is_broadcast:
                 # Broadcast that didn't land — debug-only, not an error. Could be no
                 # default_lxmf_destination configured, or all configured peers were
                 # unreachable; either way, broadcast best-effort delivery is fine.
                 logger.debug(f"Mesh→RNS broadcast not delivered: {content[:30]}...")
+                with self._stats_lock:
+                    self.stats['mesh_to_rns_dropped'] += 1
             else:
                 logger.warning(f"Failed to bridge Mesh→RNS: {content[:30]}...")
                 with self._stats_lock:
                     self.stats['errors'] += 1
+                    self.stats['mesh_to_rns_dropped'] += 1
                 requeued = self._requeue_failed_message(msg, "rns")
                 self.health.record_message_failed("mesh_to_rns", requeued=requeued)
 
@@ -111,6 +117,7 @@ class MessageTransformMixin:
             logger.error(f"Error bridging Mesh→RNS: {e}")
             with self._stats_lock:
                 self.stats['errors'] += 1
+                self.stats['mesh_to_rns_dropped'] += 1
             self.health.record_error("rns", e)
             self._requeue_failed_message(msg, "rns")
             self.health.record_message_failed("mesh_to_rns", requeued=True)
@@ -140,6 +147,8 @@ class MessageTransformMixin:
             # Handle both BridgedMessage (source_id) and CanonicalMessage (source_address)
             source_id = getattr(msg, 'source_id', None) or getattr(msg, 'source_address', '')
             dest_id = getattr(msg, 'destination_id', None) or getattr(msg, 'destination_address', '')
+            # BridgedMessage.__post_init__ centralizes bytes→str (Hardening C);
+            # CanonicalMessage may still arrive with non-str content, so guard.
             content = msg.content
             if isinstance(content, bytes):
                 content = content.decode("utf-8", errors="replace")
@@ -201,6 +210,8 @@ class MessageTransformMixin:
         from . import rns_bridge as _rns_bridge_module
         HAS_PERSISTENT_QUEUE = _rns_bridge_module.HAS_PERSISTENT_QUEUE
 
+        with self._stats_lock:
+            self.stats['rns_to_mesh_attempted'] += 1
         try:
             raw = msg.content
             if isinstance(raw, bytes):
@@ -247,8 +258,16 @@ class MessageTransformMixin:
                     logger.info(f"Bridge RNS→Mesh (queued{tag}): {content[:50]}...")
                     with self._stats_lock:
                         self.stats['messages_rns_to_mesh'] += 1
+                        self.stats['rns_to_mesh_delivered'] += 1
                     self.health.record_message_sent("rns_to_mesh")
                     return
+                # enqueue returned None — queue rejected the message
+                logger.warning("Failed to enqueue RNS→Mesh to persistent queue")
+                with self._stats_lock:
+                    self.stats['errors'] += 1
+                    self.stats['rns_to_mesh_dropped'] += 1
+                self.health.record_message_failed("rns_to_mesh", requeued=False)
+                return
 
             # Direct send (non-MQTT mode or queue unavailable)
             if self.send_to_meshtastic(
@@ -260,11 +279,13 @@ class MessageTransformMixin:
                 logger.info(f"Bridge RNS→Mesh{tag}: {content[:50]}...")
                 with self._stats_lock:
                     self.stats['messages_rns_to_mesh'] += 1
+                    self.stats['rns_to_mesh_delivered'] += 1
                 self.health.record_message_sent("rns_to_mesh")
             else:
                 logger.warning("Failed to bridge RNS→Mesh")
                 with self._stats_lock:
                     self.stats['errors'] += 1
+                    self.stats['rns_to_mesh_dropped'] += 1
                 requeued = self._requeue_failed_message(msg, "meshtastic")
                 self.health.record_message_failed("rns_to_mesh", requeued=requeued)
 
@@ -272,6 +293,7 @@ class MessageTransformMixin:
             logger.error(f"Error bridging RNS→Mesh: {e}")
             with self._stats_lock:
                 self.stats['errors'] += 1
+                self.stats['rns_to_mesh_dropped'] += 1
             self.health.record_error("meshtastic", e)
             self._requeue_failed_message(msg, "meshtastic")
             self.health.record_message_failed("rns_to_mesh", requeued=True)

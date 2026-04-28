@@ -10,6 +10,7 @@ Covers:
 """
 
 from pathlib import Path
+from typing import Optional
 from unittest.mock import patch
 
 import pytest
@@ -328,3 +329,147 @@ class TestRpcKeyScriptDoesNotLeakViaDescription:
         script_body = rpc_action.cmd[-1]
         match = re.search(r'\b[0-9a-fA-F]{64}\b', script_body)
         assert match is not None, "rpc_key value must be present in the script"
+
+
+# ---------- Hardening F: gateway preflight rpc_key alignment ----------
+
+
+class TestCheckGatewayRpcKeyAlignment:
+    """Issue #41 silent-AuthError-on-inbound was field-discovered after
+    weeks of loss. The gateway must refuse to start when rnsd has a
+    pinned rpc_key but the gateway's client config can't authenticate
+    with it. These tests cover the four-quadrant matrix:
+    rnsd-pinned × client-pinned, plus drift, plus benign cases."""
+
+    KEY_A = "a" * 64
+    KEY_B = "b" * 64
+
+    def _write(self, path: Path, key: Optional[str]) -> None:
+        if key is None:
+            path.write_text("[reticulum]\n# no rpc_key here\n")
+        else:
+            path.write_text(f"[reticulum]\n  rpc_key = {key}\n")
+
+    def test_aligned_when_both_have_same_key(self, tmp_path, monkeypatch):
+        from utils import rns_alignment
+        etc = tmp_path / "etc_config"
+        client = tmp_path / "client_config"
+        self._write(etc, self.KEY_A)
+        self._write(client, self.KEY_A)
+        monkeypatch.setattr(
+            rns_alignment, "_read_rpc_key_value",
+            lambda p, sudo=False: self.KEY_A,
+        )
+        assert rns_alignment.check_gateway_rpc_key_alignment(
+            etc_path=etc, client_path=client,
+        ) is None
+
+    def test_unpinned_rnsd_returns_none(self, tmp_path, monkeypatch):
+        """If rnsd hasn't pinned a key (legacy unpinned mode), the
+        client copy is irrelevant — preflight passes."""
+        from utils import rns_alignment
+        etc = tmp_path / "etc_config"
+        client = tmp_path / "client_config"
+        self._write(etc, None)
+        self._write(client, self.KEY_A)
+        monkeypatch.setattr(
+            rns_alignment, "_read_rpc_key_value",
+            lambda p, sudo=False: None if p == etc else self.KEY_A,
+        )
+        assert rns_alignment.check_gateway_rpc_key_alignment(
+            etc_path=etc, client_path=client,
+        ) is None
+
+    def test_first_start_no_client_config_passes(self, tmp_path, monkeypatch):
+        """Cold gateway start: client config doesn't exist yet (the
+        gateway will write it). Preflight must not block this."""
+        from utils import rns_alignment
+        etc = tmp_path / "etc_config"
+        client = tmp_path / "client_config"   # does not exist
+        self._write(etc, self.KEY_A)
+        monkeypatch.setattr(
+            rns_alignment, "_read_rpc_key_value",
+            lambda p, sudo=False: self.KEY_A if p == etc else None,
+        )
+        assert rns_alignment.check_gateway_rpc_key_alignment(
+            etc_path=etc, client_path=client,
+        ) is None
+
+    def test_rnsd_pinned_client_missing_key_refuses(self, tmp_path, monkeypatch):
+        """Issue #41 shape: rnsd pinned, client config present but no
+        key. Refuse-loud."""
+        from utils import rns_alignment
+        etc = tmp_path / "etc_config"
+        client = tmp_path / "client_config"
+        self._write(etc, self.KEY_A)
+        self._write(client, None)
+        monkeypatch.setattr(
+            rns_alignment, "_read_rpc_key_value",
+            lambda p, sudo=False: self.KEY_A if p == etc else None,
+        )
+        result = rns_alignment.check_gateway_rpc_key_alignment(
+            etc_path=etc, client_path=client,
+        )
+        assert result is not None
+        assert "no readable rpc_key" in result
+        assert self.KEY_A not in result   # secret must not leak
+
+    def test_divergent_keys_refuses(self, tmp_path, monkeypatch):
+        """Less common: client config has an old/stale key after rnsd
+        regenerated identity. Also refuse-loud."""
+        from utils import rns_alignment
+        etc = tmp_path / "etc_config"
+        client = tmp_path / "client_config"
+        self._write(etc, self.KEY_A)
+        self._write(client, self.KEY_B)
+        monkeypatch.setattr(
+            rns_alignment, "_read_rpc_key_value",
+            lambda p, sudo=False: self.KEY_A if p == etc else self.KEY_B,
+        )
+        result = rns_alignment.check_gateway_rpc_key_alignment(
+            etc_path=etc, client_path=client,
+        )
+        assert result is not None
+        assert "drift" in result.lower() or "different" in result.lower()
+        assert self.KEY_A not in result
+        assert self.KEY_B not in result
+
+
+class TestReadRpcKeyValueRejectsMalformed:
+    """The reader is the trust boundary for both pin propagation and the
+    Hardening F preflight. Reject anything that isn't a strict 64-hex
+    rpc_key — never accept a partial/typo'd value as if it were valid."""
+
+    def test_rejects_short_key(self, tmp_path):
+        from utils.rns_alignment import _read_rpc_key_value
+        f = tmp_path / "config"
+        f.write_text("rpc_key = abc123\n")
+        assert _read_rpc_key_value(f, sudo=False) is None
+
+    def test_rejects_non_hex(self, tmp_path):
+        from utils.rns_alignment import _read_rpc_key_value
+        f = tmp_path / "config"
+        f.write_text("rpc_key = " + "z" * 64 + "\n")
+        assert _read_rpc_key_value(f, sudo=False) is None
+
+    def test_accepts_indented_under_section(self, tmp_path):
+        from utils.rns_alignment import _read_rpc_key_value
+        f = tmp_path / "config"
+        f.write_text("[reticulum]\n  rpc_key = " + "a" * 64 + "\n")
+        assert _read_rpc_key_value(f, sudo=False) == "a" * 64
+
+    def test_normalizes_to_lowercase(self, tmp_path):
+        from utils.rns_alignment import _read_rpc_key_value
+        f = tmp_path / "config"
+        f.write_text("rpc_key = " + "A" * 64 + "\n")
+        assert _read_rpc_key_value(f, sudo=False) == "a" * 64
+
+    def test_skips_commented_line(self, tmp_path):
+        from utils.rns_alignment import _read_rpc_key_value
+        f = tmp_path / "config"
+        f.write_text("# rpc_key = " + "a" * 64 + "\n")
+        assert _read_rpc_key_value(f, sudo=False) is None
+
+    def test_returns_none_on_missing_file(self, tmp_path):
+        from utils.rns_alignment import _read_rpc_key_value
+        assert _read_rpc_key_value(tmp_path / "missing", sudo=False) is None
