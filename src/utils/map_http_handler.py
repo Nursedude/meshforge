@@ -177,18 +177,100 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
             self.send_header('Access-Control-Allow-Origin', origin)
             self.send_header('Vary', 'Origin')
 
+    def send_response(self, code, message=None):
+        """Override to capture status code for /metrics instrumentation.
+
+        BaseHTTPRequestHandler.send_response writes the status line
+        but doesn't expose the code. Phase D-3 metrics need it to
+        bucket requests as 2xx/3xx/4xx/5xx in Prometheus. Storing
+        on `self` is per-request safe (each request is a new
+        handler instance).
+        """
+        self._last_status = code
+        super().send_response(code, message)
+
     def do_GET(self):
+        # Phase D-3: top-level wrapper for HTTP metrics. The inner
+        # dispatch is unchanged.
+        import time as _time
+        start = _time.perf_counter()
         # Parse path and query once for all routes
         parsed = urlparse(self.path)
         path_only = parsed.path.rstrip('/')
         self._query = parse_qs(parsed.query)
+        self._last_status = 0  # reset; send_response will overwrite
 
+        try:
+            self._dispatch_get(path_only)
+        finally:
+            try:
+                from utils import map_metrics
+                duration = _time.perf_counter() - start
+                # Normalize endpoint label to keep cardinality small.
+                endpoint_label = self._endpoint_label(path_only)
+                map_metrics.record_http(
+                    method="GET",
+                    endpoint=endpoint_label,
+                    status_code=self._last_status or 0,
+                    duration_s=duration,
+                )
+            except (ImportError, Exception):  # never let metrics break dispatch
+                pass
+
+    @staticmethod
+    def _endpoint_label(path_only: str) -> str:
+        """Normalize a request path to a stable Prometheus label.
+
+        Bucket parametrized paths (e.g. /api/nodes/trajectory/<id>)
+        into a single template so cardinality stays bounded. This is
+        the bag-of-routes the Phase E dashboards will graph.
+        """
+        if path_only in (
+            "", "/index.html", "/healthz", "/metrics",
+            "/api/status", "/api/nodes/geojson", "/api/nodes/history",
+            "/api/messages/queue", "/api/messages/rx-status",
+            "/api/network/topology", "/api/region-presets",
+            "/api/settings", "/api/websocket/status", "/api/weather",
+        ):
+            return path_only or "/"
+        # Parametrized routes — bucket by prefix
+        if path_only.startswith("/api/nodes/trajectory/"):
+            return "/api/nodes/trajectory/{id}"
+        if path_only.startswith("/api/nodes/snapshot"):
+            return "/api/nodes/snapshot"
+        if path_only.startswith("/api/coverage/"):
+            return "/api/coverage/{lat}/{lon}/{alt}"
+        if path_only.startswith("/api/los/"):
+            return "/api/los/{lat1}/{lon1}/{lat2}/{lon2}"
+        if path_only.startswith("/api/messages/received"):
+            return "/api/messages/received"
+        if path_only.startswith("/api/v1/"):
+            return "/api/v1/*"
+        if path_only.startswith("/api/radio/"):
+            return "/api/radio/*"
+        if path_only.startswith("/api/proxy/"):
+            return "/api/proxy/*"
+        if path_only.startswith("/api/"):
+            return "/api/other"
+        # Static files / unknown — bucket together
+        return "/static_or_other"
+
+    def _dispatch_get(self, path_only: str):
         # /healthz is ALWAYS available — Prometheus + monitors poll
         # this; it must return 200 even during warming. State is
         # in the body so monitors can distinguish "ready" from
         # "warming" without breaking is-host-up checks.
         if path_only == '/healthz':
             self._serve_healthz()
+            return
+
+        # /metrics is ALWAYS available — Prometheus scrape target.
+        # During warming, gauges report state via SERVICE_UP=0 +
+        # SERVICE_WARMING_SINCE=<ts>; counters are still meaningful
+        # (no requests yet → all zeros), so a scrape during warming
+        # produces a valid sample, not a 503.
+        if path_only == '/metrics':
+            self._serve_metrics()
             return
 
         # Cold-start warming gate (F3). Issue: ThreadingHTTPServer
@@ -766,6 +848,38 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
         else:
             body = {"state": "ready"}
         self._serve_json(body, status=200)
+
+    def _serve_metrics(self):
+        """Prometheus scrape endpoint (/metrics).
+
+        Returns the standard text-format exposition for
+        prometheus_client's CollectorRegistry. When the optional
+        prometheus_client dep isn't installed, returns 503 + a
+        clear message rather than 500 — operators can still curl
+        /healthz to verify the service is up.
+        """
+        from utils import map_metrics
+
+        if not map_metrics.is_available():
+            self._serve_json(
+                {
+                    "error": "metrics_unavailable",
+                    "reason": "prometheus_client python module not installed",
+                    "fix": "pip install -r requirements/monitoring.txt",
+                },
+                status=503,
+            )
+            return
+        body, content_type = map_metrics.render()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass  # scraper bailed; nothing to do
 
     def _serve_warming_503(self, path_only: str):
         """503 response for any non-/healthz path while warming.

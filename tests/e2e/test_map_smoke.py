@@ -229,6 +229,99 @@ class TestHealthz:
             assert resp.status == 200
 
 
+class TestMetricsEndpoint:
+    """Phase D-3: /metrics is the Prometheus scrape target.
+
+    Contract:
+    - /metrics ALWAYS bypasses the warming gate (Prometheus scrapes
+      at startup; we don't want to lose the warming-time data).
+    - When prometheus_client is installed: returns 200 + the
+      standard text exposition format with the metric names locked
+      in `utils/map_metrics.py`.
+    - When NOT installed: returns 503 + structured error pointing
+      operators at requirements/monitoring.txt.
+    """
+
+    def test_metrics_returns_200_when_prom_available(self, map_server):
+        from utils import map_metrics
+        if not map_metrics.is_available():
+            pytest.skip("prometheus_client not installed in this venv")
+        with urllib.request.urlopen(
+            f"{map_server.url}/metrics", timeout=10
+        ) as resp:
+            assert resp.status == 200
+            content_type = resp.headers.get("Content-Type", "")
+            # prometheus_client ships text format 0.0.4 at minimum
+            assert "text/plain" in content_type
+            body = resp.read().decode("utf-8")
+        # Locked metric names — renaming breaks Phase E dashboards.
+        for required in (
+            "meshforge_map_service_up",
+            "meshforge_map_service_warming_started_seconds",
+            "meshforge_map_collector_runs_total",
+            "meshforge_map_collector_errors_total",
+            "meshforge_map_collector_nodes_yielded",
+            "meshforge_map_nodes_with_position",
+            "meshforge_map_nodes_without_position",
+            "meshforge_map_http_requests_total",
+            "meshforge_map_http_request_duration_seconds",
+        ):
+            assert required in body, (
+                f"Phase E dashboards depend on `{required}` — "
+                f"renaming or removing it breaks saved panels"
+            )
+
+    def test_metrics_records_http_request_count(self, map_server):
+        """A real /api/status request increments the http_requests
+        counter. This proves the do_GET wrapper is wired."""
+        from utils import map_metrics
+        if not map_metrics.is_available():
+            pytest.skip("prometheus_client not installed")
+        # Hit /api/status once to ensure at least 1 sample
+        urllib.request.urlopen(
+            f"{map_server.url}/api/status", timeout=10
+        ).read()
+        with urllib.request.urlopen(
+            f"{map_server.url}/metrics", timeout=10
+        ) as resp:
+            body = resp.read().decode("utf-8")
+        # Look for the api/status request count line
+        # Expected line shape:
+        #   meshforge_map_http_requests_total{endpoint="/api/status",method="GET",status_class="2xx"} N
+        api_status_lines = [
+            ln for ln in body.splitlines()
+            if "meshforge_map_http_requests_total" in ln
+            and 'endpoint="/api/status"' in ln
+            and "#" not in ln  # exclude HELP/TYPE lines
+        ]
+        assert api_status_lines, (
+            "expected meshforge_map_http_requests_total{endpoint=/api/status} sample"
+        )
+
+    def test_metrics_during_warming_does_not_503(self, tmp_path):
+        """/metrics must scrape cleanly even during cold-start warming
+        — Prometheus should never see 503 for metric scrapes, only
+        for /api/* endpoints. (Otherwise dashboards lose the
+        warming-window samples that show recovery rate.)"""
+        from tests.e2e.harness.map_server import MapServerHarness
+        from utils import map_metrics
+        if not map_metrics.is_available():
+            pytest.skip("prometheus_client not installed")
+
+        harness = MapServerHarness()
+        try:
+            harness.start(wait_ready=False)
+            # Hit /metrics during warming — must not 503
+            with urllib.request.urlopen(
+                f"{harness.url}/metrics", timeout=10
+            ) as resp:
+                assert resp.status == 200
+                body = resp.read().decode("utf-8")
+            assert "meshforge_map_service_up" in body
+        finally:
+            harness.stop()
+
+
 class TestWarmingState:
     """F3 fix: cold-start window returns 503 + state, not connection-refused.
 

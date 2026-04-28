@@ -385,6 +385,16 @@ class MapDataCollector(
         if "latency_ms" in existing:
             entry["latency_ms"] = existing["latency_ms"]
         self._source_diagnostics[source] = entry
+        # Mirror to Prometheus (Phase D-3). No-op when the optional
+        # prometheus_client dep isn't installed. We mirror here rather
+        # than at every collector site so a new collector source
+        # automatically gets metric coverage by virtue of using the
+        # standard diagnostic path.
+        try:
+            from utils import map_metrics
+            map_metrics.record_collect(source, yielded, reason_if_zero or "unknown")
+        except ImportError:
+            pass
 
     def _timed_collect(self, source: str, fn, *args, **kwargs):
         """Run `fn` and record its wall-time latency under `source`.
@@ -588,6 +598,20 @@ class MapDataCollector(
                 "online_threshold_minutes": self.get_online_threshold_seconds() // 60,
             }
         }
+
+        # Mirror node inventory to Prometheus (Phase D-3).
+        try:
+            from utils import map_metrics
+            by_network: Dict[str, int] = {}
+            for entry in self._nodes_without_position:
+                net = entry.get("network", "unknown")
+                by_network[net] = by_network.get(net, 0) + 1
+            map_metrics.set_node_inventory(
+                with_position=len(features),
+                without_position_by_network=by_network,
+            )
+        except ImportError:
+            pass
 
         # Collection summary (INFO — surfaces without --verbose)
         logger.info(

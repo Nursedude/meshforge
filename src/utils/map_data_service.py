@@ -402,6 +402,7 @@ class MapServer:
         cache-driven path inside `MapDataCollector.collect()`.
         """
         from utils.map_http_handler import MapRequestHandler
+        from utils import map_metrics
         try:
             self.collector.collect()
         except Exception as e:
@@ -411,6 +412,7 @@ class MapServer:
             # threw — endpoints will fail their own way thereafter,
             # which is more useful than indefinite 503.
             MapRequestHandler.is_warming = False
+            map_metrics.set_warming(None)  # ready: SERVICE_UP=1
             logger.info("MapServer warmup complete; serving live traffic")
 
     def start(self):
@@ -433,6 +435,8 @@ class MapServer:
         MapRequestHandler.allowed_origins = self.cors_origins
         MapRequestHandler.is_warming = True
         MapRequestHandler.warming_started_at = time.time()
+        from utils import map_metrics
+        map_metrics.set_warming(MapRequestHandler.warming_started_at)
 
         # Start WebSocket server first (so callback can be registered)
         self._start_websocket_server()
@@ -519,6 +523,8 @@ class MapServer:
         # not a 200 from a server that hasn't initialized handlers.
         MapRequestHandler.is_warming = True
         MapRequestHandler.warming_started_at = time.time()
+        from utils import map_metrics
+        map_metrics.set_warming(MapRequestHandler.warming_started_at)
 
         # Start WebSocket server first (so callback can be registered)
         self._start_websocket_server()

@@ -5,3 +5,10 @@ psutil>=5.9.0
 
 # WebSocket support (real-time message broadcast)
 websockets>=12.0
+
+# Prometheus metrics endpoint (/metrics on the map server).
+# Optional: when not installed, /metrics returns 503 with a clear
+# message — does not break the rest of the service. Pinned via the
+# >= floor only because the API surface we use (Counter, Gauge,
+# generate_latest, CONTENT_TYPE_LATEST) has been stable since 0.10.
+prometheus_client>=0.14.0
