@@ -255,6 +255,19 @@ def print_status(status: dict):
         mesh_to_rns = stats.get('messages_mesh_to_rns', 0)
         rns_to_mesh = stats.get('messages_rns_to_mesh', 0)
         print(f"Messages bridged: {mesh_to_rns + rns_to_mesh} (M->R: {mesh_to_rns}, R->M: {rns_to_mesh})")
+        # Hardening D triplet — surfaces "tried but didn't deliver" so a
+        # silent stall (queue full / channel deployment gap) doesn't hide
+        # behind the legacy single delivered counter.
+        m2r_a = stats.get('mesh_to_rns_attempted', 0)
+        m2r_d = stats.get('mesh_to_rns_dropped', 0)
+        r2m_a = stats.get('rns_to_mesh_attempted', 0)
+        r2m_d = stats.get('rns_to_mesh_dropped', 0)
+        if m2r_a or r2m_a:
+            print(
+                f"  attempted/delivered/dropped — "
+                f"M->R: {m2r_a}/{mesh_to_rns}/{m2r_d}  "
+                f"R->M: {r2m_a}/{rns_to_mesh}/{r2m_d}"
+            )
 
     node_stats = status.get('node_stats', {})
     if node_stats:
@@ -311,6 +324,16 @@ def print_multi_status(instances):
             m2r = stats.get("messages_mesh_to_rns", 0)
             r2m = stats.get("messages_rns_to_mesh", 0)
             print(f"    Messages bridged: {m2r + r2m} (M->R: {m2r}, R->M: {r2m})")
+            m2r_a = stats.get("mesh_to_rns_attempted", 0)
+            m2r_d = stats.get("mesh_to_rns_dropped", 0)
+            r2m_a = stats.get("rns_to_mesh_attempted", 0)
+            r2m_d = stats.get("rns_to_mesh_dropped", 0)
+            if m2r_a or r2m_a:
+                print(
+                    f"      att/del/drop — "
+                    f"M->R: {m2r_a}/{m2r}/{m2r_d}  "
+                    f"R->M: {r2m_a}/{r2m}/{r2m_d}"
+                )
     print(f"{'='*50}")
     print("Press Ctrl+C to stop and return to menu\n")
 
