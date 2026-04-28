@@ -45,6 +45,60 @@ def _rns_is_initialized() -> bool:
         return False
 
 
+def init_rns_singleton() -> bool:
+    """Initialize the process-wide RNS Reticulum singleton.
+
+    Idempotent: returns True if already initialized. Returns True on
+    successful initialization, False if RNS module isn't installed.
+    Raises on unexpected errors (see two-known-OSError cases below).
+
+    MUST be called from the main thread to install signal handlers
+    cleanly (Issue #44). Used by both:
+      1. Cold-start prewarm in `MapServer._init_rns_main_thread()`
+         — runs BEFORE binding `:5000` so worker-thread requests can
+         safely reuse the singleton.
+      2. Lazy init in `_collect_rns_direct()` — second-line-of-defense
+         when the prewarm didn't happen (e.g. legacy callers).
+
+    The two known recoverable OSError cases:
+      - "Attempt to reinitialise Reticulum" — another in-process
+        component (gateway, NomadNet helper) beat us to init.
+      - "signal only works in main thread" — caller violated the
+        main-thread requirement; Reticulum.__instance is set anyway
+        (line 226, before line 349 signal call) so Transport works.
+    """
+    if not _HAS_RNS:
+        return False
+    if _rns_is_initialized():
+        return True
+    import tempfile
+    from utils.paths import ReticulumPaths
+    instance_name = ReticulumPaths.get_configured_instance_name()
+    client_config_dir = Path(tempfile.gettempdir()) / "meshforge_rns_client"
+    client_config_dir.mkdir(exist_ok=True)
+    client_config_file = client_config_dir / "config"
+    lines = [
+        "[reticulum]",
+        "  share_instance = Yes",
+        "  shared_instance_port = 37428",
+        "  instance_control_port = 37429",
+        f"  instance_name = {instance_name}",
+    ]
+    rpc_key = ReticulumPaths.get_shared_rpc_key()
+    if rpc_key:
+        lines.append(f"  rpc_key = {rpc_key}")
+    client_config_file.write_text("\n".join(lines) + "\n")
+    try:
+        _RNS.Reticulum(configdir=str(client_config_dir))
+        return True
+    except (OSError, ValueError) as e:
+        msg = str(e).lower()
+        if "reinitialise" in msg or "main thread" in msg:
+            logger.debug("RNS already partially-initialized (%s) — reusing", e)
+            return True
+        raise
+
+
 class RNSDataCollectorMixin:
     """Mixin providing RNS data collection methods for MapDataCollector."""
 
@@ -92,49 +146,11 @@ class RNSDataCollectorMixin:
         rns_positions = self._load_rns_position_cache()
 
         try:
-            # Initialize the Reticulum client ONCE per process. Subsequent
-            # collect cycles read Transport.path_table directly — it's a
-            # class-level singleton and stays live. Calling Reticulum(...)
-            # a second time in the same process raises OSError (see the
-            # _rns_is_initialized() helper above for the mechanism).
-            if not _rns_is_initialized():
-                import tempfile
-                client_config_dir = Path(tempfile.gettempdir()) / "meshforge_rns_client"
-                client_config_dir.mkdir(exist_ok=True)
-                client_config_file = client_config_dir / "config"
-                lines = [
-                    "[reticulum]",
-                    "  share_instance = Yes",
-                    "  shared_instance_port = 37428",
-                    "  instance_control_port = 37429",
-                    f"  instance_name = {instance_name}",
-                ]
-                rpc_key = ReticulumPaths.get_shared_rpc_key()
-                if rpc_key:
-                    lines.append(f"  rpc_key = {rpc_key}")
-                client_config_file.write_text("\n".join(lines) + "\n")
-                try:
-                    _RNS.Reticulum(configdir=str(client_config_dir))
-                except (OSError, ValueError) as e:
-                    # Two known cases where init fails but Transport is still
-                    # usable and we should not record 'unreachable':
-                    #   1. "Attempt to reinitialise Reticulum" — another
-                    #      component beat us to init (gateway path).
-                    #   2. "signal only works in main thread of the main
-                    #      interpreter" — init ran in a ThreadingHTTPServer
-                    #      worker thread and failed at signal.signal()
-                    #      registration (RNS/Reticulum.py:349). At that point
-                    #      Reticulum.__instance is ALREADY set (line 226,
-                    #      before the signal call), so get_instance() returns
-                    #      a partially-initialized object and Transport is
-                    #      running. Ideally pre-warm from the main thread
-                    #      prevents this (see MapServer._prewarm_collector),
-                    #      but catch it here as a second line of defense.
-                    msg = str(e).lower()
-                    if "reinitialise" in msg or "main thread" in msg:
-                        logger.debug("RNS already partially-initialized (%s) — reusing", e)
-                    else:
-                        raise
+            # Init the Reticulum client ONCE per process. Idempotent
+            # via init_rns_singleton(); main-thread prewarm in
+            # MapServer._init_rns_main_thread() is the preferred
+            # callsite — this is the lazy fallback for legacy callers.
+            init_rns_singleton()
 
             # Check for known destinations in path table
             if hasattr(_RNS.Transport, 'path_table') and _RNS.Transport.path_table:

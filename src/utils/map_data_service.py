@@ -355,34 +355,84 @@ class MapServer:
     def _prewarm_collector(self):
         """Run one collect() on the main thread before starting threaded HTTP.
 
-        RNS.Reticulum.__init__ registers SIGINT/SIGTERM handlers via
-        signal.signal(), which only works on the main thread. If the first
-        collect() runs in a ThreadingHTTPServer worker, the RNS init raises
-        "signal only works in main thread of the main interpreter" and the
-        rns_direct source gets stuck reporting unreachable forever (the
-        singleton never gets to the else branch because init never finishes).
-
-        Calling collect() here does two things on the main thread:
-          1. RNS.Reticulum() runs if rnsd is reachable — signal handlers
-             install cleanly; subsequent worker-thread calls hit the
-             singleton-reuse branch in _map_collector_rns and skip init.
-          2. The cache is populated so the first HTTP request is instant
-             instead of eating the collector cold-start latency.
+        Used by the blocking `start()` path which has no warming concept
+        (monitor sees connection-refused for the prewarm duration and
+        that's expected). The background path uses
+        `_init_rns_main_thread()` + `_run_warmup()` instead — see F3 fix.
 
         Any failure is non-fatal — the server still starts, the next
-        cache-miss request runs collect() again (and may fail the same way
-        if, say, rnsd came up between calls; not worse than before).
+        cache-miss request runs collect() again.
         """
         try:
             self.collector.collect()
         except Exception as e:
             logger.warning("Collector pre-warm failed (non-fatal): %s", e)
 
+    def _init_rns_main_thread(self):
+        """Cheap main-thread RNS singleton init (Issue #44 invariant).
+
+        F3 (cold-start bind warming) splits the heavy `_prewarm_collector()`
+        into two steps so we can bind `:5000` *before* the slow collect
+        runs — eliminating the 10-30s "connection refused" window on
+        cold start.
+
+        This step does ONLY the RNS singleton init (which calls
+        `signal.signal()` and so MUST run on the main thread). The
+        full first collect runs in a background thread after bind.
+
+        Non-fatal if it fails (rnsd not running, etc.) — the lazy
+        fallback in `_collect_rns_direct` still triggers later.
+        """
+        try:
+            from utils._map_collector_rns import init_rns_singleton
+            init_rns_singleton()
+        except Exception as e:
+            logger.warning("RNS main-thread init failed (non-fatal): %s", e)
+
+    def _run_warmup(self):
+        """Background-thread first collect, atomic-swap warming → ready.
+
+        F3 fix: invoked from a daemon thread spawned in
+        `start_background()` *after* the server has bound `:5000`. The
+        `MapRequestHandler.is_warming` flag is the gate that turns 503
+        warming responses into normal handler dispatch.
+
+        The flag flip is the only state transition; never set back to
+        True at runtime. Subsequent collect cycles run via the normal
+        cache-driven path inside `MapDataCollector.collect()`.
+        """
+        from utils.map_http_handler import MapRequestHandler
+        try:
+            self.collector.collect()
+        except Exception as e:
+            logger.warning("Collector warmup failed (non-fatal): %s", e)
+        finally:
+            # Always exit warming state, even if the first collect
+            # threw — endpoints will fail their own way thereafter,
+            # which is more useful than indefinite 503.
+            MapRequestHandler.is_warming = False
+            logger.info("MapServer warmup complete; serving live traffic")
+
     def start(self):
-        """Start server (blocking)."""
+        """Start server (blocking) — bind-first warming (F3).
+
+        Same warming sequence as start_background(): bind first,
+        spawn warmup thread, then serve_forever in this (main)
+        thread. /healthz returns 200 immediately on bind; other
+        paths return 503 until the warmup completes.
+
+        This is the path used by the systemd unit
+        (`utils.map_data_service --daemon`); F3 is meaningless if
+        only start_background() got the fix. Phase D-2 of the
+        map-domain audit arc.
+        """
+        import time
+
         MapRequestHandler.collector = self.collector
         MapRequestHandler.web_dir = self.web_dir
         MapRequestHandler.allowed_origins = self.cors_origins
+        MapRequestHandler.is_warming = True
+        MapRequestHandler.warming_started_at = time.time()
 
         # Start WebSocket server first (so callback can be registered)
         self._start_websocket_server()
@@ -390,15 +440,10 @@ class MapServer:
         # Start message listener for inbound messages
         self._start_message_listener()
 
-        # Pre-warm collectors on the main thread BEFORE starting
-        # ThreadingHTTPServer. RNS.Reticulum.__init__ unconditionally
-        # calls signal.signal(SIGINT/SIGTERM, ...) (Reticulum.py:349-350),
-        # which raises "signal only works in main thread of the main
-        # interpreter" if first called from a request-handler worker
-        # thread. Doing one collect() here installs the handlers on the
-        # main thread; subsequent in-worker-thread calls reuse the
-        # singleton via _rns_is_initialized() in _map_collector_rns.
-        self._prewarm_collector()
+        # Cheap main-thread RNS init (Issue #44 — signal.signal must
+        # run on main thread). NO full collect; that runs in the
+        # warmup thread after bind.
+        self._init_rns_main_thread()
 
         # ThreadingHTTPServer: one thread per request so a slow endpoint
         # (e.g. /api/nodes/geojson returning 20MB for ~38k MeshCore features)
@@ -408,7 +453,11 @@ class MapServer:
         # MapDataCollector.collect's lock) so multi-threading here is safe.
         self._server = ThreadingHTTPServer((self.host, self.port), MapRequestHandler)
         self._server.daemon_threads = True
-        logger.info(f"Map server starting on http://{self.host}:{self.port}")
+        logger.info(
+            f"Map server bound on http://{self.host}:{self.port} "
+            f"(warming); /healthz available, other paths 503 until "
+            f"first collect completes"
+        )
         print(f"MeshForge NOC Server running on port {self.port}")
         if self.host == "0.0.0.0":
             # Show all available IPs when binding to all interfaces
@@ -425,6 +474,13 @@ class MapServer:
             print(f"  Mesh Client: https://{self.host}:{self.meshtasticd_port}/ (native)")
         print("  Press Ctrl+C to stop")
 
+        # Warmup runs after bind. The flag flip on completion turns
+        # 503 warming responses into normal handler dispatch.
+        self._warmup_thread = threading.Thread(
+            target=self._run_warmup, daemon=True, name="map-warmup"
+        )
+        self._warmup_thread.start()
+
         try:
             self._server.serve_forever()
         except KeyboardInterrupt:
@@ -433,10 +489,36 @@ class MapServer:
             self._server.shutdown()
 
     def start_background(self):
-        """Start server in background thread."""
+        """Start server in background thread with bind-first warming (F3).
+
+        Sequence (F3 — closes the cold-start "connection refused" window):
+          1. Wire MapRequestHandler class attrs.
+          2. Set is_warming=True + warming_started_at so /healthz can
+             report elapsed warming time and other paths return 503.
+          3. Start WebSocket + message listener (cheap; no RNS).
+          4. _init_rns_main_thread(): cheap RNS singleton init on the
+             main thread (Issue #44 — signal.signal must be main).
+          5. Bind ThreadingHTTPServer immediately. /healthz starts
+             returning 200 here.
+          6. Spawn the warmup thread — runs the slow first collect and
+             atomic-swaps is_warming → False on completion.
+          7. Spawn the serve_forever thread.
+
+        Pre-F3, step 5 ran AFTER a synchronous _prewarm_collector(),
+        so the bind blocked for 10-30s and any external scraper saw
+        plain connection-refused — indistinguishable from a hard
+        failure. Phase D-2 of the map-domain audit arc closes this.
+        """
+        import time
+
         MapRequestHandler.collector = self.collector
         MapRequestHandler.web_dir = self.web_dir
         MapRequestHandler.allowed_origins = self.cors_origins
+        # Enter warming state BEFORE bind so the very first request
+        # (race-window: monitor polls during step 5) sees 503 + state,
+        # not a 200 from a server that hasn't initialized handlers.
+        MapRequestHandler.is_warming = True
+        MapRequestHandler.warming_started_at = time.time()
 
         # Start WebSocket server first (so callback can be registered)
         self._start_websocket_server()
@@ -444,15 +526,26 @@ class MapServer:
         # Start message listener for inbound messages
         self._start_message_listener()
 
-        # Same main-thread pre-warm as start() — install RNS signal
-        # handlers before spawning request-handler worker threads.
-        self._prewarm_collector()
+        # Cheap main-thread RNS init (Issue #44). NO full collect.
+        self._init_rns_main_thread()
 
         self._server = ThreadingHTTPServer((self.host, self.port), MapRequestHandler)
         self._server.daemon_threads = True
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
-        logger.info(f"Map server running in background on port {self.port}")
+        logger.info(
+            f"Map server bound on port {self.port} (warming); "
+            f"/healthz available, other paths return 503 until first "
+            f"collect completes"
+        )
+
+        # Warmup runs after bind so /healthz can report state. The
+        # collector's internal lock makes the parallel-request case
+        # safe (Issue #44 TestCollectIsThreadSafe).
+        self._warmup_thread = threading.Thread(
+            target=self._run_warmup, daemon=True, name="map-warmup"
+        )
+        self._warmup_thread.start()
 
     def stop(self):
         """Stop the server."""

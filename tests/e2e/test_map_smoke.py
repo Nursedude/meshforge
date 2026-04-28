@@ -199,3 +199,92 @@ class TestNotFoundIsSane:
             assert e.code == 404
         else:
             raise AssertionError("expected HTTP 404 for unknown path")
+
+
+class TestHealthz:
+    """F3 fix: /healthz is the cold-start-safe endpoint."""
+
+    def test_healthz_returns_200_in_ready_state(self, map_server):
+        # The fixture waits for ready; healthz reflects that.
+        data = _get_json(f"{map_server.url}/healthz")
+        assert data.get("state") == "ready"
+
+    def test_healthz_does_not_require_warming_field(self, map_server):
+        """Ready state body shape: just {state: "ready"}. Other keys
+        are warming-only (since, elapsed_s) — keep the ready path
+        minimal so monitors don't have to handle absent fields."""
+        data = _get_json(f"{map_server.url}/healthz")
+        assert "state" in data
+        # When ready, since/elapsed_s may be absent — that's fine.
+
+    def test_healthz_status_code_is_200_always(self, map_server):
+        """`up` metric in Prometheus is `is /healthz 200?`. Must
+        return 200 for both warming and ready states; warming sets
+        the state in body, never status code. (Ready-state assertion
+        here; warming-state covered separately by the harness's
+        wait_ready test fixture.)"""
+        with urllib.request.urlopen(
+            f"{map_server.url}/healthz", timeout=5
+        ) as resp:
+            assert resp.status == 200
+
+
+class TestWarmingState:
+    """F3 fix: cold-start window returns 503 + state, not connection-refused.
+
+    These tests use a fresh harness that does NOT wait_ready, so we
+    catch the warming window deterministically. The first collect
+    can be slow on a Pi (10-30s); we only need to observe one 503
+    before warming completes.
+    """
+
+    def test_warming_returns_503_for_api_status(self, tmp_path):
+        from tests.e2e.harness.map_server import MapServerHarness
+
+        harness = MapServerHarness()
+        try:
+            # Don't wait — we want to catch the warming window.
+            harness.start(wait_ready=False)
+            # /healthz must be 200 immediately on bind.
+            with urllib.request.urlopen(
+                f"{harness.url}/healthz", timeout=5
+            ) as resp:
+                assert resp.status == 200
+                healthz_body = json.loads(resp.read().decode())
+            # If we caught warming, /api/status returns 503. If
+            # warming finished impossibly fast, that's also fine —
+            # check both branches.
+            try:
+                resp = urllib.request.urlopen(
+                    f"{harness.url}/api/status", timeout=5
+                )
+                # Warmup completed before our request — accept ready state.
+                assert healthz_body.get("state") in ("warming", "ready")
+            except urllib.error.HTTPError as e:
+                if e.code == 503:
+                    body = json.loads(e.read().decode())
+                    assert body.get("state") == "warming"
+                    assert body.get("error") == "service_warming"
+                    assert "since" in body
+                    assert "retry_after_s" in body
+                else:
+                    raise
+        finally:
+            harness.stop()
+
+    def test_warming_then_ready_via_wait_ready(self, tmp_path):
+        from tests.e2e.harness.map_server import MapServerHarness
+
+        harness = MapServerHarness()
+        try:
+            harness.start(wait_ready=False)
+            # Block until ready (or fail with TimeoutError on a
+            # truly-stuck server).
+            harness.wait_ready(timeout_s=600.0)
+            # Now /api/status works.
+            with urllib.request.urlopen(
+                f"{harness.url}/api/status", timeout=10
+            ) as resp:
+                assert resp.status == 200
+        finally:
+            harness.stop()

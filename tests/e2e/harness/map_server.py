@@ -15,8 +15,12 @@ exercises the HTTP wiring + main-thread RNS init invariant
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
+import time
+import urllib.error
+import urllib.request
 from typing import Optional
 
 
@@ -59,7 +63,18 @@ class MapServerHarness:
     def url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
-    def start(self) -> None:
+    def start(self, wait_ready: bool = True, timeout_s: float = 600.0) -> None:
+        """Start the in-process MapServer.
+
+        Args:
+            wait_ready: When True (default), block until /healthz
+                reports state="ready". Tests that want to assert
+                warming-state behavior should pass wait_ready=False
+                and check the state explicitly.
+            timeout_s: Max seconds to wait for warming. The first
+                collect can be slow (F3 cold-start latency); 10
+                minutes is a generous ceiling for a Pi-class box.
+        """
         # Lazy import: keeps test collection cheap when the harness
         # isn't used (e.g. during a `pytest tests/test_rf.py`).
         from utils.map_data_service import MapServer
@@ -74,6 +89,35 @@ class MapServerHarness:
                 enable_websocket=False,
             )
             self._server.start_background()
+
+        if wait_ready:
+            self.wait_ready(timeout_s=timeout_s)
+
+    def wait_ready(self, timeout_s: float = 600.0, poll_s: float = 0.5) -> None:
+        """Block until /healthz reports state="ready" or timeout.
+
+        Raises TimeoutError if warming doesn't complete in time.
+        Useful when tests need ready state but want to sleep/work
+        between start() and the wait.
+        """
+        deadline = time.time() + timeout_s
+        last_state = "<no response>"
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(
+                    f"{self.url}/healthz", timeout=2
+                ) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    last_state = data.get("state", "<missing>")
+                    if last_state == "ready":
+                        return
+            except (urllib.error.URLError, OSError) as e:
+                last_state = f"error: {e}"
+            time.sleep(poll_s)
+        raise TimeoutError(
+            f"MapServer at {self.url} did not become ready in "
+            f"{timeout_s}s; last /healthz state: {last_state}"
+        )
 
     def stop(self) -> None:
         with self._lock:

@@ -146,6 +146,15 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
     # Meshtastic API proxy (deprecated — always None, kept for graceful 503 responses)
     api_proxy = None
 
+    # Cold-start warming state (Issue #44 / F3). True from server bind
+    # until the background warmup thread completes its first collect.
+    # Atomic-swap to False is the only state transition; never set back
+    # to True at runtime. /healthz returns 200 in either state.
+    is_warming = False
+    # Unix timestamp when the server bound — included in 503 warming
+    # responses so monitors can compute "warming for N seconds."
+    warming_started_at: Optional[float] = None
+
     # Default allowed origins when none explicitly configured
     _DEFAULT_ORIGINS = ['http://localhost', 'https://localhost']
 
@@ -173,6 +182,22 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
         parsed = urlparse(self.path)
         path_only = parsed.path.rstrip('/')
         self._query = parse_qs(parsed.query)
+
+        # /healthz is ALWAYS available — Prometheus + monitors poll
+        # this; it must return 200 even during warming. State is
+        # in the body so monitors can distinguish "ready" from
+        # "warming" without breaking is-host-up checks.
+        if path_only == '/healthz':
+            self._serve_healthz()
+            return
+
+        # Cold-start warming gate (F3). Issue: ThreadingHTTPServer
+        # binds AFTER _prewarm_collector() finishes, so :5000 was
+        # connection-refused for 10-30s on cold start. We now bind
+        # first and surface the warming state explicitly.
+        if self.is_warming:
+            self._serve_warming_503(path_only)
+            return
 
         if path_only == '/api/nodes/geojson':
             self._serve_geojson()
@@ -718,6 +743,55 @@ class MapRequestHandler(RadioEndpointsMixin, MeshtasticProxyMixin, SimpleHTTPReq
                     return False
                 return True
         return False
+
+    def _serve_healthz(self):
+        """Cold-start-safe health endpoint.
+
+        Returns 200 in both warming and ready states so generic
+        is-host-up monitors don't false-alarm during cold start.
+        State is in the body — Prometheus's `up` metric becomes 1
+        as soon as we bind, but a panel can derive "warming time"
+        from `state` + `since`.
+        """
+        import time
+        if self.is_warming:
+            body = {
+                "state": "warming",
+                "since": self.warming_started_at,
+                "elapsed_s": (
+                    time.time() - self.warming_started_at
+                    if self.warming_started_at else None
+                ),
+            }
+        else:
+            body = {"state": "ready"}
+        self._serve_json(body, status=200)
+
+    def _serve_warming_503(self, path_only: str):
+        """503 response for any non-/healthz path while warming.
+
+        F3 fix: pre-Phase-D, the server didn't bind until prewarm
+        completed → external monitors saw connection-refused for
+        10-30s on cold start, indistinguishable from a hard failure.
+        Now we bind first and return 503 explicitly with `state` and
+        `since` so monitors can distinguish startup-warming from
+        sustained-down. Retry-After advises clients to back off.
+        """
+        import time
+        self._serve_json(
+            {
+                "error": "service_warming",
+                "state": "warming",
+                "path": path_only,
+                "since": self.warming_started_at,
+                "elapsed_s": (
+                    time.time() - self.warming_started_at
+                    if self.warming_started_at else None
+                ),
+                "retry_after_s": 10,
+            },
+            status=503,
+        )
 
     def _serve_json(self, obj: Any, status: int = 200):
         """Helper to serve a JSON response, gzip-compressed when client supports it."""
