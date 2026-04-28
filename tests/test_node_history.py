@@ -484,6 +484,23 @@ class TestDirectoryRetention:
         # long-tail "did we hear this node" question.
         assert DEFAULT_RETENTION_SECONDS == 48 * 3600
 
+    def test_public_fallback_is_external_bulk(self, tmp_path):
+        # public_fallback (meshmap.net / rmap.world global Meshtastic
+        # firehose) IS external bulk and must use the 7d tier — caught
+        # live on moc1 first restart where 10,241 public_fallback rows
+        # were initially routed to the 30d local tier.
+        from utils.node_history import EXTERNAL_BULK_ORIGINS
+        assert "public_fallback" in EXTERNAL_BULK_ORIGINS
+        h = self._hist(tmp_path)
+        # Aged 8 days — past 7d external retention.
+        self._seed(h, "!pf_old", source_origin="public_fallback",
+                   last_seen_offset_s=-(8 * 86400))
+        h._last_prune_ts = 0.0
+        h._maybe_prune(time.time())
+        assert not self._has(h, "!pf_old"), (
+            "public_fallback row past 7d not pruned — tier regression"
+        )
+
 
 class TestDirectoryStats:
     """get_directory_stats() shape — drives the new /api/status block."""

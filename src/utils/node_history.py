@@ -70,6 +70,7 @@ EXTERNAL_BULK_ORIGINS = frozenset({
     "meshcore_public",   # https://map.meshcore.dev — 40k global
     "aredn_worldmap",    # AREDN worldmap CSV — global
     "mqtt_global",       # MQTT region-wide aggregator (firehose)
+    "public_fallback",   # meshmap.net / rmap.world — global Meshtastic firehose
 })
 
 # Sticky promotion priority — higher number wins on UPSERT collision.
