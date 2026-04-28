@@ -1,0 +1,55 @@
+# MeshForge Prometheus scrape config (Phase D-4 of map-domain audit arc).
+#
+# Hosted on moc1 (per the locked-in arc decision: Prometheus + Grafana
+# co-locate on moc1; moc2 is the test bed and first scrape target).
+# Add more scrape targets to the `meshforge-map` static_configs as the
+# rest of the fleet (moc, moc3, volcanoai) gets validated.
+#
+# Scrape interval = 30s: balances freshness against the Pi-class cost
+# of /metrics generation + the SD wear of repeated SQLite reads (the
+# /healthz path is the hot spot and is cheap; /metrics is the more
+# expensive path because it serializes the full registry).
+#
+# Retention: 15d default (Prometheus ships with --storage.tsdb.retention.time=15d).
+# Override via /etc/default/prometheus if disk pressure becomes a concern.
+
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+  external_labels:
+    monitor: meshforge-fleet
+    role: noc
+
+scrape_configs:
+  # Local Prometheus self-monitoring — the standard pattern. Useful
+  # for "is the scraper itself healthy" panels in Phase E Grafana.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # MeshForge map service (:5000/metrics on each fleet box).
+  # Phase D-4 starts with moc2 only — the test bed; add other hosts
+  # after validating they don't false-alarm during the warming window
+  # (F3 + the warming-503 contract handles cold start gracefully).
+  - job_name: meshforge-map
+    metrics_path: /metrics
+    scrape_interval: 30s
+    # /healthz on the map service returns 200 in BOTH warming and
+    # ready states (Phase D-2). Prometheus's `up` metric becomes 1
+    # as soon as the box binds :5000, even before the first collect
+    # completes — distinguishing genuinely-down from cold-starting.
+    static_configs:
+      - targets:
+          - "moc2:5000"
+        labels:
+          fleet_role: test_bed
+          hardware: pi4b
+    # When adding the rest of the fleet, follow this shape:
+    #     - targets:
+    #         - "moc:5000"
+    #         - "moc1:5000"
+    #         - "volcanoai:5000"
+    #       labels:
+    #         fleet_role: production
+    # And split moc3 separately if its Pi 3B 1GB RAM constraint
+    # warrants different alert thresholds (see project_map_arc_findings).
