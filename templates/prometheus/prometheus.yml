@@ -2,8 +2,8 @@
 #
 # Hosted on moc1 (per the locked-in arc decision: Prometheus + Grafana
 # co-locate on moc1; moc2 is the test bed and first scrape target).
-# Add more scrape targets to the `meshforge-map` static_configs as the
-# rest of the fleet (moc, moc3, volcanoai) gets validated.
+# Add more scrape targets to the `meshforge-map` static_configs as
+# additional fleet boxes get validated (operator hostname-agnostic).
 #
 # Scrape interval = 30s: balances freshness against the Pi-class cost
 # of /metrics generation + the SD wear of repeated SQLite reads (the
@@ -46,10 +46,11 @@ scrape_configs:
           hardware: pi4b
     # When adding the rest of the fleet, follow this shape:
     #     - targets:
-    #         - "moc:5000"
-    #         - "moc1:5000"
-    #         - "volcanoai:5000"
+    #         - "<box-a>:5000"
+    #         - "<box-b>:5000"
+    #         - "<box-c>:5000"
     #       labels:
     #         fleet_role: production
-    # And split moc3 separately if its Pi 3B 1GB RAM constraint
-    # warrants different alert thresholds (see project_map_arc_findings).
+    # Split low-resource boxes (Pi 3B / 1GB) into a separate static_config
+    # if they warrant different alert thresholds — see
+    # project_map_arc_findings memory for the rationale.
