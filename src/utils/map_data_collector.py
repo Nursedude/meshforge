@@ -709,12 +709,47 @@ class MapDataCollector(
         self._last_collect = time.time()
         self._save_cache(geojson)
 
-        # Record to history database
-        if self._history and geojson["features"]:
-            try:
-                self._history.record_observations(geojson["features"])
-            except Exception as e:
-                logger.debug(f"History recording error: {e}")
+        # Record to history database. Pass BOTH positioned features AND
+        # position-less nodes (synthesized into geometry-less features)
+        # so the directory table (Issue #49) gets a row per node we
+        # heard about — including MeshCore adverts and RNS announces
+        # that carry no GPS by protocol design. The observation-stream
+        # writer in record_observations skips position-less rows itself
+        # (it requires lat/lon for the time-series); the directory
+        # writer handles them via NULL last_lat/last_lon.
+        if self._history:
+            history_features = list(geojson["features"])
+            for entry in self._nodes_without_position:
+                nid = entry.get("id")
+                if not nid:
+                    continue
+                # Tier-aware origin tagging mirrors the per-source path:
+                # MeshCore via the unified tracker is local-RX (gateway
+                # bridge), RNS announces are rns_path_table, everything
+                # else falls into local_radio. Position-less features
+                # never came through one of the threshold-gated external
+                # collectors, so they don't get external_bulk tags.
+                net = (entry.get("network") or "").lower()
+                if net == "rns":
+                    origin = "rns_path_table"
+                else:
+                    origin = "local_radio"
+                history_features.append({
+                    "type": "Feature",
+                    "geometry": {},  # explicit no-position
+                    "properties": {
+                        "id": nid,
+                        "name": entry.get("name", nid),
+                        "network": entry.get("network", "unknown"),
+                        "is_online": entry.get("is_online", False),
+                        "source_origin": origin,
+                    },
+                })
+            if history_features:
+                try:
+                    self._history.record_observations(history_features)
+                except Exception as e:
+                    logger.debug(f"History recording error: {e}")
 
         return geojson
 

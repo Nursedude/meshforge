@@ -20,6 +20,53 @@ def collector(tmp_path):
     return MapDataCollector(cache_dir=tmp_path, enable_history=False)
 
 
+class TestPositionLessThroughHistory:
+    """Issue #49 follow-up — position-less nodes (MeshCore adverts, RNS
+    announces) must reach the directory table. Caught live on moc3:
+    1237 unified_tracker nodes had no GPS and weren't being persisted
+    despite the directory schema supporting NULL lat/lon."""
+
+    def test_synthesizes_features_for_position_less(self, tmp_path):
+        from utils.map_data_collector import MapDataCollector
+        c = MapDataCollector(cache_dir=tmp_path, enable_history=True)
+        # Mock the collect path to skip every real source.
+        for src in ("_collect_unified_tracker", "_collect_meshtasticd",
+                    "_collect_direct_radio", "_collect_mqtt",
+                    "_collect_node_tracker", "_collect_aredn",
+                    "_collect_aredn_worldmap", "_collect_rns_direct",
+                    "_collect_meshcore_public",
+                    "_collect_public_fallbacks"):
+            setattr(c, src, lambda *a, **kw: [])
+        # Inject position-less entries directly so the synthetic-feature
+        # path is exercised end-to-end.
+        c._collect_locked.__func__  # ensure attribute exists
+        c._nodes_without_position = []
+        # Patch one collector to populate the list.
+        def _fake_unified():
+            c._nodes_without_position.extend([
+                {"id": "meshcore:abcd", "name": "MC1",
+                 "network": "meshcore", "is_online": True},
+                {"id": "rns:efgh", "name": "RN1",
+                 "network": "rns", "is_online": True},
+            ])
+            return []
+        c._collect_unified_tracker = _fake_unified
+
+        c._collect_locked()
+        # Both should now exist in the directory.
+        feats, pos_less = c._history.get_directory_snapshot()
+        ids_pos_less = {p["id"] for p in pos_less}
+        assert "meshcore:abcd" in ids_pos_less, (
+            "MeshCore advert should reach directory as position-less"
+        )
+        assert "rns:efgh" in ids_pos_less
+        # Tier tagging: MeshCore (via unified tracker) → local_radio (gateway-RX);
+        # RNS → rns_path_table.
+        by_id = {p["id"]: p for p in pos_less}
+        assert by_id["meshcore:abcd"]["source_origin"] == "local_radio"
+        assert by_id["rns:efgh"]["source_origin"] == "rns_path_table"
+
+
 class TestSourceOriginTagging:
     """Issue #49 — directory tier retention is driven by source_origin
     set on each feature. _tag_source_origin stamps it post-collect."""
