@@ -639,6 +639,18 @@ class MapDataCollector(
         sources["aredn_worldmap"] = len(aredn_worldmap_features)
         if promoted:
             sources["operator_positions"] = promoted
+        # Issue #49: surface the persistent node directory in the geojson
+        # response so the sidebar can count per-protocol from "what the box
+        # knows about" rather than "what's currently positioned". Wrapped:
+        # geojson must never 500 because the directory query hiccupped.
+        directory_stats = None
+        if self._history is not None:
+            try:
+                directory_stats = self._history.get_directory_stats()
+            except Exception as e:
+                logger.debug(f"directory stats lookup failed for geojson: {e}")
+                directory_stats = None
+
         geojson = {
             "type": "FeatureCollection",
             "features": list(features.values()),
@@ -651,6 +663,7 @@ class MapDataCollector(
                 "nodes_with_position": len(features),
                 "nodes_without_position": self._nodes_without_position,
                 "nodes_without_position_count": len(self._nodes_without_position),
+                "directory": directory_stats,
                 "online_threshold_minutes": self.get_online_threshold_seconds() // 60,
             }
         }

@@ -367,6 +367,84 @@ class TestCollectExposesDiagnostics:
         assert all(e.get("id") != "stale-node" for e in c.get_nodes_without_position())
 
 
+class TestGeoJSONExposesDirectoryStats:
+    """Issue #49 follow-up — the persistent node directory must be reachable
+    from /api/nodes/geojson so the sidebar can count per-protocol from the
+    directory (which knows about position-less RNS / MeshCore nodes) rather
+    than from positioned features only. Caught live on moc: 43 RNS nodes
+    in directory.by_network.rns, but sidebar showed RNS:0 because no RNS
+    node carries GPS by protocol."""
+
+    @staticmethod
+    def _stub_sources(coll):
+        for name in ("_collect_unified_tracker", "_collect_meshtasticd",
+                     "_collect_direct_radio", "_collect_mqtt",
+                     "_collect_node_tracker", "_collect_aredn",
+                     "_collect_aredn_worldmap", "_collect_rns_direct",
+                     "_collect_meshcore_public",
+                     "_collect_public_fallbacks"):
+            setattr(coll, name, lambda *_a, **_kw: [])
+
+    def test_directory_block_present_when_history_enabled(self, tmp_path):
+        c = MapDataCollector(cache_dir=tmp_path, enable_history=True)
+        self._stub_sources(c)
+        result = c.collect(max_age_seconds=0)
+        directory = result["properties"]["directory"]
+        assert isinstance(directory, dict), (
+            "directory block must be present in geojson properties when "
+            "history is enabled (frontend reads it for per-protocol counts)"
+        )
+        assert "by_network" in directory
+        assert "total" in directory
+
+    def test_directory_block_is_none_without_history(self, tmp_path):
+        c = MapDataCollector(cache_dir=tmp_path, enable_history=False)
+        self._stub_sources(c)
+        result = c.collect(max_age_seconds=0)
+        assert result["properties"]["directory"] is None
+
+    def test_directory_failure_does_not_break_geojson(self, tmp_path):
+        c = MapDataCollector(cache_dir=tmp_path, enable_history=True)
+        self._stub_sources(c)
+
+        def _boom():
+            raise RuntimeError("simulated directory failure")
+
+        c._history.get_directory_stats = _boom
+        result = c.collect(max_age_seconds=0)
+        # Geojson must remain serializable; directory falls back to None.
+        assert result["properties"]["directory"] is None
+        import json
+        json.dumps(result)
+
+    def test_directory_by_network_reflects_observed_protocols(self, tmp_path):
+        """Round-trip check: feeding RNS + MeshCore position-less nodes
+        through one collect() cycle must surface them in
+        directory.by_network on the next collect()."""
+        c = MapDataCollector(cache_dir=tmp_path, enable_history=True)
+        self._stub_sources(c)
+
+        def _seed():
+            c._nodes_without_position.extend([
+                {"id": "rns:aaaa", "name": "R1", "network": "rns",
+                 "is_online": True},
+                {"id": "meshcore:bbbb", "name": "M1", "network": "meshcore",
+                 "is_online": True},
+            ])
+            return []
+
+        c._collect_unified_tracker = _seed
+        c.collect(max_age_seconds=0)
+
+        # Second pass: no new input, but directory stats reflect last seed.
+        c._collect_unified_tracker = lambda: []
+        c._nodes_without_position = []
+        result = c.collect(max_age_seconds=0)
+        by_net = result["properties"]["directory"]["by_network"]
+        assert by_net.get("rns", 0) >= 1
+        assert by_net.get("meshcore", 0) >= 1
+
+
 class TestMeshtasticDoesNotClobberNoPositionList:
     """Regression: _collect_via_http used to = (overwrite) the no-position list,
     wiping MeshCore entries captured earlier by _collect_unified_tracker."""

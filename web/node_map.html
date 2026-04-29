@@ -1500,7 +1500,7 @@
         <div class="panel-body">
             <div class="stat-row">
                 <span class="label">Total Seen:</span>
-                <span class="value" id="stat-total-seen" title="All nodes from meshtasticd (with + without GPS)">0</span>
+                <span class="value" id="stat-total-seen" title="Nodes the directory knows about across all protocols (with + without GPS)">0</span>
             </div>
             <div class="stat-row">
                 <span class="label">Mapped:</span>
@@ -2942,10 +2942,19 @@
         state.lastUpdate = Date.now();
         state.updateCount++;
 
-        // Extract total node counts from GeoJSON properties
+        // Extract total node counts from GeoJSON properties.
+        // Issue #49: prefer the directory total (counts position-less nodes
+        // like RNS announces and MeshCore adverts) over the meshtasticd-only
+        // total_nodes. Fall back if an older fleet box hasn't been synced.
         const props = geojson.properties || {};
-        const totalSeen = props.total_nodes || geojson.features.length;
+        const directory = props.directory || null;
+        const totalSeen = (directory && directory.total) || props.total_nodes || geojson.features.length;
         const noGpsCount = props.nodes_without_position_count || 0;
+
+        // Stash directory snapshot so _finalizeUpdate can override per-protocol
+        // counts from the directory (the SSOT post-Issue #49) instead of
+        // counting only positioned features.
+        state.directory = directory;
 
         // Store nodes without position for display
         state.nodesWithoutPosition = props.nodes_without_position || [];
@@ -3175,7 +3184,21 @@
 
         updateSignalHeatmap(state.currentGeoJSON.features);
 
-        // Update stats
+        // Per-protocol counts come from the persistent node directory
+        // (Issue #49) when available — that includes RNS / MeshCore nodes
+        // that have no GPS by protocol and so never enter ctx.counts (which
+        // only sees positioned features). Fall back to feature counts if
+        // an older backend response is missing the directory block.
+        if (state.directory && state.directory.by_network) {
+            const byNet = state.directory.by_network;
+            ctx.counts.meshtastic = byNet.meshtastic || 0;
+            ctx.counts.rns = byNet.rns || 0;
+            ctx.counts.aredn = byNet.aredn || 0;
+            ctx.counts.meshcore = byNet.meshcore || 0;
+        }
+
+        // Update stats. stat-total = Mapped (positioned features only,
+        // unchanged semantics); per-protocol = directory totals.
         document.getElementById('stat-total').textContent = ctx.counts.total;
         document.getElementById('stat-meshtastic').textContent = ctx.counts.meshtastic;
         document.getElementById('stat-rns').textContent = ctx.counts.rns;
@@ -3187,7 +3210,8 @@
         const txt = document.getElementById('update-text');
         if (txt && state.currentGeoJSON) {
             const props = state.currentGeoJSON.properties || {};
-            const totalSeen = props.total_nodes || state.currentGeoJSON.features.length;
+            const directory = props.directory || null;
+            const totalSeen = (directory && directory.total) || props.total_nodes || state.currentGeoJSON.features.length;
             txt.textContent = `Live · ${state.currentGeoJSON.features.length} mapped / ${totalSeen} total`;
         }
 
