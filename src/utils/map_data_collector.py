@@ -87,13 +87,18 @@ class MapDataCollector(
     DEFAULT_MESHTASTICD_HOST = "localhost"
     DEFAULT_MESHTASTICD_PORT = 4403
 
-    def __init__(self, cache_dir: Optional[Path] = None, enable_history: bool = True):
+    def __init__(self,
+                 cache_dir: Optional[Path] = None,
+                 enable_history: bool = True,
+                 config_dir: Optional[Path] = None):
         if cache_dir:
             self._cache_dir = cache_dir
         else:
             self._cache_dir = get_real_user_home() / ".local" / "share" / "meshforge"
 
         self._cache_dir.mkdir(parents=True, exist_ok=True)
+        # Override settings location for tests (None = global CONFIG_DIR).
+        self._config_dir_override = config_dir
         self._cache_file = self._cache_dir / "map_nodes.geojson"
         self._last_collect: Optional[float] = None
         self._cached_geojson: Optional[Dict] = None
@@ -147,8 +152,41 @@ class MapDataCollector(
                 "meshcore_public_cache_ttl_seconds": self.DEFAULT_MESHCORE_PUBLIC_CACHE_TTL_SECONDS,
                 "source_timeout_seconds": self.DEFAULT_SOURCE_TIMEOUT_SECONDS,
                 "selected_region": None,
-            }
+                # Fleet federation (Issue #49 follow-up). Each box's :5000 is
+                # an island unless this is populated — peers expose
+                # /api/nodes/directory which we poll and fold into the local
+                # geojson response. Local always wins on (network, id) clash.
+                #
+                # `None` = auto-bootstrap from ~/.config/meshforge/fleet.json
+                # on first run, then persist whatever was found (or []).
+                # `[]` = explicitly disabled.
+                # Operators can edit map_settings.json to override.
+                "federation_peers": None,
+                "federation_poll_interval_seconds": 60,
+                "federation_timeout_seconds": 5,
+                "federation_port": 5000,
+            },
+            config_dir=self._config_dir_override,
         )
+
+        # Bootstrap federation_peers from fleet.json on first run if the key
+        # is None (meaning: never seen this setting before). Persist whatever
+        # was found so subsequent runs don't re-attempt the bootstrap.
+        if self._settings.get("federation_peers") is None:
+            bootstrapped = self._bootstrap_federation_peers()
+            self._settings.set("federation_peers", bootstrapped)
+            self._settings.save()
+            if bootstrapped:
+                logger.info(
+                    f"Federation: bootstrapped {len(bootstrapped)} peers "
+                    f"from fleet.json: {bootstrapped}"
+                )
+            else:
+                logger.info("Federation: no fleet.json found; peers=[] (disabled)")
+
+        # Federation collector (lazy — start() called from map_data_service)
+        self._federation = None
+        self._init_federation()
 
         # MeshCore public per-source cache. The 30 s outer cache (`collect()`'s
         # `max_age_seconds`) prevents within-burst refetches; this second tier
@@ -177,6 +215,86 @@ class MapDataCollector(
                 self._history = NodeHistoryDB(db_path=db_path)
             except Exception as e:
                 logger.debug(f"Node history disabled: {e}")
+
+    def _bootstrap_federation_peers(self) -> List[str]:
+        """Read fleet.json (if present) and derive a peer list with self filtered out.
+
+        Returns [] if fleet.json doesn't exist or doesn't parse — federation
+        is opt-in and a missing fleet config is the normal case for
+        single-box installs.
+        """
+        try:
+            from utils.map_federation import filter_self_from_peers
+            fleet_path = get_real_user_home() / ".config" / "meshforge" / "fleet.json"
+            if not fleet_path.exists():
+                return []
+            with open(fleet_path, "r") as f:
+                cfg = json.load(f)
+            peers_dict = cfg.get("peers") or {}
+            this_host = cfg.get("this_host")
+            this_host_lower = str(this_host).lower() if this_host else None
+
+            # Two-pass self-elimination:
+            #   1) Skip peer entries whose CONFIG NAME matches this_host —
+            #      handles IP-vs-hostname mismatches (the peer's stored
+            #      identifier might be its IP, but the name in the dict is
+            #      the canonical hostname).
+            #   2) Run the runtime hostname filter as a backup, in case
+            #      this_host wasn't configured but the host's actual
+            #      hostname matches one of the peer ids.
+            peer_ids: List[str] = []
+            for name, info in peers_dict.items():
+                if this_host_lower and name.lower() == this_host_lower:
+                    continue
+                if isinstance(info, dict) and info.get("ip"):
+                    peer_ids.append(info["ip"])
+                else:
+                    peer_ids.append(name)
+
+            local_names = None
+            if this_host:
+                from utils.map_federation import get_local_hostnames
+                local_names = list(set(get_local_hostnames() + [str(this_host).lower()]))
+            return filter_self_from_peers(peer_ids, local_names=local_names)
+        except (OSError, json.JSONDecodeError, KeyError, ImportError) as e:
+            logger.debug(f"Federation bootstrap from fleet.json failed: {e}")
+            return []
+
+    def _init_federation(self) -> None:
+        """Construct the FederationCollector instance (does not start it).
+
+        start_federation() is called by map_data_service after the warmup
+        collect runs, so we don't compete with the cold-start collect for
+        I/O budget on Pi-class hardware.
+        """
+        peers = self._settings.get("federation_peers") or []
+        if not peers:
+            return
+        try:
+            from utils.map_federation import FederationCollector
+            self._federation = FederationCollector(
+                peers=peers,
+                poll_interval=int(self._settings.get(
+                    "federation_poll_interval_seconds", 60
+                )),
+                timeout=float(self._settings.get(
+                    "federation_timeout_seconds", 5
+                )),
+                port=int(self._settings.get("federation_port", 5000)),
+            )
+        except ImportError as e:
+            logger.warning(f"Federation disabled (import failed): {e}")
+            self._federation = None
+
+    def start_federation(self) -> None:
+        """Start the federation poll thread. Idempotent. Called by map service."""
+        if self._federation:
+            self._federation.start()
+
+    def stop_federation(self) -> None:
+        """Stop the federation poll thread. Called by map service shutdown."""
+        if self._federation:
+            self._federation.stop()
 
     @staticmethod
     def _is_valid_coordinate(lat, lon) -> bool:
@@ -651,6 +769,11 @@ class MapDataCollector(
                 logger.debug(f"directory stats lookup failed for geojson: {e}")
                 directory_stats = None
 
+        # Federation: fold federated peer entries into local features +
+        # nodes_without_position. Local always wins on (network, id) clash.
+        # Returns the federation summary block for the geojson properties.
+        federation_block = self._merge_federation(features, self._nodes_without_position)
+
         geojson = {
             "type": "FeatureCollection",
             "features": list(features.values()),
@@ -664,6 +787,7 @@ class MapDataCollector(
                 "nodes_without_position": self._nodes_without_position,
                 "nodes_without_position_count": len(self._nodes_without_position),
                 "directory": directory_stats,
+                "federation": federation_block,
                 "online_threshold_minutes": self.get_online_threshold_seconds() // 60,
             }
         }
@@ -934,6 +1058,143 @@ class MapDataCollector(
 
         self._nodes_without_position = remaining
         return promoted
+
+    def _merge_federation(self,
+                          features: Dict[str, Dict],
+                          position_less: List[Dict]) -> Dict[str, Any]:
+        """Fold federated peer entries into local features + position_less.
+
+        Local always wins on (network, node_id) collisions — federated
+        entries from peers only fill gaps the local box doesn't already
+        know about. Federated features carry `federated: True` and
+        `federated_from: <peer>` so the frontend can style/filter them.
+
+        Returns a federation summary block for geojson properties:
+          - enabled (bool)
+          - peers (list of configured peer hostnames)
+          - peer_status (list of dicts: hostname, ok, last_sync, ...)
+          - last_sync (most recent successful peer sync ts)
+          - last_attempt (most recent attempt ts)
+          - by_network (dict: network -> count of federated-only entries)
+          - total / with_position / without_position (federated-only counts)
+
+        Disabled (no federation collector configured) returns
+        `{"enabled": False, ...}` with empty fields so the frontend can
+        unconditionally read the block.
+        """
+        empty_block = {
+            "enabled": False, "peers": [], "peer_status": [],
+            "last_sync": None, "last_attempt": None, "by_network": {},
+            "total": 0, "with_position": 0, "without_position": 0,
+        }
+        if not self._federation:
+            return empty_block
+
+        try:
+            snap = self._federation.get_snapshot()
+        except Exception as e:
+            logger.debug(f"federation snapshot failed: {e}")
+            return empty_block
+
+        # Build the set of (network, id) keys that local sources already know
+        local_keys = set()
+        for f in features.values():
+            props = f.get("properties") or {}
+            net = props.get("network")
+            nid = props.get("id")
+            if net and nid:
+                local_keys.add((net, nid))
+        for entry in position_less:
+            net = entry.get("network")
+            nid = entry.get("id")
+            if net and nid:
+                local_keys.add((net, nid))
+
+        by_network: Dict[str, int] = {}
+        with_pos = 0
+        without_pos = 0
+
+        for (net, nid), entry in snap.by_node.items():
+            if (net, nid) in local_keys:
+                continue  # local-wins — skip federated copy
+            by_network[net] = by_network.get(net, 0) + 1
+
+            lat = entry.get("lat")
+            lon = entry.get("lon")
+            seen_by = entry.get("seen_by_peers") or [entry.get("federated_from")]
+            if self._is_valid_coordinate(lat, lon):
+                # Federated-only feature: render as map marker. Use a
+                # namespaced dict key to avoid clashing with local id-keys.
+                feature = {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [
+                            lon, lat,
+                            entry.get("altitude") if entry.get("altitude") is not None else 0,
+                        ],
+                    },
+                    "properties": {
+                        "id": entry["id"],
+                        "name": entry.get("name") or entry["id"],
+                        "network": entry["network"],
+                        "role": entry.get("role", ""),
+                        "hardware": entry.get("hardware", ""),
+                        "last_seen": entry.get("last_seen"),
+                        "source": "federation",
+                        "source_origin": entry.get("source_origin") or "",
+                        "federated": True,
+                        "federated_from": entry.get("federated_from"),
+                        "seen_by_peers": seen_by,
+                        # Don't claim freshness — federation only knows
+                        # what the peer claimed; let UI mark "stale" by
+                        # rendering with reduced opacity.
+                        "is_online": False,
+                        "is_local": False,
+                        "is_gateway": False,
+                    },
+                }
+                features[f"federated:{net}:{nid}"] = feature
+                with_pos += 1
+            else:
+                position_less.append({
+                    "id": entry["id"],
+                    "name": entry.get("name") or entry["id"],
+                    "network": entry["network"],
+                    "role": entry.get("role", ""),
+                    "hardware": entry.get("hardware", ""),
+                    "last_seen": entry.get("last_seen"),
+                    "source_origin": entry.get("source_origin") or "",
+                    "federated": True,
+                    "federated_from": entry.get("federated_from"),
+                    "seen_by_peers": seen_by,
+                })
+                without_pos += 1
+
+        peer_status_list = []
+        for s in snap.peer_status.values():
+            peer_status_list.append({
+                "hostname": s.hostname,
+                "ok": s.ok,
+                "last_sync": s.last_sync,
+                "last_attempt": s.last_attempt,
+                "last_error": s.last_error,
+                "last_count": s.last_count,
+                "last_latency_ms": s.last_latency_ms,
+                "consecutive_failures": s.consecutive_failures,
+            })
+
+        return {
+            "enabled": True,
+            "peers": list(self._federation.peers),
+            "peer_status": peer_status_list,
+            "last_sync": snap.last_sync,
+            "last_attempt": snap.last_attempt,
+            "by_network": by_network,
+            "total": with_pos + without_pos,
+            "with_position": with_pos,
+            "without_position": without_pos,
+        }
 
     # _collect_via_http, _collect_via_tcp_interface, _collect_direct_radio,
     # _parse_tcp_node, _extract_node_info_without_position, _collect_via_cli,

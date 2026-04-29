@@ -214,6 +214,20 @@
             opacity: 0.4;
             filter: grayscale(60%);
         }
+        /* Federated nodes are heard by a peer fleet box, not this one — render
+           with reduced opacity + dashed ring so operators see they're indirect
+           visibility (Issue #49 federation). */
+        .node-marker-federated {
+            opacity: 0.6;
+        }
+        .node-marker-federated::after {
+            content: '';
+            position: absolute;
+            top: -3px; left: -3px; right: -3px; bottom: -3px;
+            border: 1px dashed rgba(180, 200, 255, 0.7);
+            border-radius: 50%;
+            pointer-events: none;
+        }
 
         /* Link lines */
         .link-line {
@@ -1541,6 +1555,15 @@
                 <div id="sources-list" class="sources-list"></div>
             </div>
 
+            <!-- Federation (Issue #49 follow-up): aggregate peer fleet directories -->
+            <div class="sources-section" id="federation-section" style="display: none;">
+                <div class="sources-header" onclick="toggleFederationList()">
+                    <span><span id="federation-summary">Federation</span></span>
+                    <span id="federation-toggle">▸</span>
+                </div>
+                <div id="federation-list" class="sources-list"></div>
+            </div>
+
             <div class="filter-section">
                 <label><input type="checkbox" id="filter-meshtastic" checked> Meshtastic</label>
                 <label><input type="checkbox" id="filter-rns" checked> Reticulum</label>
@@ -1553,6 +1576,7 @@
                 <label><input type="checkbox" id="filter-heatmap"> Signal heatmap</label>
                 <label><input type="checkbox" id="filter-clustering"> Cluster view</label>
                 <label><input type="checkbox" id="filter-messages"> Message flow</label>
+                <label title="Show nodes federated from peer fleet boxes (Issue #49)"><input type="checkbox" id="filter-federated" checked> Federated peers</label>
             </div>
             <div class="filter-section" style="margin-top: 4px; padding-top: 4px; border-top: 1px solid #1a2a3a;">
                 <span style="font-size: 10px; color: #888; display: block; margin-bottom: 4px;">Node Role</span>
@@ -2713,6 +2737,7 @@
         if (isNew) cls.push('node-marker-new');
         if (props.battery !== null && props.battery < 20) cls.push('node-marker-alert');
         if (!props.is_online) cls.push('node-marker-stale');
+        if (props.federated) cls.push('node-marker-federated');
 
         return L.divIcon({
             html: html,
@@ -2945,16 +2970,21 @@
         // Extract total node counts from GeoJSON properties.
         // Issue #49: prefer the directory total (counts position-less nodes
         // like RNS announces and MeshCore adverts) over the meshtasticd-only
-        // total_nodes. Fall back if an older fleet box hasn't been synced.
+        // total_nodes. Federation block adds peer-fleet directory entries
+        // on top — local always wins, federated fills the gaps.
         const props = geojson.properties || {};
         const directory = props.directory || null;
-        const totalSeen = (directory && directory.total) || props.total_nodes || geojson.features.length;
+        const federation = props.federation || null;
+        const localTotal = (directory && directory.total) || props.total_nodes || geojson.features.length;
+        const federatedTotal = (federation && federation.enabled && federation.total) || 0;
+        const totalSeen = localTotal + federatedTotal;
         const noGpsCount = props.nodes_without_position_count || 0;
 
-        // Stash directory snapshot so _finalizeUpdate can override per-protocol
-        // counts from the directory (the SSOT post-Issue #49) instead of
-        // counting only positioned features.
+        // Stash directory + federation snapshots so _finalizeUpdate can
+        // override per-protocol counts (the SSOT post-Issue #49) and the
+        // federation block can render its own peer-status badges.
         state.directory = directory;
+        state.federation = federation;
 
         // Store nodes without position for display
         state.nodesWithoutPosition = props.nodes_without_position || [];
@@ -2995,6 +3025,7 @@
             showRNS: document.getElementById('filter-rns').checked,
             showAREDN: document.getElementById('filter-aredn').checked,
             showMeshCore: document.getElementById('filter-meshcore').checked,
+            showFederated: (document.getElementById('filter-federated') || {checked: true}).checked,
             onlineOnly: document.getElementById('filter-online-only').checked,
             showCoverage: document.getElementById('filter-coverage').checked,
             showLinks: document.getElementById('filter-links').checked,
@@ -3056,6 +3087,7 @@
 
         // Apply filters
         if (ctx.onlineOnly && !props.is_online) return;
+        if (props.federated && !ctx.showFederated) return;
         if (props.network === 'meshtastic' && !ctx.showMeshtastic) return;
         if (props.network === 'rns' && !ctx.showRNS) return;
         if (props.network === 'aredn' && !ctx.showAREDN) return;
@@ -3187,14 +3219,23 @@
         // Per-protocol counts come from the persistent node directory
         // (Issue #49) when available — that includes RNS / MeshCore nodes
         // that have no GPS by protocol and so never enter ctx.counts (which
-        // only sees positioned features). Fall back to feature counts if
-        // an older backend response is missing the directory block.
+        // only sees positioned features). Federation adds peer-fleet entries
+        // on top (local always wins, federated fills the gaps). Fall back
+        // to feature counts if an older backend response is missing the
+        // directory block.
         if (state.directory && state.directory.by_network) {
             const byNet = state.directory.by_network;
             ctx.counts.meshtastic = byNet.meshtastic || 0;
             ctx.counts.rns = byNet.rns || 0;
             ctx.counts.aredn = byNet.aredn || 0;
             ctx.counts.meshcore = byNet.meshcore || 0;
+        }
+        if (state.federation && state.federation.enabled && state.federation.by_network) {
+            const fByNet = state.federation.by_network;
+            ctx.counts.meshtastic += fByNet.meshtastic || 0;
+            ctx.counts.rns += fByNet.rns || 0;
+            ctx.counts.aredn += fByNet.aredn || 0;
+            ctx.counts.meshcore += fByNet.meshcore || 0;
         }
 
         // Update stats. stat-total = Mapped (positioned features only,
@@ -3211,8 +3252,16 @@
         if (txt && state.currentGeoJSON) {
             const props = state.currentGeoJSON.properties || {};
             const directory = props.directory || null;
-            const totalSeen = (directory && directory.total) || props.total_nodes || state.currentGeoJSON.features.length;
+            const federation = props.federation || null;
+            const localTotal = (directory && directory.total) || props.total_nodes || state.currentGeoJSON.features.length;
+            const federatedTotal = (federation && federation.enabled && federation.total) || 0;
+            const totalSeen = localTotal + federatedTotal;
             txt.textContent = `Live · ${state.currentGeoJSON.features.length} mapped / ${totalSeen} total`;
+        }
+
+        // Refresh federation panel (peer status dots + counts).
+        if (typeof updateFederationPanel === 'function') {
+            updateFederationPanel(state.federation);
         }
 
         // Fit bounds only on first load
@@ -4185,7 +4234,7 @@
         updateDisplay();
     });
 
-    ['filter-meshtastic', 'filter-rns', 'filter-aredn', 'filter-meshcore',
+    ['filter-meshtastic', 'filter-rns', 'filter-aredn', 'filter-meshcore', 'filter-federated',
      'filter-online-only', 'filter-coverage', 'filter-links', 'filter-link-anim', 'filter-heatmap'].forEach(id => {
         document.getElementById(id).addEventListener('change', () => {
             // Reset markers to force rebuild with new settings
@@ -5289,6 +5338,49 @@
         if (!list || !toggle) return;
         const expanded = list.classList.toggle('expanded');
         toggle.textContent = expanded ? '▾' : '▸';
+    }
+
+    function toggleFederationList() {
+        const list = document.getElementById('federation-list');
+        const toggle = document.getElementById('federation-toggle');
+        if (!list || !toggle) return;
+        const expanded = list.classList.toggle('expanded');
+        toggle.textContent = expanded ? '▾' : '▸';
+    }
+
+    // Render the federation panel (peer status dots + summary count).
+    // Hidden when federation is disabled (no peers configured) so single-box
+    // installs don't see an empty section. Issue #49 follow-up.
+    function updateFederationPanel(federation) {
+        const section = document.getElementById('federation-section');
+        const summary = document.getElementById('federation-summary');
+        const list = document.getElementById('federation-list');
+        if (!section || !summary || !list) return;
+
+        if (!federation || !federation.enabled) {
+            section.style.display = 'none';
+            return;
+        }
+        section.style.display = '';
+
+        const peers = federation.peer_status || [];
+        const okCount = peers.filter(p => p.ok).length;
+        summary.textContent = `Federation · ${okCount}/${peers.length} peers · ${federation.total || 0} federated`;
+
+        const rows = peers.map(p => {
+            const statusColor = p.ok ? '#4caf50' : (p.consecutive_failures > 0 ? '#f44336' : '#888');
+            const lastSync = p.last_sync
+                ? `${Math.round((Date.now()/1000 - p.last_sync))}s ago`
+                : 'never';
+            const errBadge = p.last_error
+                ? ` <span style="color:#f44336;font-size:9px;" title="${escapeHtml(p.last_error)}">⚠</span>`
+                : '';
+            return `<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0;font-size:10px;">
+                <span><span style="color:${statusColor};">●</span> ${escapeHtml(p.hostname)}${errBadge}</span>
+                <span style="color:#888;">${p.last_count || 0} · ${lastSync}</span>
+            </div>`;
+        });
+        list.innerHTML = rows.join('') || '<div style="color:#888;font-size:10px;">No peers configured</div>';
     }
 
     // Light-touch HTML escape used only for tooltip values; not exposed

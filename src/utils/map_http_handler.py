@@ -717,6 +717,39 @@ class MapRequestHandler(
             except Exception as e:
                 logger.debug(f"Failed to summarize nodes_without_position: {e}")
 
+        # Federation health (Issue #49 follow-up). Surfaces per-peer
+        # status so monitoring can alert on stale federation: a peer
+        # in `consecutive_failures > 3` for >5min means we're missing
+        # whatever directory entries that box was contributing.
+        if self.collector and getattr(self.collector, "_federation", None):
+            try:
+                snap = self.collector._federation.get_snapshot()
+                status["federation"] = {
+                    "enabled": True,
+                    "peers": list(self.collector._federation.peers),
+                    "last_sync": snap.last_sync,
+                    "last_attempt": snap.last_attempt,
+                    "federated_node_count": len(snap.by_node),
+                    "peer_status": [
+                        {
+                            "hostname": s.hostname,
+                            "ok": s.ok,
+                            "last_sync": s.last_sync,
+                            "last_attempt": s.last_attempt,
+                            "last_error": s.last_error,
+                            "last_count": s.last_count,
+                            "last_latency_ms": s.last_latency_ms,
+                            "consecutive_failures": s.consecutive_failures,
+                        }
+                        for s in snap.peer_status.values()
+                    ],
+                }
+            except Exception as e:
+                logger.debug(f"federation status lookup failed: {e}")
+                status["federation"] = {"enabled": True, "error": str(e)[:200]}
+        else:
+            status["federation"] = {"enabled": False, "peers": [], "peer_status": []}
+
         # Include radio connection status + LOCAL radio config
         # (helps operators diff heterogeneous fleet boxes — e.g. LongFast vs SHORT_TURBO)
         status["radio"] = self._get_radio_status_summary()

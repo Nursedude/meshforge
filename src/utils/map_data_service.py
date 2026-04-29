@@ -348,9 +348,13 @@ class MapServer:
             logger.debug(f"Error stopping MessageListener: {e}")
 
     def _stop_all_services(self):
-        """Stop all background services (MessageListener, WebSocket)."""
+        """Stop all background services (MessageListener, WebSocket, Federation)."""
         self._stop_message_listener()
         self._stop_websocket_server()
+        try:
+            self.collector.stop_federation()
+        except Exception as e:
+            logger.debug(f"Error stopping federation: {e}")
 
     def _prewarm_collector(self):
         """Run one collect() on the main thread before starting threaded HTTP.
@@ -414,6 +418,14 @@ class MapServer:
             MapRequestHandler.is_warming = False
             map_metrics.set_warming(None)  # ready: SERVICE_UP=1
             logger.info("MapServer warmup complete; serving live traffic")
+
+        # Federation poll thread starts after warmup so we don't compete
+        # with the cold-start collect for I/O budget on Pi-class hardware.
+        # No-op if federation_peers is empty (single-box installs).
+        try:
+            self.collector.start_federation()
+        except Exception as e:
+            logger.warning("Federation start failed (non-fatal): %s", e)
 
     def start(self):
         """Start server (blocking) — bind-first warming (F3).
