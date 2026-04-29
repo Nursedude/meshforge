@@ -1564,6 +1564,18 @@
                 <div id="federation-list" class="sources-list"></div>
             </div>
 
+            <div class="filter-section" style="margin-top: 4px; padding-top: 4px; border-top: 1px solid #1a2a3a;">
+                <span style="font-size: 10px; color: #888; display: block; margin-bottom: 4px;" title="Preset queries that layer onto the protocol checkboxes below">View</span>
+                <select id="filter-preset" style="width: 100%; background: #0a1622; color: #e0e0e0; border: 1px solid #2a3a4a; border-radius: 4px; padding: 3px 6px; font-size: 11px;">
+                    <option value="custom" selected>Custom (use filters)</option>
+                    <option value="live_rf" title="Only what my radio is hearing right now">Live RF only (≤5m, !federated)</option>
+                    <option value="live_rf_mqtt" title="Live RF + local MQTT, no external feeds">Live RF + MQTT (≤15m)</option>
+                    <option value="all_gps" title="Everything with GPS, regardless of freshness">All positioned (any age)</option>
+                    <option value="external_only" title="Only the cached external aggregator data">External aggregators only</option>
+                    <option value="fleet_union" title="Union of the whole fleet (federated on)">Whole fleet (federated)</option>
+                    <option value="local_only" title="Only what this box knows independently">This box only (no federation)</option>
+                </select>
+            </div>
             <div class="filter-section">
                 <label><input type="checkbox" id="filter-meshtastic" checked> Meshtastic</label>
                 <label><input type="checkbox" id="filter-rns" checked> Reticulum</label>
@@ -3031,6 +3043,8 @@
             showLinks: document.getElementById('filter-links').checked,
             roleFilter: document.getElementById('filter-role').value,
             useClustering: document.getElementById('filter-clustering').checked,
+            viewPreset: (document.getElementById('filter-preset') || {value: 'custom'}).value,
+            nowSec: Math.floor(Date.now() / 1000),
             features: state.currentGeoJSON.features,
             activeIds: new Set(),
             counts: { total: 0, meshtastic: 0, rns: 0, aredn: 0, meshcore: 0, online: 0 },
@@ -3092,6 +3106,44 @@
         if (props.network === 'rns' && !ctx.showRNS) return;
         if (props.network === 'aredn' && !ctx.showAREDN) return;
         if (props.network === 'meshcore' && !ctx.showMeshCore) return;
+
+        // View preset — layered on top of the protocol/online filters above.
+        // Operator picks one query intent ("only what my radio is hearing
+        // right now") and the preset adds origin/age/federation predicates.
+        // Custom = no preset constraint, just use the checkboxes.
+        if (ctx.viewPreset && ctx.viewPreset !== 'custom') {
+            const origin = props.source_origin || '';
+            const ageSec = props.last_seen ? (ctx.nowSec - props.last_seen) : Infinity;
+            const isFederated = !!props.federated;
+            switch (ctx.viewPreset) {
+                case 'live_rf':
+                    if (origin !== 'local_radio') return;
+                    if (ageSec > 300) return;
+                    if (isFederated) return;
+                    break;
+                case 'live_rf_mqtt':
+                    if (origin !== 'local_radio' && origin !== 'mqtt_local') return;
+                    if (ageSec > 900) return;
+                    if (isFederated) return;
+                    break;
+                case 'all_gps':
+                    // Already filtered to positioned features (no geometry => skipped earlier)
+                    break;
+                case 'external_only':
+                    if (origin !== 'meshcore_public' &&
+                        origin !== 'aredn_worldmap' &&
+                        origin !== 'public_fallback') return;
+                    break;
+                case 'fleet_union':
+                    // Show everything: local + federated, all freshness.
+                    // No-op — preset just signals the operator intent;
+                    // protocol checkboxes still apply.
+                    break;
+                case 'local_only':
+                    if (isFederated) return;
+                    break;
+            }
+        }
         // Role filter (RMAP-inspired node type filtering).
         // Three selector shapes:
         //   'rns'              — show only RNS-network nodes
@@ -4233,6 +4285,14 @@
         state.activeRoleFilter = document.getElementById('filter-role').value || null;
         updateDisplay();
     });
+
+    // View preset dropdown — composes onto protocol/online filters.
+    const presetEl = document.getElementById('filter-preset');
+    if (presetEl) {
+        presetEl.addEventListener('change', () => {
+            updateDisplay();
+        });
+    }
 
     ['filter-meshtastic', 'filter-rns', 'filter-aredn', 'filter-meshcore', 'filter-federated',
      'filter-online-only', 'filter-coverage', 'filter-links', 'filter-link-anim', 'filter-heatmap'].forEach(id => {
