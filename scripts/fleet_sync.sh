@@ -3,6 +3,18 @@
 #   /opt/meshforge          (this repo) → restart meshforge-gateway.service
 #   /opt/meshforge-maps     (sister)    → restart meshforge-maps.service
 #
+# Plus mirror Claude memory from THIS box (the canonical writer) to each fleet
+# host:
+#   ~/.claude/memory/                            (cross-repo memory)
+#   ~/.claude/projects/-opt-meshforge/memory/    (this repo's memory)
+#
+# Memory mirror is one-way push with --delete: the box this script RUNS ON is
+# the canonical writer. Fleet boxes get a read-only-from-their-side replica.
+# If you start writing memory on a fleet box (e.g. running claude code there),
+# the next sync will erase those local-only entries — keep authoring on the
+# canonical box. Tier 2 (private git remote with secrets-grep pre-commit) will
+# replace this push model with proper history once that infra lands.
+#
 # A box without one of the repos still updates the other (skip-if-absent).
 # Without this, /opt/meshforge-maps drifts on boxes where it isn't manually
 # pulled — a real-world incident left a 14 GB sqlite WAL on an unsynced box
@@ -21,12 +33,13 @@
 #   # jump-host syntax is supported via ~/.ssh/config
 #   inner-host.via-bastion
 #
-# Per-host: verify each present repo + branch, git pull --ff-only, restart
-# the matching unit if installed, print one summary line per repo. A repo
-# missing on a host is reported as `skip_no_repo`, not a failure.
+# Per-host: mirror memory dirs (rsync), then verify each present repo + branch,
+# git pull --ff-only, restart the matching unit if installed, print one summary
+# line per repo. A repo missing on a host is reported as `skip_no_repo`, not a
+# failure.
 #
 # A host failing does NOT abort the rest. Exit code is the number of host
-# x repo failures (0 = all ok).
+# x action failures (0 = all ok).
 
 set -uo pipefail
 
@@ -56,6 +69,39 @@ Or set \$MESHFORGE_FLEET_HOSTS to a different path.
 EOF
     exit 2
 fi
+
+# Mirror Claude memory dirs from THIS box to one fleet host. Runs LOCALLY
+# (rsync drives its own ssh transport). Prints one summary line per dir in
+# the same PASS/FAIL/SKIP format the host-loop already counts. --delete is
+# on by design: canonical-writer model means fleet replicas are not allowed
+# to diverge silently. --mkpath creates missing parent dirs on first sync.
+mirror_memory_to_host() {
+    local host="$1"
+    local src dst tag
+
+    for pair in \
+        "$HOME/.claude/memory/|.claude/memory/|memory-global" \
+        "$HOME/.claude/projects/-opt-meshforge/memory/|.claude/projects/-opt-meshforge/memory/|memory-project"
+    do
+        src="${pair%%|*}"
+        rest="${pair#*|}"
+        dst="${rest%%|*}"
+        tag="${rest#*|}"
+
+        if [[ ! -d "$src" ]]; then
+            echo "SKIP $tag no_source"
+            continue
+        fi
+
+        if rsync -aq --delete --mkpath \
+                  -e 'ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new' \
+                  "$src" "$host:$dst" 2>/dev/null; then
+            echo "PASS $tag mirrored"
+        else
+            echo "FAIL $tag rsync_failed"
+        fi
+    done
+}
 
 # Remote recipe. Runs on each target Pi. Prints one tagged summary line per
 # (repo, unit) pair so the driver can attribute each result independently.
@@ -146,6 +192,10 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     host="$(echo "$raw_line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
     [[ -z "$host" || "${host:0:1}" == "#" ]] && continue
 
+    # Memory mirror first (local-side rsync). Runs before code pull so a
+    # code-sync failure doesn't strand the fleet on a stale memory state.
+    memory_summaries="$(mirror_memory_to_host "$host")"
+
     # SSH with short connect timeout; BatchMode=yes prevents password prompts
     # (operators must use key auth for fleet sync).
     result="$(ssh -o BatchMode=yes -o ConnectTimeout=10 \
@@ -153,8 +203,17 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
                   "$host" "bash -s" <<< "$REMOTE_SCRIPT" 2>&1)"
     rc=$?
 
-    # Pull all summary lines (PASS/FAIL/SKIP), one per repo.
-    summaries="$(echo "$result" | grep -E '^(PASS|FAIL|SKIP) ')"
+    # Pull all summary lines (PASS/FAIL/SKIP), one per repo, then prepend the
+    # memory-mirror summaries from this box.
+    code_summaries="$(echo "$result" | grep -E '^(PASS|FAIL|SKIP) ')"
+    if [[ -n "$memory_summaries" && -n "$code_summaries" ]]; then
+        summaries="$memory_summaries"$'\n'"$code_summaries"
+    elif [[ -n "$memory_summaries" ]]; then
+        summaries="$memory_summaries"
+    else
+        summaries="$code_summaries"
+    fi
+
     if [[ -z "$summaries" ]]; then
         printf '[%-30s] SKIP unreachable (ssh rc=%d)\n' "$host" "$rc"
         skip_count=$((skip_count + 1))
