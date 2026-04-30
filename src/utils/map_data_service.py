@@ -36,7 +36,7 @@ import socket
 import threading
 from http.server import HTTPServer, ThreadingHTTPServer
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 # Re-export for backward compatibility
 from utils.map_data_collector import MapDataCollector
@@ -154,7 +154,9 @@ class MapServer:
                  enable_message_listener: bool = True,
                  enable_websocket: bool = True,
                  websocket_port: int = 5001,
-                 meshtasticd_port: int = 9443):
+                 meshtasticd_port: int = 9443,
+                 cache_dir: Optional[Path] = None,
+                 config_dir: Optional[Path] = None):
         """Initialize map server.
 
         Args:
@@ -174,6 +176,18 @@ class MapServer:
             enable_websocket: Start WebSocket server for real-time message push (default True)
             websocket_port: WebSocket server port (default 5001)
             meshtasticd_port: meshtasticd web port (default 9443)
+            cache_dir: Override the data dir for node_history.db, geojson
+                cache, etc. None (default) uses the user's data dir. Tests
+                pass tmp_path so the harness's NodeHistoryDB doesn't fight
+                a running production meshforge-map.service over the live
+                ~/.local/share/meshforge/node_history.db (DB-lock during
+                concurrent WAL checkpoints made __init__ silently swallow,
+                leaving the test's collector._history=None — the e2e
+                history-key contract assertion then flaked under IO load).
+            config_dir: Override the config dir for map_settings.json.
+                Same isolation rationale as cache_dir; mirrors the
+                tests/test_map_data_collector_diagnostics.py fixture's
+                config_dir injection (commit e36f0a7).
         """
         self.port = port
         self.host = host
@@ -182,7 +196,12 @@ class MapServer:
         self.enable_websocket = enable_websocket
         self.websocket_port = websocket_port
         self.meshtasticd_port = meshtasticd_port
-        self.collector = MapDataCollector()
+        collector_kwargs: Dict[str, Any] = {}
+        if cache_dir is not None:
+            collector_kwargs["cache_dir"] = cache_dir
+        if config_dir is not None:
+            collector_kwargs["config_dir"] = config_dir
+        self.collector = MapDataCollector(**collector_kwargs)
         self._server: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self._message_listener_started = False

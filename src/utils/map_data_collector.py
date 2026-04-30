@@ -214,7 +214,17 @@ class MapDataCollector(
                 db_path = self._cache_dir / "node_history.db"
                 self._history = NodeHistoryDB(db_path=db_path)
             except Exception as e:
-                logger.debug(f"Node history disabled: {e}")
+                # Was DEBUG; bumped to WARNING because a None history
+                # silently strips `history`/`directory` keys from
+                # `/api/status` (the dashboard contract). Caught by the
+                # 2026-04-30 e2e flake investigation: a concurrent WAL
+                # checkpoint on the production DB made the test
+                # harness's NodeHistoryDB.__init__ raise database-locked,
+                # which got swallowed at DEBUG and looked like a flaky
+                # test instead of a contention signal. The proper fix is
+                # cache_dir isolation in the e2e harness; this log just
+                # makes future failures visible.
+                logger.warning(f"Node history disabled: {e}")
 
     def _bootstrap_federation_peers(self) -> List[str]:
         """Read fleet.json (if present) and derive a peer list with self filtered out.

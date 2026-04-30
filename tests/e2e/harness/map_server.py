@@ -16,11 +16,14 @@ exercises the HTTP wiring + main-thread RNS init invariant
 from __future__ import annotations
 
 import json
+import shutil
 import socket
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Optional
 
 
@@ -53,9 +56,31 @@ class MapServerHarness:
         self,
         host: str = "127.0.0.1",
         port: Optional[int] = None,
+        cache_dir: Optional[Path] = None,
+        config_dir: Optional[Path] = None,
     ):
         self.host = host
         self.port = port or _pick_ephemeral_port()
+        # Isolate node_history.db + map_settings.json from any running
+        # production meshforge-map.service on this box. Without
+        # isolation, the harness's NodeHistoryDB races the running
+        # service over the same SQLite file; under journal-stall load
+        # the test's __init__ silently swallows on DB-locked, leaving
+        # collector._history=None and the e2e history-key contract
+        # assertion flakes. tmp_path-style auto-allocation here keeps
+        # the harness usable from outside pytest (e.g. ad-hoc smoke).
+        self._owns_cache_dir = cache_dir is None
+        self._owns_config_dir = config_dir is None
+        self.cache_dir = (
+            cache_dir
+            if cache_dir is not None
+            else Path(tempfile.mkdtemp(prefix="meshforge-e2e-cache-"))
+        )
+        self.config_dir = (
+            config_dir
+            if config_dir is not None
+            else Path(tempfile.mkdtemp(prefix="meshforge-e2e-config-"))
+        )
         self._server = None  # type: ignore[assignment]
         self._lock = threading.Lock()
 
@@ -87,6 +112,8 @@ class MapServerHarness:
                 host=self.host,
                 enable_message_listener=False,
                 enable_websocket=False,
+                cache_dir=self.cache_dir,
+                config_dir=self.config_dir,
             )
             self._server.start_background()
 
@@ -125,6 +152,10 @@ class MapServerHarness:
                 return
             self._server.stop()
             self._server = None
+        if self._owns_cache_dir:
+            shutil.rmtree(self.cache_dir, ignore_errors=True)
+        if self._owns_config_dir:
+            shutil.rmtree(self.config_dir, ignore_errors=True)
 
     def __enter__(self) -> "MapServerHarness":
         self.start()
