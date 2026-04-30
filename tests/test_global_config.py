@@ -63,7 +63,7 @@ class TestGlobalConfigPath:
 
     def test_path_under_sudo_user_home(self, monkeypatch):
         """Running under sudo must resolve to the invoking user's home."""
-        monkeypatch.setenv("SUDO_USER", "wh6gxz")
+        monkeypatch.setenv("SUDO_USER", "testuser")
         # Force a fresh import so the path uses current env
         from importlib import reload
 
@@ -71,7 +71,7 @@ class TestGlobalConfigPath:
 
         reload(gc_module)
         p = gc_module.global_config_path()
-        assert "/home/wh6gxz/" in str(p)
+        assert "/home/testuser/" in str(p)
         assert str(p).endswith(".config/meshforge/global.ini")
 
 
