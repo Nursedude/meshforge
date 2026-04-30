@@ -53,13 +53,27 @@ scrape_configs:
         labels:
           fleet_role: test_bed
           hardware: pi4b
-    # When adding the rest of the fleet, follow this shape:
-    #     - targets:
-    #         - "<box-a>:5000"
-    #         - "<box-b>:5000"
-    #         - "<box-c>:5000"
-    #       labels:
-    #         fleet_role: production
-    # Split low-resource boxes (Pi 3B / 1GB) into a separate static_config
-    # if they warrant different alert thresholds — see
-    # project_map_arc_findings memory for the rationale.
+      # Production fleet — added 2026-04-30 (healthcheck Step 5).
+      # Requires /etc/hosts entries on the Prometheus host
+      # (Prometheus daemon doesn't read ~/.ssh/config). See
+      # project_prometheus_on_moc1 memory for the recipe.
+      - targets:
+          - "volcanoai:5000"
+          - "moc:5000"
+        labels:
+          fleet_role: production
+          hardware: pi
+      # moc3 split into its own block — Pi 3B / 1GB warrants
+      # different alert thresholds than the rest of the production
+      # fleet. Currently shares production thresholds; revisit when
+      # alert rules land.
+      - targets:
+          - "moc3:5000"
+        labels:
+          fleet_role: production
+          hardware: pi3b
+      # NOTE: moc1 itself runs meshforge-map.service on :5000 too,
+      # but is intentionally not scraped here — moc1 is the
+      # Prometheus + map-domain test bed. Adding self-scrape would
+      # muddy "production" panels with test-bed noise. Add as
+      # `fleet_role: test_bed` if/when needed.
