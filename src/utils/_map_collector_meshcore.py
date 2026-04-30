@@ -19,6 +19,7 @@ import logging
 import time
 import urllib.request
 import urllib.error
+from datetime import datetime
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -174,15 +175,30 @@ class MeshCorePublicCollectorMixin:
         node_type_id = node.get("type", 0)
         node_type = self._MESHCORE_NODE_TYPES.get(node_type_id, "unknown")
         params = node.get("params") or {}
-        last_advert = node.get("last_advert")
+        # Upstream `last_advert` is ISO-8601 ('2026-04-27T19:45:54.000Z'),
+        # not Unix epoch. Normalize here so downstream consumers (online
+        # check, F7 directory upstream-stamp in node_history._build_directory_row)
+        # see a numeric Unix timestamp. Numeric pass-through preserves
+        # forward-compat if upstream ever switches representation.
+        raw_last_advert = node.get("last_advert")
+        last_ts: float = 0.0
+        if isinstance(raw_last_advert, str):
+            try:
+                last_ts = datetime.fromisoformat(
+                    raw_last_advert.replace("Z", "+00:00")
+                ).timestamp()
+            except (TypeError, ValueError):
+                last_ts = 0.0
+        elif isinstance(raw_last_advert, (int, float)):
+            try:
+                last_ts = float(raw_last_advert)
+            except (TypeError, ValueError):
+                last_ts = 0.0
 
-        is_online = False
-        try:
-            if last_advert:
-                last_ts = float(last_advert)
-                is_online = self._is_node_online(last_ts, source="public_fallback")
-        except (TypeError, ValueError):
-            pass
+        is_online = (
+            self._is_node_online(last_ts, source="public_fallback")
+            if last_ts > 0 else False
+        )
 
         return {
             "type": "Feature",
@@ -195,7 +211,7 @@ class MeshCorePublicCollectorMixin:
                 "is_online": is_online,
                 "is_local": False,
                 "is_gateway": node_type_id == 2,  # repeater
-                "last_heard": last_advert,
+                "last_heard": last_ts,
                 "hardware": "",
                 "role": node_type,
                 "frequency": params.get("freq"),

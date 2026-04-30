@@ -588,6 +588,84 @@ class TestMeshCorePublicCollector:
         })
         assert result is None
 
+    def test_iso8601_last_advert_normalized_to_epoch(self, collector):
+        # Real upstream shape from map.meshcore.dev/api/v1/nodes —
+        # last_advert is ISO-8601 with .000Z suffix, NOT Unix epoch.
+        # Pre-fix this fell through float() ValueError and last_heard
+        # was emitted as the raw string, which broke F7's upstream-stamp
+        # path in node_history._build_directory_row.
+        result = collector._parse_meshcore_public_node({
+            "public_key": "abc",
+            "adv_lat": 19.42, "adv_lon": -155.28,
+            "type": 1,
+            "last_advert": "2026-04-27T19:45:54.000Z",
+        })
+        assert result is not None
+        last_heard = result["properties"]["last_heard"]
+        assert isinstance(last_heard, float)
+        # Sanity: 2026-04-27T19:45:54Z is 1777319154.0
+        assert 1777319100 < last_heard < 1777319200
+
+    def test_numeric_last_advert_passthrough(self, collector):
+        # Forward-compat: if upstream ever switches to Unix epoch numeric,
+        # the parser must still accept it.
+        result = collector._parse_meshcore_public_node({
+            "public_key": "abc",
+            "adv_lat": 19.42, "adv_lon": -155.28,
+            "type": 1,
+            "last_advert": 1777707954.5,
+        })
+        assert result is not None
+        assert result["properties"]["last_heard"] == 1777707954.5
+
+    def test_invalid_iso_falls_back_to_zero(self, collector):
+        # Garbage timestamp must not raise; last_heard=0 cleanly signals
+        # "no credible upstream stamp" so _build_directory_row falls back
+        # to now (the row is treated as freshly observed).
+        result = collector._parse_meshcore_public_node({
+            "public_key": "abc",
+            "adv_lat": 19.42, "adv_lon": -155.28,
+            "type": 1,
+            "last_advert": "not-a-date",
+        })
+        assert result is not None
+        assert result["properties"]["last_heard"] == 0.0
+        assert result["properties"]["is_online"] is False
+
+    def test_missing_last_advert_zero_no_online(self, collector):
+        result = collector._parse_meshcore_public_node({
+            "public_key": "abc",
+            "adv_lat": 19.42, "adv_lon": -155.28,
+            "type": 1,
+        })
+        assert result is not None
+        assert result["properties"]["last_heard"] == 0.0
+        assert result["properties"]["is_online"] is False
+
+    def test_iso_last_advert_round_trips_to_directory_upstream_stamp(self, collector, tmp_path):
+        # End-to-end: parser output flows through _build_directory_row
+        # and lands as the row's last_seen. This is the F7 contract that
+        # silently failed when the parser emitted ISO-8601 strings.
+        from utils.node_history import NodeHistoryDB
+        feature = collector._parse_meshcore_public_node({
+            "public_key": "abc",
+            "adv_lat": 19.42, "adv_lon": -155.28,
+            "type": 1,
+            "last_advert": "2026-04-27T19:45:54.000Z",
+        })
+        feature["properties"]["source_origin"] = "meshcore_public"
+        hist = NodeHistoryDB(db_path=tmp_path / "directory.db")
+        now = 1777800000.0  # well after the upstream stamp
+        row = hist._build_directory_row(feature, now)
+        assert row is not None
+        # Tuple shape: (network, node_id, last_seen, ...)
+        last_seen = row[2]
+        # last_seen MUST be the upstream stamp (~1777707954), not now.
+        assert last_seen < now
+        assert 1777319100 < last_seen < 1777319200, (
+            f"expected upstream-stamp last_seen, got {last_seen} (now={now})"
+        )
+
 
 class TestMeshCorePublicCache:
     """T1.1 — per-source cache wrapping the MeshCore public fetch.
