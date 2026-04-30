@@ -423,6 +423,11 @@ MF014_PATTERNS = [
 MF014_ALLOWED_FILES = {
     'scripts/lint.py',
     'tests/test_regression_guards.py',
+    # The Prometheus scrape config legitimately points at real fleet
+    # hosts — that's what a scrape config IS. Future templating
+    # refactor (placeholders + install-time substitution) would let
+    # this come back under MF014; until then, allowlist.
+    'templates/prometheus/prometheus.yml',
 }
 
 MF014_ALLOWED_DIRS = {
