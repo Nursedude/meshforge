@@ -246,6 +246,7 @@ def _feature_directory(node_id: str, *, network: str = "meshtastic",
                        lat=None, lon=None, name: str = "",
                        role: str = "", hardware: str = "",
                        source_origin: str = "",
+                       last_heard=None,
                        protocol_meta=None):
     """Feature builder for directory tests — supports position-less rows."""
     geom: Dict[str, Any]
@@ -262,6 +263,8 @@ def _feature_directory(node_id: str, *, network: str = "meshtastic",
     }
     if source_origin:
         props["source_origin"] = source_origin
+    if last_heard is not None:
+        props["last_heard"] = last_heard
     if protocol_meta is not None:
         props["protocol_meta"] = protocol_meta
     return {"type": "Feature", "geometry": geom, "properties": props}
@@ -388,6 +391,190 @@ class TestNodesDirectory:
         row = self._read_dir(hist, "!a")
         assert row["protocol_meta"]
         assert len(row["protocol_meta"].encode("utf-8")) <= _PROTOCOL_META_MAX_BYTES
+
+
+class TestDirectoryUpstreamTimestamp:
+    """Issue #50 / F7 — last_seen for external-bulk origins must reflect the
+    upstream `last_heard`, not the moment we re-published the bulk dataset.
+    Without this, every collect cycle rewrites last_seen to NOW and the 7d
+    external retention tier never fires (saw it live as ~60k rows pinned at
+    `oldest_last_seen == newest_last_seen` across 4 of 5 fleet boxes)."""
+
+    @pytest.fixture
+    def hist(self, tmp_path: Path):
+        from utils.node_history import NodeHistoryDB
+        return NodeHistoryDB(db_path=tmp_path / "upstream.db")
+
+    def _read_last_seen(self, hist, node_id: str, network: str = "meshcore"):
+        import sqlite3
+        with sqlite3.connect(str(hist.db_path)) as conn:
+            row = conn.execute(
+                "SELECT last_seen FROM nodes WHERE network=? AND node_id=?",
+                (network, node_id),
+            ).fetchone()
+            return row[0] if row else None
+
+    def test_external_bulk_uses_upstream_last_heard(self, hist):
+        # meshcore_public bulk feature with last_heard 2 hours ago.
+        upstream = time.time() - 7200
+        hist.record_observations([
+            _feature_directory("meshcore:abc", network="meshcore",
+                               source_origin="meshcore_public",
+                               last_heard=upstream),
+        ])
+        seen = self._read_last_seen(hist, "meshcore:abc")
+        assert seen == pytest.approx(upstream, abs=1.0), (
+            "external-bulk row must seed last_seen from upstream timestamp, "
+            "not from now()"
+        )
+
+    def test_external_bulk_republish_does_not_advance_last_seen(self, hist):
+        upstream = time.time() - 3600
+        hist.record_observations([
+            _feature_directory("meshcore:abc", network="meshcore",
+                               source_origin="meshcore_public",
+                               last_heard=upstream),
+        ])
+        first = self._read_last_seen(hist, "meshcore:abc")
+        # Cycle later: the external source republishes the same record,
+        # same upstream timestamp. last_seen must NOT bump — this is the
+        # whole point of the fix; otherwise the tier clock never fires.
+        hist.record_observations([
+            _feature_directory("meshcore:abc", network="meshcore",
+                               source_origin="meshcore_public",
+                               last_heard=upstream),
+        ])
+        second = self._read_last_seen(hist, "meshcore:abc")
+        assert second == pytest.approx(first, abs=0.001)
+
+    def test_external_bulk_newer_upstream_advances_last_seen(self, hist):
+        old = time.time() - 7200
+        new = time.time() - 60
+        hist.record_observations([
+            _feature_directory("meshcore:abc", network="meshcore",
+                               source_origin="meshcore_public",
+                               last_heard=old),
+        ])
+        hist.record_observations([
+            _feature_directory("meshcore:abc", network="meshcore",
+                               source_origin="meshcore_public",
+                               last_heard=new),
+        ])
+        seen = self._read_last_seen(hist, "meshcore:abc")
+        assert seen == pytest.approx(new, abs=1.0)
+
+    def test_max_semantics_never_regresses_last_seen(self, hist):
+        """A stale republish (older than the existing row) must not pull
+        last_seen backward. MAX(existing, incoming) on conflict guards this."""
+        recent = time.time() - 60
+        stale = time.time() - 7200
+        hist.record_observations([
+            _feature_directory("meshcore:abc", network="meshcore",
+                               source_origin="meshcore_public",
+                               last_heard=recent),
+        ])
+        hist.record_observations([
+            _feature_directory("meshcore:abc", network="meshcore",
+                               source_origin="meshcore_public",
+                               last_heard=stale),
+        ])
+        seen = self._read_last_seen(hist, "meshcore:abc")
+        assert seen == pytest.approx(recent, abs=1.0)
+
+    def test_external_bulk_zero_last_heard_falls_back_to_now(self, hist):
+        # AREDN worldmap rows whose CSV `last_seen` failed to parse arrive
+        # with last_heard=0. That's not "node was last heard at the epoch";
+        # it's "we don't know" — fall through to now() so the row at least
+        # ages out at the standard 7d external horizon from this insert.
+        before = time.time()
+        hist.record_observations([
+            _feature_directory("aredn_x", network="aredn",
+                               source_origin="aredn_worldmap",
+                               last_heard=0),
+        ])
+        seen = self._read_last_seen(hist, "aredn_x", network="aredn")
+        assert seen is not None
+        assert seen >= before - 1.0
+        assert seen <= time.time() + 1.0
+
+    def test_external_bulk_future_upstream_clamped_to_now(self, hist):
+        # A misbehaving / clock-skewed upstream that reports a far-future
+        # timestamp must not poison the prune horizon (row would never
+        # age out). _build_directory_row clamps at <= now.
+        future = time.time() + 86400
+        before = time.time()
+        hist.record_observations([
+            _feature_directory("meshcore:future", network="meshcore",
+                               source_origin="meshcore_public",
+                               last_heard=future),
+        ])
+        seen = self._read_last_seen(hist, "meshcore:future")
+        assert seen is not None
+        assert seen <= time.time() + 1.0
+        assert seen >= before - 1.0
+
+    def test_local_origin_ignores_last_heard(self, hist):
+        # Even if a local-source feature happens to carry an upstream
+        # timestamp, last_seen should reflect "we observed this now".
+        # Local sources aren't subject to the bulk-republish bloat shape.
+        old = time.time() - 7200
+        before = time.time()
+        hist.record_observations([
+            _feature_directory("!localnode", network="meshtastic",
+                               lat=1.0, lon=2.0,
+                               source_origin="local_radio",
+                               last_heard=old),
+        ])
+        seen = self._read_last_seen(hist, "!localnode", network="meshtastic")
+        assert seen is not None
+        assert seen >= before - 1.0
+        assert seen > old + 60  # not the upstream value
+
+    def test_unknown_origin_ignores_last_heard(self, hist):
+        # Defense: only origins explicitly tagged external-bulk should
+        # opt into upstream stamping. An unknown/missing origin must
+        # behave like local (use now).
+        old = time.time() - 7200
+        before = time.time()
+        hist.record_observations([
+            _feature_directory("!mystery", network="meshtastic",
+                               lat=1.0, lon=2.0,
+                               last_heard=old),
+        ])
+        seen = self._read_last_seen(hist, "!mystery", network="meshtastic")
+        assert seen is not None
+        assert seen >= before - 1.0
+
+    def test_external_bulk_pruned_after_upstream_ages_past_7d(self, tmp_path):
+        """End-to-end: an external-bulk row whose upstream stamp is 8 days
+        old must actually be deleted by the 7d external retention prune,
+        even if we just "republished" it this cycle. Pre-fix, this row
+        would survive forever because last_seen was rewritten to NOW on
+        every UPSERT."""
+        from utils.node_history import NodeHistoryDB
+        h = NodeHistoryDB(
+            db_path=tmp_path / "prune.db",
+            directory_retention_external=7 * 86400,
+            directory_retention_local=30 * 86400,
+        )
+        upstream_8d_ago = time.time() - 8 * 86400
+        h.record_observations([
+            _feature_directory("meshcore:stale", network="meshcore",
+                               source_origin="meshcore_public",
+                               last_heard=upstream_8d_ago),
+        ])
+        # Force prune (bypass the hourly cadence guard).
+        h._last_prune_ts = 0.0
+        h._maybe_prune(time.time())
+        import sqlite3
+        with sqlite3.connect(str(h.db_path)) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM nodes WHERE node_id=?", ("meshcore:stale",)
+            ).fetchone()
+        assert row is None, (
+            "8d-old upstream row survived the 7d external prune — "
+            "F7 fix is not effective"
+        )
 
 
 class TestDirectoryRetention:

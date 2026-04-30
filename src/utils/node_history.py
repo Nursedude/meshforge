@@ -281,6 +281,14 @@ class NodeHistoryDB:
         the only required fields. Position is optional so MeshCore adverts
         and RNS announces still produce a directory row with NULL lat/lon.
 
+        last_seen sourcing (Issue #50 — F7): for external-bulk origins
+        (meshcore_public, aredn_worldmap, mqtt_global, public_fallback)
+        we stamp last_seen from the feature's upstream `last_heard` when
+        present and >0. Combined with the MAX-monotonic ON CONFLICT clause,
+        this means re-publishing an unchanged upstream record does not
+        bump the tier clock, so the 7d external retention can actually fire.
+        Local-origin features always use `now` (they were observed by us).
+
         Tuple shape matches the ON CONFLICT UPSERT below:
           (network, node_id, last_seen, last_lat, last_lon, last_altitude,
            name, role, hardware, source_origin, protocol_meta_json)
@@ -290,6 +298,20 @@ class NodeHistoryDB:
         if not node_id:
             return None
         network = props.get("network", "meshtastic") or "meshtastic"
+        source_origin = props.get("source_origin", "") or ""
+
+        last_seen = now
+        if source_origin in EXTERNAL_BULK_ORIGINS:
+            upstream = props.get("last_heard")
+            try:
+                upstream_ts = float(upstream) if upstream is not None else 0.0
+            except (TypeError, ValueError):
+                upstream_ts = 0.0
+            # Cap at `now`: a future-dated upstream timestamp would
+            # poison the prune horizon (row never ages out). Also gate
+            # on >0 so missing/zero stamps fall back to now.
+            if 0.0 < upstream_ts <= now:
+                last_seen = upstream_ts
 
         # Position is optional in the directory.
         last_lat: Optional[float] = None
@@ -330,14 +352,14 @@ class NodeHistoryDB:
         return (
             network,
             node_id,
-            now,
+            last_seen,
             last_lat,
             last_lon,
             last_altitude,
             props.get("name", "") or "",
             props.get("role", "") or "",
             props.get("hardware", "") or "",
-            props.get("source_origin", "") or "",
+            source_origin,
             meta_json,
         )
 
@@ -375,8 +397,10 @@ class NodeHistoryDB:
             new_priority = _origin_priority(source_origin)
             rows.append((
                 network, node_id,
-                last_seen,           # first_seen for INSERT
-                last_seen,           # last_seen
+                now,                 # first_seen for INSERT — when WE first
+                                     # learned about this node. last_seen may
+                                     # be older (upstream stamp), and that's OK.
+                last_seen,           # last_seen — upstream-aware (Issue #50)
                 last_lat, last_lon, last_altitude,
                 name, role, hardware,
                 source_origin, protocol_meta,
@@ -386,9 +410,16 @@ class NodeHistoryDB:
             return 0
 
         # Single batched UPSERT. ON CONFLICT branch:
-        #   - last_seen / position / metadata fields update unconditionally
-        #     (with COALESCE preserving previously-known position when the
-        #     incoming feature lacks one).
+        #   - last_seen advances monotonically: MAX(existing, incoming).
+        #     External-bulk sources republish their entire dataset every
+        #     cycle; without MAX, the row's last_seen would rewrite to NOW
+        #     each time and the 7d external retention tier could never
+        #     fire (Issue #50 / F7). Combined with `_build_directory_row`
+        #     stamping last_seen from the feature's upstream `last_heard`
+        #     for external-bulk origins, repeated republishes leave the
+        #     tier clock alone.
+        #   - position / metadata fields update with COALESCE so a
+        #     position-less heartbeat doesn't wipe a known GPS fix.
         #   - source_origin updates only when the incoming origin has
         #     equal-or-higher priority than the row's existing origin.
         #     We compute the existing priority in SQL via a CASE expression
@@ -417,7 +448,7 @@ class NodeHistoryDB:
                 source_origin, protocol_meta, obs_count
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             ON CONFLICT(network, node_id) DO UPDATE SET
-                last_seen = excluded.last_seen,
+                last_seen = MAX(nodes.last_seen, excluded.last_seen),
                 last_lat = COALESCE(excluded.last_lat, nodes.last_lat),
                 last_lon = COALESCE(excluded.last_lon, nodes.last_lon),
                 last_altitude = COALESCE(excluded.last_altitude, nodes.last_altitude),

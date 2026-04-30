@@ -414,3 +414,78 @@ FROM nodes GROUP BY source_origin ORDER BY n DESC;
 EOF
 # Expect: meshcore_public oldest_d ≤ 7.0; local_radio oldest_d ≤ 30.0
 ```
+
+
+---
+
+## Issue #50: Directory tier retention defeated by UPSERT last_seen rewrite (2026-04-30)
+
+**Symptom (fleet-wide)**: After Issue #49 shipped, `node_history.db`
+ballooned on every box that had external-bulk collectors enabled —
+volcanoai 2.0 GB, moc3 803 MB, moc1 692 MB, moc 654 MB. moc2 stayed at
+19 MB (no `meshcore_public` / `public_fallback` / `aredn_worldmap`).
+4 of 5 boxes pinned at exactly 60,298 directory rows — 20% over the
+50,000 LRU cap, with `oldest_last_seen == newest_last_seen` in
+`/api/status`. The 7d external retention tier never fired.
+
+**Root cause**: external-bulk sources republish their entire dataset
+every collect cycle (meshcore.dev = 41k nodes, public_fallback = 14k).
+`_apply_features_to_directory` stamped `last_seen = now` at INSERT and
+unconditionally overwrote it with `excluded.last_seen = now` on
+CONFLICT. Result: every row's tier clock reset to NOW each cycle, so
+`directory_retention_external = 7d` could never fire. Only the 50k LRU
+cap pruned anything; with 41k meshcore_public rows republished every
+cycle, eviction churned >5k rows/cycle and the next cycle re-INSERTed
+them immediately.
+
+**Fix** (in `src/utils/node_history.py`):
+1. `_build_directory_row` reads `properties.last_heard` from the feature
+   for external-bulk origins (`meshcore_public`, `aredn_worldmap`,
+   `mqtt_global`, `public_fallback`) and uses it as the row's `last_seen`
+   when present and `0 < ts ≤ now`. Local origins always use `now`.
+   Future-dated upstream timestamps are clamped to `now` so a misbehaving
+   source can't poison the prune horizon.
+2. ON CONFLICT clause changed from `last_seen = excluded.last_seen` to
+   `last_seen = MAX(nodes.last_seen, excluded.last_seen)`. Re-publishing
+   an unchanged upstream record leaves the tier clock alone; only a
+   genuinely newer upstream observation advances `last_seen`.
+3. `first_seen` decoupled from `last_seen` on INSERT — first_seen is
+   always `now` ("when WE first inserted this row"), `last_seen` is the
+   upstream-aware candidate. On a fresh row from an old upstream record,
+   `first_seen > last_seen` is intentional and accurate.
+
+**Why option 3 (upstream stamp)** over the alternatives in
+`project_map_arc_findings.md`:
+- "Skip directory writes for external bulk" loses the
+  "did we ever hear about this node" answer that Issue #49 added the
+  directory for.
+- "Conditional last_seen update" required a side-channel signal for
+  "is this fresh"; the upstream `last_heard` already encodes that.
+- All three external-bulk parsers
+  (`_parse_meshcore_public_node`, `_parse_worldmap_row`,
+  `_parse_*_public` in `_map_collector_public.py`) already emit
+  `properties.last_heard`, so option 3 was a precise low-blast-radius
+  edit.
+
+**Tests**: `TestDirectoryUpstreamTimestamp` in `tests/test_node_history.py`
+(9 tests) — upstream-stamp wiring, republish-no-advance, newer-upstream-
+advances, MAX-monotonic guard against regression, last_heard=0 fallback,
+future-clamp, local-origin ignore, unknown-origin ignore, end-to-end
+prune at 8d-old upstream.
+
+**Operator recipe — verify the fix on a fleet box**:
+```bash
+# Pre-fix smoking gun: oldest == newest in /api/status.directory.
+# Post-fix (after a collect cycle or two): oldest ages back to ~7d.
+curl -s http://<box>:5000/api/status | jq '.directory | {oldest_last_seen, newest_last_seen, total}'
+# Confirm divergence, then re-check after 24h: total should drop as
+# external rows whose upstream stamps cross the 7d boundary get pruned.
+```
+
+**One-time cleanup of pre-fix bloat**: existing rows still carry
+`last_seen ≈ NOW`, so the 7d tier won't catch up until they age out
+naturally over the next week (or operators force a one-shot prune by
+deleting rows where `last_seen > NOW - 60` for external origins, then
+letting the next cycle repopulate with correct upstream stamps). Risky
+on a busy DB — better to let the fix soak naturally; the hourly prune
++ 50k LRU cap keeps growth bounded in the meantime.
