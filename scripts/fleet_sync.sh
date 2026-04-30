@@ -88,7 +88,7 @@ sync_repo() {
         return 1
     fi
 
-    if ! git pull --ff-only origin main >/dev/null 2>pull.err; then
+    if ! sudo -n git pull --ff-only origin main >/dev/null 2>pull.err; then
         local msg
         msg=$(tr "\n" "|" < pull.err | head -c 200)
         rm -f pull.err
