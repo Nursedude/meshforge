@@ -16,8 +16,15 @@ from utils.map_data_collector import MapDataCollector
 
 @pytest.fixture
 def collector(tmp_path):
-    """Fresh collector with an isolated cache dir per test."""
-    return MapDataCollector(cache_dir=tmp_path, enable_history=False)
+    """Fresh collector with an isolated cache dir AND settings dir per test.
+
+    Passing `config_dir=tmp_path` forces SettingsManager to a clean
+    directory — without it, tests read the real
+    ~/.config/meshforge/map_settings.json on the dev box and pick up
+    operator-set keys (e.g. aredn_node_ips on volcanoai), defeating
+    `assert d["aredn"]["reason_if_zero"] == "not_configured"`.
+    """
+    return MapDataCollector(cache_dir=tmp_path, config_dir=tmp_path, enable_history=False)
 
 
 class TestPositionLessThroughHistory:
