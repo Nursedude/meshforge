@@ -81,6 +81,8 @@ Quick navigation for AI assistants. Load only what you need.
 | `plans/noc_test_plan.md` | Lab infrastructure & testing procedures | Reference |
 | `plans/qth_test_checklist.md` | Field testing checklist (updated for TUI) | Reference |
 | `plans/deferred-issues.md` | Deferred GitHub issues (1 of 3 completed) | Active |
+| `plans/branch_convergence_guide.md` | main ↔ alpha merge strategy (single-branch model since 2026-04-19) | Reference |
+| `plans/meshanchor_split_plan.md` | MeshCore sister-repo extraction (executed 2026-04-01) | Reference |
 
 ### Knowledge & Context
 | File | Purpose |

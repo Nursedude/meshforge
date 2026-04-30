@@ -504,5 +504,5 @@ interfere with each other.
 
 ---
 
-*Analysis conducted for MeshForge v0.4.8-alpha enhancement planning*
-*Updated 2026-02-17: Reflects implemented MeshCore support and connection options*
+*Historical analysis (v0.4.8-alpha era). MeshCore handler shipped on `main` in 0.5.7-beta — the recommendations from this doc are now implemented in `src/gateway/meshcore_handler.py`.*
+*Updated 2026-02-17: Reflects implemented MeshCore support and connection options.*

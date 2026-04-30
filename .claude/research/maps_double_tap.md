@@ -14,7 +14,7 @@ This is the difference between Google Maps and an air traffic control display.
 
 ---
 
-## Current State (v0.4.7-beta)
+## State as of v0.4.7-beta (Phase 1 shipped — current map runtime is `src/utils/map_data_service.py` in 0.5.7-beta)
 
 What we have today in `src/utils/coverage_map.py`:
 
