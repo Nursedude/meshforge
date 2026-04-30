@@ -737,6 +737,36 @@ templates/
 
 ## Configuration
 
+### MeshForge ecosystem `global.ini` (shared identity)
+
+Before loading `daemon.yaml`, the NOC reads `~/.config/meshforge/global.ini`
+as a fallback layer.  This file is the single source of truth for values
+shared across the ecosystem (NOC, [meshforge-maps](https://github.com/Nursedude/meshforge-maps),
+[meshing_around_meshforge](https://github.com/Nursedude/meshing_around_meshforge),
+MeshAnchor) — set the MQTT broker, region preset, or operator identity
+once and every sister app picks it up.
+
+Layering: `dataclass defaults < deployment profile < global.ini < system daemon.yaml < user daemon.yaml < explicit --config`.
+Per-app YAML always wins, so a NOC-only override is a one-liner in
+`~/.config/meshforge/daemon.yaml`.
+
+The canonical schema is documented at
+[meshing_around_meshforge/docs/global_config.md](https://github.com/Nursedude/meshing_around_meshforge/blob/main/docs/global_config.md).
+A minimal example:
+
+```ini
+[mqtt]
+broker = mqtt.meshtastic.org
+port = 1883
+
+[region]
+preset = hawaii
+home_lat = 19.7
+home_lon = -155.1
+```
+
+Missing or malformed file → no-op, never raises.
+
 ### meshtasticd
 
 MeshForge writes hardware config overlays (never overwrites defaults):
