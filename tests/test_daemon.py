@@ -164,6 +164,79 @@ log_level: DEBUG
         # Should not raise, defaults preserved
         assert config.gateway_enabled is True
 
+    def test_global_config_seeds_mqtt_fields(self, tmp_path, monkeypatch):
+        """global.ini seeds mqtt_broker/port/enabled before YAML loads."""
+        from daemon_config import DaemonConfig
+        from utils import global_config as gc
+
+        global_dir = tmp_path / ".config" / "meshforge"
+        global_dir.mkdir(parents=True)
+        (global_dir / "global.ini").write_text(
+            "[mqtt]\n"
+            "broker = mqtt.shared.example\n"
+            "port = 8883\n"
+        )
+        monkeypatch.setattr(gc, "get_real_user_home", lambda: tmp_path)
+
+        config = DaemonConfig()
+        config._apply_global_config()
+
+        assert config.mqtt_broker == "mqtt.shared.example"
+        assert config.mqtt_port == 8883
+        assert config.mqtt_enabled is True
+
+    def test_global_config_below_yaml_priority(self, tmp_path, monkeypatch):
+        """daemon.yaml overrides global.ini values (per documented priority)."""
+        from daemon_config import DaemonConfig
+        from utils import global_config as gc
+
+        global_dir = tmp_path / ".config" / "meshforge"
+        global_dir.mkdir(parents=True)
+        (global_dir / "global.ini").write_text(
+            "[mqtt]\nbroker = mqtt.global.example\nport = 1883\n"
+        )
+        monkeypatch.setattr(gc, "get_real_user_home", lambda: tmp_path)
+
+        # Per-app YAML asserts a different broker
+        yaml_path = tmp_path / "daemon.yaml"
+        yaml_path.write_text(
+            "mqtt: true\n"
+            "mqtt_broker: mqtt.local.example\n"
+            "mqtt_port: 1884\n"
+        )
+
+        config = DaemonConfig()
+        config._apply_global_config()
+        # Sanity: global.ini was actually read (would be 'localhost' otherwise)
+        assert config.mqtt_broker == "mqtt.global.example"
+
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            pytest.skip("PyYAML not installed")
+        config._load_yaml(yaml_path)
+
+        # YAML wins
+        assert config.mqtt_broker == "mqtt.local.example"
+        assert config.mqtt_port == 1884
+        assert config.mqtt_enabled is True
+
+    def test_global_config_missing_file_is_noop(self, tmp_path, monkeypatch):
+        """Missing global.ini doesn't disturb defaults."""
+        from daemon_config import DaemonConfig
+        from utils import global_config as gc
+
+        # No global.ini under tmp_path → reader returns empty dict
+        monkeypatch.setattr(gc, "get_real_user_home", lambda: tmp_path)
+
+        config = DaemonConfig()
+        config._apply_global_config()
+
+        # Defaults preserved
+        assert config.mqtt_enabled is False
+        assert config.mqtt_broker == "localhost"
+        assert config.mqtt_port == 1883
+
 
 # =============================================================================
 # ServiceRegistry Tests

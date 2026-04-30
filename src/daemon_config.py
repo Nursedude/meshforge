@@ -23,6 +23,7 @@ from typing import Optional
 
 from utils.safe_import import safe_import
 from utils.paths import get_real_user_home
+from utils.global_config import load_global_overrides
 
 _yaml, _HAS_YAML = safe_import('yaml')
 
@@ -78,8 +79,9 @@ class DaemonConfig:
           1. Explicit config_path argument
           2. User config (~/.config/meshforge/daemon.yaml)
           3. System config (/etc/meshforge/daemon.yaml)
-          4. Deployment profile feature_flags
-          5. Dataclass defaults
+          4. ~/.config/meshforge/global.ini (MeshForge ecosystem fallback)
+          5. Deployment profile feature_flags
+          6. Dataclass defaults
 
         Args:
             config_path: Explicit YAML config file path.
@@ -93,6 +95,12 @@ class DaemonConfig:
         # Apply deployment profile defaults first (lowest priority)
         if profile is not None:
             config._apply_profile(profile)
+
+        # Apply MeshForge ecosystem-wide global.ini overrides BEFORE per-
+        # app YAML loads, so daemon.yaml still wins.  This is the cross-
+        # repo identity layer (broker, region, etc.) shared with maps and
+        # meshing_around_meshforge.  Missing file → no-op.
+        config._apply_global_config()
 
         # Load YAML configs (system first, then user override)
         for path in cls._config_search_paths(config_path):
@@ -116,6 +124,17 @@ class DaemonConfig:
             paths.append(explicit)
 
         return paths
+
+    def _apply_global_config(self) -> None:
+        """Seed missing fields from ``~/.config/meshforge/global.ini``.
+
+        Any per-app ``daemon.yaml`` loaded later overrides these — global
+        is a fallback layer, not an override.  Missing file → no-op.
+        """
+        overrides = load_global_overrides()
+        for attr_name, value in overrides.items():
+            if hasattr(self, attr_name):
+                setattr(self, attr_name, value)
 
     def _apply_profile(self, profile) -> None:
         """Apply deployment profile feature flags as defaults."""
