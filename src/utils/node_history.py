@@ -911,55 +911,54 @@ class NodeHistoryDB:
             Dict with total_observations, unique_nodes, oldest_record,
             newest_record, db_size_kb, retention_days.
         """
-        # Lock-free fast path. Tuple read is GIL-atomic; even if a
-        # concurrent writer mid-update gives us a stale (cache, expires)
-        # pair, the worst case is one extra recompute.
+        # Cache fast path. Tuple read is GIL-atomic; even if a concurrent
+        # writer mid-update gives us a stale (cache, expires) pair, the
+        # worst case is one extra recompute.
         cache = self._stats_cache
         expires = self._stats_cache_expires
         if cache is not None and time.time() < expires:
             return cache
 
-        with self._lock:
-            # Re-check under the lock — another caller may have populated
-            # the cache while we were waiting on the lock.
-            if (self._stats_cache is not None
-                    and time.time() < self._stats_cache_expires):
-                return self._stats_cache
+        # Read path runs WITHOUT self._lock — SQLite WAL mode supports
+        # concurrent readers without blocking writers, and each call uses
+        # its own connection (self._connect()). Holding self._lock here
+        # would queue this read behind in-flight federation/collect
+        # writes (Issue #52: federation poll inserts 50K rows/cycle and
+        # the lock is held for tens of seconds per poll).
+        conn = self._connect()
+        try:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM node_observations"
+            ).fetchone()[0]
+            unique = conn.execute(
+                "SELECT COUNT(DISTINCT node_id) FROM node_observations"
+            ).fetchone()[0]
 
-            conn = self._connect()
-            try:
-                total = conn.execute(
-                    "SELECT COUNT(*) FROM node_observations"
-                ).fetchone()[0]
-                unique = conn.execute(
-                    "SELECT COUNT(DISTINCT node_id) FROM node_observations"
-                ).fetchone()[0]
+            time_range = conn.execute(
+                "SELECT MIN(timestamp), MAX(timestamp) FROM node_observations"
+            ).fetchone()
 
-                time_range = conn.execute(
-                    "SELECT MIN(timestamp), MAX(timestamp) FROM node_observations"
-                ).fetchone()
+            oldest = time_range[0] if time_range[0] else None
+            newest = time_range[1] if time_range[1] else None
 
-                oldest = time_range[0] if time_range[0] else None
-                newest = time_range[1] if time_range[1] else None
+            # DB file size
+            db_size_kb = 0
+            if self.db_path.exists():
+                db_size_kb = self.db_path.stat().st_size / 1024
 
-                # DB file size
-                db_size_kb = 0
-                if self.db_path.exists():
-                    db_size_kb = self.db_path.stat().st_size / 1024
-
-                stats = {
-                    "total_observations": total,
-                    "unique_nodes": unique,
-                    "oldest_record": oldest,
-                    "newest_record": newest,
-                    "db_size_kb": round(db_size_kb, 1),
-                    "retention_days": self.retention_seconds / 86400,
-                }
-                self._stats_cache = stats
-                self._stats_cache_expires = time.time() + self._stats_cache_ttl
-                return stats
-            finally:
-                conn.close()
+            stats = {
+                "total_observations": total,
+                "unique_nodes": unique,
+                "oldest_record": oldest,
+                "newest_record": newest,
+                "db_size_kb": round(db_size_kb, 1),
+                "retention_days": self.retention_seconds / 86400,
+            }
+            self._stats_cache = stats
+            self._stats_cache_expires = time.time() + self._stats_cache_ttl
+            return stats
+        finally:
+            conn.close()
 
     def get_directory_stats(self) -> Dict[str, Any]:
         """Aggregate stats for the `nodes` directory table.
@@ -969,52 +968,54 @@ class NodeHistoryDB:
         per-origin breakdown, and the oldest/newest last_seen
         timestamps. Cheap aggregate queries — runs on every status poll.
         """
-        with self._lock:
-            conn = self._connect()
-            conn.row_factory = sqlite3.Row
-            try:
-                total = conn.execute(
-                    "SELECT COUNT(*) FROM nodes"
-                ).fetchone()[0]
+        # Read-only path; no self._lock (Issue #52). WAL mode + own
+        # connection means we read a consistent snapshot without blocking
+        # the federation/collect writers.
+        conn = self._connect()
+        conn.row_factory = sqlite3.Row
+        try:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM nodes"
+            ).fetchone()[0]
 
-                by_network: Dict[str, int] = {}
-                for row in conn.execute(
-                    "SELECT network, COUNT(*) AS n FROM nodes GROUP BY network"
-                ).fetchall():
-                    by_network[row["network"]] = row["n"]
+            by_network: Dict[str, int] = {}
+            for row in conn.execute(
+                "SELECT network, COUNT(*) AS n FROM nodes GROUP BY network"
+            ).fetchall():
+                by_network[row["network"]] = row["n"]
 
-                by_source_origin: Dict[str, int] = {}
-                for row in conn.execute(
-                    "SELECT source_origin, COUNT(*) AS n FROM nodes "
-                    "GROUP BY source_origin"
-                ).fetchall():
-                    by_source_origin[row["source_origin"] or ""] = row["n"]
+            by_source_origin: Dict[str, int] = {}
+            for row in conn.execute(
+                "SELECT source_origin, COUNT(*) AS n FROM nodes "
+                "GROUP BY source_origin"
+            ).fetchall():
+                by_source_origin[row["source_origin"] or ""] = row["n"]
 
-                with_position = conn.execute(
-                    "SELECT COUNT(*) FROM nodes "
-                    "WHERE last_lat IS NOT NULL AND last_lon IS NOT NULL"
-                ).fetchone()[0]
+            with_position = conn.execute(
+                "SELECT COUNT(*) FROM nodes "
+                "WHERE last_lat IS NOT NULL AND last_lon IS NOT NULL"
+            ).fetchone()[0]
 
-                time_range = conn.execute(
-                    "SELECT MIN(last_seen), MAX(last_seen) FROM nodes"
-                ).fetchone()
-                oldest = time_range[0]
-                newest = time_range[1]
+            time_range = conn.execute(
+                "SELECT MIN(last_seen), MAX(last_seen) FROM nodes"
+            ).fetchone()
+            oldest = time_range[0]
+            newest = time_range[1]
 
-                return {
-                    "total": total,
-                    "with_position": with_position,
-                    "without_position": total - with_position,
-                    "by_network": by_network,
-                    "by_source_origin": by_source_origin,
-                    "oldest_last_seen": oldest,
-                    "newest_last_seen": newest,
-                    "retention_local_days": self.directory_retention_local // 86400,
-                    "retention_external_days": self.directory_retention_external // 86400,
-                    "max_rows": self.directory_max_rows,
-                }
-            finally:
-                conn.close()
+            return {
+                "total": total,
+                "with_position": with_position,
+                "without_position": total - with_position,
+                "by_network": by_network,
+                "by_source_origin": by_source_origin,
+                "oldest_last_seen": oldest,
+                "newest_last_seen": newest,
+                "retention_local_days": self.directory_retention_local // 86400,
+                "retention_external_days": self.directory_retention_external // 86400,
+                "max_rows": self.directory_max_rows,
+            }
+        finally:
+            conn.close()
 
     def get_directory_snapshot(self,
                                include_position_less: bool = True
@@ -1034,21 +1035,24 @@ class NodeHistoryDB:
         features: List[Dict[str, Any]] = []
         position_less: List[Dict[str, Any]] = []
         now = time.time()
-        with self._lock:
-            conn = self._connect()
-            conn.row_factory = sqlite3.Row
-            try:
-                rows = conn.execute(
-                    """
-                    SELECT network, node_id, first_seen, last_seen,
-                           last_lat, last_lon, last_altitude,
-                           name, role, hardware,
-                           source_origin, protocol_meta, obs_count
-                    FROM nodes
-                    """
-                ).fetchall()
-            finally:
-                conn.close()
+        # Read-only path; no self._lock (Issue #52). WAL mode + own
+        # connection means concurrent federation/collect writers don't
+        # block this read. The full-table SELECT also runs faster as a
+        # single fetchall() outside any contended lock.
+        conn = self._connect()
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                """
+                SELECT network, node_id, first_seen, last_seen,
+                       last_lat, last_lon, last_altitude,
+                       name, role, hardware,
+                       source_origin, protocol_meta, obs_count
+                FROM nodes
+                """
+            ).fetchall()
+        finally:
+            conn.close()
         for row in rows:
             base = {
                 "id": row["node_id"],
