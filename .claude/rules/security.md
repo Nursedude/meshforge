@@ -91,12 +91,16 @@ leak topology.
 <!-- WRONG - leaks operator's LAN -->
 Could not load `http://192.168.86.249:5000/`.
 
-<!-- CORRECT - placeholder display, real target hidden behind link if needed -->
+<!-- ALSO WRONG - link target still contains the IP, hover/click reveals it -->
 Could not load [http://<ip>:5000](http://192.168.86.249:5000).
 
-<!-- ALSO CORRECT - pure placeholder, no real IP anywhere -->
+<!-- CORRECT - pure placeholder, no real IP anywhere in source -->
 Could not load `http://<ip>:5000/`.
 ```
+
+The IP must not appear in the source at all — not in display text, not in
+link targets, not in HTML comments, not in alt-text. "Hidden" link targets
+are still in the rendered HTML and still get crawled.
 
 **Why**: Substack posts, README screenshots, and committed transcripts get
 indexed by search engines and archived forever. A single leaked LAN IP plus
