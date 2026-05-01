@@ -189,6 +189,14 @@ class NodeHistoryDB:
         # 0 disables; tests that want deterministic timing override.
         self._last_prune_ts: float = 0.0
         self._prune_interval_seconds: int = 3600
+        # TTL cache for get_stats(). On large observation tables (Issue #52,
+        # 3.5M rows on moc1) the COUNT(*)/COUNT(DISTINCT) full scans cost
+        # ~14s each on Pi-class SD storage and held self._lock long enough
+        # to wedge every other API caller. Stats are observability-only so
+        # 60s staleness is acceptable.
+        self._stats_cache: Optional[Dict[str, Any]] = None
+        self._stats_cache_expires: float = 0.0
+        self._stats_cache_ttl: float = 60.0
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -893,10 +901,31 @@ class NodeHistoryDB:
     def get_stats(self) -> Dict[str, Any]:
         """Get database statistics.
 
+        Cached for ``self._stats_cache_ttl`` seconds (default 60s) — the
+        underlying COUNT(*) and COUNT(DISTINCT) on node_observations are
+        full table scans that cost ~14s each on Pi-class SD storage when
+        the table grows past a few million rows (Issue #52). Stats feed
+        observability, not correctness, so 60s staleness is acceptable.
+
         Returns:
-            Dict with total_observations, unique_nodes, oldest_record, newest_record, db_size_kb.
+            Dict with total_observations, unique_nodes, oldest_record,
+            newest_record, db_size_kb, retention_days.
         """
+        # Lock-free fast path. Tuple read is GIL-atomic; even if a
+        # concurrent writer mid-update gives us a stale (cache, expires)
+        # pair, the worst case is one extra recompute.
+        cache = self._stats_cache
+        expires = self._stats_cache_expires
+        if cache is not None and time.time() < expires:
+            return cache
+
         with self._lock:
+            # Re-check under the lock — another caller may have populated
+            # the cache while we were waiting on the lock.
+            if (self._stats_cache is not None
+                    and time.time() < self._stats_cache_expires):
+                return self._stats_cache
+
             conn = self._connect()
             try:
                 total = conn.execute(
@@ -918,7 +947,7 @@ class NodeHistoryDB:
                 if self.db_path.exists():
                     db_size_kb = self.db_path.stat().st_size / 1024
 
-                return {
+                stats = {
                     "total_observations": total,
                     "unique_nodes": unique,
                     "oldest_record": oldest,
@@ -926,6 +955,9 @@ class NodeHistoryDB:
                     "db_size_kb": round(db_size_kb, 1),
                     "retention_days": self.retention_seconds / 86400,
                 }
+                self._stats_cache = stats
+                self._stats_cache_expires = time.time() + self._stats_cache_ttl
+                return stats
             finally:
                 conn.close()
 

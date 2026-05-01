@@ -800,6 +800,55 @@ class TestDirectoryStats:
         assert s["max_rows"] == 50_000
 
 
+class TestStatsCache:
+    """get_stats() TTL cache — Issue #52, prevents 42s lock holds.
+
+    The COUNT(*)/COUNT(DISTINCT) full scans on a few-million-row
+    observation table dominate the lock for tens of seconds and stall
+    every other API caller. Stats are observability-only; a 60s cache
+    is the surgical fix.
+    """
+
+    @pytest.fixture
+    def hist(self, tmp_path: Path):
+        from utils.node_history import NodeHistoryDB
+        return NodeHistoryDB(db_path=tmp_path / "stats_cache.db")
+
+    def test_first_call_populates_cache(self, hist):
+        s = hist.get_stats()
+        assert s["total_observations"] == 0
+        assert hist._stats_cache is s
+        assert hist._stats_cache_expires > 0
+
+    def test_second_call_returns_cached_object(self, hist):
+        first = hist.get_stats()
+        second = hist.get_stats()
+        # Same dict object — proves it didn't recompute.
+        assert first is second
+
+    def test_cache_expires(self, hist):
+        first = hist.get_stats()
+        # Force cache expiry by rewinding the deadline.
+        hist._stats_cache_expires = 0.0
+        second = hist.get_stats()
+        # Different dict object — proves recompute fired.
+        assert first is not second
+
+    def test_cache_respects_ttl_default_60s(self, hist):
+        hist.get_stats()
+        # Default TTL is 60s; cache should be valid for at least 30s
+        # ahead of now (well within the 60s window).
+        assert hist._stats_cache_expires > time.time() + 30
+
+    def test_cache_isolated_per_instance(self, tmp_path: Path):
+        from utils.node_history import NodeHistoryDB
+        h1 = NodeHistoryDB(db_path=tmp_path / "a.db")
+        h2 = NodeHistoryDB(db_path=tmp_path / "b.db")
+        h1.get_stats()
+        # h2 has no cache yet; populating h1 doesn't leak.
+        assert h2._stats_cache is None
+
+
 class TestDirectorySnapshot:
     """get_directory_snapshot() returns features + position-less list."""
 
