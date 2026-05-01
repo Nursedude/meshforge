@@ -1586,7 +1586,7 @@
                 <label><input type="checkbox" id="filter-links" checked> Link lines</label>
                 <label><input type="checkbox" id="filter-link-anim" checked> Animate links</label>
                 <label><input type="checkbox" id="filter-heatmap"> Signal heatmap</label>
-                <label><input type="checkbox" id="filter-clustering"> Cluster view</label>
+                <label title="On by default — federated 50K+ node sets stall the browser without it (Issue #52 follow-up)"><input type="checkbox" id="filter-clustering" checked> Cluster view</label>
                 <label><input type="checkbox" id="filter-messages"> Message flow</label>
                 <label title="Show nodes federated from peer fleet boxes (Issue #49)"><input type="checkbox" id="filter-federated" checked> Federated peers</label>
             </div>
@@ -5479,9 +5479,13 @@
     // Initialize WebSocket for real-time messages
     initWebSocket();
 
-    // Auto-refresh every 30 seconds (only if no embedded data pushing updates)
+    // Auto-refresh every 60 seconds (only if no embedded data pushing updates).
+    // Bumped from 30s → 60s as an Issue #52 follow-up: with federation on,
+    // /api/nodes/geojson is ~30 MB / ~60K features and the browser stalls
+    // re-rendering every 30s. 60s also aligns with federation's ~65s poll
+    // cycle, so each refresh sees fresh peer data without amplifying load.
     if (!window.meshforgeData) {
-        setInterval(refreshNodes, 30000);
+        setInterval(refreshNodes, 60000);
     }
 
     // Periodic cache status update
