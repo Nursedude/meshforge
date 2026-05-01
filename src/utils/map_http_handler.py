@@ -140,6 +140,118 @@ REGION_PRESETS = {
 }
 
 
+# ── View presets (server-side filter mirror of web/node_map.html dropdown) ────
+# Same six options the operator picks in the View dropdown. Moving these
+# server-side shrinks /api/nodes/geojson + /api/nodes/directory from the
+# 50K+-feature federated union to just the slice the preset wants. The
+# client-side switch in node_map.html still runs as defense-in-depth.
+#
+# Each spec: optional `origins` (allowed source_origin values),
+# `exclude_federated` (drop properties.federated=True), `max_age_s` (drop
+# features whose numeric last_heard/last_seen is older than this).
+# `custom`, `fleet_union`, `all_gps` are intentionally absent — they're
+# no-ops on the server (everything passes through).
+VIEW_PRESETS = {
+    "live_rf": {
+        "origins": {"local_radio"},
+        "exclude_federated": True,
+        "max_age_s": 300,
+    },
+    "live_rf_mqtt": {
+        "origins": {"local_radio", "mqtt_local"},
+        "exclude_federated": True,
+        "max_age_s": 900,
+    },
+    "external_only": {
+        "origins": {
+            "meshcore_public", "aredn_worldmap",
+            "public_fallback", "mqtt_global",
+        },
+    },
+    "local_only": {
+        "exclude_federated": True,
+    },
+    # Pass-through presets: validated as known so we can return a
+    # 'preset_filtered' marker, but no predicate applies on the server.
+    "fleet_union": {},
+    "all_gps": {},
+    "custom": {},
+}
+
+
+def _feature_numeric_timestamp(props: Dict[str, Any]) -> Optional[float]:
+    """Pick the numeric last-seen timestamp from a feature's properties.
+
+    Live geojson features carry both `last_seen` (human string) and
+    `last_heard` (numeric epoch). Directory snapshot features carry only
+    `last_seen` (numeric epoch). Federated peer features carry whatever
+    the peer pushed — could be either shape. Returns the first numeric
+    candidate, or None if neither field is a number.
+    """
+    for key in ("last_heard", "last_seen"):
+        v = props.get(key)
+        if isinstance(v, (int, float)) and v > 0:
+            return float(v)
+    return None
+
+
+def _apply_view_preset(features: List[Dict[str, Any]],
+                       preset: Optional[str],
+                       now: Optional[float] = None) -> List[Dict[str, Any]]:
+    """Filter a list of GeoJSON features by a View preset.
+
+    Pure function — no I/O, no DB, no lock. Pass through if `preset` is
+    None, unknown, or maps to a no-op spec (custom/fleet_union/all_gps).
+    """
+    if not preset:
+        return features
+    spec = VIEW_PRESETS.get(preset)
+    if not spec:
+        return features  # unknown or pass-through preset
+    if not (spec.get("origins") or spec.get("exclude_federated") or spec.get("max_age_s")):
+        return features  # explicit no-op (fleet_union/all_gps/custom)
+
+    now = now if now is not None else time.time()
+    origins = spec.get("origins")
+    exclude_fed = spec.get("exclude_federated", False)
+    max_age = spec.get("max_age_s")
+
+    out: List[Dict[str, Any]] = []
+    for f in features:
+        props = f.get("properties") or {}
+        if exclude_fed and props.get("federated"):
+            continue
+        if origins is not None and props.get("source_origin", "") not in origins:
+            continue
+        if max_age is not None:
+            ts = _feature_numeric_timestamp(props)
+            if ts is None or (now - ts) > max_age:
+                continue
+        out.append(f)
+    return out
+
+
+def _apply_view_preset_to_position_less(
+    entries: List[Dict[str, Any]],
+    preset: Optional[str],
+    now: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """Apply a View preset to position-less directory entries.
+
+    The position_less list shape is dicts (not Features) carrying the
+    same id/network/source_origin/last_seen/federated keys. Wrap into
+    a synthetic Feature shape just long enough to reuse `_apply_view_preset`.
+    """
+    if not preset or preset not in VIEW_PRESETS:
+        return entries
+    spec = VIEW_PRESETS[preset]
+    if not (spec.get("origins") or spec.get("exclude_federated") or spec.get("max_age_s")):
+        return entries
+    wrapped = [{"properties": e} for e in entries]
+    filtered = _apply_view_preset(wrapped, preset, now=now)
+    return [w["properties"] for w in filtered]
+
+
 class MapRequestHandler(
     RadioEndpointsMixin,
     MeshtasticProxyMixin,
@@ -543,7 +655,13 @@ class MapRequestHandler(
             self.send_error(404, f"File not found: {path_only}")
 
     def _serve_geojson(self):
-        """Serve live node GeoJSON with optional bbox/region filtering."""
+        """Serve live node GeoJSON with optional bbox/region/preset filtering.
+
+        Supports three orthogonal filters that compose: ?region= (named
+        bbox preset), ?bbox= (explicit bbox), and ?preset= (View preset
+        — origin/age/federation predicates). Preset is applied first so
+        the bbox pass walks a smaller list.
+        """
         if self.collector:
             geojson = self.collector.collect()
         else:
@@ -551,6 +669,25 @@ class MapRequestHandler(
 
         # Resolve bbox from ?region= preset or explicit ?bbox= param
         query = getattr(self, '_query', {})
+
+        # View preset filter — applied before bbox so federation's 50K
+        # features collapse to the preset slice (often <5K) before any
+        # geometry walk. Unknown/missing preset is a pass-through.
+        preset_key = _safe_query_param(query, "preset")
+        if preset_key in VIEW_PRESETS:
+            spec = VIEW_PRESETS[preset_key]
+            if spec.get("origins") or spec.get("exclude_federated") or spec.get("max_age_s"):
+                filtered_features = _apply_view_preset(
+                    geojson.get("features", []), preset_key
+                )
+                geojson = dict(geojson)
+                geojson["features"] = filtered_features
+                props = dict(geojson.get("properties", {}))
+                props["preset_filtered"] = True
+                props["preset"] = preset_key
+                props["nodes_with_position"] = len(filtered_features)
+                geojson["properties"] = props
+
         bboxes = []
 
         region_key = _safe_query_param(query, "region")
@@ -887,6 +1024,22 @@ class MapRequestHandler(
             }, status=500)
             return
 
+        # Optional ?preset= filter (same shape the live geojson endpoint
+        # accepts). Directory features carry numeric `last_seen` epoch
+        # (Issue #49) so age-based presets work here without the
+        # last_heard fallback the live path needs.
+        query = getattr(self, '_query', {})
+        preset_key = _safe_query_param(query, "preset")
+        preset_applied = False
+        if preset_key in VIEW_PRESETS:
+            spec = VIEW_PRESETS[preset_key]
+            if spec.get("origins") or spec.get("exclude_federated") or spec.get("max_age_s"):
+                features = _apply_view_preset(features, preset_key)
+                position_less = _apply_view_preset_to_position_less(
+                    position_less, preset_key
+                )
+                preset_applied = True
+
         # Per-network breakdown alongside the full list — same shape
         # /api/status uses, so dashboards can consume either.
         by_network: Dict[str, int] = {}
@@ -894,14 +1047,19 @@ class MapRequestHandler(
             net = entry.get("network", "unknown")
             by_network[net] = by_network.get(net, 0) + 1
 
+        properties = {
+            "generated_at": datetime.now().isoformat(),
+            "total_features": len(features),
+            "total_position_less": len(position_less),
+        }
+        if preset_applied:
+            properties["preset_filtered"] = True
+            properties["preset"] = preset_key
+
         body = {
             "type": "FeatureCollection",
             "features": features,
-            "properties": {
-                "generated_at": datetime.now().isoformat(),
-                "total_features": len(features),
-                "total_position_less": len(position_less),
-            },
+            "properties": properties,
             "nodes_without_position": position_less,
             "nodes_without_position_by_network": by_network,
         }

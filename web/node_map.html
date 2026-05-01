@@ -4030,11 +4030,20 @@
             return;
         }
 
-        // 2. Try local API with bbox filtering
+        // 2. Try local API with bbox + preset filtering
         try {
             let geoUrl = '/api/nodes/geojson';
+            const params = [];
             const bbox = _getActiveBbox();
-            if (bbox) geoUrl += '?bbox=' + bbox;
+            if (bbox) params.push('bbox=' + bbox);
+            // Push View preset to the server so the response is preset-shaped
+            // instead of the full federation union (~30 MB / 60K features).
+            // The client-side switch in _processOneFeature still runs as
+            // defense-in-depth — it'll be a near-no-op on filtered data.
+            const presetEl = document.getElementById('filter-preset');
+            const preset = presetEl ? presetEl.value : 'custom';
+            if (preset && preset !== 'custom') params.push('preset=' + encodeURIComponent(preset));
+            if (params.length) geoUrl += '?' + params.join('&');
             const response = await fetch(geoUrl);
             if (response.ok) {
                 loadNodes(await response.json());
@@ -4287,10 +4296,15 @@
     });
 
     // View preset dropdown — composes onto protocol/online filters.
+    // Triggers a refresh: the server now uses ?preset= to shape the
+    // /api/nodes/geojson payload (F8 server-side filter), so changing
+    // the preset must re-fetch to actually shrink the response.
+    // updateDisplay() alone would only re-run the client-side switch
+    // on already-cached features — wrong shape after the server cut.
     const presetEl = document.getElementById('filter-preset');
     if (presetEl) {
         presetEl.addEventListener('change', () => {
-            updateDisplay();
+            refreshNodes();
         });
     }
 
