@@ -16,7 +16,7 @@ Each map server aggregates Meshtastic, RNS, AREDN, MeshCore-public, and several 
 
 The federation poll lands roughly every sixty-five seconds. On a five-box fleet, each poll hands the local box ~50,001 federated rows. Three days after F5 closed I wrote a memory entry calling the DB-bloat arc "complete." I was wrong inside seventy-two hours.
 
-This morning WH6GXZ could not load `http://192.168.86.249:5000/`. The federation poll's 50K-row UPSERT was holding a Python lock for five-plus seconds per cycle, and every API read on the same lock was serialized behind it. The cache I added first helped for fifty-nine seconds and then the lock came back. The fix that actually worked was dropping the lock from the read path — SQLite WAL mode supports concurrent readers, and the Python mutex was over-broad. Two commits, fleet rolled, soak check scheduled for tomorrow.
+This morning WH6GXZ could not load [http://<ip>:5000](http://192.168.86.249:5000). The federation poll's 50K-row UPSERT was holding a Python lock for five-plus seconds per cycle, and every API read on the same lock was serialized behind it. The cache I added first helped for fifty-nine seconds and then the lock came back. The fix that actually worked was dropping the lock from the read path — SQLite WAL mode supports concurrent readers, and the Python mutex was over-broad. Two commits, fleet rolled, soak check scheduled for tomorrow.
 
 The lesson: **federation cadence is the master variable.** Every other DB dimension — retention, prune throughput, lock scope, write amplification, SD bandwidth — flexes around the size and frequency of the federation poll. There is no static "right" cadence. Future fixes have to state which dimension they relieve and which one they rotate the pressure toward.
 

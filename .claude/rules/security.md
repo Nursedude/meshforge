@@ -77,3 +77,37 @@ Never commit:
 - Private keys
 
 Use environment variables or secure config.
+
+---
+
+## MF015: No operator-specific local IPs in published docs
+
+**Rule**: Anything under `docs/` (especially `docs/substack/`) is public-facing.
+Never paste literal LAN IPs (`192.168.x.y`, `10.x.y.z`, `172.16-31.x.y`) from
+the operator's network. They identify the operator's home/office subnet and
+leak topology.
+
+```markdown
+<!-- WRONG - leaks operator's LAN -->
+Could not load `http://192.168.86.249:5000/`.
+
+<!-- CORRECT - placeholder display, real target hidden behind link if needed -->
+Could not load [http://<ip>:5000](http://192.168.86.249:5000).
+
+<!-- ALSO CORRECT - pure placeholder, no real IP anywhere -->
+Could not load `http://<ip>:5000/`.
+```
+
+**Why**: Substack posts, README screenshots, and committed transcripts get
+indexed by search engines and archived forever. A single leaked LAN IP plus
+a hostname pins the operator's physical network.
+
+**Companion to MF014** (operator-specific values in source/templates). MF015
+is the docs equivalent. When transcribing a debugging session into a
+published post, sanitize IPs at copy time, not "later."
+
+**Audit before publishing a substack post**:
+```bash
+grep -rn "192\.168\.[0-9]\+\.[0-9]\+\|10\.[0-9]\+\.[0-9]\+\.[0-9]\+" docs/substack/ \
+  | grep -v "x\.x\|<ip>"
+```
