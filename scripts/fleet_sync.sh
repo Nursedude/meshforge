@@ -3,17 +3,20 @@
 #   /opt/meshforge          (this repo) → restart meshforge-gateway.service
 #   /opt/meshforge-maps     (sister)    → restart meshforge-maps.service
 #
-# Plus mirror Claude memory from THIS box (the canonical writer) to each fleet
-# host:
+# Plus auto-commit + mirror Claude memory from THIS box (the canonical writer)
+# to each fleet host:
 #   ~/.claude/memory/                            (cross-repo memory)
 #   ~/.claude/projects/-opt-meshforge/memory/    (this repo's memory)
 #
-# Memory mirror is one-way push with --delete: the box this script RUNS ON is
-# the canonical writer. Fleet boxes get a read-only-from-their-side replica.
-# If you start writing memory on a fleet box (e.g. running claude code there),
-# the next sync will erase those local-only entries — keep authoring on the
-# canonical box. Tier 2 (private git remote with secrets-grep pre-commit) will
-# replace this push model with proper history once that infra lands.
+# Each sync run starts with `git add -A && git commit && git push origin main`
+# on each memory repo (no-op when nothing changed; blocks on the secrets-grep
+# pre-commit hook if a secret pattern is detected). Then rsync mirrors the
+# committed working tree + .git/ to every fleet box.
+#
+# Canonical-writer model: --delete is on by design. Fleet boxes are pull-only
+# replicas with the full git history available locally (rsync copies .git/),
+# but they don't run their own commits — writing memory on a fleet box is a
+# footgun the next sync will erase. Author memory on the canonical box only.
 #
 # A box without one of the repos still updates the other (skip-if-absent).
 # Without this, /opt/meshforge-maps drifts on boxes where it isn't manually
@@ -69,6 +72,50 @@ Or set \$MESHFORGE_FLEET_HOSTS to a different path.
 EOF
     exit 2
 fi
+
+# Auto-commit any pending memory changes to the canonical repo and push to
+# origin. Runs ONCE before the host loop so all fleet boxes receive the same
+# committed state via rsync. Returns 0 on success (committed or no changes),
+# 1 if commit failed (typically the secrets-grep pre-commit hook blocked).
+#
+# Push failure (network/auth) is non-fatal: the commit lands locally, rsync
+# still propagates the new .git state to fleet, and the next sync retries
+# the push.
+commit_memory_repo() {
+    local dir="$1"
+    local label="$2"
+
+    if [[ ! -d "$dir/.git" ]]; then
+        printf '[%-26s] SKIP not_a_git_repo\n' "$label"
+        return 0
+    fi
+
+    git -C "$dir" add -A 2>/dev/null
+
+    if git -C "$dir" diff --cached --quiet; then
+        printf '[%-26s] CLEAN no_changes\n' "$label"
+        return 0
+    fi
+
+    local changed_count
+    changed_count=$(git -C "$dir" diff --cached --name-only | wc -l)
+
+    if ! git -C "$dir" commit -q -m "memory sync $(date -u +%Y-%m-%dT%H:%M:%SZ) — $changed_count files" 2>/dev/null; then
+        printf '[%-26s] FAIL commit_blocked (likely pre-commit secrets gate)\n' "$label"
+        return 1
+    fi
+
+    local new_head
+    new_head=$(git -C "$dir" rev-parse --short HEAD)
+
+    if timeout 30 git -C "$dir" push -q origin main 2>/dev/null; then
+        printf '[%-26s] PUSHED %s (%d files)\n' "$label" "$new_head" "$changed_count"
+    else
+        printf '[%-26s] LOCAL_COMMIT %s (%d files) push_failed\n' "$label" "$new_head" "$changed_count"
+    fi
+
+    return 0
+}
 
 # Mirror Claude memory dirs from THIS box to one fleet host. Runs LOCALLY
 # (rsync drives its own ssh transport). Prints one summary line per dir in
@@ -176,6 +223,30 @@ sync_repo meshforge       /opt/meshforge       meshforge-gateway || rc1=$?
 sync_repo meshforge-maps  /opt/meshforge-maps  meshforge-maps    || rc2=$?
 exit $(( ${rc1:-0} + ${rc2:-0} ))
 '
+
+# Pre-sync: auto-commit memory changes on the canonical box and push to
+# origin. Runs ONCE before the host loop so all fleet boxes receive the
+# same committed state via rsync. If commit is blocked (e.g. the
+# secrets-grep pre-commit hook fired), abort BEFORE any fleet propagation.
+echo "Pre-sync memory commit:"
+memory_commit_failed=0
+commit_memory_repo "$HOME/.claude/memory"                          "global-memory"            || memory_commit_failed=1
+commit_memory_repo "$HOME/.claude/projects/-opt-meshforge/memory"  "project-meshforge-memory" || memory_commit_failed=1
+
+if [[ $memory_commit_failed -ne 0 ]]; then
+    cat >&2 <<EOF
+
+Aborting fleet_sync: a memory commit was blocked (likely a secret pattern
+caught by the pre-commit hook). Fix the offending file, then re-run:
+    git -C \$HOME/.claude/memory                          status
+    git -C \$HOME/.claude/projects/-opt-meshforge/memory  status
+
+This abort is intentional — propagating un-vetted memory state to the fleet
+would defeat the secrets gate.
+EOF
+    exit 3
+fi
+echo
 
 # Iterate hosts. Each host produces multiple summary lines (one per repo);
 # we track host-level pass/fail counts (any FAIL on a host = host failed)
