@@ -217,11 +217,18 @@ sync_repo() {
     return 0
 }
 
-# Run both syncs even if one fails so a broken meshforge-maps does not mask
-# a successful meshforge update.
+# Run all three syncs even if one fails so a broken meshforge-maps does not
+# mask a successful meshforge update. meshforge-map is the singular :5000
+# map daemon from this repo (separate from the :8808 sister meshforge-maps);
+# without it the daemon stays on stale code after a git pull and re-creates
+# the project_tcp_contention_pattern starvation (Issue #53, 2026-05-02).
+# The second sync_repo call against /opt/meshforge re-pulls the same repo
+# (no-op, ~50ms LAN) and try-restarts the meshforge-map unit only when it
+# is already active — operator-disabled units stay disabled.
 sync_repo meshforge       /opt/meshforge       meshforge-gateway || rc1=$?
+sync_repo meshforge-map   /opt/meshforge       meshforge-map     || rc1b=$?
 sync_repo meshforge-maps  /opt/meshforge-maps  meshforge-maps    || rc2=$?
-exit $(( ${rc1:-0} + ${rc2:-0} ))
+exit $(( ${rc1:-0} + ${rc1b:-0} + ${rc2:-0} ))
 '
 
 # Pre-sync: auto-commit memory changes on the canonical box and push to
