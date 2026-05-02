@@ -3,9 +3,9 @@ MeshForge - LoRa Mesh Network Development & Operations Suite
 Version information and changelog
 """
 
-__version__ = "0.5.7-beta"
-__version_info__ = (0, 5, 7, 'beta')
-__release_date__ = "2026-04-24"
+__version__ = "0.6.0-beta"
+__version_info__ = (0, 6, 0, 'beta')
+__release_date__ = "2026-05-02"
 __app_name__ = "MeshForge"
 __app_description__ = "Mesh Network Operations Center & Development Ecosystem"
 __app_tagline__ = "Build. Test. Deploy. Monitor."
@@ -20,6 +20,21 @@ ALPHA_VERSION = "0.6.0-alpha"
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "0.6.0-beta",
+        "date": "2026-05-02",
+        "status": "beta",
+        "changes": [
+            "GATEWAY: Dual-gateway cross-preset bridging — proof-of-concept landed. Two active gateways concurrently: moc (LongFast LXMF↔Meshtastic, hash 3dfbdb5d…) + moc3 (SHORT_TURBO, hash f68c2f56…). RF presets can't cross-RX over the air, so the dual-gateway shape is the only path to give NomadNet operators full handheld coverage. Each gateway has a distinct `rns.gateway_name` + per-box `meshtastic.gateway_node_id` self-echo filter so neither creates duplicates.",
+            "GATEWAY: `scripts/configure_gateway.sh` canonicalizes two device-level meshtasticd MQTT prereqs that were silently assumed: `mqtt.json_enabled = true` (bridge subscribes to JSON topics, not encrypted protobuf) and `mqtt.address = localhost` (publishes routed to local mosquitto where the bridge listens). Detected during 2026-05-02 dual-gateway field validation when moc deployed clean but bridged 0/0 for half an hour. Loud warn before overriding a pre-existing remote `mqtt.address` so operator-pipeline configs aren't silently clobbered.",
+            "GATEWAY: `docs/GATEWAY_DEPLOYMENT.md` fleet truth table updated for dual-gateway shape; topology diagram shows both gateways feeding all four NomadNet inboxes via RNS Transport. moc's `default_lxmf_destination` broadcast list has all 4 NomadNets (moc1+moc2+moc3+moc); moc3's still has 3 (deferred follow-up tracked in `project_gateway_fleet_state` memory; scheduled-agent decision PR fires 2026-05-09).",
+            "MESHCHATX: Side-by-side LXMF web client integrated as opt-in sibling to NomadNet (Issue #45/#46 install pattern). `scripts/install_meshchatx.sh` idempotent installer (--check/--refresh/--reinstall flags), shell wrapper that refuses-loud on rpc_key drift (exit 87, Issue #41), Type=simple systemd-user unit on 127.0.0.1:8000. TUI handler with port_bound liveness probe + 'Open Web UI' action. 51 new tests (handler SSOT contract + installer script-shape). `meshchatx` feature flag default-False on every profile; rollout schedule fires 2026-05-16 with a draft PR to flip on FULL profile if soak signal stays clean.",
+            "FLEET_SYNC: `scripts/fleet_sync.sh` now restarts `meshforge-map.service` alongside `meshforge-gateway` and `meshforge-maps` (Issue #53 prevention). Closes a stale-daemon pattern where the :5000 map daemon stayed on weeks-old code after `git pull`, recreating the `project_tcp_contention_pattern` :4403 starvation that broke moc1's :9443 web UI.",
+            "ISSUE #53: meshforge-map stale-daemon → :4403/:9443 starvation documented in `persistent_issues.md`; recipe + diagnostic ladder captured in `project_meshforge_map_stale_daemon_pattern` memory. Prevention shipped (fleet_sync patch above).",
+            "MEMORY: New project memory entries — `project_meshchatx_rollout`, `project_solo_mode_topology_design` (deferred until uConsole hardware ships), `project_meshforge_map_stale_daemon_pattern`. Updated `project_gateway_fleet_state` for dual-gateway topology + meshtasticd MQTT prereqs.",
+            "TESTS: +51 (test_meshchatx_handler.py 25 + test_install_meshchatx.py 26).",
+        ],
+    },
     {
         "version": "0.5.7-beta",
         "date": "2026-04-24",
