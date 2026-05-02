@@ -1291,6 +1291,11 @@ class RNSMeshtasticBridge(
                 except Exception as e:
                     logger.debug(f"RNS sniffer LXMF capture error: {e}")
 
+            # Pass through LXMF fields so the xform layer can inspect
+            # meshforge_* namespace (Issue #39 attribution + relay-on-receive
+            # origin marker). LXMF.fields is dict-or-None; normalize to dict.
+            lxmf_fields = getattr(message, 'fields', None) or {}
+
             msg = BridgedMessage(
                 source_network="rns",
                 source_id=source_hash.hex(),
@@ -1299,6 +1304,7 @@ class RNSMeshtasticBridge(
                 title=message.title,
                 metadata={
                     'lxmf_stamp': message.stamp,
+                    'lxmf_fields': lxmf_fields,
                 }
             )
 

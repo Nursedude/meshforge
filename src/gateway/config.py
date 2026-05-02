@@ -371,10 +371,27 @@ class RNSConfig:
     # broadcasts the same Meshtastic message to each LXMF destination). Use the
     # list form when multiple NomadNet operators want to see the same bridged feed.
     default_lxmf_destination: Any = ""
+    # Hex hash(es) of OTHER MeshForge gateways in this operator's cluster. When
+    # set, R→M arrivals that did not originate from a peer (no
+    # ``meshforge_relayed_by`` LXMF field) are relayed to each peer gateway
+    # so a NomadNet send into one gateway thread reaches every RF preset the
+    # cluster covers. Distinct from default_lxmf_destination, which is the
+    # M→R fan-out list (operator NomadNet inboxes). Same single-or-list
+    # shape as default_lxmf_destination.
+    peer_gateway_destinations: Any = ""
 
     def get_lxmf_destinations(self) -> List[str]:
         """Return default_lxmf_destination normalized to a list of non-empty hex strings."""
         raw = self.default_lxmf_destination
+        if isinstance(raw, str):
+            return [raw] if raw else []
+        if isinstance(raw, (list, tuple)):
+            return [d for d in raw if isinstance(d, str) and d]
+        return []
+
+    def get_peer_gateway_destinations(self) -> List[str]:
+        """Return peer_gateway_destinations normalized to a list of non-empty hex strings."""
+        raw = self.peer_gateway_destinations
         if isinstance(raw, str):
             return [raw] if raw else []
         if isinstance(raw, (list, tuple)):

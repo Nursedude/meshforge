@@ -204,6 +204,13 @@ class MessageTransformMixin:
         In mqtt_bridge mode, routes through the persistent queue for
         reliable delivery with retry. Otherwise sends directly and
         persists to queue on failure.
+
+        Phase 1 fluid bridge — relay-on-receive: after local TX,
+        originals (no ``meshforge_relayed_by`` LXMF field) are
+        forwarded to each peer gateway hash listed in
+        ``rns.peer_gateway_destinations`` so a single NomadNet send
+        reaches every RF preset the cluster covers. Relayed copies
+        carry the origin marker so peers don't re-relay.
         """
         # Lazy import to keep mixin file slim and avoid circular import
         # back into rns_bridge for the HAS_PERSISTENT_QUEUE flag.
@@ -215,11 +222,26 @@ class MessageTransformMixin:
         try:
             raw = msg.content
             if isinstance(raw, bytes):
-                body = raw.decode("utf-8", errors="replace")
+                original_body = raw.decode("utf-8", errors="replace")
             elif isinstance(raw, str):
-                body = raw
+                original_body = raw
             else:
-                body = ""
+                original_body = ""
+            body = original_body  # working copy; @addr parsing strips below
+
+            lxmf_fields = (msg.metadata or {}).get('lxmf_fields') or {}
+            relayed_by = lxmf_fields.get('meshforge_relayed_by')
+            # Relayed copies carry the original NomadNet's hash so the
+            # [RNS:xxxx] prefix still attributes the operator, not the
+            # relaying gateway.
+            if relayed_by:
+                effective_source = (
+                    lxmf_fields.get('meshforge_origin_source_id')
+                    or msg.source_id
+                )
+            else:
+                effective_source = msg.source_id
+
             destination = None
             if body.startswith('@'):
                 parts = body.split(None, 1)
@@ -235,7 +257,7 @@ class MessageTransformMixin:
                             f"falling through to broadcast"
                         )
 
-            prefix = f"[RNS:{msg.source_id[:4]}] "
+            prefix = f"[RNS:{(effective_source or '')[:4]}] "
             content = prefix + body
 
             # In mqtt_bridge mode, use persistent queue for reliable delivery
@@ -260,6 +282,8 @@ class MessageTransformMixin:
                         self.stats['messages_rns_to_mesh'] += 1
                         self.stats['rns_to_mesh_delivered'] += 1
                     self.health.record_message_sent("rns_to_mesh")
+                    if not relayed_by:
+                        self._maybe_relay_to_peers(msg, original_body)
                     return
                 # enqueue returned None — queue rejected the message
                 logger.warning("Failed to enqueue RNS→Mesh to persistent queue")
@@ -281,6 +305,8 @@ class MessageTransformMixin:
                     self.stats['messages_rns_to_mesh'] += 1
                     self.stats['rns_to_mesh_delivered'] += 1
                 self.health.record_message_sent("rns_to_mesh")
+                if not relayed_by:
+                    self._maybe_relay_to_peers(msg, original_body)
             else:
                 logger.warning("Failed to bridge RNS→Mesh")
                 with self._stats_lock:
@@ -297,3 +323,107 @@ class MessageTransformMixin:
             self.health.record_error("meshtastic", e)
             self._requeue_failed_message(msg, "meshtastic")
             self.health.record_message_failed("rns_to_mesh", requeued=True)
+
+    def _maybe_relay_to_peers(self, msg, body: str) -> None:
+        """Relay an originally-NomadNet-sourced LXMF to peer gateways.
+
+        Phase 1 of the fluid bridge roadmap. When ``rns.peer_gateway_destinations``
+        is configured, originals (no ``meshforge_relayed_by`` field) are
+        forwarded to each peer gateway hash so a single NomadNet send into
+        one gateway thread reaches every RF preset the cluster covers.
+
+        Each relay carries:
+        - ``meshforge_relayed_by``: this gateway's LXMF hash hex — the
+          loop-prevention marker. Receiving gateways skip re-relay when set.
+        - ``meshforge_origin_source_id``: the original NomadNet's hash hex —
+          preserves the [RNS:xxxx] attribution at the receiving gateway.
+        - ``meshforge_origin_title``: the original LXMF title — best-effort
+          audit.
+
+        Failures are logged and counted; they never propagate to the local
+        R→M code path. The persistent-queue dedup window catches multi-path
+        duplicates at receiving gateways.
+        """
+        try:
+            peer_hexes = list(self.config.rns.get_peer_gateway_destinations())
+        except (AttributeError, TypeError):
+            # AttributeError: older config object missing the helper.
+            # TypeError: MagicMock or non-iterable return — defensive.
+            return
+        if not peer_hexes:
+            return
+
+        own_src = getattr(self, '_lxmf_source', None)
+        own_hash_attr = getattr(own_src, 'hash', None) if own_src else None
+        own_hex = own_hash_attr.hex().lower() if own_hash_attr else ''
+        if not own_hex:
+            logger.debug("Relay-on-receive skipped: own LXMF hash unknown")
+            return
+
+        # Skip relay when the LXMF arrived from a peer gateway (either via
+        # M→R fan-out across the broadcast list OR a prior relay). The
+        # ``meshforge_relayed_by`` field gate already catches explicit
+        # relays; this catches mesh-sourced fan-outs whose peer didn't set
+        # the marker but whose source IS in the peer set. Without it,
+        # every mesh-sourced message (already delivered to all gateways
+        # via M→R fan-out) would be re-relayed → duplicates on every preset.
+        peer_hex_set = {
+            h.lower() for h in peer_hexes
+            if isinstance(h, str) and len(h) == 32
+        }
+        src_id = (msg.source_id or '').lower()
+        if src_id and src_id in peer_hex_set:
+            logger.debug(
+                f"Relay-on-receive skipped: source {src_id[:8]} is a peer gateway"
+            )
+            return
+
+        relay_fields = {
+            'meshforge_relayed_by': own_hex,
+            'meshforge_origin_source_id': msg.source_id or '',
+            'meshforge_origin_title': msg.title or '',
+        }
+        title = msg.title or 'MeshForge Gateway (relay)'
+
+        relayed = 0
+        attempted = 0
+        for peer_hex in peer_hexes:
+            if not isinstance(peer_hex, str) or len(peer_hex) != 32:
+                logger.warning(
+                    f"Skipping invalid peer_gateway_destinations entry: {peer_hex!r}"
+                )
+                continue
+            if peer_hex.lower() == own_hex:
+                continue  # defensive: own hash listed in peer set
+            try:
+                dest_bytes = bytes.fromhex(peer_hex)
+            except ValueError:
+                logger.warning(
+                    f"Skipping non-hex peer_gateway_destinations entry: {peer_hex!r}"
+                )
+                continue
+            attempted += 1
+            try:
+                ok = self.send_to_rns(
+                    body, dest_bytes, title=title, fields=relay_fields,
+                )
+            except Exception as e:
+                logger.warning(f"Relay to peer {peer_hex[:8]} raised: {e}")
+                ok = False
+            if ok:
+                relayed += 1
+            else:
+                logger.warning(f"Relay to peer {peer_hex[:8]} failed")
+
+        if attempted:
+            logger.info(
+                f"Phase-1 relay: forwarded R→M origin to "
+                f"{relayed}/{attempted} peer gateway(s)"
+            )
+            with self._stats_lock:
+                self.stats['relay_to_peers_attempted'] = (
+                    self.stats.get('relay_to_peers_attempted', 0) + attempted
+                )
+                self.stats['relay_to_peers_delivered'] = (
+                    self.stats.get('relay_to_peers_delivered', 0) + relayed
+                )

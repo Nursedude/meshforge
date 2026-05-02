@@ -1288,6 +1288,247 @@ class TestProcessRNSToMesh:
 
 
 # ---------------------------------------------------------------------------
+# Phase-1 fluid bridge — relay-on-receive
+# ---------------------------------------------------------------------------
+
+
+class TestRelayOnReceive:
+    """Tests for _maybe_relay_to_peers + origin-marker handling.
+
+    Phase 1 of the fluid-bridge roadmap: a NomadNet-typed message
+    arriving at one gateway in a cluster fans out to every peer
+    gateway listed in rns.peer_gateway_destinations. Loop prevention
+    is via the ``meshforge_relayed_by`` LXMF field set on relay
+    copies; receiving gateways inspect the field and skip re-relay.
+    """
+
+    OWN_HEX = "aa" * 16  # 32 hex chars
+    PEER_A = "bb" * 16
+    PEER_B = "cc" * 16
+
+    def _configure_peers(self, bridge, peers):
+        """Wire peer_gateway_destinations and own LXMF hash on the mocked bridge."""
+        bridge.config.rns.get_peer_gateway_destinations = MagicMock(
+            return_value=list(peers)
+        )
+        own_hash = MagicMock()
+        own_hash.hex.return_value = self.OWN_HEX
+        bridge._lxmf_source = MagicMock()
+        bridge._lxmf_source.hash = own_hash
+
+    def test_original_relays_to_each_peer(self, bridge):
+        """No relayed_by + 2 peers configured = 2 send_to_rns calls."""
+        from gateway.rns_bridge import BridgedMessage
+        self._configure_peers(bridge, [self.PEER_A, self.PEER_B])
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content="hello cluster",
+            metadata={"lxmf_fields": {}},
+        )
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True), \
+             patch.object(bridge, 'send_to_rns', return_value=True) as mock_rns:
+            bridge._process_rns_to_mesh(msg)
+
+        assert mock_rns.call_count == 2
+        for call in mock_rns.call_args_list:
+            kwargs = call.kwargs
+            assert kwargs["title"]
+            assert kwargs["fields"]["meshforge_relayed_by"] == self.OWN_HEX
+            assert kwargs["fields"]["meshforge_origin_source_id"] == "abcdef01"
+        sent_dests = {call.args[1] for call in mock_rns.call_args_list}
+        assert sent_dests == {bytes.fromhex(self.PEER_A),
+                              bytes.fromhex(self.PEER_B)}
+        assert bridge.stats["relay_to_peers_attempted"] == 2
+        assert bridge.stats["relay_to_peers_delivered"] == 2
+
+    def test_relayed_message_does_not_re_relay(self, bridge):
+        """meshforge_relayed_by present => skip relay (loop prevention)."""
+        from gateway.rns_bridge import BridgedMessage
+        self._configure_peers(bridge, [self.PEER_A])
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content="echoed back",
+            metadata={"lxmf_fields": {
+                "meshforge_relayed_by": self.PEER_A,
+                "meshforge_origin_source_id": "deadbeef",
+            }},
+        )
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True), \
+             patch.object(bridge, 'send_to_rns', return_value=True) as mock_rns:
+            bridge._process_rns_to_mesh(msg)
+
+        assert mock_rns.call_count == 0
+        assert "relay_to_peers_attempted" not in bridge.stats
+
+    def test_relayed_uses_origin_source_for_prefix(self, bridge):
+        """Relayed msg's [RNS:xxxx] must show the original NomadNet, not the relayer."""
+        from gateway.rns_bridge import BridgedMessage
+        self._configure_peers(bridge, [])  # no further relay
+        msg = BridgedMessage(
+            source_network="rns", source_id=self.PEER_A,  # relayer's hash
+            destination_id=None, content="from origin",
+            metadata={"lxmf_fields": {
+                "meshforge_relayed_by": self.PEER_A,
+                "meshforge_origin_source_id": "deadbeef",
+            }},
+        )
+        captured = {}
+
+        def capture_send(content, destination=None, channel=0):
+            captured["content"] = content
+            return True
+
+        with patch.object(bridge, 'send_to_meshtastic', side_effect=capture_send):
+            bridge._process_rns_to_mesh(msg)
+
+        assert captured["content"].startswith("[RNS:dead] ")
+
+    def test_self_hash_in_peer_list_is_skipped(self, bridge):
+        """Defensive: own hash listed under peers must not relay to self."""
+        from gateway.rns_bridge import BridgedMessage
+        self._configure_peers(bridge, [self.OWN_HEX, self.PEER_A])
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content="hi",
+            metadata={"lxmf_fields": {}},
+        )
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True), \
+             patch.object(bridge, 'send_to_rns', return_value=True) as mock_rns:
+            bridge._process_rns_to_mesh(msg)
+
+        assert mock_rns.call_count == 1
+        assert mock_rns.call_args.args[1] == bytes.fromhex(self.PEER_A)
+
+    def test_invalid_peer_hex_skipped_with_warning(self, bridge):
+        """Non-hex / wrong-length entries must be skipped, valid ones still relay."""
+        from gateway.rns_bridge import BridgedMessage
+        self._configure_peers(bridge, ["not-a-hash", "ab", self.PEER_A])
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content="hi",
+            metadata={"lxmf_fields": {}},
+        )
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True), \
+             patch.object(bridge, 'send_to_rns', return_value=True) as mock_rns:
+            bridge._process_rns_to_mesh(msg)
+
+        assert mock_rns.call_count == 1
+
+    def test_no_peers_configured_no_relay(self, bridge):
+        """Empty peer list = no relay, even on original messages."""
+        from gateway.rns_bridge import BridgedMessage
+        self._configure_peers(bridge, [])
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content="hi",
+            metadata={"lxmf_fields": {}},
+        )
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True), \
+             patch.object(bridge, 'send_to_rns', return_value=True) as mock_rns:
+            bridge._process_rns_to_mesh(msg)
+
+        assert mock_rns.call_count == 0
+
+    def test_local_tx_failure_does_not_relay(self, bridge):
+        """Phase-1 conservative: skip relay when local R→M fails so backpressure
+        signals from one preset don't multiply onto others."""
+        from gateway.rns_bridge import BridgedMessage
+        self._configure_peers(bridge, [self.PEER_A])
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content="hi",
+            metadata={"lxmf_fields": {}},
+        )
+        with patch.object(bridge, 'send_to_meshtastic', return_value=False), \
+             patch.object(bridge, '_requeue_failed_message', return_value=False), \
+             patch.object(bridge, 'send_to_rns', return_value=True) as mock_rns:
+            bridge._process_rns_to_mesh(msg)
+
+        assert mock_rns.call_count == 0
+
+    def test_relay_send_failure_counts_attempted_not_delivered(self, bridge):
+        from gateway.rns_bridge import BridgedMessage
+        self._configure_peers(bridge, [self.PEER_A, self.PEER_B])
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content="hi",
+            metadata={"lxmf_fields": {}},
+        )
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True), \
+             patch.object(bridge, 'send_to_rns',
+                          side_effect=[True, False]):
+            bridge._process_rns_to_mesh(msg)
+
+        assert bridge.stats["relay_to_peers_attempted"] == 2
+        assert bridge.stats["relay_to_peers_delivered"] == 1
+
+    def test_relay_uses_original_body_with_at_token(self, bridge):
+        """@addr DM at the originating gateway is forwarded with the @addr
+        intact so a peer gateway whose preset hosts the target node can
+        still resolve and DM. The local TX strips the token; the relay
+        does not."""
+        from gateway.rns_bridge import BridgedMessage
+        self._configure_peers(bridge, [self.PEER_A])
+        bridge.node_tracker.get_node_by_short_name.return_value = None
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content="@HAT3 ping",
+            metadata={"lxmf_fields": {}},
+        )
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True), \
+             patch.object(bridge, 'send_to_rns', return_value=True) as mock_rns:
+            bridge._process_rns_to_mesh(msg)
+
+        assert mock_rns.call_count == 1
+        # First positional arg is the body forwarded to the peer.
+        assert mock_rns.call_args.args[0] == "@HAT3 ping"
+
+    def test_no_lxmf_source_skips_relay(self, bridge):
+        """RNS not yet initialized — _lxmf_source None — must not crash."""
+        from gateway.rns_bridge import BridgedMessage
+        bridge.config.rns.get_peer_gateway_destinations = MagicMock(
+            return_value=[self.PEER_A]
+        )
+        bridge._lxmf_source = None
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content="hi",
+            metadata={"lxmf_fields": {}},
+        )
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True), \
+             patch.object(bridge, 'send_to_rns', return_value=True) as mock_rns:
+            bridge._process_rns_to_mesh(msg)
+
+        assert mock_rns.call_count == 0
+
+    def test_peer_sourced_fanout_does_not_re_relay(self, bridge):
+        """Critical guard: a mesh-source M→R fan-out from a peer gateway
+        arrives at this gateway via the existing default_lxmf_destination
+        broadcast list. msg.source_id IS the peer's own LXMF hash. We
+        must NOT relay back — that would duplicate every mesh-sourced
+        message on every preset. This is independent of whether the peer
+        set ``meshforge_relayed_by`` (legacy peers won't)."""
+        from gateway.rns_bridge import BridgedMessage
+        self._configure_peers(bridge, [self.PEER_A])
+        msg = BridgedMessage(
+            source_network="rns", source_id=self.PEER_A,
+            destination_id=None, content="from peer M->R",
+            metadata={"lxmf_fields": {
+                # Peer's M→R fan-out includes Issue #39 attribution but
+                # not meshforge_relayed_by (it's not a relay; it's the
+                # original M→R fan-out).
+                "meshforge_source_network": "meshtastic",
+                "meshforge_from_id": "!aabbccdd",
+            }},
+        )
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True), \
+             patch.object(bridge, 'send_to_rns', return_value=True) as mock_rns:
+            bridge._process_rns_to_mesh(msg)
+
+        assert mock_rns.call_count == 0
+
+
+# ---------------------------------------------------------------------------
 # _resolve_mesh_destination
 # ---------------------------------------------------------------------------
 
