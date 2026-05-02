@@ -336,6 +336,44 @@ class ReticulumPaths:
         return 'default'
 
 
+class MeshChatXPaths:
+    """Paths related to MeshChatX (third-party RNS web chat client).
+
+    MeshChatX is an LXMF web client that runs as a long-lived HTTP daemon
+    bound to ``127.0.0.1:8000`` by default. It coexists with NomadNet —
+    each has its own LXMF identity stored in a separate directory.
+
+    The storage_dir holds the MeshChatX identity, message history DB,
+    and runtime state. We pin it under ``~/.local/share/meshchatx/``
+    rather than MeshChatX's upstream default of ``./storage`` so the
+    install survives ``cwd`` changes and is reachable from the unit's
+    ``WorkingDirectory``-independent ExecStart.
+    """
+
+    @classmethod
+    def get_storage_dir(cls) -> Path:
+        return get_real_user_home() / '.local' / 'share' / 'meshchatx'
+
+    @classmethod
+    def get_identity_path(cls) -> Path:
+        return cls.get_storage_dir() / 'identity'
+
+    @classmethod
+    def get_log_path(cls) -> Path:
+        return cls.get_storage_dir() / 'meshchatx.log'
+
+    @classmethod
+    def get_rns_client_configdir(cls) -> Path:
+        """Client-only Reticulum configdir for MeshChatX.
+
+        Mirrors the gateway's ``/tmp/meshforge_rns_client/`` pattern so
+        MeshChatX attaches to rnsd's shared instance instead of binding
+        its own port. The pinned ``rpc_key`` (Issue #41) is propagated
+        into this config by the installer.
+        """
+        return Path('/tmp/meshforge_meshchatx_rns_client')
+
+
 class MeshForgePaths:
     """Paths related to MeshForge application"""
 

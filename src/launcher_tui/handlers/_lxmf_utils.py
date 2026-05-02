@@ -32,12 +32,15 @@ logger = logging.getLogger(__name__)
 
 # Apps we recognise as LXMF clients. The argv[0] basename is checked against
 # this set after stripping common prefixes (e.g. python interpreter wrappers).
-LXMF_CLIENT_NAMES = {"nomadnet", "sideband"}
+LXMF_CLIENT_NAMES = {"nomadnet", "sideband", "meshchatx"}
 
 # Default config dirs each client uses when --config is not passed.
+# MeshChatX uses ``--storage-dir`` instead of ``--config``; we record its
+# canonical storage path here so the same exclusivity machinery applies.
 DEFAULT_CONFIG_DIRS = {
     "nomadnet": ".nomadnetwork",
     "sideband": ".config/sideband",
+    "meshchatx": ".local/share/meshchatx",
 }
 
 

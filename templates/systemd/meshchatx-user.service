@@ -1,0 +1,67 @@
+# MeshForge — MeshChatX User Service (web daemon, no tmux)
+# ==========================================================
+#
+# MeshChatX is a third-party LXMF web chat client. Unlike NomadNet
+# (which is a TUI wrapped in tmux for headless boxes), MeshChatX is
+# a long-lived HTTP daemon — no terminal, no tmux session. The unit
+# is therefore Type=simple with a direct ExecStart pointing at the
+# canonical wrapper.
+#
+# Operator workflow:
+#   - Install / repair:
+#       sudo bash /opt/meshforge/scripts/install_meshchatx.sh
+#   - Open the web UI:
+#       http://127.0.0.1:8000/                    (on-box browser)
+#       ssh -L 8000:localhost:8000 user@host       (remote tunnel)
+#   - Status:
+#       systemctl --user status meshchatx
+#       ss -tnp 'sport = :8000'
+#
+# rnsd on this fleet is a SYSTEM service running as root. We don't
+# Require= a user rnsd.service — the wrapper script
+# (meshchatx_wrapper.sh, created by the canonical installer) tolerates
+# transient rnsd unavailability and refuses-loud on rpc_key mismatch
+# (Issue #41, #46).
+#
+# StartLimitBurst caps the restart-loop: if the wrapper exits 87
+# (rpc_key mismatch) repeatedly, systemd parks the unit in failed
+# state after 5 attempts inside StartLimitIntervalSec. The operator
+# then sees a single clear failure in the journal + TUI, rather than
+# a silent restart loop.
+#
+# The ExecStart placeholder __MESHCHATX_EXEC__ is substituted at
+# install time by scripts/install_meshchatx.sh and by the TUI's
+# handlers/_meshchatx_service_ops.py::_install_user_unit. The value
+# resolves to the canonical wrapper path (e.g.
+# ~/.config/meshforge/meshchatx_wrapper.sh).
+
+[Unit]
+Description=MeshChatX LXMF Web Client (MeshForge-managed)
+After=default.target network-online.target rnsd.service
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+Environment=HOME=%h
+Environment=PYTHONUNBUFFERED=1
+
+# Direct invocation — no tmux. MeshChatX writes its own logs to
+# ${HOME}/.local/share/meshchatx/ and the daemon's stdout/stderr go
+# to the journal.
+ExecStart=__MESHCHATX_EXEC__
+
+# Restart on transient failures. exit 87 from the wrapper trips
+# StartLimitBurst above and the unit enters failed state — that's the
+# desired refuse-loud behaviour (rpc_key not pinned). Other exits get
+# the usual recovery loop.
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshchatx
+
+[Install]
+WantedBy=default.target
