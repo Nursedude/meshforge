@@ -260,22 +260,39 @@ set `mesh_bridge.enabled: true` explicitly in `gateway.json` to silence.
   Harmless; the log just disables. Fix:
   `sudo chown -R $(id -un):$(id -gn) ~/.cache/meshforge`.
 
-## Fleet truth table (2026-04-26 — consolidated to single canonical gateway)
+## Fleet truth table (2026-05-02 — dual-gateway, one per RF preset)
 
 | Box | Role | Gateway LXMF hash | RNode | Bridging live |
 |-----|------|-------------------|-------|---------------|
 | fleet-host | manager / NomadNet | — (no gateway) | no | n/a |
-| moc | NomadNet client | (was `3dfbdb5d…`, disabled) | no | no |
+| **moc** | **active gateway — LongFast bridge** | `3dfbdb5d24c6de195ae4f3c0f56b5ea5` | no | **yes (LongFast HAT)** |
 | fleet-host-1 | NomadNet client (LongFast HAT) | (was `f5bb192d…`, disabled) | no | no |
 | fleet-host-2 | NomadNet client (SHORT_TURBO HAT) | (was `b185b0de…`, disabled) | no | no |
-| **fleet-host-3** | **canonical gateway** | `0123456789abcdef0123456789abcdef` | yes (903.625 MHz, SF7) | **yes** |
+| **fleet-host-3** | **active gateway — SHORT_TURBO bridge** | `0123456789abcdef0123456789abcdef` | yes (903.625 MHz, SF7) | **yes** |
 
-The disabled hashes still show up in older `node_cache.json` entries but no
-fleet box is announcing them anymore. If you see them in fresh
-`journalctl -u rnsd` announces, it means a gateway service got started on
-a non-canonical box — `scripts/fleet_sync.sh` after `8899ae8` uses
-`systemctl try-restart` so a stopped+disabled gateway stays down through
-syncs.
+Two active gateways by design — each handles one RF preset. moc bridges
+LongFast Meshtastic ↔ RNS/LXMF; fleet-host-3 bridges SHORT_TURBO ↔ RNS/LXMF.
+The presets can't cross-RX over the air, so a single gateway only ever
+covers one segment. This dual-gateway shape gives full bridge coverage:
+LongFast handheld traffic + SHORT_TURBO handheld traffic both reach
+NomadNet operators.
+
+Each gateway has a distinct `rns.gateway_name` set in its `gateway.json`
+(`MeshForge Gateway (moc)` vs `MeshForge Gateway (fleet-host-3)`) so the
+two threads index separately in NomadNet's per-source view (Issue #35).
+The `meshtastic.gateway_node_id` self-echo filter is set per-box to its
+HAT's own node ID — `!32962f10` on moc, `!ebfa1b11` on fleet-host-3 —
+so neither gateway re-bridges its own outbound TX as a duplicate.
+
+If a third gateway is ever needed (e.g. hot standby), the recipe is the
+same `scripts/configure_gateway.sh <user>` + `scripts/install_gateway_service.sh <user>`,
+followed by post-edit of the rendered `gateway.json` to set
+`meshtastic.gateway_node_id`, `rns.gateway_name`, and the
+`rns.default_lxmf_destination` broadcast list. Older disabled-hash
+references in `node_cache.json` (e.g. `f5bb192d…` from fleet-host-1's
+prior gateway role) are inert — `scripts/fleet_sync.sh` after `8899ae8`
+uses `systemctl try-restart` so stopped+disabled gateways stay down
+through syncs.
 
 ## Topology & data flow — where each message lands
 
@@ -284,24 +301,36 @@ first-time operators. Documenting it here so the design intent is
 explicit rather than feeling like a workaround.
 
 ```
-                    ┌──────────────────────┐
-                    │  fleet-host-3 (gateway box)  │
-                    │  ─────────────────── │
-                    │  meshforge-gateway   │
-                    │  meshtasticd ─── HAT │ ──RF── SHORT_TURBO meshforge
-                    │  rnsd  ── hub :4242  │
-                    │  NomadNet  6b1a0120… │
-                    └──────────┬───────────┘
-                               │ RNS Transport (TCP)
-                  ┌────────────┼────────────┐
-                  │            │            │
-              ┌───┴────┐   ┌───┴────┐   ┌──────────┐
-              │ fleet-host-1   │   │ fleet-host-2   │   │  moc     │
-              │ NomNet │   │ NomNet │   │  (idle)  │
-              │ 522c…  │   │ d1df…  │   │          │
-              │ HAT:LF │   │ HAT:ST │   │  HAT:LF  │
-              └────────┘   └────────┘   └──────────┘
+  ┌──────────────────────────────┐         ┌──────────────────────────────┐
+  │  fleet-host-3 (gateway #1)   │         │      moc (gateway #2)        │
+  │  ─────────────────────────── │         │  ─────────────────────────── │
+  │  meshforge-gateway           │         │  meshforge-gateway           │
+  │  meshtasticd ─── HAT         │         │  meshtasticd ─── HAT         │
+  │     RF: SHORT_TURBO meshforge│         │     RF: LongFast meshforge   │
+  │  rnsd  ── hub :4242          │         │  rnsd  ── TCPServer :4242    │
+  │  NomadNet  6b1a0120…         │         │  NomadNet  7cda0fab…         │
+  │  Gateway   f68c2f56…         │         │  Gateway   3dfbdb5d…         │
+  └──────────┬───────────────────┘         └────────────┬─────────────────┘
+             │   RNS Transport (TCP / AutoInterface mesh)│
+             └──────────────────┬─────────────────────────┘
+                                │
+                  ┌─────────────┼─────────────┐
+                  │             │             │
+              ┌───┴────┐    ┌───┴────┐    ┌───┴────────┐
+              │fleet-host-1│ │fleet-host-2│ │ fleet-host │
+              │ NomadNet   │ │ NomadNet   │ │ (manager)  │
+              │ 522c…      │ │ d1df…      │ │ no NomNet  │
+              │ HAT:LF     │ │ HAT:ST     │ │            │
+              └────────────┘ └────────────┘ └────────────┘
 ```
+
+Each gateway's `default_lxmf_destination` broadcast list contains all
+four NomadNet inboxes (`522c…`, `d1df…`, `6b1a…`, `7cda…`) so any
+inbound RF message fans out to every operator. The two gateway hashes
+(`f68c2f56…` and `3dfbdb5d…`) appear in NomadNet as separate threads
+named `MeshForge Gateway (fleet-host-3)` and `MeshForge Gateway (moc)`
+respectively — the operator can tell at a glance which RF preset a
+bridged message originated on.
 
 **Where does a message appear?** Roles in **boldface** are the canonical
 display surface for that direction:
