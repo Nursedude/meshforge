@@ -5,8 +5,9 @@ runs side-by-side with NomadNet on a MeshForge box. MeshChatX gives HAMs and
 first-time RNS users a browser UI ("normal" UX) instead of the keyboard-driven
 NomadNet TUI; the install path mirrors NomadNet's canonical pattern.
 
-> Status: parity install (Phase 1). Field validation pending on moc1 + volcanoai.
-> Other fleet boxes remain NomadNet-only until soak signal closes.
+> Status: parity install (Phase 1). Field validation pending on the
+> designated test-bed and operator-monitor boxes; remaining fleet
+> hosts stay NomadNet-only until soak signal closes.
 
 ## What MeshChatX is
 
@@ -98,10 +99,10 @@ What the installer does:
 
 ## Open the web UI
 
-| Box has a desktop?              | How                                                 |
-|---------------------------------|------------------------------------------------------|
-| Yes (e.g. volcanoai with monitor) | Run `xdg-open http://127.0.0.1:8000/` on the box     |
-| No (headless Pi)                | `ssh -L 8000:localhost:8000 user@host` then visit `http://localhost:8000/` |
+| Box has a desktop?  | How                                                                          |
+|---------------------|------------------------------------------------------------------------------|
+| Yes (monitor on Pi) | Run `xdg-open http://127.0.0.1:8000/` on the box                             |
+| No (headless Pi)    | `ssh -L 8000:localhost:8000 user@host` then visit `http://localhost:8000/`   |
 
 The TUI menu does both for you: **MeshChatX > Open Web UI**.
 
@@ -213,14 +214,25 @@ rm -rf ~/.local/share/meshchatx
 rm -f ~/.config/meshforge/meshchatx_wrapper.sh
 ```
 
-## Rollout state (2026-05-02)
+## Rollout sequencing
 
-| Box        | Profile     | MeshChatX | Notes                                          |
-|------------|-------------|-----------|------------------------------------------------|
-| volcanoai  | full        | pending   | Has a monitor — primary "friendly UX" target    |
-| moc1       | full        | pending   | Designated test bed (project_test_bed_moc1)     |
-| moc        | full        | (held)    | Pending moc1 + volcanoai field signal           |
-| moc2       | full        | (held)    | Pending moc1 + volcanoai field signal           |
-| moc3       | gateway     | (held)    | Canonical gateway — defer pending soak          |
+The opt-in feature flag (`meshchatx: False` on every profile) keeps this
+dormant until an operator decides to enable it. Recommended order:
 
-Update this table as the rollout progresses.
+1. **Test-bed Pi** (full profile, designated for staged rollouts) — install
+   first, run `--check`, soak 24-48h watching `journalctl --user -u meshchatx`
+   for restart-loop signal.
+2. **Operator-monitor Pi** (the box with a physical display) — second
+   install. The on-box browser is the actual "friendly UX" demo
+   surface, so this box validates the use case the integration was
+   built for.
+3. **Remaining full-profile boxes** — opt-in only after the first two
+   show clean soak.
+4. **Gateway profile box(es)** — defer until last; the gateway already
+   has a heavy load profile and adding a second LXMF client there
+   should follow rather than lead.
+
+Per-fleet rollout state belongs in operator memory (e.g.
+`project_meshchatx_rollout.md`) rather than this repo doc — that
+prevents operator-specific hostnames from leaking through MF014 and
+keeps the doc generic across boxes.
