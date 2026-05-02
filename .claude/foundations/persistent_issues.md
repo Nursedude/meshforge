@@ -589,10 +589,13 @@ curl -sk -o /dev/null -w "%{size_download}\n" \
 # size=0 with no python on :4403 = normal empty-state (benign)
 ```
 
-**Prevention** (open work): add `meshforge-map.service` to
-`scripts/fleet_sync.sh`'s restart loop alongside `meshforge` and
-`meshforge-maps` so a `git pull` actually picks up new code on
-every fleet box. Today the daemon stays on whatever code was loaded
-at last manual restart, which converges to "weeks-stale" without
-prompting. Tracker:
-`project_meshforge_map_stale_daemon_pattern.md` (operator memory).
+**Prevention** (shipped 2026-05-02, commit `660f26f`):
+`scripts/fleet_sync.sh` now restarts `meshforge-map.service`
+alongside the existing `meshforge` and `meshforge-maps` units —
+three sync_repo calls instead of two. The second call against
+`/opt/meshforge` re-pulls (no-op, ~50ms LAN) and try-restarts the
+map daemon only when it's already active, preserving operator-
+disabled state. Verified end-to-end on all five fleet boxes:
+PIDs changed and :4403 stayed clear through one full collect
+cycle. Tracker memory:
+`project_meshforge_map_stale_daemon_pattern.md`.
