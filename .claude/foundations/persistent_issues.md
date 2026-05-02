@@ -543,3 +543,56 @@ synthetic already-normalized stand-ins. Audit other parsers for the
 same gap when introducing analogous schema-aware flow logic. The
 `TestMeshCorePublicCollector` round-trip pattern (parser → directory
 row tuple) is the regression-prevention shape for similar future work.
+
+
+---
+
+## Issue #53: meshforge-map.service stale daemon → :4403 contention starves :9443 web UI (2026-05-02)
+
+**Symptom**: User reported `<ip>:9443` "not functional" on a fleet box.
+The web UI's HTML shell loaded but the SPA's data calls hung. Survey
+showed `python pid=N (utils.map_data_service) ESTABLISHED` to
+`127.0.0.1:4403` on moc, moc1, and volcanoai (moc2 had a
+CLOSE-WAIT remnant; moc3 unaffected — gateway profile, no
+meshforge-map). `/api/v1/fromradio?all=true` returned `size=0` on
+the affected boxes — exactly the
+`project_tcp_contention_pattern` shape.
+
+**Root cause**: stale daemon, not a current-code regression. The
+running `meshforge-map.service` had been live since 2026-05-01 (~21h
+on moc1) and was loading pre-fix module code. Subsequent fleet
+syncs updated the working tree to current `main` but did NOT
+restart `meshforge-map.service` — `scripts/fleet_sync.sh` only
+restarts `meshforge` (gateway, this-repo) and `meshforge-maps`
+(sister :8808 service); the singular `meshforge-map.service`
+(:5000 map from this repo) is omitted from the restart loop.
+
+The map collector's HTTP path
+(`_collect_via_http` in `src/utils/_map_collector_meshtastic.py`)
+talks to meshtasticd on :9443. When :4403 is contended, that fetch
+is starved → returns empty → the collector falls through to
+`_collect_via_tcp_interface` (line 86), which opens its OWN
+:4403 socket via `get_connection_manager`, which the singleton
+caches between cycles → self-reinforcing starvation.
+
+**Fix** (immediate): `sudo systemctl restart meshforge-map.service`
+on each affected box. Post-restart, current code keeps :4403 clear
+across at least one full collect cycle (verified 75s on each box,
+moc / moc1 / volcanoai).
+
+**Operator diagnostic**:
+```bash
+sudo ss -tnp | grep ":4403" | grep python   # any output = contention
+curl -sk -o /dev/null -w "%{size_download}\n" \
+    "https://127.0.0.1:9443/api/v1/fromradio?all=true" -m 5
+# size=0 with python on :4403 = the failure mode
+# size=0 with no python on :4403 = normal empty-state (benign)
+```
+
+**Prevention** (open work): add `meshforge-map.service` to
+`scripts/fleet_sync.sh`'s restart loop alongside `meshforge` and
+`meshforge-maps` so a `git pull` actually picks up new code on
+every fleet box. Today the daemon stays on whatever code was loaded
+at last manual restart, which converges to "weeks-stale" without
+prompting. Tracker:
+`project_meshforge_map_stale_daemon_pattern.md` (operator memory).
