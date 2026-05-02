@@ -180,6 +180,70 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Ensure meshtasticd publishes JSON to LOCAL mosquitto so the bridge can
+# subscribe (gap discovered 2026-05-02 during dual-gateway field validation
+# on moc — bridge sat at 0/0 even though everything else was correct).
+#
+# Two device-level settings that the bridge requires:
+#
+#   mqtt.json_enabled = true   — publishes msh/.../json/<channel>/<id>
+#                                topics. Without this only encrypted
+#                                protobuf (msh/.../e/...) is published,
+#                                and the bridge subscribes to JSON.
+#   mqtt.address      = localhost
+#                              — routes publishes to LOCAL mosquitto where
+#                                the bridge is subscribed. If meshtasticd
+#                                is set to a remote MQTT broker (e.g. an
+#                                operator's external mesh-stats pipeline),
+#                                the local bridge sees nothing.
+#
+# Both are idempotent — setting an already-correct value is a no-op on
+# the device.
+# ---------------------------------------------------------------------------
+step "Ensuring meshtasticd publishes JSON to local mosquitto (bridge prereq)"
+
+if [[ -z "$MESH_CLI" ]]; then
+    warn "meshtastic CLI not found — cannot verify mqtt.json_enabled / mqtt.address."
+    warn "Set manually after install:"
+    warn "  meshtastic --host localhost --set mqtt.json_enabled true"
+    warn "  meshtastic --host localhost --set mqtt.address localhost"
+elif [[ "$DRY_RUN" = "1" ]]; then
+    echo "    (dry-run) would: meshtastic --set mqtt.json_enabled true"
+    echo "    (dry-run) would: meshtastic --set mqtt.address localhost"
+else
+    # Read current values so we only flag changes (and don't churn the
+    # device write-cycle with no-op writes).
+    CURRENT_JSON="$(sudo -u "$TARGET_USER" "$MESH_CLI" --host localhost \
+        --get mqtt.json_enabled 2>&1 | \
+        grep -E 'mqtt\.json_enabled' | awk '{print $NF}' || true)"
+    CURRENT_ADDR="$(sudo -u "$TARGET_USER" "$MESH_CLI" --host localhost \
+        --get mqtt.address 2>&1 | \
+        grep -E 'mqtt\.address' | awk '{print $NF}' || true)"
+
+    if [[ "$CURRENT_JSON" != "True" ]]; then
+        echo "    setting mqtt.json_enabled = true (was: ${CURRENT_JSON:-unknown})"
+        sudo -u "$TARGET_USER" "$MESH_CLI" --host localhost \
+            --set mqtt.json_enabled true 2>&1 | tail -3 || \
+            warn "mqtt.json_enabled update failed — set manually if needed."
+    else
+        echo "    mqtt.json_enabled = true (already correct)"
+    fi
+
+    if [[ "$CURRENT_ADDR" != "localhost" ]]; then
+        warn "mqtt.address is '${CURRENT_ADDR:-unknown}', not localhost"
+        warn "  The bridge subscribes to LOCAL mosquitto. Switching now —"
+        warn "  this stops meshtasticd from publishing to ${CURRENT_ADDR}."
+        warn "  If you want to keep the remote pipeline AND the local bridge,"
+        warn "  configure a mosquitto bridge instead and re-run with --skip-mqtt-addr."
+        sudo -u "$TARGET_USER" "$MESH_CLI" --host localhost \
+            --set mqtt.address localhost 2>&1 | tail -3 || \
+            warn "mqtt.address update failed — set manually if needed."
+    else
+        echo "    mqtt.address = localhost (already correct)"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Render gateway.json
 # ---------------------------------------------------------------------------
 step "Rendering gateway.json"
