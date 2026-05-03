@@ -83,6 +83,38 @@ tmp="$(mktemp)"
 printf '%s\n' "${status_lines[@]}" > "$tmp"
 mv "$tmp" "$STATUS_FILE"
 
+# Stale open-PR sweep — a PR sitting open >14 days is rot too,
+# even if not red. Dependabot/web-Claude PRs accumulate silently.
+# Doesn't fail the script (exit code stays driven by CI red), but
+# appends a "stale PRs" section to the status file when found.
+stale_pr_lines=()
+STALE_DAYS=14
+for repo in "${REPOS[@]}"; do
+    short="${repo#Nursedude/}"
+    prs_json="$(gh pr list --repo "$repo" --state open --limit 20 \
+        --json number,title,updatedAt,author 2>/dev/null)"
+    [ -z "$prs_json" ] || [ "$prs_json" = "[]" ] && continue
+    while IFS=$'\t' read -r pr_num pr_age pr_title pr_author; do
+        [ -z "$pr_num" ] && continue
+        if [ "$pr_age" -gt "$STALE_DAYS" ]; then
+            stale_pr_lines+=("$(printf '  %s#%s  %dd  %s — %s' "$short" "$pr_num" "$pr_age" "$pr_author" "${pr_title:0:60}")")
+        fi
+    done < <(echo "$prs_json" | python3 -c '
+import json, sys, datetime
+now = datetime.datetime.now(datetime.timezone.utc)
+for pr in json.load(sys.stdin):
+    age = (now - datetime.datetime.fromisoformat(pr["updatedAt"].replace("Z","+00:00"))).days
+    print(pr["number"], age, pr["title"], pr["author"]["login"], sep="\t")
+')
+done
+
+if [ "${#stale_pr_lines[@]}" -gt 0 ]; then
+    {
+        printf '\n# Stale open PRs (>%d days)\n' "$STALE_DAYS"
+        printf '%s\n' "${stale_pr_lines[@]}"
+    } >> "$STATUS_FILE"
+fi
+
 # Stdout mirrors status file (cron MAILTO picks this up).
 cat "$STATUS_FILE"
 
