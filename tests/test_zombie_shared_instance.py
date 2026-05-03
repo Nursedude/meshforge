@@ -489,13 +489,13 @@ class TestCheckRnsSharedInstance:
 class TestTUIHandlersHonorConfiguredInstanceName:
     """Regression: TUI handlers must pass configured instance_name."""
 
-    @patch('src.launcher_tui.status_bar.check_rns_shared_instance', return_value=True)
-    @patch('src.launcher_tui.status_bar.check_systemd_service', return_value=(True, None))
-    @patch('src.utils.paths.ReticulumPaths.get_configured_instance_name',
+    @patch('launcher_tui.status_bar.check_rns_shared_instance', return_value=True)
+    @patch('launcher_tui.status_bar.check_systemd_service', return_value=(True, None))
+    @patch('utils.paths.ReticulumPaths.get_configured_instance_name',
            return_value='volcano ai rns')
     def test_status_bar_passes_configured_name(
             self, mock_inst, mock_systemd, mock_check):
-        from src.launcher_tui.status_bar import StatusBar
+        from launcher_tui.status_bar import StatusBar
         sb = StatusBar.__new__(StatusBar)
         sb._check_systemd_active('rnsd')
         mock_check.assert_called_with('volcano ai rns')

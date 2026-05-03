@@ -58,7 +58,7 @@ jobs:
           # surfaced by the "Dump failure summary" step below if this step
           # exits non-zero — GitHub's lazy-loaded log viewer sometimes hides
           # raw output, so we echo an explicit marker section too.
-          python -m pytest tests/ -v --tb=short --timeout=30 --timeout-method=thread -x -rA \
+          python -m pytest tests/ -v --tb=short --timeout=30 --timeout-method=thread -rA \
             --ignore=tests/test_bridge_integration.py \
             -o log_cli_level=WARNING \
             2>&1 | tee /tmp/pytest.log
