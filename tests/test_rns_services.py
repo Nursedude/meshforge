@@ -8,6 +8,12 @@ sys.path.insert(0, 'src')
 import unittest
 from datetime import datetime
 
+try:
+    import msgpack  # noqa: F401
+    _HAS_MSGPACK = True
+except ImportError:
+    _HAS_MSGPACK = False
+
 
 class TestRNSServiceTypes(unittest.TestCase):
     """Test RNS service type definitions"""
@@ -72,6 +78,7 @@ class TestLXMFParser(unittest.TestCase):
         idx = LXMFParser._find_msgpack_start(b'JustAName')
         self.assertEqual(idx, -1)
 
+    @unittest.skipUnless(_HAS_MSGPACK, "msgpack not installed")
     def test_lxmrouter_canonical_msgpack_shape(self):
         """LXMF >= 0.6 — the canonical wire format.
 
@@ -101,6 +108,7 @@ class TestLXMFParser(unittest.TestCase):
         self.assertFalse(info.display_name.startswith('"'))
         self.assertFalse(info.display_name.startswith('!'))
 
+    @unittest.skipUnless(_HAS_MSGPACK, "msgpack not installed")
     def test_lxmrouter_canonical_with_stamp_cost(self):
         """Stamp cost present (small int after the name) — must not
         be misread as part of the name."""
@@ -113,6 +121,7 @@ class TestLXMFParser(unittest.TestCase):
         info = LXMFParser.parse(app_data, 'lxmf.delivery')
         self.assertEqual(info.display_name, 'NodeWithStamp')
 
+    @unittest.skipUnless(_HAS_MSGPACK, "msgpack not installed")
     def test_lxmrouter_canonical_with_sideband_telemetry(self):
         """Sideband variant: trailing dict carries lat/lon. Parser
         must still pull a clean display_name AND honour telemetry."""
