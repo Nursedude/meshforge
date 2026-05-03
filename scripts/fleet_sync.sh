@@ -181,7 +181,13 @@ sync_repo() {
         return 1
     fi
 
-    if ! sudo -n git pull --ff-only origin main >/dev/null 2>pull.err; then
+    # NOT sudo: pulling as root creates root-owned refs/objects under .git/,
+    # which silently break subsequent unprivileged fetches (Insight 7,
+    # 2026-05-03). The repo tree is wh6gxz-owned on every fleet box; if a
+    # future box has different ownership, this fails LOUD rather than
+    # leaking a root-owned ref. Use `sudo -u <user>` if elevation is ever
+    # truly required for path access — never `sudo git pull` directly.
+    if ! git pull --ff-only origin main >/dev/null 2>pull.err; then
         local msg
         msg=$(tr "\n" "|" < pull.err | head -c 200)
         rm -f pull.err
