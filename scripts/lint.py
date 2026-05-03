@@ -434,6 +434,14 @@ MF014_ALLOWED_DIRS = {
     '.claude',  # operator-private context, non-portable by design
 }
 
+# Path prefixes (multi-segment) that are exempt from MF014. Substack posts
+# are dated narrative artifacts where the operator's box names are the
+# protagonists — sanitizing them damages the published story. MF015 still
+# governs LAN-IP leaks in the same tree.
+MF014_ALLOWED_PREFIXES = (
+    'docs/substack' + os.sep,
+)
+
 MF014_SCAN_EXTENSIONS = {
     '.py', '.sh', '.bash', '.yaml', '.yml', '.json', '.toml', '.ini', '.cfg',
     '.conf', '.service', '.md', '.txt', '.rst', '.html', '.js', '.css', '.tmpl',
@@ -470,6 +478,8 @@ def check_operator_values_in_files(files: List[str], repo_root: str = '.') -> Li
         first_seg = rel_path.split(os.sep)[0]
         if first_seg in MF014_ALLOWED_DIRS:
             continue
+        if any(rel_path.startswith(p) for p in MF014_ALLOWED_PREFIXES):
+            continue
         if rel_path in MF014_ALLOWED_FILES:
             continue
         ext = os.path.splitext(rel_path)[1].lower()
@@ -493,6 +503,8 @@ def check_operator_values_full_tree(repo_root: str = '.') -> List[LintIssue]:
             continue
         for filename in files:
             rel_path = os.path.normpath(os.path.join(rel_root, filename)) if rel_root != '.' else filename
+            if any(rel_path.startswith(p) for p in MF014_ALLOWED_PREFIXES):
+                continue
             if rel_path in MF014_ALLOWED_FILES:
                 continue
             ext = os.path.splitext(filename)[1].lower()

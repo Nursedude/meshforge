@@ -44,7 +44,8 @@ import sys, time, json
 sys.path.insert(0, \"/opt/meshforge/src\")
 from utils.node_history import NodeHistoryDB
 from pathlib import Path
-h = NodeHistoryDB(db_path=Path(\"/home/wh6gxz/.local/share/meshforge/node_history.db\"))
+import os
+h = NodeHistoryDB(db_path=Path(os.path.expanduser(\"~/.local/share/meshforge/node_history.db\")))
 out = {}
 t0 = time.time(); s = h.get_stats(); out[\"get_stats\"] = {\"elapsed_s\": round(time.time()-t0, 2), **s}
 t0 = time.time(); d = h.get_directory_stats(); out[\"get_directory_stats\"] = {\"elapsed_s\": round(time.time()-t0, 2), **{k: v for k, v in d.items() if not isinstance(v, dict) or k in (\"by_network\", \"by_source_origin\")}}
