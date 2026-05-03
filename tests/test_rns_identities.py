@@ -97,7 +97,16 @@ class TestCreateIdentities:
         assert 'rns' not in result.data['created']
 
     def test_fails_without_rns_module(self, tmp_path):
-        """Fails gracefully when RNS is not installed."""
+        """Fails gracefully when RNS is not installed.
+
+        Must patch `commands.rns._HAS_RNS=False` directly. Patching
+        `sys.modules['RNS']=None` alone is insufficient — `commands.rns`
+        already bound `_HAS_RNS=True` at import time on any host where
+        RNS is installed (i.e. every fleet box), so the gate stays open
+        and the "not installed" branch never executes. CI's clean
+        container hides this because RNS isn't installed there. The
+        ASYMMETRY between CI-passes and fleet-passes is the smell.
+        """
         rns_config_dir = tmp_path / "reticulum"
         rns_config_dir.mkdir()
         (rns_config_dir / "config").touch()
@@ -105,11 +114,7 @@ class TestCreateIdentities:
 
         with patch('commands.rns.ReticulumPaths.get_config_dir', return_value=rns_config_dir), \
              patch('commands.rns.get_identity_path', return_value=gw_path), \
-             patch.dict(sys.modules, {'RNS': None}):
-            # Force re-import to hit the ImportError
-            import importlib
-            import commands.rns as rns_mod
-            # Manually test with a direct import that will fail
+             patch('commands.rns._HAS_RNS', False):
             from commands.rns import create_identities
             result = create_identities()
 

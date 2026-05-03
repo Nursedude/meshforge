@@ -29,6 +29,30 @@ from status_bar import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_status_bar_from_fleet(request):
+    """Block StatusBar.__init__ from pulling real node-tracker state.
+
+    Without this, `_seed_node_count()` reaches into the live node tracker
+    singleton and pre-populates `_node_count` with whatever the running
+    fleet box has (a busy box sees ~400 nodes). That invisibly satisfies
+    or breaks node-count assertions depending on the fleet's mood —
+    `test_no_node_count_by_default` was failing on a fleet box with a
+    real node count leaking into the status line. CI passed because
+    no fleet, no nodes. The asymmetry was the smell.
+
+    Tests that explicitly call `bar.set_node_count(N)` after init still
+    work — that's the post-init setter, untouched by this isolation.
+    Tests in TestSeedNodeCount intentionally exercise _seed_node_count
+    and are exempted by class name.
+    """
+    if request.cls is not None and request.cls.__name__ == 'TestSeedNodeCount':
+        yield
+        return
+    with patch.object(StatusBar, '_seed_node_count'):
+        yield
+
+
 class TestStatusBarFormat:
     """Test status line formatting."""
 
@@ -352,10 +376,17 @@ class TestDialogBackendIntegration:
 
         # Should still work without error
         backend.msgbox("Test", "Hello")
-        mock_run.assert_called_once()
 
-        # --backtitle should NOT be in the command (graceful fallback)
-        call_args = mock_run.call_args[0][0]
+        # Check the whiptail call specifically. assert_called_once() is too
+        # strict in the full-suite context — earlier tests can leak bridge
+        # threads (e.g. RNS zombie diagnostic) that also call subprocess.run
+        # via the same mock. Intent: dialog rendered + no --backtitle.
+        whiptail_calls = [
+            c for c in mock_run.call_args_list
+            if c.args and c.args[0] and c.args[0][0] == 'whiptail'
+        ]
+        assert len(whiptail_calls) == 1, f"Expected one whiptail call, got {len(whiptail_calls)}"
+        call_args = whiptail_calls[0].args[0]
         assert '--backtitle' not in call_args
 
 

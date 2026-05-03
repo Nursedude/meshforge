@@ -852,6 +852,16 @@ class TestMeshtasticConnectionStability:
         # path. With the default "LongFast" name set, the bridge
         # would (correctly) refuse to start under refuse-loud.
         config.mqtt_bridge.channel = ""
+        # Force broker + meshtasticd unreachable so the assertion below
+        # exercises the degraded path even on a fleet box where
+        # mosquitto + meshtasticd are healthy on localhost. Without
+        # this pin, the bridge happily connects to the real services
+        # and `meshtastic_connected` comes back True. Mirrors the
+        # 19999-unused-port pattern of the sibling tests above.
+        config.mqtt_bridge.broker = "127.0.0.1"
+        config.mqtt_bridge.port = 19999
+        config.meshtastic.host = "127.0.0.1"
+        config.meshtastic.port = 19999
 
         from gateway.rns_bridge import RNSMeshtasticBridge
         bridge = RNSMeshtasticBridge(config=config)
