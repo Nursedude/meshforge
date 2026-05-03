@@ -73,9 +73,9 @@ class TestResolveRnsdConfigdir:
         cd = _resolve_rnsd_configdir(user='root', exec_start='/usr/local/bin/rnsd --service')
         assert cd == Path('/root/.reticulum')
 
-    def test_user_wh6gxz_no_flag_defaults_to_user_home(self):
-        cd = _resolve_rnsd_configdir(user='wh6gxz', exec_start='/usr/local/bin/rnsd')
-        assert cd == Path('/home/<user>/.reticulum')
+    def test_named_user_no_flag_defaults_to_user_home(self):
+        cd = _resolve_rnsd_configdir(user='testuser', exec_start='/usr/local/bin/rnsd')
+        assert cd == Path('/home/testuser/.reticulum')
 
     def test_no_user_no_flag_treated_as_root(self):
         cd = _resolve_rnsd_configdir(user=None, exec_start='/usr/local/bin/rnsd')
@@ -295,7 +295,7 @@ class TestPlanNormalize:
         plan = plan_normalize(s)
         chown_actions = [a for a in plan if 'chown' in a.description]
         assert chown_actions, "should plan chown to user"
-        assert 'wh6gxz' in chown_actions[0].cmd[-1]
+        assert '<user>' in chown_actions[0].cmd[-1]
 
     def test_idempotent_on_already_normalized(self):
         """Running plan_normalize twice on canonical state stays empty."""
