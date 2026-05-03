@@ -1,0 +1,16 @@
+[Unit]
+Description=MeshForge fleet runtime health timer
+Documentation=https://github.com/Nursedude/meshforge
+
+[Timer]
+# Twice daily — 09:00 and 19:00, offset 1 hour from the CI-status timer
+# (08:00 / 18:00) so the two reports land separately and the operator
+# can scan them in sequence rather than as one wall of text.
+# RandomizedDelaySec keeps cron-thundering-herd off if multiple
+# manager-class boxes ever run this in parallel.
+OnCalendar=*-*-* 09,19:00:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

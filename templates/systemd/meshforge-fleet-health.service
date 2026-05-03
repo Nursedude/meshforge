@@ -1,0 +1,15 @@
+[Unit]
+Description=MeshForge fleet runtime health check
+Documentation=https://github.com/Nursedude/meshforge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/meshforge/scripts/fleet_runtime_health.sh
+# Per-host SSH with 10s connect timeout; 5 hosts = ~60s worst case.
+# Allow 5 minutes of slack for slow links.
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshforge-fleet-health
