@@ -1,0 +1,16 @@
+[Unit]
+Description=MeshForge ecosystem CI status timer
+Documentation=https://github.com/Nursedude/meshforge
+
+[Timer]
+# Run twice daily — 08:00 and 18:00 — with up to 5 minutes random
+# delay. Twice daily because: (a) once is enough to catch slow rot
+# but two gives a same-day re-check after operator fixes a red repo,
+# (b) the run is API-bounded (~6 gh calls), so the cost is trivial.
+OnCalendar=*-*-* 08,18:00:00
+RandomizedDelaySec=300
+# If the Pi was off when scheduled, run on next boot.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

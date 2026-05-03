@@ -1,0 +1,16 @@
+[Unit]
+Description=MeshForge ecosystem CI status check
+Documentation=https://github.com/Nursedude/meshforge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/meshforge/scripts/ecosystem_ci_status.sh
+# gh CLI uses ~/.config/gh — needs HOME set when running as a user
+# unit. The systemd-user manager already provides this; the system-
+# level form below assumes User=<operator> in a drop-in.
+TimeoutStartSec=120
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshforge-ci-status
