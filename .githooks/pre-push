@@ -1,0 +1,53 @@
+#!/bin/bash
+# MeshForge pre-push hook
+#
+# Runs scripts/healthcheck.sh before pushing to keep CI from going red.
+# Today (2026-05-03) we shipped two pushes that compounded a CI red
+# baseline before the surface failure was even fixed; pre-push closes
+# that loop. Bypass with `git push --no-verify` if you really need to.
+#
+# Setup: git config core.hooksPath .githooks (already on per CLAUDE.md)
+
+set -u
+
+# Only run on push to origin; skip for pushes to local sandboxes / forks
+# (those are usually personal experiments). Adjust if your workflow
+# differs.
+remote="$1"
+if [ "$remote" != "origin" ] && [ "$remote" != "meshforge" ]; then
+    exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+if [ ! -x "$REPO_ROOT/scripts/healthcheck.sh" ]; then
+    echo "scripts/healthcheck.sh not found or not executable — skipping pre-push check" >&2
+    exit 0
+fi
+
+# Default: lint only — fast (~2s) and catches MF-rule violations
+# (including MF016 which would have blocked the 2026-05-03 incident).
+# This box runs as a real fleet member, so the local test suite has
+# environmental failures (real meshtasticd/RNS/cached DB) that would
+# always block a push without telling us anything CI-relevant. Lint
+# is environment-independent and high-value.
+#
+# Opt-in escalation:
+#   MESHFORGE_PREPUSH_FULL=1  → run full test suite locally too
+#   MESHFORGE_PREPUSH_CLEAN=1 → run in clean CI-parity venv (slowest, most accurate)
+if [ "${MESHFORGE_PREPUSH_CLEAN:-0}" = "1" ]; then
+    "$REPO_ROOT/scripts/healthcheck.sh" --clean-venv
+elif [ "${MESHFORGE_PREPUSH_FULL:-0}" = "1" ]; then
+    "$REPO_ROOT/scripts/healthcheck.sh"
+else
+    "$REPO_ROOT/scripts/healthcheck.sh" --lint-only
+fi
+rc=$?
+
+if [ "$rc" -ne 0 ]; then
+    echo ""
+    echo "Pre-push healthcheck failed. Fix issues or override with:"
+    echo "  git push --no-verify"
+    exit 1
+fi
+exit 0

@@ -17,6 +17,7 @@ Checks:
 - MF012: Context-loaded doc size (persistent_issues.md must stay under 40k chars)
 - MF013: Bare sqlite3.connect() outside db_helpers.py (must use connect_tuned)
 - MF014: Operator-specific values (hostnames, personal email, /home/<user>/) — break repo portability
+- MF016: @patch('src.utils.paths.…') in tests — production imports via bare 'utils.paths', divergent class objects
 
 Usage:
     python3 scripts/lint.py [files...]
@@ -65,6 +66,13 @@ class MeshForgeLinter:
         issues = []
 
         if not filepath.endswith('.py'):
+            return issues
+
+        # Self-skip: the linter source legitimately contains every pattern
+        # it detects (in detection regexes, docstrings, allowlist comments).
+        # Per-line rules don't have rule-by-rule allowlists for this file,
+        # so skip the whole file. MF014 still scans via its own pass.
+        if os.path.basename(filepath) == 'lint.py' and 'scripts' in filepath.split(os.sep):
             return issues
 
         try:
@@ -329,6 +337,26 @@ class MeshForgeLinter:
                     filepath, lineno, Severity.ERROR, "MF013",
                     "Bare sqlite3.connect() — use utils.db_helpers.connect_tuned "
                     "(WAL + sync=NORMAL + 64MB journal cap)"
+                ))
+
+        # MF016: @patch('src.utils.paths.…') silently no-ops because production
+        # code imports via `from utils.paths import …` and conftest puts only
+        # `src/` on sys.path — `src.utils.paths` and `utils.paths` resolve to
+        # different module objects with different ReticulumPaths class objects.
+        # The patch lands on src.utils.paths.ReticulumPaths; the consumer uses
+        # utils.paths.ReticulumPaths; the mock never fires. The test then
+        # passes-by-coincidence on a fleet box where the real method returns
+        # the expected value (see project_ci_red_2026_05_03_cascade.md).
+        # Cure: patch at the consumer's namespace OR use bare 'utils.paths.…'.
+        basename_lc = os.path.basename(filepath)
+        if (basename_lc.startswith('test_') or '/tests/' in filepath) and '@patch' in line:
+            if re.search(r"@patch\(\s*['\"]src\.utils\.paths\.", line):
+                issues.append(LintIssue(
+                    filepath, lineno, Severity.ERROR, "MF016",
+                    "@patch('src.utils.paths.…') silently no-ops — production "
+                    "imports via 'from utils.paths import …' (different module "
+                    "object). Use 'utils.paths.…' or patch at the consumer's "
+                    "namespace (Issue: 2026-05-03 CI cascade)"
                 ))
 
         # MF010: time.sleep() in daemon loops (should use _stop_event.wait())
