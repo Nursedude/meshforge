@@ -29,6 +29,8 @@ import json
 import urllib.error
 import urllib.request
 
+import pytest
+
 
 def _get_json(url: str, timeout: float = 10.0) -> dict:
     with urllib.request.urlopen(url, timeout=timeout) as resp:
