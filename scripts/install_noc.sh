@@ -1319,7 +1319,7 @@ if $INSTALL_RNS; then
     # Subdirectories required by RNS:
     #   ratchets/  - Identity.persist_job() key ratcheting
     #   resources/ - Reticulum.__init__() resource storage
-    #   interfaces/ - Custom interface plugins (e.g. Meshtastic_Interface)
+    #   interfaces/ - Custom RNS interface plugins (operator-managed)
     echo "  Creating /etc/reticulum/ structure..."
     mkdir -p /etc/reticulum/storage/ratchets
     mkdir -p /etc/reticulum/storage/resources
@@ -1426,15 +1426,6 @@ RNSD_SERVICE
         fi
         chown -R "${REAL_USER}:" "$USER_SYSTEMD_DIR" 2>/dev/null || true
         echo -e "  ${GREEN}✓ User service templates deployed to ${USER_SYSTEMD_DIR}${NC}"
-    fi
-
-    # Deploy Meshtastic_Interface.py from vendored template
-    if [[ -f "$INSTALL_DIR/templates/interfaces/Meshtastic_Interface.py" ]]; then
-        cp "$INSTALL_DIR/templates/interfaces/Meshtastic_Interface.py" /etc/reticulum/interfaces/
-        chmod 644 /etc/reticulum/interfaces/Meshtastic_Interface.py
-        echo -e "  ${GREEN}✓ Meshtastic_Interface.py deployed to /etc/reticulum/interfaces/${NC}"
-        pip3 install $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=45.0.7,<47' 'pyopenssl>=25.3.0'
-        echo -e "  ${GREEN}✓ meshtastic module installed for rnsd${NC}"
     fi
 
     systemctl daemon-reload

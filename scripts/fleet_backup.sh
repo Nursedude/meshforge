@@ -213,7 +213,7 @@ do_local_backup() {
             backed_up=$((backed_up + 1))
         fi
 
-        # Interfaces directory (plugins like Meshtastic_Interface.py)
+        # Interfaces directory (operator-managed RNS interface plugins, if any)
         if [[ -d /etc/reticulum/interfaces ]]; then
             cp -a /etc/reticulum/interfaces "$staging/etc/reticulum/interfaces"
             log_info "/etc/reticulum/interfaces/"
