@@ -1,0 +1,157 @@
+name: PR Overdue Check
+
+# Insight 2 of the 2026-05-03 diagnostic-insights plan. Born from PR
+# #1153: web-Claude opened a 2-line CI fix that was 54 commits behind
+# main and would have reverted ~10,875 lines if merged. Title looked
+# legit; only diff stat + behind-count exposed it.
+#
+# Posts a comment with diff stat + behind-count whenever a PR is opened
+# OR has new commits (synchronize) AND is more than 20 commits behind
+# its base. Single rolling comment per PR, tagged with a marker so we
+# update in place rather than spamming.
+#
+# Labels the PR `overdue` so it shows up in repo filters; removes the
+# label once the PR rebases below threshold. Operator's vocabulary
+# choice is deliberate — see Insight 5: "overdue" → "fix it now",
+# "stale" → "file it".
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.fork == false || github.event.pull_request.author_association == 'COLLABORATOR'
+    steps:
+      - name: Checkout PR with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Compute behind / ahead / diff stat
+        id: stats
+        run: |
+          set -u
+          BASE_REF="${{ github.event.pull_request.base.ref }}"
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          # Fetch latest base in case origin/<base> moved between
+          # PR-event and runner pickup. Important: we want behind vs
+          # the CURRENT base tip, not the snapshot in the event payload.
+          git fetch --no-tags --prune origin "$BASE_REF":"refs/remotes/origin/$BASE_REF"
+          BASE_TIP="$(git rev-parse "origin/$BASE_REF")"
+
+          BEHIND=$(git rev-list --count "$HEAD_SHA..$BASE_TIP")
+          AHEAD=$(git rev-list --count "$BASE_TIP..$HEAD_SHA" || echo "?")
+
+          # Diff stat against current base tip (not the event-snapshot
+          # base) — same reasoning.
+          STAT_FILE=$(mktemp)
+          git diff "$BASE_TIP..$HEAD_SHA" --stat | tail -25 > "$STAT_FILE"
+          STAT_BLOCK=$(cat "$STAT_FILE")
+          # Total lines changed (insertions + deletions).
+          SHORTSTAT=$(git diff "$BASE_TIP..$HEAD_SHA" --shortstat 2>/dev/null || true)
+          TOTAL_LINES=$(echo "$SHORTSTAT" \
+              | grep -oE '[0-9]+ insertions|[0-9]+ deletions' \
+              | grep -oE '^[0-9]+' \
+              | paste -sd+ \
+              | bc 2>/dev/null || echo 0)
+
+          {
+              echo "behind=$BEHIND"
+              echo "ahead=$AHEAD"
+              echo "total_lines=${TOTAL_LINES:-0}"
+              echo "base_ref=$BASE_REF"
+              echo "stat_block<<EOF_STAT"
+              echo "$STAT_BLOCK"
+              echo "EOF_STAT"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Comment on PR (or update existing)
+        if: steps.stats.outputs.behind != '0'
+        uses: actions/github-script@v7
+        env:
+          BEHIND: ${{ steps.stats.outputs.behind }}
+          AHEAD: ${{ steps.stats.outputs.ahead }}
+          TOTAL_LINES: ${{ steps.stats.outputs.total_lines }}
+          BASE_REF: ${{ steps.stats.outputs.base_ref }}
+          STAT_BLOCK: ${{ steps.stats.outputs.stat_block }}
+        with:
+          script: |
+            const MARKER = '<!-- meshforge-pr-overdue-check -->';
+            const THRESHOLD = 20;
+            const behind = parseInt(process.env.BEHIND || '0', 10);
+            const ahead = process.env.AHEAD;
+            const totalLines = process.env.TOTAL_LINES || '?';
+            const baseRef = process.env.BASE_REF;
+            const statBlock = process.env.STAT_BLOCK || '(no diff stat available)';
+
+            const overdue = behind > THRESHOLD;
+
+            // Find existing comment by marker.
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const { data: comments } = await github.rest.issues.listComments({
+                owner, repo, issue_number, per_page: 100
+            });
+            const existing = comments.find(c => c.body && c.body.includes(MARKER));
+
+            // Manage the `overdue` label.
+            try {
+                if (overdue) {
+                    await github.rest.issues.addLabels({
+                        owner, repo, issue_number, labels: ['overdue']
+                    });
+                } else {
+                    await github.rest.issues.removeLabel({
+                        owner, repo, issue_number, name: 'overdue'
+                    }).catch(() => {});  // 404 if label not set
+                }
+            } catch (e) {
+                core.warning(`Label management failed: ${e.message}`);
+            }
+
+            if (!overdue) {
+                // Below threshold — clean up any stale comment.
+                if (existing) {
+                    await github.rest.issues.deleteComment({
+                        owner, repo, comment_id: existing.id
+                    }).catch(() => {});
+                }
+                return;
+            }
+
+            const body = [
+                MARKER,
+                `### ⚠ PR is **${behind} commits behind \`${baseRef}\`**`,
+                '',
+                `(${ahead} ahead, ${totalLines} total lines changed)`,
+                '',
+                'A PR this far behind base risks reverting downstream changes when',
+                'merged. Compare the diff scope below against the PR title — if the',
+                'diff dwarfs the apparent scope, rebase before merging.',
+                '',
+                '```',
+                statBlock,
+                '```',
+                '',
+                '_Born from PR #1153 (2026-05-03): a "2-line CI fix" 54 commits behind_',
+                '_main, would have reverted ~10,875 lines. Title hid the blast radius._',
+                '_Auto-posted by `.github/workflows/pr_overdue_check.yml`._',
+            ].join('\n');
+
+            if (existing) {
+                await github.rest.issues.updateComment({
+                    owner, repo, comment_id: existing.id, body
+                });
+            } else {
+                await github.rest.issues.createComment({
+                    owner, repo, issue_number, body
+                });
+            }
