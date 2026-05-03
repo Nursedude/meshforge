@@ -1,28 +1,36 @@
 #!/bin/bash
-# Install MeshForge git hooks
+# Install MeshForge git hooks via core.hooksPath.
 #
 # Usage: ./scripts/install-hooks.sh
+#
+# Sets git's core.hooksPath to the repo-tracked .githooks/ directory so the
+# pre-commit hook is shared across clones (vs. copying into per-clone
+# .git/hooks/, which drifts). Idempotent: re-running is a no-op once configured.
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-HOOKS_DIR="$REPO_ROOT/.git/hooks"
 
-echo "Installing MeshForge git hooks..."
+cd "$REPO_ROOT"
 
-# Create hooks directory if it doesn't exist
-mkdir -p "$HOOKS_DIR"
+if [ ! -d .git ]; then
+    echo "ERROR: $REPO_ROOT is not a git repo." >&2
+    exit 1
+fi
 
-# Install pre-commit hook
-if [ -f "$SCRIPT_DIR/hooks/pre-commit" ]; then
-    cp "$SCRIPT_DIR/hooks/pre-commit" "$HOOKS_DIR/pre-commit"
-    chmod +x "$HOOKS_DIR/pre-commit"
-    echo "  Installed: pre-commit"
+if [ ! -x .githooks/pre-commit ]; then
+    echo "ERROR: .githooks/pre-commit missing or not executable." >&2
+    exit 1
+fi
+
+current=$(git config --get core.hooksPath || true)
+if [ "$current" = ".githooks" ]; then
+    echo "core.hooksPath already set to .githooks (no-op)."
+else
+    git config core.hooksPath .githooks
+    echo "Set core.hooksPath = .githooks"
 fi
 
 echo ""
-echo "Git hooks installed successfully!"
-echo ""
-echo "Hooks will run automatically on git operations."
-echo "To bypass: git commit --no-verify"
+echo "Pre-commit hook active. Bypass with: git commit --no-verify"

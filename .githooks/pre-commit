@@ -27,6 +27,17 @@ if ! python3 -m pytest tests/test_regression_guards.py -x -q 2>/dev/null; then
     exit 1
 fi
 
+# Collection-only sweep: catches module-level import/syntax errors across the
+# full suite without running test bodies. Fast (~2-3s) and flags the class of
+# regression where a test module fails to import in CI but loads in dev.
+echo "Collecting test modules..."
+if ! python3 -m pytest --collect-only -q tests/ >/dev/null 2>&1; then
+    echo ""
+    echo "Test collection failed — a test module won't import."
+    echo "Run: python3 -m pytest --collect-only tests/"
+    exit 1
+fi
+
 # Validate Claude Code permission grammar in .claude/settings.json
 # Catches silently-skipped rules (CVE-2026-21852 class of issue).
 if [ -f .claude/settings.json ]; then

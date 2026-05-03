@@ -192,6 +192,14 @@ sync_repo() {
     local new_head
     new_head=$(git rev-parse --short HEAD)
 
+    # Idempotently wire the repo-tracked .githooks/ dir as the hooks path so
+    # every fleet box runs the pre-commit hook on local edits. core.hooksPath
+    # lives in .git/config (per-clone, not repo-tracked); without this every
+    # new clone silently skips the hook.
+    if [ -x .githooks/pre-commit ] && [ "$(git config --get core.hooksPath || true)" != ".githooks" ]; then
+        git config core.hooksPath .githooks 2>/dev/null || true
+    fi
+
     if systemctl list-unit-files "${unit}.service" 2>/dev/null | grep -q "$unit"; then
         # try-restart only acts if the unit is already active. A disabled+stopped
         # unit stays stopped — operator intent is honored. Without this, every
