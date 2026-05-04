@@ -44,8 +44,16 @@ jobs:
           # Fetch latest base in case origin/<base> moved between
           # PR-event and runner pickup. Important: we want behind vs
           # the CURRENT base tip, not the snapshot in the event payload.
-          git fetch --no-tags --prune origin "$BASE_REF":"refs/remotes/origin/$BASE_REF"
-          BASE_TIP="$(git rev-parse "origin/$BASE_REF")"
+          #
+          # Use FETCH_HEAD instead of an explicit refspec. The previous
+          # form (`--prune origin "main:refs/remotes/origin/main"`)
+          # interacted with actions/checkout@v4's narrow
+          # `remote.origin.fetch` config and DELETED `origin/main`
+          # instead of updating it, breaking `git rev-parse origin/main`.
+          # Caught downstream in MeshAnchor PR #13 (CI run 25297110388,
+          # fixed in MeshAnchor commit 72ff06fc).
+          git fetch --no-tags origin "$BASE_REF"
+          BASE_TIP="$(git rev-parse FETCH_HEAD)"
 
           BEHIND=$(git rev-list --count "$HEAD_SHA..$BASE_TIP")
           AHEAD=$(git rev-list --count "$BASE_TIP..$HEAD_SHA" || echo "?")
