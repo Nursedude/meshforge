@@ -21,6 +21,7 @@ from .bridge_health import (
     BridgeHealthMonitor, DeliveryTracker,
     BridgeStatus, SubsystemState, MessageOrigin
 )
+from utils.boundary_timing import call_boundary
 from utils.safe_import import safe_import
 
 # MQTT bridge handler (zero-interference, recommended)
@@ -793,8 +794,13 @@ class RNSMeshtasticBridge(
 
             if destination_hash:
                 # Direct message
-                if not RNS.Transport.has_path(destination_hash):
-                    RNS.Transport.request_path(destination_hash)
+                hash_short = destination_hash.hex()[:8]
+                if not call_boundary("rnsd.has_path",
+                                     RNS.Transport.has_path, destination_hash,
+                                     target=hash_short):
+                    call_boundary("rnsd.request_path",
+                                  RNS.Transport.request_path, destination_hash,
+                                  target=hash_short)
                     # Wait briefly for path (interruptible on shutdown)
                     for _ in range(50):
                         if RNS.Transport.has_path(destination_hash):
@@ -806,7 +812,9 @@ class RNSMeshtasticBridge(
                     logger.warning("No path to destination")
                     return False
 
-                dest_identity = RNS.Identity.recall(destination_hash)
+                dest_identity = call_boundary("rnsd.identity_recall",
+                                              RNS.Identity.recall, destination_hash,
+                                              target=hash_short)
                 destination = RNS.Destination(
                     dest_identity,
                     RNS.Destination.OUT,
@@ -854,7 +862,9 @@ class RNSMeshtasticBridge(
                 # LXMF version may not support callbacks
                 logger.debug("LXMF callbacks not available, skipping delivery tracking")
 
-            self._lxmf_router.handle_outbound(lxm)
+            call_boundary("rnsd.handle_outbound",
+                          self._lxmf_router.handle_outbound, lxm,
+                          target=hash_short)
             return True
 
         except Exception as e:
@@ -882,9 +892,14 @@ class RNSMeshtasticBridge(
 
             if isinstance(destination_hash, str):
                 destination_hash = bytes.fromhex(destination_hash)
+            hash_short = destination_hash.hex()[:8]
 
-            if not RNS.Transport.has_path(destination_hash):
-                RNS.Transport.request_path(destination_hash)
+            if not call_boundary("rnsd.has_path",
+                                 RNS.Transport.has_path, destination_hash,
+                                 target=hash_short):
+                call_boundary("rnsd.request_path",
+                              RNS.Transport.request_path, destination_hash,
+                              target=hash_short)
                 for _ in range(30):
                     if RNS.Transport.has_path(destination_hash):
                         break
@@ -894,14 +909,18 @@ class RNSMeshtasticBridge(
             if not RNS.Transport.has_path(destination_hash):
                 return False
 
-            dest_identity = RNS.Identity.recall(destination_hash)
+            dest_identity = call_boundary("rnsd.identity_recall",
+                                          RNS.Identity.recall, destination_hash,
+                                          target=hash_short)
             destination = RNS.Destination(
                 dest_identity, RNS.Destination.OUT,
                 RNS.Destination.SINGLE, "lxmf", "delivery"
             )
 
             lxm = LXMF.LXMessage(destination, self._lxmf_source, message, "MeshForge Gateway")
-            self._lxmf_router.handle_outbound(lxm)
+            call_boundary("rnsd.handle_outbound",
+                          self._lxmf_router.handle_outbound, lxm,
+                          target=hash_short)
             return True
 
         except Exception as e:

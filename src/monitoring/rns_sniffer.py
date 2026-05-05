@@ -29,6 +29,7 @@ from monitoring.traffic_inspector import (
     MeshPacket, PacketProtocol, PacketDirection, PacketTree,
     PacketField, FieldType, get_traffic_inspector
 )
+from utils.boundary_timing import call_boundary
 from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
@@ -744,7 +745,9 @@ class RNSSniffer:
             dest_hash = bytes.fromhex(dest_hash_hex)
 
             # Request path
-            RNS.Transport.request_path(dest_hash)
+            call_boundary("rnsd.request_path",
+                          RNS.Transport.request_path, dest_hash,
+                          target=dest_hash_hex[:8])
 
             # Capture as outbound packet
             packet = RNSPacketInfo(

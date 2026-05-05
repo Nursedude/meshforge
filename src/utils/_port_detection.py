@@ -16,6 +16,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Tuple
 
+from utils.boundary_timing import timed_boundary
+
 logger = logging.getLogger(__name__)
 
 
@@ -327,6 +329,16 @@ def get_rns_shared_instance_info(instance_name: str = 'default',
         instance_name: RNS instance name (default: ``'default'``).
         port: Shared instance port for TCP/UDP fallback (default: 37428).
     """
+    # Wrap the entire probe path so a stalled rnsd-availability check
+    # (most often caused by the unix-socket scan or fallback TCP connect)
+    # produces a forensic. Per-tier timing (proc/net/unix scan vs.
+    # TCP connect) is rarely worth knowing — what matters for diagnosis
+    # is "the rnsd availability check stalled".
+    with timed_boundary("rnsd.shared_instance_probe"):
+        return _shared_instance_info_inner(instance_name, port)
+
+
+def _shared_instance_info_inner(instance_name: str, port: int) -> dict:
     # 1. Passive check: scan /proc/net/unix for the abstract domain socket.
     # RNS creates @rns/{instance_name} (LocalInterface data transport).
     # This mirrors how check_udp_port() reads /proc/net/udp — no connection

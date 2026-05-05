@@ -32,6 +32,7 @@ try:
 except ImportError:
     def broadcast_message(*args, **kwargs):
         pass
+from utils.boundary_timing import timed_boundary
 from utils.safe_import import safe_import
 from utils.service_check import check_service
 
@@ -285,11 +286,12 @@ class MeshtasticHandler(BaseMessageHandler):
                 # For broadcasts, use ^all instead of None
                 dest = destination if destination else "^all"
                 logger.debug(f"Sending to Meshtastic: dest={dest}, ch={channel}, msg={message[:50]}")
-                result = self._interface.sendText(
-                    message,
-                    destinationId=dest,
-                    channelIndex=channel
-                )
+                with timed_boundary("meshtasticd.send_text", target=str(dest)):
+                    result = self._interface.sendText(
+                        message,
+                        destinationId=dest,
+                        channelIndex=channel
+                    )
                 if result is None or result is False:
                     logger.warning(f"sendText returned {result} — TX may have failed "
                                    f"(dest={dest}, ch={channel})")
@@ -325,7 +327,8 @@ class MeshtasticHandler(BaseMessageHandler):
         try:
             if self._interface:
                 dest = destination if destination else "^all"
-                result = self._interface.sendText(message, destinationId=dest, channelIndex=channel)
+                with timed_boundary("meshtasticd.send_text", target=str(dest)):
+                    result = self._interface.sendText(message, destinationId=dest, channelIndex=channel)
                 if result is None or result is False:
                     logger.warning(f"Queue sendText returned {result} — TX may have failed")
                     return False
@@ -345,12 +348,13 @@ class MeshtasticHandler(BaseMessageHandler):
         sock = None
         try:
             import socket
+            host = self.config.meshtastic.host
+            port = self.config.meshtastic.port
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(5)
-            result = sock.connect_ex((
-                self.config.meshtastic.host,
-                self.config.meshtastic.port
-            ))
+            with timed_boundary("meshtasticd.tcp_probe",
+                                target=f"{host}:{port}"):
+                result = sock.connect_ex((host, port))
             return result == 0
         except (OSError, Exception) as e:
             logger.debug(f"Meshtastic connection test failed: {e}")
@@ -596,11 +600,13 @@ class MeshtasticHandler(BaseMessageHandler):
                 logger.debug("Meshtastic CLI not found")
                 return False
 
-            result = subprocess.run(
-                [cli_path, '--info'],
-                capture_output=True,
-                timeout=10
-            )
+            # CLI shells out to meshtasticd; subprocess timeout is 10s
+            with timed_boundary("meshtasticd.cli_info", threshold_s=10.0):
+                result = subprocess.run(
+                    [cli_path, '--info'],
+                    capture_output=True,
+                    timeout=10
+                )
             return result.returncode == 0
         except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError) as e:
             logger.debug(f"Meshtastic CLI test failed: {e}")
@@ -617,7 +623,11 @@ class MeshtasticHandler(BaseMessageHandler):
             if channel > 0:
                 cmd.extend(['--ch-index', str(channel)])
 
-            result = subprocess.run(cmd, capture_output=True, timeout=30)
+            # CLI fallback shells out to meshtasticd; subprocess timeout is 30s
+            with timed_boundary("meshtasticd.cli_send",
+                                target=destination or "broadcast",
+                                threshold_s=30.0):
+                result = subprocess.run(cmd, capture_output=True, timeout=30)
             return result.returncode == 0
         except Exception as e:
             logger.error(f"CLI send failed: {e}")

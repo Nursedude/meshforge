@@ -24,6 +24,7 @@ from contextlib import contextmanager
 from enum import Enum
 from typing import Optional, List, Dict, Any
 
+from utils.boundary_timing import timed_boundary
 from utils.safe_import import safe_import
 from utils.service_check import restart_service
 
@@ -228,7 +229,8 @@ def safe_close_interface(interface) -> None:
 
     try:
         # Try to close normally
-        interface.close()
+        with timed_boundary("meshtasticd.close"):
+            interface.close()
     except (BrokenPipeError, ConnectionResetError, OSError) as e:
         # Connection already closed by server - this is fine
         logger.debug(f"Connection already closed during cleanup: {e}")
@@ -324,10 +326,12 @@ class MeshtasticConnectionManager:
             True if port is reachable, False otherwise
         """
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(timeout)
-                sock.connect((self.host, self.port))
-                return True
+            with timed_boundary("meshtasticd.tcp_probe",
+                                target=f"{self.host}:{self.port}"):
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                    sock.settimeout(timeout)
+                    sock.connect((self.host, self.port))
+                    return True
         except (socket.error, socket.timeout, OSError):
             return False
 
@@ -341,7 +345,11 @@ class MeshtasticConnectionManager:
         Returns:
             True if lock acquired, False if timeout
         """
-        return self._lock.acquire(timeout=timeout)
+        # Per charter: lock already times itself; emit elapsed as a boundary
+        # metric. Default 2.0s threshold — any wait that long signals real
+        # contention regardless of the caller's wider timeout budget.
+        with timed_boundary("meshtasticd.connection_lock_acquire"):
+            return self._lock.acquire(timeout=timeout)
 
     def release_lock(self):
         """Release the connection lock"""
@@ -493,7 +501,11 @@ class MeshtasticConnectionManager:
             raise ConnectionError("meshtastic library not installed")
         try:
             logger.debug(f"Creating TCP interface to {self.host}:{self.port}")
-            return _meshtastic_tcp.TCPInterface(hostname=self.host)
+            # cold-start TCPInterface drains initial config burst — give it 5s
+            with timed_boundary("meshtasticd.tcp_connect",
+                                target=f"{self.host}:{self.port}",
+                                threshold_s=5.0):
+                return _meshtastic_tcp.TCPInterface(hostname=self.host)
         except Exception as e:
             raise ConnectionError(f"TCP connection failed: {e}")
 
@@ -508,7 +520,11 @@ class MeshtasticConnectionManager:
                     "No USB device found. Connect a Meshtastic radio or specify serial_port."
                 )
             logger.debug(f"Creating Serial interface to {device}")
-            return _meshtastic_serial.SerialInterface(devPath=device)
+            # SerialInterface also drains initial config burst on connect
+            with timed_boundary("meshtasticd.serial_connect",
+                                target=device,
+                                threshold_s=5.0):
+                return _meshtastic_serial.SerialInterface(devPath=device)
         except Exception as e:
             raise ConnectionError(f"Serial connection failed: {e}")
 
