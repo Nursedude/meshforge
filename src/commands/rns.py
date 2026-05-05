@@ -18,6 +18,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass, field
 
 from .base import CommandResult
+from utils.boundary_timing import call_boundary
 from utils.safe_import import safe_import
 from utils.service_check import check_service, start_service, stop_service
 
@@ -910,9 +911,12 @@ def test_path(destination_hash: str, timeout: int = 10) -> CommandResult:
 
     try:
         dest_bytes = bytes.fromhex(destination_hash)
+        hash_short = destination_hash[:8]
 
         # Check if path exists
-        has_path = RNS.Transport.has_path(dest_bytes)
+        has_path = call_boundary("rnsd.has_path",
+                                 RNS.Transport.has_path, dest_bytes,
+                                 target=hash_short)
 
         if has_path:
             return CommandResult.ok(
@@ -924,7 +928,9 @@ def test_path(destination_hash: str, timeout: int = 10) -> CommandResult:
             )
 
         # Request path
-        RNS.Transport.request_path(dest_bytes)
+        call_boundary("rnsd.request_path",
+                      RNS.Transport.request_path, dest_bytes,
+                      target=hash_short)
 
         # Wait for path
         import time

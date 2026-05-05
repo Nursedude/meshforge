@@ -19,6 +19,7 @@ from datetime import datetime
 from enum import Enum, auto
 from typing import Dict, List, Optional, Set, Tuple, Callable, Any
 
+from utils.boundary_timing import timed_boundary
 from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
@@ -229,13 +230,19 @@ class PathTableMonitor:
         try:
             RNS = _RNS
 
-            if not hasattr(RNS.Transport, 'path_table') or not RNS.Transport.path_table:
-                return
+            # Snapshot path_table inside one timed_boundary block. On a
+            # shared-instance client this is a mostly-local read, but
+            # slowness here flags sync pressure on rnsd or a very large
+            # table — exactly what the wedge investigation needs visible.
+            with timed_boundary("rnsd.path_table_read"):
+                if not hasattr(RNS.Transport, 'path_table') or not RNS.Transport.path_table:
+                    return
+                path_table_items = list(RNS.Transport.path_table.items())
 
             current_snapshot: Dict[bytes, PathTableEntry] = {}
 
             # Build current snapshot
-            for dest_hash, path_data in RNS.Transport.path_table.items():
+            for dest_hash, path_data in path_table_items:
                 if not isinstance(dest_hash, bytes) or len(dest_hash) != 16:
                     continue
 

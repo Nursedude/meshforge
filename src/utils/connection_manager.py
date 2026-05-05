@@ -35,6 +35,7 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union
 
+from utils.boundary_timing import timed_boundary
 from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
@@ -196,10 +197,14 @@ class _ConnectionManager:
         last_error = None
         for attempt in range(max_retries):
             try:
-                self._connection = _tcp_interface_mod.TCPInterface(
-                    hostname=self._host,
-                    portNumber=self._port
-                )
+                # cold-start TCPInterface drains initial config burst — give it 5s
+                with timed_boundary("meshtasticd.tcp_connect",
+                                    target=f"{self._host}:{self._port}",
+                                    threshold_s=5.0):
+                    self._connection = _tcp_interface_mod.TCPInterface(
+                        hostname=self._host,
+                        portNumber=self._port
+                    )
                 return self._connection
             except (ConnectionResetError, BrokenPipeError, OSError) as e:
                 last_error = e
@@ -235,7 +240,9 @@ class _ConnectionManager:
         if interface is None:
             return
         try:
-            interface.close()
+            with timed_boundary("meshtasticd.close",
+                                target=f"{self._host}:{self._port}"):
+                interface.close()
         except (BrokenPipeError, ConnectionResetError, OSError) as e:
             # Connection already closed by server - this is fine
             logger.debug(f"Connection already closed during cleanup: {e}")
@@ -253,10 +260,12 @@ class _ConnectionManager:
     def is_available(self, timeout: float = 2.0) -> bool:
         """Check if meshtasticd port is reachable."""
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(timeout)
-                sock.connect((self._host, self._port))
-                return True
+            with timed_boundary("meshtasticd.tcp_probe",
+                                target=f"{self._host}:{self._port}"):
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                    sock.settimeout(timeout)
+                    sock.connect((self._host, self._port))
+                    return True
         except (socket.error, socket.timeout, OSError):
             return False
 

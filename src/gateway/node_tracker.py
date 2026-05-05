@@ -27,6 +27,7 @@ from .node_models import (
     NODE_STATE_AVAILABLE, RNS_SERVICES_AVAILABLE
 )
 
+from utils.boundary_timing import timed_boundary
 from utils.safe_import import safe_import
 
 # Import RNS service registry and topology (optional - graceful fallback)
@@ -208,8 +209,11 @@ class UnifiedNodeTracker:
                 except ImportError:
                     pass  # service_check not available, proceed anyway
 
-                # Connect using client-only config
-                self._reticulum = RNS.Reticulum(configdir=str(client_config_dir))
+                # Connect using client-only config. Cold-start RNS attach is
+                # genuinely slow (identity load + shared-instance socket open
+                # + state sync), so the threshold is higher than the default.
+                with timed_boundary("rnsd.attach", threshold_s=10.0):
+                    self._reticulum = RNS.Reticulum(configdir=str(client_config_dir))
                 self._rns_connected = True
                 logger.info("Connected to existing rnsd instance")
 

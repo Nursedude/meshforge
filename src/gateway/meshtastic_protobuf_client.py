@@ -31,6 +31,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional
 
+from utils.boundary_timing import timed_boundary
 from utils.safe_import import safe_import
 
 from .meshtastic_protobuf_ops import (
@@ -178,18 +179,22 @@ def send_text_direct(
             headers={'Content-Type': 'application/x-protobuf'},
         )
         ctx = _stateless_ssl_ctx if tls else None
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-            if resp.status in (200, 204):
-                logger.info(
-                    f"Sent text via stateless HTTP protobuf "
-                    f"(id={packet_id}, dest={'broadcast' if dest == 0xFFFFFFFF else f'!{dest:08x}'})"
-                )
-                logger.debug(f"Message content: {text[:50]}")
-                _protobuf_circuit.record_success(cb_dest)
-                return True
-            logger.warning(f"send_text_direct: unexpected status {resp.status}")
-            _protobuf_circuit.record_failure(cb_dest, f"HTTP {resp.status}")
-            return False
+        # threshold matches caller-supplied HTTP timeout (default 5s)
+        with timed_boundary("meshtasticd.toradio_put",
+                            target=f"{packet_id:08x}",
+                            threshold_s=max(timeout, 2.0)):
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+                if resp.status in (200, 204):
+                    logger.info(
+                        f"Sent text via stateless HTTP protobuf "
+                        f"(id={packet_id}, dest={'broadcast' if dest == 0xFFFFFFFF else f'!{dest:08x}'})"
+                    )
+                    logger.debug(f"Message content: {text[:50]}")
+                    _protobuf_circuit.record_success(cb_dest)
+                    return True
+                logger.warning(f"send_text_direct: unexpected status {resp.status}")
+                _protobuf_circuit.record_failure(cb_dest, f"HTTP {resp.status}")
+                return False
     except urllib.error.HTTPError as e:
         logger.warning(f"send_text_direct: HTTP {e.code}: {e.reason}")
         _protobuf_circuit.record_failure(cb_dest, f"HTTP {e.code}")
@@ -337,10 +342,14 @@ class MeshtasticProtobufClient(ProtobufAdminMixin):
                 },
             )
             ctx = self._ssl_ctx if self._config.tls else None
-            with urllib.request.urlopen(
-                req, timeout=self._config.connect_timeout, context=ctx
-            ) as resp:
-                return resp.status in (200, 204)
+            with timed_boundary(
+                "meshtasticd.toradio_put",
+                threshold_s=max(self._config.connect_timeout, 2.0),
+            ):
+                with urllib.request.urlopen(
+                    req, timeout=self._config.connect_timeout, context=ctx
+                ) as resp:
+                    return resp.status in (200, 204)
         except urllib.error.HTTPError as e:
             logger.warning(f"POST /api/v1/toradio HTTP {e.code}: {e.reason}")
             return False
@@ -364,13 +373,19 @@ class MeshtasticProtobufClient(ProtobufAdminMixin):
                 },
             )
             ctx = self._ssl_ctx if self._config.tls else None
-            with urllib.request.urlopen(
-                req, timeout=self._config.read_timeout, context=ctx
-            ) as resp:
-                data = resp.read()
-                if data and len(data) > 0:
-                    return data
-                return None
+            # threshold matches read_timeout — fromradio polls legitimately
+            # wait the full read_timeout before returning empty.
+            with timed_boundary(
+                "meshtasticd.fromradio_get",
+                threshold_s=max(self._config.read_timeout, 2.0),
+            ):
+                with urllib.request.urlopen(
+                    req, timeout=self._config.read_timeout, context=ctx
+                ) as resp:
+                    data = resp.read()
+                    if data and len(data) > 0:
+                        return data
+                    return None
         except urllib.error.HTTPError as e:
             logger.warning(f"GET /api/v1/fromradio HTTP {e.code}: {e.reason}")
             return None
