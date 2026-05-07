@@ -240,6 +240,13 @@ def iter_log_packets(
             except ValueError:
                 continue
             from_hex = m.group("from_hex").lower()
+            # ``from=0x0`` is the local-send / MQTT-downlink-inject
+            # artifact, not a real over-the-air sender. Drop it.
+            if int(from_hex, 16) == 0:
+                continue
+            # Zero-pad to 8 hex chars so the source matches the canonical
+            # form used by node_history.db and the rest of the stack.
+            from_hex = from_hex.zfill(8)
             pid_hex = m.group("pid_hex").lower()
             paylen_str = m.group("paylen")
             yield ParsedPacket(

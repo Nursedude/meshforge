@@ -100,44 +100,10 @@ def _safe_query_param(query, key, default=None):
     return values[0] if values[0] else default
 
 
-# ── Region presets (ported from meshforge-maps) ───────────────────────
-REGION_PRESETS = {
-    "hawaii": {
-        "label": "Hawaii",
-        "map_center_lat": 20.5, "map_center_lon": -157.0,
-        "map_default_zoom": 7,
-        "bbox": [18.5, -161.0, 22.5, -154.0],
-    },
-    "west_coast": {
-        "label": "West Coast",
-        "map_center_lat": 37.5, "map_center_lon": -122.0,
-        "map_default_zoom": 6,
-        "bbox": [32.0, -125.0, 49.0, -114.0],
-    },
-    "us": {
-        "label": "United States",
-        "map_center_lat": 39.0, "map_center_lon": -98.0,
-        "map_default_zoom": 4,
-        "bbox": [
-            [24.5, -125.0, 49.5, -66.0],   # CONUS
-            [51.0, -180.0, 72.0, -130.0],   # Alaska
-            [18.5, -161.0, 22.5, -154.0],   # Hawaii
-            [17.5, -68.0, 18.6, -64.0],     # PR + USVI
-        ],
-    },
-    "americas": {
-        "label": "Americas",
-        "map_center_lat": 15.0, "map_center_lon": -80.0,
-        "map_default_zoom": 3,
-        "bbox": [-56.0, -180.0, 72.0, -34.0],
-    },
-    "world": {
-        "label": "World",
-        "map_center_lat": 20.0, "map_center_lon": 0.0,
-        "map_default_zoom": 3,
-        "bbox": None,
-    },
-}
+# ── Region presets ────────────────────────────────────────────────────
+# Single source of truth lives in utils.region_presets so the MOC
+# Analysis Tool and the map HTTP handler share the same bbox definitions.
+from utils.region_presets import REGION_PRESETS  # noqa: E402,F401
 
 
 # ── View presets (server-side filter mirror of web/node_map.html dropdown) ────
