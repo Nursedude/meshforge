@@ -171,6 +171,20 @@ INVENTORY: List[DBSpec] = [
         retention_days=None,  # row-cap based, sibling to traffic_capture
         notes="PacketArchive — long-form packet retention with manual cleanup.",
     ),
+    DBSpec(
+        name="presentation_capture",
+        path_factory=lambda: _meshforge_data_dir() / "presentation_capture.db",
+        creator_module="moc_analysis_tool.collectors.presentation_capture",
+        has_auto_prune=False,
+        retention_days=None,
+        notes=(
+            "Cumulative packet store for MOC Analysis Tool. Populated by "
+            "diag24h_parser re-running over ~/meshforge_diag_24h/<box>/ "
+            "logs (idempotent). Manual lifecycle — operator deletes when "
+            "the analysis run is no longer needed. First consumer: "
+            "BIRC 2026-05-17 Hawaii talk."
+        ),
+    ),
 ]
 
 
