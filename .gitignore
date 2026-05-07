@@ -56,3 +56,8 @@ CLAUDE.local.md
 # Session context (local only)
 .claude/CURRENT.md
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# Local-only symlinks for serving operator-rendered analysis output
+# via meshforge-map's static dir (target lives outside the repo).
+web/moc_analyses

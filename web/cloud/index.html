@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5"/>
+  <title>MeshForge — Hawaii Mesh Live</title>
+  <meta name="description" content="Live view of the LongFast Meshtastic mesh in Hawaii, captured by MeshForge NOC."/>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+        crossorigin=""/>
+
+  <style>
+    :root {
+      --bg: #0E1E2B;
+      --fg: #FFFFFF;
+      --muted: #A8B2BD;
+      --rule: #2A3A4A;
+      --accent: #E8794F;
+      --good: #6FB3B8;
+      --link: #6FB3B8;
+      --font-stack: "IBM Plex Sans", "Inter", "Helvetica Neue", Arial, sans-serif;
+      --font-mono: "IBM Plex Mono", "JetBrains Mono", "SF Mono", Consolas, monospace;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: var(--font-stack);
+      background: var(--bg);
+      color: var(--fg);
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      padding: 14px 20px 10px;
+      border-bottom: 1px solid var(--rule);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: baseline;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.2px;
+    }
+    header .subtitle {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    header .stamp {
+      margin-left: auto;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.4px;
+    }
+    header .stamp.stale { color: var(--accent); }
+
+    #map { flex: 1; background: #1A2D3F; }
+
+    footer {
+      padding: 8px 20px;
+      border-top: 1px solid var(--rule);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.3px;
+    }
+    footer a {
+      color: var(--link);
+      text-decoration: none;
+    }
+    footer a:hover { text-decoration: underline; }
+
+    /* Leaflet popup styling — match the dark deck look */
+    .leaflet-popup-content-wrapper {
+      background: #16273A;
+      color: var(--fg);
+      border-radius: 4px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    }
+    .leaflet-popup-tip { background: #16273A; }
+    .popup-name { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+    .popup-id   { font-family: var(--font-mono); font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+    .popup-row  { font-size: 12px; margin-top: 2px; }
+    .popup-row .k { color: var(--muted); margin-right: 6px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>MeshForge — Hawaii Mesh Live</h1>
+  <span class="subtitle">LongFast nodes observed from one Big Island vantage point</span>
+  <span class="stamp" id="stamp">loading…</span>
+</header>
+
+<div id="map" role="application" aria-label="Hawaii mesh node map"></div>
+
+<footer>
+  <span id="counts">—</span>
+  <span style="margin-left:auto;">
+    Open source ·
+    <a href="https://github.com/Nursedude/meshforge" target="_blank" rel="noopener">github.com/Nursedude/meshforge</a>
+  </span>
+</footer>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""></script>
+<script>
+(function () {
+  // SNR colour ramp matching the moc_analysis_tool theme.
+  function colorForSnr(snr) {
+    if (snr === null || snr === undefined) return "#5C6B7A";
+    if (snr <= -10) return "#0B3C6F";
+    if (snr >= 6)   return "#E8794F";
+    if (snr < 0)    return "#0B3C6F";
+    return "#6FB3B8";
+  }
+  function radiusForCount(n, max) {
+    if (!max || max <= 0) return 5;
+    return 4 + 12 * Math.sqrt(n / max);
+  }
+  function htmlEscape(s) {
+    return String(s ?? "").replace(/[&<>"']/g, c =>
+      ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c])
+    );
+  }
+
+  // Hawaii bbox — same as REGION_PRESETS["hawaii"] in the repo.
+  const map = L.map("map", { preferCanvas: true, zoomControl: true })
+    .setView([20.5, -157.0], 7);
+
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 18,
+    attribution: "© OpenStreetMap contributors"
+  }).addTo(map);
+
+  const layer = L.layerGroup().addTo(map);
+
+  function refreshStamp(meta) {
+    const stamp = document.getElementById("stamp");
+    const counts = document.getElementById("counts");
+    if (!meta || !meta.generated_at_epoch) {
+      stamp.textContent = "no data yet";
+      stamp.classList.add("stale");
+      return;
+    }
+    const ageS = Math.floor(Date.now() / 1000 - meta.generated_at_epoch);
+    let label;
+    if (ageS < 90)        label = `updated ${ageS}s ago`;
+    else if (ageS < 3600) label = `updated ${Math.floor(ageS / 60)}m ago`;
+    else                  label = `updated ${Math.floor(ageS / 3600)}h ago`;
+    stamp.textContent = label;
+    if (ageS > 300) stamp.classList.add("stale");
+    else stamp.classList.remove("stale");
+
+    counts.textContent = `${meta.feature_count ?? 0} nodes · region ${meta.region ?? "?"}`;
+  }
+
+  async function fetchAll() {
+    try {
+      const [metaResp, dataResp] = await Promise.all([
+        fetch("/meta.json", { cache: "no-store" }),
+        fetch("/data.geojson", { cache: "no-store" })
+      ]);
+      const meta = metaResp.ok ? await metaResp.json() : null;
+      const data = dataResp.ok ? await dataResp.json() : null;
+      refreshStamp(meta);
+
+      layer.clearLayers();
+      const features = (data && data.features) || [];
+      const counts = features.map(f => (f.properties && f.properties.packet_count) || 0);
+      const max = counts.length ? Math.max(...counts) : 0;
+
+      let plotted = 0;
+      for (const f of features) {
+        const g = f.geometry;
+        const p = f.properties || {};
+        if (!g || g.type !== "Point") continue;
+        const [lon, lat] = g.coordinates || [];
+        if (typeof lat !== "number" || typeof lon !== "number") continue;
+        if (lat === 0 && lon === 0) continue;
+
+        const snr = (typeof p.snr === "number") ? p.snr
+                  : (typeof p.avg_snr === "number") ? p.avg_snr
+                  : null;
+        const pktCount = p.packet_count || 0;
+
+        const marker = L.circleMarker([lat, lon], {
+          radius: radiusForCount(pktCount, max),
+          color: "#0E1E2B",
+          weight: 1,
+          fillColor: colorForSnr(snr),
+          fillOpacity: 0.85,
+        });
+        const name = htmlEscape(p.long_name || p.name || p.short_name || "(unnamed)");
+        const nodeId = htmlEscape(p.node_id || p.id || "");
+        const role = htmlEscape(p.role || "");
+        const hw = htmlEscape(p.hardware || p.hw_model || "");
+        const snrStr = (snr === null) ? "—" : (snr >= 0 ? `+${snr.toFixed(1)}` : snr.toFixed(1)) + " dB";
+
+        marker.bindPopup(
+          `<div class="popup-name">${name}</div>` +
+          `<div class="popup-id">${nodeId}</div>` +
+          (role ? `<div class="popup-row"><span class="k">role</span>${role}</div>` : "") +
+          (hw   ? `<div class="popup-row"><span class="k">hw</span>${hw}</div>`     : "") +
+          `<div class="popup-row"><span class="k">snr</span>${snrStr}</div>` +
+          (pktCount ? `<div class="popup-row"><span class="k">packets</span>${pktCount}</div>` : "")
+        );
+        marker.addTo(layer);
+        plotted++;
+      }
+    } catch (err) {
+      const stamp = document.getElementById("stamp");
+      stamp.textContent = "fetch failed";
+      stamp.classList.add("stale");
+      console.error("MeshForge cloud fetch failed:", err);
+    }
+  }
+
+  fetchAll();
+  // Refresh every 30s — matches the cache-control header upstream.
+  setInterval(fetchAll, 30 * 1000);
+})();
+</script>
+
+</body>
+</html>

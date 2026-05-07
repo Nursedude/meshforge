@@ -1,0 +1,70 @@
+{# Caddy config for the cloud :8808 demo VPS.
+   Rendered by scripts/cloud/setup_vps.sh with the operator's domain.
+   Substitution variables:
+     domain   — fully-qualified hostname (e.g. noc.example.com)
+     webroot  — filesystem path to the static dir (e.g. /var/www/meshforge)
+#}
+{
+    # Email used for Let's Encrypt account + expiry warnings.
+    # Override per-deploy; not committed.
+    email {$ACME_EMAIL:admin@{{ domain }}}
+
+    # Sensible defaults
+    servers {
+        protocols h1 h2 h3
+    }
+}
+
+{{ domain }} {
+    encode zstd gzip
+
+    root * {{ webroot }}
+
+    # Cache static GeoJSON + JSON for 30s — enough that an audience
+    # tab refresh during the talk shows fresh data without hammering
+    # the VPS during a viral moment.
+    @data path /data.geojson /api/*
+    header @data {
+        Cache-Control "public, max-age=30, stale-while-revalidate=60"
+    }
+
+    # Standard hardening for the static site.
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer-when-downgrade"
+        # Permissive CSP — Leaflet from CDN, OSM tile fetches, inline svg.
+        Content-Security-Policy "default-src 'self'; script-src 'self' https://unpkg.com 'unsafe-inline'; style-src 'self' https://unpkg.com 'unsafe-inline'; img-src 'self' data: https://*.tile.openstreetmap.org https://unpkg.com; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'"
+        -Server
+    }
+
+    # Health check endpoint — returns 200 when Caddy is up + the data
+    # file exists. The on-prem push script uses this to verify the
+    # rsync target is healthy before pushing.
+    handle /healthz {
+        respond "ok" 200
+    }
+
+    # Plain old static file server for everything else.
+    file_server {
+        precompressed gzip
+        index index.html
+    }
+
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 10mb
+            roll_keep 5
+            roll_keep_for 168h
+        }
+        format json
+        # Don't log healthchecks — they happen every 60s and crowd out signal.
+        skip_path_pattern /healthz
+    }
+}
+
+# HTTP → HTTPS redirect (Caddy does this automatically for managed
+# certs, but the explicit block makes the intent obvious).
+http://{{ domain }} {
+    redir https://{{ domain }}{uri} permanent
+}

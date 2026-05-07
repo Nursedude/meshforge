@@ -1,0 +1,24 @@
+[Unit]
+Description=MeshForge cloud :8808 snapshot push (oneshot, fired by timer)
+Documentation=https://github.com/Nursedude/meshforge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Run as the operator account that owns the SSH key for the cloud VPS
+# and has read access to the meshtasticd HTTP API on localhost.
+# Set this in the EnvironmentFile, not hardcoded.
+User=
+Group=
+EnvironmentFile=-/etc/default/meshforge-cloud-push
+ExecStart=/opt/meshforge/scripts/cloud/push_snapshot.sh
+# Don't fail the unit on transient errors — the timer fires again in 60s.
+SuccessExitStatus=0 1
+TimeoutStartSec=45s
+# Keep this push lightweight; if it ever runs over 90s, kill it before
+# the next firing piles up.
+RuntimeMaxSec=90s
+
+[Install]
+WantedBy=multi-user.target

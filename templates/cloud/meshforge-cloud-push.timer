@@ -1,0 +1,18 @@
+[Unit]
+Description=Fire MeshForge cloud snapshot push every 60s
+Documentation=https://github.com/Nursedude/meshforge
+
+[Timer]
+# First push 30s after boot — gives meshforge-map.service time to come up.
+OnBootSec=30s
+# Then every 60s. Audience-grade freshness without flooding the VPS.
+OnUnitActiveSec=60s
+# AccuracySec lower = more precise firing; defaults to 1min which is
+# plenty for our 60s cadence.
+AccuracySec=5s
+# Don't drift; reset wall-clock anchor on resume.
+Persistent=false
+Unit=meshforge-cloud-push.service
+
+[Install]
+WantedBy=timers.target
