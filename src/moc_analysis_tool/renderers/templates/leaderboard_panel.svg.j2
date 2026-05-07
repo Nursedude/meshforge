@@ -48,11 +48,17 @@
           font-family="{{ fonts.stack }}" font-weight="700"
           font-size="22" fill="{{ palette.muted }}">#{{ row.rank }}</text>
 
-    {# Display name #}
+    {# Display name. 28-char cap + ellipsis when truncated; size 13 so
+       a full 28-char name like "Haleakala Summit Repeater" still fits
+       in the 180px gutter to the left of the bar. #}
+    {%- set _name = row.display_name -%}
+    {%- if _name|length > 28 -%}
+      {%- set _name = _name[:27] ~ '…' -%}
+    {%- endif -%}
     <text x="{{ margin + 40 }}" y="{{ y + row_h * 0.42 }}"
           font-family="{{ fonts.stack }}" font-weight="600"
-          font-size="{{ t_label.size + 2 }}"
-          fill="{{ palette.fg }}">{{ row.display_name[:24] }}</text>
+          font-size="{{ t_label.size + 1 }}"
+          fill="{{ palette.fg }}">{{ _name }}</text>
 
     {# node_id sub-label #}
     <text x="{{ margin + 40 }}" y="{{ y + row_h * 0.85 }}"
