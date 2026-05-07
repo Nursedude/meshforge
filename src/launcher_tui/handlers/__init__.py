@@ -27,12 +27,14 @@ def get_all_handlers() -> List[Type]:
     from handlers.amateur_radio import AmateurRadioHandler
     from handlers.analytics import AnalyticsHandler
     from handlers.rf_tools import RFToolsHandler
+    from handlers.moc_analysis import MOCAnalysisHandler
     handlers.extend([
         LatencyHandler,
         ClassifierHandler,
         AmateurRadioHandler,
         AnalyticsHandler,
         RFToolsHandler,
+        MOCAnalysisHandler,
     ])
 
     # Batch 1 handlers
