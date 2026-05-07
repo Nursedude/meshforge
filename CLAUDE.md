@@ -184,6 +184,19 @@ test: Add tests             security: Security fix
 
 ---
 
+## Pre-Push Check (four lines, every push)
+
+Before `git push origin main`, mentally run:
+
+1. **On `main`?** — `git branch --show-current` says `main`. Solo workflow per branch strategy above.
+2. **Lint green?** — `python3 scripts/lint.py --all` exits 0. The pre-commit hook covers this, but verify if you bypassed.
+3. **New runtime dep?** — If `import X` got added, is `X` in `requirements.txt`? CI installs the minimal-deps profile and will surface the gap (see Issue #29 / `project_ci_red_2026_05_03_cascade`).
+4. **New service unit or DB?** — If you added a new systemd unit, does `templates/systemd/` carry it? If you added a new SQLite DB, does `utils.db_inventory` have the `DBSpec` (MF013)?
+
+If any line says "no", fix before pushing — every fleet box pulls within seconds and runs the change.
+
+---
+
 ## Research Docs (`.claude/` — 93 files)
 
 | File | Contents |
