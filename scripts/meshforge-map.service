@@ -28,7 +28,21 @@ ExecStart=/bin/bash -c '\
 
 # Graceful shutdown
 ExecStop=/bin/kill -TERM $MAINPID
-TimeoutStopSec=10
+
+# After the service exits, checkpoint node_history.db so the WAL doesn't
+# accumulate across long uptimes. SQLite checkpoints opportunistically
+# during runtime, so a 4-day uptime can leave a 400-500 MB WAL pending.
+# Without this, the next cold start spends 1-10 min in WAL replay
+# before /api/* responds (returning 503 service_warming the whole time).
+# Doing the checkpoint at stop time pays the cost when nobody's waiting.
+# `|| true` ensures a SQLite failure doesn't block the stop sequence —
+# the next start will replay the WAL the slow way as a fallback.
+# See `project_meshforge_map_cold_start_wal` in operator memory.
+ExecStopPost=/bin/bash -c 'sqlite3 /home/__MESHFORGE_USER__/.local/share/meshforge/node_history.db "PRAGMA wal_checkpoint(TRUNCATE);" 2>&1 || true'
+# Bumped from 10s → 60s to give the checkpoint room on Pi-class SD with
+# a large WAL. Real-world cold-start (no fix) was 5-10 min; doing it
+# here at stop time is much faster because no concurrent reads compete.
+TimeoutStopSec=60
 
 # Restart policy
 Restart=on-failure
