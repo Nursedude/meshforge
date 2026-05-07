@@ -1,0 +1,99 @@
+{#- Leaderboard panel — horizontal bars, rank descending.
+   Vars:
+     canvas_w, canvas_h
+     leaderboard: Leaderboard dataclass with .title, .subtitle, .rows, .note
+     bar_color: hex color for the bar fill
+     subtitle_extra: optional second-line subtitle
+     footer_left, footer_right: small text in the bottom margin
+-#}
+{%- set margin = THEME.canvas.margin -%}
+{%- set t_title = THEME.type.title -%}
+{%- set t_sub = THEME.type.subtitle -%}
+{%- set t_label = THEME.type.label -%}
+{%- set t_body = THEME.type.body -%}
+{%- set t_small = THEME.type.small -%}
+{%- set palette = THEME.palette -%}
+{%- set fonts = THEME.fonts -%}
+{%- set rows = leaderboard.rows -%}
+{%- set max_value = rows | map(attribute='primary_value') | map('float') | max if rows else 1 -%}
+
+{%- set chart_x = margin + 220 -%}
+{%- set chart_w = canvas_w - chart_x - margin - 160 -%}
+{%- set top = margin + 80 -%}
+{%- set row_h = 44 -%}
+{%- set row_gap = 6 -%}
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {{ canvas_w }} {{ canvas_h }}"
+     width="{{ canvas_w }}" height="{{ canvas_h }}">
+  <rect width="{{ canvas_w }}" height="{{ canvas_h }}" fill="{{ palette.bg }}"/>
+
+  {# Title block #}
+  <text x="{{ margin }}" y="{{ margin + t_title.size }}"
+        font-family="{{ fonts.stack }}" font-weight="{{ t_title.weight }}"
+        font-size="{{ t_title.size }}" letter-spacing="{{ t_title.tracking }}"
+        fill="{{ palette.fg }}">{{ leaderboard.title }}</text>
+  <text x="{{ margin }}" y="{{ margin + t_title.size + 24 }}"
+        font-family="{{ fonts.stack }}" font-weight="{{ t_sub.weight }}"
+        font-size="{{ t_sub.size }}"
+        fill="{{ palette.muted }}">{{ leaderboard.subtitle }}</text>
+
+  {# Rows #}
+  {% for row in rows %}
+    {%- set y = top + loop.index0 * (row_h + row_gap) -%}
+    {%- set frac = (row.primary_value | float) / max_value if max_value > 0 else 0 -%}
+    {%- set bar_w = (chart_w * frac) | round | int -%}
+
+    {# Rank #}
+    <text x="{{ margin }}" y="{{ y + row_h * 0.65 }}"
+          font-family="{{ fonts.stack }}" font-weight="700"
+          font-size="22" fill="{{ palette.muted }}">#{{ row.rank }}</text>
+
+    {# Display name #}
+    <text x="{{ margin + 40 }}" y="{{ y + row_h * 0.42 }}"
+          font-family="{{ fonts.stack }}" font-weight="600"
+          font-size="{{ t_label.size + 2 }}"
+          fill="{{ palette.fg }}">{{ row.display_name[:24] }}</text>
+
+    {# node_id sub-label #}
+    <text x="{{ margin + 40 }}" y="{{ y + row_h * 0.85 }}"
+          font-family="{{ fonts.stack_mono }}" font-weight="400"
+          font-size="{{ t_small.size }}" letter-spacing="0.5"
+          fill="{{ palette.muted }}">{{ row.node_id }}</text>
+
+    {# Bar background #}
+    <rect x="{{ chart_x }}" y="{{ y + 8 }}" width="{{ chart_w }}" height="{{ row_h - 16 }}"
+          fill="{{ palette.rule }}" rx="3"/>
+    {# Bar fill #}
+    <rect x="{{ chart_x }}" y="{{ y + 8 }}" width="{{ bar_w }}" height="{{ row_h - 16 }}"
+          fill="{{ bar_color }}" rx="3"/>
+
+    {# Primary label (right of bar) #}
+    <text x="{{ chart_x + chart_w + 10 }}" y="{{ y + row_h * 0.62 }}"
+          font-family="{{ fonts.stack_mono }}" font-weight="600"
+          font-size="{{ t_label.size + 1 }}"
+          fill="{{ palette.fg }}">{{ row.primary_label }}</text>
+  {% endfor %}
+
+  {# Footnote (optional) #}
+  {% if leaderboard.note %}
+    <text x="{{ margin }}" y="{{ canvas_h - margin }}"
+          font-family="{{ fonts.stack }}" font-weight="400"
+          font-size="{{ t_small.size }}" font-style="italic"
+          fill="{{ palette.muted }}">{{ leaderboard.note }}</text>
+  {% endif %}
+
+  {# Footer #}
+  {% if footer_left %}
+    <text x="{{ margin }}" y="{{ canvas_h - 14 }}"
+          font-family="{{ fonts.stack }}" font-weight="500"
+          font-size="{{ t_small.size }}" letter-spacing="0.4"
+          fill="{{ palette.muted }}">{{ footer_left }}</text>
+  {% endif %}
+  {% if footer_right %}
+    <text x="{{ canvas_w - margin }}" y="{{ canvas_h - 14 }}"
+          font-family="{{ fonts.stack }}" font-weight="500"
+          font-size="{{ t_small.size }}" letter-spacing="0.4"
+          text-anchor="end"
+          fill="{{ palette.muted }}">{{ footer_right }}</text>
+  {% endif %}
+</svg>

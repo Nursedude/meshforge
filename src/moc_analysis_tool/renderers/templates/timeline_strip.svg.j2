@@ -1,0 +1,88 @@
+{#- Timeline strip — packets per hour, stacked by app.
+   Vars:
+     canvas_w, canvas_h, title, subtitle
+     bars: list of dicts with .x, .y, .w, .segments=[{h, fill, label}]
+     y_axis: list of {y, label}
+     x_axis: list of {x, label}
+     legend: list of {label, fill}
+     footer_left, footer_right
+-#}
+{%- set palette = THEME.palette -%}
+{%- set fonts = THEME.fonts -%}
+{%- set t_title = THEME.type.title -%}
+{%- set t_sub = THEME.type.subtitle -%}
+{%- set t_label = THEME.type.label -%}
+{%- set t_small = THEME.type.small -%}
+{%- set margin = THEME.canvas.margin -%}
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {{ canvas_w }} {{ canvas_h }}"
+     width="{{ canvas_w }}" height="{{ canvas_h }}">
+  <rect width="{{ canvas_w }}" height="{{ canvas_h }}" fill="{{ palette.bg }}"/>
+
+  <text x="{{ margin }}" y="{{ margin + t_title.size }}"
+        font-family="{{ fonts.stack }}" font-weight="{{ t_title.weight }}"
+        font-size="{{ t_title.size }}"
+        fill="{{ palette.fg }}">{{ title }}</text>
+  <text x="{{ margin }}" y="{{ margin + t_title.size + 24 }}"
+        font-family="{{ fonts.stack }}" font-weight="{{ t_sub.weight }}"
+        font-size="{{ t_sub.size }}"
+        fill="{{ palette.muted }}">{{ subtitle }}</text>
+
+  {# Y-axis grid lines + labels #}
+  {% for y_tick in y_axis %}
+    <line x1="{{ chart_x }}" y1="{{ y_tick.y }}"
+          x2="{{ chart_x + chart_w }}" y2="{{ y_tick.y }}"
+          stroke="{{ palette.rule }}" stroke-width="0.5"/>
+    <text x="{{ chart_x - 8 }}" y="{{ y_tick.y + 4 }}"
+          font-family="{{ fonts.stack_mono }}" font-size="{{ t_small.size }}"
+          text-anchor="end"
+          fill="{{ palette.muted }}">{{ y_tick.label }}</text>
+  {% endfor %}
+
+  {# Stacked bars #}
+  {% for bar in bars %}
+    {%- set seg_y = bar.y -%}
+    {% for seg in bar.segments %}
+      <rect x="{{ bar.x | round(1) }}" y="{{ seg_y | round(1) }}"
+            width="{{ bar.w | round(1) }}" height="{{ seg.h | round(1) }}"
+            fill="{{ seg.fill }}"/>
+      {%- set seg_y = seg_y + seg.h -%}
+    {% endfor %}
+  {% endfor %}
+
+  {# X-axis labels (day boundaries) #}
+  {% for x_tick in x_axis %}
+    <line x1="{{ x_tick.x }}" y1="{{ chart_y + chart_h }}"
+          x2="{{ x_tick.x }}" y2="{{ chart_y + chart_h + 6 }}"
+          stroke="{{ palette.muted }}" stroke-width="1"/>
+    <text x="{{ x_tick.x }}" y="{{ chart_y + chart_h + 22 }}"
+          font-family="{{ fonts.stack }}" font-size="{{ t_small.size }}"
+          font-weight="500" text-anchor="middle"
+          fill="{{ palette.muted }}">{{ x_tick.label }}</text>
+  {% endfor %}
+
+  {# Legend #}
+  {%- set lg_y = canvas_h - margin - 24 -%}
+  {%- set lg_x = margin -%}
+  {% for item in legend %}
+    {%- set ix = lg_x + loop.index0 * 130 -%}
+    <rect x="{{ ix }}" y="{{ lg_y - 10 }}" width="14" height="10" fill="{{ item.fill }}"/>
+    <text x="{{ ix + 20 }}" y="{{ lg_y }}" font-family="{{ fonts.stack }}"
+          font-size="{{ t_small.size }}" font-weight="500"
+          fill="{{ palette.fg }}">{{ item.label }}</text>
+  {% endfor %}
+
+  {% if footer_left %}
+    <text x="{{ margin }}" y="{{ canvas_h - 14 }}"
+          font-family="{{ fonts.stack }}" font-weight="500"
+          font-size="{{ t_small.size }}" letter-spacing="0.4"
+          fill="{{ palette.muted }}">{{ footer_left }}</text>
+  {% endif %}
+  {% if footer_right %}
+    <text x="{{ canvas_w - margin }}" y="{{ canvas_h - 14 }}"
+          font-family="{{ fonts.stack }}" font-weight="500"
+          font-size="{{ t_small.size }}" letter-spacing="0.4"
+          text-anchor="end"
+          fill="{{ palette.muted }}">{{ footer_right }}</text>
+  {% endif %}
+</svg>

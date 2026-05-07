@@ -1,0 +1,62 @@
+{#- App-mix treemap.
+   Vars:
+     canvas_w, canvas_h, title, subtitle
+     rects: list of dicts with .x, .y, .w, .h, .fill, .label, .pct, .count
+     footer_left, footer_right
+-#}
+{%- set palette = THEME.palette -%}
+{%- set fonts = THEME.fonts -%}
+{%- set t_title = THEME.type.title -%}
+{%- set t_sub = THEME.type.subtitle -%}
+{%- set t_label = THEME.type.label -%}
+{%- set t_small = THEME.type.small -%}
+{%- set margin = THEME.canvas.margin -%}
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {{ canvas_w }} {{ canvas_h }}"
+     width="{{ canvas_w }}" height="{{ canvas_h }}">
+  <rect width="{{ canvas_w }}" height="{{ canvas_h }}" fill="{{ palette.bg }}"/>
+
+  <text x="{{ margin }}" y="{{ margin + t_title.size }}"
+        font-family="{{ fonts.stack }}" font-weight="{{ t_title.weight }}"
+        font-size="{{ t_title.size }}"
+        fill="{{ palette.fg }}">{{ title }}</text>
+  <text x="{{ margin }}" y="{{ margin + t_title.size + 24 }}"
+        font-family="{{ fonts.stack }}" font-weight="{{ t_sub.weight }}"
+        font-size="{{ t_sub.size }}"
+        fill="{{ palette.muted }}">{{ subtitle }}</text>
+
+  {% for r in rects %}
+    <rect x="{{ r.x | round(1) }}" y="{{ r.y | round(1) }}"
+          width="{{ r.w | round(1) }}" height="{{ r.h | round(1) }}"
+          fill="{{ r.fill }}" stroke="{{ palette.bg }}" stroke-width="2"/>
+    {% if r.w > 80 and r.h > 36 %}
+      <text x="{{ (r.x + 14) | round(1) }}" y="{{ (r.y + 26) | round(1) }}"
+            font-family="{{ fonts.stack }}" font-weight="600" font-size="14"
+            fill="#FFFFFF">{{ r.label }}</text>
+      <text x="{{ (r.x + 14) | round(1) }}" y="{{ (r.y + 44) | round(1) }}"
+            font-family="{{ fonts.stack_mono }}" font-weight="500"
+            font-size="13" fill="#FFFFFF" fill-opacity="0.9">
+        {{ r.count | fmt_int }} · {{ r.pct | fmt_float(1) }}%
+      </text>
+    {% elif r.w > 50 and r.h > 22 %}
+      <text x="{{ (r.x + 8) | round(1) }}" y="{{ (r.y + 16) | round(1) }}"
+            font-family="{{ fonts.stack }}" font-weight="600" font-size="11"
+            fill="#FFFFFF">{{ r.pct | fmt_float(0) }}%</text>
+    {% endif %}
+  {% endfor %}
+
+  {# Footer #}
+  {% if footer_left %}
+    <text x="{{ margin }}" y="{{ canvas_h - 14 }}"
+          font-family="{{ fonts.stack }}" font-weight="500"
+          font-size="{{ t_small.size }}" letter-spacing="0.4"
+          fill="{{ palette.muted }}">{{ footer_left }}</text>
+  {% endif %}
+  {% if footer_right %}
+    <text x="{{ canvas_w - margin }}" y="{{ canvas_h - 14 }}"
+          font-family="{{ fonts.stack }}" font-weight="500"
+          font-size="{{ t_small.size }}" letter-spacing="0.4"
+          text-anchor="end"
+          fill="{{ palette.muted }}">{{ footer_right }}</text>
+  {% endif %}
+</svg>

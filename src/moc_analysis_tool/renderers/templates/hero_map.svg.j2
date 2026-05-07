@@ -1,0 +1,98 @@
+{#- Hero map — Hawaii silhouette + active mesh nodes pinned by lat/lon.
+   Vars:
+     canvas_w, canvas_h
+     islands_path: SVG path-d string
+     pins: list of dicts with .x, .y, .r, .fill, .label, .label_x, .label_y
+     stats: dict with .total_nodes, .total_packets, .window_label
+     title, subtitle
+     footer_left, footer_right
+-#}
+{%- set palette = THEME.palette -%}
+{%- set fonts = THEME.fonts -%}
+{%- set t_title = THEME.type.title -%}
+{%- set t_sub = THEME.type.subtitle -%}
+{%- set t_label = THEME.type.label -%}
+{%- set t_small = THEME.type.small -%}
+{%- set margin = THEME.canvas.margin -%}
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {{ canvas_w }} {{ canvas_h }}"
+     width="{{ canvas_w }}" height="{{ canvas_h }}">
+  <rect width="{{ canvas_w }}" height="{{ canvas_h }}" fill="{{ palette.bg }}"/>
+
+  {# Title #}
+  <text x="{{ margin }}" y="{{ margin + t_title.size }}"
+        font-family="{{ fonts.stack }}" font-weight="{{ t_title.weight }}"
+        font-size="{{ t_title.size }}" letter-spacing="{{ t_title.tracking }}"
+        fill="{{ palette.fg }}">{{ title }}</text>
+  <text x="{{ margin }}" y="{{ margin + t_title.size + 24 }}"
+        font-family="{{ fonts.stack }}" font-weight="{{ t_sub.weight }}"
+        font-size="{{ t_sub.size }}"
+        fill="{{ palette.muted }}">{{ subtitle }}</text>
+
+  {# Islands #}
+  <path d="{{ islands_path }}"
+        fill="#E8EEF3"
+        stroke="{{ palette.rule }}" stroke-width="1.5" stroke-linejoin="round"/>
+
+  {# Pins #}
+  {% for pin in pins %}
+    <circle cx="{{ pin.x | round(1) }}" cy="{{ pin.y | round(1) }}" r="{{ pin.r | round(1) }}"
+            fill="{{ pin.fill }}" fill-opacity="0.85"
+            stroke="{{ palette.bg }}" stroke-width="1"/>
+  {% endfor %}
+
+  {# Stats panel — bottom right #}
+  {%- set sx = canvas_w - margin - 320 -%}
+  {%- set sy = canvas_h - margin - 120 -%}
+  <g transform="translate({{ sx }},{{ sy }})">
+    <rect x="0" y="0" width="320" height="100" fill="{{ palette.bg }}"
+          stroke="{{ palette.rule }}" stroke-width="1" rx="6"/>
+    <text x="16" y="22" font-family="{{ fonts.stack }}" font-weight="600"
+          font-size="{{ t_label.size }}" letter-spacing="0.4"
+          fill="{{ palette.muted }}">CAPTURE WINDOW</text>
+    <text x="16" y="42" font-family="{{ fonts.stack_mono }}" font-weight="500"
+          font-size="14" fill="{{ palette.fg }}">{{ stats.window_label }}</text>
+    <text x="16" y="68" font-family="{{ fonts.stack }}" font-weight="600"
+          font-size="20" fill="{{ palette.fg }}">
+      {{ stats.total_nodes | fmt_int }} nodes · {{ stats.total_packets | fmt_int }} packets
+    </text>
+    <text x="16" y="88" font-family="{{ fonts.stack }}" font-weight="400"
+          font-size="{{ t_small.size }}"
+          fill="{{ palette.muted }}">{{ stats.region_label }}</text>
+  </g>
+
+  {# Color legend — bottom left #}
+  {%- set lx = margin -%}
+  {%- set ly = canvas_h - margin - 80 -%}
+  <g transform="translate({{ lx }},{{ ly }})">
+    <text x="0" y="0" font-family="{{ fonts.stack }}" font-weight="600"
+          font-size="{{ t_label.size }}" letter-spacing="0.4"
+          fill="{{ palette.muted }}">PIN COLOR · AVG SNR</text>
+    <g transform="translate(0,16)">
+      <circle cx="6" cy="6" r="6" fill="{{ palette.ramp_low }}"/>
+      <text x="20" y="10" font-family="{{ fonts.stack }}" font-size="{{ t_small.size }}"
+            fill="{{ palette.fg }}">poor (≤ -10 dB)</text>
+      <circle cx="6" cy="26" r="6" fill="{{ palette.ramp_mid }}"/>
+      <text x="20" y="30" font-family="{{ fonts.stack }}" font-size="{{ t_small.size }}"
+            fill="{{ palette.fg }}">good (~ 0 dB)</text>
+      <circle cx="6" cy="46" r="6" fill="{{ palette.ramp_high }}"/>
+      <text x="20" y="50" font-family="{{ fonts.stack }}" font-size="{{ t_small.size }}"
+            fill="{{ palette.fg }}">excellent (≥ +6 dB)</text>
+    </g>
+  </g>
+
+  {# Footer #}
+  {% if footer_left %}
+    <text x="{{ margin }}" y="{{ canvas_h - 14 }}"
+          font-family="{{ fonts.stack }}" font-weight="500"
+          font-size="{{ t_small.size }}" letter-spacing="0.4"
+          fill="{{ palette.muted }}">{{ footer_left }}</text>
+  {% endif %}
+  {% if footer_right %}
+    <text x="{{ canvas_w - margin }}" y="{{ canvas_h - 14 }}"
+          font-family="{{ fonts.stack }}" font-weight="500"
+          font-size="{{ t_small.size }}" letter-spacing="0.4"
+          text-anchor="end"
+          fill="{{ palette.muted }}">{{ footer_right }}</text>
+  {% endif %}
+</svg>
