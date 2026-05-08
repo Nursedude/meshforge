@@ -200,15 +200,16 @@ def send_text_direct(
         except urllib.error.URLError as e:
             if isinstance(e.reason, ConnectionRefusedError):
                 # meshtasticd's API server suspends after idle and needs a
-                # wake-up window. Field-tested 2026-05-08: an immediate retry
-                # (5ms gap) still hit ECONNREFUSED, while the persistent
-                # queue's retry 72ms later succeeded. 100ms backoff catches
-                # the wake-up reliably without bloating steady-state latency.
+                # wake-up window. Field-tested 2026-05-08 across three R→M
+                # arrivals on moc: observed wake-up windows of 72ms, 119ms,
+                # and 153ms — variable but consistently sub-200ms. 250ms
+                # covers the worst observed case with margin; steady-state
+                # path skips the sleep entirely.
                 logger.debug(
                     f"send_text_direct: ECONNREFUSED on idle socket "
-                    f"(id={packet_id:08x}); retrying once after 100ms"
+                    f"(id={packet_id:08x}); retrying once after 250ms"
                 )
-                time.sleep(0.1)
+                time.sleep(0.25)
                 status = _attempt()
             else:
                 raise

@@ -498,7 +498,7 @@ class TestSendTextDirectRetry:
         result = send_text_direct("hello", host="localhost", port=9443)
         assert result is True
         assert mock_urlopen.call_count == 2
-        mock_sleep.assert_called_once_with(0.1)
+        mock_sleep.assert_called_once_with(0.25)
 
     @patch('gateway.meshtastic_protobuf_client.time.sleep')
     @patch('gateway.meshtastic_protobuf_client.urllib.request.urlopen')
@@ -510,7 +510,7 @@ class TestSendTextDirectRetry:
         result = send_text_direct("hello", host="localhost", port=9443)
         assert result is False
         assert mock_urlopen.call_count == 2
-        mock_sleep.assert_called_once_with(0.1)
+        mock_sleep.assert_called_once_with(0.25)
 
     @patch('gateway.meshtastic_protobuf_client.time.sleep')
     @patch('gateway.meshtastic_protobuf_client.urllib.request.urlopen')
