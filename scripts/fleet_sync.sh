@@ -5,8 +5,9 @@
 #
 # Plus auto-commit + mirror Claude memory from THIS box (the canonical writer)
 # to each fleet host:
-#   ~/.claude/memory/                            (cross-repo memory)
-#   ~/.claude/projects/-opt-meshforge/memory/    (this repo's memory)
+#   ~/.claude/memory/                                 (cross-repo memory)
+#   ~/.claude/projects/-opt-meshforge/memory/         (meshforge repo memory)
+#   ~/.claude/projects/-opt-meshforge-maps/memory/    (meshforge-maps repo memory)
 #
 # Each sync run starts with `git add -A && git commit && git push origin main`
 # on each memory repo (no-op when nothing changed; blocks on the secrets-grep
@@ -128,7 +129,8 @@ mirror_memory_to_host() {
 
     for pair in \
         "$HOME/.claude/memory/|.claude/memory/|memory-global" \
-        "$HOME/.claude/projects/-opt-meshforge/memory/|.claude/projects/-opt-meshforge/memory/|memory-project"
+        "$HOME/.claude/projects/-opt-meshforge/memory/|.claude/projects/-opt-meshforge/memory/|memory-project" \
+        "$HOME/.claude/projects/-opt-meshforge-maps/memory/|.claude/projects/-opt-meshforge-maps/memory/|memory-project-maps"
     do
         src="${pair%%|*}"
         rest="${pair#*|}"
@@ -251,16 +253,18 @@ exit $(( ${rc1:-0} + ${rc1b:-0} + ${rc2:-0} ))
 # secrets-grep pre-commit hook fired), abort BEFORE any fleet propagation.
 echo "Pre-sync memory commit:"
 memory_commit_failed=0
-commit_memory_repo "$HOME/.claude/memory"                          "global-memory"            || memory_commit_failed=1
-commit_memory_repo "$HOME/.claude/projects/-opt-meshforge/memory"  "project-meshforge-memory" || memory_commit_failed=1
+commit_memory_repo "$HOME/.claude/memory"                               "global-memory"                 || memory_commit_failed=1
+commit_memory_repo "$HOME/.claude/projects/-opt-meshforge/memory"       "project-meshforge-memory"      || memory_commit_failed=1
+commit_memory_repo "$HOME/.claude/projects/-opt-meshforge-maps/memory"  "project-meshforge-maps-memory" || memory_commit_failed=1
 
 if [[ $memory_commit_failed -ne 0 ]]; then
     cat >&2 <<EOF
 
 Aborting fleet_sync: a memory commit was blocked (likely a secret pattern
 caught by the pre-commit hook). Fix the offending file, then re-run:
-    git -C \$HOME/.claude/memory                          status
-    git -C \$HOME/.claude/projects/-opt-meshforge/memory  status
+    git -C \$HOME/.claude/memory                                status
+    git -C \$HOME/.claude/projects/-opt-meshforge/memory        status
+    git -C \$HOME/.claude/projects/-opt-meshforge-maps/memory   status
 
 This abort is intentional — propagating un-vetted memory state to the fleet
 would defeat the secrets gate.
