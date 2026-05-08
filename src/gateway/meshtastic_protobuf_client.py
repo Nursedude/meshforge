@@ -170,31 +170,54 @@ def send_text_direct(
     # HTTP PUT to /api/v1/toradio — write-only, no fromradio read
     scheme = "https" if tls else "http"
     url = f"{scheme}://{host}:{port}/api/v1/toradio"
+    payload = to_radio.SerializeToString()
+    ctx = _stateless_ssl_ctx if tls else None
 
-    try:
-        req = urllib.request.Request(
+    def _build_request() -> urllib.request.Request:
+        return urllib.request.Request(
             url,
-            data=to_radio.SerializeToString(),
+            data=payload,
             method='PUT',
             headers={'Content-Type': 'application/x-protobuf'},
         )
-        ctx = _stateless_ssl_ctx if tls else None
+
+    def _attempt() -> int:
         # threshold matches caller-supplied HTTP timeout (default 5s)
         with timed_boundary("meshtasticd.toradio_put",
                             target=f"{packet_id:08x}",
                             threshold_s=max(timeout, 2.0)):
-            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-                if resp.status in (200, 204):
-                    logger.info(
-                        f"Sent text via stateless HTTP protobuf "
-                        f"(id={packet_id}, dest={'broadcast' if dest == 0xFFFFFFFF else f'!{dest:08x}'})"
-                    )
-                    logger.debug(f"Message content: {text[:50]}")
-                    _protobuf_circuit.record_success(cb_dest)
-                    return True
-                logger.warning(f"send_text_direct: unexpected status {resp.status}")
-                _protobuf_circuit.record_failure(cb_dest, f"HTTP {resp.status}")
-                return False
+            with urllib.request.urlopen(_build_request(), timeout=timeout, context=ctx) as resp:
+                return resp.status
+
+    try:
+        # meshtasticd's HTTPS keep-alive silently reaps idle sockets; the
+        # first attempt after a long idle stretch sees ECONNREFUSED while a
+        # fresh socket opened immediately succeeds. Retry once on that
+        # specific case; let other URLErrors fall through to the outer
+        # handler unchanged.
+        try:
+            status = _attempt()
+        except urllib.error.URLError as e:
+            if isinstance(e.reason, ConnectionRefusedError):
+                logger.debug(
+                    f"send_text_direct: ECONNREFUSED on idle socket "
+                    f"(id={packet_id:08x}); retrying once"
+                )
+                status = _attempt()
+            else:
+                raise
+
+        if status in (200, 204):
+            logger.info(
+                f"Sent text via stateless HTTP protobuf "
+                f"(id={packet_id}, dest={'broadcast' if dest == 0xFFFFFFFF else f'!{dest:08x}'})"
+            )
+            logger.debug(f"Message content: {text[:50]}")
+            _protobuf_circuit.record_success(cb_dest)
+            return True
+        logger.warning(f"send_text_direct: unexpected status {status}")
+        _protobuf_circuit.record_failure(cb_dest, f"HTTP {status}")
+        return False
     except urllib.error.HTTPError as e:
         logger.warning(f"send_text_direct: HTTP {e.code}: {e.reason}")
         _protobuf_circuit.record_failure(cb_dest, f"HTTP {e.code}")

@@ -469,6 +469,64 @@ import urllib.error
 
 
 # ---------------------------------------------------------------------------
+# send_text_direct retry behavior
+# ---------------------------------------------------------------------------
+
+from gateway.meshtastic_protobuf_client import send_text_direct
+
+
+def _ok_response(status=200):
+    resp = MagicMock()
+    resp.status = status
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+class TestSendTextDirectRetry:
+    """ECONNREFUSED inline retry — see docs/gateway_traffic_flow_analysis_2026_05_08.md."""
+
+    @patch('gateway.meshtastic_protobuf_client.urllib.request.urlopen')
+    def test_retries_once_on_econnrefused(self, mock_urlopen):
+        # First attempt: ConnectionRefusedError (the idle-keep-alive case).
+        # Second attempt: success on a fresh socket.
+        mock_urlopen.side_effect = [
+            urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
+            _ok_response(200),
+        ]
+        result = send_text_direct("hello", host="localhost", port=9443)
+        assert result is True
+        assert mock_urlopen.call_count == 2
+
+    @patch('gateway.meshtastic_protobuf_client.urllib.request.urlopen')
+    def test_returns_false_when_both_attempts_econnrefused(self, mock_urlopen):
+        # Both attempts fail with ECONNREFUSED — retry once, then give up.
+        mock_urlopen.side_effect = urllib.error.URLError(
+            ConnectionRefusedError(111, "Connection refused")
+        )
+        result = send_text_direct("hello", host="localhost", port=9443)
+        assert result is False
+        assert mock_urlopen.call_count == 2
+
+    @patch('gateway.meshtastic_protobuf_client.urllib.request.urlopen')
+    def test_no_retry_on_non_econnrefused_url_error(self, mock_urlopen):
+        # Different URLError reasons (DNS, timeout, etc.) should NOT trigger
+        # the retry — we only paper over the specific idle-keep-alive case.
+        mock_urlopen.side_effect = urllib.error.URLError("name resolution failed")
+        result = send_text_direct("hello", host="localhost", port=9443)
+        assert result is False
+        assert mock_urlopen.call_count == 1
+
+    @patch('gateway.meshtastic_protobuf_client.urllib.request.urlopen')
+    def test_no_retry_on_first_attempt_success(self, mock_urlopen):
+        # Steady state: first attempt succeeds, no retry overhead.
+        mock_urlopen.return_value = _ok_response(200)
+        result = send_text_direct("hello", host="localhost", port=9443)
+        assert result is True
+        assert mock_urlopen.call_count == 1
+
+
+# ---------------------------------------------------------------------------
 # Session tests
 # ---------------------------------------------------------------------------
 
