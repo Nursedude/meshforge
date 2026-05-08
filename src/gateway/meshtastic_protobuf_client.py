@@ -170,61 +170,31 @@ def send_text_direct(
     # HTTP PUT to /api/v1/toradio — write-only, no fromradio read
     scheme = "https" if tls else "http"
     url = f"{scheme}://{host}:{port}/api/v1/toradio"
-    payload = to_radio.SerializeToString()
-    ctx = _stateless_ssl_ctx if tls else None
 
-    def _build_request() -> urllib.request.Request:
-        return urllib.request.Request(
+    try:
+        req = urllib.request.Request(
             url,
-            data=payload,
+            data=to_radio.SerializeToString(),
             method='PUT',
             headers={'Content-Type': 'application/x-protobuf'},
         )
-
-    def _attempt() -> int:
+        ctx = _stateless_ssl_ctx if tls else None
         # threshold matches caller-supplied HTTP timeout (default 5s)
         with timed_boundary("meshtasticd.toradio_put",
                             target=f"{packet_id:08x}",
                             threshold_s=max(timeout, 2.0)):
-            with urllib.request.urlopen(_build_request(), timeout=timeout, context=ctx) as resp:
-                return resp.status
-
-    try:
-        # meshtasticd's HTTPS keep-alive silently reaps idle sockets; the
-        # first attempt after a long idle stretch sees ECONNREFUSED while a
-        # fresh socket opened immediately succeeds. Retry once on that
-        # specific case; let other URLErrors fall through to the outer
-        # handler unchanged.
-        try:
-            status = _attempt()
-        except urllib.error.URLError as e:
-            if isinstance(e.reason, ConnectionRefusedError):
-                # meshtasticd's API server suspends after idle and needs a
-                # wake-up window. Field-tested 2026-05-08 across three R→M
-                # arrivals on moc: observed wake-up windows of 72ms, 119ms,
-                # and 153ms — variable but consistently sub-200ms. 250ms
-                # covers the worst observed case with margin; steady-state
-                # path skips the sleep entirely.
-                logger.debug(
-                    f"send_text_direct: ECONNREFUSED on idle socket "
-                    f"(id={packet_id:08x}); retrying once after 250ms"
-                )
-                time.sleep(0.25)
-                status = _attempt()
-            else:
-                raise
-
-        if status in (200, 204):
-            logger.info(
-                f"Sent text via stateless HTTP protobuf "
-                f"(id={packet_id}, dest={'broadcast' if dest == 0xFFFFFFFF else f'!{dest:08x}'})"
-            )
-            logger.debug(f"Message content: {text[:50]}")
-            _protobuf_circuit.record_success(cb_dest)
-            return True
-        logger.warning(f"send_text_direct: unexpected status {status}")
-        _protobuf_circuit.record_failure(cb_dest, f"HTTP {status}")
-        return False
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+                if resp.status in (200, 204):
+                    logger.info(
+                        f"Sent text via stateless HTTP protobuf "
+                        f"(id={packet_id}, dest={'broadcast' if dest == 0xFFFFFFFF else f'!{dest:08x}'})"
+                    )
+                    logger.debug(f"Message content: {text[:50]}")
+                    _protobuf_circuit.record_success(cb_dest)
+                    return True
+                logger.warning(f"send_text_direct: unexpected status {resp.status}")
+                _protobuf_circuit.record_failure(cb_dest, f"HTTP {resp.status}")
+                return False
     except urllib.error.HTTPError as e:
         logger.warning(f"send_text_direct: HTTP {e.code}: {e.reason}")
         _protobuf_circuit.record_failure(cb_dest, f"HTTP {e.code}")
