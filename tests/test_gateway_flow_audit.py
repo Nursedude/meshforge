@@ -13,11 +13,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from unittest.mock import patch
+
 from utils.gateway_diagnostic import CheckStatus
 from utils.gateway_flow_audit import (
     check_bridge_counters,
     check_dedup_pattern,
     check_econnrefused,
+    check_services,
     parse_bridge_counters,
 )
 
@@ -150,3 +153,56 @@ class TestCheckEconnrefused:
         journal = "boundary | DEBUG | rpc[meshtasticd.toradio_put] ok 0.018s\n" * 10
         r = check_econnrefused(journal)
         assert r.status == CheckStatus.PASS
+
+
+# ---------------------------------------------------------------------------
+# Service check — meshforge-gateway specialization
+# ---------------------------------------------------------------------------
+
+
+class _FakeServiceStatus:
+    def __init__(self, available, state_value, fix_hint=None):
+        self.available = available
+        self.state = type("S", (), {"value": state_value})()
+        self.fix_hint = fix_hint
+
+
+class TestCheckServicesGatewaySpecialization:
+    """meshforge-gateway should SKIP (not FAIL) on non-gateway boxes."""
+
+    @patch("utils.gateway_flow_audit._is_unit_enabled")
+    @patch("utils.gateway_flow_audit.check_service")
+    def test_disabled_and_inactive_skips(self, mock_check, mock_enabled):
+        # moc1/moc2 shape: meshforge-gateway disabled, others fine.
+        def cs(name):
+            if name == "meshforge-gateway":
+                return _FakeServiceStatus(False, "not_running")
+            return _FakeServiceStatus(True, "available")
+
+        mock_check.side_effect = cs
+        mock_enabled.return_value = False
+
+        results = {r.name: r for r in check_services()}
+        assert results["service.meshforge-gateway"].status == CheckStatus.SKIP
+        assert "not a gateway box" in results["service.meshforge-gateway"].message
+        # Other services keep passing — they're prerequisites regardless.
+        assert results["service.meshtasticd"].status == CheckStatus.PASS
+
+    @patch("utils.gateway_flow_audit._is_unit_enabled")
+    @patch("utils.gateway_flow_audit.check_service")
+    def test_enabled_but_inactive_still_fails(self, mock_check, mock_enabled):
+        # Real problem: gateway was meant to run but isn't.
+        mock_check.return_value = _FakeServiceStatus(False, "not_running")
+        mock_enabled.return_value = True
+
+        results = {r.name: r for r in check_services()}
+        assert results["service.meshforge-gateway"].status == CheckStatus.FAIL
+
+    @patch("utils.gateway_flow_audit._is_unit_enabled")
+    @patch("utils.gateway_flow_audit.check_service")
+    def test_active_passes_regardless_of_enabled(self, mock_check, mock_enabled):
+        mock_check.return_value = _FakeServiceStatus(True, "available")
+        mock_enabled.return_value = False  # shouldn't matter
+
+        results = {r.name: r for r in check_services()}
+        assert results["service.meshforge-gateway"].status == CheckStatus.PASS

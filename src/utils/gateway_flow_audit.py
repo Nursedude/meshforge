@@ -87,8 +87,28 @@ def _journalctl(unit: str, since: str) -> str:
         return ""
 
 
+def _is_unit_enabled(name: str) -> bool:
+    """Return True if the unit is enabled (or static), False if disabled/masked/missing."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-enabled", name],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+    return result.stdout.strip() in ("enabled", "static", "alias")
+
+
 def check_services() -> List[CheckResult]:
-    """Verify all gateway-side services are active. Issue #20 SSOT."""
+    """Verify all gateway-side services are active. Issue #20 SSOT.
+
+    ``meshforge-gateway`` is special: on non-gateway boxes (moc1, moc2)
+    the unit is deliberately disabled. When it's disabled-and-inactive,
+    emit SKIP rather than FAIL so the recipe runs cleanly fleet-wide
+    without flagging "not a gateway box" as a problem.
+    """
     results: List[CheckResult] = []
     for unit in ("meshforge-gateway", "meshtasticd", "rnsd", "mosquitto"):
         status = check_service(unit)
@@ -100,15 +120,24 @@ def check_services() -> List[CheckResult]:
                     message=f"{unit} is {status.state.value}",
                 )
             )
-        else:
+            continue
+        if unit == "meshforge-gateway" and not _is_unit_enabled(unit):
             results.append(
                 CheckResult(
                     name=f"service.{unit}",
-                    status=CheckStatus.FAIL,
-                    message=f"{unit} is {status.state.value}",
-                    fix_hint=status.fix_hint or f"sudo systemctl start {unit}",
+                    status=CheckStatus.SKIP,
+                    message="meshforge-gateway is disabled — not a gateway box",
                 )
             )
+            continue
+        results.append(
+            CheckResult(
+                name=f"service.{unit}",
+                status=CheckStatus.FAIL,
+                message=f"{unit} is {status.state.value}",
+                fix_hint=status.fix_hint or f"sudo systemctl start {unit}",
+            )
+        )
     return results
 
 
