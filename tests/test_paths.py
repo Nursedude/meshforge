@@ -298,6 +298,56 @@ class TestReticulumPathsResolution:
         with patch.object(ReticulumPaths, 'get_config_file', return_value=missing):
             assert ReticulumPaths.get_shared_rpc_key() is None
 
+    def test_shared_rpc_key_derives_when_no_explicit(self, tmp_path):
+        """No explicit rpc_key in config + transport_identity present at
+        ``<configdir>/storage/transport_identity`` => derive
+        ``Identity.full_hash(transport_identity.private_key)`` (RNS 1.2.0+
+        default behavior). Sister-project MeshAnchor commits e226ccbb +
+        0a6502b6 traced inbound LXMF DM drop to rpc_key mismatch when this
+        derivation fallback was missing.
+        """
+        try:
+            import RNS  # type: ignore
+        except ImportError:
+            pytest.skip("RNS not installed")
+        from utils.paths import ReticulumPaths
+
+        cfg = tmp_path / "config"
+        cfg.write_text("[reticulum]\n  share_instance = Yes\n")
+        storage = tmp_path / "storage"
+        storage.mkdir()
+        identity = RNS.Identity()
+        identity_path = storage / "transport_identity"
+        identity.to_file(str(identity_path))
+        expected = RNS.Identity.full_hash(identity.get_private_key()).hex()
+
+        with patch.object(ReticulumPaths, 'get_config_file', return_value=cfg):
+            assert ReticulumPaths.get_shared_rpc_key() == expected
+
+    def test_shared_rpc_key_explicit_wins_over_derivation(self, tmp_path):
+        """Explicit rpc_key in config beats the derivation fallback —
+        operator pinning is intentional and identity-independent.
+        """
+        try:
+            import RNS  # type: ignore
+        except ImportError:
+            pytest.skip("RNS not installed")
+        from utils.paths import ReticulumPaths
+
+        cfg = tmp_path / "config"
+        explicit = "ab" * 32
+        cfg.write_text(
+            "[reticulum]\n"
+            f"  rpc_key = {explicit}\n"
+        )
+        # Lay down a transport_identity that would derive to something else.
+        storage = tmp_path / "storage"
+        storage.mkdir()
+        RNS.Identity().to_file(str(storage / "transport_identity"))
+
+        with patch.object(ReticulumPaths, 'get_config_file', return_value=cfg):
+            assert ReticulumPaths.get_shared_rpc_key() == explicit
+
     def test_configured_instance_name_default_when_unset(self, tmp_path):
         """Missing ``instance_name`` option => 'default'."""
         from utils.paths import ReticulumPaths

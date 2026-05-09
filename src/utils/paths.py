@@ -264,7 +264,7 @@ class ReticulumPaths:
 
     @classmethod
     def get_shared_rpc_key(cls) -> Optional[str]:
-        """Read the ``rpc_key`` option from the active RNS config, if set.
+        """Resolve the rnsd shared-instance rpc_key for client config writers.
 
         rnsd derives its RPC key from the transport identity's private bytes by
         default. Any client using a different configdir (e.g. the gateway's
@@ -272,23 +272,36 @@ class ReticulumPaths:
         different key — every RPC to rnsd then fails with
         ``AuthenticationError: digest sent was rejected`` (Issue #37, #40).
 
-        Pinning ``rpc_key`` explicitly in both configs makes the key
-        deterministic and identity-independent. This helper returns the
-        pinned key so client-only config writers can propagate it.
+        Resolution order:
+          1. Explicit ``rpc_key`` line in the active RNS config — return it
+             verbatim. (Pinning makes the key deterministic and
+             identity-independent. Operators on RNS 1.1.x typically pin.)
+          2. Derive from rnsd's transport identity (RNS 1.2.0 default
+             behavior): ``Identity.full_hash(transport_identity.private_key)``
+             read from ``<configdir>/storage/transport_identity``. RNS 1.2.0
+             requires this match for inbound Link packets to clear
+             ``Link.__update_phy_stats`` without
+             ``AuthenticationError: digest sent was rejected``, which would
+             otherwise drop ALL inbound LXMF DMs to the daemon
+             (sister-project MeshAnchor commits e226ccbb + 0a6502b6).
+          3. Return None — caller writes no rpc_key line and falls back to
+             RNS's own derivation (which works only when client and rnsd
+             share the same configdir/identity).
 
-        Note: the RNS 1.1.x option name is literally ``rpc_key``
+        Note: the RNS option name is literally ``rpc_key``
         (``Reticulum.py`` line ~477). An earlier helper variant used
         ``shared_instance_rpc_key`` which RNS silently ignores, causing
         the pin to be a no-op and the AuthenticationError to recur on
         boxes with identity-split between rnsd and clients.
 
-        Returns the 64-char hex string if present, else None.
+        Returns the 64-char lowercase hex string, or None.
         """
+        # Step 1: explicit rpc_key line in config
         cfg = cls.get_config_file()
         try:
             text = cfg.read_text()
         except (OSError, PermissionError):
-            return None
+            text = ""
         for raw in text.splitlines():
             line = raw.strip()
             if not line or line.startswith('#'):
@@ -301,7 +314,23 @@ class ReticulumPaths:
             key = value.strip()
             if len(key) == 64 and all(c in '0123456789abcdefABCDEF' for c in key):
                 return key.lower()
+            # Explicit but malformed — don't silently fall through to
+            # derivation; operator's intent was the (broken) explicit value.
             return None
+
+        # Step 2: derive from rnsd's transport identity (RNS 1.2.0+ default).
+        # Use get_config_file().parent (not get_config_dir()) so tests that
+        # patch get_config_file stay self-isolated against the real /etc.
+        try:
+            import RNS  # type: ignore
+            identity_path = cls.get_config_file().parent / 'storage' / 'transport_identity'
+            if identity_path.is_file():
+                identity = RNS.Identity.from_file(str(identity_path))
+                if identity is not None:
+                    return RNS.Identity.full_hash(identity.get_private_key()).hex()
+        except Exception:
+            return None
+
         return None
 
     @classmethod
