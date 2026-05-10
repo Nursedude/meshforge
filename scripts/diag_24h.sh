@@ -37,8 +37,29 @@ mkdir -p "${OUTDIR}/snapshots"
 
 cmd_start() {
     if [ -f "${OUTDIR}/T0.txt" ]; then
-        echo "Already running (T0=$(cat "${OUTDIR}/T0.txt")). Run 'stop' first to restart." >&2
-        return 1
+        # Liveness check — T0.txt persists across capture deaths (silent
+        # nohup death, OOM kill, SIGTERM during reboot). If the tmux
+        # session is gone, the T0 marker is stale and `start` should
+        # cleanly recover instead of refusing. Caught live 2026-05-09:
+        # capture died on May 3, T0 stayed put, operator hit "Already
+        # running" 6 days later. See `feedback_no_silent_failure`.
+        local stale=0
+        if command -v tmux >/dev/null 2>&1; then
+            if ! tmux has-session -t "${SESSION}" 2>/dev/null; then
+                stale=1
+            fi
+        elif [ -f "${OUTDIR}/meshtasticd_tail.pid" ]; then
+            if ! kill -0 "$(cat "${OUTDIR}/meshtasticd_tail.pid")" 2>/dev/null; then
+                stale=1
+            fi
+        fi
+        if [ "${stale}" = "1" ]; then
+            echo "Stale T0 marker (capture process is gone). Cleaning up and starting fresh." >&2
+            cmd_stop >/dev/null 2>&1 || true
+        else
+            echo "Already running (T0=$(cat "${OUTDIR}/T0.txt")). Run 'stop' first to restart." >&2
+            return 1
+        fi
     fi
     date -u +"%Y-%m-%dT%H:%M:%SZ" > "${OUTDIR}/T0.txt"
     logger -t meshforge-diag "diag_24h start host=${HOST} t0=$(cat "${OUTDIR}/T0.txt")"
