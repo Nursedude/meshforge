@@ -671,17 +671,19 @@ class TestDirectoryRetention:
         # long-tail "did we hear this node" question.
         assert DEFAULT_RETENTION_SECONDS == 48 * 3600
 
-    def test_prune_batch_cap_caps_observation_delete(self, tmp_path):
+    def test_prune_batch_cap_caps_each_transaction(self, tmp_path):
         """Defensive bound — caught live on moc3 (790MB DB on Pi 3B,
         first prune after 7d→48h cutover generated 465MB WAL and stalled
-        the service 10+ minutes). With prune_batch_limit=10000, the
-        excess rolls over to the next hourly prune so the box stays
-        responsive during a one-time rebalance."""
+        the service 10+ minutes). The per-batch cap bounds individual
+        transaction size; the per-cycle cap (max_batches) bounds total
+        work. With max_batches=1 we get the legacy single-batch
+        behavior — backlog rolls over to the next hourly prune."""
         from utils.node_history import NodeHistoryDB
         h = NodeHistoryDB(
             db_path=tmp_path / "batch.db",
             retention_seconds=3600,            # 1h
             prune_batch_limit=5,               # tiny cap for the test
+            prune_max_batches_per_cycle=1,     # legacy single-batch
         )
         # Seed 12 aged-out observations directly so we can prove the cap.
         import sqlite3, time as _t
@@ -713,6 +715,175 @@ class TestDirectoryRetention:
         assert remaining == 2, (
             f"expected 2 rows after second capped prune, got {remaining}"
         )
+
+    def test_prune_multi_batch_drains_backlog_in_one_cycle(self, tmp_path):
+        """Multi-batch loop fix (2026-05-09). The default cycle runs up
+        to prune_max_batches_per_cycle (12) batches. A backlog of 12
+        rows with batch_limit=5 fits in 3 batches (5+5+2) and should
+        clear in one cycle — pre-fix this needed three cycles."""
+        from utils.node_history import NodeHistoryDB
+        h = NodeHistoryDB(
+            db_path=tmp_path / "drain.db",
+            retention_seconds=3600,
+            prune_batch_limit=5,
+            prune_max_batches_per_cycle=12,    # default
+        )
+        import sqlite3, time as _t
+        old = _t.time() - 7200
+        with sqlite3.connect(str(h.db_path)) as conn:
+            for i in range(12):
+                conn.execute(
+                    "INSERT INTO node_observations "
+                    "(node_id, timestamp, latitude, longitude, network) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (f"!n{i}", old, 1.0, 2.0, "meshtastic"),
+                )
+            conn.commit()
+        h._last_prune_ts = 0.0
+        h._maybe_prune(_t.time())
+        with sqlite3.connect(str(h.db_path)) as conn:
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM node_observations"
+            ).fetchone()[0]
+        assert remaining == 0, (
+            f"multi-batch loop should drain 12 in one cycle, got {remaining} left"
+        )
+
+    def test_prune_multi_batch_loop_terminates_early_on_partial_batch(self, tmp_path):
+        """The loop breaks as soon as a batch returns fewer rows than
+        batch_limit (i.e., backlog drained). Without the early-exit
+        guard the loop would issue empty DELETEs for the remaining
+        max_batches iterations every cycle, costing nothing but worth
+        locking in."""
+        from utils.node_history import NodeHistoryDB
+        h = NodeHistoryDB(
+            db_path=tmp_path / "early.db",
+            retention_seconds=3600,
+            prune_batch_limit=10,
+            prune_max_batches_per_cycle=12,
+        )
+        import sqlite3, time as _t
+        old = _t.time() - 7200
+        with sqlite3.connect(str(h.db_path)) as conn:
+            # 7 < batch_limit → first batch deletes all 7, rc<10 → loop exits.
+            for i in range(7):
+                conn.execute(
+                    "INSERT INTO node_observations "
+                    "(node_id, timestamp, latitude, longitude, network) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (f"!n{i}", old, 1.0, 2.0, "meshtastic"),
+                )
+            conn.commit()
+        h._last_prune_ts = 0.0
+        h._maybe_prune(_t.time())
+        with sqlite3.connect(str(h.db_path)) as conn:
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM node_observations"
+            ).fetchone()[0]
+        assert remaining == 0, (
+            f"first-batch partial drain should clear all 7, got {remaining}"
+        )
+
+    def test_prune_max_batches_per_cycle_caps_total_work(self, tmp_path):
+        """Per-cycle cap bounds total work. With batch=5 and
+        max_batches=2, a backlog of 30 should leave 20 after one cycle
+        (5+5 deleted, 20 remain) — proving the loop exits at the cycle
+        cap before draining."""
+        from utils.node_history import NodeHistoryDB
+        h = NodeHistoryDB(
+            db_path=tmp_path / "cyclecap.db",
+            retention_seconds=3600,
+            prune_batch_limit=5,
+            prune_max_batches_per_cycle=2,
+        )
+        import sqlite3, time as _t
+        old = _t.time() - 7200
+        with sqlite3.connect(str(h.db_path)) as conn:
+            for i in range(30):
+                conn.execute(
+                    "INSERT INTO node_observations "
+                    "(node_id, timestamp, latitude, longitude, network) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (f"!n{i}", old, 1.0, 2.0, "meshtastic"),
+                )
+            conn.commit()
+        h._last_prune_ts = 0.0
+        h._maybe_prune(_t.time())
+        with sqlite3.connect(str(h.db_path)) as conn:
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM node_observations"
+            ).fetchone()[0]
+        assert remaining == 20, (
+            f"max_batches=2 × batch=5 = 10 deleted; got {30 - remaining} deleted, "
+            f"{remaining} remain"
+        )
+
+    def test_prune_directory_multi_batch_drains_backlog(self, tmp_path):
+        """Phase 2 (directory tier prune) gets the same multi-batch
+        treatment as Phase 1. A federation-enabled fleet box
+        (2026-05-09) carried 28k+ aged meshcore_public rows that the
+        single-batch prune couldn't catch up on. Same shape verified
+        for the directory side."""
+        h = self._hist(tmp_path, prune_batch_limit=5,
+                       prune_max_batches_per_cycle=12)
+        # Seed 14 aged external rows (>7d old).
+        for i in range(14):
+            self._seed(h, f"!ext{i}", source_origin="meshcore_public",
+                       last_seen_offset_s=-(8 * 86400))
+        h._last_prune_ts = 0.0
+        h._maybe_prune(time.time())
+        # 14 fits in 3 batches (5+5+4) — all should clear.
+        for i in range(14):
+            assert not self._has(h, f"!ext{i}"), (
+                f"!ext{i} not pruned — directory multi-batch loop regression"
+            )
+
+    def test_prune_runs_wal_checkpoint_truncate(self, tmp_path):
+        """End-of-cycle PRAGMA wal_checkpoint(TRUNCATE) (2026-05-09 fix).
+        Long-running readers (federation polls, /api/nodes/directory
+        responses) blocked the default passive checkpoint from ever
+        truncating WAL on a federation-enabled fleet box → 688 MB WAL
+        accumulated across days. The forced truncate runs every cycle
+        and falls through gracefully if blocked.
+
+        Test shape: seed enough aged rows to balloon the WAL across
+        multiple batched commits, run prune, then verify the WAL file
+        is at or near 0 bytes. With no active reader, TRUNCATE always
+        succeeds — which is what we're locking in here."""
+        from utils.node_history import NodeHistoryDB
+        h = NodeHistoryDB(
+            db_path=tmp_path / "wal.db",
+            retention_seconds=3600,
+            prune_batch_limit=100,
+            prune_max_batches_per_cycle=12,
+        )
+        import sqlite3, time as _t
+        old = _t.time() - 7200
+        with sqlite3.connect(str(h.db_path)) as conn:
+            for i in range(500):
+                conn.execute(
+                    "INSERT INTO node_observations "
+                    "(node_id, timestamp, latitude, longitude, network) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (f"!n{i}", old, 1.0, 2.0, "meshtastic"),
+                )
+            conn.commit()
+        h._last_prune_ts = 0.0
+        h._maybe_prune(_t.time())
+        with sqlite3.connect(str(h.db_path)) as conn:
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM node_observations"
+            ).fetchone()[0]
+        assert remaining == 0, (
+            f"prune cycle should drain backlog, got {remaining} left"
+        )
+        # With no other readers, TRUNCATE checkpoints back to 0 bytes
+        # (or removes the file entirely on some SQLite builds).
+        wal = tmp_path / "wal.db-wal"
+        if wal.exists():
+            assert wal.stat().st_size == 0, (
+                f"WAL not truncated after prune cycle: {wal.stat().st_size} bytes"
+            )
 
     def test_prune_batch_cap_zero_means_unbounded(self, tmp_path):
         # Operators can opt out (legacy behavior): one giant DELETE.
