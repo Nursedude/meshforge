@@ -127,6 +127,35 @@ def _origin_priority(origin: Optional[str]) -> int:
     return _ORIGIN_PRIORITY.get(origin, 10)  # unknown origin: low priority
 
 
+def _should_skip_observation(props: Dict[str, Any], source_origin: str) -> bool:
+    """True when a feature should NOT generate a node_observations row.
+
+    Two cases produce a "skip":
+      1. Federation-fetched features. The peer that originally heard the
+         node owns its trajectory; duplicating observations on every
+         federation receiver multiplies SD write pressure linearly with
+         peer count for zero query value (the trajectory query against
+         a federated node returns the same data the home box already
+         has). Identified by `properties.federated == True` or the
+         presence of `properties.federated_from`.
+      2. External-bulk origins (meshcore_public, aredn_worldmap,
+         mqtt_global, public_fallback). These are global firehoses of
+         mostly-stationary nodes — observations on them generate
+         heartbeat-driven inserts at upstream poll rate × node count
+         (a federation-enabled fleet box, 2026-05-09: 75k inserts/hr)
+         for trajectory data that's never queried.
+
+    The `nodes` directory table still UPSERTs in both cases — it's the
+    long-tail "did we ever hear this node" record. Only the time-series
+    `node_observations` insert is suppressed.
+    """
+    if props.get("federated") or props.get("federated_from"):
+        return True
+    if source_origin in EXTERNAL_BULK_ORIGINS:
+        return True
+    return False
+
+
 @dataclass
 class NodeObservation:
     """A single node observation at a point in time."""
@@ -544,6 +573,15 @@ class NodeHistoryDB:
 
             node_id = props.get("id", "")
             if not node_id:
+                continue
+
+            # Phase 1 SD-survival fix (2026-05-09): skip observation insert
+            # for federated and external-bulk features. Directory still
+            # upserts via _apply_features_to_directory above. Drops the
+            # observation insert rate on federation receivers from ~75k/hr
+            # to a few hundred/hr — the firehose was the structural cause
+            # of the multi-day DB bloat the multi-batch prune mitigated.
+            if _should_skip_observation(props, props.get("source_origin", "")):
                 continue
 
             # Throttle: skip if recorded recently

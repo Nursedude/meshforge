@@ -270,6 +270,141 @@ def _feature_directory(node_id: str, *, network: str = "meshtastic",
     return {"type": "Feature", "geometry": geom, "properties": props}
 
 
+class TestPhase1SkipObservation:
+    """Phase 1 SD-survival fix (2026-05-09): federation-receiver and
+    external-bulk features SHOULD upsert into the `nodes` directory but
+    must NOT generate `node_observations` rows. Cuts insert rate from
+    ~75k/hr to a few hundred/hr on a federation-enabled box; eliminates
+    the structural cause of the multi-day backlog the multi-batch prune
+    was mitigating."""
+
+    @pytest.fixture
+    def hist(self, tmp_path: Path):
+        from utils.node_history import NodeHistoryDB
+        return NodeHistoryDB(db_path=tmp_path / "phase1.db",
+                             retention_seconds=86400)
+
+    def _fed_feature(self, node_id, *, federated_from="moc3",
+                     source_origin="local_radio"):
+        """A feature shape produced by map_data_collector for a federated
+        peer entry. Mirrors line ~1147-1165 of map_data_collector.py."""
+        return {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [0.1, 0.2]},
+            "properties": {
+                "id": node_id, "name": node_id, "network": "meshtastic",
+                "is_online": True,
+                "source": "federation",
+                "source_origin": source_origin,
+                "federated": True,
+                "federated_from": federated_from,
+            },
+        }
+
+    def _local_feature(self, node_id):
+        return {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [0.1, 0.2]},
+            "properties": {
+                "id": node_id, "name": node_id, "network": "meshtastic",
+                "is_online": True,
+                "source_origin": "local_radio",
+            },
+        }
+
+    def _external_bulk_feature(self, node_id, origin="meshcore_public"):
+        return {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [0.1, 0.2]},
+            "properties": {
+                "id": node_id, "name": node_id, "network": "meshcore",
+                "is_online": True,
+                "source_origin": origin,
+            },
+        }
+
+    def test_federated_feature_does_not_insert_observation(self, hist):
+        # The whole point of Phase 1: federation receivers don't accumulate
+        # trajectory data for nodes the peer already owns.
+        inserted = hist.record_observations([self._fed_feature("!fed1")])
+        assert inserted == 0, "federated feature should not insert obs"
+        traj = hist.get_trajectory("!fed1", hours=24)
+        assert traj == [], "federated feature wrote a trajectory row"
+
+    def test_federated_feature_still_populates_directory(self, hist):
+        # Directory is the long-tail "did we ever hear this node" record;
+        # federation receivers must keep it.
+        hist.record_observations([self._fed_feature("!fed_dir")])
+        features, _position_less = hist.get_directory_snapshot()
+        ids = {f["properties"]["id"] for f in features}
+        assert "!fed_dir" in ids, "federated feature missed directory upsert"
+
+    def test_external_bulk_feature_does_not_insert_observation(self, hist):
+        # meshcore_public is 43k mostly-stationary nodes per cycle. Their
+        # trajectory data was the largest single source of SD writes.
+        inserted = hist.record_observations([
+            self._external_bulk_feature("!mc_pub", origin="meshcore_public"),
+        ])
+        assert inserted == 0
+        traj = hist.get_trajectory("!mc_pub", hours=24)
+        assert traj == []
+
+    def test_all_external_bulk_origins_skip_observations(self, hist):
+        from utils.node_history import EXTERNAL_BULK_ORIGINS
+        for origin in EXTERNAL_BULK_ORIGINS:
+            nid = f"!ext_{origin}"
+            inserted = hist.record_observations([
+                self._external_bulk_feature(nid, origin=origin),
+            ])
+            assert inserted == 0, (
+                f"{origin} should be in the skip list but inserted obs"
+            )
+
+    def test_local_feature_still_inserts_observation(self, hist):
+        # Regression guard: local sources MUST still write trajectories.
+        # This is the whole reason node_observations exists.
+        inserted = hist.record_observations([self._local_feature("!loc1")])
+        assert inserted == 1, "local_radio feature lost its observation"
+        traj = hist.get_trajectory("!loc1", hours=24)
+        assert len(traj) == 1
+
+    def test_mixed_batch_inserts_only_locals(self, hist):
+        # Realistic record_observations call shape: federation + external
+        # bulk + local in one batch (the daemon merges all collectors
+        # before passing to record_observations).
+        inserted = hist.record_observations([
+            self._fed_feature("!f1"),
+            self._fed_feature("!f2"),
+            self._external_bulk_feature("!e1"),
+            self._local_feature("!l1"),
+            self._local_feature("!l2"),
+        ])
+        assert inserted == 2, (
+            f"expected 2 local observations from mixed batch, got {inserted}"
+        )
+        # All five reached the directory (long-tail record).
+        features, _position_less = hist.get_directory_snapshot()
+        ids = {f["properties"]["id"] for f in features}
+        for nid in ("!f1", "!f2", "!e1", "!l1", "!l2"):
+            assert nid in ids, f"{nid} missed directory upsert"
+
+    def test_federated_from_alone_triggers_skip(self, hist):
+        # Defensive: a feature with `federated_from` set but no `federated`
+        # boolean should still skip. The flag pair is set together by the
+        # collector but a hand-built feature might not carry both.
+        feat = {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [0.1, 0.2]},
+            "properties": {
+                "id": "!ff_only", "name": "ff", "network": "meshtastic",
+                "source_origin": "local_radio",
+                "federated_from": "moc3",
+                # no `federated: True` key
+            },
+        }
+        assert hist.record_observations([feat]) == 0
+
+
 class TestNodesDirectory:
     """UPSERT semantics, position-null preservation, sticky source_origin
     promotion, and protocol_meta size cap on the new `nodes` directory."""
