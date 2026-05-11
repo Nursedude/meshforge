@@ -221,11 +221,13 @@ def main() -> int:
         print(f"Not a directory: {outdir}", file=sys.stderr)
         return 2
 
-    t0 = (
-        (outdir / "T0.txt").read_text().strip()
-        if (outdir / "T0.txt").exists()
-        else "unknown"
-    )
+    # Prefer live T0.txt; fall back to T0_archived.txt left by cmd_stop (#1161).
+    if (outdir / "T0.txt").exists():
+        t0 = (outdir / "T0.txt").read_text().strip()
+    elif (outdir / "T0_archived.txt").exists():
+        t0 = (outdir / "T0_archived.txt").read_text().strip()
+    else:
+        t0 = "unknown"
 
     report = {
         "host": outdir.name,

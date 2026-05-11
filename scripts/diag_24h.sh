@@ -115,7 +115,10 @@ cmd_stop() {
     crontab -l 2>/dev/null | grep -v "diag_24h_snapshot" > "${TMP_CRON}" || true
     crontab "${TMP_CRON}"
     rm "${TMP_CRON}"
-    rm -f "${OUTDIR}/T0.txt"
+    # Rename rather than delete so post-stop `analyze` still has T0 (#1161).
+    # cmd_status keys "live" off T0.txt presence; T0_archived.txt preserves
+    # the window for the analyzer without spoofing the live-run signal.
+    mv -f "${OUTDIR}/T0.txt" "${OUTDIR}/T0_archived.txt" 2>/dev/null || true
     echo "diag_24h stopped on ${HOST}. Captures preserved in ${OUTDIR}."
 }
 
