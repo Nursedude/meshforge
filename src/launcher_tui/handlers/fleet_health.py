@@ -170,8 +170,10 @@ class FleetHealthHandler(BaseHandler):
         )
 
     def _probe_rns_hub_peers(self) -> ProbeResult:
-        # ss is read-only; works without sudo.
-        out = self._run(["ss", "-tn", "state", "established"], timeout=5)
+        # ss is read-only; works without sudo. `ss -tn` (no state filter)
+        # keeps the state column in output, so the column indices below match
+        # both the live output and the test fixtures.
+        out = self._run(["ss", "-tn"], timeout=5)
         if out is None:
             return ProbeResult(
                 label="RNS hub peers",
