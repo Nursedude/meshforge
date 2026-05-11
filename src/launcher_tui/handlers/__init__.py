@@ -233,4 +233,8 @@ def get_all_handlers() -> List[Type]:
     from handlers.config_doctor import ConfigDoctorHandler
     handlers.append(ConfigDoctorHandler)
 
+    # Batch 21 — Fleet Health (T0 of cmd/diag/analyzer triad)
+    from handlers.fleet_health import FleetHealthHandler
+    handlers.append(FleetHealthHandler)
+
     return handlers
