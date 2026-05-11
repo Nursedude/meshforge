@@ -319,6 +319,7 @@ class MapRequestHandler(
             "/api/messages/queue", "/api/messages/rx-status",
             "/api/network/topology", "/api/region-presets",
             "/api/settings", "/api/websocket/status", "/api/weather",
+            "/fleet/slo",
         ):
             return path_only or "/"
         # Parametrized routes — bucket by prefix
@@ -409,6 +410,8 @@ class MapRequestHandler(
             self._serve_network_topology()
         elif path_only == '/api/weather':
             self._serve_weather()
+        elif path_only == '/fleet/slo':
+            self._serve_fleet_slo()
         # ─────────────────────────────────────────────────────────────
         # Meshtastic API Proxy - MeshForge owns the web client API
         # ─────────────────────────────────────────────────────────────
@@ -1174,6 +1177,17 @@ class MapRequestHandler(
             # keeps the journal clean; the bare exception used to surface as
             # a noisy traceback per abandoned request.
             logger.debug(f"Client disconnected during _serve_json: {e}")
+
+    def _serve_fleet_slo(self):
+        """Serve the MeshAnchor `/fleet/slo` peer contract.
+
+        MA's `/fleet/rollup` polls this on every peer in its fleet.json.
+        Producing the same shape MA emits for itself lets a MF box show
+        up in the rollup without running a full MA daemon — Path B per
+        the `feedback_consolidate_dont_add` consolidation pattern.
+        """
+        from utils.fleet_snapshot import build_slo_snapshot
+        self._serve_json(build_slo_snapshot(collector=self.collector))
 
     def _serve_coverage(self, parts: List[str]):
         """Serve terrain-aware coverage prediction for a location.
