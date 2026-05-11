@@ -189,6 +189,8 @@ sync_repo() {
     # future box has different ownership, this fails LOUD rather than
     # leaking a root-owned ref. Use `sudo -u <user>` if elevation is ever
     # truly required for path access — never `sudo git pull` directly.
+    local old_head
+    old_head=$(git rev-parse HEAD 2>/dev/null || echo "")
     if ! git pull --ff-only origin main >/dev/null 2>pull.err; then
         local msg
         msg=$(tr "\n" "|" < pull.err | head -c 200)
@@ -199,6 +201,8 @@ sync_repo() {
     rm -f pull.err
     local new_head
     new_head=$(git rev-parse --short HEAD)
+    local new_head_full
+    new_head_full=$(git rev-parse HEAD)
 
     # Idempotently wire the repo-tracked .githooks/ dir as the hooks path so
     # every fleet box runs the pre-commit hook on local edits. core.hooksPath
@@ -206,6 +210,55 @@ sync_repo() {
     # new clone silently skips the hook.
     if [ -x .githooks/pre-commit ] && [ "$(git config --get core.hooksPath || true)" != ".githooks" ]; then
         git config core.hooksPath .githooks 2>/dev/null || true
+    fi
+
+    # Decide whether the pulled changes warrant a service restart. Three
+    # cases — only the third pays the cold-start cost (6-10 min on the
+    # heavy-DB boxes for meshforge-map):
+    #   (a) No commits pulled. Restart is pure waste.
+    #   (b) Commits pulled but only docs / .md / .claude / tests. Daemon
+    #       does not read them at runtime, so the running process keeps
+    #       serving correct behavior.
+    #   (c) Code, config, templates, or scripts changed. Restart so the
+    #       daemon loads the new code.
+    # This closes the workflow gap surfaced 2026-05-11 by Path B fleet
+    # rollup work: every memory-only commit was triggering a full
+    # cold-start cycle on moc/moc1 because sync_repo restarted
+    # unconditionally.
+    local restart_reason=""
+    if [ -z "$old_head" ] || [ "$old_head" = "$new_head_full" ]; then
+        restart_reason=""  # case (a) — no change, no restart
+    else
+        # case (b) vs (c): grep for service-relevant paths in the diff.
+        # The narrow include list — only paths the running daemon
+        # actually loads at import or invocation time:
+        #   src/           — Python runtime modules
+        #   scripts/       — shell scripts (incl. ExecStart wrappers)
+        #   pyproject.toml — package + tooling config
+        #   requirements*.txt — runtime deps (pip install is manual,
+        #                       but restarting on dep change is correct)
+        # Everything else (tests/, docs/, .claude/, .github/, *.md,
+        # README*) is excluded by absence from the pattern. Tests run
+        # in CI, docs do not load at runtime, .github is CI-only.
+        if git diff --name-only "$old_head" "$new_head_full" 2>/dev/null \
+            | grep -qE "^(src|scripts)/|^pyproject\.toml$|^requirements.*\.txt$"; then
+            restart_reason="code"
+        else
+            restart_reason="docs_only"
+        fi
+    fi
+
+    if [ "$restart_reason" = "docs_only" ]; then
+        echo "PASS $short $new_head docs_only"
+        return 0
+    fi
+
+    if [ -z "$restart_reason" ]; then
+        # No commits to apply — repo is already at HEAD. Skip restart;
+        # any running service is on the same code the restart would
+        # bring up.
+        echo "PASS $short $new_head unchanged"
+        return 0
     fi
 
     if systemctl list-unit-files "${unit}.service" 2>/dev/null | grep -q "$unit"; then
