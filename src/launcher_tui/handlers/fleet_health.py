@@ -64,14 +64,14 @@ class FleetHealthHandler(BaseHandler):
     def menu_items(self):
         return [
             (
-                "datapath",
+                "stack_health",
                 "Stack Health        Local: RNS path, NomadNet, bridge, DB",
                 None,
             ),
         ]
 
     def execute(self, action):
-        if action == "datapath":
+        if action == "stack_health":
             self.ctx.safe_call("Fleet Health", self._render_overview)
 
     def _render_overview(self):

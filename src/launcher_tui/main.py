@@ -637,7 +637,7 @@ class MeshForgeLauncher:
     def _dashboard_menu(self):
         """Dashboard - Status, health, alerts, propagation."""
         _ORDERING = ["status", "weather", "network", "nodes", "health", "score",
-                      "datapath", "metrics", "analytics", "latency", "reports", "alerts"]
+                      "datapath", "stack_health", "metrics", "analytics", "latency", "reports", "alerts"]
         while True:
             # Legacy items — most now handled by DashboardHandler (Batch 4)
             legacy = [
