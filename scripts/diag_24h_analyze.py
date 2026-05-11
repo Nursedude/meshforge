@@ -66,7 +66,14 @@ def parse_meshtasticd_log(path: Path) -> dict | None:
             kind, from_hex, pid_hex, portnum = m.groups()
             counters[f"recv_{kind.lower()}"] += 1
             received_from[f"0x{from_hex}"] += 1
-            portnums[portnum] += 1
+            # Valid Meshtastic portnums are small non-negative ints (#1159).
+            # Huge negative values are protobuf decode edge cases — drop at ingest.
+            try:
+                pn_int = int(portnum)
+                if 0 <= pn_int <= 1023:
+                    portnums[portnum] += 1
+            except ValueError:
+                pass
             unique_packet_ids.add(f"0x{pid_hex}")
         m = CHAN_UTIL_RE.search(line)
         if m:
@@ -158,10 +165,23 @@ def parse_mosquitto_log(path: Path) -> dict | None:
     }
 
 
-def parse_snapshots(snap_dir: Path) -> dict | None:
+def parse_snapshots(snap_dir: Path, t0_iso: str | None = None) -> dict | None:
     if not snap_dir.exists():
         return None
     snaps = sorted(snap_dir.glob("*.json"))
+    # Clamp to T0 window — drop leftover snapshots from prior runs (#1160).
+    # Snapshot filename stems are YYYYMMDDTHHMMSSZ; T0 is ISO-8601.
+    if t0_iso and t0_iso != "unknown":
+        try:
+            t0_dt = datetime.strptime(t0_iso, "%Y-%m-%dT%H:%M:%SZ")
+            def _in_window(p: Path) -> bool:
+                try:
+                    return datetime.strptime(p.stem, "%Y%m%dT%H%M%SZ") >= t0_dt
+                except ValueError:
+                    return False
+            snaps = [s for s in snaps if _in_window(s)]
+        except ValueError:
+            pass
     if not snaps:
         return None
     role_dists = []
@@ -213,7 +233,7 @@ def main() -> int:
         "analyzed_at": datetime.now(timezone.utc).isoformat(),
         "meshtasticd": parse_meshtasticd_log(outdir / "meshtasticd.log"),
         "mosquitto": parse_mosquitto_log(outdir / "mosquitto.log"),
-        "snapshots": parse_snapshots(outdir / "snapshots"),
+        "snapshots": parse_snapshots(outdir / "snapshots", t0),
     }
 
     (outdir / "report.json").write_text(json.dumps(report, indent=2))
@@ -285,7 +305,14 @@ def main() -> int:
         md.append("")
 
         md.append("### Portnums seen\n")
-        for portnum, count in sorted((mt.get("portnums") or {}).items()):
+        # Sort by count desc; drop count=1 single-shot noise (#1159).
+        for portnum, count in sorted(
+            (mt.get("portnums") or {}).items(),
+            key=lambda kv: kv[1],
+            reverse=True,
+        ):
+            if count < 2:
+                continue
             md.append(f"- `{portnum}`: {count:,}")
         md.append("")
 
