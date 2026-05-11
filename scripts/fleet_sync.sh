@@ -165,7 +165,7 @@ set -u
 # Emits exactly one summary line. Returns 0 on PASS/SKIP, 1 on FAIL so the
 # overall exit code reflects how many things broke.
 sync_repo() {
-    local short="$1" repo="$2" unit="$3"
+    local short="$1" repo="$2" unit="$3" override_old_head="${4:-}"
 
     if [ ! -d "$repo/.git" ]; then
         echo "SKIP $short no_repo"
@@ -189,8 +189,18 @@ sync_repo() {
     # future box has different ownership, this fails LOUD rather than
     # leaking a root-owned ref. Use `sudo -u <user>` if elevation is ever
     # truly required for path access — never `sudo git pull` directly.
+    #
+    # `override_old_head` lets the caller pin the pre-pull baseline so
+    # multiple sync_repo calls against the same repo (gateway + map both
+    # live in /opt/meshforge) share one diff window. Without it, the
+    # second call sees `old_head == new_head` because the first call
+    # already pulled, masking real code changes from the unit it owns.
     local old_head
-    old_head=$(git rev-parse HEAD 2>/dev/null || echo "")
+    if [ -n "$override_old_head" ]; then
+        old_head="$override_old_head"
+    else
+        old_head=$(git rev-parse HEAD 2>/dev/null || echo "")
+    fi
     if ! git pull --ff-only origin main >/dev/null 2>pull.err; then
         local msg
         msg=$(tr "\n" "|" < pull.err | head -c 200)
@@ -294,9 +304,17 @@ sync_repo() {
 # The second sync_repo call against /opt/meshforge re-pulls the same repo
 # (no-op, ~50ms LAN) and try-restarts the meshforge-map unit only when it
 # is already active — operator-disabled units stay disabled.
-sync_repo meshforge       /opt/meshforge       meshforge-gateway || rc1=$?
-sync_repo meshforge-map   /opt/meshforge       meshforge-map     || rc1b=$?
-sync_repo meshforge-maps  /opt/meshforge-maps  meshforge-maps    || rc2=$?
+#
+# Snapshot pre-pull HEAD per unique repo path BEFORE any sync_repo runs,
+# then thread it into both calls that target the same path. This keeps
+# the restart decision honest when two units share one repo: a real code
+# change to /opt/meshforge correctly restarts BOTH gateway and map; a
+# docs-only or no-op pull restarts neither.
+MF_PRE_HEAD=$(cd /opt/meshforge       2>/dev/null && git rev-parse HEAD 2>/dev/null || echo "")
+MFMAPS_PRE_HEAD=$(cd /opt/meshforge-maps 2>/dev/null && git rev-parse HEAD 2>/dev/null || echo "")
+sync_repo meshforge       /opt/meshforge       meshforge-gateway "$MF_PRE_HEAD"     || rc1=$?
+sync_repo meshforge-map   /opt/meshforge       meshforge-map     "$MF_PRE_HEAD"     || rc1b=$?
+sync_repo meshforge-maps  /opt/meshforge-maps  meshforge-maps    "$MFMAPS_PRE_HEAD" || rc2=$?
 exit $(( ${rc1:-0} + ${rc1b:-0} + ${rc2:-0} ))
 '
 
