@@ -1,0 +1,31 @@
+# MeshForge — moc/moc1 drain snapshot (systemd-user one-shot)
+# ============================================================
+#
+# Pairs with moc-drain-snapshot-user.timer to emit one journal line per
+# morning showing where moc and moc1's node_history.db drain stands.
+# See project_moc_post_drain_vacuum.md for the underlying arc — DBs are
+# at 4.7 GB draining at ~120K rows/hour, expected to converge
+# 2026-05-14/15.
+#
+# Morning check: journalctl --user -u moc-drain-snapshot
+#
+# Install (run on the operator's "manager" box, typically the same box
+# running nomadnet-silence-watch):
+#   cp /opt/meshforge/templates/systemd/moc-drain-snapshot-user.service \
+#      ~/.config/systemd/user/moc-drain-snapshot.service
+#   cp /opt/meshforge/templates/systemd/moc-drain-snapshot-user.timer \
+#      ~/.config/systemd/user/moc-drain-snapshot.timer
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now moc-drain-snapshot.timer
+
+[Unit]
+Description=moc/moc1 node_history drain snapshot (one-shot)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/meshforge/scripts/moc_drain_snapshot.sh moc
+ExecStart=/opt/meshforge/scripts/moc_drain_snapshot.sh moc1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=moc-drain-snapshot

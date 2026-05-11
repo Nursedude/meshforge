@@ -1,0 +1,18 @@
+# MeshForge — moc drain snapshot timer
+# =====================================
+#
+# Daily at 07:00 local time. systemd-user respects the user's TZ
+# (HST on most fleet boxes), so 07:00 here means 07:00 HST = 17:00 UTC.
+# Persistent=true so a missed firing (e.g. box was off) catches up on boot.
+
+[Unit]
+Description=Daily moc/moc1 drain snapshot at 07:00 local
+Requires=moc-drain-snapshot.service
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
