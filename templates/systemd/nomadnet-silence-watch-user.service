@@ -1,0 +1,44 @@
+# MeshForge — NomadNet silence watcher (systemd-user)
+# ===================================================
+#
+# Long-running detector for the silence-mode failure we caught on
+# 2026-05-11 (multiple boxes had NomadNet alive but doing nothing
+# for 8+ days). Pairs with scripts/nomadnet_silence_watch.py.
+#
+# Output → journal. Tail with:
+#   journalctl --user -u nomadnet-silence-watch -f
+#
+# Install (per box that should run the watcher — typically just one
+# box per LAN, since it polls every box over ssh):
+#   mkdir -p ~/.config/systemd/user
+#   cp /opt/meshforge/templates/systemd/nomadnet-silence-watch-user.service \
+#      ~/.config/systemd/user/nomadnet-silence-watch.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now nomadnet-silence-watch
+#
+# Persist after logout (required for headless / overnight):
+#   loginctl enable-linger $USER
+#
+# The watcher needs ssh-resolvable hostnames for the boxes it polls.
+# It reads peers from ~/.config/meshforge/fleet.json by default;
+# pass --boxes explicitly via Environment= or an override drop-in
+# if you want a different set.
+
+[Unit]
+Description=NomadNet silence-mode watcher (fleet-wide)
+After=default.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=10
+
+ExecStart=/usr/bin/python3 /opt/meshforge/scripts/nomadnet_silence_watch.py
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nomadnet-silence-watch
+
+[Install]
+WantedBy=default.target

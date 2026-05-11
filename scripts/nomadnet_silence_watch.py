@@ -29,8 +29,8 @@ Stop with Ctrl+C.
 from __future__ import annotations
 
 import argparse
-import json
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -46,24 +46,49 @@ def _real_home() -> Path:
     return Path.home()
 
 
-DEFAULT_FLEET_JSON = _real_home() / ".config" / "meshforge" / "fleet.json"
+DEFAULT_FLEET_HOSTS = _real_home() / ".config" / "meshforge" / "fleet_hosts"
 
 
-def _boxes_from_fleet_json(path: Path) -> list[str]:
-    """Read peer hostnames from a fleet.json. Returns [] if missing/malformed."""
+def _boxes_from_fleet_hosts(path: Path, include_self: bool = True) -> list[str]:
+    """Read peer ssh aliases from fleet_hosts (the file fleet_sync.sh reads).
+
+    Format: one host per line, '#' comments allowed. By convention the
+    file excludes self (so fleet_sync doesn't push to its own host); for
+    a watcher we usually do want to monitor self too, so we prepend the
+    box's own hostname unless include_self=False.
+    """
+    aliases: list[str] = []
     try:
-        data = json.loads(path.read_text())
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        for raw in path.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            aliases.append(line)
+    except (FileNotFoundError, OSError):
         return []
-    peers = data.get("peers", {})
-    return [name for name in peers.keys()] if isinstance(peers, dict) else []
+    if include_self:
+        # Lowercased to match the convention in fleet_hosts (moc, moc1, ...).
+        self_name = socket.gethostname().lower()
+        if self_name and self_name not in aliases:
+            aliases.insert(0, self_name)
+    return aliases
 
 
 def probe(host: str, ssh_timeout: int = 15) -> Optional[int]:
-    """Return seconds since the host's NomadNet logfile mtime, or None on error."""
+    """Return seconds since the host's NomadNet logfile mtime, or None on error.
+
+    `StrictHostKeyChecking=accept-new` is used so IP-addressed boxes from
+    fleet.json work on first contact without an operator running ssh-keyscan
+    by hand. Subsequent connections require the host key to match (MITM
+    protection still applies).
+    """
     try:
         r = subprocess.run(
-            ["ssh", "-o", "ConnectTimeout=10", host,
+            ["ssh",
+             "-o", "ConnectTimeout=10",
+             "-o", "StrictHostKeyChecking=accept-new",
+             "-o", "BatchMode=yes",
+             host,
              "expr $(date +%s) - $(stat -c %Y ~/.nomadnetwork/logfile "
              "2>/dev/null || echo 0)"],
             capture_output=True, text=True, timeout=ssh_timeout, check=False,
@@ -78,8 +103,8 @@ def main() -> int:
     ap.add_argument("--boxes", default="",
                     help="comma-separated host list (ssh-resolvable). "
                          "If unset, reads peers from --fleet-json.")
-    ap.add_argument("--fleet-json", default=str(DEFAULT_FLEET_JSON),
-                    help=f"fleet config (default: {DEFAULT_FLEET_JSON})")
+    ap.add_argument("--fleet-hosts", default=str(DEFAULT_FLEET_HOSTS),
+                    help=f"fleet host list (default: {DEFAULT_FLEET_HOSTS})")
     ap.add_argument("--poll-sec", type=int, default=300,
                     help="seconds between poll rounds (default 300)")
     ap.add_argument("--quiet-min", type=int, default=60,
@@ -93,10 +118,10 @@ def main() -> int:
     if args.boxes:
         boxes = [b.strip() for b in args.boxes.split(",") if b.strip()]
     else:
-        boxes = _boxes_from_fleet_json(Path(args.fleet_json))
+        boxes = _boxes_from_fleet_hosts(Path(args.fleet_hosts))
     if not boxes:
         print(f"error: no boxes to watch. Pass --boxes or create "
-              f"{args.fleet_json} (see scripts/fleet_sync.sh docs).",
+              f"{args.fleet_hosts} (see scripts/fleet_sync.sh docs).",
               file=sys.stderr)
         return 2
     quiet_s = args.quiet_min * 60
