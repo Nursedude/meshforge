@@ -258,7 +258,7 @@ def test_handler_registration_shape():
     assert len(items) == 1
     tag, label, gate = items[0]
     assert tag == "datapath"
-    assert "Fleet Health" in label
+    assert "Stack Health" in label
     assert gate is None
 
 
@@ -288,7 +288,7 @@ def test_render_overview_does_not_raise(monkeypatch, capsys):
         h.execute("datapath")
 
     out = capsys.readouterr().out
-    assert "Fleet Health" in out
+    assert "Stack Health" in out
     assert "[ OK ]" in out
     assert "[WARN]" in out
 

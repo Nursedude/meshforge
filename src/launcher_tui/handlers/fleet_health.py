@@ -65,7 +65,7 @@ class FleetHealthHandler(BaseHandler):
         return [
             (
                 "datapath",
-                "Fleet Health        RNS path, NomadNet, bridge, DB at a glance",
+                "Stack Health        Local: RNS path, NomadNet, bridge, DB",
                 None,
             ),
         ]
@@ -78,7 +78,7 @@ class FleetHealthHandler(BaseHandler):
         from backend import clear_screen
 
         clear_screen()
-        print("Fleet Health — local stack snapshot")
+        print("Stack Health — local stack snapshot")
         print(f"Host: {self._hostname()}    {self._now_utc()}")
         print("=" * 72)
 
