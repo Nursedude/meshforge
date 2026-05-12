@@ -36,6 +36,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Tuple
 
+from utils.node_history import _origin_priority
+
 logger = logging.getLogger(__name__)
 
 
@@ -372,10 +374,25 @@ class FederationCollector:
                         entry["seen_by_peers"] = [peer]
                         merged[key] = entry
                     else:
-                        # Newer last_seen wins
-                        e_last = entry.get("last_seen") or 0
-                        x_last = existing.get("last_seen") or 0
-                        if e_last > x_last:
+                        # Higher source_origin priority wins over newer
+                        # last_seen. Without this, a sister peer's
+                        # local_radio observation (the box that actually
+                        # hears the radio) gets clobbered by a fleet peer
+                        # republishing the same hash as meshcore_public
+                        # with a fresher firehose-poll timestamp. Tie-
+                        # break on newer last_seen preserves the original
+                        # behavior when both peers report the same origin.
+                        e_priority = _origin_priority(entry.get("source_origin"))
+                        x_priority = _origin_priority(existing.get("source_origin"))
+                        if e_priority > x_priority:
+                            wins = True
+                        elif e_priority < x_priority:
+                            wins = False
+                        else:
+                            e_last = entry.get("last_seen") or 0
+                            x_last = existing.get("last_seen") or 0
+                            wins = e_last > x_last
+                        if wins:
                             new_seen = list(existing.get("seen_by_peers", []))
                             if peer not in new_seen:
                                 new_seen.append(peer)

@@ -259,8 +259,9 @@ class TestPollOnce:
         assert snap.peer_status["b"].ok
 
     def test_conflict_newer_last_seen_wins(self):
+        """At equal source_origin priority, newer last_seen wins (original rule)."""
         fc = FederationCollector(["a", "b"], poll_interval=10)
-        # Same node on both peers — b has newer last_seen
+        # Same node on both peers — b has newer last_seen, same origin
         same_node_a = {"network": "rns", "id": "shared", "name": "from-a",
                        "lat": 1.0, "lon": 1.0, "last_seen": 100,
                        "source_origin": "rns_path_table", "federated_from": "a"}
@@ -281,6 +282,69 @@ class TestPollOnce:
         assert merged["name"] == "from-b"
         assert merged["last_seen"] == 200
         assert set(merged["seen_by_peers"]) == {"a", "b"}
+
+    def test_conflict_higher_priority_origin_wins_over_newer_timestamp(self):
+        """Higher source_origin priority beats newer last_seen.
+
+        Sister peer (b) reports local_radio (priority 100) — that's the
+        box actually hearing the radio. Fleet peer (a) republishes the
+        same hash as meshcore_public (priority 30) from the firehose
+        with a NEWER timestamp. Without this rule, the firehose entry
+        would clobber the authoritative local_radio observation.
+        """
+        fc = FederationCollector(["a", "b"], poll_interval=10)
+        firehose_a = {"network": "meshcore", "id": "812e3c8e",
+                      "name": "FROM-A-PUBLIC", "lat": 19.435, "lon": -155.213,
+                      "last_seen": 999,  # newer
+                      "source_origin": "meshcore_public", "federated_from": "a"}
+        local_b = {"network": "meshcore", "id": "812e3c8e",
+                   "name": "FROM-B-LOCAL", "lat": 19.435274, "lon": -155.213797,
+                   "last_seen": 100,  # older but high-trust
+                   "source_origin": "local_radio", "federated_from": "b"}
+        responses = {
+            "a": ([firehose_a], FederationPeerStatus(hostname="a", ok=True,
+                  last_sync=time.time(), last_count=1, last_attempt=time.time())),
+            "b": ([local_b], FederationPeerStatus(hostname="b", ok=True,
+                  last_sync=time.time(), last_count=1, last_attempt=time.time())),
+        }
+        with patch("utils.map_federation.fetch_peer_directory",
+                   side_effect=lambda peer, *a, **kw: responses[peer]):
+            fc.poll_once()
+        snap = fc.get_snapshot()
+        merged = snap.by_node[("meshcore", "812e3c8e")]
+        assert merged["source_origin"] == "local_radio"
+        assert merged["name"] == "FROM-B-LOCAL"
+        # Coords from the local_radio observation, not the firehose entry
+        assert merged["lat"] == pytest.approx(19.435274)
+        # Both peers' provenance preserved
+        assert set(merged["seen_by_peers"]) == {"a", "b"}
+
+    def test_conflict_lower_priority_loses_even_with_newer_timestamp(self):
+        """Reverse symmetry: a newer meshcore_public can't displace existing local_radio."""
+        fc = FederationCollector(["a", "b"], poll_interval=10)
+        # a polled first with local_radio, b reports same hash as newer
+        # public — the local_radio entry must persist.
+        local_a = {"network": "meshcore", "id": "x",
+                   "name": "FROM-A-LOCAL", "lat": 1.0, "lon": 1.0,
+                   "last_seen": 100,
+                   "source_origin": "local_radio", "federated_from": "a"}
+        public_b = {"network": "meshcore", "id": "x",
+                    "name": "FROM-B-PUBLIC", "lat": 2.0, "lon": 2.0,
+                    "last_seen": 999,
+                    "source_origin": "meshcore_public", "federated_from": "b"}
+        responses = {
+            "a": ([local_a], FederationPeerStatus(hostname="a", ok=True,
+                  last_sync=time.time(), last_count=1, last_attempt=time.time())),
+            "b": ([public_b], FederationPeerStatus(hostname="b", ok=True,
+                  last_sync=time.time(), last_count=1, last_attempt=time.time())),
+        }
+        with patch("utils.map_federation.fetch_peer_directory",
+                   side_effect=lambda peer, *a, **kw: responses[peer]):
+            fc.poll_once()
+        snap = fc.get_snapshot()
+        merged = snap.by_node[("meshcore", "x")]
+        assert merged["source_origin"] == "local_radio"
+        assert merged["name"] == "FROM-A-LOCAL"
 
     def test_failed_peer_increments_consecutive_failures(self):
         fc = FederationCollector(["bad"], poll_interval=10)
