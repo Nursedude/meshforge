@@ -218,6 +218,88 @@ def test_probe_lxmf_queue_normal(monkeypatch, tmp_path):
     assert "2 pending" in r.headline
 
 
+# ------------------------------------------------------------ Map service
+
+
+def test_probe_map_service_active(monkeypatch):
+    monkeypatch.setattr(
+        "utils.service_check.check_service",
+        lambda name: MagicMock(available=True),
+    )
+    monkeypatch.setattr(
+        FleetHealthHandler,
+        "_service_uptime_seconds",
+        classmethod(lambda cls, unit: 3600 * 5),
+    )
+    r = _handler()._probe_map_service()
+    assert r.status == "ok"
+    assert "5.0 hr" in r.headline
+
+
+def test_probe_map_service_disabled_on_gateway_box(monkeypatch):
+    """moc3-shape box: map deliberately off, gateway active."""
+    def _cs(name):
+        return MagicMock(available=(name == "meshforge-gateway"))
+    monkeypatch.setattr("utils.service_check.check_service", _cs)
+    monkeypatch.setattr(
+        FleetHealthHandler,
+        "_unit_file_state",
+        classmethod(lambda cls, unit: "disabled"),
+    )
+    r = _handler()._probe_map_service()
+    assert r.status == "info"
+    assert "gateway-priority" in r.headline
+    assert r.hint and ":5000" in r.hint and ":8808" in r.hint
+
+
+def test_probe_map_service_disabled_no_gateway(monkeypatch):
+    """Disabled but not a gateway box — still INFO, generic hint."""
+    monkeypatch.setattr(
+        "utils.service_check.check_service",
+        lambda name: MagicMock(available=False),
+    )
+    monkeypatch.setattr(
+        FleetHealthHandler,
+        "_unit_file_state",
+        classmethod(lambda cls, unit: "masked"),
+    )
+    r = _handler()._probe_map_service()
+    assert r.status == "info"
+    assert "masked" in r.headline
+
+
+def test_probe_map_service_not_installed(monkeypatch):
+    monkeypatch.setattr(
+        "utils.service_check.check_service",
+        lambda name: MagicMock(available=False),
+    )
+    monkeypatch.setattr(
+        FleetHealthHandler,
+        "_unit_file_state",
+        classmethod(lambda cls, unit: "not-found"),
+    )
+    r = _handler()._probe_map_service()
+    assert r.status == "info"
+    assert "not installed" in r.headline
+
+
+def test_probe_map_service_enabled_but_stopped(monkeypatch):
+    """Enabled unit that's not running — operator should investigate."""
+    monkeypatch.setattr(
+        "utils.service_check.check_service",
+        lambda name: MagicMock(available=False),
+    )
+    monkeypatch.setattr(
+        FleetHealthHandler,
+        "_unit_file_state",
+        classmethod(lambda cls, unit: "enabled"),
+    )
+    r = _handler()._probe_map_service()
+    assert r.status == "fail"
+    assert "not running" in r.headline
+    assert r.hint and "systemctl restart meshforge-map" in r.hint
+
+
 # ----------------------------------------------------------------- Map DB
 
 
@@ -280,6 +362,7 @@ def test_render_overview_does_not_raise(monkeypatch, capsys):
     monkeypatch.setattr(h, "_probe_nomadnet", lambda: _fake("nomadnet", "warn"))
     monkeypatch.setattr(h, "_probe_lxmf_queue", lambda: _fake("queue"))
     monkeypatch.setattr(h, "_probe_gateway_bridge", lambda: _fake("bridge"))
+    monkeypatch.setattr(h, "_probe_map_service", lambda: _fake("mapsvc"))
     monkeypatch.setattr(h, "_probe_map_db", lambda: _fake("db"))
     monkeypatch.setattr(h, "_probe_meshtasticd_radio", lambda: _fake("radio"))
 
@@ -307,8 +390,8 @@ def test_probe_exception_is_isolated(monkeypatch, capsys):
     monkeypatch.setattr(h, "_probe_rnsd", boom)
     for name in (
         "_probe_rns_path_table", "_probe_rns_hub_peers", "_probe_nomadnet",
-        "_probe_lxmf_queue", "_probe_gateway_bridge", "_probe_map_db",
-        "_probe_meshtasticd_radio",
+        "_probe_lxmf_queue", "_probe_gateway_bridge",
+        "_probe_map_service", "_probe_map_db", "_probe_meshtasticd_radio",
     ):
         monkeypatch.setattr(
             h, name,

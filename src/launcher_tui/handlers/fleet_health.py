@@ -89,6 +89,7 @@ class FleetHealthHandler(BaseHandler):
             self._probe_nomadnet,
             self._probe_lxmf_queue,
             self._probe_gateway_bridge,
+            self._probe_map_service,
             self._probe_map_db,
             self._probe_meshtasticd_radio,
         ]
@@ -343,6 +344,61 @@ class FleetHealthHandler(BaseHandler):
             headline=f"active, {stats_line}",
         )
 
+    def _probe_map_service(self) -> ProbeResult:
+        """Is the :5000 map daemon serving on this box?
+
+        Distinguishes 'deliberately disabled' (gateway-priority deploys
+        like moc3 where the 1 GB Pi can't run gateway + map together)
+        from 'unit enabled but stopped' (something broke).
+        """
+        from utils.service_check import check_service
+
+        state = check_service("meshforge-map")
+        if state.available:
+            uptime_s = self._service_uptime_seconds("meshforge-map")
+            uptime_label = (
+                self._humanize_duration(uptime_s) if uptime_s else "uptime unknown"
+            )
+            return ProbeResult(
+                label="Map server (:5000)",
+                status="ok",
+                headline=f"active, {uptime_label}",
+            )
+
+        unit_status = self._unit_file_state("meshforge-map")
+        if unit_status in ("not-found", "missing"):
+            return ProbeResult(
+                label="Map server (:5000)",
+                status="info",
+                headline="not installed on this box",
+            )
+
+        gateway_active = check_service("meshforge-gateway").available
+        if unit_status in ("disabled", "masked"):
+            if gateway_active:
+                return ProbeResult(
+                    label="Map server (:5000)",
+                    status="info",
+                    headline="disabled on this box (gateway-priority deploy)",
+                    hint="Map runs on peer fleet boxes — load :5000 there, "
+                         "or the :8808 public mirror.",
+                )
+            return ProbeResult(
+                label="Map server (:5000)",
+                status="info",
+                headline=f"deliberately {unit_status} on this box",
+                hint="Map runs on peer fleet boxes — load :5000 there, "
+                     "or the :8808 public mirror.",
+            )
+
+        # Unit enabled (or static/alias) but inactive: something broke.
+        return ProbeResult(
+            label="Map server (:5000)",
+            status="fail",
+            headline="enabled but not running",
+            hint="Restart with: sudo systemctl restart meshforge-map",
+        )
+
     def _probe_map_db(self) -> ProbeResult:
         from utils.paths import get_real_user_home
 
@@ -452,6 +508,25 @@ class FleetHealthHandler(BaseHandler):
             return int((proc.stdout or "0").strip() or "0")
         except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
             return 0
+
+    @classmethod
+    def _unit_file_state(cls, unit: str) -> str:
+        """Return the unit's install state per `systemctl is-enabled`.
+
+        One of: "enabled", "static", "alias", "disabled", "masked",
+        "not-found" (unit file missing), or "missing" (systemctl absent).
+        Used to distinguish 'operator turned this off' from 'service
+        crashed' — same pattern as `gateway_flow_audit._is_unit_enabled`.
+        """
+        out = cls._run(["systemctl", "is-enabled", unit], timeout=5)
+        if out is None:
+            return "missing"
+        text = out.strip().lower()
+        if text in ("enabled", "static", "alias", "disabled", "masked",
+                    "enabled-runtime", "linked", "indirect", "generated",
+                    "transient"):
+            return text
+        return "not-found"
 
     @classmethod
     def _service_uptime_seconds(cls, unit: str) -> Optional[float]:
