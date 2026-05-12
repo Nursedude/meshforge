@@ -13,6 +13,12 @@ User=
 Group=
 EnvironmentFile=-/etc/default/meshforge-cloud-push
 ExecStart=/opt/meshforge/scripts/cloud/push_snapshot.sh
+# Self-check that the cloud is serving the assets we expect after each
+# push. Lightweight curl + grep; runs only when ExecStart succeeded.
+# A failure here surfaces as systemctl-status-failed and a clear
+# journalctl line, so silent regressions in static assets (e.g. the
+# popup-wrap CSS) are caught at the cycle they happen, not "later."
+ExecStartPost=/opt/meshforge/scripts/cloud/verify_cloud_assets.sh
 # Don't fail the unit on transient errors — the timer fires again in 120s.
 SuccessExitStatus=0 1
 # Budget envelope: curl(90s) + space_weather(15s) + alerts(15s) + rsync(20s)
