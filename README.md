@@ -71,6 +71,16 @@ sudo python3 src/launcher_tui/main.py
 
 ---
 
+## Live Demo
+
+See the Hawaii fleet's view of the LoRa mesh — node positions, SNR-coloured link quality, NOAA space weather, and active space-weather alerts — at **[meshforge-maps.ddns.net](https://meshforge-maps.ddns.net/)**.
+
+The demo runs on a small VPS that mirrors a regional GeoJSON snapshot from one fleet box every two minutes via `scripts/cloud/push_snapshot.sh`. The mesh itself stays on-prem; only the map data is published. The page is mobile-friendly (tested on iOS, 13" MacBook, larger displays) and shows per-protocol counts (Meshtastic / AREDN / MeshCore) alongside SFI, X-ray, geomagnetic storm level, and per-band HF condition pills.
+
+To stand up your own VPS demo, see `scripts/cloud/README.md` — one-shot setup via `setup_vps.sh <domain>` on a fresh Ubuntu 24.04 box.
+
+---
+
 ## Quick Start
 
 > **Already running MeshForge?** See [Upgrading](#upgrading-meshforge) for upgrade paths.
