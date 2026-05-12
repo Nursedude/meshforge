@@ -1,0 +1,44 @@
+# MeshForge — synth soak (systemd-user, one-shot, fired by the timer)
+# ===================================================================
+#
+# Fires one cycle of `lab_multi_user_synth` and writes the JSON report
+# to ~/.local/state/meshforge/synth_soak/synth-<UTC-timestamp>.json.
+# Pairs with meshforge-synth-soak.timer (30-min cadence by default).
+#
+# Defaults: burst N=10 interval=5s duration=60s ack_timeout=30s,
+# exclude=moc3, threshold=0.95. Tune via env in the timer or
+# drop-in: e.g. Environment=SYNTH_PATTERN=sustained.
+#
+# Install (typically only on the designated tester box — moc):
+#   cp /opt/meshforge/templates/systemd/meshforge-synth-soak-user.service \
+#      ~/.config/systemd/user/meshforge-synth-soak.service
+#   cp /opt/meshforge/templates/systemd/meshforge-synth-soak-user.timer \
+#      ~/.config/systemd/user/meshforge-synth-soak.timer
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now meshforge-synth-soak.timer
+#
+# Prereqs:
+#   - ~/.config/meshforge/lab_peers populated with peer hashes
+#   - rnsd running (system or user)
+#   - peers' echo daemons enabled
+#
+# Aggregate the soak run with:
+#   bash /opt/meshforge/scripts/lab_synth_soak_rollup.sh [hours]
+#
+# Per-fire knobs (set in the timer's [Service] Environment= or here):
+#   SYNTH_USERS, SYNTH_PATTERN, SYNTH_INTERVAL, SYNTH_DURATION,
+#   SYNTH_ACK_TIMEOUT, SYNTH_EXCLUDE, SYNTH_THRESHOLD, STATE_DIR
+
+[Unit]
+Description=MeshForge synth soak (multi-user LXMF load fire)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/meshforge
+ExecStart=/opt/meshforge/scripts/lab_synth_soak_fire.sh
+TimeoutStartSec=180
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshforge-synth-soak

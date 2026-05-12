@@ -1,0 +1,33 @@
+# MeshForge — synth soak timer (every 30 min)
+# ===========================================
+#
+# Mirrors the tracer/moc-drain-snapshot pattern: persistent=true so a
+# missed firing (e.g. box rebooted) catches up after boot.
+#
+# Each fire runs the synth for ~60-120s (60s send + 30s ack grace +
+# RNS init/teardown overhead). At 30-min cadence this is <10% duty
+# cycle, leaving the box idle the rest of the time. Over 24h that's
+# 48 fires × ~500 PINGs = ~24k LXMF messages — well below fleet's
+# federation-firehose tolerance (75k/hr) but enough to accumulate
+# statistical signal across day/night noise.
+#
+# To change cadence, edit OnCalendar and run:
+#   systemctl --user daemon-reload
+#   systemctl --user restart meshforge-synth-soak.timer
+
+[Unit]
+Description=Fire meshforge-synth-soak every 30 minutes
+Requires=meshforge-synth-soak.service
+
+[Timer]
+# Top of every 30 minutes (:00 and :30). Persistent catches missed fires.
+OnCalendar=*-*-* *:00/30:00
+Persistent=true
+AccuracySec=30s
+# Small randomized delay so a fleet-wide reboot doesn't fire every
+# box simultaneously (we expect this to run from one tester box,
+# but cheap insurance).
+RandomizedDelaySec=15s
+
+[Install]
+WantedBy=timers.target
