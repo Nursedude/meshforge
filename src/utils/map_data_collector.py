@@ -40,6 +40,7 @@ from utils._map_collector_public import PublicDataFallbackMixin
 from utils._map_collector_meshtastic import MeshtasticDataCollectorMixin
 from utils._map_collector_aredn import ARENDataCollectorMixin
 from utils._map_collector_meshcore import MeshCorePublicCollectorMixin
+from utils.node_history import _origin_priority
 
 
 class MapDataCollector(
@@ -1106,27 +1107,52 @@ class MapDataCollector(
             logger.debug(f"federation snapshot failed: {e}")
             return empty_block
 
-        # Build the set of (network, id) keys that local sources already know
-        local_keys = set()
-        for f in features.values():
+        # Index local entries by (network, id) with source_origin priority,
+        # so a federated peer carrying a HIGHER-trust origin can override a
+        # lower-trust local entry. Without this, a node first heard by the
+        # local meshcore_public collector (priority 30) blocks a federated
+        # peer's local_radio observation (priority 100) for the same hash —
+        # which defeats the purpose of cross-box federation when a sister
+        # box is the only one with the radio. "Local always wins" stays
+        # intact at equal priority (the original guarantee against peer
+        # noise); a higher-priority federated entry strictly upgrades.
+        # Index entry: (priority, feature_key | None, position_less_index | None).
+        local_index: Dict[tuple, tuple] = {}
+        for fkey, f in features.items():
             props = f.get("properties") or {}
             net = props.get("network")
             nid = props.get("id")
             if net and nid:
-                local_keys.add((net, nid))
-        for entry in position_less:
+                origin = props.get("source_origin")
+                local_index[(net, nid)] = (_origin_priority(origin), fkey, None)
+        for idx, entry in enumerate(position_less):
             net = entry.get("network")
             nid = entry.get("id")
-            if net and nid:
-                local_keys.add((net, nid))
+            if net and nid and (net, nid) not in local_index:
+                origin = entry.get("source_origin")
+                local_index[(net, nid)] = (_origin_priority(origin), None, idx)
 
         by_network: Dict[str, int] = {}
         with_pos = 0
         without_pos = 0
 
+        # Track position_less indices to delete after the loop (deleting in-flight
+        # would shift indices and break the second `enumerate` pass above).
+        position_less_drop: set = set()
+
         for (net, nid), entry in snap.by_node.items():
-            if (net, nid) in local_keys:
-                continue  # local-wins — skip federated copy
+            local = local_index.get((net, nid))
+            if local is not None:
+                local_priority, local_fkey, local_pl_idx = local
+                fed_priority = _origin_priority(entry.get("source_origin"))
+                if fed_priority <= local_priority:
+                    continue  # local-wins — skip federated copy (original behavior)
+                # Federated peer carries a higher-trust origin: drop the
+                # local stub so the federated entry can take its place.
+                if local_fkey is not None:
+                    features.pop(local_fkey, None)
+                elif local_pl_idx is not None:
+                    position_less_drop.add(local_pl_idx)
             by_network[net] = by_network.get(net, 0) + 1
 
             lat = entry.get("lat")
@@ -1180,6 +1206,14 @@ class MapDataCollector(
                     "seen_by_peers": seen_by,
                 })
                 without_pos += 1
+
+        # Drop position_less stubs that got overridden by a higher-priority
+        # federated entry (collected during the loop to avoid in-flight
+        # index shifts).
+        if position_less_drop:
+            position_less[:] = [
+                p for i, p in enumerate(position_less) if i not in position_less_drop
+            ]
 
         peer_status_list = []
         for s in snap.peer_status.values():

@@ -191,6 +191,13 @@ class TestMergeFederationBlock:
         assert position_less[0]["network"] == "rns"
 
     def test_local_wins_on_collision(self, collector):
+        """Local wins when source_origin priority is equal or higher.
+
+        Both entries here carry `local_radio` (priority 100) — at parity, the
+        original 'local always wins' guarantee against peer noise still holds.
+        Federated peer entries can only override at *strictly higher* priority
+        (see test_federated_higher_priority_overrides_local below).
+        """
         self._stub_federation(collector, {
             ("meshtastic", "!abc"): {
                 "id": "!abc", "network": "meshtastic", "name": "FROM PEER",
@@ -199,12 +206,14 @@ class TestMergeFederationBlock:
                 "federated_from": "peer-a", "seen_by_peers": ["peer-a"],
             },
         })
-        # Local already has !abc — federation should NOT add it
         features = {
             "!abc": {
                 "type": "Feature",
                 "geometry": {"type": "Point", "coordinates": [-1.0, -1.0]},
-                "properties": {"id": "!abc", "network": "meshtastic", "name": "LOCAL"},
+                "properties": {
+                    "id": "!abc", "network": "meshtastic", "name": "LOCAL",
+                    "source_origin": "local_radio",
+                },
             },
         }
         position_less: list = []
@@ -216,6 +225,7 @@ class TestMergeFederationBlock:
         assert "federated:meshtastic:!abc" not in features
 
     def test_local_wins_on_position_less_collision(self, collector):
+        """Equal-priority position_less stub blocks the federated copy."""
         self._stub_federation(collector, {
             ("rns", "shared"): {
                 "id": "shared", "network": "rns", "name": "FROM PEER",
@@ -224,13 +234,103 @@ class TestMergeFederationBlock:
                 "federated_from": "peer-a", "seen_by_peers": ["peer-a"],
             },
         })
-        position_less = [{"id": "shared", "network": "rns", "name": "LOCAL"}]
+        position_less = [{
+            "id": "shared", "network": "rns", "name": "LOCAL",
+            "source_origin": "rns_path_table",
+        }]
         block = collector._merge_federation({}, position_less)
 
         assert block["total"] == 0
         assert len(position_less) == 1
         assert position_less[0]["name"] == "LOCAL"
         assert "federated" not in position_less[0]
+
+    def test_federated_higher_priority_overrides_local(self, collector):
+        """A federated peer's local_radio (100) replaces a local meshcore_public (30).
+
+        This is the cross-box bridge: when a sister fleet box is the only one
+        with the radio hardware, its locally-heard observation must beat the
+        public-firehose entry of the same hash. Without priority-aware merge,
+        the public position (often stale or imprecise) would stick.
+        """
+        self._stub_federation(collector, {
+            ("meshcore", "812e3c8e"): {
+                "id": "812e3c8e", "network": "meshcore", "name": "MA-LOCAL-HEARD",
+                "lat": 19.435274, "lon": -155.213797, "altitude": None,
+                "last_seen": 200, "source_origin": "local_radio",
+                "federated_from": "meshanchor-server", "seen_by_peers": ["meshanchor-server"],
+            },
+        })
+        features = {
+            "812e3c8e": {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [-155.213, 19.435]},
+                "properties": {
+                    "id": "812e3c8e", "network": "meshcore", "name": "PUBLIC-STALE",
+                    "source_origin": "meshcore_public",
+                },
+            },
+        }
+        position_less: list = []
+        block = collector._merge_federation(features, position_less)
+
+        # Local entry replaced by federated; counted as federated_with_position
+        assert "812e3c8e" not in features  # local stub dropped
+        assert "federated:meshcore:812e3c8e" in features
+        fed_feat = features["federated:meshcore:812e3c8e"]
+        assert fed_feat["properties"]["source_origin"] == "local_radio"
+        assert fed_feat["properties"]["federated"] is True
+        assert block["with_position"] == 1
+        assert block["by_network"]["meshcore"] == 1
+
+    def test_federated_lower_priority_yields_to_local(self, collector):
+        """The reverse: local local_radio (100) keeps a federated meshcore_public (30) out."""
+        self._stub_federation(collector, {
+            ("meshcore", "abc"): {
+                "id": "abc", "network": "meshcore", "name": "PEER-PUBLIC",
+                "lat": 0.0, "lon": 0.0, "altitude": None,
+                "last_seen": 200, "source_origin": "meshcore_public",
+                "federated_from": "peer-x", "seen_by_peers": ["peer-x"],
+            },
+        })
+        features = {
+            "abc": {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [1.0, 1.0]},
+                "properties": {
+                    "id": "abc", "network": "meshcore", "name": "LOCAL-HEARD",
+                    "source_origin": "local_radio",
+                },
+            },
+        }
+        block = collector._merge_federation(features, [])
+
+        assert block["total"] == 0
+        assert features["abc"]["properties"]["name"] == "LOCAL-HEARD"
+        assert "federated:meshcore:abc" not in features
+
+    def test_federated_higher_priority_overrides_position_less(self, collector):
+        """Federated local_radio with position upgrades a local position_less stub."""
+        self._stub_federation(collector, {
+            ("meshcore", "xyz"): {
+                "id": "xyz", "network": "meshcore", "name": "MA-PEER",
+                "lat": 19.4, "lon": -155.2, "altitude": None,
+                "last_seen": 200, "source_origin": "local_radio",
+                "federated_from": "meshanchor-server", "seen_by_peers": ["meshanchor-server"],
+            },
+        })
+        # Stub from a low-priority local source (no GPS)
+        position_less = [{
+            "id": "xyz", "network": "meshcore", "name": "LOCAL-NOPOS",
+            "source_origin": "meshcore_public",
+        }]
+        block = collector._merge_federation({}, position_less)
+
+        # The local stub is dropped; the federated feature is added with position
+        assert len(position_less) == 0
+        assert block["with_position"] == 1
+        # And it carries the federated provenance
+        assert block["by_network"]["meshcore"] == 1
 
     def test_peer_status_in_block(self, collector):
         self._stub_federation(collector, {}, peers=("peer-a", "peer-b"))
