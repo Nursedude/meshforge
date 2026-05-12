@@ -1,21 +1,23 @@
 [Unit]
-Description=Fire MeshForge cloud snapshot push every 180s
+Description=Fire MeshForge cloud snapshot push every 600s
 Documentation=https://github.com/Nursedude/meshforge
 
 [Timer]
 # First push 30s after boot — gives meshforge-map.service time to come up.
 OnBootSec=30s
-# Cadence: 180s. Source data churns far slower than the push timer —
-# mesh node positions are static, NOAA SFI/Kp update at hour-to-day
-# cadence, MeshCore upstream is cached 10 min internally, and the
-# browser caches every payload for 30s anyway. At 120s the push
-# script burned ~28% duty cycle (median 28s wall time per cycle)
-# mostly on the region-filter scan against a 76k-node directory
-# (observed 19-65s on volcanoai, 2026-05-11). 180s drops duty cycle
-# to ~19% and leaves more headroom for the slow tail without
-# changing perceived freshness during a 25-min talk (worst-case
-# visitor staleness ~210s including the 30s browser cache).
-OnUnitActiveSec=180s
+# Cadence: 600s. Bumped from 180s on 2026-05-11 to give volcanoai
+# duty-cycle relief during the fleet-wide WAL drain (moc/moc1 are
+# working through multi-day prune backlogs that converge ~May 14-15).
+# Source data justifies this: mesh positions static, NOAA SFI daily,
+# Kp every 3h, MeshCore upstream cached 10 min internally, browser
+# cache 30s. Worst-case visitor staleness ~630s (push interval + 30s
+# browser cache) — still invisible during a 25-min talk for a map of
+# static nodes. Duty cycle on volcanoai drops from ~19% to ~6%.
+# Rollback to 180s if BIRC audience reports observable lag during
+# live demo — one-line revert. A/B against shorter cadences is
+# deferred to post-talk so we're not chasing a moving target while
+# the WAL drain finishes.
+OnUnitActiveSec=600s
 # AccuracySec lower = more precise firing; 5s is fine.
 AccuracySec=5s
 # Don't drift; reset wall-clock anchor on resume.
