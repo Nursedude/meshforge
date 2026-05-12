@@ -48,6 +48,7 @@ mkdir -p "$CACHE_DIR"
 SNAPSHOT="$CACHE_DIR/data.geojson.tmp"
 STAMP="$CACHE_DIR/last_pushed.txt"
 META="$CACHE_DIR/meta.json.tmp"
+SW="$CACHE_DIR/space_weather.json.tmp"
 
 # 1. Pull GeoJSON from the local meshforge-map. Bound by --max-time so a
 #    hung map service doesn't pile up timer firings. 90s budget reflects
@@ -91,6 +92,36 @@ mv "$META" "${META%.tmp}"
 SNAPSHOT_FINAL="${SNAPSHOT%.tmp}"
 META_FINAL="${META%.tmp}"
 
+# 4b. Space weather snapshot from NOAA SWPC (via on-prem propagation
+#     module). Bounded to 15s — NOAA's HTTPS endpoint is normally <2s
+#     but the audience-facing page can render without this strip, so a
+#     failure here is non-fatal. Reuses `src/commands/propagation.py`,
+#     same code path the local TUI uses.
+SW_PUSH=""
+SW_TMP="$SW" NOW_EPOCH="$NOW_EPOCH" \
+timeout 15 python3 - <<'PYEOF' 2>/dev/null
+import os, sys, json
+sys.path.insert(0, '/opt/meshforge/src')
+try:
+    from commands import propagation
+    r = propagation.get_space_weather()
+    if not (r.success and r.data):
+        sys.exit(1)
+    payload = dict(r.data)
+    payload['generated_at_epoch'] = int(os.environ.get('NOW_EPOCH') or 0)
+    with open(os.environ['SW_TMP'], 'w') as f:
+        json.dump(payload, f)
+except Exception:
+    sys.exit(1)
+PYEOF
+if [[ -s "$SW" ]]; then
+    mv "$SW" "${SW%.tmp}"
+    SW_PUSH="${SW%.tmp}"
+else
+    rm -f "$SW"
+    log "space weather fetch failed or empty; pushing without it this cycle"
+fi
+
 # 5. Cloud healthcheck — don't bother pushing to a VPS that's down.
 if ! curl -sS --max-time 5 -o /dev/null "https://$CLOUD_HOST/healthz" 2>/dev/null; then
     log "cloud healthcheck failed; will retry on next firing"
@@ -106,13 +137,16 @@ RSYNC_OPTS=(
     -e "ssh -i $CLOUD_SSH_KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
 )
 
+PUSH_FILES=("$SNAPSHOT_FINAL" "$META_FINAL")
+[[ -n "$SW_PUSH" ]] && PUSH_FILES+=("$SW_PUSH")
+
 if ! rsync "${RSYNC_OPTS[@]}" \
-        "$SNAPSHOT_FINAL" "$META_FINAL" \
+        "${PUSH_FILES[@]}" \
         "$CLOUD_USER@$CLOUD_HOST:$CLOUD_WEBROOT/"; then
     err "rsync failed; will retry on next firing"
     exit 1
 fi
 
 date +%s > "$STAMP"
-log "pushed $N_FEATURES features to $CLOUD_HOST in $((SECONDS))s"
+log "pushed $N_FEATURES features${SW_PUSH:+ + space_weather} to $CLOUD_HOST in $((SECONDS))s"
 exit 0

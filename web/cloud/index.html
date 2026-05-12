@@ -59,6 +59,67 @@
     }
     header .stamp.stale { color: var(--accent); }
 
+    /* Space weather strip — sits between header and map. Mirrors the
+       slide-14 panel on meshforge-maps :8808 but in a single wrappable
+       row for mobile audiences (BIRC = phones in the room). */
+    #space-weather {
+      padding: 8px 20px;
+      border-bottom: 1px solid var(--rule);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px 16px;
+      font-size: 12px;
+      background: #0B1622;
+    }
+    #space-weather.hidden { display: none; }
+    #space-weather .label {
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      font-size: 10px;
+      font-weight: 600;
+    }
+    .sw-stat {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 4px;
+      font-family: var(--font-mono);
+    }
+    .sw-stat .k {
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+    .sw-stat .v { color: var(--fg); }
+    .sw-bands {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      align-items: center;
+    }
+    .sw-band {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      letter-spacing: 0.3px;
+      white-space: nowrap;
+    }
+    .sw-band.excellent { background: #1E5F4F; color: #BCEAD4; }
+    .sw-band.good      { background: #1E4A5F; color: #BCD8EA; }
+    .sw-band.fair      { background: #5F4A1E; color: #EAD9BC; }
+    .sw-band.poor      { background: #5F2A1E; color: #EABCBC; }
+    .sw-band.unknown   { background: #2A3A4A; color: var(--muted); }
+    .sw-source {
+      color: var(--muted);
+      font-size: 10px;
+      margin-left: auto;
+      font-family: var(--font-mono);
+      letter-spacing: 0.3px;
+    }
+
     #map { flex: 1; background: #1A2D3F; }
 
     footer {
@@ -98,6 +159,13 @@
   <span class="subtitle">LongFast nodes observed from one Big Island vantage point</span>
   <span class="stamp" id="stamp">loading…</span>
 </header>
+
+<div id="space-weather" class="hidden" aria-label="Space weather and HF band conditions">
+  <span class="label">Space Weather</span>
+  <span id="sw-stats"></span>
+  <span class="sw-bands" id="sw-bands"></span>
+  <span class="sw-source" id="sw-source"></span>
+</div>
 
 <div id="map" role="application" aria-label="Hawaii mesh node map"></div>
 
@@ -163,15 +231,77 @@
     counts.textContent = `${meta.feature_count ?? 0} nodes · region ${meta.region ?? "?"}`;
   }
 
+  function renderSpaceWeather(sw) {
+    const panel = document.getElementById("space-weather");
+    if (!sw) {
+      panel.classList.add("hidden");
+      return;
+    }
+    panel.classList.remove("hidden");
+
+    const stats = [];
+    if (typeof sw.solar_flux === "number")
+      stats.push(["SFI", Math.round(sw.solar_flux)]);
+    if (typeof sw.k_index === "number")
+      stats.push(["Kp", sw.k_index]);
+    if (typeof sw.a_index === "number" && sw.a_index >= 0)
+      stats.push(["A", sw.a_index]);
+    if (sw.xray_flux)
+      stats.push(["X-ray", sw.xray_flux]);
+    if (sw.geomag_storm)
+      stats.push(["Storm", sw.geomag_storm]);
+
+    document.getElementById("sw-stats").innerHTML = stats.map(([k, v]) =>
+      `<span class="sw-stat"><span class="k">${htmlEscape(k)}</span><span class="v">${htmlEscape(v)}</span></span>`
+    ).join("");
+
+    // Band conditions — order from low to high frequency to match the
+    // way most propagation panels are read.
+    const order = ["160m","80m","60m","40m","30m","20m","17m","15m","12m","10m","6m"];
+    const bands = sw.band_conditions || {};
+    const seen = new Set();
+    const bandPills = [];
+    for (const b of order) {
+      if (b in bands) {
+        seen.add(b);
+        const cond = String(bands[b] || "Unknown");
+        const cls = cond.toLowerCase();
+        bandPills.push(`<span class="sw-band ${htmlEscape(cls)}">${htmlEscape(b)} ${htmlEscape(cond)}</span>`);
+      }
+    }
+    // Catch any band the upstream added that we didn't list explicitly.
+    for (const [b, cond] of Object.entries(bands)) {
+      if (seen.has(b)) continue;
+      const cls = String(cond || "Unknown").toLowerCase();
+      bandPills.push(`<span class="sw-band ${htmlEscape(cls)}">${htmlEscape(b)} ${htmlEscape(cond)}</span>`);
+    }
+    document.getElementById("sw-bands").innerHTML = bandPills.join("");
+
+    // Source line: e.g. "NOAA SWPC · updated 4m ago"
+    let ageLabel = "";
+    if (sw.generated_at_epoch) {
+      const ageS = Math.floor(Date.now() / 1000 - sw.generated_at_epoch);
+      if (ageS < 90)        ageLabel = `${ageS}s ago`;
+      else if (ageS < 3600) ageLabel = `${Math.floor(ageS / 60)}m ago`;
+      else                  ageLabel = `${Math.floor(ageS / 3600)}h ago`;
+    }
+    const src = sw.source || "NOAA SWPC";
+    document.getElementById("sw-source").textContent =
+      ageLabel ? `${src} · updated ${ageLabel}` : src;
+  }
+
   async function fetchAll() {
     try {
-      const [metaResp, dataResp] = await Promise.all([
+      const [metaResp, dataResp, swResp] = await Promise.all([
         fetch("/meta.json", { cache: "no-store" }),
-        fetch("/data.geojson", { cache: "no-store" })
+        fetch("/data.geojson", { cache: "no-store" }),
+        fetch("/space_weather.json", { cache: "no-store" }).catch(() => null)
       ]);
       const meta = metaResp.ok ? await metaResp.json() : null;
       const data = dataResp.ok ? await dataResp.json() : null;
+      const sw = (swResp && swResp.ok) ? await swResp.json().catch(() => null) : null;
       refreshStamp(meta);
+      renderSpaceWeather(sw);
 
       layer.clearLayers();
       const features = (data && data.features) || [];
