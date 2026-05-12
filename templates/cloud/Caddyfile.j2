@@ -51,12 +51,11 @@
         index index.html
     }
 
-    # Don't log healthchecks — they happen every 60s and crowd out
-    # signal. `log_skip` is a Caddy 2.6-compatible directive (the
-    # `skip_path_pattern` subdirective inside `log` only exists in
-    # 2.8+; Ubuntu 24.04 LTS ships 2.6.2).
-    log_skip /healthz
-
+    # Note: healthcheck spam is bounded by log rotation (10mb × 5 =
+    # 50mb cap). Caddy 2.6.2 (Ubuntu 24.04 LTS apt package) has no
+    # path-skip directive — `log_skip` is 2.7+, `skip_path_pattern`
+    # is 2.8+. If Caddy is ever upgraded, re-introduce `log_skip
+    # /healthz` here.
     log {
         output file /var/log/caddy/access.log {
             roll_size 10mb
