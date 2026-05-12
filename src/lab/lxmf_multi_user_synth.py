@@ -396,6 +396,38 @@ def _sender_loop(
             return
 
 
+# --------------------------------------------------------- exclusion matching
+
+
+# Common per-host prefixes the operator's lab_peers names carry that
+# users won't naturally type when passing --exclude. We strip these
+# when matching so a short alias (--exclude <node>) matches its full
+# fleet-prefixed name (<prefix>-<node>).
+_PEER_NAME_STRIP_PREFIXES = ("meshforge-", "meshanchor-")
+
+
+def _peer_matches_exclude(peer_name: str, excludes: set) -> bool:
+    """Case-insensitive exclude match supporting common name aliases.
+
+    Operators run --exclude with short names but lab_peers carries
+    full names with fleet-specific prefixes. This bridges by matching:
+
+    - exact lower-case
+    - stripped lower-case (remove configured prefixes)
+
+    Returns True if the peer should be excluded.
+    """
+    name_lower = peer_name.lower()
+    if name_lower in excludes:
+        return True
+    for prefix in _PEER_NAME_STRIP_PREFIXES:
+        if name_lower.startswith(prefix):
+            stripped = name_lower[len(prefix):]
+            if stripped in excludes:
+                return True
+    return False
+
+
 # ----------------------------------------------------------------- peers I/O
 
 
@@ -836,7 +868,7 @@ def main(argv=None) -> int:
     }
     excludes.add(self_short.lower())
 
-    filtered = [p for p in peers if p.name.lower() not in excludes]
+    filtered = [p for p in peers if not _peer_matches_exclude(p.name, excludes)]
     if len(filtered) < len(peers):
         skipped = [p.name for p in peers if p not in filtered]
         logger.info("synth: skipping peer(s): %s", skipped)

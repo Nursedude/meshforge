@@ -590,3 +590,50 @@ class TestRunSynthValidation:
 
         with pytest.raises(ValueError, match="n_users must be"):
             run_synth(peers=[], n_users=0)
+
+
+# -------------------------------------------------------- exclude matching
+
+
+class TestExcludeMatch:
+    """The operator types short aliases on the CLI, but lab_peers
+    carries fleet-prefixed full names. Surfaced from the first smoke
+    fire 2026-05-12 — bare-equality match silently passed the peer
+    through and the verdict reported 80% / FAIL when the real answer
+    was 100% / PASS."""
+
+    def test_exact_match(self):
+        from lab.lxmf_multi_user_synth import _peer_matches_exclude
+
+        assert _peer_matches_exclude("alpha", {"alpha"})
+
+    def test_case_insensitive(self):
+        from lab.lxmf_multi_user_synth import _peer_matches_exclude
+
+        assert _peer_matches_exclude("ALPHA", {"alpha"})
+
+    def test_meshforge_prefix_stripped(self):
+        from lab.lxmf_multi_user_synth import _peer_matches_exclude
+
+        # Peer name carries fleet prefix; user types just the suffix.
+        assert _peer_matches_exclude("meshforge-alpha", {"alpha"})
+
+    def test_meshanchor_prefix_stripped(self):
+        from lab.lxmf_multi_user_synth import _peer_matches_exclude
+
+        assert _peer_matches_exclude("meshanchor-server", {"server"})
+
+    def test_no_match_when_substring_only(self):
+        """Don't fall through to substring match — too coarse. A user
+        typing --exclude alpha must NOT silently drop alpha1, alpha2."""
+        from lab.lxmf_multi_user_synth import _peer_matches_exclude
+
+        assert not _peer_matches_exclude("meshforge-alpha1", {"alpha"})
+        assert not _peer_matches_exclude("meshforge-alphax", {"alpha"})
+
+    def test_full_name_still_works_when_user_types_full(self):
+        from lab.lxmf_multi_user_synth import _peer_matches_exclude
+
+        assert _peer_matches_exclude(
+            "meshforge-alpha", {"meshforge-alpha"},
+        )
