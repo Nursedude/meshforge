@@ -50,9 +50,14 @@ STAMP="$CACHE_DIR/last_pushed.txt"
 META="$CACHE_DIR/meta.json.tmp"
 
 # 1. Pull GeoJSON from the local meshforge-map. Bound by --max-time so a
-#    hung map service doesn't pile up timer firings.
+#    hung map service doesn't pile up timer firings. 90s budget reflects
+#    the worst-case region-filter scan on a large directory (~76k nodes
+#    observed in the field 2026-05-11: regional filter ~67s vs <1s
+#    unfiltered). Follow-up: cache or precompute regional slices
+#    server-side; for now the 90s ceiling matches the timer's 120s
+#    cadence with margin.
 URL="$LOCAL_MAP_URL/api/nodes/geojson?region=$REGION"
-if ! curl -sS --max-time 15 -o "$SNAPSHOT" "$URL"; then
+if ! curl -sS --max-time 90 -o "$SNAPSHOT" "$URL"; then
     err "curl failed against $URL"
     exit 1
 fi

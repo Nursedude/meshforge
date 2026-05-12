@@ -5,10 +5,13 @@ Documentation=https://github.com/Nursedude/meshforge
 [Timer]
 # First push 30s after boot — gives meshforge-map.service time to come up.
 OnBootSec=30s
-# Then every 60s. Audience-grade freshness without flooding the VPS.
-OnUnitActiveSec=60s
-# AccuracySec lower = more precise firing; defaults to 1min which is
-# plenty for our 60s cadence.
+# Cadence: 120s. Audience-grade freshness (≤3 min stale at the talk)
+# while leaving headroom for slow region-filter scans on large
+# directories. Observed 2026-05-11 on volcanoai: hawaii filter took
+# ~67s against a 76k-node directory; a 60s cadence would queue
+# snapshots back-to-back and crowd out interactive map clients.
+OnUnitActiveSec=120s
+# AccuracySec lower = more precise firing; 5s is fine.
 AccuracySec=5s
 # Don't drift; reset wall-clock anchor on resume.
 Persistent=false
