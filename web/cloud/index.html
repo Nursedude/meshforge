@@ -121,6 +121,52 @@
     }
 
     #map { flex: 1; background: #1A2D3F; }
+    /* Dark-mode hack for OSM tiles: invert + hue-rotate gives a designed
+       dark basemap without swapping providers (which would require a CSP
+       update). Filter applies only to the tile pane so circle markers
+       and popups render at full saturation. */
+    .leaflet-tile-pane {
+      filter: hue-rotate(180deg) invert(0.92) brightness(0.95) contrast(0.88);
+    }
+
+    /* Alerts banner — orange strip above the space-weather row when NOAA
+       has active warnings/alerts in the last 24h. Wraps on mobile. */
+    #alerts {
+      padding: 8px 20px;
+      background: #3A1F12;
+      border-bottom: 1px solid #5F2A1E;
+      color: #FFD7C2;
+      font-size: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+      align-items: center;
+    }
+    #alerts.hidden { display: none; }
+    #alerts .label {
+      font-weight: 700;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      font-size: 10px;
+      color: var(--accent);
+    }
+    #alerts .alert-item {
+      display: inline-flex;
+      gap: 6px;
+      align-items: baseline;
+      font-family: var(--font-mono);
+    }
+    #alerts .alert-item .t {
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 10px;
+    }
+    #alerts .alert-item .msg { color: #FFD7C2; }
+    #alerts .alert-item .when {
+      color: var(--muted);
+      font-size: 10px;
+      font-family: var(--font-mono);
+    }
 
     footer {
       padding: 8px 20px;
@@ -159,6 +205,11 @@
   <span class="subtitle">LongFast nodes observed from one Big Island vantage point</span>
   <span class="stamp" id="stamp">loading…</span>
 </header>
+
+<div id="alerts" class="hidden" role="status" aria-live="polite" aria-label="Active space weather alerts">
+  <span class="label">NOAA Alert</span>
+  <span id="alerts-list"></span>
+</div>
 
 <div id="space-weather" class="hidden" aria-label="Space weather and HF band conditions">
   <span class="label">Space Weather</span>
@@ -290,18 +341,37 @@
       ageLabel ? `${src} · updated ${ageLabel}` : src;
   }
 
+  function renderAlerts(alerts) {
+    const panel = document.getElementById("alerts");
+    const list = (alerts && alerts.alerts) || [];
+    if (!list.length) {
+      panel.classList.add("hidden");
+      return;
+    }
+    panel.classList.remove("hidden");
+    document.getElementById("alerts-list").innerHTML = list.map(a => {
+      const t = htmlEscape(a.type || "ALERT");
+      const msg = htmlEscape(a.title || a.message || "");
+      const when = htmlEscape(a.issue_datetime || "");
+      return `<span class="alert-item"><span class="t">${t}</span><span class="msg">${msg}</span><span class="when">${when}</span></span>`;
+    }).join("");
+  }
+
   async function fetchAll() {
     try {
-      const [metaResp, dataResp, swResp] = await Promise.all([
+      const [metaResp, dataResp, swResp, alResp] = await Promise.all([
         fetch("/meta.json", { cache: "no-store" }),
         fetch("/data.geojson", { cache: "no-store" }),
-        fetch("/space_weather.json", { cache: "no-store" }).catch(() => null)
+        fetch("/space_weather.json", { cache: "no-store" }).catch(() => null),
+        fetch("/alerts.json", { cache: "no-store" }).catch(() => null)
       ]);
       const meta = metaResp.ok ? await metaResp.json() : null;
       const data = dataResp.ok ? await dataResp.json() : null;
       const sw = (swResp && swResp.ok) ? await swResp.json().catch(() => null) : null;
+      const al = (alResp && alResp.ok) ? await alResp.json().catch(() => null) : null;
       refreshStamp(meta);
       renderSpaceWeather(sw);
+      renderAlerts(al);
 
       layer.clearLayers();
       const features = (data && data.features) || [];

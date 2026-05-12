@@ -49,6 +49,7 @@ SNAPSHOT="$CACHE_DIR/data.geojson.tmp"
 STAMP="$CACHE_DIR/last_pushed.txt"
 META="$CACHE_DIR/meta.json.tmp"
 SW="$CACHE_DIR/space_weather.json.tmp"
+AL="$CACHE_DIR/alerts.json.tmp"
 
 # 1. Pull GeoJSON from the local meshforge-map. Bound by --max-time so a
 #    hung map service doesn't pile up timer firings. 90s budget reflects
@@ -122,6 +123,69 @@ else
     log "space weather fetch failed or empty; pushing without it this cycle"
 fi
 
+# 4c. NOAA active alerts (last 72h). Same non-fatal pattern as 4b — the
+#     banner only renders when there's something to say. NOAA alert
+#     cadence is bursty (days-quiet then a flare cluster), so a 24h
+#     window often shows nothing for the audience; 72h keeps recent
+#     space-weather context visible during a multi-day demo.
+AL_PUSH=""
+AL_TMP="$AL" NOW_EPOCH="$NOW_EPOCH" \
+timeout 15 python3 - <<'PYEOF' 2>/dev/null
+import os, sys, re, json, time
+from datetime import datetime, timedelta
+sys.path.insert(0, '/opt/meshforge/src')
+try:
+    from commands import propagation
+    r = propagation.get_alerts()
+    if not (r.success and r.data):
+        sys.exit(1)
+    raw = (r.data or {}).get('alerts') or []
+    cutoff = datetime.utcnow() - timedelta(hours=72)
+    out = []
+    type_re = re.compile(r'\b(ALERT|WARNING|WATCH|SUMMARY)\s*:\s*([^|\n]+)')
+    for a in raw:
+        msg = (a.get('message') or '').strip()
+        ts = (a.get('issue_datetime') or '').strip()
+        # Parse the NOAA timestamp (e.g. "2026-05-10 14:14:33.073")
+        try:
+            issued = datetime.strptime(ts.split('.')[0], '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            continue
+        if issued < cutoff:
+            continue
+        m = type_re.search(msg)
+        if m:
+            alert_type, title = m.group(1), m.group(2).strip()
+        else:
+            alert_type, title = 'ALERT', msg.split('|')[0].strip()[:80]
+        # Trim title for banner display
+        title = title.strip()[:120]
+        out.append({
+            'type': alert_type,
+            'title': title,
+            'issue_datetime': ts.split('.')[0] + 'Z',
+        })
+        if len(out) >= 3:
+            break
+    payload = {
+        'alerts': out,
+        'count': len(out),
+        'source': 'NOAA SWPC',
+        'generated_at_epoch': int(os.environ.get('NOW_EPOCH') or 0),
+    }
+    with open(os.environ['AL_TMP'], 'w') as f:
+        json.dump(payload, f)
+except Exception:
+    sys.exit(1)
+PYEOF
+if [[ -s "$AL" ]]; then
+    mv "$AL" "${AL%.tmp}"
+    AL_PUSH="${AL%.tmp}"
+else
+    rm -f "$AL"
+    log "alerts fetch failed or empty; pushing without it this cycle"
+fi
+
 # 5. Cloud healthcheck — don't bother pushing to a VPS that's down.
 if ! curl -sS --max-time 5 -o /dev/null "https://$CLOUD_HOST/healthz" 2>/dev/null; then
     log "cloud healthcheck failed; will retry on next firing"
@@ -139,6 +203,7 @@ RSYNC_OPTS=(
 
 PUSH_FILES=("$SNAPSHOT_FINAL" "$META_FINAL")
 [[ -n "$SW_PUSH" ]] && PUSH_FILES+=("$SW_PUSH")
+[[ -n "$AL_PUSH" ]] && PUSH_FILES+=("$AL_PUSH")
 
 # Also keep index.html in lockstep with the repo, so page changes
 # (new panels, layout tweaks) auto-deploy on next push without an
@@ -155,5 +220,5 @@ if ! rsync "${RSYNC_OPTS[@]}" \
 fi
 
 date +%s > "$STAMP"
-log "pushed $N_FEATURES features${SW_PUSH:+ + space_weather} to $CLOUD_HOST in $((SECONDS))s"
+log "pushed $N_FEATURES features${SW_PUSH:+ + space_weather}${AL_PUSH:+ + alerts} to $CLOUD_HOST in $((SECONDS))s"
 exit 0
