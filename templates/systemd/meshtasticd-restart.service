@@ -1,0 +1,13 @@
+[Unit]
+Description=Weekly restart of meshtasticd to clear accumulated VSZ / swap
+Documentation=https://github.com/meshtastic/firmware
+# Workaround for upstream meshtasticd memory growth: VmPeak climbs to
+# ~900 GB and VmSwap to ~1.8 GB after ~10 days of uptime on long-lived
+# root-mode daemons (observed on a subset of the fleet, 2026-05-12).
+# Healthy boxes show VmPeak <1 GB. Remove this timer once upstream fixes
+# the leak.
+After=meshtasticd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart meshtasticd.service

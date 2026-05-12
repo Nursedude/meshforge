@@ -1,0 +1,16 @@
+[Unit]
+Description=Weekly restart of meshtasticd
+Documentation=https://github.com/meshtastic/firmware
+
+[Timer]
+# Sun 02:30 HST — staggered before:
+#   - meshanchor-daemon-restart.timer (Sun 03:30, where deployed)
+#   - meshforge-map-restart.timer     (Sun 04:00)
+# Each restart is independent; the stagger just keeps load gentle.
+# Workaround for upstream meshtasticd VSZ/swap growth; remove once fixed.
+OnCalendar=Sun *-*-* 02:30:00
+Persistent=true
+Unit=meshtasticd-restart.service
+
+[Install]
+WantedBy=timers.target
