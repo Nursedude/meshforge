@@ -383,11 +383,13 @@ def main(argv=None) -> int:
         ack_timeout_s=args.ack_timeout,
     )
 
-    # Exit code: 0 if every peer ACKed, 1 if any timeout/no-route.
-    # Aggregator reads journal lines, not exit code — this is for ad-hoc
-    # operator runs where exit status matters.
-    failed = [r for r in results if r.result != "ok"]
-    return 0 if not failed else 1
+    # Always exit 0 — the tracer is an observability tool, not a gating
+    # check. Per-peer results live in the journal (which the aggregator
+    # reads). Returning non-zero on partial failures would flag
+    # `meshforge-tracer.service` as failed in systemd every cycle that
+    # has a single timeout/no-route, drowning real failures (like the
+    # daemon crashing) in routine red.
+    return 0
 
 
 if __name__ == "__main__":
