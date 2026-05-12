@@ -110,9 +110,23 @@ META_FINAL="${META%.tmp}"
 #     but the audience-facing page can render without this strip, so a
 #     failure here is non-fatal. Reuses `src/commands/propagation.py`,
 #     same code path the local TUI uses.
+#
+#     Local cache: NOAA SFI updates daily, Kp every 3h, X-ray every
+#     minute. Re-fetching every 180s wastes 5-15s of every push on
+#     payloads that essentially never change between cycles. Cache for
+#     600s (10 min) — still fresher than NOAA's slowest indices and
+#     undetectable during a 25-min talk. Cache lives under CACHE_DIR
+#     so it survives between firings without persisting across reboots.
+NOAA_CACHE_TTL="${NOAA_CACHE_TTL:-600}"
+SW_CACHE="$CACHE_DIR/space_weather.cache.json"
 SW_PUSH=""
-SW_TMP="$SW" NOW_EPOCH="$NOW_EPOCH" \
-timeout 15 python3 - <<'PYEOF' 2>/dev/null
+if [[ -s "$SW_CACHE" ]] && \
+        (( NOW_EPOCH - $(stat -c %Y "$SW_CACHE" 2>/dev/null || echo 0) < NOAA_CACHE_TTL )); then
+    cp "$SW_CACHE" "${SW%.tmp}"
+    SW_PUSH="${SW%.tmp}"
+else
+    SW_TMP="$SW" NOW_EPOCH="$NOW_EPOCH" \
+    timeout 15 python3 - <<'PYEOF' 2>/dev/null
 import os, sys, json
 sys.path.insert(0, '/opt/meshforge/src')
 try:
@@ -127,12 +141,19 @@ try:
 except Exception:
     sys.exit(1)
 PYEOF
-if [[ -s "$SW" ]]; then
-    mv "$SW" "${SW%.tmp}"
-    SW_PUSH="${SW%.tmp}"
-else
-    rm -f "$SW"
-    log "space weather fetch failed or empty; pushing without it this cycle"
+    if [[ -s "$SW" ]]; then
+        mv "$SW" "${SW%.tmp}"
+        cp "${SW%.tmp}" "$SW_CACHE"
+        SW_PUSH="${SW%.tmp}"
+    elif [[ -s "$SW_CACHE" ]]; then
+        # Fetch failed but we have a stale cache — better than nothing.
+        cp "$SW_CACHE" "${SW%.tmp}"
+        SW_PUSH="${SW%.tmp}"
+        log "space weather fetch failed; using stale cache from $(date -d @$(stat -c %Y "$SW_CACHE") -u +%H:%M:%SZ)"
+    else
+        rm -f "$SW"
+        log "space weather fetch failed or empty; pushing without it this cycle"
+    fi
 fi
 
 # 4c. NOAA active alerts (last 72h). Same non-fatal pattern as 4b — the
@@ -140,9 +161,19 @@ fi
 #     cadence is bursty (days-quiet then a flare cluster), so a 24h
 #     window often shows nothing for the audience; 72h keeps recent
 #     space-weather context visible during a multi-day demo.
+#
+#     Same 600s local cache as space_weather (4b). NOAA alerts are
+#     hours-to-days apart; a 10-min stale window is invisible to the
+#     audience and saves 5-15s of NOAA HTTPS round-trip per push.
+AL_CACHE="$CACHE_DIR/alerts.cache.json"
 AL_PUSH=""
-AL_TMP="$AL" NOW_EPOCH="$NOW_EPOCH" \
-timeout 15 python3 - <<'PYEOF' 2>/dev/null
+if [[ -s "$AL_CACHE" ]] && \
+        (( NOW_EPOCH - $(stat -c %Y "$AL_CACHE" 2>/dev/null || echo 0) < NOAA_CACHE_TTL )); then
+    cp "$AL_CACHE" "${AL%.tmp}"
+    AL_PUSH="${AL%.tmp}"
+else
+    AL_TMP="$AL" NOW_EPOCH="$NOW_EPOCH" \
+    timeout 15 python3 - <<'PYEOF' 2>/dev/null
 import os, sys, re, json, time
 from datetime import datetime, timedelta
 sys.path.insert(0, '/opt/meshforge/src')
@@ -190,12 +221,18 @@ try:
 except Exception:
     sys.exit(1)
 PYEOF
-if [[ -s "$AL" ]]; then
-    mv "$AL" "${AL%.tmp}"
-    AL_PUSH="${AL%.tmp}"
-else
-    rm -f "$AL"
-    log "alerts fetch failed or empty; pushing without it this cycle"
+    if [[ -s "$AL" ]]; then
+        mv "$AL" "${AL%.tmp}"
+        cp "${AL%.tmp}" "$AL_CACHE"
+        AL_PUSH="${AL%.tmp}"
+    elif [[ -s "$AL_CACHE" ]]; then
+        cp "$AL_CACHE" "${AL%.tmp}"
+        AL_PUSH="${AL%.tmp}"
+        log "alerts fetch failed; using stale cache from $(date -d @$(stat -c %Y "$AL_CACHE") -u +%H:%M:%SZ)"
+    else
+        rm -f "$AL"
+        log "alerts fetch failed or empty; pushing without it this cycle"
+    fi
 fi
 
 # 5. Cloud healthcheck — don't bother pushing to a VPS that's down.
