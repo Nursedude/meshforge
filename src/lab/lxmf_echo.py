@@ -129,9 +129,14 @@ def make_on_receive(state: _EchoState):
         except Exception as exc:
             # One failed ACK must not kill the daemon — soak runs for
             # weeks. Bridge errors / transient path loss happen.
+            # exc_info=True puts the traceback in the journal so we
+            # can diagnose without re-running; some RNS exceptions have
+            # empty str() and would otherwise produce a stub line.
             logger.warning(
-                "echo: tx FAILED seq=%d to=%s: %s",
-                ping.seq, message.source_hash.hex(), exc,
+                "echo: tx FAILED seq=%d to=%s: %s: %s",
+                ping.seq, message.source_hash.hex(),
+                type(exc).__name__, exc or "(no message)",
+                exc_info=True,
             )
 
     return _on_receive
