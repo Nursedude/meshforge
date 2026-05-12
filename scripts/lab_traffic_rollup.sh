@@ -4,7 +4,7 @@
 #
 # For each fleet box in $HOME/.config/meshforge/fleet_hosts (or the
 # fallback paths fleet_sync.sh uses), ssh in and pull the last
-# $LOOKBACK_HOURS of journalctl --user -u meshforge-tracer output
+# $LOOKBACK_HOURS of journalctl --user-unit=meshforge-tracer output
 # filtered for "rtt seq=" lines. Compute per-(from→to) pair:
 #
 #   samples | mean ms | p95 ms | fail %
@@ -58,18 +58,35 @@ echo "# fleet-from-host | journal-line" > "$TMP"
 hosts_seen=0
 hosts_with_data=0
 
+# Always pull the local journal first. fleet_hosts excludes "self" by
+# convention (see scripts/fleet_sync.sh), but the tester box typically
+# IS the local box — without this we'd silently miss its data.
+local_host="$(hostname -s 2>/dev/null || hostname)"
+hosts_seen=$((hosts_seen + 1))
+local_result=$(journalctl --user-unit=meshforge-tracer \
+    --since "${LOOKBACK_HOURS} hours ago" --no-pager -o cat 2>/dev/null \
+    | grep -E 'tracer: rtt seq=' || true)
+if [[ -n "$local_result" ]]; then
+    hosts_with_data=$((hosts_with_data + 1))
+    while IFS= read -r line; do
+        printf '%s | %s\n' "$local_host" "$line" >> "$TMP"
+    done <<< "$local_result"
+fi
+
 while IFS= read -r raw; do
     # Strip comments and trim. Skip blank lines.
     host="${raw%%#*}"
     host="${host//[[:space:]]/}"
     [[ -z "$host" ]] && continue
+    # Skip if it matches the local host (already pulled).
+    [[ "$host" == "$local_host" ]] && continue
     hosts_seen=$((hosts_seen + 1))
 
     # journalctl emits "<ts> <host> <id>[<pid>]: <message>". We only
     # want the message body. -o cat strips everything but the body.
     result=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" \
-        "journalctl --user -u meshforge-tracer --since '${LOOKBACK_HOURS} hours ago' \
-         --no-pager -o cat 2>/dev/null | grep -E '^tracer: rtt seq='" \
+        "journalctl --user-unit=meshforge-tracer --since '${LOOKBACK_HOURS} hours ago' \
+         --no-pager -o cat 2>/dev/null | grep -E 'tracer: rtt seq='" \
         2>/dev/null || true)
 
     if [[ -n "$result" ]]; then
