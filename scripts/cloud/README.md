@@ -168,7 +168,7 @@ sudo rm /etc/default/meshforge-cloud-push
 | Risk | Mitigation |
 |---|---|
 | DNS propagation lag pre-talk | Point DNS by May 14. |
-| Let's Encrypt rate limit | Caddy retries; if it fails, fall back to Cloudflare flexible TLS. |
+| Let's Encrypt rate limit | Caddy retries; if first-issuance fails, retry after 1h or temporarily serve the demo at the raw VPS IP over HTTP until LE clears. No Cloudflare-proxy bridge — the demo uses NoIP DNS, not Cloudflare. |
 | Public exposure of intentionally-local nodes | Day 2 audit before flipping DNS; denylist in push script if needed. |
 | VPS down during talk | Mention `:5000` on-prem URL as fallback. |
 | Snapshot push fails silently | Page shows "stale" stamp ≥ 5min; journald has full log. |
