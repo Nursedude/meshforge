@@ -120,14 +120,7 @@
       letter-spacing: 0.3px;
     }
 
-    #map { flex: 1; background: #1A2D3F; }
-    /* Dark-mode hack for OSM tiles: invert + hue-rotate gives a designed
-       dark basemap without swapping providers (which would require a CSP
-       update). Filter applies only to the tile pane so circle markers
-       and popups render at full saturation. */
-    .leaflet-tile-pane {
-      filter: hue-rotate(180deg) invert(0.92) brightness(0.95) contrast(0.88);
-    }
+    #map { flex: 1; background: #0E1E2B; }
 
     /* Alerts banner — orange strip above the space-weather row when NOAA
        has active warnings/alerts in the last 24h. Wraps on mobile. */
@@ -255,10 +248,30 @@
   const map = L.map("map", { preferCanvas: true, zoomControl: true })
     .setView([20.5, -157.0], 7);
 
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 18,
-    attribution: "© OpenStreetMap contributors"
-  }).addTo(map);
+  // CartoDB Dark Matter — designed dark basemap. Allowed by CSP
+  // img-src in templates/cloud/Caddyfile.j2 (re-render needed on VPS
+  // when this changed: `sudo bash setup_vps.sh <domain>`).
+  // If CSP blocks CartoDB (e.g. before the Caddyfile reload lands),
+  // fall back to OSM with a CSS dark filter so the page never goes
+  // map-less. One-shot swap on the first tile error.
+  const carto = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    subdomains: "abcd",
+    maxZoom: 19,
+    attribution: "© OpenStreetMap contributors © CARTO"
+  });
+  let fellBack = false;
+  carto.on("tileerror", () => {
+    if (fellBack) return;
+    fellBack = true;
+    map.removeLayer(carto);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 18,
+      attribution: "© OpenStreetMap contributors"
+    }).addTo(map);
+    const pane = document.querySelector(".leaflet-tile-pane");
+    if (pane) pane.style.filter = "hue-rotate(180deg) invert(0.92) brightness(0.95) contrast(0.88)";
+  });
+  carto.addTo(map);
 
   const layer = L.layerGroup().addTo(map);
 
