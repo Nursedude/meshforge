@@ -13,12 +13,15 @@ User=
 Group=
 EnvironmentFile=-/etc/default/meshforge-cloud-push
 ExecStart=/opt/meshforge/scripts/cloud/push_snapshot.sh
-# Don't fail the unit on transient errors — the timer fires again in 60s.
+# Don't fail the unit on transient errors — the timer fires again in 120s.
 SuccessExitStatus=0 1
-TimeoutStartSec=45s
-# Keep this push lightweight; if it ever runs over 90s, kill it before
-# the next firing piles up.
-RuntimeMaxSec=90s
+# Budget envelope: curl(90s) + space_weather(15s) + alerts(15s) + rsync(20s)
+# = ~140s worst case. The timer cadence is 120s (see meshforge-cloud-push.timer)
+# so we cap below that to avoid piling firings. Most cycles finish in 20–30s;
+# this ceiling exists for the local-map slow path (region filter ~67s on
+# directories north of 75k nodes).
+TimeoutStartSec=120s
+RuntimeMaxSec=120s
 
 [Install]
 WantedBy=multi-user.target
