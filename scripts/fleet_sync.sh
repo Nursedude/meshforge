@@ -240,18 +240,29 @@ sync_repo() {
         restart_reason=""  # case (a) — no change, no restart
     else
         # case (b) vs (c): grep for service-relevant paths in the diff.
-        # The narrow include list — only paths the running daemon
-        # actually loads at import or invocation time:
-        #   src/           — Python runtime modules
-        #   scripts/       — shell scripts (incl. ExecStart wrappers)
-        #   pyproject.toml — package + tooling config
-        #   requirements*.txt — runtime deps (pip install is manual,
-        #                       but restarting on dep change is correct)
-        # Everything else (tests/, docs/, .claude/, .github/, *.md,
-        # README*) is excluded by absence from the pattern. Tests run
-        # in CI, docs do not load at runtime, .github is CI-only.
+        # Tight include list — only paths the running daemon actually
+        # imports at runtime:
+        #   src/             — Python modules loaded by the daemon
+        #   pyproject.toml   — package metadata + tooling
+        #   requirements*.txt — runtime deps
+        #
+        # NOT included (intentionally):
+        #   scripts/         — operator tooling. fleet_sync.sh, lint.py,
+        #                      diag_*.sh, install_*.sh, cloud/* run out
+        #                      of band; the daemon does not import them.
+        #                      Changing them does not require a daemon
+        #                      restart. (Surfaced 2026-05-11 by
+        #                      scripts/cloud/push_snapshot.sh tuning
+        #                      that triggered fleet-wide map restarts
+        #                      for no benefit.)
+        #   templates/       — copy targets for setup scripts. Even if
+        #                      a *.service file changes, fleet_sync
+        #                      uses try-restart not daemon-reload, so
+        #                      a unit-file change would not take
+        #                      effect via this script anyway.
+        #   tests/ docs/ .claude/ .github/ *.md — never load at runtime.
         if git diff --name-only "$old_head" "$new_head_full" 2>/dev/null \
-            | grep -qE "^(src|scripts)/|^pyproject\.toml$|^requirements.*\.txt$"; then
+            | grep -qE "^src/|^pyproject\.toml$|^requirements.*\.txt$"; then
             restart_reason="code"
         else
             restart_reason="docs_only"
