@@ -10,10 +10,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Nursedude/meshforge"><img src="https://img.shields.io/badge/version-0.5.6--beta-blue.svg" alt="Version"></a>
+  <a href="https://github.com/Nursedude/meshforge"><img src="https://img.shields.io/badge/version-0.6.0--beta-blue.svg" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green.svg" alt="License"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.9+-yellow.svg" alt="Python"></a>
-  <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-3229%20passing-brightgreen.svg" alt="Tests"></a>
+  <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-4008%20passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 <p align="center">
@@ -217,7 +217,7 @@ Main Menu (MeshForge NOC)
 
 ---
 
-## What Works (v0.5.5-beta)
+## What Works (v0.6.0-beta)
 
 ### Status Definitions
 
@@ -234,7 +234,7 @@ These features have been used in actual mesh deployments with physical radios an
 
 | Category | Capabilities |
 |----------|-------------|
-| **TUI Interface** | Installer, service control, device config wizard, gateway config, diagnostics — 64 handlers via registry pattern |
+| **TUI Interface** | Installer, service control, device config wizard, gateway config, diagnostics — 68 handlers via registry pattern |
 | **Radio Management** | Install/configure meshtasticd, LoRa presets, channels, SPI/USB auto-detect |
 | **RF Engineering** | Link budget, Fresnel zone, path loss, site planning, space weather (NOAA), Cython-optimized |
 | **AI Diagnostics** | Offline knowledge base (20+ topics), rule-based troubleshooting, confidence scoring |
@@ -314,18 +314,26 @@ MeshForge retains MeshCore as an optional gateway handler.
 | MQTT packet decryption | v0.5.5 | Optional AES-256-CTR decryption via meshing_around crypto bridge |
 | Cross-repo ecosystem config | v0.5.5 | `.claude/` configurations synced across meshforge, meshing_around, meshforge-maps |
 
-**Current Priority: Field Validation (v0.5.x → v0.6.0)**
+**Shipped in v0.6.0 (post-v0.5.5)**
 
-These features exist on main but need real-world testing before the v0.6.0 release:
+| Feature | Notes |
+|---------|-------|
+| Gateway field-deployed | Single canonical gateway live in the fleet; LXMF directed downlink via `@id` / `@short_name` |
+| Live NOC map (`:5000`) | Field-validated on 5-Pi fleet; per-protocol counts, federation across fleet boxes |
+| Public cloud demo (`:8808` → VPS) | `https://meshforge-maps.ddns.net/` — static-push from on-prem, dark CartoDB tiles, NOAA space weather + alerts, slide-14-style network-layer pills |
+| Federation across fleet | Each box's map sees every other box's nodes (24h freshness window) |
+| Coverage maps | Folium generation field-tested with real GPS position data |
+| Tiered node-directory retention | 30d for local origins, 7d for external bulk; 50k LRU cap |
+| Fleet-sync classifier | `scripts/fleet_sync.sh` skips daemon restarts on docs-only commits |
+| Memory persistence + mirror | Private GitHub backup of operator's Claude memory with secrets-grep gate |
 
-| Feature | What Needs Testing | Priority |
-|---------|-------------------|----------|
-| Gateway bridge (MQTT mode) | End-to-end Meshtastic ↔ RNS message delivery with real radios | High |
-| Coverage maps | Folium generation with real GPS position data | High |
-| Live NOC map | WebSocket updates with live node data in browser | High |
-| MQTT monitoring | Real mesh traffic observation and telemetry decode | Medium |
-| Traffic inspector | Packet capture with actual mesh packets | Medium |
-| Circuit breaker | Failure recovery under real disconnect conditions | Medium |
+**Currently Soaking**
+
+| Feature | Status |
+|---------|--------|
+| Gateway reliability counters | `R→M` drop rate audit (Issue #50/#51 lineage) |
+| Cross-broker MQTT bridge | LongFast ecosystem multi-broker visibility |
+| MeshAnchor `/fleet/rollup` parity | 6th fleet box stood up 2026-05-02 |
 
 **MeshAnchor Track**
 
@@ -915,7 +923,7 @@ connection (port 4403):
 
 ### Test Coverage
 
-**2,975 tests** across 81 test files:
+**4,008 tests** across 119 test files (selected high-volume files below):
 
 | Test File | Tests | Covers |
 |-----------|-------|--------|
@@ -983,7 +991,7 @@ print(f'Issues: {report.total_issues}, Files scanned: {report.total_files_scanne
 - Shared connection manager prevents TCP:4403 client contention
 - Exponential backoff reconnection (1s → 2s → 4s → ... → 30s max)
 - Canonical logging via `setup_logging()` — all 9 `basicConfig()` calls consolidated
-- Handler registry pattern: all 60 TUI handlers use registry dispatch (mixin inheritance fully replaced)
+- Handler registry pattern: all 68 TUI handlers use registry dispatch (mixin inheritance fully replaced)
 - Connection failure logs upgraded to WARNING level for visibility (cleanup errors stay DEBUG)
 
 ---
