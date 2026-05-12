@@ -218,6 +218,157 @@ def test_probe_lxmf_queue_normal(monkeypatch, tmp_path):
     assert "2 pending" in r.headline
 
 
+# ---------------------------------------------------- peer-gateway probe
+
+
+def test_probe_peer_gateways_daemon_inactive(monkeypatch):
+    """If meshforge-gateway isn't running, the probe is N/A (info)."""
+    monkeypatch.setattr(
+        "utils.service_check.check_service",
+        lambda name: MagicMock(available=False),
+    )
+    r = _handler()._probe_peer_gateways()
+    assert r.status == "info"
+    assert "not applicable" in r.headline
+
+
+def test_probe_peer_gateways_silent_journal(monkeypatch):
+    """Gateway up but journalctl returns nothing — warn."""
+    monkeypatch.setattr(
+        "utils.service_check.check_service",
+        lambda name: MagicMock(available=True),
+    )
+    monkeypatch.setattr(FleetHealthHandler, "_run", staticmethod(lambda *a, **k: ""))
+    r = _handler()._probe_peer_gateways()
+    assert r.status == "warn"
+    assert "no gateway journal output" in r.headline
+
+
+def test_probe_peer_gateways_no_peers_in_log(monkeypatch):
+    """Gateway active, journal has output but no peer lines — isolation warn."""
+    monkeypatch.setattr(
+        "utils.service_check.check_service",
+        lambda name: MagicMock(available=True),
+    )
+    monkeypatch.setattr(
+        FleetHealthHandler, "_run",
+        staticmethod(lambda *a, **k: "May 11 08:25 just a regular log line\n"),
+    )
+    r = _handler()._probe_peer_gateways()
+    assert r.status == "warn"
+    assert "no peer-gateway log entries" in r.headline
+
+
+def test_probe_peer_gateways_node_tracker_signal(monkeypatch):
+    """Production signal: node_tracker RNS announces (heartbeat off).
+
+    This is the line shape that ACTUALLY fires in production today
+    on moc3. The probe must surface peer-gateway-named RNS nodes as
+    live peers even when the heartbeat MQTT feature is disabled.
+    """
+    monkeypatch.setattr(
+        "utils.service_check.check_service",
+        lambda name: MagicMock(available=True),
+    )
+    journal = (
+        "May 11 16:39 py[1]: 2026-05-11 16:39 | gateway.node_tracker | "
+        "INFO | Discovered RNS node: 3dfbdb5d (MeshForge Gateway (moc)) "
+        "[LXMF_DELIVERY]\n"
+        "May 11 16:46 py[1]: 2026-05-11 16:46 | gateway.node_tracker | "
+        "INFO | Discovered RNS node: 627fa566 (MeshAnchor Broadcast) "
+        "[LXMF_DELIVERY]\n"
+    )
+    monkeypatch.setattr(
+        FleetHealthHandler, "_run",
+        staticmethod(lambda *a, **k: journal),
+    )
+    r = _handler()._probe_peer_gateways()
+    assert r.status == "ok"
+    assert "2 live" in r.headline
+
+
+def test_probe_peer_gateways_handles_nested_parens_in_name(monkeypatch):
+    """Production names have nested parens — must not truncate at inner )."""
+    monkeypatch.setattr(
+        "utils.service_check.check_service",
+        lambda name: MagicMock(available=True),
+    )
+    journal = (
+        "Discovered RNS node: 3dfbdb5d (MeshForge Gateway (moc)) "
+        "[LXMF_DELIVERY]\n"
+        "Discovered RNS node: f68c2f56 (MeshForge Gateway (moc3)) "
+        "[LXMF_DELIVERY]\n"
+    )
+    monkeypatch.setattr(
+        FleetHealthHandler, "_run",
+        staticmethod(lambda *a, **k: journal),
+    )
+    r = _handler()._probe_peer_gateways()
+    assert r.status == "ok"
+    assert "MeshForge Gateway (moc)" in r.headline
+    assert "MeshForge Gateway (moc3)" in r.headline
+
+
+def test_probe_peer_gateways_ignores_non_gateway_rns_nodes(monkeypatch):
+    """RNS announces from non-gateway destinations must NOT count."""
+    monkeypatch.setattr(
+        "utils.service_check.check_service",
+        lambda name: MagicMock(available=True),
+    )
+    journal = (
+        "Discovered RNS node: aaa (lab-echo (box-a)) [LXMF_DELIVERY]\n"
+        "Discovered RNS node: bbb (random nomadnet user) [LXMF_DELIVERY]\n"
+        "Discovered RNS node: ccc (validator) [LXMF_DELIVERY]\n"
+    )
+    monkeypatch.setattr(
+        FleetHealthHandler, "_run",
+        staticmethod(lambda *a, **k: journal),
+    )
+    r = _handler()._probe_peer_gateways()
+    assert r.status == "warn"
+    assert "no peer-gateway log entries" in r.headline
+
+
+def test_probe_peer_gateways_heartbeat_signal(monkeypatch):
+    """When heartbeat MQTT IS enabled, its log lines also feed the probe."""
+    monkeypatch.setattr(
+        "utils.service_check.check_service",
+        lambda name: MagicMock(available=True),
+    )
+    journal = (
+        "Discovered peer gateway: moc3-mf (role=meshtastic)\n"
+        "Discovered peer gateway: peer-2 (role=test)\n"
+        "GATEWAY HEARTBEAT: peer peer-2 is DOWN\n"
+    )
+    monkeypatch.setattr(
+        FleetHealthHandler, "_run",
+        staticmethod(lambda *a, **k: journal),
+    )
+    r = _handler()._probe_peer_gateways()
+    assert r.status == "ok"
+    assert "1 live" in r.headline
+    assert "1 DOWN" in r.headline
+
+
+def test_probe_peer_gateways_all_down(monkeypatch):
+    """All known peers are DOWN — fail."""
+    monkeypatch.setattr(
+        "utils.service_check.check_service",
+        lambda name: MagicMock(available=True),
+    )
+    journal = (
+        "Discovered peer gateway: only-peer (role=test)\n"
+        "GATEWAY HEARTBEAT: peer only-peer is DOWN\n"
+    )
+    monkeypatch.setattr(
+        FleetHealthHandler, "_run",
+        staticmethod(lambda *a, **k: journal),
+    )
+    r = _handler()._probe_peer_gateways()
+    assert r.status == "fail"
+    assert "all marked DOWN" in r.headline
+
+
 # ------------------------------------------------------------ Map service
 
 
@@ -362,6 +513,7 @@ def test_render_overview_does_not_raise(monkeypatch, capsys):
     monkeypatch.setattr(h, "_probe_nomadnet", lambda: _fake("nomadnet", "warn"))
     monkeypatch.setattr(h, "_probe_lxmf_queue", lambda: _fake("queue"))
     monkeypatch.setattr(h, "_probe_gateway_bridge", lambda: _fake("bridge"))
+    monkeypatch.setattr(h, "_probe_peer_gateways", lambda: _fake("peers"))
     monkeypatch.setattr(h, "_probe_map_service", lambda: _fake("mapsvc"))
     monkeypatch.setattr(h, "_probe_map_db", lambda: _fake("db"))
     monkeypatch.setattr(h, "_probe_meshtasticd_radio", lambda: _fake("radio"))
@@ -390,7 +542,7 @@ def test_probe_exception_is_isolated(monkeypatch, capsys):
     monkeypatch.setattr(h, "_probe_rnsd", boom)
     for name in (
         "_probe_rns_path_table", "_probe_rns_hub_peers", "_probe_nomadnet",
-        "_probe_lxmf_queue", "_probe_gateway_bridge",
+        "_probe_lxmf_queue", "_probe_gateway_bridge", "_probe_peer_gateways",
         "_probe_map_service", "_probe_map_db", "_probe_meshtasticd_radio",
     ):
         monkeypatch.setattr(

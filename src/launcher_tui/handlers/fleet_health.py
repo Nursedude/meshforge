@@ -89,6 +89,7 @@ class FleetHealthHandler(BaseHandler):
             self._probe_nomadnet,
             self._probe_lxmf_queue,
             self._probe_gateway_bridge,
+            self._probe_peer_gateways,
             self._probe_map_service,
             self._probe_map_db,
             self._probe_meshtasticd_radio,
@@ -342,6 +343,125 @@ class FleetHealthHandler(BaseHandler):
             label="Gateway bridge",
             status="ok",
             headline=f"active, {stats_line}",
+        )
+
+    def _probe_peer_gateways(self) -> ProbeResult:
+        """Surface peer-gateway visibility across the fleet.
+
+        Answers the load-bearing question: "does THIS gateway see the
+        OTHER gateways yet?" That's the precondition for any
+        cross-stack bridge traffic (Meshtastic↔MF↔RNS↔MA↔MeshCore).
+
+        Reads the meshforge-gateway journal for TWO signals (whichever
+        is producing data), since heartbeat MQTT is feature-flagged
+        off by default and the load-bearing peer-discovery in
+        production is RNS announce reception:
+
+        1. ``node_tracker`` log lines: ``Discovered RNS node: <hash>
+           (<name>) [LXMF_DELIVERY]`` — filtered to names matching
+           gateway patterns (``Gateway``, ``Broadcast``). Fires
+           whenever the gateway hears a peer's LXMF announce; this is
+           the path that actually carries bridge traffic.
+        2. ``gateway_heartbeat`` log lines: ``Discovered peer gateway:
+           <id>`` + DOWN/RECOVERED transitions. Only fires when the
+           heartbeat MQTT feature is enabled
+           (``gateway_heartbeat_enabled=True`` in gateway config).
+
+        If both signals are silent, the gateway is isolated — that's
+        the diagnostic surface the operator wants.
+
+        Ported from MeshAnchor's equivalent handler — same wire
+        format, different service unit name.
+        """
+        from utils.service_check import check_service
+
+        state = check_service("meshforge-gateway")
+        if not state.available:
+            return ProbeResult(
+                label="Peer gateways",
+                status="info",
+                headline="not applicable (meshforge-gateway not running)",
+            )
+
+        out = self._run(
+            ["journalctl", "-u", "meshforge-gateway",
+             "--since", "1 hour ago", "--no-pager"],
+            timeout=15,
+        )
+        if not out:
+            return ProbeResult(
+                label="Peer gateways",
+                status="warn",
+                headline="no gateway journal output in last hour",
+                hint="Gateway may have gone silent — check 'journalctl -u "
+                     "meshforge-gateway --since \"1 hour ago\"'",
+            )
+
+        peers_seen: dict = {}
+        peers_down: set = set()
+
+        for ln in out.splitlines():
+            # Signal 1: node_tracker RNS announces — load-bearing path.
+            # "Discovered RNS node: <hash> (<name>) [LXMF_DELIVERY]"
+            idx = ln.find("Discovered RNS node: ")
+            if idx >= 0:
+                tail = ln[idx + len("Discovered RNS node: "):]
+                # Use rfind for nested parens like "MeshForge Gateway (moc)".
+                lp = tail.find("(")
+                rp = tail.rfind(")") if lp >= 0 else -1
+                if lp >= 0 and rp > lp:
+                    name = tail[lp + 1:rp].strip()
+                    if any(k in name for k in ("Gateway", "Broadcast")):
+                        peers_seen[name] = ln
+                continue
+
+            # Signal 2: gateway_heartbeat MQTT (only if enabled).
+            for marker in ("Discovered peer gateway:",
+                           "GATEWAY HEARTBEAT: peer "):
+                hidx = ln.find(marker)
+                if hidx < 0:
+                    continue
+                tail = ln[hidx + len(marker):].strip()
+                peer_id = tail.split()[0].rstrip(":,")
+                peers_seen[peer_id] = ln
+                if "is DOWN" in ln:
+                    peers_down.add(peer_id)
+                elif "RECOVERED" in ln or "Discovered peer gateway" in ln:
+                    peers_down.discard(peer_id)
+                break
+
+        if not peers_seen:
+            return ProbeResult(
+                label="Peer gateways",
+                status="warn",
+                headline="no peer-gateway log entries in last hour",
+                hint="This gateway is running but isolated — peers may not be "
+                     "announcing on RNS (path table?) or heartbeat is off",
+            )
+
+        live = [p for p in peers_seen if p not in peers_down]
+        if not live:
+            return ProbeResult(
+                label="Peer gateways",
+                status="fail",
+                headline=f"{len(peers_seen)} peer(s) known, all marked DOWN",
+                hint="Heartbeat broker may be unreachable or all peers offline",
+            )
+
+        def _short(pid: str) -> str:
+            return pid[:24] + "…" if len(pid) > 25 else pid
+
+        live_short = ", ".join(_short(p) for p in sorted(live)[:3])
+        more = "" if len(live) <= 3 else f" (+{len(live) - 3} more)"
+
+        down_note = ""
+        if peers_down:
+            down_note = f", {len(peers_down)} DOWN"
+
+        return ProbeResult(
+            label="Peer gateways",
+            status="ok",
+            headline=f"{len(live)} live{down_note} — {live_short}{more}",
         )
 
     def _probe_map_service(self) -> ProbeResult:
