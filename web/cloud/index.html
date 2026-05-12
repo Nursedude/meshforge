@@ -33,22 +33,22 @@
     }
 
     header {
-      padding: 14px 20px 10px;
+      padding: 8px 16px 6px;
       border-bottom: 1px solid var(--rule);
       display: flex;
       flex-wrap: wrap;
-      gap: 12px;
+      gap: 10px;
       align-items: baseline;
     }
     header h1 {
       margin: 0;
-      font-size: 18px;
+      font-size: 15px;
       font-weight: 700;
       letter-spacing: -0.2px;
     }
     header .subtitle {
       color: var(--muted);
-      font-size: 13px;
+      font-size: 11px;
     }
     header .stamp {
       margin-left: auto;
@@ -59,36 +59,48 @@
     }
     header .stamp.stale { color: var(--accent); }
 
-    /* Space weather strip — sits between header and map. Mirrors the
-       slide-14 panel on meshforge-maps :8808 but in a single wrappable
-       row for mobile audiences (BIRC = phones in the room). */
-    #space-weather {
-      padding: 8px 20px;
+    /* Info strip — one consolidated row carrying networks, space weather,
+       and HF bands. Mirrors the slide-14 panel in a single tight row to
+       maximize map real estate on a 13" laptop. Wraps cleanly on mobile.
+       Each section is separated by an inline divider span. */
+    #info {
+      padding: 4px 16px;
       border-bottom: 1px solid var(--rule);
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 10px 16px;
-      font-size: 12px;
+      gap: 4px 12px;
+      font-size: 11px;
       background: #0B1622;
+      line-height: 1.4;
     }
-    #space-weather.hidden { display: none; }
-    #space-weather .label {
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.6px;
-      font-size: 10px;
-      font-weight: 600;
+    #info.hidden { display: none; }
+    #info .divider {
+      color: var(--rule);
+      user-select: none;
     }
-    .sw-stat {
+    .net-pill, .sw-stat {
       display: inline-flex;
-      align-items: baseline;
+      align-items: center;
       gap: 4px;
       font-family: var(--font-mono);
+      white-space: nowrap;
     }
+    .net-pill .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    .net-pill .n { color: var(--fg); font-weight: 600; }
+    .net-pill .name { color: var(--muted); font-size: 10px; }
+    .net-pill.meshtastic .dot { background: #6FB3B8; }
+    .net-pill.aredn      .dot { background: #E8794F; }
+    .net-pill.meshcore   .dot { background: #B49AD8; }
+    .net-pill.rns        .dot { background: #E8B340; }
     .sw-stat .k {
       color: var(--muted);
-      font-size: 10px;
+      font-size: 9px;
       text-transform: uppercase;
       letter-spacing: 0.4px;
     }
@@ -96,13 +108,13 @@
     .sw-bands {
       display: inline-flex;
       flex-wrap: wrap;
-      gap: 4px;
+      gap: 3px;
       align-items: center;
     }
     .sw-band {
       font-family: var(--font-mono);
-      font-size: 10px;
-      padding: 2px 6px;
+      font-size: 9px;
+      padding: 1px 5px;
       border-radius: 3px;
       letter-spacing: 0.3px;
       white-space: nowrap;
@@ -114,7 +126,7 @@
     .sw-band.unknown   { background: #2A3A4A; color: var(--muted); }
     .sw-source {
       color: var(--muted);
-      font-size: 10px;
+      font-size: 9px;
       margin-left: auto;
       font-family: var(--font-mono);
       letter-spacing: 0.3px;
@@ -122,91 +134,51 @@
 
     #map { flex: 1; background: #0E1E2B; }
 
-    /* Network layers strip — slide-14 parity. One pill per protocol with a
-       colored dot keying the network to its branded color. */
-    #networks {
-      padding: 6px 20px;
-      border-bottom: 1px solid var(--rule);
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px 14px;
-      font-size: 12px;
-      align-items: center;
-      background: #0B1622;
-    }
-    #networks.hidden { display: none; }
-    #networks .label {
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.6px;
-      font-size: 10px;
-      font-weight: 600;
-    }
-    .net-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      font-family: var(--font-mono);
-    }
-    .net-pill .dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      display: inline-block;
-    }
-    .net-pill .n { color: var(--fg); font-weight: 600; }
-    .net-pill .name { color: var(--muted); font-size: 11px; }
-    .net-pill.meshtastic .dot { background: #6FB3B8; }
-    .net-pill.aredn      .dot { background: #E8794F; }
-    .net-pill.meshcore   .dot { background: #B49AD8; }
-    .net-pill.rns        .dot { background: #E8B340; }
-
-    /* Alerts banner — orange strip above the space-weather row when NOAA
-       has active warnings/alerts in the last 24h. Wraps on mobile. */
+    /* Alerts banner — orange ticker above the info row when NOAA has
+       active warnings/alerts in the last 72h. One line of comma-joined
+       items keeps the vertical footprint minimal. */
     #alerts {
-      padding: 8px 20px;
+      padding: 4px 16px;
       background: #3A1F12;
       border-bottom: 1px solid #5F2A1E;
       color: #FFD7C2;
-      font-size: 12px;
+      font-size: 11px;
       display: flex;
       flex-wrap: wrap;
-      gap: 8px 14px;
+      gap: 4px 10px;
       align-items: center;
+      line-height: 1.4;
     }
     #alerts.hidden { display: none; }
     #alerts .label {
       font-weight: 700;
       letter-spacing: 0.6px;
       text-transform: uppercase;
-      font-size: 10px;
+      font-size: 9px;
       color: var(--accent);
     }
     #alerts .alert-item {
       display: inline-flex;
-      gap: 6px;
+      gap: 4px;
       align-items: baseline;
       font-family: var(--font-mono);
+      white-space: nowrap;
     }
     #alerts .alert-item .t {
       color: var(--accent);
       font-weight: 700;
-      font-size: 10px;
+      font-size: 9px;
     }
     #alerts .alert-item .msg { color: #FFD7C2; }
-    #alerts .alert-item .when {
-      color: var(--muted);
-      font-size: 10px;
-      font-family: var(--font-mono);
-    }
+    #alerts .sep { color: #7A4A35; user-select: none; }
 
     footer {
-      padding: 8px 20px;
+      padding: 4px 16px;
       border-top: 1px solid var(--rule);
       display: flex;
       flex-wrap: wrap;
-      gap: 14px;
-      font-size: 11px;
+      gap: 12px;
+      font-size: 10px;
       color: var(--muted);
       letter-spacing: 0.3px;
     }
@@ -238,19 +210,16 @@
   <span class="stamp" id="stamp">loading…</span>
 </header>
 
-<div id="networks" class="hidden" aria-label="Network layer counts">
-  <span class="label">Networks</span>
-  <span id="networks-list"></span>
-</div>
-
 <div id="alerts" class="hidden" role="status" aria-live="polite" aria-label="Active space weather alerts">
-  <span class="label">NOAA Alert</span>
+  <span class="label">NOAA</span>
   <span id="alerts-list"></span>
 </div>
 
-<div id="space-weather" class="hidden" aria-label="Space weather and HF band conditions">
-  <span class="label">Space Weather</span>
+<div id="info" class="hidden" aria-label="Network layer counts, space weather, HF band conditions">
+  <span id="networks-list"></span>
+  <span id="info-divider-1" class="divider hidden">│</span>
   <span id="sw-stats"></span>
+  <span id="info-divider-2" class="divider hidden">│</span>
   <span class="sw-bands" id="sw-bands"></span>
   <span class="sw-source" id="sw-source"></span>
 </div>
@@ -341,20 +310,15 @@
   }
 
   function renderNetworks(byNetwork) {
-    const panel = document.getElementById("networks");
+    const target = document.getElementById("networks-list");
     if (!byNetwork || typeof byNetwork !== "object" || !Object.keys(byNetwork).length) {
-      panel.classList.add("hidden");
+      target.innerHTML = "";
+      updateInfoVisibility();
       return;
     }
-    panel.classList.remove("hidden");
-    // Display order: protocols we know about first, in a sensible reading
-    // order; anything unknown appended.
     const known = ["meshtastic", "aredn", "meshcore", "rns"];
     const labels = {
-      meshtastic: "Meshtastic",
-      aredn: "AREDN",
-      meshcore: "MeshCore",
-      rns: "RNS",
+      meshtastic: "Meshtastic", aredn: "AREDN", meshcore: "MeshCore", rns: "RNS",
     };
     const seen = new Set();
     const out = [];
@@ -369,16 +333,30 @@
       const name = htmlEscape(k.charAt(0).toUpperCase() + k.slice(1));
       out.push(`<span class="net-pill"><span class="dot" style="background:var(--muted)"></span><span class="n">${v}</span><span class="name">${name}</span></span>`);
     }
-    document.getElementById("networks-list").innerHTML = out.join("");
+    target.innerHTML = out.join(" ");
+    updateInfoVisibility();
+  }
+
+  function updateInfoVisibility() {
+    const panel = document.getElementById("info");
+    const hasNet = document.getElementById("networks-list").innerHTML.length > 0;
+    const hasSw = document.getElementById("sw-stats").innerHTML.length > 0;
+    const hasBands = document.getElementById("sw-bands").innerHTML.length > 0;
+    if (hasNet || hasSw || hasBands) panel.classList.remove("hidden");
+    else panel.classList.add("hidden");
+    // Show dividers only when adjacent sections both have content
+    document.getElementById("info-divider-1").classList.toggle("hidden", !(hasNet && (hasSw || hasBands)));
+    document.getElementById("info-divider-2").classList.toggle("hidden", !(hasSw && hasBands));
   }
 
   function renderSpaceWeather(sw) {
-    const panel = document.getElementById("space-weather");
     if (!sw) {
-      panel.classList.add("hidden");
+      document.getElementById("sw-stats").innerHTML = "";
+      document.getElementById("sw-bands").innerHTML = "";
+      document.getElementById("sw-source").textContent = "";
+      updateInfoVisibility();
       return;
     }
-    panel.classList.remove("hidden");
 
     const stats = [];
     if (typeof sw.solar_flux === "number")
@@ -429,6 +407,7 @@
     const src = sw.source || "NOAA SWPC";
     document.getElementById("sw-source").textContent =
       ageLabel ? `${src} · updated ${ageLabel}` : src;
+    updateInfoVisibility();
   }
 
   function renderAlerts(alerts) {
@@ -439,12 +418,13 @@
       return;
     }
     panel.classList.remove("hidden");
+    // Comma-joined ticker — vertical space matters more than per-item
+    // dates. The most recent alerts win the foreground.
     document.getElementById("alerts-list").innerHTML = list.map(a => {
       const t = htmlEscape(a.type || "ALERT");
       const msg = htmlEscape(a.title || a.message || "");
-      const when = htmlEscape(a.issue_datetime || "");
-      return `<span class="alert-item"><span class="t">${t}</span><span class="msg">${msg}</span><span class="when">${when}</span></span>`;
-    }).join("");
+      return `<span class="alert-item"><span class="t">${t}</span><span class="msg">${msg}</span></span>`;
+    }).join(' <span class="sep">·</span> ');
   }
 
   async function fetchAll() {
