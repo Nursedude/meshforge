@@ -140,6 +140,13 @@ RSYNC_OPTS=(
 PUSH_FILES=("$SNAPSHOT_FINAL" "$META_FINAL")
 [[ -n "$SW_PUSH" ]] && PUSH_FILES+=("$SW_PUSH")
 
+# Also keep index.html in lockstep with the repo, so page changes
+# (new panels, layout tweaks) auto-deploy on next push without an
+# operator round-trip to the VPS. rsync's checksum/mtime check makes
+# unchanged files a no-op.
+INDEX_HTML="/opt/meshforge/web/cloud/index.html"
+[[ -r "$INDEX_HTML" ]] && PUSH_FILES+=("$INDEX_HTML")
+
 if ! rsync "${RSYNC_OPTS[@]}" \
         "${PUSH_FILES[@]}" \
         "$CLOUD_USER@$CLOUD_HOST:$CLOUD_WEBROOT/"; then
