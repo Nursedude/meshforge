@@ -1,0 +1,23 @@
+# MeshForge — lab tracer timer (every 10 min)
+# ===========================================
+#
+# Mirrors the moc-drain-snapshot pattern: persistent=true so a missed
+# firing (e.g. box rebooted) catches up after boot. Cadence is 10 min
+# per L1 plan question #2.
+#
+# To change cadence, edit OnCalendar below and run:
+#   systemctl --user daemon-reload
+#   systemctl --user restart meshforge-tracer.timer
+
+[Unit]
+Description=Fire meshforge-tracer every 10 minutes
+Requires=meshforge-tracer.service
+
+[Timer]
+# *:00/10 = at the start of every 10th minute (00, 10, 20, 30, 40, 50)
+OnCalendar=*-*-* *:00/10:00
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

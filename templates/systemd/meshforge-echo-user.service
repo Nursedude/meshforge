@@ -1,0 +1,45 @@
+# MeshForge — lab echo responder (systemd-user, long-running)
+# ============================================================
+#
+# Replies ACK to any inbound LXMF whose body parses as
+# "PING seq=N from=<short>". Pairs with meshforge-tracer.timer (the
+# sender side) to produce per-pair RTT + reliability data.
+#
+# Identity at ~/.config/meshforge/lab_echo_identity (auto-generated
+# on first run). The destination hash is logged at startup —
+# distribute it to peers via lab_peers files.
+#
+# Install (on every fleet box that should answer pings):
+#   cp /opt/meshforge/templates/systemd/meshforge-echo-user.service \
+#      ~/.config/systemd/user/meshforge-echo.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now meshforge-echo.service
+#   journalctl --user -u meshforge-echo --since "1 min ago" \
+#       | grep "lab-echo destination"
+#
+# Bootstrap (one-time, to seed peers' lab_peers files before enabling):
+#   python3 -m lab.lxmf_echo --init   # prints "<short>=<hash>"
+#
+# Operator notes:
+#   - Restart=on-failure keeps the daemon up across transient RNS init
+#     failures (which happen when rnsd restarts under us).
+#   - Echo is stateless; LXMF storage lives in /tmp, swept each restart.
+#   - See project_lab_traffic_soak_l1_plan.md for the broader arc.
+
+[Unit]
+Description=MeshForge lab echo responder (LXMF PING/ACK)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/meshforge/src
+ExecStart=/usr/bin/python3 -m lab.lxmf_echo
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshforge-echo
+
+[Install]
+WantedBy=default.target

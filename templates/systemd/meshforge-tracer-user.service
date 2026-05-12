@@ -1,0 +1,35 @@
+# MeshForge — lab tracer (systemd-user, one-shot, fired by the timer)
+# ===================================================================
+#
+# Sends one PING per peer in ~/.config/meshforge/lab_peers, waits for
+# ACKs, emits "tracer: rtt seq=N peer=<name> result=ok|timeout|no-route
+# ms=<int>" lines to the journal. Aggregator
+# (scripts/lab_traffic_rollup.sh) rolls these into per-pair samples /
+# mean / p95 / fail%.
+#
+# Pairs with meshforge-tracer.timer (10-min cadence by default).
+#
+# Install (typically only on the designated tester box):
+#   cp /opt/meshforge/templates/systemd/meshforge-tracer-user.service \
+#      ~/.config/systemd/user/meshforge-tracer.service
+#   cp /opt/meshforge/templates/systemd/meshforge-tracer-user.timer \
+#      ~/.config/systemd/user/meshforge-tracer.timer
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now meshforge-tracer.timer
+#
+# Peer hash distribution: each box runs `python3 -m lab.lxmf_echo --init`
+# once, prints "<short>=<hash>", operator concatenates results into
+# ~/.config/meshforge/lab_peers on the tester box.
+
+[Unit]
+Description=MeshForge lab tracer (LXMF PING+ACK measurement)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/meshforge/src
+ExecStart=/usr/bin/python3 -m lab.lxmf_tracer
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshforge-tracer
