@@ -122,6 +122,45 @@
 
     #map { flex: 1; background: #0E1E2B; }
 
+    /* Network layers strip — slide-14 parity. One pill per protocol with a
+       colored dot keying the network to its branded color. */
+    #networks {
+      padding: 6px 20px;
+      border-bottom: 1px solid var(--rule);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 14px;
+      font-size: 12px;
+      align-items: center;
+      background: #0B1622;
+    }
+    #networks.hidden { display: none; }
+    #networks .label {
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      font-size: 10px;
+      font-weight: 600;
+    }
+    .net-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--font-mono);
+    }
+    .net-pill .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    .net-pill .n { color: var(--fg); font-weight: 600; }
+    .net-pill .name { color: var(--muted); font-size: 11px; }
+    .net-pill.meshtastic .dot { background: #6FB3B8; }
+    .net-pill.aredn      .dot { background: #E8794F; }
+    .net-pill.meshcore   .dot { background: #B49AD8; }
+    .net-pill.rns        .dot { background: #E8B340; }
+
     /* Alerts banner — orange strip above the space-weather row when NOAA
        has active warnings/alerts in the last 24h. Wraps on mobile. */
     #alerts {
@@ -198,6 +237,11 @@
   <span class="subtitle">LongFast nodes observed from one Big Island vantage point</span>
   <span class="stamp" id="stamp">loading…</span>
 </header>
+
+<div id="networks" class="hidden" aria-label="Network layer counts">
+  <span class="label">Networks</span>
+  <span id="networks-list"></span>
+</div>
 
 <div id="alerts" class="hidden" role="status" aria-live="polite" aria-label="Active space weather alerts">
   <span class="label">NOAA Alert</span>
@@ -293,6 +337,39 @@
     else stamp.classList.remove("stale");
 
     counts.textContent = `${meta.feature_count ?? 0} nodes · region ${meta.region ?? "?"}`;
+    renderNetworks(meta.counts_by_network);
+  }
+
+  function renderNetworks(byNetwork) {
+    const panel = document.getElementById("networks");
+    if (!byNetwork || typeof byNetwork !== "object" || !Object.keys(byNetwork).length) {
+      panel.classList.add("hidden");
+      return;
+    }
+    panel.classList.remove("hidden");
+    // Display order: protocols we know about first, in a sensible reading
+    // order; anything unknown appended.
+    const known = ["meshtastic", "aredn", "meshcore", "rns"];
+    const labels = {
+      meshtastic: "Meshtastic",
+      aredn: "AREDN",
+      meshcore: "MeshCore",
+      rns: "RNS",
+    };
+    const seen = new Set();
+    const out = [];
+    for (const k of known) {
+      if (byNetwork[k] != null) {
+        seen.add(k);
+        out.push(`<span class="net-pill ${k}"><span class="dot"></span><span class="n">${byNetwork[k]}</span><span class="name">${labels[k]}</span></span>`);
+      }
+    }
+    for (const [k, v] of Object.entries(byNetwork)) {
+      if (seen.has(k)) continue;
+      const name = htmlEscape(k.charAt(0).toUpperCase() + k.slice(1));
+      out.push(`<span class="net-pill"><span class="dot" style="background:var(--muted)"></span><span class="n">${v}</span><span class="name">${name}</span></span>`);
+    }
+    document.getElementById("networks-list").innerHTML = out.join("");
   }
 
   function renderSpaceWeather(sw) {

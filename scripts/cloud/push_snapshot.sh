@@ -70,10 +70,21 @@ if ! python3 -c "import json,sys; d=json.load(open('$SNAPSHOT')); n=len(d.get('f
     rm -f "$SNAPSHOT"
     exit 1
 fi
-N_FEATURES=$(python3 -c "import json;print(len(json.load(open('$SNAPSHOT')).get('features',[])))")
+# Tally per-network counts in the same pass so the audience-facing page
+# can show a slide-14-style "Meshtastic / AREDN / MeshCore" strip.
+read N_FEATURES COUNTS_JSON < <(SNAP="$SNAPSHOT" python3 - <<'PYEOF'
+import json, os
+from collections import Counter
+feats = json.load(open(os.environ['SNAP'])).get('features', [])
+c = Counter((f.get('properties') or {}).get('network') for f in feats)
+c.pop(None, None)
+print(len(feats), json.dumps(dict(c), separators=(',', ':')))
+PYEOF
+)
 
 # 3. Write a small meta.json with the freshness stamp + counts. The
-#    cloud index.html reads this to display "last updated <X>s ago".
+#    cloud index.html reads this to display "last updated <X>s ago"
+#    and the per-network breakdown.
 NOW_EPOCH=$(date +%s)
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 cat > "$META" <<EOF
@@ -81,6 +92,7 @@ cat > "$META" <<EOF
   "generated_at": "$NOW_ISO",
   "generated_at_epoch": $NOW_EPOCH,
   "feature_count": $N_FEATURES,
+  "counts_by_network": $COUNTS_JSON,
   "region": "$REGION",
   "source": "meshforge-cloud-push"
 }
