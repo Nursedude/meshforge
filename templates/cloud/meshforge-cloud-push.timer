@@ -1,16 +1,21 @@
 [Unit]
-Description=Fire MeshForge cloud snapshot push every 60s
+Description=Fire MeshForge cloud snapshot push every 180s
 Documentation=https://github.com/Nursedude/meshforge
 
 [Timer]
 # First push 30s after boot — gives meshforge-map.service time to come up.
 OnBootSec=30s
-# Cadence: 120s. Audience-grade freshness (≤3 min stale at the talk)
-# while leaving headroom for slow region-filter scans on large
-# directories. Observed 2026-05-11 on volcanoai: hawaii filter took
-# ~67s against a 76k-node directory; a 60s cadence would queue
-# snapshots back-to-back and crowd out interactive map clients.
-OnUnitActiveSec=120s
+# Cadence: 180s. Source data churns far slower than the push timer —
+# mesh node positions are static, NOAA SFI/Kp update at hour-to-day
+# cadence, MeshCore upstream is cached 10 min internally, and the
+# browser caches every payload for 30s anyway. At 120s the push
+# script burned ~28% duty cycle (median 28s wall time per cycle)
+# mostly on the region-filter scan against a 76k-node directory
+# (observed 19-65s on volcanoai, 2026-05-11). 180s drops duty cycle
+# to ~19% and leaves more headroom for the slow tail without
+# changing perceived freshness during a 25-min talk (worst-case
+# visitor staleness ~210s including the 30s browser cache).
+OnUnitActiveSec=180s
 # AccuracySec lower = more precise firing; 5s is fine.
 AccuracySec=5s
 # Don't drift; reset wall-clock anchor on resume.
