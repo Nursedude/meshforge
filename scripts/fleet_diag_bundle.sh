@@ -144,42 +144,31 @@ echo
 echo "### installed unit ↔ repo template drift"
 echo '```'
 # Catches the class of "fix is in the repo but /etc/systemd/system/
-# never got the new copy" gotcha (e.g. the meshanchor-daemon EROFS
-# class on 2026-05-13: a sandbox fix landed in the MA repo but the
-# cp-to-/etc step was never re-run on the deploy box, so the daemon
-# spammed [Errno 30] for 7 days while the daemon was technically
-# `active (running)`).
-drift=0
-tmp_cmp="$(mktemp)"
-trap 'rm -f "$tmp_cmp"' EXIT
-for installed in /etc/systemd/system/*.service /etc/systemd/system/*.timer; do
-    [[ -f "$installed" ]] || continue
-    name=$(basename "$installed")
-    for tpl in /opt/meshforge/templates/systemd/"$name" \
-               /opt/meshforge/scripts/"$name" \
-               /opt/meshanchor/scripts/"$name"; do
-        [[ -f "$tpl" ]] || continue
-        # Resolve install-time placeholders by reading the running unit's
-        # User= line and rewriting __MESHFORGE_USER__ in the template. Without
-        # this, every host where install_noc.sh substituted the operator user
-        # would falsely flag DRIFT against the literal placeholder template.
-        user_val=$(grep -m1 '^User=' "$installed" 2>/dev/null | cut -d= -f2)
-        if [[ -n "$user_val" ]] && grep -q '__MESHFORGE_USER__' "$tpl"; then
-            sed "s|__MESHFORGE_USER__|$user_val|g" "$tpl" > "$tmp_cmp"
-            cmp_target="$tmp_cmp"
-        else
-            cmp_target="$tpl"
-        fi
-        if ! cmp -s "$installed" "$cmp_target"; then
-            echo "DRIFT: $name"
-            echo "  installed md5: $(md5sum "$installed"   | cut -d' ' -f1)"
-            echo "  template  md5: $(md5sum "$cmp_target" | cut -d' ' -f1)  ($tpl)"
-            drift=1
-        fi
-        break
+# never got the new copy" gotcha. Compare logic + placeholder
+# substitution + comment-strip live in scripts/lib/unit_compare.sh
+# (Phase A of the fleet_etc_reconcile design).
+if [[ -r /opt/meshforge/scripts/lib/unit_compare.sh ]]; then
+    source /opt/meshforge/scripts/lib/unit_compare.sh
+    drift=0
+    for installed in /etc/systemd/system/*.service /etc/systemd/system/*.timer; do
+        [[ -f "$installed" ]] || continue
+        result=$(unit_compare_check "$installed")
+        case "$result" in
+            DRIFT*)
+                # Format: "DRIFT <inst_md5> <tpl_md5> <tpl_path>"
+                read -r _ imd5 tmd5 tpl <<< "$result"
+                echo "DRIFT: $(basename "$installed")"
+                echo "  installed md5: $imd5"
+                echo "  template  md5: $tmd5  ($tpl)"
+                drift=1
+                ;;
+            # MATCH / NO_TEMPLATE / MISSING — silent, only DRIFT surfaces.
+        esac
     done
-done
-[[ $drift -eq 0 ]] && echo "(all installed units match repo templates)"
+    [[ $drift -eq 0 ]] && echo "(all installed units match repo templates)"
+else
+    echo "(unit_compare.sh not deployed yet — drift check skipped)"
+fi
 echo '```'
 
 echo
