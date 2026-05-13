@@ -1,6 +1,6 @@
 # BIRC Talk 2026-05-17 — Outline (working draft)
 
-> Big Island Radio Club, third Sunday of May. Audience: hams, mostly Meshtastic-curious, mostly haven't heard of Reticulum or MeshCore. Target ~35 min talk + ~10 min Q&A. Slides + 5-min live demo. Drafted 2026-05-10 from substack voice + current fleet state + the 7 SVGs in `~/meshforge_data/moc_analyses/hawaii_may2026/svg/`.
+> Big Island Radio Club, third Sunday of May. Audience: hams, mostly Meshtastic-curious, mostly haven't heard of Reticulum or MeshCore. Target ~35 min talk + ~10 min Q&A. Slides + 5-min live demo. Drafted 2026-05-10 from substack voice + current fleet state + the 7 SVGs in `docs/birc_2026_05_17_assets/`.
 
 ---
 
@@ -38,7 +38,7 @@
 
 ### 4. What's actually on the air over Hawaii right now (3 min) — DEMO HOOK
 
-**Display**: `01_hero_map.svg` — Hawaii silhouette with 605 LongFast nodes pinned, color-coded by SNR.
+**Display**: `hero_map.svg` — Hawaii silhouette with 641 LongFast nodes pinned (color-coding by SNR was anticipated but the captured `packets` table has no SNR column; renders as uniform pins).
 
 **Numbers (verified on the capture box, 2026-05-07)**:
 - 5.1-day capture window (Apr 28 → May 3)
@@ -54,7 +54,7 @@
 
 ### 5. The most active nodes (2 min)
 
-**Display**: `02_leaderboard_active.svg` — top 10 by packet count, app mix per node.
+**Display**: `leaderboard_most_active.svg` — top 10 by packet count, app mix per node.
 
 **Speaker**: "Top of the leaderboard isn't always who you think. Some of these are router nodes — they're relaying traffic for everyone. Some are chatty handhelds. The mix tells you which nodes are infrastructure and which are people."
 
@@ -64,7 +64,7 @@
 
 ### 6. What the network is actually carrying (90 sec)
 
-**Display**: `05_app_mix.svg` — squarified treemap: TEXT_MESSAGE / POSITION / TELEMETRY / NODEINFO / TRACEROUTE / ROUTING.
+**Display**: `app_mix.svg` — squarified treemap: POSITION / NODEINFO / TELEMETRY / TRACEROUTE (the four portnums actually observed; TEXT_MESSAGE and ROUTING weren't captured in window).
 
 **Speaker**: "Most traffic isn't text. It's position beacons and telemetry — temperature, battery, how every node says 'I'm still here.' That's why your channel utilization climbs without anyone typing. Numbers in the corner: this is what's chewing your airtime."
 
@@ -74,7 +74,7 @@
 
 ### 7. Best signal-to-noise ratio (90 sec)
 
-**Display**: `03_leaderboard_snr.svg` — top 10 by avg SNR with `n >= 30` floor footnote.
+**Display**: `leaderboard_best_snr.svg` — top 10 by avg SNR with `n >= 30` floor footnote. **Note**: stub-empty in current render — the captured `packets` table doesn't carry an SNR column. Either drop this slide for v2 or instrument a fresh capture pipeline before the talk.
 
 **Speaker**: "Whoever's at the top of this list either has a great antenna, a great location, or both. SNR floor on this slide is 30 packets — a node has to be heard 30 times before it qualifies, so a single lucky bounce doesn't game it."
 
@@ -94,7 +94,7 @@
 
 ### 9. Five Pis, deliberately heterogeneous (3 min)
 
-**Display**: `06_timeline.svg` — 5-day packet timeline, color-banded by app + diagram of the 5-Pi fleet (each box's role/preset/HAT).
+**Display**: `timeline.svg` — 5-day packet timeline, color-banded by app + diagram of the 5-Pi fleet (each box's role/preset/HAT).
 
 **Speaker**: "Five Pis. Different presets, different HATs, deliberately not the same. Every architectural mistake I make lands on at least one box that fights back. When I shipped a typo three weeks ago — `shared_instance_rpc_key` instead of `rpc_key` — RNS silently ignored it. Unit tests passed. The fleet caught it the first time inbound LXMF tried to talk and authentication failed. The fleet IS my QA environment."
 
@@ -204,17 +204,17 @@
 
 ## Slide assets — current state (2026-05-10)
 
-Already produced under `~/meshforge_data/moc_analyses/hawaii_may2026/svg/`:
+Tracked in-repo under `docs/birc_2026_05_17_assets/`:
 
 | Slide # | SVG file | Status |
 |---|---|---|
-| 4 | `01_hero_map.svg` | ✓ |
-| 5 | `02_leaderboard_active.svg` | ✓ |
-| 6 | `05_app_mix.svg` | ✓ |
-| 7 | `03_leaderboard_snr.svg` | ✓ |
-| 9 | `06_timeline.svg` | ✓ |
-| — | `04_leaderboard_relays.svg` | ✓ (held in reserve, may swap into slide 5 or 7 if needed) |
-| — | `07_summary.svg` | ✓ (held in reserve, possible opener visual) |
+| 4 | `hero_map.svg` | ✓ |
+| 5 | `leaderboard_most_active.svg` | ✓ |
+| 6 | `app_mix.svg` | ✓ |
+| 7 | `leaderboard_best_snr.svg` | ⚠️ stub-empty (no SNR column in capture) |
+| 9 | `timeline.svg` | ✓ |
+| — | `leaderboard_most_relayed.svg` | ✓ (held in reserve, may swap into slide 5 or 7 if needed) |
+| — | `leaderboard_most_reliable.svg` | ⚠️ stub-empty (no reliability metric in capture) |
 
 **Refresh consideration**: capture window is Apr 28 → May 3, currently 7 days stale. If we restart `diag_24h` on the capture box today (2026-05-10) we get fresh data through ~5/16 for re-render the night before. Decision point 5/14 — re-run analysis or ship as-is?
 

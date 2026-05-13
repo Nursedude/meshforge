@@ -8,10 +8,17 @@
 > **Raw URL** (for Claude.ai design fetch):
 > `https://raw.githubusercontent.com/Nursedude/meshforge/main/docs/birc_2026_05_17_hawaii_slides.md`
 >
-> **SVG raw URLs** are not in this repo — they live at
-> `~/meshforge_data/moc_analyses/hawaii_may2026/svg/` on the operator's workstation.
-> Operator uploads SVGs directly to Claude.ai design; this file references them
-> by filename so the design conversation can match them.
+> **SVG assets** are tracked in this repo at `docs/birc_2026_05_17_assets/`.
+> Raw URLs follow the same `raw.githubusercontent.com/Nursedude/meshforge/main/`
+> prefix — Claude.ai design can fetch them directly, no upload needed:
+>
+> - `docs/birc_2026_05_17_assets/hero_map.svg`
+> - `docs/birc_2026_05_17_assets/leaderboard_most_active.svg`
+> - `docs/birc_2026_05_17_assets/leaderboard_most_relayed.svg`
+> - `docs/birc_2026_05_17_assets/leaderboard_best_snr.svg` (stub-empty — no SNR data in capture)
+> - `docs/birc_2026_05_17_assets/leaderboard_most_reliable.svg` (stub-empty — no reliability data in capture)
+> - `docs/birc_2026_05_17_assets/app_mix.svg`
+> - `docs/birc_2026_05_17_assets/timeline.svg`
 >
 > **Refresh policy**: this content is locked to a frozen capture window
 > (Apr 28 → May 4 2026 UTC). It does NOT drift with current fleet state. If
@@ -22,9 +29,11 @@
 
 ## Source of truth
 
-All numbers below come from
-`~/meshforge_data/moc_analyses/hawaii_may2026/json/aggregate_summary.json`
-(generated 2026-05-07T19:27 UTC by `src/moc_analysis_tool/`).
+All numbers below come from running `moc_analysis_tool` against the
+frozen `presentation_capture.db` capture. JSON outputs not tracked
+in-repo; regenerate from the operator's workstation via
+`cd src && python3 -m moc_analysis_tool.cli.run_analysis --preset hawaii_may2026`.
+Latest regeneration: 2026-05-13T22:22 UTC (commit `5b3b93b` + later).
 
 ```
 Capture window:  2026-04-28T00:00:00 UTC → 2026-05-04T00:00:00 UTC
@@ -32,10 +41,11 @@ Duration:        144 hours · 6.0 days
 Listener:        single Pi · LongFast preset · Hawaiʻi
 Total packets:   16,235
 Unique sources:  231 nodes (heard at least once)
-Nodes with pos:  606 (pinned on hero_map)
-Nodes total:     788 (seen, including position-less)
+Nodes with pos:  641 (pinned on hero_map)
+Nodes total:     830 (seen, including position-less)
 Active hours:    124 / 144 (86%)
 SNR floor:       n ≥ 30 packets for the SNR leaderboard
+                 (note: stub-empty — captured `packets` table has no SNR column)
 ```
 
 Portnum distribution (top 4):
