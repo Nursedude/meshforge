@@ -1,0 +1,255 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"
+     width="1280" height="720">
+  <rect width="1280" height="720" fill="#FFFFFF"/>
+
+  <text x="48" y="76"
+        font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="700"
+        font-size="28" letter-spacing="-0.5"
+        fill="#0E1E2B">Most Active Senders</text>
+  <text x="48" y="100"
+        font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="400"
+        font-size="14"
+        fill="#5C6B7A">Top 10 by packets received over 144 h</text>
+
+    <text x="48" y="156.6"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="700"
+          font-size="22" fill="#5C6B7A">#1</text>
+
+<text x="88" y="146.48"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">WS85 Ho’okipa</text>
+
+    <text x="88" y="165.4"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="400"
+          font-size="10" letter-spacing="0.5"
+          fill="#5C6B7A">!75695fb4</text>
+
+    <rect x="268" y="136" width="804" height="28"
+          fill="#D6DCE2" rx="3"/>
+    <rect x="268" y="136" width="804" height="28"
+          fill="#0B3C6F" rx="3"/>
+
+    <text x="1082" y="155.28"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">1,080 pkts</text>
+    <text x="48" y="206.6"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="700"
+          font-size="22" fill="#5C6B7A">#2</text>
+
+<text x="88" y="196.48"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">GTR B-Base</text>
+
+    <text x="88" y="215.4"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="400"
+          font-size="10" letter-spacing="0.5"
+          fill="#5C6B7A">!18cc57c0</text>
+
+    <rect x="268" y="186" width="804" height="28"
+          fill="#D6DCE2" rx="3"/>
+    <rect x="268" y="186" width="416" height="28"
+          fill="#0B3C6F" rx="3"/>
+
+    <text x="1082" y="205.28"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">559 pkts</text>
+    <text x="48" y="256.6"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="700"
+          font-size="22" fill="#5C6B7A">#3</text>
+
+<text x="88" y="246.48"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">Makawao e255</text>
+
+    <text x="88" y="265.4"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="400"
+          font-size="10" letter-spacing="0.5"
+          fill="#5C6B7A">!1b1de255</text>
+
+    <rect x="268" y="236" width="804" height="28"
+          fill="#D6DCE2" rx="3"/>
+    <rect x="268" y="236" width="414" height="28"
+          fill="#0B3C6F" rx="3"/>
+
+    <text x="1082" y="255.28"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">556 pkts</text>
+    <text x="48" y="306.6"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="700"
+          font-size="22" fill="#5C6B7A">#4</text>
+
+<text x="88" y="296.48"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">KH7EH-04</text>
+
+    <text x="88" y="315.4"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="400"
+          font-size="10" letter-spacing="0.5"
+          fill="#5C6B7A">!a038f60c</text>
+
+    <rect x="268" y="286" width="804" height="28"
+          fill="#D6DCE2" rx="3"/>
+    <rect x="268" y="286" width="383" height="28"
+          fill="#0B3C6F" rx="3"/>
+
+    <text x="1082" y="305.28"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">514 pkts</text>
+    <text x="48" y="356.6"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="700"
+          font-size="22" fill="#5C6B7A">#5</text>
+
+<text x="88" y="346.48"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">Solar monolith beta</text>
+
+    <text x="88" y="365.4"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="400"
+          font-size="10" letter-spacing="0.5"
+          fill="#5C6B7A">!79be01d3</text>
+
+    <rect x="268" y="336" width="804" height="28"
+          fill="#D6DCE2" rx="3"/>
+    <rect x="268" y="336" width="341" height="28"
+          fill="#0B3C6F" rx="3"/>
+
+    <text x="1082" y="355.28"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">458 pkts</text>
+    <text x="48" y="406.6"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="700"
+          font-size="22" fill="#5C6B7A">#6</text>
+
+<text x="88" y="396.48"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">solar 482f</text>
+
+    <text x="88" y="415.4"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="400"
+          font-size="10" letter-spacing="0.5"
+          fill="#5C6B7A">!f57d482f</text>
+
+    <rect x="268" y="386" width="804" height="28"
+          fill="#D6DCE2" rx="3"/>
+    <rect x="268" y="386" width="264" height="28"
+          fill="#0B3C6F" rx="3"/>
+
+    <text x="1082" y="405.28"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">355 pkts</text>
+    <text x="48" y="456.6"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="700"
+          font-size="22" fill="#5C6B7A">#7</text>
+
+<text x="88" y="446.48"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">Haleakala Summit Repeater</text>
+
+    <text x="88" y="465.4"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="400"
+          font-size="10" letter-spacing="0.5"
+          fill="#5C6B7A">!6d9ee8c7</text>
+
+    <rect x="268" y="436" width="804" height="28"
+          fill="#D6DCE2" rx="3"/>
+    <rect x="268" y="436" width="215" height="28"
+          fill="#0B3C6F" rx="3"/>
+
+    <text x="1082" y="455.28"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">289 pkts</text>
+    <text x="48" y="506.6"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="700"
+          font-size="22" fill="#5C6B7A">#8</text>
+
+<text x="88" y="496.48"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">WH6EPS-🥥📡</text>
+
+    <text x="88" y="515.4"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="400"
+          font-size="10" letter-spacing="0.5"
+          fill="#5C6B7A">!a2ed9124</text>
+
+    <rect x="268" y="486" width="804" height="28"
+          fill="#D6DCE2" rx="3"/>
+    <rect x="268" y="486" width="214" height="28"
+          fill="#0B3C6F" rx="3"/>
+
+    <text x="1082" y="505.28"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">287 pkts</text>
+    <text x="48" y="556.6"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="700"
+          font-size="22" fill="#5C6B7A">#9</text>
+
+<text x="88" y="546.48"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">Hale Pohaku alpha 195f</text>
+
+    <text x="88" y="565.4"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="400"
+          font-size="10" letter-spacing="0.5"
+          fill="#5C6B7A">!c34e195f</text>
+
+    <rect x="268" y="536" width="804" height="28"
+          fill="#D6DCE2" rx="3"/>
+    <rect x="268" y="536" width="198" height="28"
+          fill="#0B3C6F" rx="3"/>
+
+    <text x="1082" y="555.28"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">266 pkts</text>
+    <text x="48" y="606.6"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="700"
+          font-size="22" fill="#5C6B7A">#10</text>
+
+<text x="88" y="596.48"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">Meshtastic bc60</text>
+
+    <text x="88" y="615.4"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="400"
+          font-size="10" letter-spacing="0.5"
+          fill="#5C6B7A">!a2e1bc60</text>
+
+    <rect x="268" y="586" width="804" height="28"
+          fill="#D6DCE2" rx="3"/>
+    <rect x="268" y="586" width="197" height="28"
+          fill="#0B3C6F" rx="3"/>
+
+    <text x="1082" y="605.28"
+          font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="600"
+          font-size="13"
+          fill="#0E1E2B">265 pkts</text>
+
+
+    <text x="48" y="706"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="500"
+          font-size="10" letter-spacing="0.4"
+          fill="#5C6B7A">meshforge.moc_analysis_tool</text>
+    <text x="1232" y="706"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="500"
+          font-size="10" letter-spacing="0.4"
+          text-anchor="end"
+          fill="#5C6B7A">MOC Analysis · hawaii_may2026 · 2026-05-13</text>
+</svg>

@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"
+     width="1280" height="720">
+  <rect width="1280" height="720" fill="#FFFFFF"/>
+
+  <text x="48" y="76"
+        font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="700"
+        font-size="28"
+        fill="#0E1E2B">Application Mix</text>
+  <text x="48" y="100"
+        font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="400"
+        font-size="14"
+        fill="#5C6B7A">Distribution of 16,235 packets by Meshtastic PortNum over 144 h</text>
+
+    <rect x="48" y="128"
+          width="1184.0" height="214.8"
+          fill="#3A6EA5" stroke="#FFFFFF" stroke-width="2"/>
+      <text x="62" y="154"
+            font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="600" font-size="14"
+            fill="#FFFFFF">POSITION</text>
+      <text x="62" y="172"
+            font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="500"
+            font-size="13" fill="#FFFFFF" fill-opacity="0.9">
+        6,920 · 42.6%
+      </text>
+    <rect x="48" y="342.8"
+          width="1184.0" height="142.8"
+          fill="#7FB069" stroke="#FFFFFF" stroke-width="2"/>
+      <text x="62" y="368.8"
+            font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="600" font-size="14"
+            fill="#FFFFFF">NODEINFO</text>
+      <text x="62" y="386.8"
+            font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="500"
+            font-size="13" fill="#FFFFFF" fill-opacity="0.9">
+        4,599 · 28.3%
+      </text>
+    <rect x="48" y="485.6"
+          width="1184.0" height="106.9"
+          fill="#E8C547" stroke="#FFFFFF" stroke-width="2"/>
+      <text x="62" y="511.6"
+            font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="600" font-size="14"
+            fill="#FFFFFF">TELEMETRY</text>
+      <text x="62" y="529.6"
+            font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="500"
+            font-size="13" fill="#FFFFFF" fill-opacity="0.9">
+        3,442 · 21.2%
+      </text>
+    <rect x="48" y="592.4"
+          width="1184.0" height="39.6"
+          fill="#C44D58" stroke="#FFFFFF" stroke-width="2"/>
+      <text x="62" y="618.4"
+            font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="600" font-size="14"
+            fill="#FFFFFF">TRACEROUTE</text>
+      <text x="62" y="636.4"
+            font-family="&#39;IBM Plex Mono&#39;, &#39;JetBrains Mono&#39;, &#39;SF Mono&#39;, Consolas, monospace" font-weight="500"
+            font-size="13" fill="#FFFFFF" fill-opacity="0.9">
+        1,274 · 7.8%
+      </text>
+
+    <text x="48" y="706"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="500"
+          font-size="10" letter-spacing="0.4"
+          fill="#5C6B7A">meshforge.moc_analysis_tool</text>
+    <text x="1232" y="706"
+          font-family="&#39;IBM Plex Sans&#39;, &#39;Inter&#39;, &#39;Helvetica Neue&#39;, Arial, sans-serif" font-weight="500"
+          font-size="10" letter-spacing="0.4"
+          text-anchor="end"
+          fill="#5C6B7A">MOC Analysis · hawaii_may2026 · 2026-05-13</text>
+</svg>
