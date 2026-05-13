@@ -423,20 +423,64 @@ class MapServer:
         The flag flip is the only state transition; never set back to
         True at runtime. Subsequent collect cycles run via the normal
         cache-driven path inside `MapDataCollector.collect()`.
+
+        Gate-on-cache fix (2026-05-13, [[project_map_warming_gate_bug]]):
+        flag flips as soon as `collector._cached_geojson` is populated,
+        NOT when `collect()` returns. `collect()` continues writing
+        observations to the history DB after the cache is built; on
+        Pi-class SD with a multi-GB DB that write is state-D-bound and
+        can hold the thread for 15+ minutes (witnessed on moc1 today).
+        `/api/*` only needs the cache, so gating on cache-ready is the
+        correct primitive. The watcher thread polls a private flag so
+        the collector contract stays untouched.
         """
+        import threading
+        import time
         from utils.map_http_handler import MapRequestHandler
         from utils import map_metrics
+
+        warming_cleared = threading.Event()
+
+        def _watch_cache_ready():
+            # Poll for the cache to populate. `_cached_geojson` is
+            # populated in `MapDataCollector.collect()` BEFORE the
+            # history-DB write phase, so this flips warming as early
+            # as it can safely be flipped.
+            while not warming_cleared.is_set():
+                if self.collector._cached_geojson is not None:
+                    MapRequestHandler.is_warming = False
+                    map_metrics.set_warming(None)
+                    logger.info(
+                        "MapServer warmup complete (cache ready); "
+                        "serving live traffic"
+                    )
+                    warming_cleared.set()
+                    return
+                time.sleep(0.5)
+
+        watcher = threading.Thread(
+            target=_watch_cache_ready, daemon=True,
+            name="warmup-cache-watcher",
+        )
+        watcher.start()
+
         try:
             self.collector.collect()
         except Exception as e:
             logger.warning("Collector warmup failed (non-fatal): %s", e)
         finally:
-            # Always exit warming state, even if the first collect
-            # threw — endpoints will fail their own way thereafter,
-            # which is more useful than indefinite 503.
-            MapRequestHandler.is_warming = False
-            map_metrics.set_warming(None)  # ready: SERVICE_UP=1
-            logger.info("MapServer warmup complete; serving live traffic")
+            # Always flip warming False on the way out — covers the
+            # case where collect() raises before populating the cache
+            # (the watcher would never see _cached_geojson and would
+            # leave warming True indefinitely).
+            if not warming_cleared.is_set():
+                MapRequestHandler.is_warming = False
+                map_metrics.set_warming(None)
+                logger.info(
+                    "MapServer warmup complete (collect returned without "
+                    "cache populated); serving live traffic"
+                )
+                warming_cleared.set()
 
         # Federation poll thread starts after warmup so we don't compete
         # with the cold-start collect for I/O budget on Pi-class hardware.
