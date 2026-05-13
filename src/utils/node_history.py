@@ -242,7 +242,18 @@ class NodeHistoryDB:
         # 60s staleness is acceptable.
         self._stats_cache: Optional[Dict[str, Any]] = None
         self._stats_cache_expires: float = 0.0
-        self._stats_cache_ttl: float = 60.0
+        # Bumped 60s → 300s (2026-05-13): status endpoint is observability,
+        # not correctness; 5-min staleness is fine and cuts the cache-miss
+        # rate by 5×, which directly translates to fewer 14s wall-clock
+        # hits on /api/status under disk contention.
+        self._stats_cache_ttl: float = 300.0
+        # Directory stats cache (added 2026-05-13). Same shape as stats
+        # cache. Without this, `/api/status` ran 5 full table scans on
+        # the `nodes` table every request, sequentially, and could
+        # exceed HTTP timeout under SD contention on fat-DB hosts.
+        self._directory_stats_cache: Optional[Dict[str, Any]] = None
+        self._directory_stats_cache_expires: float = 0.0
+        self._directory_stats_cache_ttl: float = 300.0
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -1051,8 +1062,22 @@ class NodeHistoryDB:
         Surfaced in /api/status so operators can see the cached node
         population at a glance: total count, per-network breakdown,
         per-origin breakdown, and the oldest/newest last_seen
-        timestamps. Cheap aggregate queries — runs on every status poll.
+        timestamps.
+
+        Cached for ``self._directory_stats_cache_ttl`` seconds (default
+        300s). Pre-warming-gate fix (2026-05-13): five sequential full
+        scans on the `nodes` table were running on every request, and
+        under SD contention with a concurrent writer (e.g. warmup-
+        thread history-DB write) the sum exceeded HTTP timeout. Cache
+        is observability-only; staleness is fine.
         """
+        # Cache fast path — see get_stats() for the GIL-atomic-read
+        # rationale.
+        cache = self._directory_stats_cache
+        expires = self._directory_stats_cache_expires
+        if cache is not None and time.time() < expires:
+            return cache
+
         # Read-only path; no self._lock (Issue #52). WAL mode + own
         # connection means we read a consistent snapshot without blocking
         # the federation/collect writers.
@@ -1087,7 +1112,7 @@ class NodeHistoryDB:
             oldest = time_range[0]
             newest = time_range[1]
 
-            return {
+            result = {
                 "total": total,
                 "with_position": with_position,
                 "without_position": total - with_position,
@@ -1099,6 +1124,9 @@ class NodeHistoryDB:
                 "retention_external_days": self.directory_retention_external // 86400,
                 "max_rows": self.directory_max_rows,
             }
+            self._directory_stats_cache = result
+            self._directory_stats_cache_expires = time.time() + self._directory_stats_cache_ttl
+            return result
         finally:
             conn.close()
 

@@ -1155,6 +1155,45 @@ class TestStatsCache:
         assert h2._stats_cache is None
 
 
+class TestDirectoryStatsCache:
+    """get_directory_stats() TTL cache — 2026-05-13 follow-up to the
+    warming-gate fix. /api/status fans five sequential full scans on
+    the `nodes` table into one user-facing request; under SD contention
+    that sum exceeded HTTP timeout. Cache is observability-only; same
+    surgical pattern as TestStatsCache.
+    """
+
+    @pytest.fixture
+    def hist(self, tmp_path: Path):
+        from utils.node_history import NodeHistoryDB
+        return NodeHistoryDB(db_path=tmp_path / "dir_stats_cache.db")
+
+    def test_first_call_populates_cache(self, hist):
+        s = hist.get_directory_stats()
+        assert s["total"] == 0
+        assert hist._directory_stats_cache is s
+        assert hist._directory_stats_cache_expires > 0
+
+    def test_second_call_returns_cached_object(self, hist):
+        first = hist.get_directory_stats()
+        second = hist.get_directory_stats()
+        # Same dict object — proves it didn't recompute.
+        assert first is second
+
+    def test_cache_expires(self, hist):
+        first = hist.get_directory_stats()
+        hist._directory_stats_cache_expires = 0.0
+        second = hist.get_directory_stats()
+        assert first is not second
+
+    def test_cache_isolated_per_instance(self, tmp_path: Path):
+        from utils.node_history import NodeHistoryDB
+        h1 = NodeHistoryDB(db_path=tmp_path / "a.db")
+        h2 = NodeHistoryDB(db_path=tmp_path / "b.db")
+        h1.get_directory_stats()
+        assert h2._directory_stats_cache is None
+
+
 class TestDirectorySnapshot:
     """get_directory_snapshot() returns features + position-less list."""
 

@@ -76,17 +76,23 @@ class WarmingGateTests(unittest.TestCase):
         cache was populated at 1s; old code held is_warming True the whole
         time. New code flips at 1s.
         """
-        collector = FakeCollector(cache_at_seconds=0.2, return_at_seconds=2.0)
+        # cache_at=0.3 + return_at=3.0 gives the watcher's 0.5s poll
+        # interval room to fire well before collect() returns. Tight
+        # margins flake under GIL contention; wide margins don't.
+        collector = FakeCollector(cache_at_seconds=0.3, return_at_seconds=3.0)
         svc, handler = self._build_service(collector)
 
         # Run warmup in a thread so we can observe is_warming mid-collect.
         warmup_thread = threading.Thread(target=svc._run_warmup, daemon=True)
         warmup_thread.start()
 
-        # At t=0.5s the cache should be populated (at 0.2s) and the
-        # watcher should have flipped is_warming. collect() is still
-        # running (returns at 2.0s) — this is the load-bearing assertion.
-        time.sleep(0.5)
+        # Poll for is_warming to flip, bounded by collect() still running.
+        # Looser than a fixed sleep — eliminates GIL-race flakiness.
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if not handler.is_warming:
+                break
+            time.sleep(0.05)
         self.assertFalse(
             handler.is_warming,
             "is_warming should be False once cache is populated, "
@@ -94,11 +100,11 @@ class WarmingGateTests(unittest.TestCase):
         )
         self.assertIsNotNone(
             collector._cached_geojson,
-            "cache should be populated by t=0.5s (cache_at=0.2)",
+            "cache should be populated before warming clears",
         )
         self.assertTrue(
             warmup_thread.is_alive(),
-            "collect() should still be running at t=0.5s (return_at=2.0)",
+            "collect() should still be running (return_at=3.0)",
         )
 
         warmup_thread.join(timeout=5)
@@ -126,6 +132,28 @@ class WarmingGateTests(unittest.TestCase):
             "finally clause must flip warming False even when "
             "collect() raises before cache is populated",
         )
+
+    def test_stats_caches_prewarmed_after_cache_ready(self):
+        """_prewarm_status_caches() fires after the cache-ready flip so
+        the first /api/status request after restart hits warm cache
+        instead of cold COUNT(*) queries.
+
+        Witnessed bug: moc1 served /api/* fine via cache, but
+        /api/status hung past HTTP timeout because get_stats() and
+        get_directory_stats() ran cold COUNT(*) under SD contention
+        with the still-running warmup-thread DB write.
+        """
+        collector = FakeCollector(cache_at_seconds=0.1, return_at_seconds=0.3)
+        # Attach a fake history with prewarmable methods.
+        history = MagicMock()
+        history.get_stats = MagicMock(return_value={"total_observations": 0})
+        history.get_directory_stats = MagicMock(return_value={"total": 0})
+        collector._history = history
+
+        svc, _handler = self._build_service(collector)
+        svc._run_warmup()
+        history.get_stats.assert_called()
+        history.get_directory_stats.assert_called()
 
     def test_federation_starts_after_collect_returns_not_after_cache(self):
         """Federation start is gated on collect() RETURN, not cache-ready.

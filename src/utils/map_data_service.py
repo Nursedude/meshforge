@@ -455,6 +455,12 @@ class MapServer:
                         "serving live traffic"
                     )
                     warming_cleared.set()
+                    # Pre-populate stats caches so the first /api/status
+                    # request after restart hits warm cache instead of
+                    # running 14s COUNT(*) queries during peak contention
+                    # with the still-running warmup-thread DB write.
+                    # [[project_map_warming_gate_bug]] secondary effect.
+                    self._prewarm_status_caches()
                     return
                 time.sleep(0.5)
 
@@ -470,9 +476,11 @@ class MapServer:
             logger.warning("Collector warmup failed (non-fatal): %s", e)
         finally:
             # Always flip warming False on the way out — covers the
-            # case where collect() raises before populating the cache
-            # (the watcher would never see _cached_geojson and would
-            # leave warming True indefinitely).
+            # case where collect() raises before populating the cache,
+            # AND the case where collect() returns faster than the
+            # watcher's poll interval (warming_cleared race). In the
+            # fast-collect case the watcher will exit without firing
+            # prewarm, so we do it here too.
             if not warming_cleared.is_set():
                 MapRequestHandler.is_warming = False
                 map_metrics.set_warming(None)
@@ -481,6 +489,16 @@ class MapServer:
                     "cache populated); serving live traffic"
                 )
                 warming_cleared.set()
+                # If collect() actually populated the cache, also
+                # pre-warm — same rationale as the watcher path.
+                if self.collector._cached_geojson is not None:
+                    self._prewarm_status_caches()
+
+        # Wait briefly for the watcher's pre-warm pass to complete so
+        # callers (tests + observability) see a predictable post-warmup
+        # state. The watcher's work is small (two cached queries); the
+        # cap keeps us from blocking forever if the DB is wedged.
+        watcher.join(timeout=30)
 
         # Federation poll thread starts after warmup so we don't compete
         # with the cold-start collect for I/O budget on Pi-class hardware.
@@ -489,6 +507,28 @@ class MapServer:
             self.collector.start_federation()
         except Exception as e:
             logger.warning("Federation start failed (non-fatal): %s", e)
+
+    def _prewarm_status_caches(self):
+        """Pre-populate node_history stats caches so /api/status doesn't
+        pay the 14s+ COUNT(*) tax on its first call after restart.
+
+        Witnessed on moc1 2026-05-13: /api/status hung past HTTP timeout
+        while the warmup-thread was mid-collect on a 4.7 GB DB. The
+        cache populates here so user-facing requests always hit warm.
+        Non-fatal — if the queries throw, /api/status simply pays the
+        cost on its first call (same behavior as pre-fix).
+        """
+        history = getattr(self.collector, "_history", None)
+        if history is None:
+            return
+        try:
+            history.get_stats()
+        except Exception as e:
+            logger.debug("stats pre-warm failed (non-fatal): %s", e)
+        try:
+            history.get_directory_stats()
+        except Exception as e:
+            logger.debug("directory stats pre-warm failed (non-fatal): %s", e)
 
     def start(self):
         """Start server (blocking) — bind-first warming (F3).
