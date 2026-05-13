@@ -150,6 +150,8 @@ echo '```'
 # spammed [Errno 30] for 7 days while the daemon was technically
 # `active (running)`).
 drift=0
+tmp_cmp="$(mktemp)"
+trap 'rm -f "$tmp_cmp"' EXIT
 for installed in /etc/systemd/system/*.service /etc/systemd/system/*.timer; do
     [[ -f "$installed" ]] || continue
     name=$(basename "$installed")
@@ -157,10 +159,21 @@ for installed in /etc/systemd/system/*.service /etc/systemd/system/*.timer; do
                /opt/meshforge/scripts/"$name" \
                /opt/meshanchor/scripts/"$name"; do
         [[ -f "$tpl" ]] || continue
-        if ! cmp -s "$installed" "$tpl"; then
+        # Resolve install-time placeholders by reading the running unit's
+        # User= line and rewriting __MESHFORGE_USER__ in the template. Without
+        # this, every host where install_noc.sh substituted the operator user
+        # would falsely flag DRIFT against the literal placeholder template.
+        user_val=$(grep -m1 '^User=' "$installed" 2>/dev/null | cut -d= -f2)
+        if [[ -n "$user_val" ]] && grep -q '__MESHFORGE_USER__' "$tpl"; then
+            sed "s|__MESHFORGE_USER__|$user_val|g" "$tpl" > "$tmp_cmp"
+            cmp_target="$tmp_cmp"
+        else
+            cmp_target="$tpl"
+        fi
+        if ! cmp -s "$installed" "$cmp_target"; then
             echo "DRIFT: $name"
-            echo "  installed md5: $(md5sum "$installed" | cut -d' ' -f1)"
-            echo "  template  md5: $(md5sum "$tpl"        | cut -d' ' -f1)  ($tpl)"
+            echo "  installed md5: $(md5sum "$installed"   | cut -d' ' -f1)"
+            echo "  template  md5: $(md5sum "$cmp_target" | cut -d' ' -f1)  ($tpl)"
             drift=1
         fi
         break
