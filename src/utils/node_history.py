@@ -675,7 +675,27 @@ class NodeHistoryDB:
         # Run pruning OUTSIDE the insert lock — it's a separate transaction
         # and holding the insert lock longer just slows the next writer.
         self._maybe_prune(now)
+        # Invalidate stats caches so the next get_stats / get_directory_stats
+        # call sees the rows we just wrote. The queries are cheap
+        # (MAX(rowid) + COUNT FROM nodes); freshness is more valuable than
+        # the 300s TTL window here. Closes a write-then-read staleness bug
+        # caught by tests/test_map_data_collector_diagnostics.py on
+        # 2026-05-13 after the cache was first introduced.
+        self._invalidate_stats_caches()
         return inserted
+
+    def _invalidate_stats_caches(self) -> None:
+        """Expire the stats and directory-stats TTL caches.
+
+        Called after any write that changes what those queries would
+        return — see record_observations() and _maybe_prune() (deletes
+        also need to bust the cache, otherwise total_observations stays
+        stale until TTL expiry).
+        """
+        self._stats_cache = None
+        self._stats_cache_expires = 0.0
+        self._directory_stats_cache = None
+        self._directory_stats_cache_expires = 0.0
 
     def _maybe_prune(self, now: float) -> None:
         """Delete observations + tier-prune directory if hourly cadence reached.
@@ -865,6 +885,9 @@ class NodeHistoryDB:
                 logger.error(f"Auto-prune failed: {e}")
             finally:
                 conn.close()
+        # Prune deletes rows from both node_observations and nodes —
+        # invalidate stats caches so totals don't lag the new ground truth.
+        self._invalidate_stats_caches()
 
     def get_trajectory(self, node_id: str, hours: float = 24,
                        limit: int = 1000) -> List[NodeObservation]:
