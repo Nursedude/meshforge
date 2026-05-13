@@ -39,10 +39,17 @@ ExecStop=/bin/kill -TERM $MAINPID
 # the next start will replay the WAL the slow way as a fallback.
 # See `project_meshforge_map_cold_start_wal` in operator memory.
 ExecStopPost=/bin/bash -c 'sqlite3 /home/__MESHFORGE_USER__/.local/share/meshforge/node_history.db "PRAGMA wal_checkpoint(TRUNCATE);" 2>&1 || true'
-# Bumped from 10s → 60s to give the checkpoint room on Pi-class SD with
-# a large WAL. Real-world cold-start (no fix) was 5-10 min; doing it
-# here at stop time is much faster because no concurrent reads compete.
-TimeoutStopSec=60
+# Bumped 10s → 60s → 300s. The 60s window was witnessed too short on
+# moc1's 4.7 GB node_history.db on 2026-05-13: the wal_checkpoint took
+# longer than 60s, systemd killed the unit mid-checkpoint, leaving the
+# WAL in an inconsistent state. The next start then had to do a full
+# WAL recovery (state D, `do_get_write_access` in ext4 JBD2) before
+# even binding :5000 — a 15+ min cascade. 300s gives the checkpoint
+# room on fat DBs while shutdowns on normal-sized DBs still finish in
+# seconds. Cleaner long-term: move checkpoint into the Python daemon's
+# shutdown hook so systemd's TimeoutStopSec covers the whole sequence
+# rather than only ExecStopPost; deferred until needed.
+TimeoutStopSec=300
 
 # Restart policy
 Restart=on-failure
