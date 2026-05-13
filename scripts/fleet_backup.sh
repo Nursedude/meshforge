@@ -50,15 +50,24 @@ ACTION=""
 # Detect real user home (handles sudo)
 # ─────────────────────────────────────────────────────────────────
 if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
-    REAL_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
     REAL_USER="$SUDO_USER"
-else
-    REAL_HOME="$HOME"
+elif [[ "${USER:-$(whoami)}" != "root" ]]; then
     REAL_USER="${USER:-$(whoami)}"
+else
+    # Bare root (e.g. systemd unit with no User=) — find first real user.
+    # HOME isn't reliable here: systemd doesn't export it, and `set -u` trips.
+    REAL_USER=$(getent passwd | awk -F: '$3 >= 1000 && $3 < 60000 {print $1; exit}')
 fi
 
+if [[ -z "${REAL_USER:-}" ]]; then
+    echo -e "${RED}Error: No real user (UID >= 1000) found on this system${NC}" >&2
+    exit 1
+fi
+
+REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
+
 if [[ -z "$REAL_HOME" ]]; then
-    echo -e "${RED}Error: Cannot determine user home directory${NC}"
+    echo -e "${RED}Error: Cannot determine home directory for $REAL_USER${NC}"
     exit 1
 fi
 
