@@ -997,11 +997,27 @@ class NodeHistoryDB:
     def get_stats(self) -> Dict[str, Any]:
         """Get database statistics.
 
-        Cached for ``self._stats_cache_ttl`` seconds (default 60s) — the
-        underlying COUNT(*) and COUNT(DISTINCT) on node_observations are
-        full table scans that cost ~14s each on Pi-class SD storage when
-        the table grows past a few million rows (Issue #52). Stats feed
-        observability, not correctness, so 60s staleness is acceptable.
+        Cached for ``self._stats_cache_ttl`` seconds. All queries now use
+        indexes or constant-time lookups so even a cold cache miss
+        completes in <100ms on a multi-GB DB.
+
+        2026-05-13 rewrite: the previous `SELECT COUNT(*)` and
+        `COUNT(DISTINCT node_id)` were full table scans on
+        node_observations and took 14+s on Pi-class SD with a 4.7 GB
+        DB. The 60s cache hid the cost on warm calls but the FIRST
+        call after restart blocked /api/status past HTTP timeout —
+        and racing the prewarm-thread made it worse (multiple
+        concurrent full scans on SD). The new queries:
+
+        - total_observations → `MAX(rowid)` (B-tree max, O(log n)).
+          High-water mark; differs from exact COUNT(*) after retention
+          pruning but the difference is observability-tier acceptable.
+        - unique_nodes → `COUNT(*) FROM nodes` (the directory table is
+          the canonical unique-nodes list per Issue #49; one row per
+          (network, node_id)). Tiny table (~tens of thousands of rows),
+          near-instant.
+        - oldest/newest timestamp → `MIN/MAX(timestamp)` use
+          `idx_obs_timestamp`, O(log n).
 
         Returns:
             Dict with total_observations, unique_nodes, oldest_record,
@@ -1023,11 +1039,18 @@ class NodeHistoryDB:
         # the lock is held for tens of seconds per poll).
         conn = self._connect()
         try:
-            total = conn.execute(
-                "SELECT COUNT(*) FROM node_observations"
-            ).fetchone()[0]
+            # MAX(rowid) — B-tree max, no scan. May overshoot the exact
+            # COUNT(*) after retention pruning re-uses rowids, but
+            # observability-tier acceptable.
+            row = conn.execute(
+                "SELECT MAX(rowid) FROM node_observations"
+            ).fetchone()
+            total = row[0] if row and row[0] is not None else 0
+            # Unique nodes from the directory table (Issue #49), which
+            # is canonical for per-node identity. Avoids COUNT(DISTINCT)
+            # full scan on node_observations.
             unique = conn.execute(
-                "SELECT COUNT(DISTINCT node_id) FROM node_observations"
+                "SELECT COUNT(*) FROM nodes"
             ).fetchone()[0]
 
             time_range = conn.execute(
