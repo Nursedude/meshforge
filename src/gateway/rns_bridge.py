@@ -1296,8 +1296,16 @@ class RNSMeshtasticBridge(
                 try:
                     sniffer = get_rns_sniffer()
                     if sniffer and sniffer._running:
-                        # Encode message content as payload
-                        content_bytes = message.content.encode('utf-8') if message.content else b''
+                        # LXMessage.content can be either bytes (binary LXMF
+                        # payload) or str — encode only when we got text.
+                        # (Issue #1162: 'bytes'.encode() raised, dropping the
+                        # capture; delivery itself was unaffected.)
+                        raw_content = message.content or b''
+                        content_bytes = (
+                            raw_content.encode('utf-8')
+                            if isinstance(raw_content, str)
+                            else raw_content
+                        )
                         packet_info = RNSPacketInfo(
                             packet_type=RNSPacketType.DATA,
                             source_hash=source_hash,
