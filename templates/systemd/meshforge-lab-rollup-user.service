@@ -1,0 +1,59 @@
+# MeshForge — lab rollup writer (systemd-user, one-shot, fired by the timer)
+# ==========================================================================
+#
+# Runs scripts/lab_traffic_rollup.sh (and lab_synth_soak_rollup.sh if data
+# is present) every 10 min and writes the output to fixed state files that
+# the NOC dashboard reads. Without this on a schedule, the rollup scripts
+# exist but produce no surface — they have to be run by hand.
+#
+# Output paths:
+#   ~/.local/state/meshforge/lab-traffic-rollup.md    (alphabetical)
+#   ~/.local/state/meshforge/lab-traffic-rollup-leaderboard.md  (SORT_BY=fail)
+#   ~/.local/state/meshforge/lab-synth-soak-rollup.md (only on the synth box)
+#
+# Atomicity: each rollup is written to a .tmp sibling and renamed in place,
+# so dashboard reads never see a half-written file.
+#
+# Install (on the "tester box" — the host whose ssh keys reach the rest of
+# the fleet AND whose own tracer fires; typically the NOC control box):
+#   cp /opt/meshforge/templates/systemd/meshforge-lab-rollup-user.service \
+#      ~/.config/systemd/user/meshforge-lab-rollup.service
+#   cp /opt/meshforge/templates/systemd/meshforge-lab-rollup-user.timer \
+#      ~/.config/systemd/user/meshforge-lab-rollup.timer
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now meshforge-lab-rollup.timer
+#
+# Memory: feedback_bundle_full_stack_not_light_version — this unit IS the
+# surfacing layer; deploying tracer without this is the silent-script
+# anti-pattern.
+
+[Unit]
+Description=MeshForge lab rollup writer (markdown for NOC dashboard)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/meshforge
+# State dir is created idempotently each fire — no separate ExecStartPre needed.
+# Bash handles tmp+rename atomicity. Synth rollup is skipped silently when
+# the data dir is absent (most hosts).
+ExecStart=/usr/bin/bash -c ' \
+    set -u; \
+    out_dir="${XDG_STATE_HOME:-$HOME/.local/state}/meshforge"; \
+    mkdir -p "$out_dir"; \
+    LOOKBACK_HOURS=24 SORT_BY=pair bash /opt/meshforge/scripts/lab_traffic_rollup.sh \
+        > "$out_dir/lab-traffic-rollup.md.tmp" 2>/dev/null \
+        && mv "$out_dir/lab-traffic-rollup.md.tmp" "$out_dir/lab-traffic-rollup.md"; \
+    LOOKBACK_HOURS=24 SORT_BY=fail bash /opt/meshforge/scripts/lab_traffic_rollup.sh \
+        > "$out_dir/lab-traffic-rollup-leaderboard.md.tmp" 2>/dev/null \
+        && mv "$out_dir/lab-traffic-rollup-leaderboard.md.tmp" "$out_dir/lab-traffic-rollup-leaderboard.md"; \
+    if [ -d "$out_dir/synth_soak" ] && ls "$out_dir/synth_soak/"synth-*.json >/dev/null 2>&1; then \
+        bash /opt/meshforge/scripts/lab_synth_soak_rollup.sh \
+            > "$out_dir/lab-synth-soak-rollup.md.tmp" 2>/dev/null \
+            && mv "$out_dir/lab-synth-soak-rollup.md.tmp" "$out_dir/lab-synth-soak-rollup.md"; \
+    fi; \
+    exit 0'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshforge-lab-rollup

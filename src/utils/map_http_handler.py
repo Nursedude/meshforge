@@ -412,6 +412,12 @@ class MapRequestHandler(
             self._serve_weather()
         elif path_only == '/fleet/slo':
             self._serve_fleet_slo()
+        elif path_only == '/lab/rollup' or path_only == '/lab/rollup/':
+            self._serve_lab_rollup(variant='leaderboard')
+        elif path_only == '/lab/rollup/alphabetical':
+            self._serve_lab_rollup(variant='alphabetical')
+        elif path_only == '/lab/synth-rollup' or path_only == '/lab/synth-rollup/':
+            self._serve_lab_rollup(variant='synth')
         # ─────────────────────────────────────────────────────────────
         # Meshtastic API Proxy - MeshForge owns the web client API
         # ─────────────────────────────────────────────────────────────
@@ -1188,6 +1194,91 @@ class MapRequestHandler(
         """
         from utils.fleet_snapshot import build_slo_snapshot
         self._serve_json(build_slo_snapshot(collector=self.collector))
+
+    # Lab rollup state files written every 10min by
+    # meshforge-lab-rollup.service. Variants:
+    #   leaderboard   — traffic rollup sorted worst-fail-first (default)
+    #   alphabetical  — traffic rollup sorted by pair (historical)
+    #   synth         — multi-user synth-soak rollup (only on synth boxes)
+    _LAB_ROLLUP_FILES = {
+        'leaderboard':  'lab-traffic-rollup-leaderboard.md',
+        'alphabetical': 'lab-traffic-rollup.md',
+        'synth':        'lab-synth-soak-rollup.md',
+    }
+
+    def _serve_lab_rollup(self, variant: str):
+        """Serve the lab rollup markdown produced by meshforge-lab-rollup.
+
+        State file lives under $XDG_STATE_HOME/meshforge/ (default
+        ~/.local/state/meshforge). 404s with a fix-hint when the file
+        doesn't exist — typical cause is the rollup timer never having
+        been installed on this host.
+        """
+        filename = self._LAB_ROLLUP_FILES.get(variant)
+        if filename is None:
+            self._serve_text(f"unknown rollup variant: {variant}\n",
+                             status=404, content_type='text/plain')
+            return
+
+        # XDG_STATE_HOME with the standard ~/.local/state fallback.
+        state_home = os.environ.get('XDG_STATE_HOME') or \
+            os.path.join(os.path.expanduser('~'), '.local', 'state')
+        path = os.path.join(state_home, 'meshforge', filename)
+
+        try:
+            with open(path, 'rb') as f:
+                data = f.read()
+        except FileNotFoundError:
+            hint = (
+                f"# lab rollup not found\n\n"
+                f"`{path}` does not exist on this host.\n\n"
+                f"Fix: install and enable the rollup timer on this box:\n"
+                f"```\n"
+                f"cp /opt/meshforge/templates/systemd/meshforge-lab-rollup-user.service \\\n"
+                f"   ~/.config/systemd/user/meshforge-lab-rollup.service\n"
+                f"cp /opt/meshforge/templates/systemd/meshforge-lab-rollup-user.timer \\\n"
+                f"   ~/.config/systemd/user/meshforge-lab-rollup.timer\n"
+                f"systemctl --user daemon-reload\n"
+                f"systemctl --user enable --now meshforge-lab-rollup.timer\n"
+                f"```\n"
+            )
+            self._serve_text(hint, status=404, content_type='text/markdown')
+            return
+        except OSError as e:
+            self._serve_text(f"# error reading rollup\n\n{e}\n",
+                             status=500, content_type='text/markdown')
+            return
+
+        self._serve_text(data, status=200, content_type='text/markdown')
+
+    def _serve_text(self, body, status: int = 200,
+                    content_type: str = 'text/plain'):
+        """Send a text/markdown response with the gzip + CORS pattern.
+
+        Accepts bytes or str. Uses the same gzip threshold as _serve_json
+        so small responses skip compression overhead.
+        """
+        if isinstance(body, str):
+            data = body.encode('utf-8')
+        else:
+            data = body
+        encoding: Optional[str] = None
+        if len(data) >= self._GZIP_MIN_BYTES and self._client_accepts_gzip():
+            data = gzip.compress(data, compresslevel=6)
+            encoding = 'gzip'
+        self.send_response(status)
+        self.send_header('Content-Type', f'{content_type}; charset=utf-8')
+        self.send_header('Content-Length', str(len(data)))
+        if encoding:
+            self.send_header('Content-Encoding', encoding)
+        self.send_header('Vary', 'Accept-Encoding')
+        self._send_cors_header()
+        self.send_header('Cache-Control', 'no-cache')
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as e:
+            logger.debug(f"Client disconnected during _serve_text: {e}")
 
     def _serve_coverage(self, parts: List[str]):
         """Serve terrain-aware coverage prediction for a location.

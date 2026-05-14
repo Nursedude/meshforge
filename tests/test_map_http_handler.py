@@ -326,3 +326,103 @@ class TestApplyViewPresetToPositionLess:
         )
         assert len(out) == 1
         assert out[0]["id"] == "a"
+
+
+# ---------------------------------------------------------------------------
+# /lab/rollup endpoint — serves rollup markdown produced by
+# meshforge-lab-rollup.service. See feedback_bundle_full_stack_not_light_version.
+# ---------------------------------------------------------------------------
+
+class TestServeLabRollup:
+    """The /lab/* endpoints surface the rollup state files."""
+
+    def _make_handler_with_state(self, tmp_path, monkeypatch,
+                                  filename: str | None = None,
+                                  content: bytes | str = b""):
+        """Point XDG_STATE_HOME at tmp_path and optionally seed a file."""
+        state_dir = tmp_path / "meshforge"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        if filename is not None:
+            data = content.encode() if isinstance(content, str) else content
+            (state_dir / filename).write_bytes(data)
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+        h = _make_handler("gzip")
+        return h
+
+    def test_leaderboard_variant_serves_file(self, tmp_path, monkeypatch):
+        h = self._make_handler_with_state(
+            tmp_path, monkeypatch,
+            filename="lab-traffic-rollup-leaderboard.md",
+            content="| pair | fail % |\n|---|---:|\n| foo->bar | 100.0 |\n",
+        )
+        h._serve_lab_rollup(variant="leaderboard")
+        body = h.wfile.getvalue()
+        # Small payload — not gzipped, raw markdown comes through.
+        assert b"foo->bar" in body
+        h.send_response.assert_called_once_with(200)
+        content_types = [v for k, v in h._sent_headers if k == "Content-Type"]
+        assert any("text/markdown" in v for v in content_types)
+
+    def test_alphabetical_variant_routes_to_different_file(self, tmp_path, monkeypatch):
+        h = self._make_handler_with_state(
+            tmp_path, monkeypatch,
+            filename="lab-traffic-rollup.md",
+            content="alphabetical-marker\n",
+        )
+        h._serve_lab_rollup(variant="alphabetical")
+        assert b"alphabetical-marker" in h.wfile.getvalue()
+        h.send_response.assert_called_once_with(200)
+
+    def test_synth_variant_routes_to_synth_file(self, tmp_path, monkeypatch):
+        h = self._make_handler_with_state(
+            tmp_path, monkeypatch,
+            filename="lab-synth-soak-rollup.md",
+            content="synth-marker\n",
+        )
+        h._serve_lab_rollup(variant="synth")
+        assert b"synth-marker" in h.wfile.getvalue()
+
+    def test_missing_file_returns_404_with_install_hint(self, tmp_path, monkeypatch):
+        # No file seeded — must 404 and emit a fix-hint pointing at the
+        # systemd template. Per feedback_visual_dashboard_as_human_claude_collab,
+        # a silent-empty response is the failure mode we're explicitly avoiding.
+        h = self._make_handler_with_state(tmp_path, monkeypatch)
+        h._serve_lab_rollup(variant="leaderboard")
+        h.send_response.assert_called_once_with(404)
+        body = h.wfile.getvalue()
+        assert b"meshforge-lab-rollup" in body
+        assert b"systemctl --user enable --now" in body
+
+    def test_unknown_variant_returns_404(self, tmp_path, monkeypatch):
+        h = self._make_handler_with_state(tmp_path, monkeypatch)
+        h._serve_lab_rollup(variant="garbage")
+        h.send_response.assert_called_once_with(404)
+        assert b"unknown rollup variant" in h.wfile.getvalue()
+
+
+class TestServeText:
+    """_serve_text is the helper used by /lab/* and any future markdown-y
+    endpoints. Mirrors _serve_json gzip + CORS behavior."""
+
+    def test_str_input_encoded_as_utf8(self):
+        h = _make_handler("")
+        h._serve_text("hello-Ω")
+        assert h.wfile.getvalue() == "hello-Ω".encode("utf-8")
+
+    def test_bytes_input_passed_through(self):
+        h = _make_handler("")
+        h._serve_text(b"\x01\x02\x03")
+        assert h.wfile.getvalue() == b"\x01\x02\x03"
+
+    def test_large_payload_gzipped_when_client_accepts(self):
+        h = _make_handler("gzip")
+        h._serve_text("x" * 50000, content_type="text/markdown")
+        body = h.wfile.getvalue()
+        assert body.startswith(b"\x1f\x8b"), "expected gzip magic bytes"
+        assert gzip.decompress(body) == ("x" * 50000).encode("utf-8")
+
+    def test_custom_status_code(self):
+        h = _make_handler("")
+        h._serve_text("oops", status=503)
+        h.send_response.assert_called_once_with(503)
