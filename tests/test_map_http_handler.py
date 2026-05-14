@@ -337,9 +337,13 @@ class TestServeLabRollup:
     """The /lab/* endpoints surface the rollup state files."""
 
     def _make_handler_with_state(self, tmp_path, monkeypatch,
-                                  filename: str | None = None,
-                                  content: bytes | str = b""):
-        """Point XDG_STATE_HOME at tmp_path and optionally seed a file."""
+                                  filename=None, content=b""):
+        """Point XDG_STATE_HOME at tmp_path and optionally seed a file.
+
+        ``filename`` is str|None and ``content`` is bytes|str — annotations
+        omitted because this file currently has to import-compile under
+        Python 3.9 in CI (PEP-604 union syntax landed in 3.10).
+        """
         state_dir = tmp_path / "meshforge"
         state_dir.mkdir(parents=True, exist_ok=True)
         if filename is not None:
