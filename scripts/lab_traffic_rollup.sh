@@ -13,9 +13,14 @@
 # ~/lab_rollup_$(date +%Y%m%d).md` or pastes into substack writeups.
 #
 # Usage:
-#   bash scripts/lab_traffic_rollup.sh                # last 24h, default fleet
+#   bash scripts/lab_traffic_rollup.sh                  # last 24h, alphabetical
 #   LOOKBACK_HOURS=6 bash scripts/lab_traffic_rollup.sh
 #   FLEET_HOSTS=~/.config/meshforge/fleet_hosts bash scripts/lab_traffic_rollup.sh
+#   SORT_BY=fail bash scripts/lab_traffic_rollup.sh     # leaderboard: worst-fail-first
+#   SORT_BY=rtt  bash scripts/lab_traffic_rollup.sh     # leaderboard: slowest-RTT-first
+#
+# SORT_BY values: pair (default), fail (desc), rtt (desc), samples (desc).
+# Leaderboard ordering (fail/rtt) makes outliers pop in dashboards.
 #
 # Exit codes:
 #   0 — rollup emitted (even if some hosts unreachable; those become "?"s)
@@ -27,6 +32,12 @@ set -o pipefail
 
 LOOKBACK_HOURS="${LOOKBACK_HOURS:-24}"
 FLEET_HOSTS="${FLEET_HOSTS:-}"
+SORT_BY="${SORT_BY:-pair}"
+
+case "$SORT_BY" in
+    pair|fail|rtt|samples) ;;
+    *) echo "error: SORT_BY must be pair|fail|rtt|samples (got: $SORT_BY)" >&2; exit 2 ;;
+esac
 
 if [[ -z "$FLEET_HOSTS" ]]; then
     if [[ -r "$HOME/.config/meshforge/fleet_hosts" ]]; then
@@ -161,14 +172,48 @@ END {
     print "| pair | samples | mean ms | p95 ms | fail % | breakdown |"
     print "|---|---:|---:|---:|---:|---|"
 
-    # Stable order: sort the pair keys.
+    # Compute per-pair stats first (mean/p95/fail_pct), then sort keys
+    # by SORT_BY before printing. Two-pass so the sort comparator has
+    # the stats it needs.
     n = 0
     for (k in samples) { keys[++n] = k }
-    # Simple insertion sort — fleet is small.
+
+    # First pass: compute mean / p95 / fail_pct per key.
+    for (i = 1; i <= n; i++) {
+        p = keys[i]
+        s = samples[p]
+        o = ok[p] + 0
+        fail_pct_arr[p] = (s == 0) ? 0 : 100 * (s - o) / s
+
+        cnt = rtt_count[p] + 0
+        if (cnt == 0) {
+            mean_arr[p] = -1   # sentinel — formatted as "-" later
+            p95_arr[p]  = -1
+        } else {
+            sum = 0
+            for (j = 1; j <= cnt; j++) {
+                v[j] = rtts[p "/" j]
+                sum += v[j]
+            }
+            for (a = 2; a <= cnt; a++) {
+                x = v[a]; b = a - 1
+                while (b >= 1 && v[b] > x) { v[b+1] = v[b]; b-- }
+                v[b+1] = x
+            }
+            mean_arr[p] = sum / cnt
+            p95_idx = int(0.95 * cnt + 0.999999)
+            if (p95_idx < 1) p95_idx = 1
+            if (p95_idx > cnt) p95_idx = cnt
+            p95_arr[p] = v[p95_idx]
+        }
+    }
+
+    # Sort comparator key per SORT_BY. Insertion sort — fleet is small.
+    sort_by = "'"$SORT_BY"'"
     for (i = 2; i <= n; i++) {
         x = keys[i]
         j = i - 1
-        while (j >= 1 && keys[j] > x) {
+        while (j >= 1 && _greater(keys[j], x, sort_by, fail_pct_arr, mean_arr, samples)) {
             keys[j+1] = keys[j]
             j--
         }
@@ -178,36 +223,14 @@ END {
     for (i = 1; i <= n; i++) {
         p = keys[i]
         s = samples[p]
-        o = ok[p] + 0
-        fail_pct = (s == 0) ? 0 : 100 * (s - o) / s
 
-        # Collect this pair'\''s RTTs into a sorted list for p95.
-        cnt = rtt_count[p] + 0
-        if (cnt == 0) {
-            mean = "-"
-            p95 = "-"
+        if (mean_arr[p] < 0) {
+            mean = "-"; p95 = "-"
         } else {
-            sum = 0
-            for (j = 1; j <= cnt; j++) {
-                v[j] = rtts[p "/" j]
-                sum += v[j]
-            }
-            # Sort v[1..cnt].
-            for (a = 2; a <= cnt; a++) {
-                x = v[a]
-                b = a - 1
-                while (b >= 1 && v[b] > x) {
-                    v[b+1] = v[b]; b--
-                }
-                v[b+1] = x
-            }
-            mean = sprintf("%.0f", sum / cnt)
-            # p95 index (1-based): ceil(0.95 * cnt)
-            p95_idx = int(0.95 * cnt + 0.999999)
-            if (p95_idx < 1) p95_idx = 1
-            if (p95_idx > cnt) p95_idx = cnt
-            p95 = sprintf("%.0f", v[p95_idx])
+            mean = sprintf("%.0f", mean_arr[p])
+            p95  = sprintf("%.0f", p95_arr[p])
         }
+        fail_pct = fail_pct_arr[p]
 
         # Breakdown of failure kinds for this pair.
         breakdown = ""
@@ -224,7 +247,38 @@ END {
         printf("| %s | %d | %s | %s | %.1f | %s |\n",
             p, s, mean, p95, fail_pct, breakdown)
     }
+}
 
+# Returns 1 if a sorts after b under the chosen sort key (= "a is greater").
+# For pair: alphabetical asc (a > b means a comes after b). For fail/rtt/samples:
+# desc order (a > b means a has a SMALLER value, so it should be moved later).
+function _greater(a, b, kind, fail, mean, samples_,    av, bv) {
+    if (kind == "pair") return a > b
+    if (kind == "fail") {
+        av = fail[a]; bv = fail[b]
+        if (av == bv) return a > b   # stable tiebreak by name
+        return av < bv               # desc: smaller fail sorts later
+    }
+    if (kind == "rtt") {
+        # Treat missing RTT (-1) as "highest" — pure-fail pairs lead the leaderboard.
+        av = mean[a]; bv = mean[b]
+        if (av < 0 && bv >= 0) return 0   # a is "infinity" — a stays earlier
+        if (bv < 0 && av >= 0) return 1   # b is "infinity" — a moves later
+        if (av == bv) return a > b
+        return av < bv               # desc
+    }
+    if (kind == "samples") {
+        av = samples_[a]; bv = samples_[b]
+        if (av == bv) return a > b
+        return av < bv               # desc
+    }
+    return a > b   # fallback
+}
+
+# Awk concatenates multiple END blocks in source order. The window
+# footer is split into a second END so the comparator function can sit
+# at top level (awk forbids function defs inside blocks).
+END {
     print ""
     printf("_window: last %d h    hosts queried: %d    hosts with data: %d_\n",
         '"$LOOKBACK_HOURS"', '"$hosts_seen"', '"$hosts_with_data"')

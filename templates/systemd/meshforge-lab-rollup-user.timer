@@ -1,0 +1,27 @@
+# MeshForge — lab rollup timer (every 10 min, matches tracer cadence)
+# ===================================================================
+#
+# Fires meshforge-lab-rollup.service on a 10-minute cadence so the
+# dashboard's view of federation round-trip health stays at most 10 min
+# stale. Matches the tracer cadence — every tracer fire produces fresh
+# journal lines, then the next rollup picks them up.
+#
+# Persistent=true so a missed firing (e.g. box rebooted) catches up
+# after boot. Without persistence, a Pi power-cycle leaves the dashboard
+# rendering stale rollup data forever.
+
+[Unit]
+Description=Fire meshforge-lab-rollup every 10 minutes
+Requires=meshforge-lab-rollup.service
+
+[Timer]
+# *:05/10 = 05, 15, 25, 35, 45, 55 — offset 5min from the tracer's
+# *:00/10 so the rollup runs AFTER the tracer journal lines have landed,
+# not before. Without this offset the rollup races the tracer and
+# regularly captures one-cycle-old data.
+OnCalendar=*-*-* *:05/10:00
+Persistent=true
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
