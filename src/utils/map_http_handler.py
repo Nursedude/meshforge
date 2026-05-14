@@ -245,6 +245,49 @@ class MapRequestHandler(
     # Default allowed origins when none explicitly configured
     _DEFAULT_ORIGINS = ['http://localhost', 'https://localhost']
 
+    # Content-Security-Policy applied to all HTML responses. Scope A
+    # ("loose CSP") — allows `'unsafe-inline'` because node_map.html
+    # carries ~30 inline event handlers (`onclick=`) and the
+    # Python-emitted HTML has inline <script> blocks for map init.
+    # Scope B (no `'unsafe-inline'`) is a post-May-17 UI refactor —
+    # see project_npm_security_posture.md.
+    #
+    # Origins allowed for script-src match the SRI-pinned CDN refs
+    # already in the repo (audited 94398db, 2026-05-14):
+    #   unpkg.com           leaflet, leaflet.markercluster, leaflet.heat, d3
+    #   cdn.jsdelivr.net    chart.js
+    #   d3js.org            d3.v7.min (path_visualizer, topology_visualizer)
+    #
+    # img-src https: is permissive intentionally — tile servers
+    # (OpenStreetMap, CartoDB, ESRI, etc.) are operator-configurable
+    # at runtime, and pinning each one in the policy would require
+    # rebuilding the CSP on every tile-source change.
+    _CSP_POLICY = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' "
+            "https://unpkg.com https://cdn.jsdelivr.net https://d3js.org; "
+        "style-src 'self' 'unsafe-inline' https://unpkg.com; "
+        "img-src 'self' data: https:; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-ancestors 'none'; "
+        "form-action 'self'"
+    )
+
+    def _send_security_headers(self):
+        """Send CSP + companion hardening headers for HTML responses.
+
+        Called from HTML-emitting handlers only (not JSON / metrics —
+        those don't render in a script context). CSP is the load-bearing
+        line; the other three are zero-cost defense-in-depth.
+        """
+        self.send_header('Content-Security-Policy', self._CSP_POLICY)
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Referrer-Policy', 'no-referrer-when-downgrade')
+        self.send_header('X-Frame-Options', 'DENY')
+
     def _send_cors_header(self):
         """Send appropriate CORS header based on configuration.
 
@@ -624,6 +667,7 @@ class MapRequestHandler(
             self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
             self.send_header('Pragma', 'no-cache')
             self.send_header('Expires', '0')
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(data)
         else:
@@ -776,6 +820,7 @@ class MapRequestHandler(
             self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
             self.send_header('Pragma', 'no-cache')
             self.send_header('Expires', '0')
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(data)
         else:
