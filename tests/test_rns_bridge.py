@@ -2330,3 +2330,57 @@ class TestBridgeStartRefuses:
         # Operator-visible error with fix-hint hook
         assert any("Refusing to start bridge" in rec.message for rec in caplog.records)
         assert any("meshforge" in rec.message for rec in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# _on_lxmf_receive — sniffer-capture branch (Issue #1162)
+# ---------------------------------------------------------------------------
+
+class TestLXMFReceiveSnifferCapture:
+    """The traffic-inspection sniffer hook in _on_lxmf_receive must accept
+    both bytes and str content. LXMessage.content arrives as bytes for
+    binary LXMF payloads; pre-fix the .encode('utf-8') call raised
+    AttributeError, dropping the capture (delivery itself was unaffected
+    but observability missed the message)."""
+
+    @staticmethod
+    def _make_message(content):
+        msg = MagicMock()
+        msg.source_hash = b"\x3d\xfb\xdb\x5d" + b"\x00" * 12
+        msg.content = content
+        msg.title = None
+        msg.stamp = None
+        msg.fields = None
+        return msg
+
+    def _run_with_sniffer(self, bridge, message):
+        sniffer = MagicMock()
+        sniffer._running = True
+        with patch("gateway.rns_bridge.HAS_RNS_SNIFFER", True), \
+             patch("gateway.rns_bridge.get_rns_sniffer", return_value=sniffer), \
+             patch("gateway.rns_bridge.UnifiedNode"), \
+             patch("commands.messaging.store_incoming"):
+            bridge._on_lxmf_receive(message)
+        return sniffer
+
+    def test_bytes_content_does_not_raise(self, bridge):
+        """Regression for #1162: bytes content must pass through unchanged."""
+        sniffer = self._run_with_sniffer(bridge, self._make_message(b"hello-bytes"))
+        sniffer._store_packet.assert_called_once()
+        captured = sniffer._store_packet.call_args[0][0]
+        assert captured.payload == b"hello-bytes"
+        assert captured.payload_size == len(b"hello-bytes")
+
+    def test_str_content_is_utf8_encoded(self, bridge):
+        sniffer = self._run_with_sniffer(bridge, self._make_message("hello-str-Ω"))
+        sniffer._store_packet.assert_called_once()
+        captured = sniffer._store_packet.call_args[0][0]
+        assert captured.payload == "hello-str-Ω".encode("utf-8")
+        assert captured.payload_size == len("hello-str-Ω".encode("utf-8"))
+
+    def test_none_content_yields_empty_payload(self, bridge):
+        sniffer = self._run_with_sniffer(bridge, self._make_message(None))
+        sniffer._store_packet.assert_called_once()
+        captured = sniffer._store_packet.call_args[0][0]
+        assert captured.payload == b""
+        assert captured.payload_size == 0
