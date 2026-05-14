@@ -95,7 +95,15 @@ while IFS= read -r raw; do
 
     # journalctl emits "<ts> <host> <id>[<pid>]: <message>". We only
     # want the message body. -o cat strips everything but the body.
-    result=$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" \
+    # NB: `-n` is load-bearing here. The header docstring of this file
+    # already warns about the gotcha (ssh inside a `while read` loop
+    # eats the host list via stdin), and the sibling
+    # soak_check_fleet_2026_05_14.sh follows the rule. This call site
+    # missed it pre-2026-05-14, which silently truncated the rollup to
+    # only the first peer (caught when moc/moc1/moc2/moc3 tracer data
+    # never appeared in /lab/rollup even though each host's tracer was
+    # firing cleanly).
+    result=$(ssh -n -o BatchMode=yes -o ConnectTimeout=8 "$host" \
         "journalctl --user-unit=meshforge-tracer --since '${LOOKBACK_HOURS} hours ago' \
          --no-pager -o cat 2>/dev/null | grep -E 'tracer: rtt seq='" \
         2>/dev/null || true)
