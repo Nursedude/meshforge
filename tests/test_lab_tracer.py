@@ -208,3 +208,110 @@ def test_load_peers_reads_from_explicit_path(tmp_path):
     peers = load_peers(peers_file)
     assert len(peers) == 1
     assert peers[0].name == "moc"
+
+
+# ---------------------------------------------------------- state file writes
+
+
+def test_write_state_file_round_trip(tmp_path):
+    """One JSON object per file, single-line, newline-terminated.
+
+    The rollup ssh-fans `cat tracer-*.json` across the fleet; the result
+    is one JSONL stream. The single-line + newline shape is load-bearing.
+    """
+    import json
+    from lab.lxmf_tracer import TraceResult, write_state_file
+
+    results = [
+        TraceResult(seq=1, peer="box-a", result="ok", rtt_ms=42),
+        TraceResult(seq=2, peer="box-b", result="timeout", rtt_ms=0),
+        TraceResult(seq=3, peer="box-c", result="no-route", rtt_ms=0),
+    ]
+    path = write_state_file(
+        results, fire_at_unix=1_700_000_000.0,
+        self_short="test-host", state_dir=tmp_path,
+    )
+    assert path is not None
+    assert path.name == "tracer-1700000000.json"
+
+    raw = path.read_text()
+    assert raw.endswith("\n"), "trailing newline required for cat-concat JSONL"
+    assert "\n" not in raw.rstrip("\n"), "must be single-line"
+
+    doc = json.loads(raw)
+    assert doc["schema_version"] == 1
+    assert doc["self_short"] == "test-host"
+    assert doc["fire_at_unix"] == 1_700_000_000.0
+    assert doc["fire_at_iso"].endswith("Z")
+    assert len(doc["results"]) == 3
+    assert doc["results"][0] == {
+        "seq": 1, "peer": "box-a", "result": "ok", "rtt_ms": 42,
+    }
+
+
+def test_write_state_file_creates_dir(tmp_path):
+    """First fire creates the state dir; we don't expect operator to mkdir."""
+    from lab.lxmf_tracer import write_state_file
+
+    nested = tmp_path / "does" / "not" / "yet" / "exist"
+    assert not nested.exists()
+    path = write_state_file(
+        [], fire_at_unix=1.0, self_short="x", state_dir=nested,
+    )
+    assert path is not None
+    assert nested.is_dir()
+
+
+def test_write_state_file_atomic_replace(tmp_path):
+    """Write goes via tmp + os.replace — a partial file shouldn't be visible."""
+    from lab.lxmf_tracer import write_state_file
+
+    write_state_file([], fire_at_unix=1.0, self_short="x", state_dir=tmp_path)
+    files = sorted(tmp_path.iterdir())
+    # Only the final file should exist — no stray .tmp leftover.
+    assert [p.name for p in files] == ["tracer-1.json"]
+
+
+def test_prune_state_dir_removes_only_expired(tmp_path):
+    """TTL is mtime-based; files newer than cutoff stay."""
+    import os
+    from lab.lxmf_tracer import prune_state_dir
+
+    now = 2_000_000_000.0
+    fresh = tmp_path / "tracer-1999999999.json"
+    stale = tmp_path / "tracer-100.json"
+    other = tmp_path / "not-a-tracer.json"
+    for p in (fresh, stale, other):
+        p.write_text("{}\n")
+    # Force mtimes (write_text sets to current time otherwise).
+    os.utime(fresh, (now - 60, now - 60))
+    os.utime(stale, (now - 30 * 86400, now - 30 * 86400))
+    os.utime(other, (now - 30 * 86400, now - 30 * 86400))
+
+    deleted = prune_state_dir(tmp_path, ttl_days=7, now_unix=now)
+    assert deleted == 1
+    assert fresh.exists()
+    assert not stale.exists()
+    # Unrelated files in the dir must be untouched — only tracer-*.json
+    # matches the prune glob.
+    assert other.exists()
+
+
+def test_prune_state_dir_handles_missing_dir(tmp_path):
+    from lab.lxmf_tracer import prune_state_dir
+
+    assert prune_state_dir(tmp_path / "nope", ttl_days=7) == 0
+
+
+def test_write_state_file_returns_none_on_oserror(tmp_path, monkeypatch):
+    """A write failure must not propagate — tracer is observability, not gating."""
+    from lab.lxmf_tracer import write_state_file
+
+    # Point at a path where mkdir will fail (parent is a file, not a dir).
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a dir")
+    result = write_state_file(
+        [], fire_at_unix=1.0, self_short="x",
+        state_dir=blocker / "child",
+    )
+    assert result is None

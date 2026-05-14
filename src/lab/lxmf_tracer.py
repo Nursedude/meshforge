@@ -18,7 +18,9 @@ constraint from L1 plan question #3).
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
 import sys
 import tempfile
 import threading
@@ -32,6 +34,14 @@ logger = logging.getLogger("lab.tracer")
 
 DEFAULT_PATH_TIMEOUT_S = 8.0
 DEFAULT_ACK_TIMEOUT_S = 30.0
+
+# Per-fire JSON state. Survives volatile journals on Pi boxes (every
+# fleet box runs `Storage=volatile`, which rotates user-unit journal
+# data away within an hour on small tmpfs partitions; the original
+# 2026-05-12 design assumed durable journals and broke fleet rollups
+# as a result — see project_lab_install_gap_moc3.md follow-up).
+STATE_SCHEMA_VERSION = 1
+STATE_TTL_DAYS = 7
 
 
 @dataclass
@@ -341,6 +351,98 @@ def run_trace(
         return results
 
 
+# ---------------------------------------------------------------- state files
+
+
+def _state_dir_default() -> Path:
+    """``$XDG_STATE_HOME/meshforge/tracer`` (or ``~/.local/state/...``).
+
+    Same shape `lab_synth_soak_*` use, so an operator only has to learn
+    one path convention.
+    """
+    from utils.paths import get_real_user_home
+
+    xdg = os.environ.get("XDG_STATE_HOME")
+    base = Path(xdg) if xdg else get_real_user_home() / ".local" / "state"
+    return base / "meshforge" / "tracer"
+
+
+def write_state_file(
+    results: List[TraceResult],
+    fire_at_unix: float,
+    self_short: str,
+    state_dir: Optional[Path] = None,
+) -> Optional[Path]:
+    """Write one JSON file per fire: ``tracer-<unix-ts>.json``.
+
+    One JSON object per file, terminated with a newline so ``cat *.json``
+    produces clean JSONL for the aggregator. Returns the written path,
+    or None on write failure (we never want state-file IO to fail the
+    fire — observability, not gating).
+    """
+    sd = state_dir or _state_dir_default()
+    try:
+        sd.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("tracer: state dir create failed: %s", exc)
+        return None
+
+    payload = {
+        "schema_version": STATE_SCHEMA_VERSION,
+        "fire_at_unix": float(fire_at_unix),
+        "fire_at_iso": time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(fire_at_unix),
+        ),
+        "self_short": self_short,
+        "results": [
+            {
+                "seq": r.seq,
+                "peer": r.peer,
+                "result": r.result,
+                "rtt_ms": r.rtt_ms,
+            }
+            for r in results
+        ],
+    }
+
+    target = sd / f"tracer-{int(fire_at_unix)}.json"
+    tmp = sd / f".tracer-{int(fire_at_unix)}.json.tmp"
+    try:
+        tmp.write_text(json.dumps(payload, separators=(",", ":")) + "\n")
+        os.replace(tmp, target)
+    except OSError as exc:
+        logger.warning("tracer: state write failed: %s", exc)
+        tmp.unlink(missing_ok=True)
+        return None
+    return target
+
+
+def prune_state_dir(
+    state_dir: Optional[Path] = None,
+    ttl_days: int = STATE_TTL_DAYS,
+    now_unix: Optional[float] = None,
+) -> int:
+    """Delete ``tracer-*.json`` files older than ``ttl_days``.
+
+    Returns the count deleted. Best-effort: a single unlink failure
+    logs and continues. Called from main() before the fire so a
+    partial fire doesn't skip the prune cycle.
+    """
+    sd = state_dir or _state_dir_default()
+    if not sd.is_dir():
+        return 0
+    cutoff = (now_unix if now_unix is not None else time.time()) - ttl_days * 86400
+    deleted = 0
+    for p in sd.glob("tracer-*.json"):
+        try:
+            if p.stat().st_mtime < cutoff:
+                p.unlink()
+                deleted += 1
+        except OSError as exc:
+            logger.debug("tracer: prune skip %s: %s", p.name, exc)
+    return deleted
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -377,15 +479,34 @@ def main(argv=None) -> int:
         return 2
 
     logger.info("tracer: starting trace against %d peer(s)", len(peers))
+
+    # Prune old state files BEFORE the fire so a long run won't skip a
+    # prune cycle (and so we don't accidentally evict the file we just
+    # wrote). Best-effort — failures don't gate the fire.
+    deleted = prune_state_dir()
+    if deleted:
+        logger.debug("tracer: pruned %d expired state files", deleted)
+
+    fire_at_unix = time.time()
     results = run_trace(
         peers,
         path_timeout_s=args.path_timeout,
         ack_timeout_s=args.ack_timeout,
     )
 
+    # Durable per-fire state — the journal is volatile on the small
+    # fleet boxes and the rollup can't see >1h of history. Aggregator
+    # (lab_traffic_rollup.sh) reads these JSON files first; the journal
+    # remains as a secondary human-readable log only.
+    from lab._lab_common import short_name
+    state_path = write_state_file(
+        results, fire_at_unix=fire_at_unix, self_short=short_name(),
+    )
+    if state_path is not None:
+        logger.debug("tracer: wrote state file %s", state_path)
+
     # Always exit 0 — the tracer is an observability tool, not a gating
-    # check. Per-peer results live in the journal (which the aggregator
-    # reads). Returning non-zero on partial failures would flag
+    # check. Returning non-zero on partial failures would flag
     # `meshforge-tracer.service` as failed in systemd every cycle that
     # has a single timeout/no-route, drowning real failures (like the
     # daemon crashing) in routine red.

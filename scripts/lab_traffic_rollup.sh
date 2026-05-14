@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-# lab_traffic_rollup.sh — Roll up tracer journal lines into a pairwise
-# reliability matrix.
+# lab_traffic_rollup.sh — Roll up tracer JSON state files into a
+# pairwise reliability matrix.
 #
 # For each fleet box in $HOME/.config/meshforge/fleet_hosts (or the
-# fallback paths fleet_sync.sh uses), ssh in and pull the last
-# $LOOKBACK_HOURS of journalctl --user-unit=meshforge-tracer output
-# filtered for "rtt seq=" lines. Compute per-(from→to) pair:
+# fallback paths fleet_sync.sh uses), ssh in and concatenate the last
+# $LOOKBACK_HOURS of `tracer-*.json` files from the box's state dir
+# (~/.local/state/meshforge/tracer/). Each file is one fire's JSON
+# object, newline-terminated → the concatenation is clean JSONL. The
+# Python aggregator parses each line, bins per-(from→to) pair, and
+# emits a markdown table of samples / mean / p95 / fail %.
 #
-#   samples | mean ms | p95 ms | fail %
-#
-# Emit a markdown table to stdout — operator pipes to `tee
-# ~/lab_rollup_$(date +%Y%m%d).md` or pastes into substack writeups.
+# Why state files instead of the journal: every fleet box runs
+# journald with `Storage=volatile`, and the per-user /run journals
+# are size-capped at 17-74 MB on the small Pis. 24h of tracer history
+# rotates away in ~1 hour, so the journal-based rollup undercounted
+# non-tester boxes (caught 2026-05-14 — see
+# project_lab_install_gap_moc3.md). State files persist across journal
+# rotation; rotation is mtime-based pruning inside lxmf_tracer.py.
 #
 # Usage:
 #   bash scripts/lab_traffic_rollup.sh                  # last 24h, alphabetical
@@ -20,12 +26,13 @@
 #   SORT_BY=rtt  bash scripts/lab_traffic_rollup.sh     # leaderboard: slowest-RTT-first
 #
 # SORT_BY values: pair (default), fail (desc), rtt (desc), samples (desc).
-# Leaderboard ordering (fail/rtt) makes outliers pop in dashboards.
 #
 # Exit codes:
-#   0 — rollup emitted (even if some hosts unreachable; those become "?"s)
+#   0 — rollup emitted (even if some hosts unreachable; those become
+#       a "no state files" note in the footer)
 #   2 — invalid args / fleet host file missing
-#   3 — no rtt lines from any host (likely tracer not running)
+#   3 — no JSON state files from any host (likely tracer not running,
+#       or no fire has happened since the state-file rollout landed)
 
 set -u
 set -o pipefail
@@ -56,67 +63,69 @@ if ! [[ "$LOOKBACK_HOURS" =~ ^[0-9]+$ ]]; then
     exit 2
 fi
 
-# Collect rtt lines from each host. Tracer runs on (typically) one
-# designated box, but we sweep all fleet boxes — each box's own short
-# name appears in the rtt lines as "from=" (we tag it via ssh hostname).
-TMP="$(mktemp)"
-trap 'rm -f "$TMP"' EXIT
+# State dir path on each fleet box. $HOME expansion happens on the
+# remote side (single-quoted in the ssh command).
+REMOTE_STATE_EXPR='"${XDG_STATE_HOME:-$HOME/.local/state}/meshforge/tracer"'
 
-# Headers + a "from-host" tag so we don't depend on the journal
-# carrying $(hostname) in every line.
-echo "# fleet-from-host | journal-line" > "$TMP"
+# find -mmin uses minutes. Convert hours → minutes.
+MINS=$(( LOOKBACK_HOURS * 60 ))
+
+# Per-host fetch: list .json files in the window and cat them. Files
+# are atomically written by lxmf_tracer.write_state_file (tmp + replace)
+# and newline-terminated, so concatenation produces clean JSONL.
+fetch_host_json() {
+    local host="$1"
+    if [[ "$host" == "__local__" ]]; then
+        local sd
+        sd="${XDG_STATE_HOME:-$HOME/.local/state}/meshforge/tracer"
+        if [[ -d "$sd" ]]; then
+            find "$sd" -maxdepth 1 -name 'tracer-*.json' -mmin "-${MINS}" \
+                -exec cat {} + 2>/dev/null
+        fi
+        return 0
+    fi
+    # `ssh -n` is load-bearing: without it ssh consumes the host list
+    # via stdin and silently truncates the rollup to the first peer
+    # (fixed 2026-05-14 in commit 46522e4).
+    ssh -n -o BatchMode=yes -o ConnectTimeout=8 "$host" \
+        "sd=${REMOTE_STATE_EXPR}; \
+         [ -d \"\$sd\" ] && find \"\$sd\" -maxdepth 1 \
+            -name 'tracer-*.json' -mmin '-${MINS}' \
+            -exec cat {} + 2>/dev/null" \
+        2>/dev/null || true
+}
+
+# Collect every host's JSONL into one stream. Track which hosts
+# returned anything so the footer can flag silent ones.
+TMP="$(mktemp)"
+EMPTY_HOSTS="$(mktemp)"
+trap 'rm -f "$TMP" "$EMPTY_HOSTS"' EXIT
 
 hosts_seen=0
 hosts_with_data=0
 
-# Always pull the local journal first. fleet_hosts excludes "self" by
-# convention (see scripts/fleet_sync.sh), but the tester box typically
-# IS the local box — without this we'd silently miss its data.
+emit_host_data() {
+    local label="$1"
+    local data="$2"
+    hosts_seen=$((hosts_seen + 1))
+    if [[ -n "$data" ]]; then
+        hosts_with_data=$((hosts_with_data + 1))
+        printf '%s\n' "$data" >> "$TMP"
+    else
+        printf '%s\n' "$label" >> "$EMPTY_HOSTS"
+    fi
+}
+
+# Local box first (fleet_hosts excludes self by convention).
 local_host="$(hostname -s 2>/dev/null || hostname)"
-hosts_seen=$((hosts_seen + 1))
-local_result=$(journalctl --user-unit=meshforge-tracer \
-    --since "${LOOKBACK_HOURS} hours ago" --no-pager -o cat 2>/dev/null \
-    | grep -E 'tracer: rtt seq=' || true)
-if [[ -n "$local_result" ]]; then
-    hosts_with_data=$((hosts_with_data + 1))
-    while IFS= read -r line; do
-        printf '%s | %s\n' "$local_host" "$line" >> "$TMP"
-    done <<< "$local_result"
-fi
+emit_host_data "$local_host (local)" "$(fetch_host_json __local__)"
 
 while IFS= read -r raw; do
-    # Strip comments and trim. Skip blank lines.
     host="${raw%%#*}"
     host="${host//[[:space:]]/}"
     [[ -z "$host" ]] && continue
-    # Skip if it matches the local host (already pulled).
     [[ "$host" == "$local_host" ]] && continue
-    hosts_seen=$((hosts_seen + 1))
-
-    # journalctl emits "<ts> <host> <id>[<pid>]: <message>". We only
-    # want the message body. -o cat strips everything but the body.
-    # NB: `-n` is load-bearing here. The header docstring of this file
-    # already warns about the gotcha (ssh inside a `while read` loop
-    # eats the host list via stdin), and the sibling
-    # soak_check_fleet_2026_05_14.sh follows the rule. This call site
-    # missed it pre-2026-05-14, which silently truncated the rollup to
-    # only the first peer (caught when moc/moc1/moc2/moc3 tracer data
-    # never appeared in /lab/rollup even though each host's tracer was
-    # firing cleanly).
-    result=$(ssh -n -o BatchMode=yes -o ConnectTimeout=8 "$host" \
-        "journalctl --user-unit=meshforge-tracer --since '${LOOKBACK_HOURS} hours ago' \
-         --no-pager -o cat 2>/dev/null | grep -E 'tracer: rtt seq='" \
-        2>/dev/null || true)
-
-    if [[ -n "$result" ]]; then
-        hosts_with_data=$((hosts_with_data + 1))
-        # Tag each line with the host we pulled from, since the rtt
-        # line itself doesn't echo "from=" (that's implicit in which
-        # box ran the tracer).
-        while IFS= read -r line; do
-            printf '%s | %s\n' "$host" "$line" >> "$TMP"
-        done <<< "$result"
-    fi
+    emit_host_data "$host" "$(fetch_host_json "$host")"
 done < "$FLEET_HOSTS"
 
 if [[ "$hosts_seen" -eq 0 ]]; then
@@ -124,173 +133,149 @@ if [[ "$hosts_seen" -eq 0 ]]; then
     exit 2
 fi
 
-# Count payload rows (everything past the header).
-rows="$(tail -n +2 "$TMP" | wc -l)"
-if [[ "$rows" -eq 0 ]]; then
-    echo "error: no rtt lines from any host (last ${LOOKBACK_HOURS}h)." >&2
-    echo "       Is meshforge-tracer.timer enabled on a tester box?" >&2
+lines="$(wc -l < "$TMP" 2>/dev/null || echo 0)"
+if [[ "$lines" -eq 0 ]]; then
+    echo "error: no tracer state files from any host (last ${LOOKBACK_HOURS}h)." >&2
+    echo "       Has any box fired since the state-file rollout?" >&2
+    echo "       Check on a fleet box:" >&2
+    echo "         ls ~/.local/state/meshforge/tracer/ | wc -l" >&2
     exit 3
 fi
 
-# Aggregate. Each row is "<from-host> | tracer: rtt seq=N peer=<name>
-# result=<r> ms=<int>". We pull (from, peer, result, ms) into a small
-# AWK pipeline.
-#
-# AWK fields after the "|" split:
-#   $0 split by "|": from=$1
-#   right half tokenized: seq= peer= result= ms=
-awk -F'\\|' '
-NR == 1 { next }    # skip header
-{
-    from = $1
-    gsub(/[[:space:]]/, "", from)
-    body = $2
+# Aggregate. Python reads JSONL from $TMP (one fire per line),
+# accumulates per-(from→to) pair stats, and emits the markdown table.
+python3 - "$SORT_BY" "$LOOKBACK_HOURS" "$hosts_seen" "$hosts_with_data" \
+         "$TMP" "$EMPTY_HOSTS" <<'PYEOF'
+import json
+import statistics
+import sys
+from collections import defaultdict
 
-    seq=""; peer=""; result=""; ms=""
-    n = split(body, tokens, " ")
-    for (i = 1; i <= n; i++) {
-        t = tokens[i]
-        if (t ~ /^seq=/)    { seq    = substr(t, 5) }
-        else if (t ~ /^peer=/)   { peer   = substr(t, 6) }
-        else if (t ~ /^result=/) { result = substr(t, 8) }
-        else if (t ~ /^ms=/)     { ms     = substr(t, 4) }
-    }
+sort_by, lookback_h, hosts_seen, hosts_with_data, tmp_path, empty_path = \
+    sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), \
+    sys.argv[5], sys.argv[6]
 
-    if (peer == "" || result == "") next
-    if (from == peer) { pair = from " (loopback)" }
-    else              { pair = from " -> " peer }
+# pairs[(from, to)] = {samples, ok, fail_kinds: {kind: count}, rtts: [int]}
+pairs = defaultdict(lambda: {
+    "samples": 0, "ok": 0, "fail_kinds": defaultdict(int), "rtts": [],
+})
+malformed = 0
 
-    samples[pair] += 1
-    if (result == "ok") {
-        ok[pair] += 1
-        # Track RTTs for mean + p95.
-        rtt_count[pair] += 1
-        idx = pair "/" rtt_count[pair]
-        rtts[idx] = ms + 0
-    } else {
-        fail_kind[pair "/" result] += 1
-    }
-}
+with open(tmp_path) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            doc = json.loads(line)
+        except json.JSONDecodeError:
+            malformed += 1
+            continue
+        sender = doc.get("self_short")
+        if not sender:
+            malformed += 1
+            continue
+        for row in doc.get("results", []):
+            peer = row.get("peer")
+            result = row.get("result")
+            if not peer or not result:
+                continue
+            key = (sender, peer) if sender != peer else (sender + " (loopback)", "")
+            slot = pairs[key]
+            slot["samples"] += 1
+            if result == "ok":
+                slot["ok"] += 1
+                ms = row.get("rtt_ms")
+                if isinstance(ms, (int, float)):
+                    slot["rtts"].append(int(ms))
+            else:
+                slot["fail_kinds"][result] += 1
 
-END {
-    # Header.
-    print ""
-    print "## Lab traffic rollup"
-    print ""
-    print "| pair | samples | mean ms | p95 ms | fail % | breakdown |"
-    print "|---|---:|---:|---:|---:|---|"
+# Pretty pair label: loopback rows have empty "to", restore the original
+# rollup shape "host (loopback)" for them.
+def pair_label(key):
+    sender, peer = key
+    if peer == "" and sender.endswith(" (loopback)"):
+        return sender
+    return f"{sender} -> {peer}"
 
-    # Compute per-pair stats first (mean/p95/fail_pct), then sort keys
-    # by SORT_BY before printing. Two-pass so the sort comparator has
-    # the stats it needs.
-    n = 0
-    for (k in samples) { keys[++n] = k }
+rows = []
+for key, slot in pairs.items():
+    samples = slot["samples"]
+    ok = slot["ok"]
+    fail_pct = 100.0 * (samples - ok) / samples if samples else 0.0
+    rtts = slot["rtts"]
+    if rtts:
+        rtts_sorted = sorted(rtts)
+        mean_ms = int(round(statistics.fmean(rtts)))
+        # Nearest-rank, ceiling to match the existing awk behavior
+        # (int(0.95 * n + 0.999999)).
+        idx = max(1, min(len(rtts_sorted),
+                         int(0.95 * len(rtts_sorted) + 0.999999)))
+        p95_ms = rtts_sorted[idx - 1]
+    else:
+        mean_ms = None
+        p95_ms = None
+    breakdown_bits = [
+        f"{kind}={cnt}" for kind, cnt in
+        sorted(slot["fail_kinds"].items())
+    ]
+    breakdown = " ".join(breakdown_bits) if breakdown_bits else "(none)"
+    rows.append({
+        "label": pair_label(key),
+        "samples": samples, "ok": ok,
+        "mean_ms": mean_ms, "p95_ms": p95_ms,
+        "fail_pct": fail_pct, "breakdown": breakdown,
+    })
 
-    # First pass: compute mean / p95 / fail_pct per key.
-    for (i = 1; i <= n; i++) {
-        p = keys[i]
-        s = samples[p]
-        o = ok[p] + 0
-        fail_pct_arr[p] = (s == 0) ? 0 : 100 * (s - o) / s
+def sort_key(r):
+    if sort_by == "fail":
+        # desc fail, then label asc as tiebreak
+        return (-r["fail_pct"], r["label"])
+    if sort_by == "rtt":
+        # Missing RTT (pure-fail pairs) leads the leaderboard.
+        mean = r["mean_ms"]
+        if mean is None:
+            return (-1e18, r["label"])
+        return (-mean, r["label"])
+    if sort_by == "samples":
+        return (-r["samples"], r["label"])
+    return (r["label"],)
 
-        cnt = rtt_count[p] + 0
-        if (cnt == 0) {
-            mean_arr[p] = -1   # sentinel — formatted as "-" later
-            p95_arr[p]  = -1
-        } else {
-            sum = 0
-            for (j = 1; j <= cnt; j++) {
-                v[j] = rtts[p "/" j]
-                sum += v[j]
-            }
-            for (a = 2; a <= cnt; a++) {
-                x = v[a]; b = a - 1
-                while (b >= 1 && v[b] > x) { v[b+1] = v[b]; b-- }
-                v[b+1] = x
-            }
-            mean_arr[p] = sum / cnt
-            p95_idx = int(0.95 * cnt + 0.999999)
-            if (p95_idx < 1) p95_idx = 1
-            if (p95_idx > cnt) p95_idx = cnt
-            p95_arr[p] = v[p95_idx]
-        }
-    }
+rows.sort(key=sort_key)
 
-    # Sort comparator key per SORT_BY. Insertion sort — fleet is small.
-    sort_by = "'"$SORT_BY"'"
-    for (i = 2; i <= n; i++) {
-        x = keys[i]
-        j = i - 1
-        while (j >= 1 && _greater(keys[j], x, sort_by, fail_pct_arr, mean_arr, samples)) {
-            keys[j+1] = keys[j]
-            j--
-        }
-        keys[j+1] = x
-    }
+print()
+print("## Lab traffic rollup")
+print()
+print("| pair | samples | mean ms | p95 ms | fail % | breakdown |")
+print("|---|---:|---:|---:|---:|---|")
+for r in rows:
+    mean_s = "-" if r["mean_ms"] is None else str(r["mean_ms"])
+    p95_s = "-" if r["p95_ms"] is None else str(r["p95_ms"])
+    print(f"| {r['label']} | {r['samples']} | {mean_s} | {p95_s} | "
+          f"{r['fail_pct']:.1f} | {r['breakdown']} |")
 
-    for (i = 1; i <= n; i++) {
-        p = keys[i]
-        s = samples[p]
+print()
+empty_hosts = []
+try:
+    with open(empty_path) as f:
+        empty_hosts = [ln.strip() for ln in f if ln.strip()]
+except OSError:
+    pass
 
-        if (mean_arr[p] < 0) {
-            mean = "-"; p95 = "-"
-        } else {
-            mean = sprintf("%.0f", mean_arr[p])
-            p95  = sprintf("%.0f", p95_arr[p])
-        }
-        fail_pct = fail_pct_arr[p]
+if empty_hosts:
+    print("_silent (no state files in window — tracer not firing, or "
+          "rollout hasn't reached this box):_")
+    for h in empty_hosts:
+        print(f"- `{h}`")
+    print()
 
-        # Breakdown of failure kinds for this pair.
-        breakdown = ""
-        for (k in fail_kind) {
-            if (index(k, p "/") == 1) {
-                kind = substr(k, length(p) + 2)
-                c = fail_kind[k]
-                breakdown = breakdown sprintf("%s=%d ", kind, c)
-            }
-        }
-        if (breakdown == "") breakdown = "(none)"
-        sub(/ +$/, "", breakdown)
-
-        printf("| %s | %d | %s | %s | %.1f | %s |\n",
-            p, s, mean, p95, fail_pct, breakdown)
-    }
-}
-
-# Returns 1 if a sorts after b under the chosen sort key (= "a is greater").
-# For pair: alphabetical asc (a > b means a comes after b). For fail/rtt/samples:
-# desc order (a > b means a has a SMALLER value, so it should be moved later).
-function _greater(a, b, kind, fail, mean, samples_,    av, bv) {
-    if (kind == "pair") return a > b
-    if (kind == "fail") {
-        av = fail[a]; bv = fail[b]
-        if (av == bv) return a > b   # stable tiebreak by name
-        return av < bv               # desc: smaller fail sorts later
-    }
-    if (kind == "rtt") {
-        # Treat missing RTT (-1) as "highest" — pure-fail pairs lead the leaderboard.
-        av = mean[a]; bv = mean[b]
-        if (av < 0 && bv >= 0) return 0   # a is "infinity" — a stays earlier
-        if (bv < 0 && av >= 0) return 1   # b is "infinity" — a moves later
-        if (av == bv) return a > b
-        return av < bv               # desc
-    }
-    if (kind == "samples") {
-        av = samples_[a]; bv = samples_[b]
-        if (av == bv) return a > b
-        return av < bv               # desc
-    }
-    return a > b   # fallback
-}
-
-# Awk concatenates multiple END blocks in source order. The window
-# footer is split into a second END so the comparator function can sit
-# at top level (awk forbids function defs inside blocks).
-END {
-    print ""
-    printf("_window: last %d h    hosts queried: %d    hosts with data: %d_\n",
-        '"$LOOKBACK_HOURS"', '"$hosts_seen"', '"$hosts_with_data"')
-}
-' "$TMP"
+footer = (f"_window: last {lookback_h} h    "
+          f"hosts queried: {hosts_seen}    "
+          f"hosts with data: {hosts_with_data}_")
+if malformed:
+    footer += f"    _malformed-line skipped: {malformed}_"
+print(footer)
+PYEOF
 
 exit 0
