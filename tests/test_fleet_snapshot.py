@@ -18,7 +18,10 @@ from utils import fleet_snapshot
 from utils.fleet_snapshot import (
     OPTIONAL_SERVICES,
     REQUIRED_SERVICES,
+    SCHEDULE_STALE_MULTIPLIER,
+    _normalize_timer,
     _probe_radio,
+    _schedules_block,
     _services_rollup,
     _systemctl_state,
     build_slo_snapshot,
@@ -222,3 +225,177 @@ def test_boundaries_top_is_empty_phase_1():
     """MF doesn't instrument systemd boundaries yet. Empty is valid for MA."""
     snap = build_slo_snapshot()
     assert snap["boundaries_top"] == []
+
+
+# ─── Schedules block (T0 schedule-health) ──────────────────────────────
+
+
+NOW = 1778870000.0  # reference instant for normalize tests
+
+
+def test_normalize_timer_converts_microseconds_to_unix_seconds():
+    raw = {
+        "unit": "meshforge-tracer.timer",
+        # 1778869400000000 µs = 1778869400.0 s (10 min before NOW)
+        "last": 1778869400000000,
+        "next": 1778870000000000,
+    }
+    entry = _normalize_timer(raw, "user", NOW)
+    assert entry["name"] == "meshforge-tracer.timer"
+    assert entry["scope"] == "user"
+    assert entry["last_fire_unix"] == pytest.approx(1778869400.0)
+    assert entry["next_fire_unix"] == pytest.approx(1778870000.0)
+    assert entry["age_s"] == pytest.approx(600.0)
+    assert entry["stale"] is False
+
+
+def test_normalize_timer_zero_means_unset():
+    """systemctl emits 0 for timers with no scheduled fire (the moc1 case)."""
+    raw = {"unit": "broken.timer", "last": 1778869400000000, "next": 0}
+    entry = _normalize_timer(raw, "user", NOW)
+    assert entry["next_fire_unix"] is None
+    assert entry["stale"] is True, (
+        "next=None must flag stale — this is the moc1 18h-freeze signature"
+    )
+
+
+def test_normalize_timer_no_last_run_yet_not_stale():
+    """Fresh boot before first fire: next set, last=0. Not stale."""
+    raw = {"unit": "fresh.timer", "last": 0, "next": 1778870600000000}
+    entry = _normalize_timer(raw, "system", NOW)
+    assert entry["last_fire_unix"] is None
+    assert entry["age_s"] is None
+    assert entry["stale"] is False
+
+
+def test_normalize_timer_flags_stale_when_age_exceeds_2x_interval():
+    """If next-last = 600s (10min interval) and age > 1200s, flag red."""
+    raw = {
+        "unit": "lagging.timer",
+        "last": int((NOW - 1500) * 1_000_000),  # 25 min ago
+        "next": int((NOW - 900) * 1_000_000),   # 15 min ago — overdue
+    }
+    entry = _normalize_timer(raw, "user", NOW)
+    assert entry["age_s"] == pytest.approx(1500.0)
+    # interval = next - last = 600s; age=1500s > 2×600 ⇒ stale
+    assert entry["stale"] is True
+
+
+def test_normalize_timer_not_stale_when_age_under_2x_interval():
+    raw = {
+        "unit": "ok.timer",
+        "last": int((NOW - 700) * 1_000_000),
+        "next": int((NOW + 500) * 1_000_000),  # interval = 1200s
+    }
+    entry = _normalize_timer(raw, "system", NOW)
+    # age=700, interval=1200, 2× = 2400 → not stale
+    assert entry["stale"] is False
+
+
+def test_normalize_timer_rejects_missing_unit():
+    assert _normalize_timer({}, "system", NOW) is None
+    assert _normalize_timer({"unit": ""}, "system", NOW) is None
+
+
+def test_normalize_timer_handles_garbage_us_values():
+    raw = {"unit": "garbage.timer", "last": "not-a-number", "next": None}
+    entry = _normalize_timer(raw, "user", NOW)
+    assert entry["last_fire_unix"] is None
+    assert entry["next_fire_unix"] is None
+    assert entry["stale"] is True  # next=None ⇒ stale
+
+
+def test_schedules_block_filters_to_fleet_prefixes(monkeypatch):
+    """OS timers like apt-daily.timer must not appear in the panel."""
+    fake_system = [
+        {"unit": "apt-daily.timer", "last": int(NOW * 1e6),
+         "next": int((NOW + 86400) * 1e6)},
+        {"unit": "meshforge-backup.timer", "last": int(NOW * 1e6),
+         "next": int((NOW + 3600) * 1e6)},
+    ]
+    fake_user = [
+        {"unit": "meshforge-tracer.timer",
+         "last": int((NOW - 60) * 1e6), "next": int((NOW + 540) * 1e6)},
+    ]
+
+    def _fake_list(scope):
+        return fake_system if scope == "system" else fake_user
+    monkeypatch.setattr(fleet_snapshot, "_list_timers_scope", _fake_list)
+    monkeypatch.setattr(fleet_snapshot.time, "time", lambda: NOW)
+
+    block = _schedules_block()
+    names = [u["name"] for u in block["units"]]
+    assert "apt-daily.timer" not in names, "OS timer leaked into fleet panel"
+    assert "meshforge-backup.timer" in names
+    assert "meshforge-tracer.timer" in names
+
+
+def test_schedules_block_stale_first_then_alphabetical(monkeypatch):
+    """Operator scan-order: red badges surface together at the top."""
+    fake_user = [
+        {"unit": "meshforge-z-healthy.timer",
+         "last": int((NOW - 60) * 1e6), "next": int((NOW + 540) * 1e6)},
+        {"unit": "meshforge-a-stale.timer",
+         "last": int((NOW - 60) * 1e6), "next": 0},
+        {"unit": "meshforge-m-healthy.timer",
+         "last": int((NOW - 60) * 1e6), "next": int((NOW + 540) * 1e6)},
+    ]
+    monkeypatch.setattr(
+        fleet_snapshot, "_list_timers_scope",
+        lambda scope: fake_user if scope == "user" else [],
+    )
+    monkeypatch.setattr(fleet_snapshot.time, "time", lambda: NOW)
+    block = _schedules_block()
+    names = [u["name"] for u in block["units"]]
+    assert names[0] == "meshforge-a-stale.timer", (
+        f"stale must surface first; got {names}"
+    )
+    assert names[1:] == [
+        "meshforge-m-healthy.timer", "meshforge-z-healthy.timer",
+    ]
+
+
+def test_schedules_block_healthy_when_no_stale(monkeypatch):
+    monkeypatch.setattr(
+        fleet_snapshot, "_list_timers_scope",
+        lambda scope: [
+            {"unit": "meshforge-backup.timer",
+             "last": int((NOW - 60) * 1e6),
+             "next": int((NOW + 540) * 1e6)},
+        ] if scope == "system" else [],
+    )
+    monkeypatch.setattr(fleet_snapshot.time, "time", lambda: NOW)
+    block = _schedules_block()
+    assert block["healthy"] is True
+    assert block["stale_count"] == 0
+
+
+def test_schedules_block_unhealthy_when_any_stale(monkeypatch):
+    monkeypatch.setattr(
+        fleet_snapshot, "_list_timers_scope",
+        lambda scope: [
+            {"unit": "meshforge-tracer.timer",
+             "last": int((NOW - 18 * 3600) * 1e6),  # 18h ago, the moc1 case
+             "next": 0},
+        ] if scope == "user" else [],
+    )
+    monkeypatch.setattr(fleet_snapshot.time, "time", lambda: NOW)
+    block = _schedules_block()
+    assert block["healthy"] is False
+    assert block["stale_count"] == 1
+    assert block["units"][0]["age_s"] == pytest.approx(64800.0)
+
+
+def test_snapshot_includes_schedules_block():
+    snap = build_slo_snapshot()
+    assert "schedules" in snap
+    assert "healthy" in snap["schedules"]
+    assert "stale_count" in snap["schedules"]
+    assert "units" in snap["schedules"]
+    assert isinstance(snap["schedules"]["units"], list)
+
+
+def test_schedule_stale_multiplier_is_documented():
+    """The constant exists for tunability; this test guards against
+    accidentally shifting the heuristic without operator awareness."""
+    assert SCHEDULE_STALE_MULTIPLIER == 2.0
