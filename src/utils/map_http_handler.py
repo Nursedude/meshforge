@@ -455,6 +455,8 @@ class MapRequestHandler(
             self._serve_weather()
         elif path_only == '/fleet/slo':
             self._serve_fleet_slo()
+        elif path_only == '/fleet/logs':
+            self._serve_fleet_logs()
         elif path_only == '/lab/rollup' or path_only == '/lab/rollup/':
             self._serve_lab_rollup(variant='leaderboard')
         elif path_only == '/lab/rollup/alphabetical':
@@ -1239,6 +1241,91 @@ class MapRequestHandler(
         """
         from utils.fleet_snapshot import build_slo_snapshot
         self._serve_json(build_slo_snapshot(collector=self.collector))
+
+    # ─────────────────────────────────────────────────────────────────
+    # /fleet/logs — T1 of fleet dashboard roadmap
+    #
+    # Returns a recent slice of a systemd unit's journal so the operator
+    # can scan ERROR/WARN across the fleet from the dashboard instead of
+    # ssh-tailing per box. Unit allowlist prevents arbitrary log dump
+    # (the daemon runs as a user; sudo isn't required for the units we
+    # ship, but we still want the surface bounded).
+    # ─────────────────────────────────────────────────────────────────
+    _FLEET_LOG_UNITS = {
+        # System-scope units (sudo journalctl -u <unit>)
+        "meshforge-map":   ("system", "Map dashboard daemon"),
+        "meshforge":       ("system", "MeshForge gateway"),
+        "meshforge-maps":  ("system", "MeshForge maps :8808"),
+        "rnsd":            ("system", "Reticulum daemon"),
+        "meshtasticd":     ("system", "Meshtastic radio daemon"),
+        "mosquitto":       ("system", "MQTT broker"),
+        # User-scope units (journalctl --user -u <unit>)
+        "meshforge-tracer":     ("user", "Lab tracer (10-min fire)"),
+        "meshforge-echo":       ("user", "Lab echo responder"),
+        "meshforge-synth-soak": ("user", "Lab synth soak (hourly fire)"),
+        "meshforge-lab-rollup": ("user", "Lab rollup writer"),
+        "nomadnet":             ("user", "NomadNet TUI (tmux)"),
+    }
+
+    _FLEET_LOG_MAX_N = 200
+    _FLEET_LOG_DEFAULT_N = 50
+
+    def _serve_fleet_logs(self):
+        """Return recent journalctl lines for an allowlisted unit.
+
+        Query params:
+          unit=<allowlisted-name>        required
+          n=<int 1..200>                 optional (default 50)
+          priority=err|warn|info|debug   optional (default warn)
+
+        Response shape:
+          {
+            "unit": "meshforge-tracer",
+            "scope": "user",
+            "priority": "warn",
+            "n": 50,
+            "host": "<hostname>",
+            "lines": [
+              {"ts": <unix float>, "level": "WARNING", "msg": "..."},
+              ...
+            ]
+          }
+
+        Errors:
+          400 if unit unknown or n/priority out of range
+          500 on journalctl failure (returns lines:[] + error string)
+        """
+        from urllib.parse import urlparse, parse_qs
+
+        qs = parse_qs(urlparse(self.path).query)
+        unit = (qs.get("unit", [""])[0] or "").strip()
+        if unit not in self._FLEET_LOG_UNITS:
+            self._serve_json(
+                {"error": "unit not allowlisted",
+                 "allowed": sorted(self._FLEET_LOG_UNITS.keys())},
+                status=400,
+            )
+            return
+        scope, _desc = self._FLEET_LOG_UNITS[unit]
+
+        try:
+            n = int(qs.get("n", [self._FLEET_LOG_DEFAULT_N])[0])
+        except (ValueError, TypeError):
+            n = self._FLEET_LOG_DEFAULT_N
+        n = max(1, min(self._FLEET_LOG_MAX_N, n))
+
+        priority = (qs.get("priority", ["warn"])[0] or "warn").lower()
+        if priority not in ("err", "warning", "warn", "info", "debug",
+                            "notice", "crit", "alert", "emerg"):
+            priority = "warn"
+        # journalctl accepts "warning" but the operator-facing alias is "warn".
+        journal_priority = "warning" if priority == "warn" else priority
+
+        from utils.fleet_logs import fetch_unit_logs
+        payload = fetch_unit_logs(
+            unit=unit, scope=scope, n=n, priority=journal_priority,
+        )
+        self._serve_json(payload)
 
     # Lab rollup state files written every 10min by
     # meshforge-lab-rollup.service. Variants:
