@@ -192,7 +192,9 @@ def run_daemon(loglevel: str = "INFO", announce_interval_s: int = ANNOUNCE_INTER
         logger.error("RNS/LXMF not installed: %s", exc)
         return 3
 
-    from lab._lab_common import load_or_create_identity, short_name
+    from lab._lab_common import (
+        init_reticulum_with_watchdog, load_or_create_identity, short_name,
+    )
 
     state = _EchoState()
 
@@ -209,7 +211,7 @@ def run_daemon(loglevel: str = "INFO", announce_interval_s: int = ANNOUNCE_INTER
 
         logger.info("echo: initialising RNS (configdir=%s)", tmpdir)
         try:
-            reticulum = RNS.Reticulum(configdir=str(tmpdir), loglevel=2)
+            reticulum = init_reticulum_with_watchdog(str(tmpdir))
         except Exception as exc:
             logger.error("echo: RNS init failed: %s", exc)
             return 4

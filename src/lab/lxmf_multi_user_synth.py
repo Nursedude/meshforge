@@ -546,8 +546,9 @@ def run_synth(
         tmpdir = Path(tmp)
         _build_client_config(tmpdir)
 
+        from lab._lab_common import init_reticulum_with_watchdog
         try:
-            reticulum = RNS.Reticulum(configdir=str(tmpdir), loglevel=2)
+            reticulum = init_reticulum_with_watchdog(str(tmpdir))
         except Exception as exc:
             logger.error("synth: RNS init failed: %s", exc)
             return _empty_report(

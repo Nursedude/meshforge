@@ -214,6 +214,7 @@ def run_trace(
         return []
 
     from lab._lab_common import (
+        init_reticulum_with_watchdog,
         load_or_create_identity, make_ping_body, short_name,
     )
 
@@ -225,7 +226,7 @@ def run_trace(
         _build_client_config(tmpdir)
 
         try:
-            reticulum = RNS.Reticulum(configdir=str(tmpdir), loglevel=2)
+            reticulum = init_reticulum_with_watchdog(str(tmpdir))
         except Exception as exc:
             logger.error("tracer: RNS init failed: %s", exc)
             return [

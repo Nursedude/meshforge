@@ -16,12 +16,17 @@ across multiple peers without keeping per-peer seq spaces.
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 import socket
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # Hash-obscurity v1 (per L1 plan question #1): peers learn the echo
 # destination hash via lab_peers file. Outsiders don't have it. HMAC
@@ -106,6 +111,67 @@ def _identity_path_for(name: str) -> Path:
     from utils.paths import get_real_user_home
 
     return get_real_user_home() / ".config" / "meshforge" / f"{name}_identity"
+
+
+RNS_INIT_TIMEOUT_S = float(os.environ.get("MESHFORGE_LAB_RNS_INIT_TIMEOUT", "60"))
+
+
+def init_reticulum_with_watchdog(
+    configdir: str,
+    *,
+    loglevel: int = 2,
+    timeout_s: float = RNS_INIT_TIMEOUT_S,
+):
+    """Call ``RNS.Reticulum(configdir=..., loglevel=...)`` under a hard
+    timeout watchdog.
+
+    rnsd's ``@rns/default/rpc`` abstract Unix socket listener can wedge
+    (observed 2026-05-15 on moc1, 18h silent freeze). When that happens
+    a fresh ``RNS.Reticulum()`` blocks in kernel ``unix_wait_for_peer``
+    on ``connect()`` with no userland timeout, and systemd reports the
+    unit ``active (running)`` while it produces zero output. See
+    ``project_rnsd_rpc_listener_wedge.md``.
+
+    We run the constructor on a daemon thread; if it doesn't finish in
+    ``timeout_s``, we ``os._exit(2)`` so systemd restarts the unit. The
+    worker thread can't be cancelled from userland (the kernel
+    ``connect()`` is uninterruptible by Python), so a hard process
+    abort is the only escape.
+
+    Returns the ``Reticulum`` instance on success. Re-raises whatever
+    the constructor raised on failure (preserves existing try/except
+    semantics in callers).
+    """
+    import RNS
+
+    result: dict[str, Any] = {}
+
+    def _construct() -> None:
+        try:
+            result["instance"] = RNS.Reticulum(
+                configdir=configdir, loglevel=loglevel,
+            )
+        except BaseException as exc:
+            result["error"] = exc
+
+    thread = threading.Thread(
+        target=_construct, daemon=True, name="rns-init-watchdog",
+    )
+    thread.start()
+    thread.join(timeout=timeout_s)
+
+    if thread.is_alive():
+        logger.error(
+            "lab: RNS.Reticulum() did not return after %.1fs — likely "
+            "rnsd RPC listener wedge. Aborting process so systemd can "
+            "restart us. See project_rnsd_rpc_listener_wedge.md.",
+            timeout_s,
+        )
+        os._exit(2)
+
+    if "error" in result:
+        raise result["error"]
+    return result["instance"]
 
 
 def load_or_create_identity(name: str):
