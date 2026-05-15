@@ -140,41 +140,42 @@ def test_watchdog_reraises_constructor_exception(monkeypatch):
 
 
 def test_watchdog_aborts_process_on_timeout(monkeypatch):
-    """The wedge fingerprint: constructor never returns. Watchdog must
-    call os._exit(2) so systemd restarts the unit."""
+    """The wedge fingerprint: constructor never returns. Watchdog thread
+    must call os._exit(2) so systemd restarts the unit. In production
+    os._exit terminates the whole process regardless of which thread
+    called it; the test substitutes a recorder that also unblocks the
+    main-thread mock so the test itself can complete."""
     import threading as _threading
 
     started = _threading.Event()
     release = _threading.Event()
+    abort_calls = []
 
     class _FakeRNSModule:
         @staticmethod
         def Reticulum(configdir, loglevel):
             started.set()
-            # Simulate the kernel `unix_wait_for_peer` hang. release is
-            # never set by the test so this thread blocks forever (as a
-            # daemon thread, the interpreter will reap it on exit).
-            release.wait()
-
-    monkeypatch.setitem(sys.modules, "RNS", _FakeRNSModule)
-
-    abort_calls = []
+            # Simulate the kernel `unix_wait_for_peer` hang. Safety bound
+            # (5s) so a test failure can't wedge pytest forever.
+            release.wait(timeout=5.0)
 
     def _fake_exit(code):
-        # In production os._exit terminates; raise SystemExit so the test
-        # also short-circuits and the fall-through code in the watchdog
-        # (which would KeyError on the empty result dict) is bypassed.
         abort_calls.append(code)
-        raise SystemExit(code)
+        # Real os._exit terminates the process; here we instead release
+        # the blocked main-thread mock so the function under test can
+        # return and the test can assert.
+        release.set()
 
+    monkeypatch.setitem(sys.modules, "RNS", _FakeRNSModule)
     monkeypatch.setattr("lab._lab_common.os._exit", _fake_exit)
 
-    with pytest.raises(SystemExit) as excinfo:
-        init_reticulum_with_watchdog("/tmp/x", timeout_s=0.2)
+    init_reticulum_with_watchdog("/tmp/x", timeout_s=0.2)
 
-    assert excinfo.value.code == 2
     assert started.is_set(), "constructor must have started"
-    assert abort_calls == [2]
+    assert abort_calls == [2], (
+        "watchdog must call os._exit(2); got %r" % (abort_calls,)
+    )
+    assert release.wait(timeout=0.1), "release must have been set by watchdog"
 
 
 def test_watchdog_default_timeout_from_env(monkeypatch):

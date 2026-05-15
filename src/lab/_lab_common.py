@@ -24,7 +24,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -132,11 +132,13 @@ def init_reticulum_with_watchdog(
     unit ``active (running)`` while it produces zero output. See
     ``project_rnsd_rpc_listener_wedge.md``.
 
-    We run the constructor on a daemon thread; if it doesn't finish in
-    ``timeout_s``, we ``os._exit(2)`` so systemd restarts the unit. The
-    worker thread can't be cancelled from userland (the kernel
-    ``connect()`` is uninterruptible by Python), so a hard process
-    abort is the only escape.
+    We run the constructor on the main thread (it installs signal
+    handlers which Python only permits from the main thread) and arm
+    a daemon watchdog thread that calls ``os._exit(2)`` if the
+    constructor doesn't complete within ``timeout_s``. The kernel
+    ``connect()`` is uninterruptible from userland, so a hard process
+    abort is the only escape; systemd's timer will restart the unit
+    on the next interval.
 
     Returns the ``Reticulum`` instance on success. Re-raises whatever
     the constructor raised on failure (preserves existing try/except
@@ -144,34 +146,27 @@ def init_reticulum_with_watchdog(
     """
     import RNS
 
-    result: dict[str, Any] = {}
+    done = threading.Event()
 
-    def _construct() -> None:
-        try:
-            result["instance"] = RNS.Reticulum(
-                configdir=configdir, loglevel=loglevel,
+    def _watchdog() -> None:
+        if not done.wait(timeout=timeout_s):
+            logger.error(
+                "lab: RNS.Reticulum() did not return after %.1fs — "
+                "likely rnsd RPC listener wedge. Aborting process so "
+                "systemd can restart us. See "
+                "project_rnsd_rpc_listener_wedge.md.",
+                timeout_s,
             )
-        except BaseException as exc:
-            result["error"] = exc
+            os._exit(2)
 
-    thread = threading.Thread(
-        target=_construct, daemon=True, name="rns-init-watchdog",
+    watchdog = threading.Thread(
+        target=_watchdog, daemon=True, name="rns-init-watchdog",
     )
-    thread.start()
-    thread.join(timeout=timeout_s)
-
-    if thread.is_alive():
-        logger.error(
-            "lab: RNS.Reticulum() did not return after %.1fs — likely "
-            "rnsd RPC listener wedge. Aborting process so systemd can "
-            "restart us. See project_rnsd_rpc_listener_wedge.md.",
-            timeout_s,
-        )
-        os._exit(2)
-
-    if "error" in result:
-        raise result["error"]
-    return result["instance"]
+    watchdog.start()
+    try:
+        return RNS.Reticulum(configdir=configdir, loglevel=loglevel)
+    finally:
+        done.set()
 
 
 def load_or_create_identity(name: str):
