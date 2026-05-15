@@ -189,14 +189,25 @@ def _list_timers_scope(scope: str) -> List[Dict[str, Any]]:
     available on systemd 247+ (Bookworm and later). Failures return
     an empty list rather than raising; a host without a user session
     just contributes its system timers.
+
+    A systemd-launched daemon inherits a bare environment with no
+    ``XDG_RUNTIME_DIR``, so ``systemctl --user`` can't find the user
+    manager's socket and returns nothing. Inject the standard
+    ``/run/user/<euid>`` path when calling user-scope; linger keeps
+    the user manager up, so the path exists on the fleet boxes
+    (verified: `loginctl show-user wh6gxz Linger=yes`).
     """
     cmd = ["systemctl"]
+    env = None
     if scope == "user":
         cmd.append("--user")
+        if "XDG_RUNTIME_DIR" not in os.environ:
+            env = os.environ.copy()
+            env["XDG_RUNTIME_DIR"] = f"/run/user/{os.geteuid()}"
     cmd.extend(["list-timers", "--all", "--output=json"])
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=5,
+            cmd, capture_output=True, text=True, timeout=5, env=env,
         )
         if result.returncode != 0 or not result.stdout.strip():
             return []
