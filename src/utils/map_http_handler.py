@@ -49,6 +49,7 @@ import logging
 import mimetypes
 import os
 import re
+import socket
 import time
 from datetime import datetime
 from http.server import SimpleHTTPRequestHandler
@@ -457,6 +458,8 @@ class MapRequestHandler(
             self._serve_fleet_slo()
         elif path_only == '/fleet/logs':
             self._serve_fleet_logs()
+        elif path_only == '/fleet/tests':
+            self._serve_fleet_tests_list()
         elif path_only == '/lab/rollup' or path_only == '/lab/rollup/':
             self._serve_lab_rollup(variant='leaderboard')
         elif path_only == '/lab/rollup/alphabetical':
@@ -528,6 +531,11 @@ class MapRequestHandler(
         # ─────────────────────────────────────────────────────────────
         elif path_only == '/api/radio/message':
             self._handle_send_message()
+        # ─────────────────────────────────────────────────────────────
+        # Fleet test runner — operator clicks dashboard button → fire
+        # ─────────────────────────────────────────────────────────────
+        elif path_only == '/fleet/run-test':
+            self._serve_fleet_run_test()
         else:
             self.send_error(404, "Not Found")
 
@@ -1326,6 +1334,124 @@ class MapRequestHandler(
             unit=unit, scope=scope, n=n, priority=journal_priority,
         )
         self._serve_json(payload)
+
+    # ─────────────────────────────────────────────────────────────────
+    # /fleet/tests — T1.5 of fleet dashboard roadmap
+    #
+    # Operator-triggered, allowlisted lab-unit fires from the dashboard.
+    # GET /fleet/tests           → list the available tests + last-fire
+    #                              metadata (when did it last run)
+    # POST /fleet/run-test       → fire one (body: {"test": "<id>"})
+    #
+    # Each test maps to a `systemctl --user start <unit>` call (or the
+    # system equivalent). Oneshot units finish on their own; the runner
+    # returns immediately with the just-fired unit name + start time.
+    # The operator can then refresh the Logs panel to see the result.
+    #
+    # No new code path on the device — these are the SAME units the
+    # timers fire on cadence. The button is a manual extra fire, not a
+    # separate test harness, so we don't have to maintain two paths.
+    # ─────────────────────────────────────────────────────────────────
+    _FLEET_TESTS = {
+        # id: (unit, scope, human-label, what-it-does)
+        "tracer": (
+            "meshforge-tracer.service", "user",
+            "Tracer fire",
+            "Send one LXMF PING to each fleet peer and record ACK RTTs.",
+        ),
+        "synth-soak": (
+            "meshforge-synth-soak.service", "user",
+            "Synth soak fire",
+            "Multi-user LXMF load fire (~60s).",
+        ),
+        "lab-rollup": (
+            "meshforge-lab-rollup.service", "user",
+            "Refresh lab rollup",
+            "Re-aggregate tracer state files into the markdown panel.",
+        ),
+        "ci-status": (
+            "meshforge-ci-status.service", "user",
+            "Refresh CI status",
+            "Poll GitHub Actions for fleet-repo build state.",
+        ),
+    }
+
+    def _serve_fleet_tests_list(self):
+        """Return the list of allowlisted tests + last-fire info per unit.
+
+        The MA dashboard uses this both to render the buttons (no
+        hardcoded list on the JS side) and to show "last fired Xs ago"
+        next to each — operator scan signal for "did this just run."
+        """
+        from utils.fleet_snapshot import _list_timers_scope, _normalize_timer
+        import time as _time
+
+        now = _time.time()
+        # Index timers across both scopes so we can pick out the .timer
+        # paired with each service (last_fire/next_fire). Not all tests
+        # have a timer — manual-only tests show last_fire=None.
+        timer_index = {}
+        for scope in ("system", "user"):
+            for raw in _list_timers_scope(scope):
+                entry = _normalize_timer(raw, scope, now)
+                if entry is None:
+                    continue
+                # Map the .timer back to the .service it activates.
+                activates = raw.get("activates") or ""
+                if activates:
+                    timer_index[activates] = entry
+
+        tests = []
+        for test_id, (unit, scope, label, desc) in self._FLEET_TESTS.items():
+            paired = timer_index.get(unit)
+            tests.append({
+                "id": test_id,
+                "unit": unit,
+                "scope": scope,
+                "label": label,
+                "description": desc,
+                "last_fire_unix": paired["last_fire_unix"] if paired else None,
+                "next_fire_unix": paired["next_fire_unix"] if paired else None,
+                "age_s": paired["age_s"] if paired else None,
+            })
+
+        self._serve_json({"tests": tests, "host": socket.gethostname()})
+
+    def _serve_fleet_run_test(self):
+        """POST /fleet/run-test — fire an allowlisted lab unit.
+
+        Body: {"test": "<id>"}     # id must be a key of _FLEET_TESTS
+        Returns: {ok, test, unit, scope, started_at_unix, error}
+        """
+        import json as _json
+        import socket as _socket
+
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            body_raw = self.rfile.read(length) if length > 0 else b""
+            body = _json.loads(body_raw.decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError):
+            self._serve_json(
+                {"ok": False, "error": "body must be valid JSON"},
+                status=400,
+            )
+            return
+
+        test_id = (body.get("test") or "").strip()
+        if test_id not in self._FLEET_TESTS:
+            self._serve_json(
+                {"ok": False, "error": "test not allowlisted",
+                 "allowed": sorted(self._FLEET_TESTS.keys())},
+                status=400,
+            )
+            return
+
+        unit, scope, _label, _desc = self._FLEET_TESTS[test_id]
+        from utils.fleet_test_runner import fire_unit
+        result = fire_unit(unit=unit, scope=scope)
+        result["test"] = test_id
+        result["host"] = _socket.gethostname()
+        self._serve_json(result, status=200 if result.get("ok") else 500)
 
     # Lab rollup state files written every 10min by
     # meshforge-lab-rollup.service. Variants:

@@ -43,8 +43,14 @@ _CACHE_TTL_S = 60.0
 # journalctl short-iso line: "2026-05-15T07:31:02-1000 hostname unit[pid]: message"
 # We only parse the timestamp and message; level comes from --priority filter,
 # so we know it's at-least the requested level.
+# Zone forms produced by `--output=short-iso`:
+#   "-1000"  (older systemd / non-Debian)
+#   "-10:00" (Debian/Bookworm)
+#   "Z"      (UTC)
+# Match all three; the parse helper normalizes them downstream.
 _LINE_RE = re.compile(
-    r"^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{4}|Z)?)\s+"
+    r"^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+    r"(?:\.\d+)?(?:[+-]\d{2}:?\d{2}|Z)?)\s+"
     r"\S+\s+\S+\[\d+\]:\s*(?P<msg>.*)$"
 )
 
