@@ -40,6 +40,17 @@ def test_fire_user_unit_uses_systemctl_user():
     assert "meshforge-tracer.service" in cap["cmd"]
 
 
+def test_fire_uses_no_block_to_return_immediately():
+    """Without --no-block, systemctl start blocks until oneshot
+    completion (~10-15s for tracer), which times out the HTTP
+    request. The operator can refresh the Logs panel to see
+    completion."""
+    fake, cap = _capture_run()
+    with patch("utils.fleet_test_runner.subprocess.run", fake):
+        fire_unit(unit="meshforge-tracer.service", scope="user")
+    assert "--no-block" in cap["cmd"]
+
+
 def test_fire_system_unit_omits_user_flag():
     fake, cap = _capture_run()
     with patch("utils.fleet_test_runner.subprocess.run", fake):

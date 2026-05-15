@@ -52,7 +52,13 @@ def fire_unit(*, unit: str, scope: str) -> Dict[str, Any]:
         if "XDG_RUNTIME_DIR" not in os.environ:
             env = os.environ.copy()
             env["XDG_RUNTIME_DIR"] = f"/run/user/{os.geteuid()}"
-    cmd.extend(["start", unit])
+    # --no-block: enqueue the start and return immediately. Without
+    # this, `systemctl start <oneshot>` blocks until the unit
+    # finishes, which for tracer is ~10-15s (PING all peers + ACK
+    # wait). The HTTP request would then time out before returning
+    # to the dashboard. The operator can refresh the Logs / Schedules
+    # panel to see the fire complete.
+    cmd.extend(["--no-block", "start", unit])
 
     started_at = time.time()
     try:

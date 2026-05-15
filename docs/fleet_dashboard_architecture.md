@@ -103,9 +103,16 @@ real incidents.
 - **Tracer fire detail drilldown** — click a Federation Round-Trip
   cell, see the per-fire JSON for that pair over the last hour.
   Data already exists at `~/.local/state/meshforge/tracer/*.json`.
-- **"Run tests" buttons (gated)** — operator one-click triggers
-  for `systemctl --user start meshforge-tracer.service`. Same idea
-  for synth-soak. Behind an env-var gate (`MESHFORGE_DASHBOARD_RUN_TESTS=1`).
+- **Run Tests panel** *(shipped 2026-05-15)* — operator one-click
+  triggers for `meshforge-tracer.service`, `meshforge-synth-soak`,
+  `meshforge-lab-rollup`, `meshforge-ci-status`.
+  Backend: `GET /fleet/tests` returns the allowlist + last-fire
+  metadata; `POST /fleet/run-test` body `{"test": "<id>"}` fires
+  the unit via `systemctl --user start`. Allowlist lives in
+  `map_http_handler._FLEET_TESTS` (one dict entry per test = the
+  whole add-a-test contract). Dashboard panel renders one button
+  per test with last-fire-age chips; fires show green/red result
+  inline + auto-refresh the list after 8s.
 - **CI status pill** — surface GitHub Actions state from the
   existing `meshforge-ci-status.timer` user-scope poll. Already
   fires; the data isn't on the dashboard yet.
