@@ -99,54 +99,48 @@ def test_fetch_skips_boot_markers():
     assert not any("Boot 12345" in m for m in msgs)
 
 
-def test_fetch_uses_user_scope_command_shape():
-    """User scope: journalctl --user; no sudo."""
+def test_fetch_uses_user_scope_field_match_no_sudo():
+    """User scope reads from system journal via `_SYSTEMD_USER_UNIT=`
+    field match. This avoids the user-journal-not-persistent gotcha
+    AND avoids needing sudo: `adm` group membership is enough on the
+    fleet boxes (default on Debian)."""
     fake_run, captured = _mock_journalctl()
     with patch("utils.fleet_logs.subprocess.run", fake_run):
         fetch_unit_logs(
             unit="meshforge-tracer", scope="user", n=10, priority="info",
         )
     assert captured["cmd"][0] == "journalctl"
-    assert "--user" in captured["cmd"]
-    assert "sudo" not in captured["cmd"][0]
+    assert "_SYSTEMD_USER_UNIT=meshforge-tracer.service" in captured["cmd"]
+    assert "--user" not in captured["cmd"]
+    assert "sudo" not in captured["cmd"]
 
 
-def test_fetch_uses_system_scope_command_shape():
-    """System scope: sudo -n /usr/bin/journalctl (sudoers drop-in required)."""
+def test_fetch_uses_system_scope_unprivileged_journalctl():
+    """System scope: plain journalctl -u <unit>. The `adm` group on
+    Debian grants system journal read access; sudo is unnecessary."""
     fake_run, captured = _mock_journalctl()
     with patch("utils.fleet_logs.subprocess.run", fake_run):
         fetch_unit_logs(
             unit="meshforge", scope="system", n=10, priority="warning",
         )
     cmd = captured["cmd"]
-    assert cmd[0] == "sudo"
-    assert "-n" in cmd
-    assert "/usr/bin/journalctl" in cmd
-    assert "--user" not in cmd
+    assert cmd[0] == "journalctl"
+    assert "-u" in cmd
+    assert "meshforge" in cmd
+    assert "sudo" not in cmd
+    assert "_SYSTEMD_USER_UNIT" not in " ".join(cmd)
 
 
-def test_fetch_injects_xdg_runtime_dir_for_user_scope(monkeypatch):
-    """Daemon context lacks XDG_RUNTIME_DIR — inject /run/user/<euid>."""
+def test_fetch_user_scope_does_not_need_xdg_runtime_dir(monkeypatch):
+    """The system-journal field-match path doesn't talk to the user
+    systemd manager, so XDG_RUNTIME_DIR injection is no longer
+    required. Verify env stays None (subprocess inherits parent)."""
     monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
     fake_run, captured = _mock_journalctl()
     with patch("utils.fleet_logs.subprocess.run", fake_run):
         fetch_unit_logs(
             unit="meshforge-tracer", scope="user", n=5, priority="info",
         )
-    assert captured["env"] is not None
-    assert "XDG_RUNTIME_DIR" in captured["env"]
-    assert captured["env"]["XDG_RUNTIME_DIR"].startswith("/run/user/")
-
-
-def test_fetch_respects_existing_xdg_runtime_dir(monkeypatch):
-    """If env already has XDG_RUNTIME_DIR, don't override the subprocess env."""
-    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/9999")
-    fake_run, captured = _mock_journalctl()
-    with patch("utils.fleet_logs.subprocess.run", fake_run):
-        fetch_unit_logs(
-            unit="meshforge-tracer", scope="user", n=5, priority="info",
-        )
-    # env=None means subprocess uses the parent env (which already has it).
     assert captured["env"] is None
 
 

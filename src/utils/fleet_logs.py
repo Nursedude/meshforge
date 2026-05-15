@@ -100,16 +100,26 @@ def fetch_unit_logs(
     cmd: List[str] = []
     env: Optional[Dict[str, str]] = None
     if scope == "user":
-        cmd.extend(["journalctl", "--user"])
-        if "XDG_RUNTIME_DIR" not in os.environ:
-            env = os.environ.copy()
-            env["XDG_RUNTIME_DIR"] = f"/run/user/{os.geteuid()}"
+        # Read user-unit logs from the SYSTEM journal via the
+        # `_SYSTEMD_USER_UNIT=<unit>.service` field match. Works
+        # without sudo for any user in the `adm` or `systemd-journal`
+        # group (default on Debian/Bookworm). Avoids the gotcha that
+        # `journalctl --user -u <unit>` requires the user journal to
+        # be persistent (`Storage=persistent`), which the fleet
+        # doesn't enable — it's in-memory only and rotates with
+        # systemd-user restart.
+        cmd.extend([
+            "journalctl",
+            f"_SYSTEMD_USER_UNIT={unit}.service",
+        ])
     else:
         # System scope: sudo (-n = non-interactive; daemon must have a
-        # sudoers drop-in allowing journalctl with no password).
-        cmd.extend(["sudo", "-n", "/usr/bin/journalctl"])
+        # sudoers drop-in allowing journalctl with no password). Same
+        # `adm` group covers `journalctl -u <system-unit>` without
+        # sudo too — try the unprivileged path first.
+        cmd.extend(["journalctl", "-u", unit])
     cmd.extend([
-        "-u", unit, "-n", str(n), "-p", priority,
+        "-n", str(n), "-p", priority,
         "--no-pager", "--output=short-iso",
     ])
 
