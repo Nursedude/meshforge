@@ -190,7 +190,7 @@ PROFILES: Dict[ProfileName, ProfileDefinition] = {
             "mqtt": True,
             "maps": True,
             "tactical": True,
-            "meshchatx": False,
+            "meshchatx": True,
         },
     ),
 }
