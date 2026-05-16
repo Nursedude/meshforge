@@ -87,8 +87,8 @@ real incidents.
 
 ### T1 — Next 1–2 sessions
 
-- **Log tail viewer per host** *(backend shipped 2026-05-15)* — sample
-  N last ERROR/WARN lines from key services. Backend:
+- **Log tail viewer per host** *(shipped 2026-05-15)* — sample N
+  last ERROR/WARN lines from key services. Backend:
   `/fleet/logs?unit=<name>&n=<int>&priority=<level>` lives at
   `meshforge/src/utils/fleet_logs.py`. Allowlisted units cover
   meshforge daemons + rnsd / meshtasticd / mosquitto + user-scope
@@ -96,10 +96,10 @@ real incidents.
   60s in-process cache; XDG_RUNTIME_DIR injection for user scope
   (same daemon-context fix as schedules block, commit 2dfca78).
   System scope shells via `sudo -n /usr/bin/journalctl` — sudoers
-  drop-in required per box (deferred to deployment).
-  **Outstanding**: MA dashboard panel that consumes this. Single
-  unit picker + tail render. Tier transitions to shipped when the
-  panel lands.
+  drop-in required per box (deferred to deployment). MA panel
+  shipped in `meshanchor 902560e4` with on-demand fetch + per-host
+  + per-unit picker. MA's own `/fleet/logs` route shipped in
+  `meshanchor f10c7095` (peers hit each box's local endpoint).
 - **Tracer fire detail drilldown** — click a Federation Round-Trip
   cell, see the per-fire JSON for that pair over the last hour.
   Data already exists at `~/.local/state/meshforge/tracer/*.json`.
