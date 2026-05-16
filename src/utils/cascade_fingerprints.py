@@ -34,6 +34,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,114 @@ def probe_rns_rpc_wedge() -> Optional[ProbeHit]:
     )
 
 
+# ── Fingerprint 2: tracer_stale_fire ──────────────────────────────────────
+
+# Default: 25 min. tracer.timer fires every 10 min, so 2× = 20 min would
+# be the minimum; +5 min slack absorbs jitter from the timer's
+# RandomizedDelaySec and the ~30-60s tracer run itself. Override via
+# env var so an operator can tighten/loosen without code change.
+_DEFAULT_TRACER_STALE_THRESHOLD_S = 1500
+_TRACER_STALE_THRESHOLD_ENV = "MESHFORGE_CASCADE_TRACER_STALE_S"
+
+
+def _tracer_stale_threshold_s() -> int:
+    """Resolve threshold each probe — env can change without restart."""
+    raw = os.environ.get(_TRACER_STALE_THRESHOLD_ENV)
+    if raw is None:
+        return _DEFAULT_TRACER_STALE_THRESHOLD_S
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_TRACER_STALE_THRESHOLD_S
+    return value if value > 0 else _DEFAULT_TRACER_STALE_THRESHOLD_S
+
+
+def _tracer_state_dir() -> Path:
+    """`$XDG_STATE_HOME/meshforge/tracer` (matches `lab.lxmf_tracer`).
+
+    Pulled out so tests can monkeypatch the env var. We don't import
+    `lab.lxmf_tracer._state_dir_default` directly because the cascade
+    detector lives in `utils/` and we'd rather not pull `lab/` into the
+    import graph of the map service.
+    """
+    from utils.paths import get_real_user_home
+
+    xdg = os.environ.get("XDG_STATE_HOME")
+    base = Path(xdg) if xdg else get_real_user_home() / ".local" / "state"
+    return base / "meshforge" / "tracer"
+
+
+def probe_tracer_stale_fire() -> Optional[ProbeHit]:
+    """Detect when the local tracer timer has stopped firing JSON files.
+
+    Symptom shape (per `project_rnsd_rpc_listener_wedge.md` open follow-up
+    #2): once rnsd's RPC listener wedges, the user-unit `meshforge-tracer`
+    oneshot hangs in `activating start` indefinitely. Future timer fires
+    are blocked, but systemd reports the timer itself as `active waiting`.
+    The only operator-visible signal today is the cross-fleet rollup
+    showing 100 % timeout in src→<this-host> rows ~2.5 h later — long
+    after the wedge began.
+
+    Probe: stat the newest `tracer-*.json` in
+    `$XDG_STATE_HOME/meshforge/tracer/` (or `~/.local/state/meshforge/
+    tracer/`). When its mtime is older than 2× the timer interval (+slack)
+    we surface a `pre_fail` so `/fleet/cascade` flips while the operator
+    still has the chance to restart rnsd before the rollup window
+    accumulates failure samples.
+
+    Miss conditions (intentional — must not false-alarm boxes where the
+    tracer isn't installed or hasn't run yet):
+        * State dir does not exist (tracer profile not installed)
+        * State dir empty (tracer installed but hasn't fired once yet —
+          we have no baseline to compare against)
+        * Newest file's mtime is within threshold (healthy)
+
+    Honors `MESHFORGE_CASCADE_PROBE_DISABLED` for the same test-isolation
+    reason as `probe_rns_rpc_wedge`.
+    """
+    if _probes_disabled():
+        return None
+    try:
+        sd = _tracer_state_dir()
+    except Exception:
+        return None
+    try:
+        if not sd.is_dir():
+            return None
+        newest_mtime: Optional[float] = None
+        newest_name: Optional[str] = None
+        for entry in sd.iterdir():
+            if not entry.name.startswith("tracer-") or not entry.name.endswith(".json"):
+                continue
+            try:
+                mtime = entry.stat().st_mtime
+            except OSError:
+                continue
+            if newest_mtime is None or mtime > newest_mtime:
+                newest_mtime = mtime
+                newest_name = entry.name
+    except OSError:
+        return None
+    if newest_mtime is None:
+        return None
+
+    threshold = _tracer_stale_threshold_s()
+    age = time.time() - newest_mtime
+    if age < threshold:
+        return None
+    return ProbeHit(
+        evidence=(
+            f"newest tracer fire is {int(age)}s old (threshold {threshold}s) — "
+            "tracer timer or rnsd RPC listener likely wedged"
+        ),
+        metric={
+            "age_s": int(age),
+            "threshold_s": threshold,
+            "newest_file": newest_name,
+        },
+    )
+
+
 # ── Catalog ───────────────────────────────────────────────────────────────
 
 
@@ -138,8 +247,21 @@ FINGERPRINTS: List[Fingerprint] = [
             "within one timer interval (~10 min)"
         ),
     ),
-    # Future fingerprints (Track 3): wal_oversize, tracer_timer_dead,
-    # tcp_4403_contention, oneshot_activating. See plan file.
+    Fingerprint(
+        name="tracer_stale_fire",
+        severity="pre_fail",
+        probe=probe_tracer_stale_fire,
+        cadence_s=60,
+        incident_refs=("project_rnsd_rpc_listener_wedge",),
+        coupled_to=(
+            "cross-fleet tracer rollup row for this host begins accumulating "
+            "100 % timeouts; downstream fingerprints (rns_rpc_wedge) may "
+            "also fire, but this one trips first because it watches "
+            "consequence (no fires) rather than cause (SYN-SENT socks)"
+        ),
+    ),
+    # Future fingerprints (Track 3): wal_oversize, tcp_4403_contention,
+    # oneshot_activating. See plan file.
 ]
 
 

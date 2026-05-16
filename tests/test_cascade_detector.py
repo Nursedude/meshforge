@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -132,6 +133,127 @@ class TestProbeRnsRpcWedge:
             hit = cfp.probe_rns_rpc_wedge()
         assert hit is not None
         assert hit.metric["syn_sent_count"] == 1
+
+
+# ── tracer_stale_fire probe ──────────────────────────────────────────────
+
+
+class TestProbeTracerStaleFire:
+    """Tracer stale-fire probe: stat newest tracer-*.json mtime; flag
+    pre_fail when older than threshold. Open follow-up from
+    `project_rnsd_rpc_listener_wedge` recurrence #3 (2026-05-16) — the
+    operator-visible signal lag was 2.5 h via cross-fleet rollup; this
+    fingerprint cuts that to one detector cadence after the threshold."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_probe(self, monkeypatch):
+        monkeypatch.delenv("MESHFORGE_CASCADE_PROBE_DISABLED", raising=False)
+
+    @pytest.fixture
+    def _state_dir(self, tmp_path, monkeypatch):
+        sd = tmp_path / "meshforge" / "tracer"
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        return sd
+
+    def test_returns_none_when_state_dir_missing(self, _state_dir):
+        assert not _state_dir.exists()
+        assert cfp.probe_tracer_stale_fire() is None
+
+    def test_returns_none_when_state_dir_empty(self, _state_dir):
+        _state_dir.mkdir(parents=True)
+        assert cfp.probe_tracer_stale_fire() is None
+
+    def test_returns_none_when_only_non_tracer_files(self, _state_dir):
+        """A foreign file in the dir must not be mistaken for a tracer fire."""
+        _state_dir.mkdir(parents=True)
+        (_state_dir / "README.md").write_text("# notes")
+        (_state_dir / "tracer-old.txt").write_text("not json")
+        assert cfp.probe_tracer_stale_fire() is None
+
+    def test_returns_none_when_newest_file_is_fresh(self, _state_dir):
+        _state_dir.mkdir(parents=True)
+        f = _state_dir / "tracer-1.json"
+        f.write_text("{}")
+        # mtime is now → way under threshold
+        assert cfp.probe_tracer_stale_fire() is None
+
+    def test_returns_hit_when_newest_file_older_than_threshold(self, _state_dir, monkeypatch):
+        _state_dir.mkdir(parents=True)
+        old = _state_dir / "tracer-stale.json"
+        old.write_text("{}")
+        # Backdate beyond default 1500s.
+        import os as _os
+        old_time = time.time() - 2000
+        _os.utime(old, (old_time, old_time))
+        hit = cfp.probe_tracer_stale_fire()
+        assert hit is not None
+        assert hit.metric["age_s"] >= 2000
+        assert hit.metric["threshold_s"] == 1500
+        assert hit.metric["newest_file"] == "tracer-stale.json"
+        assert "tracer fire" in hit.evidence
+
+    def test_uses_newest_mtime_when_multiple_files(self, _state_dir):
+        """Several old fires + one recent one = clean. The probe must pick
+        the newest, not the oldest, or it would constantly false-alarm
+        on boxes with a backlog of historical fires."""
+        _state_dir.mkdir(parents=True)
+        import os as _os
+        for i in range(3):
+            f = _state_dir / f"tracer-old-{i}.json"
+            f.write_text("{}")
+            t = time.time() - 5000
+            _os.utime(f, (t, t))
+        # One fresh file
+        (_state_dir / "tracer-fresh.json").write_text("{}")
+        assert cfp.probe_tracer_stale_fire() is None
+
+    def test_threshold_env_override(self, _state_dir, monkeypatch):
+        _state_dir.mkdir(parents=True)
+        f = _state_dir / "tracer-x.json"
+        f.write_text("{}")
+        import os as _os
+        # 120s old
+        t = time.time() - 120
+        _os.utime(f, (t, t))
+        # Default threshold 1500 → miss
+        assert cfp.probe_tracer_stale_fire() is None
+        # Override 60 → hit
+        monkeypatch.setenv("MESHFORGE_CASCADE_TRACER_STALE_S", "60")
+        hit = cfp.probe_tracer_stale_fire()
+        assert hit is not None
+        assert hit.metric["threshold_s"] == 60
+
+    def test_invalid_env_falls_back_to_default(self, _state_dir, monkeypatch):
+        """Garbage env value must not crash the probe or disable the alarm."""
+        monkeypatch.setenv("MESHFORGE_CASCADE_TRACER_STALE_S", "not-a-number")
+        _state_dir.mkdir(parents=True)
+        f = _state_dir / "tracer-x.json"
+        f.write_text("{}")
+        import os as _os
+        t = time.time() - 2000
+        _os.utime(f, (t, t))
+        hit = cfp.probe_tracer_stale_fire()
+        assert hit is not None
+        assert hit.metric["threshold_s"] == 1500
+
+    def test_disabled_env_short_circuits(self, _state_dir, monkeypatch):
+        """The test-isolation escape hatch must still apply."""
+        _state_dir.mkdir(parents=True)
+        f = _state_dir / "tracer-stale.json"
+        f.write_text("{}")
+        import os as _os
+        t = time.time() - 9999
+        _os.utime(f, (t, t))
+        monkeypatch.setenv("MESHFORGE_CASCADE_PROBE_DISABLED", "1")
+        assert cfp.probe_tracer_stale_fire() is None
+
+    def test_fingerprint_is_registered_in_catalog(self):
+        names = [fp.name for fp in cfp.FINGERPRINTS]
+        assert "tracer_stale_fire" in names
+        fp = cfp.get_fingerprint_by_name("tracer_stale_fire")
+        assert fp is not None
+        assert fp.severity == "pre_fail"
+        assert fp.cadence_s == 60
 
 
 # ── CascadeDetector hysteresis ───────────────────────────────────────────
