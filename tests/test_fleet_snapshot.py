@@ -825,3 +825,103 @@ def test_snapshot_includes_ci_status_block():
     assert "ci_status" in snap
     assert isinstance(snap["ci_status"], dict)
     assert "available" in snap["ci_status"]
+
+
+# ─── Observability blocks (Track 2.6) ───────────────────────────────────
+
+
+def test_snapshot_includes_path_table_block():
+    """The dashboard needs a per-host count of known RNS paths to
+    answer 'where can this message go.' Contract: build_slo_snapshot
+    carries `path_table: {available, count, ts, reason?}`."""
+    snap = build_slo_snapshot()
+    assert "path_table" in snap
+    block = snap["path_table"]
+    assert isinstance(block, dict)
+    assert "available" in block
+    assert "count" in block
+    assert isinstance(block["count"], int)
+    assert "ts" in block
+
+
+def test_snapshot_includes_interfaces_block():
+    """Compact summary so MA can show '<host>: 4/4 interfaces online'
+    without dumping the per-interface RX/TX detail into /fleet/slo."""
+    snap = build_slo_snapshot()
+    assert "interfaces" in snap
+    block = snap["interfaces"]
+    assert isinstance(block, dict)
+    assert "count" in block
+    assert "online_count" in block
+    assert isinstance(block["count"], int)
+    assert isinstance(block["online_count"], int)
+
+
+def test_snapshot_includes_cascade_block():
+    """Cascade-detector summary so MA's rollup can red-flag a host
+    with a pre_fail fingerprint without drilling into /fleet/cascade."""
+    snap = build_slo_snapshot()
+    assert "cascade" in snap
+    block = snap["cascade"]
+    assert isinstance(block, dict)
+    # Stable keys consumers can rely on (no KeyError on healthy boxes).
+    for k in ("total", "clean", "suspected", "pre_fail", "wedged", "degraded"):
+        assert k in block, f"cascade.{k} missing — consumers must not KeyError"
+        assert isinstance(block[k], int)
+
+
+def test_overall_status_demotes_to_degraded_on_cascade_pre_fail(monkeypatch):
+    """A pre_fail fingerprint must trip overall_status=degraded so the
+    rollup dashboard surfaces it WITHOUT operators having to remember
+    to look at /fleet/cascade separately."""
+    class _FakeDetector:
+        def summary(self):
+            return {"clean": 0, "pre_fail": 1}
+    monkeypatch.setattr(
+        "utils.cascade_detector.get_singleton",
+        lambda: _FakeDetector(),
+    )
+    snap = build_slo_snapshot()
+    assert snap["overall_status"] == "degraded"
+    assert any("cascade" in e for e in snap["errors"]), (
+        "errors must mention cascade so operators see the reason"
+    )
+
+
+def test_overall_status_demotes_to_degraded_on_cascade_wedged(monkeypatch):
+    """Same demotion for wedged severity — it's the most severe state."""
+    class _FakeDetector:
+        def summary(self):
+            return {"clean": 0, "wedged": 1}
+    monkeypatch.setattr(
+        "utils.cascade_detector.get_singleton",
+        lambda: _FakeDetector(),
+    )
+    snap = build_slo_snapshot()
+    assert snap["overall_status"] == "degraded"
+
+
+def test_overall_status_stays_ready_when_only_suspected_cascade(monkeypatch):
+    """`suspected` is 1-hit hysteresis — too noisy to demote on. Only
+    `pre_fail` and `wedged` count for overall_status demotion."""
+    # Need to mock services_rollup as well so it doesn't naturally demote
+    # in the test environment (where the gateway/map units may not exist).
+    class _FakeDetector:
+        def summary(self):
+            return {"clean": 0, "suspected": 1}
+    monkeypatch.setattr(
+        "utils.cascade_detector.get_singleton",
+        lambda: _FakeDetector(),
+    )
+    monkeypatch.setattr(
+        "utils.fleet_snapshot._services_rollup",
+        lambda: {
+            "required": {"total": 1, "available": 1},
+            "optional": {"total": 0, "available": 0},
+            "_detail": {},
+        },
+    )
+    snap = build_slo_snapshot()
+    assert snap["overall_status"] == "ready"
+    # No cascade-related error message either.
+    assert not any("cascade" in e for e in snap["errors"])

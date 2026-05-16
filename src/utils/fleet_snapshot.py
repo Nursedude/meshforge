@@ -552,6 +552,74 @@ def _schedules_block() -> Dict[str, Any]:
     }
 
 
+def _path_table_summary() -> Dict[str, Any]:
+    """Compact summary of the cached RNS path_table for /fleet/slo.
+
+    Returns `{available, count, ts}` rather than dumping the whole
+    path list (which can be hundreds of entries). The consumer drills
+    into `/api/network/rns/paths` for detail.
+
+    Track 2.6 of the federation→DB pressure→wedge cascade arc.
+    """
+    try:
+        from utils._map_collector_rns import get_cached_path_table_snapshot
+        snap = get_cached_path_table_snapshot()
+        return {
+            "available": bool(snap.get("available")),
+            "reason": snap.get("reason"),
+            "count": len(snap.get("paths", [])),
+            "ts": snap.get("ts", 0.0),
+        }
+    except Exception as e:
+        return {"available": False, "reason": f"summary_failed: {e!r}", "count": 0, "ts": 0.0}
+
+
+def _interfaces_summary() -> Dict[str, Any]:
+    """Compact summary of the cached RNS interfaces for /fleet/slo.
+
+    Returns `{available, count, online_count, ts}`. Drill into
+    `/api/network/interfaces` for per-interface RX/TX bytes.
+    """
+    try:
+        from utils._map_collector_rns import get_cached_interface_snapshot
+        snap = get_cached_interface_snapshot()
+        interfaces = snap.get("interfaces", [])
+        return {
+            "available": bool(snap.get("available")),
+            "reason": snap.get("reason"),
+            "count": len(interfaces),
+            "online_count": sum(1 for i in interfaces if i.get("online")),
+            "ts": snap.get("ts", 0.0),
+        }
+    except Exception as e:
+        return {"available": False, "reason": f"summary_failed: {e!r}",
+                "count": 0, "online_count": 0, "ts": 0.0}
+
+
+def _cascade_summary() -> Dict[str, Any]:
+    """Compact summary of the cascade detector state for /fleet/slo.
+
+    Returns `{total, clean, suspected, pre_fail, wedged, degraded}`.
+    Drill into `/fleet/cascade` for per-fingerprint evidence + metric.
+    """
+    try:
+        from utils.cascade_detector import get_singleton
+        counts = get_singleton().summary()
+        # Normalize: always present keys consumers can rely on.
+        return {
+            "total": sum(counts.values()),
+            "clean": counts.get("clean", 0),
+            "suspected": counts.get("suspected", 0),
+            "pre_fail": counts.get("pre_fail", 0),
+            "wedged": counts.get("wedged", 0),
+            "degraded": counts.get("degraded", 0),
+        }
+    except Exception as e:
+        return {"total": 0, "clean": 0, "suspected": 0,
+                "pre_fail": 0, "wedged": 0, "degraded": 0,
+                "_error": f"summary_failed: {e!r}"}
+
+
 def build_slo_snapshot(*, collector: Optional[Any] = None) -> Dict[str, Any]:
     """Build the SLO snapshot in MA's expected shape.
 
@@ -570,6 +638,22 @@ def build_slo_snapshot(*, collector: Optional[Any] = None) -> Dict[str, Any]:
 
     overall_status = "ready" if services["required"]["available"] == services["required"]["total"] else "degraded"
 
+    # Observability surface for the goal: "where did this message go +
+    # why did it fail" — three compact summary blocks consumers (MeshAnchor
+    # dashboard) merge across the fleet. Track 2.6 of the
+    # we-have-a-cycle-jolly-wadler stability arc.
+    path_table = _path_table_summary()
+    interfaces = _interfaces_summary()
+    cascade = _cascade_summary()
+
+    # Overall status downgrades when cascade fingerprints have escalated.
+    if cascade["pre_fail"] > 0 or cascade["wedged"] > 0:
+        overall_status = "degraded"
+        errors.append(
+            f"cascade fingerprints: pre_fail={cascade['pre_fail']} "
+            f"wedged={cascade['wedged']}"
+        )
+
     return {
         "generated_at": time.time(),
         "host": socket.gethostname(),
@@ -581,4 +665,9 @@ def build_slo_snapshot(*, collector: Optional[Any] = None) -> Dict[str, Any]:
         "errors": errors,
         "schedules": _schedules_block(),
         "ci_status": _ci_status_block(),
+        # Observability blocks (Track 2.6) — additive, never break
+        # existing consumers that don't read these keys.
+        "path_table": path_table,
+        "interfaces": interfaces,
+        "cascade": cascade,
     }
