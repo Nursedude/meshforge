@@ -214,6 +214,7 @@ def run_trace(
         return []
 
     from lab._lab_common import (
+        bounded_block,
         init_reticulum_with_watchdog,
         load_or_create_identity, make_ping_body, short_name,
     )
@@ -234,122 +235,133 @@ def run_trace(
                 for p in peers
             ]
 
-        identity, _ = load_or_create_identity("lab_tracer")
-        lxmf_storage = tmpdir / "lxmf"
-        lxmf_storage.mkdir(parents=True, exist_ok=True)
-        router = LXMF.LXMRouter(storagepath=str(lxmf_storage))
-        source = router.register_delivery_identity(
-            identity, display_name=f"lab-tracer ({self_short})",
+        # Post-init region — LXMRouter init, announce, path-resolve, and
+        # handle_outbound all open Unix-socket connections to rnsd's RPC
+        # and can hang in unix_wait_for_peer if the listener wedges (the
+        # init-only watchdog above has already disarmed by this point).
+        # Bound this whole region. Formula: per-peer path-resolve is
+        # sequential, ACK wait is concurrent, 20s buffer covers LXMRouter
+        # init + announce + send-loop overhead.
+        post_init_timeout_s = (
+            len(peers) * path_timeout_s + ack_timeout_s + 20.0
         )
+        with bounded_block(post_init_timeout_s, label="tracer post-init"):
+            identity, _ = load_or_create_identity("lab_tracer")
+            lxmf_storage = tmpdir / "lxmf"
+            lxmf_storage.mkdir(parents=True, exist_ok=True)
+            router = LXMF.LXMRouter(storagepath=str(lxmf_storage))
+            source = router.register_delivery_identity(
+                identity, display_name=f"lab-tracer ({self_short})",
+            )
 
-        # Inbound ACK matcher.
-        def _on_receive(message):
-            body = message.content
-            if isinstance(body, bytes):
+            # Inbound ACK matcher.
+            def _on_receive(message):
+                body = message.content
+                if isinstance(body, bytes):
+                    try:
+                        body = body.decode("utf-8")
+                    except UnicodeDecodeError:
+                        body = body.decode("utf-8", errors="replace")
+                match = match_ack_to_pending(body, self_short, pending)
+                if match is None:
+                    return
+                seq, p = match
+                p.rtt_ms = int((time.monotonic() - p.sent_at_monotonic) * 1000)
+                p.ack_event.set()
+                logger.info(
+                    "tracer: ack seq=%d peer=%s rtt_ms=%d",
+                    seq, p.peer_name, p.rtt_ms,
+                )
+
+            router.register_delivery_callback(_on_receive)
+
+            # Announce so peers can resolve us (for the ACK return path).
+            router.announce(source.hash)
+            time.sleep(0.2)  # let the announce hit the wire
+
+            # Send PINGs.
+            results: List[TraceResult] = []
+            seq = seq_start
+            for peer in peers:
+                if not _resolve_path(RNS, peer.dest_hash, path_timeout_s):
+                    logger.info(
+                        "tracer: rtt seq=%d peer=%s result=no-route ms=0",
+                        seq, peer.name,
+                    )
+                    results.append(TraceResult(
+                        seq=seq, peer=peer.name, result="no-route", rtt_ms=0,
+                    ))
+                    seq += 1
+                    continue
+
+                dest_identity = RNS.Identity.recall(peer.dest_hash)
+                if dest_identity is None:
+                    logger.warning(
+                        "tracer: recall returned None for peer=%s — counting "
+                        "as no-route", peer.name,
+                    )
+                    results.append(TraceResult(
+                        seq=seq, peer=peer.name, result="no-route", rtt_ms=0,
+                    ))
+                    seq += 1
+                    continue
+
+                destination = RNS.Destination(
+                    dest_identity, RNS.Destination.OUT, RNS.Destination.SINGLE,
+                    "lxmf", "delivery",
+                )
+                body = make_ping_body(seq, self_short)
+                lxm = LXMF.LXMessage(destination, source, body, "lab tracer PING")
+
+                ping = _PendingPing(
+                    seq=seq, peer_name=peer.name,
+                    sent_at_monotonic=time.monotonic(),
+                )
+                pending[seq] = ping
                 try:
-                    body = body.decode("utf-8")
-                except UnicodeDecodeError:
-                    body = body.decode("utf-8", errors="replace")
-            match = match_ack_to_pending(body, self_short, pending)
-            if match is None:
-                return
-            seq, p = match
-            p.rtt_ms = int((time.monotonic() - p.sent_at_monotonic) * 1000)
-            p.ack_event.set()
-            logger.info(
-                "tracer: ack seq=%d peer=%s rtt_ms=%d",
-                seq, p.peer_name, p.rtt_ms,
-            )
+                    router.handle_outbound(lxm)
+                except Exception as exc:
+                    logger.warning(
+                        "tracer: send failed seq=%d peer=%s: %s",
+                        seq, peer.name, exc,
+                    )
+                    del pending[seq]
+                    results.append(TraceResult(
+                        seq=seq, peer=peer.name, result="send-error", rtt_ms=0,
+                    ))
+                    seq += 1
+                    continue
 
-        router.register_delivery_callback(_on_receive)
-
-        # Announce so peers can resolve us (for the ACK return path).
-        router.announce(source.hash)
-        time.sleep(0.2)  # let the announce hit the wire
-
-        # Send PINGs.
-        results: List[TraceResult] = []
-        seq = seq_start
-        for peer in peers:
-            if not _resolve_path(RNS, peer.dest_hash, path_timeout_s):
-                logger.info(
-                    "tracer: rtt seq=%d peer=%s result=no-route ms=0",
-                    seq, peer.name,
-                )
-                results.append(TraceResult(
-                    seq=seq, peer=peer.name, result="no-route", rtt_ms=0,
-                ))
                 seq += 1
-                continue
+                # Small gap so we don't slam rnsd's outbound queue.
+                time.sleep(0.05)
 
-            dest_identity = RNS.Identity.recall(peer.dest_hash)
-            if dest_identity is None:
-                logger.warning(
-                    "tracer: recall returned None for peer=%s — counting "
-                    "as no-route", peer.name,
-                )
-                results.append(TraceResult(
-                    seq=seq, peer=peer.name, result="no-route", rtt_ms=0,
-                ))
-                seq += 1
-                continue
+            # Wait for ACKs concurrently.
+            deadline = time.monotonic() + ack_timeout_s
+            for ping in list(pending.values()):
+                remaining = max(0.0, deadline - time.monotonic())
+                if ping.ack_event.wait(remaining):
+                    results.append(TraceResult(
+                        seq=ping.seq, peer=ping.peer_name,
+                        result="ok", rtt_ms=ping.rtt_ms,
+                    ))
+                    logger.info(
+                        "tracer: rtt seq=%d peer=%s result=ok ms=%d",
+                        ping.seq, ping.peer_name, ping.rtt_ms,
+                    )
+                else:
+                    results.append(TraceResult(
+                        seq=ping.seq, peer=ping.peer_name,
+                        result="timeout", rtt_ms=0,
+                    ))
+                    logger.info(
+                        "tracer: rtt seq=%d peer=%s result=timeout ms=0",
+                        ping.seq, ping.peer_name,
+                    )
 
-            destination = RNS.Destination(
-                dest_identity, RNS.Destination.OUT, RNS.Destination.SINGLE,
-                "lxmf", "delivery",
-            )
-            body = make_ping_body(seq, self_short)
-            lxm = LXMF.LXMessage(destination, source, body, "lab tracer PING")
-
-            ping = _PendingPing(
-                seq=seq, peer_name=peer.name,
-                sent_at_monotonic=time.monotonic(),
-            )
-            pending[seq] = ping
-            try:
-                router.handle_outbound(lxm)
-            except Exception as exc:
-                logger.warning(
-                    "tracer: send failed seq=%d peer=%s: %s",
-                    seq, peer.name, exc,
-                )
-                del pending[seq]
-                results.append(TraceResult(
-                    seq=seq, peer=peer.name, result="send-error", rtt_ms=0,
-                ))
-                seq += 1
-                continue
-
-            seq += 1
-            # Small gap so we don't slam rnsd's outbound queue.
-            time.sleep(0.05)
-
-        # Wait for ACKs concurrently.
-        deadline = time.monotonic() + ack_timeout_s
-        for ping in list(pending.values()):
-            remaining = max(0.0, deadline - time.monotonic())
-            if ping.ack_event.wait(remaining):
-                results.append(TraceResult(
-                    seq=ping.seq, peer=ping.peer_name,
-                    result="ok", rtt_ms=ping.rtt_ms,
-                ))
-                logger.info(
-                    "tracer: rtt seq=%d peer=%s result=ok ms=%d",
-                    ping.seq, ping.peer_name, ping.rtt_ms,
-                )
-            else:
-                results.append(TraceResult(
-                    seq=ping.seq, peer=ping.peer_name,
-                    result="timeout", rtt_ms=0,
-                ))
-                logger.info(
-                    "tracer: rtt seq=%d peer=%s result=timeout ms=0",
-                    ping.seq, ping.peer_name,
-                )
-
-        # Sort results by seq so journal output is monotonic.
-        results.sort(key=lambda r: r.seq)
-        return results
+            # Sort results by seq so journal output is monotonic.
+            results.sort(key=lambda r: r.seq)
+            return results
 
 
 # ---------------------------------------------------------------- state files

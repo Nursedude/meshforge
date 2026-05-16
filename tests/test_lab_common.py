@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from lab._lab_common import (
     AckMessage,
     PingMessage,
+    bounded_block,
     init_reticulum_with_watchdog,
     make_ack_body,
     make_ping_body,
@@ -190,3 +191,97 @@ def test_watchdog_default_timeout_from_env(monkeypatch):
     # Restore default for other tests.
     monkeypatch.delenv("MESHFORGE_LAB_RNS_INIT_TIMEOUT", raising=False)
     importlib.reload(lc)
+
+
+# ----------------------------------------------------- bounded_block
+
+
+def test_bounded_block_normal_exit_disarms_watchdog(monkeypatch):
+    """Wrapped block returns; watchdog must NOT fire os._exit."""
+    abort_calls = []
+    monkeypatch.setattr(
+        "lab._lab_common.os._exit", lambda code: abort_calls.append(code),
+    )
+
+    with bounded_block(timeout_s=1.0, label="test"):
+        pass  # immediate return
+
+    # Give the watchdog thread a moment to settle (it should have seen
+    # done.set() and exited cleanly).
+    import time
+    time.sleep(0.1)
+    assert abort_calls == [], (
+        "bounded_block must not fire os._exit on normal return; got %r"
+        % (abort_calls,)
+    )
+
+
+def test_bounded_block_exception_propagates_and_disarms(monkeypatch):
+    """Exception inside the block propagates AND disarms the watchdog."""
+    abort_calls = []
+    monkeypatch.setattr(
+        "lab._lab_common.os._exit", lambda code: abort_calls.append(code),
+    )
+
+    class _Boom(RuntimeError):
+        pass
+
+    with pytest.raises(_Boom, match="kaboom"):
+        with bounded_block(timeout_s=1.0, label="test"):
+            raise _Boom("kaboom")
+
+    import time
+    time.sleep(0.1)
+    assert abort_calls == [], (
+        "exception inside the block must also disarm; got %r" % (abort_calls,)
+    )
+
+
+def test_bounded_block_fires_os_exit_on_timeout(monkeypatch):
+    """Block doesn't return within timeout — watchdog must call os._exit(2).
+
+    Production semantics: os._exit terminates the whole process. The test
+    captures the call instead, then signals an event so the wedged block
+    can complete and the test itself doesn't hang."""
+    import threading as _threading
+
+    release = _threading.Event()
+    abort_calls = []
+
+    def _fake_exit(code):
+        abort_calls.append(code)
+        # Unblock the test's "wedged" block so it can complete.
+        release.set()
+
+    monkeypatch.setattr("lab._lab_common.os._exit", _fake_exit)
+
+    with bounded_block(timeout_s=0.2, label="wedge-test"):
+        # Simulate a kernel hang; bounded by 5s so a test bug can't
+        # wedge pytest forever.
+        release.wait(timeout=5.0)
+
+    assert abort_calls == [2], (
+        "watchdog must fire os._exit(2) on timeout; got %r" % (abort_calls,)
+    )
+
+
+def test_bounded_block_label_appears_in_log(monkeypatch, caplog):
+    """Operators read the watchdog log to diagnose which region wedged;
+    the label is the only signal pointing them at the right call site."""
+    import threading as _threading
+
+    release = _threading.Event()
+
+    def _fake_exit(code):
+        release.set()
+
+    monkeypatch.setattr("lab._lab_common.os._exit", _fake_exit)
+
+    with caplog.at_level("ERROR", logger="lab._lab_common"):
+        with bounded_block(timeout_s=0.1, label="my-special-region"):
+            release.wait(timeout=5.0)
+
+    assert any("my-special-region" in rec.message for rec in caplog.records), (
+        "watchdog log must include the label; got %r"
+        % ([r.message for r in caplog.records],)
+    )

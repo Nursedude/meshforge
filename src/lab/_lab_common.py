@@ -16,6 +16,7 @@ across multiple peers without keeping per-peer seq spaces.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -24,7 +25,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +166,49 @@ def init_reticulum_with_watchdog(
     watchdog.start()
     try:
         return RNS.Reticulum(configdir=configdir, loglevel=loglevel)
+    finally:
+        done.set()
+
+
+@contextlib.contextmanager
+def bounded_block(timeout_s: float, *, label: str) -> Iterator[None]:
+    """Run the wrapped block under a hard timeout watchdog.
+
+    Sibling to ``init_reticulum_with_watchdog`` but generic: any region
+    that might wedge on rnsd's RPC socket (LXMRouter init, announce,
+    path-resolve, handle_outbound) can be wrapped here. A daemon watchdog
+    thread calls ``os._exit(2)`` if the block doesn't exit within
+    ``timeout_s``. Normal completion AND exceptions both disarm the
+    watchdog.
+
+    Why ``os._exit``: the kernel ``connect()`` in
+    ``unix_wait_for_peer`` is uninterruptible from userland — SIGTERM
+    queues behind the syscall. Only ``os._exit`` (or systemd-driven
+    SIGKILL via ``TimeoutStartSec=``) gets the process out cleanly.
+
+    See ``project_rnsd_rpc_listener_wedge.md`` for the wedge fingerprint
+    and recovery recipe. The constructor watchdog
+    (``init_reticulum_with_watchdog``) only covers ``RNS.Reticulum()``;
+    this covers everything else.
+    """
+    done = threading.Event()
+
+    def _watchdog() -> None:
+        if not done.wait(timeout=timeout_s):
+            logger.error(
+                "lab: %s did not complete after %.1fs — likely rnsd "
+                "RPC listener wedge. Aborting process so systemd can "
+                "restart us. See project_rnsd_rpc_listener_wedge.md.",
+                label, timeout_s,
+            )
+            os._exit(2)
+
+    watchdog = threading.Thread(
+        target=_watchdog, daemon=True, name=f"bounded-{label}",
+    )
+    watchdog.start()
+    try:
+        yield
     finally:
         done.set()
 
