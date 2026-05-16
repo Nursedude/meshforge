@@ -16,10 +16,14 @@ import pytest
 
 from utils import fleet_snapshot
 from utils.fleet_snapshot import (
+    CI_STATUS_STALE_AFTER_S,
     OPTIONAL_SERVICES,
     REQUIRED_SERVICES,
     SCHEDULE_STALE_MULTIPLIER,
+    _ci_overall,
+    _ci_status_block,
     _normalize_timer,
+    _parse_ci_status_file,
     _probe_radio,
     _schedules_block,
     _services_rollup,
@@ -489,3 +493,180 @@ def test_list_timers_root_user_scope_no_operator_returns_empty(monkeypatch):
         "utils.fleet_snapshot.subprocess.run", _should_not_be_called,
     )
     assert fleet_snapshot._list_timers_scope("user") == []
+
+
+# ─── CI status block ────────────────────────────────────────────────────
+#
+# `~/.meshforge-ci-status` is written twice daily by the
+# meshforge-ci-status timer on whichever fleet box has it enabled.
+# Format: a single "# generated <iso>" header plus one indented line
+# per repo. Robust parsing matters because the block flows directly
+# to the dashboard pill.
+
+
+_CI_FILE_SAMPLE = (
+    "# MeshForge ecosystem CI status — generated 2026-05-15T08:04:36-10:00\n"
+    "  meshforge                            in_progress  a11095c  feat(fleet): T1.5\n"
+    "  meshanchor                           in_progress  3fbf241  feat(fleet): panel\n"
+    "  meshforge-maps                       success      0ec25c8  fix(tests): foo\n"
+    "  meshing_around_meshforge             success      3d1c97b  github_actions\n"
+    "  RNS-Management-Tool                  success      dc1b109  Merge pull request\n"
+    "  RNS-Meshtastic-Gateway-Tool          success      cd2748a  fix(ci): drop -x\n"
+)
+
+
+def test_parse_ci_status_file_extracts_repos_and_overall():
+    block = _parse_ci_status_file(_CI_FILE_SAMPLE)
+    assert block["available"] is True
+    assert block["generated_at"] == "2026-05-15T08:04:36-10:00"
+    assert isinstance(block["generated_unix"], float)
+    assert len(block["repos"]) == 6
+    names = [r["name"] for r in block["repos"]]
+    assert "meshforge" in names
+    assert "RNS-Meshtastic-Gateway-Tool" in names
+    # 4 success + 2 in_progress → overall is in_progress (no failure).
+    assert block["overall"] == "in_progress"
+    assert block["red_count"] == 0
+    assert block["in_progress_count"] == 2
+
+
+def test_parse_ci_status_file_ignores_overdue_pr_section():
+    """The 'Overdue open PRs' section is informational; the pill must
+    not surface its lines as repos."""
+    sample = (
+        _CI_FILE_SAMPLE
+        + "\n"
+        + "# Overdue open PRs (>14 days)\n"
+        "  meshforge#1234  20d  user — Some title\n"
+    )
+    block = _parse_ci_status_file(sample)
+    assert len(block["repos"]) == 6
+    assert all("#" not in r["name"] for r in block["repos"])
+
+
+def test_parse_ci_status_file_skips_lines_without_valid_sha():
+    """Stray lines that don't carry a 7-char hex sha shouldn't poison
+    the repo list — the parser is defensive against future format
+    additions like commentary lines indented under a repo."""
+    sample = (
+        "# generated 2026-05-15T08:04:36-10:00\n"
+        "  meshforge  success  abc1234  ok\n"
+        "  meshanchor  success  notahex  bad sha\n"
+        "  meshforge-maps  success  deadbee  good sha\n"
+    )
+    block = _parse_ci_status_file(sample)
+    assert len(block["repos"]) == 2  # meshanchor's notahex line dropped
+    assert {r["name"] for r in block["repos"]} == {"meshforge", "meshforge-maps"}
+
+
+def test_parse_ci_status_file_handles_no_runs_state():
+    """A brand-new repo with no CI runs shows up as 'no-runs'.
+    The pill should surface it without trying to parse a sha."""
+    sample = (
+        "# generated 2026-05-15T08:04:36-10:00\n"
+        "  newrepo  no-runs\n"
+    )
+    block = _parse_ci_status_file(sample)
+    assert len(block["repos"]) == 1
+    assert block["repos"][0]["state"] == "no-runs"
+    assert block["repos"][0]["sha"] == ""
+
+
+def test_ci_overall_failure_dominates():
+    repos = [
+        {"name": "a", "state": "success", "sha": "1234567"},
+        {"name": "b", "state": "in_progress", "sha": "1234567"},
+        {"name": "c", "state": "failure", "sha": "1234567"},
+    ]
+    assert _ci_overall(repos) == "failure"
+
+
+def test_ci_overall_in_progress_when_no_failure():
+    repos = [
+        {"name": "a", "state": "success", "sha": "1234567"},
+        {"name": "b", "state": "in_progress", "sha": "1234567"},
+    ]
+    assert _ci_overall(repos) == "in_progress"
+
+
+def test_ci_overall_success_when_all_clean():
+    repos = [
+        {"name": "a", "state": "success", "sha": "1234567"},
+        {"name": "b", "state": "success", "sha": "1234567"},
+    ]
+    assert _ci_overall(repos) == "success"
+
+
+def test_ci_overall_unknown_when_no_repos():
+    """Empty file or all-malformed lines → unknown (the pill renders
+    grey, not green — silence isn't the same as healthy)."""
+    assert _ci_overall([]) == "unknown"
+
+
+def test_ci_overall_degraded_for_cancelled_or_skipped():
+    """A run that was cancelled or skipped isn't a failure but isn't
+    success either — render the pill as degraded (orange)."""
+    repos = [
+        {"name": "a", "state": "success", "sha": "1234567"},
+        {"name": "b", "state": "cancelled", "sha": "1234567"},
+    ]
+    assert _ci_overall(repos) == "degraded"
+
+
+def test_ci_status_block_returns_unavailable_when_file_missing(tmp_path, monkeypatch):
+    """Most fleet boxes don't run the CI timer — the block should
+    cleanly report unavailable so MA's pill picks another peer."""
+    monkeypatch.setattr(fleet_snapshot, "_operator_home", lambda: tmp_path)
+    block = _ci_status_block()
+    assert block["available"] is False
+    assert block["reason"] == "no_file"
+
+
+def test_ci_status_block_returns_unavailable_when_no_operator_home(monkeypatch):
+    """Root daemon with no resolvable operator user → unavailable.
+    Reproduces meshanchor-server-style edge case if /run/user/ is
+    empty for some reason."""
+    monkeypatch.setattr(fleet_snapshot, "_operator_home", lambda: None)
+    block = _ci_status_block()
+    assert block["available"] is False
+    assert block["reason"] == "no_operator_home"
+
+
+def test_ci_status_block_parses_real_file(tmp_path, monkeypatch):
+    """End-to-end: drop the sample file in a fake operator home,
+    confirm the block carries repos + overall + age."""
+    (tmp_path / ".meshforge-ci-status").write_text(_CI_FILE_SAMPLE)
+    monkeypatch.setattr(fleet_snapshot, "_operator_home", lambda: tmp_path)
+    block = _ci_status_block()
+    assert block["available"] is True
+    assert block["overall"] == "in_progress"
+    assert len(block["repos"]) == 6
+    assert block["age_s"] is not None  # depends on test-run wallclock vs sample ts
+    assert isinstance(block["stale"], bool)
+
+
+def test_ci_status_block_marks_stale_when_old(tmp_path, monkeypatch):
+    """If the file's generated_at is older than CI_STATUS_STALE_AFTER_S
+    (currently 14h — 1.4× the timer's 10h gap), mark stale=True so
+    the pill renders amber instead of green/red."""
+    # Build a sample with a deliberately-ancient timestamp.
+    ancient_iso = "2020-01-01T00:00:00-10:00"
+    sample = (
+        f"# MeshForge ecosystem CI status — generated {ancient_iso}\n"
+        "  meshforge  success  abc1234  ok\n"
+    )
+    (tmp_path / ".meshforge-ci-status").write_text(sample)
+    monkeypatch.setattr(fleet_snapshot, "_operator_home", lambda: tmp_path)
+    block = _ci_status_block()
+    assert block["available"] is True
+    assert block["stale"] is True
+    assert block["age_s"] > CI_STATUS_STALE_AFTER_S
+
+
+def test_snapshot_includes_ci_status_block():
+    """Schema contract: /fleet/slo must carry a ci_status key so MA's
+    rollup poller can read it for the dashboard pill."""
+    snap = build_slo_snapshot()
+    assert "ci_status" in snap
+    assert isinstance(snap["ci_status"], dict)
+    assert "available" in snap["ci_status"]

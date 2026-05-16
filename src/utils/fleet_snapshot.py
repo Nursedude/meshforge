@@ -286,6 +286,162 @@ def _normalize_timer(raw: Dict[str, Any], scope: str,
     }
 
 
+# Ecosystem CI status — the timer twice-daily fires write
+# ``~/.meshforge-ci-status`` (see ``scripts/ecosystem_ci_status.sh``).
+# Only the fleet box(es) that enable the timer write the file; other
+# boxes return ``available=False`` and the dashboard picks the
+# freshest peer. Bump if the timer cadence changes (currently
+# 08:00/18:00 → ~10h gap).
+CI_STATUS_STALE_AFTER_S = 14 * 3600
+
+
+def _operator_home() -> "Optional[Any]":
+    """Resolve the operator user's home directory.
+
+    Non-root daemon: ``get_real_user_home()`` returns the operator's
+    home. Root daemon (any host that runs the map daemon as
+    ``User=root``): walk ``/run/user/<uid>/bus`` via
+    ``_find_operator_user`` — same helper used by the schedules
+    root→operator drop. Returns ``None`` when no operator can be
+    resolved (block becomes ``available=False``).
+    """
+    from pathlib import Path
+    if os.geteuid() != 0:
+        from utils.paths import get_real_user_home
+        return get_real_user_home()
+    try:
+        from utils.fleet_test_runner import _find_operator_user
+    except ImportError:
+        return None
+    op = _find_operator_user()
+    if op is None:
+        return None
+    op_uid, _ = op
+    try:
+        import pwd
+        return Path(pwd.getpwuid(op_uid).pw_dir)
+    except (KeyError, ImportError, OSError):
+        return None
+
+
+def _parse_ci_status_file(text: str) -> Dict[str, Any]:
+    """Parse the plain-text status file into a structured block.
+
+    Format (one repo per line, after a single ``# header — generated <ts>``):
+    ``  <repo-name>  <state>  <sha7>  <commit-title>``
+
+    Unknown lines, blank lines, and a trailing "# Overdue open PRs"
+    section are silently ignored — the surface is repos + overall.
+    """
+    from datetime import datetime
+    generated_at: Optional[str] = None
+    generated_unix: Optional[float] = None
+    repos: List[Dict[str, str]] = []
+    in_overdue_section = False
+
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if line.startswith("#"):
+            # Header line carries the generation timestamp; later '#'
+            # lines (e.g. "# Overdue open PRs") gate the repos block.
+            if "Overdue" in line:
+                in_overdue_section = True
+                continue
+            if "generated" in line and generated_at is None:
+                # "# MeshForge ecosystem CI status — generated <iso>"
+                marker = "generated "
+                idx = line.find(marker)
+                if idx >= 0:
+                    generated_at = line[idx + len(marker):].strip()
+                    try:
+                        generated_unix = datetime.fromisoformat(generated_at).timestamp()
+                    except (ValueError, TypeError):
+                        generated_unix = None
+            continue
+        if in_overdue_section:
+            continue
+        parts = line.split()
+        # Repo line: name, state, [sha (7 hex)], [title…]. The "no-runs"
+        # state has no sha (script doesn't emit one). The pill doesn't
+        # surface the title — dashboard can grow a tooltip later.
+        if len(parts) < 2:
+            continue
+        name, state = parts[0], parts[1]
+        if state == "no-runs":
+            repos.append({"name": name, "state": state, "sha": ""})
+            continue
+        if len(parts) < 3:
+            continue
+        sha = parts[2]
+        # 7-char hex sanity check on sha so we don't capture a stray
+        # status word as a sha.
+        if len(sha) == 7 and all(c in "0123456789abcdef" for c in sha):
+            repos.append({"name": name, "state": state, "sha": sha})
+
+    overall = _ci_overall(repos)
+    return {
+        "available": True,
+        "generated_at": generated_at,
+        "generated_unix": generated_unix,
+        "overall": overall,
+        "red_count": sum(1 for r in repos if r["state"] == "failure"),
+        "in_progress_count": sum(1 for r in repos if r["state"] == "in_progress"),
+        "repos": repos,
+    }
+
+
+def _ci_overall(repos: List[Dict[str, str]]) -> str:
+    """Aggregate per-repo state to a single pill color.
+
+    Precedence: failure > in_progress > anything-not-success > success.
+    Empty list (no parseable lines) returns ``"unknown"``.
+    """
+    if not repos:
+        return "unknown"
+    states = {r["state"] for r in repos}
+    if "failure" in states:
+        return "failure"
+    if "in_progress" in states:
+        return "in_progress"
+    if states <= {"success"}:
+        return "success"
+    return "degraded"
+
+
+def _ci_status_block() -> Dict[str, Any]:
+    """Read ``~/.meshforge-ci-status`` (operator home) and structure it.
+
+    Returns ``{"available": False, "reason": ...}`` when:
+    - operator home can't be resolved (root daemon, no operator user)
+    - the file doesn't exist (most fleet boxes won't have it — only
+      the box that runs the meshforge-ci-status timer writes it)
+    - the read fails (permissions, IO)
+
+    The dashboard JS picks the freshest ``available=True`` block
+    across all peers — single source of truth wins.
+    """
+    home = _operator_home()
+    if home is None:
+        return {"available": False, "reason": "no_operator_home"}
+    path = home / ".meshforge-ci-status"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return {"available": False, "reason": "no_file"}
+    except (PermissionError, OSError) as e:
+        return {"available": False, "reason": f"read_error: {e.__class__.__name__}"}
+    block = _parse_ci_status_file(text)
+    if block.get("generated_unix") is not None:
+        age = time.time() - block["generated_unix"]
+        block["age_s"] = round(age, 1)
+        block["stale"] = age > CI_STATUS_STALE_AFTER_S
+    else:
+        block["age_s"] = None
+        block["stale"] = False
+    return block
+
+
 def _schedules_block() -> Dict[str, Any]:
     """Build the schedules block for the SLO snapshot.
 
@@ -343,4 +499,5 @@ def build_slo_snapshot(*, collector: Optional[Any] = None) -> Dict[str, Any]:
         "radio": _probe_radio(),
         "errors": errors,
         "schedules": _schedules_block(),
+        "ci_status": _ci_status_block(),
     }
