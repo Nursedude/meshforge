@@ -30,6 +30,11 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/meshforge/src
 ExecStart=/usr/bin/python3 -m lab.lxmf_tracer
+# Kills the unit if it sits in start phase >120s. Backstops the in-process
+# watchdog (init_reticulum_with_watchdog), which only covers RNS init —
+# rnsd RPC wedges can still hang LXMRouter/announce/send. See
+# project_rnsd_rpc_listener_wedge.md (moc1 2026-05-16 post-init wedge).
+TimeoutStartSec=120
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=meshforge-tracer
