@@ -130,10 +130,14 @@ real incidents.
 
 - **Cron / non-systemd job catalog** — if/when MeshForge grows
   cron-driven work, surface its state alongside systemd timers.
-- **Plugin shape** — extract panel-rendering into a registered
-  list so adding a new panel = one JS module + one Python feed.
-  Today the panels are inline in `fleet.html`. Don't refactor
-  pre-T1; refactor when there are 3+ T1-shipped panels to migrate.
+- **Plugin shape** *(shipped 2026-05-16, MA `dc43a3df`)* — panel
+  rendering extracted into a `FLEET_PANELS` registry +
+  `POLL_SOURCES` config + `dispatchPanels` / `runTickForScope`
+  dispatcher. Adding a new panel = one `registerPanel({id, source,
+  render, init?})` call (was three: tickSlow body + render fn +
+  DOMContentLoaded wiring). 12 existing panels migrated (10
+  tick-driven + 2 on-demand) without behavior change. Per-panel
+  try/catch isolates a buggy render from the dispatch loop.
 - **WebSocket push** — replace polling with server-push for
   `activity` and `schedules` (the high-cadence panels). Reduces
   load and latency.
