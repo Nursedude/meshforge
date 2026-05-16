@@ -125,7 +125,11 @@ METRICS: Dict[str, MetricDefinition] = {
     "meshforge_nodes_total": MetricDefinition(
         name="meshforge_nodes_total",
         metric_type=GAUGE,
-        help_text="Total number of tracked nodes",
+        help_text=(
+            "Node counts by state: tracked=seen by local meshtasticd this "
+            "cycle, with_gps=of those, ones with a position, directory=total "
+            "nodes in the cached directory (includes federation + external)"
+        ),
         labels=["state"],
     ),
 

@@ -320,6 +320,7 @@ class PrometheusExporter:
         lines = []
         node_count = 0
         nodes_with_gps = 0
+        directory_total = 0
 
         # Primary source: MapDataCollector (has actual node data)
         geojson = _collect_node_geojson()
@@ -327,7 +328,9 @@ class PrometheusExporter:
             props = geojson.get("properties", {})
             node_count = props.get("total_nodes", 0)
             nodes_with_gps = props.get("nodes_with_position", 0)
-            logger.debug(f"MapDataCollector: {node_count} total, {nodes_with_gps} with GPS")
+            directory = props.get("directory") or {}
+            directory_total = directory.get("total", 0) if isinstance(directory, dict) else 0
+            logger.debug(f"MapDataCollector: {node_count} tracked, {nodes_with_gps} with GPS, {directory_total} directory")
 
         # Fallback to MetricsHistory if MapDataCollector returned 0
         if node_count == 0 and _HAS_METRICS_HISTORY:
@@ -345,6 +348,8 @@ class PrometheusExporter:
         lines.append(_format_metric_line(defn.name, node_count, {"state": "tracked"}))
         if nodes_with_gps > 0:
             lines.append(_format_metric_line(defn.name, nodes_with_gps, {"state": "with_gps"}))
+        if directory_total > 0:
+            lines.append(_format_metric_line(defn.name, directory_total, {"state": "directory"}))
 
         # Per-node SNR/RSSI metrics from MetricsHistory
         if _HAS_METRICS_HISTORY:
