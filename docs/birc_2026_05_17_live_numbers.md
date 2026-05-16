@@ -4,26 +4,26 @@
 >
 > **Raw URL**: `https://raw.githubusercontent.com/Nursedude/meshforge/main/docs/birc_2026_05_17_live_numbers.md`
 >
-> **Generated**: 2026-05-11 20:45 UTC
+> **Generated**: 2026-05-16 20:39 UTC
 
 ## Ecosystem versions + test counts
 
 | Repo | Version | Test files | Test functions | Notes |
 |------|---------|-----------:|---------------:|-------|
-| `meshforge` | `0.6.0-beta` | 121 | 3,520 |  |
+| `meshforge` | `0.6.0-beta` | 134 | 3,830 |  |
 | `meshforge-maps` | `0.7.4-beta` | 45 | 1,117 |  |
 | `meshing_around_meshforge` | `0.6.0` | 20 | 961 |  |
-| `meshanchor` | `0.1.0-alpha` | 135 | 3,667 |  |
+| `meshanchor` | `0.1.0-alpha` | 144 | 3,891 |  |
 | `RNS-Management-Tool` | `—` | 0 | 0 |  |
-| **Total** | — | **321** | **9,265** | across ecosystem |
+| **Total** | — | **343** | **9,799** | across ecosystem |
 
 ## Live map state — `localhost:5000`
 
-- Directory nodes total: **76,991**
-  - with position: 75,424
-  - without position: 1,567
-- By network: aredn: 2,706 · meshcore: 48,282 · meshtastic: 24,625 · rns: 1,378
-- Observations in retention window: **1,133,157** across 73,901 unique nodes
+- Directory nodes total: **83,493**
+  - with position: 81,432
+  - without position: 2,061
+- By network: aredn: 2,785 · meshcore: 51,004 · meshtastic: 27,835 · rns: 1,869
+- Observations in retention window: **22,027,650** across 83,493 unique nodes
 - Retention: 2.0 d (local) · 7 d (external)
 
 ## Slide-by-slide refresh hints
@@ -43,7 +43,7 @@ These are the slides whose numbers should be replaced from the values above befo
 Add to footer of every slide (or just title + closing slides):
 
 ```
-MeshForge 0.6.0-beta · data window 2026-04-28 → 2026-05-04 · rendered 2026-05-11
+MeshForge 0.6.0-beta · data window 2026-04-28 → 2026-05-04 · rendered 2026-05-16
 ```
 
 Any drift between deck and reality after lock becomes intentional — the deck is a snapshot, the live state is always at `github.com/Nursedude/meshforge`.
