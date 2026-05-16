@@ -19,11 +19,18 @@ WorkingDirectory=/opt/meshforge/src
 RuntimeDirectory=meshforge
 
 # Use venv if available, fall back to system Python
+# --cors-origins set so the MA dashboard at http://<lan-host>:5000
+# can fetch this box's /fleet/logs etc. cross-origin. Origins are
+# *prefix* matched (see MapRequestHandler._send_cors_header in
+# map_http_handler.py) — the 192.168.86. entry covers every host on
+# the operator's /24 without requiring a per-box config knob. Add
+# new LAN prefixes here if the fleet expands (e.g. AREDN 10.x.y.z).
 ExecStart=/bin/bash -c '\
+    CORS="http://localhost,http://127.0.0.1,http://192.168.86."; \
     if [ -x /opt/meshforge/venv/bin/python ]; then \
-        exec /opt/meshforge/venv/bin/python -m utils.map_data_service --daemon --host 0.0.0.0 --port 5000; \
+        exec /opt/meshforge/venv/bin/python -m utils.map_data_service --daemon --host 0.0.0.0 --port 5000 --cors-origins "$CORS"; \
     else \
-        exec python3 -m utils.map_data_service --daemon --host 0.0.0.0 --port 5000; \
+        exec python3 -m utils.map_data_service --daemon --host 0.0.0.0 --port 5000 --cors-origins "$CORS"; \
     fi'
 
 # Graceful shutdown

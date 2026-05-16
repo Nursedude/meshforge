@@ -732,7 +732,22 @@ Examples:
                         help="PID file location (default: /run/meshforge/map-server.pid)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Enable verbose logging")
+    # CORS allowlist for cross-origin browser fetches (T1 fleet
+    # dashboard). Default keeps the secure-by-default localhost-only
+    # behavior. The systemd unit threads a LAN-permissive set so a
+    # dashboard served by an MA daemon on the same LAN can reach
+    # every MF box's /fleet/logs etc. Origins are *prefix* matched
+    # (`_send_cors_header` uses `startswith`), so e.g.
+    # `http://192.168.86.` matches every host on that /24.
+    parser.add_argument("--cors-origins", type=str, default=None,
+                        help="Comma-separated CORS allowlist (prefix match). "
+                             "Default: localhost-only.")
     args = parser.parse_args()
+
+    cors_origins = None
+    if args.cors_origins:
+        cors_origins = [o.strip() for o in args.cors_origins.split(",")
+                        if o.strip()]
 
     # Configure logging — use canonical logging_config
     from utils.logging_config import setup_logging
@@ -772,6 +787,7 @@ Examples:
     server = MapServer(
         port=args.port,
         host=args.host,
+        cors_origins=cors_origins,
     )
 
     # Signal handlers for graceful shutdown
