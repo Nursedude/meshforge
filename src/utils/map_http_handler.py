@@ -458,6 +458,8 @@ class MapRequestHandler(
             self._serve_fleet_slo()
         elif path_only == '/fleet/logs':
             self._serve_fleet_logs()
+        elif path_only == '/fleet/tracer-fires':
+            self._serve_fleet_tracer_fires()
         elif path_only == '/fleet/tests':
             self._serve_fleet_tests_list()
         elif path_only == '/lab/rollup' or path_only == '/lab/rollup/':
@@ -1332,6 +1334,56 @@ class MapRequestHandler(
         from utils.fleet_logs import fetch_unit_logs
         payload = fetch_unit_logs(
             unit=unit, scope=scope, n=n, priority=journal_priority,
+        )
+        self._serve_json(payload)
+
+    def _serve_fleet_tracer_fires(self):
+        """Return this host's recent tracer fires for one peer.
+
+        T1 drilldown surface: the dashboard's Federation Round-Trip
+        table shows aggregate stats per (src, dst) pair. Operator
+        clicks a cell → MA's JS fetches
+        ``http://<src>:5000/fleet/tracer-fires?peer=<dst>&since=<unix>``
+        and renders the per-fire detail (timestamp, RTT, result).
+
+        Data source: per-fire JSON in
+        ``~/.local/state/meshforge/tracer/tracer-<unix>.json``
+        (written by the meshforge-tracer.service). This endpoint
+        reads ONE host's state — cross-host aggregation belongs
+        elsewhere (the lab rollup already does that via ssh+cat).
+
+        Query params:
+          peer=<short-name>      required (operator short hostname)
+          since=<unix>           optional (default now - 1h, clamped to 24h)
+          limit=<int 1..200>     optional (default 60)
+
+        Response shape:
+          {
+            "host": "<this hostname>",
+            "peer": "<peer>",
+            "since_unix": <float>,
+            "fires": [{
+              "fire_at_unix": <float>,
+              "fire_at_iso": "<iso>",
+              "self_short": "<host's own short name>",
+              "seq": <int>,
+              "result": "ok"|"fail"|...,
+              "rtt_ms": <int|null>
+            }, ...],
+            "fires_total_seen": <int>,
+            "truncated": <bool>
+          }
+        """
+        from urllib.parse import urlparse, parse_qs
+        from utils.tracer_fires import parse_query, get_recent_fires
+
+        qs = parse_qs(urlparse(self.path).query)
+        peer, since_unix, limit, err = parse_query(qs)
+        if err is not None:
+            self._serve_json({"error": err}, status=400)
+            return
+        payload = get_recent_fires(
+            peer=peer, since_unix=since_unix, limit=limit,
         )
         self._serve_json(payload)
 
