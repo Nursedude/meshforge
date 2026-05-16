@@ -609,6 +609,19 @@ class MapServer:
         )
         self._warmup_thread.start()
 
+        # Cascade detector — same wiring as start_background(). The
+        # systemd unit (`--daemon`) calls THIS path; without the start
+        # here, the singleton would only be lazily created on the first
+        # /fleet/cascade request, returning the initial clean state
+        # forever because the evaluator thread is never spawned. Result:
+        # silent miss on every wedge in production (verified 2026-05-16
+        # while exercising the new `tracer_stale_fire` fingerprint).
+        try:
+            from utils.cascade_detector import get_singleton
+            get_singleton().start()
+        except Exception as e:
+            logger.warning("CascadeDetector start failed (non-fatal): %s", e)
+
         try:
             self._server.serve_forever()
         except KeyboardInterrupt:

@@ -172,5 +172,46 @@ class WarmingGateTests(unittest.TestCase):
         )
 
 
+class CascadeDetectorStartContract(unittest.TestCase):
+    """Regression: both the `start()` (systemd `--daemon` path) and
+    `start_background()` (test/CLI path) MUST invoke
+    `cascade_detector.get_singleton().start()`. Witnessed bug
+    2026-05-16: the cascade detector wiring was added to
+    `start_background()` only; the systemd daemon path created the
+    singleton lazily on the first `/fleet/cascade` request but never
+    spawned the evaluator thread, so every probe silently never ran.
+    `tracer_stale_fire` shipped + the rnsd-RPC wedge still went
+    operator-undetected because the detector was dead in production.
+    """
+
+    def _method_body(self, name: str) -> str:
+        import inspect
+        from utils import map_data_service
+        return inspect.getsource(getattr(map_data_service.MapServer, name))
+
+    def test_start_invokes_cascade_detector_singleton(self):
+        body = self._method_body("start")
+        self.assertIn(
+            "get_singleton().start()", body,
+            "MapServer.start() (systemd --daemon path) must spawn the "
+            "cascade detector thread; without it /fleet/cascade always "
+            "reports clean.",
+        )
+        self.assertIn(
+            "from utils.cascade_detector import get_singleton", body,
+            "MapServer.start() must import the cascade detector singleton.",
+        )
+
+    def test_start_background_invokes_cascade_detector_singleton(self):
+        body = self._method_body("start_background")
+        self.assertIn(
+            "get_singleton().start()", body,
+            "MapServer.start_background() must spawn the cascade detector thread.",
+        )
+        self.assertIn(
+            "from utils.cascade_detector import get_singleton", body,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
