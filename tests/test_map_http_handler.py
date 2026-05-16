@@ -405,6 +405,203 @@ class TestServeLabRollup:
         assert b"unknown rollup variant" in h.wfile.getvalue()
 
 
+class TestServeFleetTestsList:
+    """/fleet/tests merges timer-driven and manual-fire signals.
+
+    Two failure modes this guards against:
+      1. "Refresh lab rollup" chip never advances after a manual click,
+         because the dashboard was reading the .timer's LastTriggerUSec
+         only. Fixed by merging the service's ExecMainExitTimestamp /
+         ActiveEnterTimestamp into last_fire_unix (most recent wins).
+      2. "Synth soak fire" button on a host where the unit isn't
+         installed silently fails with exit=5 from systemctl. Fixed by
+         exposing not_installed (LoadState != "loaded") so the UI can
+         grey the button out.
+    """
+
+    def _seed(self, monkeypatch, timer_index=None, props_by_unit=None):
+        """Patch the two helpers _serve_fleet_tests_list reaches into.
+
+        ``timer_index`` keys are .service unit names → normalized timer
+        entry (same shape as _normalize_timer returns).
+        ``props_by_unit`` keys are (unit, scope) → dict of
+        ``systemctl show -p`` key=value strings.
+        """
+        timer_index = timer_index or {}
+        props_by_unit = props_by_unit or {}
+
+        # _list_timers_scope returns raw `list-timers` JSON entries; the
+        # handler post-processes those via _normalize_timer. Patch both
+        # together: emit the synthetic timer entries via _list_timers_scope
+        # and make _normalize_timer pass them through unchanged.
+        synthetic_raw = []
+        for activates, entry in timer_index.items():
+            synthetic_raw.append({
+                "unit": entry.get("name", "x.timer"),
+                "activates": activates,
+            })
+
+        def _fake_list_timers(scope):
+            return [r for r in synthetic_raw
+                    if timer_index[r["activates"]]["scope"] == scope]
+
+        def _fake_normalize(raw, scope, now):
+            return timer_index.get(raw["activates"])
+
+        def _fake_show(unit, scope, _props):
+            return props_by_unit.get((unit, scope), {})
+
+        monkeypatch.setattr(
+            "utils.fleet_snapshot._list_timers_scope", _fake_list_timers,
+        )
+        monkeypatch.setattr(
+            "utils.fleet_snapshot._normalize_timer", _fake_normalize,
+        )
+        monkeypatch.setattr(
+            "utils.fleet_snapshot._show_unit_props", _fake_show,
+        )
+
+    def _call(self):
+        h = _make_handler("")
+        h._serve_fleet_tests_list()
+        body = h.wfile.getvalue()
+        # Strip HTTP status-line framing — _serve_json writes just the
+        # body to wfile and status/headers go through send_response /
+        # send_header (which are mocks in _make_handler). The body IS
+        # the JSON document.
+        return json.loads(body), h
+
+    def test_manual_fire_advances_chip_when_service_timestamp_newer(
+        self, monkeypatch,
+    ):
+        """The smoking gun. Timer last triggered an hour ago, but the
+        operator just hit "Refresh lab rollup" 30s ago — chip should
+        show 30s, not 3600s."""
+        import time as _time
+        now = _time.time()
+        self._seed(
+            monkeypatch,
+            timer_index={
+                "meshforge-lab-rollup.service": {
+                    "name": "meshforge-lab-rollup.timer",
+                    "scope": "user",
+                    "last_fire_unix": now - 3600,
+                    "next_fire_unix": now + 600,
+                    "age_s": 3600.0,
+                    "stale": False,
+                },
+            },
+            props_by_unit={
+                ("meshforge-lab-rollup.service", "user"): {
+                    "LoadState": "loaded",
+                    "ExecMainExitTimestamp": f"@{int(now - 30)}",
+                    "ActiveEnterTimestamp": "",
+                },
+            },
+        )
+        payload, _ = self._call()
+        rollup = next(t for t in payload["tests"] if t["id"] == "lab-rollup")
+        assert rollup["last_fire_unix"] == pytest.approx(now - 30, abs=2)
+        assert rollup["age_s"] == pytest.approx(30.0, abs=2)
+        assert rollup["not_installed"] is False
+
+    def test_timer_wins_when_more_recent_than_service_exit(
+        self, monkeypatch,
+    ):
+        """If the timer just fired (5s ago) and the last manual fire was
+        an hour ago, the chip reflects the timer fire."""
+        import time as _time
+        now = _time.time()
+        self._seed(
+            monkeypatch,
+            timer_index={
+                "meshforge-tracer.service": {
+                    "name": "meshforge-tracer.timer",
+                    "scope": "user",
+                    "last_fire_unix": now - 5,
+                    "next_fire_unix": now + 295,
+                    "age_s": 5.0,
+                    "stale": False,
+                },
+            },
+            props_by_unit={
+                ("meshforge-tracer.service", "user"): {
+                    "LoadState": "loaded",
+                    "ExecMainExitTimestamp": f"@{int(now - 3600)}",
+                    "ActiveEnterTimestamp": "",
+                },
+            },
+        )
+        payload, _ = self._call()
+        tracer = next(t for t in payload["tests"] if t["id"] == "tracer")
+        assert tracer["last_fire_unix"] == pytest.approx(now - 5, abs=2)
+        assert tracer["age_s"] == pytest.approx(5.0, abs=2)
+
+    def test_not_installed_flag_set_when_unit_missing(self, monkeypatch):
+        """Synth-soak is installed on only one fleet host; the rest
+        return LoadState=not-found. Dashboard needs the flag to grey
+        the button instead of letting a click silently fail."""
+        self._seed(
+            monkeypatch,
+            props_by_unit={
+                ("meshforge-synth-soak.service", "user"): {
+                    "LoadState": "not-found",
+                    "ExecMainExitTimestamp": "",
+                    "ActiveEnterTimestamp": "",
+                },
+            },
+        )
+        payload, _ = self._call()
+        synth = next(t for t in payload["tests"] if t["id"] == "synth-soak")
+        assert synth["not_installed"] is True
+        assert synth["last_fire_unix"] is None
+        assert synth["age_s"] is None
+
+    def test_loaded_unit_is_not_flagged_not_installed(self, monkeypatch):
+        self._seed(
+            monkeypatch,
+            props_by_unit={
+                ("meshforge-lab-rollup.service", "user"): {
+                    "LoadState": "loaded",
+                    "ExecMainExitTimestamp": "",
+                    "ActiveEnterTimestamp": "",
+                },
+            },
+        )
+        payload, _ = self._call()
+        rollup = next(t for t in payload["tests"] if t["id"] == "lab-rollup")
+        assert rollup["not_installed"] is False
+
+    def test_missing_loadstate_defaults_to_installed(self, monkeypatch):
+        """systemctl show failure returns {} from _show_unit_props.
+        Missing LoadState must NOT mark the unit not_installed — that
+        would mass-grey buttons on a transient systemctl hiccup.
+        Treat "no signal" as "assume installed, click will reveal."
+        """
+        self._seed(monkeypatch, props_by_unit={})  # all units return {}
+        payload, _ = self._call()
+        for t in payload["tests"]:
+            assert t["not_installed"] is False, (
+                f"{t['id']}: must default to installed when LoadState "
+                f"is unknown — see test docstring"
+            )
+
+    def test_all_four_known_tests_emitted(self, monkeypatch):
+        """The MA dashboard reads the test list from this endpoint
+        (no hardcoded JS list). All four _FLEET_TESTS entries must
+        appear so the buttons render."""
+        self._seed(monkeypatch)
+        payload, _ = self._call()
+        emitted_ids = {t["id"] for t in payload["tests"]}
+        assert emitted_ids == {
+            "tracer", "synth-soak", "lab-rollup", "ci-status",
+        }
+        for t in payload["tests"]:
+            assert {"id", "unit", "scope", "label", "description",
+                    "last_fire_unix", "next_fire_unix", "age_s",
+                    "not_installed"} <= set(t.keys())
+
+
 class TestServeText:
     """_serve_text is the helper used by /lab/* and any future markdown-y
     endpoints. Mirrors _serve_json gzip + CORS behavior."""

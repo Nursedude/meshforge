@@ -495,6 +495,161 @@ def test_list_timers_root_user_scope_no_operator_returns_empty(monkeypatch):
     assert fleet_snapshot._list_timers_scope("user") == []
 
 
+# ─── _show_unit_props + _parse_unix_at ─────────────────────────────────
+#
+# Used by /fleet/tests to (a) detect not-installed units (LoadState !=
+# loaded) so the dashboard greys them out instead of silently failing
+# with exit=5, and (b) read service-side timestamps so a manual
+# `systemctl start <unit>.service` advances the chip without waiting
+# for the .timer's next tick.
+
+
+def test_parse_unix_at_strips_leading_at():
+    """systemctl `--timestamp=unix` emits values like `@1778910308`."""
+    from utils.fleet_snapshot import _parse_unix_at
+    assert _parse_unix_at("@1778910308") == 1778910308.0
+
+
+def test_parse_unix_at_accepts_bare_int_for_robustness():
+    from utils.fleet_snapshot import _parse_unix_at
+    assert _parse_unix_at("1778910308") == 1778910308.0
+
+
+def test_parse_unix_at_empty_means_unset():
+    """systemctl emits `Key=` (empty value) for unset timestamps; the
+    parser surfaces None so the merger can ignore it via `or None`."""
+    from utils.fleet_snapshot import _parse_unix_at
+    assert _parse_unix_at("") is None
+
+
+def test_parse_unix_at_zero_means_unset():
+    """Matches the 0-as-unset convention from _normalize_timer."""
+    from utils.fleet_snapshot import _parse_unix_at
+    assert _parse_unix_at("@0") is None
+    assert _parse_unix_at("0") is None
+
+
+def test_parse_unix_at_bad_input_returns_none():
+    from utils.fleet_snapshot import _parse_unix_at
+    assert _parse_unix_at("not-a-number") is None
+    assert _parse_unix_at("@abc") is None
+
+
+def test_show_unit_props_parses_key_value_output(monkeypatch):
+    """Real systemctl output is one `Key=Value` per line. Empty values
+    survive as empty strings (callers use `or None` semantics)."""
+    fake, cap = _capture_subprocess_run(
+        returncode=0,
+        stdout=(
+            "LoadState=loaded\n"
+            "ExecMainExitTimestamp=@1778910308\n"
+            "ActiveEnterTimestamp=\n"
+        ),
+    )
+    monkeypatch.setattr("utils.fleet_snapshot.os.geteuid", lambda: 1000)
+    monkeypatch.setattr("utils.fleet_snapshot.subprocess.run", fake)
+    out = fleet_snapshot._show_unit_props(
+        "meshforge-lab-rollup.service", "user",
+        ["LoadState", "ExecMainExitTimestamp", "ActiveEnterTimestamp"],
+    )
+    assert out["LoadState"] == "loaded"
+    assert out["ExecMainExitTimestamp"] == "@1778910308"
+    assert out["ActiveEnterTimestamp"] == ""
+    # Correct invocation shape — same as _list_timers_scope pattern.
+    assert cap["cmd"][0] == "systemctl"
+    assert "--user" in cap["cmd"]
+    assert "show" in cap["cmd"]
+    assert "--timestamp=unix" in cap["cmd"]
+    prop_idx = cap["cmd"].index("-p")
+    assert cap["cmd"][prop_idx + 1] == (
+        "LoadState,ExecMainExitTimestamp,ActiveEnterTimestamp"
+    )
+
+
+def test_show_unit_props_not_found_returns_loadstate(monkeypatch):
+    """Synth-soak on every fleet box except moc returns LoadState=not-found.
+    The dashboard turns this into `not_installed: true`."""
+    fake, _ = _capture_subprocess_run(
+        returncode=0,
+        stdout=(
+            "LoadState=not-found\n"
+            "ExecMainExitTimestamp=\n"
+            "ActiveEnterTimestamp=\n"
+        ),
+    )
+    monkeypatch.setattr("utils.fleet_snapshot.os.geteuid", lambda: 1000)
+    monkeypatch.setattr("utils.fleet_snapshot.subprocess.run", fake)
+    out = fleet_snapshot._show_unit_props(
+        "meshforge-synth-soak.service", "user", ["LoadState"],
+    )
+    assert out["LoadState"] == "not-found"
+
+
+def test_show_unit_props_nonzero_returncode_returns_empty(monkeypatch):
+    """systemctl can fail (no user bus, etc.) — return {} so the dashboard
+    treats the unit as 'no extra signal' rather than crashing."""
+    fake, _ = _capture_subprocess_run(returncode=1, stdout="")
+    monkeypatch.setattr("utils.fleet_snapshot.os.geteuid", lambda: 1000)
+    monkeypatch.setattr("utils.fleet_snapshot.subprocess.run", fake)
+    assert fleet_snapshot._show_unit_props(
+        "x.service", "user", ["LoadState"],
+    ) == {}
+
+
+def test_show_unit_props_timeout_returns_empty(monkeypatch):
+    monkeypatch.setattr("utils.fleet_snapshot.os.geteuid", lambda: 1000)
+    monkeypatch.setattr(
+        "utils.fleet_snapshot.subprocess.run",
+        lambda *a, **k: (_ for _ in ()).throw(
+            __import__("subprocess").TimeoutExpired(cmd="systemctl", timeout=5)
+        ),
+    )
+    assert fleet_snapshot._show_unit_props(
+        "x.service", "user", ["LoadState"],
+    ) == {}
+
+
+def test_show_unit_props_root_user_scope_drops_to_operator(monkeypatch):
+    """Same root→operator drop as _list_timers_scope. Required for
+    meshanchor-server (map daemon as User=root) to read user-scope
+    unit props."""
+    fake, cap = _capture_subprocess_run(
+        returncode=0, stdout="LoadState=loaded\n",
+    )
+    monkeypatch.setattr("utils.fleet_snapshot.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "utils.fleet_test_runner._find_operator_user",
+        lambda: (1000, "wh6gxz"),
+    )
+    monkeypatch.setattr("utils.fleet_snapshot.subprocess.run", fake)
+    fleet_snapshot._show_unit_props(
+        "meshforge-lab-rollup.service", "user", ["LoadState"],
+    )
+    assert cap["cmd"][0] == "sudo"
+    assert "-n" in cap["cmd"]
+    assert cap["cmd"][cap["cmd"].index("-u") + 1] == "wh6gxz"
+    env_idx = cap["cmd"].index("env")
+    assert cap["cmd"][env_idx + 1] == "XDG_RUNTIME_DIR=/run/user/1000"
+    assert "show" in cap["cmd"]
+    assert "--user" in cap["cmd"]
+
+
+def test_show_unit_props_root_user_no_operator_returns_empty(monkeypatch):
+    monkeypatch.setattr("utils.fleet_snapshot.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "utils.fleet_test_runner._find_operator_user", lambda: None,
+    )
+    monkeypatch.setattr(
+        "utils.fleet_snapshot.subprocess.run",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("subprocess.run must not be invoked")
+        ),
+    )
+    assert fleet_snapshot._show_unit_props(
+        "x.service", "user", ["LoadState"],
+    ) == {}
+
+
 # ─── CI status block ────────────────────────────────────────────────────
 #
 # `~/.meshforge-ci-status` is written twice daily by the

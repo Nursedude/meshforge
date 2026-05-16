@@ -286,6 +286,87 @@ def _normalize_timer(raw: Dict[str, Any], scope: str,
     }
 
 
+def _show_unit_props(unit: str, scope: str,
+                     props: List[str]) -> Dict[str, str]:
+    """Return ``systemctl [--user] show <unit> -p <props>`` as a dict.
+
+    Used by ``_serve_fleet_tests_list`` to (a) detect ``LoadState ==
+    not-found`` so the dashboard can render "not installed on this
+    host" instead of silently failing, and (b) read
+    ``ExecMainExitTimestamp`` / ``ActiveEnterTimestamp`` so a manual
+    ``systemctl start <unit>.service`` advances the chip (the timer's
+    ``LastTriggerUSec`` doesn't update on manual fires).
+
+    ``--timestamp=unix`` returns ``@<unix-int>`` for timestamps, which
+    parses unambiguously across locales (systemd 250+; Bookworm ships
+    252, Trixie 257). Empty values come back as ``Key=`` — preserved
+    as empty strings so callers can use ``or None`` semantics.
+
+    Same root→operator drop-priv pattern as ``_list_timers_scope``.
+    Returns ``{}`` on any error rather than raising — the dashboard
+    treats missing properties as "no extra signal."
+    """
+    cmd: List[str]
+    env: Optional[Dict[str, str]] = None
+    prop_arg = ",".join(props)
+
+    if scope == "user" and os.geteuid() == 0:
+        from utils.fleet_test_runner import _find_operator_user
+        op = _find_operator_user()
+        if op is None:
+            return {}
+        op_uid, op_name = op
+        cmd = [
+            "sudo", "-n", "-u", op_name,
+            "env", f"XDG_RUNTIME_DIR=/run/user/{op_uid}",
+            "systemctl", "--user", "show", unit,
+            "-p", prop_arg, "--timestamp=unix",
+        ]
+    else:
+        cmd = ["systemctl"]
+        if scope == "user":
+            cmd.append("--user")
+            if "XDG_RUNTIME_DIR" not in os.environ:
+                env = os.environ.copy()
+                env["XDG_RUNTIME_DIR"] = f"/run/user/{os.geteuid()}"
+        cmd.extend(["show", unit, "-p", prop_arg, "--timestamp=unix"])
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=5, env=env,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return {}
+
+    if result.returncode != 0:
+        return {}
+
+    out: Dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            out[key] = value
+    return out
+
+
+def _parse_unix_at(value: str) -> Optional[float]:
+    """Parse ``--timestamp=unix`` output (``@<int>``) to a unix float.
+
+    Empty string or missing ``@`` prefix → ``None``. Zero values
+    (``@0``) → ``None`` to match the ``0-as-unset`` convention used
+    by ``_normalize_timer``.
+    """
+    if not value:
+        return None
+    if value.startswith("@"):
+        value = value[1:]
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return float(n) if n > 0 else None
+
+
 # Ecosystem CI status — the timer twice-daily fires write
 # ``~/.meshforge-ci-status`` (see ``scripts/ecosystem_ci_status.sh``).
 # Only the fleet box(es) that enable the timer write the file; other

@@ -1434,8 +1434,26 @@ class MapRequestHandler(
         The MA dashboard uses this both to render the buttons (no
         hardcoded list on the JS side) and to show "last fired Xs ago"
         next to each — operator scan signal for "did this just run."
+
+        Two signals merge into ``last_fire_unix``:
+          * the paired ``.timer``'s ``LastTriggerUSec`` (timer-driven)
+          * the service's ``ExecMainExitTimestamp`` /
+            ``ActiveEnterTimestamp`` (manual-fire-driven)
+        We pick whichever is more recent so a manual click in the
+        dashboard advances the chip. Without this, "Refresh lab
+        rollup" fires the unit successfully but the chip stays stale
+        because timer-driven activations are the only thing that
+        update ``LastTriggerUSec``.
+
+        ``not_installed`` (LoadState != "loaded") lets the UI grey out
+        buttons whose unit isn't deployed on this host instead of
+        silently returning exit=5 from systemctl (e.g. synth-soak on
+        every fleet box except moc — see project_lab_traffic_soak_l1).
         """
-        from utils.fleet_snapshot import _list_timers_scope, _normalize_timer
+        from utils.fleet_snapshot import (
+            _list_timers_scope, _normalize_timer,
+            _show_unit_props, _parse_unix_at,
+        )
         import time as _time
 
         now = _time.time()
@@ -1456,15 +1474,34 @@ class MapRequestHandler(
         tests = []
         for test_id, (unit, scope, label, desc) in self._FLEET_TESTS.items():
             paired = timer_index.get(unit)
+            timer_last = paired["last_fire_unix"] if paired else None
+            next_fire = paired["next_fire_unix"] if paired else None
+
+            props = _show_unit_props(
+                unit, scope,
+                ["LoadState", "ExecMainExitTimestamp",
+                 "ActiveEnterTimestamp"],
+            )
+            not_installed = (props.get("LoadState") or "loaded") != "loaded"
+            svc_exit = _parse_unix_at(props.get("ExecMainExitTimestamp", ""))
+            svc_enter = _parse_unix_at(props.get("ActiveEnterTimestamp", ""))
+
+            # Most-recent wins. None-tolerant max.
+            candidates = [t for t in (timer_last, svc_exit, svc_enter)
+                          if t is not None]
+            last_fire = max(candidates) if candidates else None
+            age_s = round(now - last_fire, 1) if last_fire is not None else None
+
             tests.append({
                 "id": test_id,
                 "unit": unit,
                 "scope": scope,
                 "label": label,
                 "description": desc,
-                "last_fire_unix": paired["last_fire_unix"] if paired else None,
-                "next_fire_unix": paired["next_fire_unix"] if paired else None,
-                "age_s": paired["age_s"] if paired else None,
+                "last_fire_unix": last_fire,
+                "next_fire_unix": next_fire,
+                "age_s": age_s,
+                "not_installed": not_installed,
             })
 
         self._serve_json({"tests": tests, "host": socket.gethostname()})
