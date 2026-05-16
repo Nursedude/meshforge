@@ -46,7 +46,12 @@ log="$STATE_DIR/fire.log"
     echo "  output=$out"
 } >>"$log"
 
-cd /opt/meshforge/src
+# Resolve repo root from the script's own location so this works whether
+# the clone lives at /opt/meshforge, ~/meshforge (e.g. meshanchor-server
+# where no /opt write perms), or anywhere else. Same pattern as
+# install_lab_traffic.sh.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT/src"
 
 python3 -m lab.lxmf_multi_user_synth \
     --users "$USERS" \
