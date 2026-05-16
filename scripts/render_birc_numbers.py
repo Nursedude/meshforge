@@ -118,11 +118,18 @@ def render(args) -> str:
         if by_net:
             parts = [f"{k}: {v:,}" for k, v in by_net.items()]
             out.append(f"- By network: {' · '.join(parts)}")
-        out.append(f"- Observations in retention window: "
-                   f"**{hist.get('total_observations', 0):,}** across "
-                   f"{hist.get('unique_nodes', 0):,} unique nodes")
         out.append(f"- Retention: {hist.get('retention_days', '?')} d (local) · "
                    f"{directory.get('retention_external_days', '?')} d (external)")
+        out.append("")
+        out.append("> **Note on `/api/status.history`**: `total_observations` is "
+                   "`MAX(rowid)` on `node_observations` — a lifetime insert "
+                   "high-water mark, NOT a current-window count. Pruning shrinks "
+                   "`COUNT(*)` but not rowid. `unique_nodes` there is the "
+                   "directory size, not distinct observers. For an "
+                   "audience-facing \"live mesh\" number, cite the directory "
+                   "total above; for a real activity number, query "
+                   "`node_observations` directly (~hundreds of active "
+                   "observers, ~30k rows in a 2-day window on the publishing box).")
         out.append("")
     elif args.map_host:
         out.append(f"## Live map state — `{args.map_host}:5000`")

@@ -4,7 +4,7 @@
 >
 > **Raw URL**: `https://raw.githubusercontent.com/Nursedude/meshforge/main/docs/birc_2026_05_17_live_numbers.md`
 >
-> **Generated**: 2026-05-16 20:39 UTC
+> **Generated**: 2026-05-16 20:46 UTC
 
 ## Ecosystem versions + test counts
 
@@ -19,12 +19,13 @@
 
 ## Live map state — `localhost:5000`
 
-- Directory nodes total: **83,493**
-  - with position: 81,432
+- Directory nodes total: **83,501**
+  - with position: 81,440
   - without position: 2,061
-- By network: aredn: 2,785 · meshcore: 51,004 · meshtastic: 27,835 · rns: 1,869
-- Observations in retention window: **22,027,650** across 83,493 unique nodes
+- By network: aredn: 2,785 · meshcore: 51,006 · meshtastic: 27,841 · rns: 1,869
 - Retention: 2.0 d (local) · 7 d (external)
+
+> **Note on `/api/status.history`**: `total_observations` is `MAX(rowid)` on `node_observations` — a lifetime insert high-water mark, NOT a current-window count. Pruning shrinks `COUNT(*)` but not rowid. `unique_nodes` there is the directory size, not distinct observers. For an audience-facing "live mesh" number, cite the directory total above; for a real activity number, query `node_observations` directly (~hundreds of active observers, ~30k rows in a 2-day window on the publishing box).
 
 ## Slide-by-slide refresh hints
 
