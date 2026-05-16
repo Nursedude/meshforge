@@ -507,16 +507,15 @@ class MapServer:
             self.collector.start_federation()
         except Exception as e:
             logger.warning("Federation start failed (non-fatal): %s", e)
-
-        # Cascade detector — pre-failure fingerprint surveillance for
-        # /fleet/cascade. Read-only health check, in-memory state only,
-        # 30s cadence; safe to start after warmup. Track 0C of the
-        # we-have-a-cycle-jolly-wadler stability arc.
-        try:
-            from utils.cascade_detector import get_singleton
-            get_singleton().start()
-        except Exception as e:
-            logger.warning("CascadeDetector start failed (non-fatal): %s", e)
+        # NB: Cascade detector start lives in `start_background` /
+        # `start_synchronous`, NOT here. `_run_warmup` is exercised
+        # directly by tests (test_map_warming_gate.py), so any
+        # background-thread daemon started here keeps running across
+        # subsequent tests and leaks subprocess calls into unrelated
+        # mocks (e.g. test_service_check::test_apply_config_and_restart_
+        # custom_timeout asserts on subprocess.run call_args_list).
+        # Production path triggers the detector from the higher-level
+        # entry point instead.
 
     def _prewarm_status_caches(self):
         """Pre-populate node_history stats caches so /api/status doesn't
@@ -677,6 +676,19 @@ class MapServer:
             target=self._run_warmup, daemon=True, name="map-warmup"
         )
         self._warmup_thread.start()
+
+        # Cascade detector — pre-failure fingerprint surveillance for
+        # /fleet/cascade. Started OUTSIDE `_run_warmup` so the test
+        # suite (test_map_warming_gate calls _run_warmup directly) does
+        # not spawn a background subprocess-firing thread that leaks
+        # into unrelated tests' mocks. Read-only health check, in-memory
+        # state only, 30s cadence. Track 0C of the
+        # we-have-a-cycle-jolly-wadler stability arc.
+        try:
+            from utils.cascade_detector import get_singleton
+            get_singleton().start()
+        except Exception as e:
+            logger.warning("CascadeDetector start failed (non-fatal): %s", e)
 
     def stop(self):
         """Stop the server."""
