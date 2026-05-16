@@ -362,6 +362,7 @@ class MapRequestHandler(
             "/api/nodes/directory",
             "/api/messages/queue", "/api/messages/rx-status",
             "/api/network/topology", "/api/network/rns/paths",
+            "/api/network/interfaces",
             "/api/region-presets",
             "/api/settings", "/api/websocket/status", "/api/weather",
             "/fleet/slo", "/fleet/cascade",
@@ -455,6 +456,8 @@ class MapRequestHandler(
             self._serve_network_topology()
         elif path_only == '/api/network/rns/paths':
             self._serve_rns_paths()
+        elif path_only == '/api/network/interfaces':
+            self._serve_rns_interfaces()
         elif path_only == '/api/weather':
             self._serve_weather()
         elif path_only == '/fleet/slo':
@@ -1154,6 +1157,35 @@ class MapRequestHandler(
         except Exception as e:
             self._serve_json(
                 {"error": "detector_unavailable", "reason": str(e)},
+                status=500,
+            )
+
+    def _serve_rns_interfaces(self):
+        """Read-only snapshot of RNS.Transport.interfaces.
+
+        Cache refreshed by `_collect_rns_direct` every ~60s. Endpoint
+        is a single dict copy — never walks Transport.interfaces.
+        Shape:
+
+            {"ts": unix_ts, "available": bool, "reason": str|None,
+             "interfaces": [
+                {"name": str, "kind": str, "online": bool,
+                 "rxb": int, "txb": int, "bitrate": int|None,
+                 "hw_mtu": int|None, "age_s": float|None}
+             ]}
+
+        Track 2.3 of the federation→DB pressure→wedge cascade arc.
+        Pairs with `/api/network/rns/paths` to answer "which interface
+        is this message flowing through" + "does the destination have a
+        known path." See `we-have-a-cycle-jolly-wadler.md`.
+        """
+        try:
+            from utils._map_collector_rns import get_cached_interface_snapshot
+            snap = get_cached_interface_snapshot()
+            self._serve_json(snap, status=200)
+        except Exception as e:
+            self._serve_json(
+                {"error": "snapshot_unavailable", "reason": str(e)},
                 status=500,
             )
 

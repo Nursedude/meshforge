@@ -45,6 +45,19 @@ _LAST_PATH_TABLE_SNAPSHOT: Dict[str, Any] = {
 _PATH_TABLE_SNAPSHOT_LOCK = threading.Lock()
 
 
+# Companion cache for RNS.Transport.interfaces — surfaces per-interface
+# RX/TX bytes + bitrate + online state so the operator can answer
+# "which interface saw this message" alongside the path-table view.
+# Refreshed in the same _collect_rns_direct cycle.
+_LAST_INTERFACE_SNAPSHOT: Dict[str, Any] = {
+    "ts": 0.0,
+    "interfaces": [],
+    "available": False,
+    "reason": "never_collected",
+}
+_INTERFACE_SNAPSHOT_LOCK = threading.Lock()
+
+
 def _interface_name(iface: Any) -> Optional[str]:
     """Best-effort name for an RNS Interface object.
 
@@ -135,6 +148,89 @@ def get_cached_path_table_snapshot() -> Dict[str, Any]:
     with _PATH_TABLE_SNAPSHOT_LOCK:
         # Shallow copy is fine — entries are dicts of immutables.
         return dict(_LAST_PATH_TABLE_SNAPSHOT)
+
+
+def _snapshot_interfaces_inplace() -> None:
+    """Capture per-interface RX/TX bytes + state from RNS.Transport.interfaces.
+
+    Each RNS Interface carries:
+      * rxb / txb     — RX / TX byte counters (monotonic)
+      * online        — bool, whether the interface is currently up
+      * bitrate       — bits/sec for the underlying transport
+      * HW_MTU        — hardware MTU, if known
+      * created       — unix ts when the interface was instantiated
+      * __str__       — operator-readable name (e.g. "TCPInterface[hub:4242]",
+                        "RNodeInterface[/dev/ttyUSB0]", "AutoInterface[default]")
+
+    The snapshot is cheap to compute (one pass over Transport.interfaces,
+    typically ≤10 entries) and answers the operator's "which interface
+    is this message flowing through" question without touching the
+    bridge (which runs in a separate process).
+
+    Never raises. Empty list with `available: True` on healthy-but-no-
+    interfaces (e.g. AutoInterface still discovering peers).
+    """
+    global _LAST_INTERFACE_SNAPSHOT
+    if not _HAS_RNS:
+        snap = {
+            "ts": time.time(), "interfaces": [],
+            "available": False, "reason": "rns_module_unavailable",
+        }
+    elif not _rns_is_initialized():
+        snap = {
+            "ts": time.time(), "interfaces": [],
+            "available": False, "reason": "rns_not_initialized",
+        }
+    else:
+        interfaces: List[Dict[str, Any]] = []
+        try:
+            ifaces = getattr(_RNS.Transport, "interfaces", None) or []
+            now = time.time()
+            for iface in ifaces:
+                try:
+                    name = _interface_name(iface)
+                    kind = type(iface).__name__ if iface is not None else None
+                    rxb = getattr(iface, "rxb", None)
+                    txb = getattr(iface, "txb", None)
+                    online = bool(getattr(iface, "online", False))
+                    bitrate = getattr(iface, "bitrate", None)
+                    hw_mtu = getattr(iface, "HW_MTU", None)
+                    created = getattr(iface, "created", None)
+                    age_s = (
+                        float(now - created)
+                        if isinstance(created, (int, float)) else None
+                    )
+                    interfaces.append({
+                        "name": name,
+                        "kind": kind,
+                        "online": online,
+                        "rxb": int(rxb) if isinstance(rxb, int) else rxb,
+                        "txb": int(txb) if isinstance(txb, int) else txb,
+                        "bitrate": int(bitrate) if isinstance(bitrate, int) else bitrate,
+                        "hw_mtu": int(hw_mtu) if isinstance(hw_mtu, int) else hw_mtu,
+                        "age_s": age_s,
+                    })
+                except Exception:
+                    # One malformed interface doesn't poison the snapshot.
+                    continue
+            snap = {
+                "ts": time.time(), "interfaces": interfaces,
+                "available": True, "reason": None,
+            }
+        except Exception as e:
+            snap = {
+                "ts": time.time(), "interfaces": [],
+                "available": False,
+                "reason": f"interfaces_read_error: {e!r}",
+            }
+    with _INTERFACE_SNAPSHOT_LOCK:
+        _LAST_INTERFACE_SNAPSHOT = snap
+
+
+def get_cached_interface_snapshot() -> Dict[str, Any]:
+    """Return the most recent RNS interfaces snapshot (shallow copy)."""
+    with _INTERFACE_SNAPSHOT_LOCK:
+        return dict(_LAST_INTERFACE_SNAPSHOT)
 
 
 def _rns_is_initialized() -> bool:
@@ -312,6 +408,10 @@ class RNSDataCollectorMixin:
             # /api/network/rns/paths endpoint. Same cadence as this collect
             # cycle (~60s); no extra path_table walk on HTTP requests.
             _snapshot_path_table_inplace()
+
+            # Companion snapshot — per-interface RX/TX bytes for the
+            # /api/network/interfaces endpoint.
+            _snapshot_interfaces_inplace()
 
             # Compute path_table size for diagnostic notes (visible in /api/status).
             path_count = 0
