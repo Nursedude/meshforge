@@ -27,6 +27,7 @@ Lifecycle:
 
 import json
 import logging
+import os
 import socket
 import threading
 import time
@@ -34,7 +35,8 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from utils.node_history import _origin_priority
 
@@ -45,6 +47,26 @@ DEFAULT_POLL_INTERVAL = 60       # seconds between full federation polls
 DEFAULT_TIMEOUT = 5.0             # per-peer HTTP timeout
 DEFAULT_PORT = 5000               # peer map service port
 DEFAULT_MAX_RESPONSE_BYTES = 50 * 1024 * 1024  # 50 MB hard cap per peer
+
+# Federation backpressure: skip polls when the node_history.db WAL is bigger
+# than this. 64 MB is the journal_size_limit set in db_helpers.connect_tuned,
+# so anything above means the checkpoint thread is starving and another
+# 50k-row republish would worsen the fsync stall. See
+# project_db_recurring_class.md, project_meshforge_map_cold_start_wal.md.
+DEFAULT_WAL_SKIP_THRESHOLD_BYTES = 64 * 1024 * 1024
+
+
+def _wal_path_for(db_path: Path) -> Path:
+    """SQLite WAL companion path next to the main DB file."""
+    return db_path.with_name(db_path.name + "-wal")
+
+
+def _stat_size(p: Path) -> int:
+    """Default stat_fn for FederationCollector — best-effort, 0 on miss."""
+    try:
+        return p.stat().st_size
+    except OSError:
+        return 0
 
 
 @dataclass
@@ -278,6 +300,9 @@ class FederationCollector:
         timeout: float = DEFAULT_TIMEOUT,
         port: int = DEFAULT_PORT,
         max_workers: int = 5,
+        db_path: Optional[Path] = None,
+        wal_skip_threshold_bytes: int = DEFAULT_WAL_SKIP_THRESHOLD_BYTES,
+        stat_fn: Callable[[Path], int] = _stat_size,
     ):
         self._peers = list(peers)
         self._poll_interval = max(10, int(poll_interval))
@@ -290,6 +315,15 @@ class FederationCollector:
         self._snapshot = FederationSnapshot(
             peer_status={p: FederationPeerStatus(hostname=p) for p in self._peers},
         )
+
+        # Backpressure: when node_history.db's WAL is oversize, federation
+        # polls would compound the fsync stall. We log the FIRST skip in a
+        # streak at WARNING and only log subsequent skips at DEBUG so we
+        # don't flood the journal. _consecutive_wal_skips tracks the streak.
+        self._db_path = Path(db_path) if db_path is not None else None
+        self._wal_skip_threshold_bytes = int(wal_skip_threshold_bytes)
+        self._stat_fn = stat_fn
+        self._consecutive_wal_skips = 0
 
     @property
     def peers(self) -> List[str]:
@@ -422,15 +456,50 @@ class FederationCollector:
             f"{len(merged)} federated nodes"
         )
 
+    def _wal_oversize(self) -> Optional[int]:
+        """Return WAL size in bytes if it exceeds the skip threshold, else None.
+
+        Read-only stat call. Used by _run to skip a poll cycle when the
+        node_history DB is mid-fsync-stall — adding another 50k-row
+        federation cycle on top of that is the documented cascade trigger.
+        """
+        if self._db_path is None:
+            return None
+        wal_size = self._stat_fn(_wal_path_for(self._db_path))
+        if wal_size > self._wal_skip_threshold_bytes:
+            return wal_size
+        return None
+
     def _run(self) -> None:
         # Stagger first poll slightly so we don't add to startup-thundering-herd
         if self._stop_event.wait(2):
             return
         while not self._stop_event.is_set():
-            try:
-                self.poll_once()
-            except Exception as e:
-                logger.error(f"FederationCollector poll crashed: {e}", exc_info=True)
+            wal_bytes = self._wal_oversize()
+            if wal_bytes is not None:
+                self._consecutive_wal_skips += 1
+                msg = (
+                    f"FederationCollector: skipping poll — node_history WAL "
+                    f"is {wal_bytes // (1024 * 1024)} MB "
+                    f"(> {self._wal_skip_threshold_bytes // (1024 * 1024)} MB "
+                    f"threshold), streak={self._consecutive_wal_skips}. "
+                    f"See project_db_recurring_class.md."
+                )
+                if self._consecutive_wal_skips == 1:
+                    logger.warning(msg)
+                else:
+                    logger.debug(msg)
+            else:
+                if self._consecutive_wal_skips > 0:
+                    logger.info(
+                        f"FederationCollector: WAL back below threshold after "
+                        f"{self._consecutive_wal_skips} skipped poll(s); resuming."
+                    )
+                self._consecutive_wal_skips = 0
+                try:
+                    self.poll_once()
+                except Exception as e:
+                    logger.error(f"FederationCollector poll crashed: {e}", exc_info=True)
             # _stop_event.wait() respects the bounded interval AND wakes
             # immediately on stop() — consistent with daemon-loop pattern
             # in the rest of the codebase.

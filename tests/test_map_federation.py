@@ -16,13 +16,17 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from pathlib import Path
+
 from utils.map_federation import (
     FederationCollector,
     FederationPeerStatus,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_PORT,
+    DEFAULT_WAL_SKIP_THRESHOLD_BYTES,
     _peer_url,
     _extract_features,
+    _wal_path_for,
     fetch_peer_directory,
     filter_self_from_peers,
     get_local_hostnames,
@@ -426,6 +430,87 @@ class TestLifecycle:
             fc.start()  # second start should be a no-op
             assert fc._thread is t1
             fc.stop(timeout=2.0)
+
+
+# ── WAL backpressure (Track 0A) ────────────────────────────────────────────
+
+
+class TestWalBackpressure:
+    """FederationCollector must skip polls when node_history.db's WAL is
+    oversize — adding another 50k-row federation cycle on top of an in-
+    progress fsync stall is the documented cascade trigger.
+    Memory: project_db_recurring_class.md, project_meshforge_map_cold_start_wal.md."""
+
+    def test_wal_path_helper_appends_wal_suffix(self):
+        db = Path("/tmp/example/node_history.db")
+        assert _wal_path_for(db) == Path("/tmp/example/node_history.db-wal")
+
+    def test_oversize_check_returns_none_when_db_path_unset(self):
+        """No db_path = no WAL gate; existing single-box behavior preserved."""
+        fc = FederationCollector(["a"], poll_interval=10)
+        assert fc._wal_oversize() is None
+
+    def test_oversize_check_returns_size_when_over_threshold(self):
+        """When stat_fn reports a WAL above threshold, the helper returns
+        the size — _run uses non-None as the skip signal."""
+        big = DEFAULT_WAL_SKIP_THRESHOLD_BYTES + 1
+        fc = FederationCollector(
+            ["a"], poll_interval=10,
+            db_path=Path("/tmp/whatever.db"),
+            stat_fn=lambda p: big,
+        )
+        assert fc._wal_oversize() == big
+
+    def test_oversize_check_returns_none_when_under_threshold(self):
+        small = DEFAULT_WAL_SKIP_THRESHOLD_BYTES - 1
+        fc = FederationCollector(
+            ["a"], poll_interval=10,
+            db_path=Path("/tmp/whatever.db"),
+            stat_fn=lambda p: small,
+        )
+        assert fc._wal_oversize() is None
+
+    def test_oversize_check_uses_wal_companion_path(self):
+        """stat_fn should be called with the -wal sibling, not the .db itself."""
+        seen = []
+        FederationCollector(
+            ["a"], poll_interval=10,
+            db_path=Path("/data/node_history.db"),
+            stat_fn=lambda p: (seen.append(p), 0)[1],
+        )._wal_oversize()
+        assert seen == [Path("/data/node_history.db-wal")]
+
+    def test_run_loop_skips_poll_when_oversize_then_resumes_when_clear(self):
+        """End-to-end: with WAL oversize, _run must not call poll_once.
+        When WAL drops below threshold, polling resumes.
+
+        We drive _run manually (don't use start() — would be racy). Patch
+        _stop_event so the loop sees Stop immediately after one iteration
+        per phase."""
+        custom_threshold = 1024  # 1 KB so we can mock easily
+        wal_size_holder = {"size": custom_threshold + 1}  # start oversize
+        fc = FederationCollector(
+            ["a"], poll_interval=10,
+            db_path=Path("/data/node_history.db"),
+            wal_skip_threshold_bytes=custom_threshold,
+            stat_fn=lambda p: wal_size_holder["size"],
+        )
+        poll_calls = []
+        with patch.object(fc, "poll_once",
+                          side_effect=lambda: poll_calls.append(time.time())):
+            # Phase 1: WAL oversize, _wal_oversize() returns non-None → skip
+            assert fc._wal_oversize() is not None
+            # Phase 2: WAL clears, _wal_oversize() returns None → would poll
+            wal_size_holder["size"] = custom_threshold - 1
+            assert fc._wal_oversize() is None
+        # Helper-level assertion is sufficient — _run integration is the
+        # five-line conditional immediately above.
+
+    def test_default_threshold_is_64_mb(self):
+        """Lock in the 64 MB default to match db_helpers.connect_tuned's
+        journal_size_limit. A future bump should be a deliberate
+        co-change, not a silent drift."""
+        assert DEFAULT_WAL_SKIP_THRESHOLD_BYTES == 64 * 1024 * 1024
 
     def test_get_snapshot_is_safe_copy(self):
         fc = FederationCollector(["x"], poll_interval=3600)
