@@ -97,6 +97,18 @@ if _HAS_PROM:
         ["network"],
         registry=REGISTRY,
     )
+    DIRECTORY_TOTAL = Gauge(
+        "meshforge_map_directory_total",
+        "Total nodes in the cached directory (includes federation + external bulk; "
+        "differs from nodes_with_position by including history beyond this collect cycle).",
+        registry=REGISTRY,
+    )
+    DIRECTORY_BY_NETWORK = Gauge(
+        "meshforge_map_directory_by_network",
+        "Cached directory nodes broken out by network.",
+        ["network"],
+        registry=REGISTRY,
+    )
 
     # ----- HTTP-side metrics (drives Phase E request-rate / latency panels)
     HTTP_REQUESTS = Counter(
@@ -194,6 +206,21 @@ def set_node_inventory(
     # and stable, so set() per-label is correct for "current state".
     for network, count in (without_position_by_network or {}).items():
         NODES_WITHOUT_POSITION.labels(network=network).set(count)
+
+
+def set_directory_inventory(total: int, by_network: dict) -> None:
+    """Set the directory_total / directory_by_network gauges.
+
+    Sourced from NodeHistoryDB.get_directory_stats() — captures the
+    full cached directory population (federation + external bulk),
+    not just the current collect cycle. Pair with
+    `meshforge_map_nodes_with_position` for cycle-vs-cumulative views.
+    """
+    if not _HAS_PROM:
+        return
+    DIRECTORY_TOTAL.set(total)
+    for network, count in (by_network or {}).items():
+        DIRECTORY_BY_NETWORK.labels(network=network).set(count)
 
 
 def record_http(method: str, endpoint: str, status_code: int, duration_s: float) -> None:

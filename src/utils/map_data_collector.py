@@ -821,6 +821,11 @@ class MapDataCollector(
                 with_position=len(features),
                 without_position_by_network=by_network,
             )
+            if directory_stats:
+                map_metrics.set_directory_inventory(
+                    total=directory_stats.get("total", 0),
+                    by_network=directory_stats.get("by_network", {}),
+                )
         except ImportError:
             pass
 
