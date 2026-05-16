@@ -196,15 +196,38 @@ def _list_timers_scope(scope: str) -> List[Dict[str, Any]]:
     ``/run/user/<euid>`` path when calling user-scope; linger keeps
     the user manager up, so the path exists on the fleet boxes
     (verified: `loginctl show-user wh6gxz Linger=yes`).
+
+    Root-firing-operator case: when this process runs as root (e.g.
+    a map daemon with ``User=root``) and ``scope == "user"``, root's
+    own /run/user/0 has no bus socket. Drop privilege to the
+    operator user via ``sudo -n -u <op> env XDG_RUNTIME_DIR=...
+    systemctl --user list-timers ...`` so the call lands on the
+    operator's user systemd manager. Mirrors the fire_unit pattern
+    from c6d7609. Requires a sudoers entry on root-daemon hosts.
     """
-    cmd = ["systemctl"]
-    env = None
-    if scope == "user":
-        cmd.append("--user")
-        if "XDG_RUNTIME_DIR" not in os.environ:
-            env = os.environ.copy()
-            env["XDG_RUNTIME_DIR"] = f"/run/user/{os.geteuid()}"
-    cmd.extend(["list-timers", "--all", "--output=json"])
+    cmd: List[str]
+    env: Optional[Dict[str, str]] = None
+
+    if scope == "user" and os.geteuid() == 0:
+        from utils.fleet_test_runner import _find_operator_user
+        op = _find_operator_user()
+        if op is None:
+            return []
+        op_uid, op_name = op
+        cmd = [
+            "sudo", "-n", "-u", op_name,
+            "env", f"XDG_RUNTIME_DIR=/run/user/{op_uid}",
+            "systemctl", "--user", "list-timers", "--all", "--output=json",
+        ]
+    else:
+        cmd = ["systemctl"]
+        if scope == "user":
+            cmd.append("--user")
+            if "XDG_RUNTIME_DIR" not in os.environ:
+                env = os.environ.copy()
+                env["XDG_RUNTIME_DIR"] = f"/run/user/{os.geteuid()}"
+        cmd.extend(["list-timers", "--all", "--output=json"])
+
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=5, env=env,
