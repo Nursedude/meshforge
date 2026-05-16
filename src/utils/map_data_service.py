@@ -508,6 +508,16 @@ class MapServer:
         except Exception as e:
             logger.warning("Federation start failed (non-fatal): %s", e)
 
+        # Cascade detector — pre-failure fingerprint surveillance for
+        # /fleet/cascade. Read-only health check, in-memory state only,
+        # 30s cadence; safe to start after warmup. Track 0C of the
+        # we-have-a-cycle-jolly-wadler stability arc.
+        try:
+            from utils.cascade_detector import get_singleton
+            get_singleton().start()
+        except Exception as e:
+            logger.warning("CascadeDetector start failed (non-fatal): %s", e)
+
     def _prewarm_status_caches(self):
         """Pre-populate node_history stats caches so /api/status doesn't
         pay the 14s+ COUNT(*) tax on its first call after restart.

@@ -361,9 +361,10 @@ class MapRequestHandler(
             "/api/status", "/api/nodes/geojson", "/api/nodes/history",
             "/api/nodes/directory",
             "/api/messages/queue", "/api/messages/rx-status",
-            "/api/network/topology", "/api/region-presets",
+            "/api/network/topology", "/api/network/rns/paths",
+            "/api/region-presets",
             "/api/settings", "/api/websocket/status", "/api/weather",
-            "/fleet/slo",
+            "/fleet/slo", "/fleet/cascade",
         ):
             return path_only or "/"
         # Parametrized routes — bucket by prefix
@@ -452,6 +453,8 @@ class MapRequestHandler(
             self._serve_websocket_status()
         elif path_only == '/api/network/topology':
             self._serve_network_topology()
+        elif path_only == '/api/network/rns/paths':
+            self._serve_rns_paths()
         elif path_only == '/api/weather':
             self._serve_weather()
         elif path_only == '/fleet/slo':
@@ -462,6 +465,8 @@ class MapRequestHandler(
             self._serve_fleet_tracer_fires()
         elif path_only == '/fleet/tests':
             self._serve_fleet_tests_list()
+        elif path_only == '/fleet/cascade':
+            self._serve_fleet_cascade()
         elif path_only == '/lab/rollup' or path_only == '/lab/rollup/':
             self._serve_lab_rollup(variant='leaderboard')
         elif path_only == '/lab/rollup/alphabetical':
@@ -1129,6 +1134,56 @@ class MapRequestHandler(
                     return False
                 return True
         return False
+
+    def _serve_fleet_cascade(self):
+        """Cascade detector snapshot — pre-failure fingerprints state.
+
+        Track 0C of the federation→DB pressure→wedge cascade arc.
+        Surfaces degraded-but-not-dead subsystem state BEFORE it
+        cascades to the operator-visible failure mode (tracer rollup
+        100% timeout, etc.). See plan:
+        ``~/.claude/plans/we-have-a-cycle-jolly-wadler.md``.
+
+        Returns the in-memory state from `cascade_detector.get_singleton()`.
+        Cheap — single dict copy under the detector's lock.
+        """
+        try:
+            from utils.cascade_detector import get_singleton
+            snap = get_singleton().get_snapshot()
+            self._serve_json(snap, status=200)
+        except Exception as e:
+            self._serve_json(
+                {"error": "detector_unavailable", "reason": str(e)},
+                status=500,
+            )
+
+    def _serve_rns_paths(self):
+        """Read-only snapshot of RNS Transport.path_table.
+
+        Cache refreshed by `_collect_rns_direct` every ~60s. Endpoint
+        itself never walks path_table — single dict copy. Shape:
+
+            {"ts": unix_ts, "available": bool, "reason": str|None,
+             "paths": [
+                {"dest_hash": "<hex>", "hops": int|None,
+                 "next_hop": "<hex>"|None,
+                 "via_interface": "<name>"|None,
+                 "last_heard": float|None}
+             ]}
+
+        Track 0B of the federation→DB pressure→wedge cascade arc — gives
+        the operator the "where did this go?" answer for the RNS half.
+        See `we-have-a-cycle-jolly-wadler.md`.
+        """
+        try:
+            from utils._map_collector_rns import get_cached_path_table_snapshot
+            snap = get_cached_path_table_snapshot()
+            self._serve_json(snap, status=200)
+        except Exception as e:
+            self._serve_json(
+                {"error": "snapshot_unavailable", "reason": str(e)},
+                status=500,
+            )
 
     def _serve_healthz(self):
         """Cold-start-safe health endpoint.

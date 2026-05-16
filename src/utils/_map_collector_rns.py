@@ -10,8 +10,10 @@ Expects the following on the host class:
 
 import json
 import logging
+import threading
+import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from utils.paths import get_real_user_home
 from utils.safe_import import safe_import
@@ -20,6 +22,119 @@ _RNS, _HAS_RNS = safe_import('RNS')
 _msgpack, _HAS_MSGPACK = safe_import('msgpack')
 
 logger = logging.getLogger(__name__)
+
+
+# RNS Transport.path_table entry indices — must match upstream RNS/Transport.py
+# IDX_PT_* constants (path_data is a 7-element list/tuple).
+_PT_TIMESTAMP = 0
+_PT_NEXT_HOP = 1
+_PT_HOPS = 2
+_PT_RVCD_IF = 5
+
+# Cached snapshot of RNS Transport.path_table for the read-only HTTP
+# endpoint (/api/network/rns/paths). Refreshed every time the collector
+# walks path_table (currently once per 60s collect cycle in _collect_rns_direct).
+# Process-global on purpose — RNS itself is a process singleton, so there's
+# exactly one path_table to mirror.
+_LAST_PATH_TABLE_SNAPSHOT: Dict[str, Any] = {
+    "ts": 0.0,
+    "paths": [],
+    "available": False,
+    "reason": "never_collected",
+}
+_PATH_TABLE_SNAPSHOT_LOCK = threading.Lock()
+
+
+def _interface_name(iface: Any) -> Optional[str]:
+    """Best-effort name for an RNS Interface object.
+
+    RNS Interface has a `name` attribute (e.g. "RNodeInterface[/dev/ttyUSB0]"),
+    but path_data[IDX_PT_RVCD_IF] may legitimately be None for not-yet-
+    reached destinations. Falls back to str() so an unknown shape doesn't
+    blow up the snapshot.
+    """
+    if iface is None:
+        return None
+    name = getattr(iface, "name", None)
+    if isinstance(name, str) and name:
+        return name
+    try:
+        return str(iface)
+    except Exception:
+        return None
+
+
+def _snapshot_path_table_inplace() -> None:
+    """Re-read RNS Transport.path_table and cache a JSON-serializable view.
+
+    Called from _collect_rns_direct after the existing path_table walk
+    (no extra path_table iterations — same hot path). Defensive about
+    RNS variant shapes; never raises (snapshot becomes empty + reason
+    on failure).
+
+    See `get_cached_path_table_snapshot()` for the consumer.
+    """
+    global _LAST_PATH_TABLE_SNAPSHOT
+    if not _HAS_RNS:
+        snap = {
+            "ts": time.time(), "paths": [],
+            "available": False, "reason": "rns_module_unavailable",
+        }
+    elif not _rns_is_initialized():
+        snap = {
+            "ts": time.time(), "paths": [],
+            "available": False, "reason": "rns_not_initialized",
+        }
+    else:
+        paths: List[Dict[str, Any]] = []
+        try:
+            pt = getattr(_RNS.Transport, "path_table", None)
+            if pt:
+                for dest_hash, path_data in pt.items():
+                    try:
+                        if not (isinstance(dest_hash, bytes)
+                                and len(dest_hash) == 16):
+                            continue
+                        if not (isinstance(path_data, (list, tuple))
+                                and len(path_data) > _PT_RVCD_IF):
+                            continue
+                        ts_val = path_data[_PT_TIMESTAMP]
+                        next_hop = path_data[_PT_NEXT_HOP]
+                        hops_val = path_data[_PT_HOPS]
+                        iface = path_data[_PT_RVCD_IF]
+                        paths.append({
+                            "dest_hash": dest_hash.hex(),
+                            "hops": int(hops_val) if isinstance(hops_val, int) else None,
+                            "next_hop": next_hop.hex() if isinstance(next_hop, bytes) else None,
+                            "via_interface": _interface_name(iface),
+                            "last_heard": float(ts_val) if isinstance(ts_val, (int, float)) else None,
+                        })
+                    except Exception:
+                        # One malformed entry shouldn't poison the whole snapshot.
+                        continue
+            snap = {
+                "ts": time.time(), "paths": paths,
+                "available": True, "reason": None,
+            }
+        except Exception as e:
+            snap = {
+                "ts": time.time(), "paths": [],
+                "available": False, "reason": f"path_table_read_error: {e!r}",
+            }
+    with _PATH_TABLE_SNAPSHOT_LOCK:
+        _LAST_PATH_TABLE_SNAPSHOT = snap
+
+
+def get_cached_path_table_snapshot() -> Dict[str, Any]:
+    """Return the most recent path_table snapshot (a shallow copy).
+
+    Read-only consumer for HTTP handlers. Returns the same `available:
+    False` shape on cold-start (before _collect_rns_direct has run) so
+    the endpoint always has a valid JSON contract.
+    """
+    with _PATH_TABLE_SNAPSHOT_LOCK:
+        # Shallow copy is fine — entries are dicts of immutables.
+        return dict(_LAST_PATH_TABLE_SNAPSHOT)
 
 
 def _rns_is_initialized() -> bool:
@@ -192,6 +307,11 @@ class RNSDataCollectorMixin:
                 feature = self._rns_peer_to_feature(peer)
                 if feature:
                     features.append(feature)
+
+            # Refresh the path_table snapshot cache for the read-only
+            # /api/network/rns/paths endpoint. Same cadence as this collect
+            # cycle (~60s); no extra path_table walk on HTTP requests.
+            _snapshot_path_table_inplace()
 
             # Compute path_table size for diagnostic notes (visible in /api/status).
             path_count = 0
