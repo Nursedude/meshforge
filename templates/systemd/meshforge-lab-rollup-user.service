@@ -38,22 +38,32 @@ WorkingDirectory=/opt/meshforge
 # State dir is created idempotently each fire — no separate ExecStartPre needed.
 # Bash handles tmp+rename atomicity. Synth rollup is skipped silently when
 # the data dir is absent (most hosts).
+#
+# Failure surfacing (per project_lab_rollup_silent_failure 2026-05-15):
+# stderr is NOT redirected — it reaches the journal so the dashboard Logs
+# panel surfaces config errors (e.g. missing ~/.config/meshforge/fleet_hosts).
+# Final exit code is nonzero if any sub-stage failed → systemd shows
+# Result=failure on /fleet/run-test instead of silent ok-with-0-byte-artifact.
 ExecStart=/usr/bin/bash -c ' \
     set -u; \
+    rc=0; \
     out_dir="${XDG_STATE_HOME:-$HOME/.local/state}/meshforge"; \
-    mkdir -p "$out_dir"; \
+    mkdir -p "$out_dir" || rc=1; \
     LOOKBACK_HOURS=24 SORT_BY=pair bash /opt/meshforge/scripts/lab_traffic_rollup.sh \
-        > "$out_dir/lab-traffic-rollup.md.tmp" 2>/dev/null \
-        && mv "$out_dir/lab-traffic-rollup.md.tmp" "$out_dir/lab-traffic-rollup.md"; \
+        > "$out_dir/lab-traffic-rollup.md.tmp" \
+        && mv "$out_dir/lab-traffic-rollup.md.tmp" "$out_dir/lab-traffic-rollup.md" \
+        || rc=1; \
     LOOKBACK_HOURS=24 SORT_BY=fail bash /opt/meshforge/scripts/lab_traffic_rollup.sh \
-        > "$out_dir/lab-traffic-rollup-leaderboard.md.tmp" 2>/dev/null \
-        && mv "$out_dir/lab-traffic-rollup-leaderboard.md.tmp" "$out_dir/lab-traffic-rollup-leaderboard.md"; \
+        > "$out_dir/lab-traffic-rollup-leaderboard.md.tmp" \
+        && mv "$out_dir/lab-traffic-rollup-leaderboard.md.tmp" "$out_dir/lab-traffic-rollup-leaderboard.md" \
+        || rc=1; \
     if [ -d "$out_dir/synth_soak" ] && ls "$out_dir/synth_soak/"synth-*.json >/dev/null 2>&1; then \
         bash /opt/meshforge/scripts/lab_synth_soak_rollup.sh \
-            > "$out_dir/lab-synth-soak-rollup.md.tmp" 2>/dev/null \
-            && mv "$out_dir/lab-synth-soak-rollup.md.tmp" "$out_dir/lab-synth-soak-rollup.md"; \
+            > "$out_dir/lab-synth-soak-rollup.md.tmp" \
+            && mv "$out_dir/lab-synth-soak-rollup.md.tmp" "$out_dir/lab-synth-soak-rollup.md" \
+            || rc=1; \
     fi; \
-    exit 0'
+    exit "$rc"'
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=meshforge-lab-rollup
