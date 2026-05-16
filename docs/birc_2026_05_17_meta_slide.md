@@ -1,9 +1,17 @@
 # BIRC 2026-05-17 — META slide spec ("the deck is already stale")
 
-> **For Claude.ai design**: this file specs ONE new slide to insert near
-> the end of the deck — between slide 22 (AI-paired velocity) and slide 23
-> (Your turn / three ways in). Pulls from the same visual system as the
-> rest of the deck.
+> **For Claude.ai design**: this file specs ONE new slide to APPEND at the
+> end of the deck — as a new slide 24, AFTER current slide 23 ("Three
+> repos. Three jobs. One domain."). Acts as the closing slide so the deck
+> ends on the staleness punchline + canonical-source URL strip. Pulls from
+> the same visual system as the rest of the deck.
+>
+> **Deck context (current 23-slide PDF, 2026-05-16)**:
+> - Slide 20 = "Nursedude + AI, every commit on the record" (HOW THIS GOT BUILT)
+> - Slide 21 = "Three commands. Then you're in the dialog." (GETTING STARTED)
+> - Slide 22 = "MeshForge is a domain, not a repo." (ECOSYSTEM · 5 REPOS)
+> - Slide 23 = "Three repos. Three jobs. One domain." (DEEP DIVE)
+> - **Slide 24 (NEW, this spec)** = staleness punchline + canonical-source URLs
 >
 > **Raw URL**:
 > `https://raw.githubusercontent.com/Nursedude/meshforge/main/docs/birc_2026_05_17_meta_slide.md`
@@ -24,9 +32,10 @@ ask the operator at the back of the room.
 
 ## Slide META — "This deck was already wrong by Wednesday"
 
-**Position**: between slide 22 (Meta · AI-paired velocity) and slide 23
-(Your turn / three ways in). Acts as the bridge from "look how fast this
-is moving" to "here's how you plug in."
+**Position**: NEW slide 24 (append at end), AFTER current slide 23 ("Three
+repos. Three jobs. One domain."). Becomes the deck's closing slide — the
+last thing the audience sees is the canonical-source URL strip and the
+"the deck is a snapshot, the repo is the artifact" punchline.
 
 **Header label** (top-left, monospace, orange/amber accent — different from
 the other meta slides to flag this one as a punchline):
@@ -79,11 +88,11 @@ matches the deck's existing call-out style):
 
 > "Quick admission. The deck you're looking at was rendered yesterday.
 > The repo doesn't stop for slide-prep. By the time we get to Q&A, that
-> version number" — point to slide 22 or 10 — "is probably already
-> a commit out of date. There's a github.com URL on this slide that has
-> what's true at this exact second. The deck is a snapshot. The repo
-> is the artifact. That mismatch isn't a bug — it's what the talk's
-> actually about."
+> version number" — point back to slide 10 ('STATUS · v0.6.0-beta') or
+> slide 16 ('3,229 tests · 81 files') — "is probably already a commit
+> out of date. The github.com URL on this slide has what's true at this
+> exact second. The deck is a snapshot. The repo is the artifact. That
+> mismatch isn't a bug — it's what the talk's actually about."
 
 The line to land: **"the deck is a snapshot, the repo is the artifact."**
 That's the takeaway, and it generalizes — it's what every project should
@@ -99,16 +108,17 @@ spending 30 minutes listening to a club talk knows that demos break and
 slides go stale. Naming the staleness up-front shows you respect their
 time and don't expect them to fact-check you against a moving target.
 
-It also sets up slide 23 ("Your turn") cleanly — once the room knows
-github is the source of truth, "go look at the repo" lands as the
-actual call-to-action, not a generic close.
+Closing on this slide makes the canonical-source URL the final image —
+once the room knows github is the source of truth, "go look at the repo"
+lands as the actual call-to-action, not a generic close.
 
 ---
 
 ## Implementation notes for design
 
-- Match the deck's existing meta-slide visual style (slide 22 — META · AI-PAIRED
-  VELOCITY) so this reads as a sibling, not an outlier.
+- Match the deck's existing "how this got built" visual style (slide 20 —
+  HOW THIS GOT BUILT · LIVING HISTORY, "Nursedude + AI, every commit on the
+  record") so this reads as a sibling, not an outlier.
 - The amber/orange accent (versus the green/cyan used elsewhere) is intentional —
   signals "this is the punchline slide" without breaking the visual system.
 - If the design system has trouble with the delta value being editable,
