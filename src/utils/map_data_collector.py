@@ -285,7 +285,10 @@ class MapDataCollector(
             from utils.map_federation import FederationCollector
             # Pass node_history db_path so federation can backpressure-skip
             # polls when the WAL is oversize (project_db_recurring_class).
-            db_path = self._history.db_path if self._history is not None else None
+            # NB: _init_federation runs BEFORE self._history is set in
+            # __init__, so derive the path the same way the history block
+            # does (~line 215) rather than reading self._history.db_path.
+            db_path = self._cache_dir / "node_history.db"
             self._federation = FederationCollector(
                 peers=peers,
                 poll_interval=int(self._settings.get(
