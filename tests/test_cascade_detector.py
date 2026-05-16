@@ -54,6 +54,16 @@ class TestCatalogShape:
 
 
 class TestProbeRnsRpcWedge:
+    """Direct probe-behavior tests. The conftest pytest_configure sets
+    `MESHFORGE_CASCADE_PROBE_DISABLED=1` so background daemon threads
+    don't leak `subprocess.run` calls into other tests' patches; these
+    tests are the explicit exception — they need the probe to actually
+    run end-to-end so they delenv via this autouse fixture."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_probe(self, monkeypatch):
+        monkeypatch.delenv("MESHFORGE_CASCADE_PROBE_DISABLED", raising=False)
+
     def test_returns_none_when_ss_missing(self):
         with patch("utils.cascade_fingerprints.shutil.which",
                    return_value=None):

@@ -34,6 +34,19 @@ def pytest_configure(config):
         "markers", "network: mark test as requiring network access"
     )
 
+    # Disable cascade-detector probes during pytest. The
+    # rns_rpc_wedge fingerprint calls `subprocess.run(["ss", ...],
+    # timeout=2)`; when a daemon detector thread (started by any test
+    # that exercises the full service init path) is still running
+    # during another test's `with patch('subprocess.run')` window, the
+    # probe's call leaks into the mock's call_args_list and trips
+    # assertions like `assert call[1]['timeout'] == 60` —
+    # observed on Python 3.9/3.11 in CI starting at commit 79f5d7b.
+    # See project_ci_red_track0_followup.md for full forensics.
+    # Tests that explicitly exercise probe behavior unset this via
+    # `monkeypatch.delenv("MESHFORGE_CASCADE_PROBE_DISABLED", raising=False)`.
+    os.environ["MESHFORGE_CASCADE_PROBE_DISABLED"] = "1"
+
 
 def pytest_collection_modifyitems(config, items):
     """Auto-skip certain tests in CI environment."""

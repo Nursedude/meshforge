@@ -29,6 +29,7 @@ and Track 3 for the full catalog roadmap.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -36,6 +37,20 @@ from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# Test-only escape hatch — pytest conftest sets this so the daemon
+# detector thread (if ever started from inside a test) cannot leak
+# `subprocess.run(...)` calls into a sibling test's globally-patched
+# subprocess.run mock. CI red 79f5d7b series + see
+# `project_ci_red_track0_followup.md` for the leak shape. Tests that
+# explicitly exercise probe_rns_rpc_wedge unset this env var via
+# `monkeypatch.delenv`.
+_PROBE_DISABLED_ENV = "MESHFORGE_CASCADE_PROBE_DISABLED"
+
+
+def _probes_disabled() -> bool:
+    return bool(os.environ.get(_PROBE_DISABLED_ENV))
 
 
 @dataclass(frozen=True)
@@ -73,7 +88,14 @@ def probe_rns_rpc_wedge() -> Optional[ProbeHit]:
 
     Returns ``None`` if ``ss`` isn't installed, if the command times
     out, or if no matching lines are found.
+
+    Also returns ``None`` immediately when the test-only escape-hatch
+    env var ``MESHFORGE_CASCADE_PROBE_DISABLED`` is set — prevents the
+    probe's ``subprocess.run`` call from leaking into unrelated tests'
+    globally-patched ``subprocess.run`` mocks (CI red 79f5d7b series).
     """
+    if _probes_disabled():
+        return None
     if shutil.which("ss") is None:
         return None
     try:
