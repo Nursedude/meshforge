@@ -415,6 +415,91 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     fi
 done < "$FLEET_FILE"
 
+# Local-box self-sync — fleet_hosts excludes this box (the operator
+# runs fleet_sync FROM here), so the remote loop never reaches it.
+# After a `git push` from here, the local daemons run on the
+# pre-push code until something else restarts them — which is the
+# silent-stale-daemon class we've already burned cycles on (Issue
+# #53, 2026-05-02; also the 2026-05-16 tracer-fires drilldown ship
+# where this box served 404s for ~33min until manual restart).
+#
+# Mechanism: for each daemon under the two MF repos, compare the
+# daemon's process start time to the newest commit touching code
+# paths (the same regex the remote classifier uses). If the daemon
+# predates the newest code commit, restart it. Output format
+# matches the remote sync (one tagged line per unit) so the operator
+# scans one table.
+sync_local_unit() {
+    local unit="$1" repo="$2"
+    local self_tag
+    self_tag="self ($(hostname -s))"
+
+    if ! systemctl list-unit-files "${unit}.service" 2>/dev/null | grep -q "$unit"; then
+        return 0  # not installed locally — silent skip
+    fi
+    if ! systemctl is-active "${unit}.service" >/dev/null 2>&1; then
+        # Honor operator-disabled / not-running units the same way the
+        # remote sync_repo does — don't resurrect them.
+        return 0
+    fi
+    if [ ! -d "$repo/.git" ]; then
+        return 0
+    fi
+
+    local pid daemon_started newest_code_commit now
+    pid="$(systemctl show "${unit}.service" -p MainPID --value 2>/dev/null)"
+    if [ -z "$pid" ] || [ "$pid" = "0" ]; then
+        return 0
+    fi
+    # /proc/<pid> directory's mtime is the process creation time
+    # (kernel sets it on fork). Reliable on Linux; older than the
+    # daemon's first request handling, which is what we want.
+    daemon_started="$(stat -c %Y "/proc/$pid" 2>/dev/null || echo 0)"
+    if [ "$daemon_started" = "0" ]; then
+        return 0  # couldn't read; skip silently rather than thrash
+    fi
+
+    # Most-recent commit touching daemon-relevant paths. Matches the
+    # remote classifier's include list: src/, pyproject.toml,
+    # requirements*.txt. `--` separates path filters from refs.
+    newest_code_commit="$(git -C "$repo" log -1 --format=%ct \
+        -- 'src/*' 'pyproject.toml' 'requirements*.txt' 2>/dev/null)"
+    if [ -z "$newest_code_commit" ]; then
+        return 0  # no code commits ever (unlikely) — skip
+    fi
+
+    if [ "$newest_code_commit" -le "$daemon_started" ]; then
+        # Daemon is current. Emit a clean line so the operator can
+        # confirm self was checked (silence here would be confusing).
+        printf '[%-30s] PASS %s current (no restart needed)\n' \
+            "$self_tag" "$unit"
+        action_pass=$((action_pass + 1))
+        return 0
+    fi
+
+    now="$(date +%s)"
+    local age_s=$(( now - daemon_started ))
+    local lag_s=$(( newest_code_commit - daemon_started ))
+    if sudo -n systemctl restart "${unit}.service" >/dev/null 2>&1; then
+        printf '[%-30s] PASS %s restarted (was %ds old, %ds behind code)\n' \
+            "$self_tag" "$unit" "$age_s" "$lag_s"
+        action_pass=$((action_pass + 1))
+    else
+        printf '[%-30s] FAIL %s restart (sudo or systemctl error)\n' \
+            "$self_tag" "$unit"
+        action_fail=$((action_fail + 1))
+        # Self-restart failure doesn't fail the whole sync — the remote
+        # propagation may still have succeeded. Operators see it in the
+        # summary lines and can investigate.
+    fi
+}
+
+echo
+echo "Self-sync (this box):"
+sync_local_unit meshforge-gateway /opt/meshforge
+sync_local_unit meshforge-map     /opt/meshforge
+sync_local_unit meshforge-maps    /opt/meshforge-maps
+
 echo
 printf 'Hosts:   %d ok, %d failed, %d unreachable\n' \
     "$pass_count" "$fail_count" "$skip_count"
