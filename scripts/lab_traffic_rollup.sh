@@ -10,6 +10,12 @@
 # Python aggregator parses each line, bins per-(from→to) pair, and
 # emits a markdown table of samples / mean / p95 / fail %.
 #
+# Two-bucket view (added 2026-05-15): the aggregator renders a "Last 1h"
+# table first, then the "Last ${LOOKBACK_HOURS}h" table. Historical
+# wedges (e.g. moc1's 18h rnsd-RPC wedge on 2026-05-14) skew the 24h
+# fail% for days; the 1h bucket is the "right now" signal that decays
+# in minutes. Override with WINDOWS="1,6,24" for a custom set.
+#
 # Why state files instead of the journal: every fleet box runs
 # journald with `Storage=volatile`, and the per-user /run journals
 # are size-capped at 17-74 MB on the small Pis. 24h of tracer history
@@ -40,6 +46,7 @@ set -o pipefail
 LOOKBACK_HOURS="${LOOKBACK_HOURS:-24}"
 FLEET_HOSTS="${FLEET_HOSTS:-}"
 SORT_BY="${SORT_BY:-pair}"
+WINDOWS="${WINDOWS:-}"
 
 case "$SORT_BY" in
     pair|fail|rtt|samples) ;;
@@ -60,6 +67,21 @@ fi
 
 if ! [[ "$LOOKBACK_HOURS" =~ ^[0-9]+$ ]]; then
     echo "error: LOOKBACK_HOURS must be a positive integer" >&2
+    exit 2
+fi
+
+# Window set for the aggregator. Default: 1h + LOOKBACK_HOURS, deduped
+# (so LOOKBACK_HOURS=1 doesn't print two identical tables). Operator
+# override via WINDOWS="1,6,24" — any comma-separated positive ints.
+if [[ -z "$WINDOWS" ]]; then
+    if [[ "$LOOKBACK_HOURS" -eq 1 ]]; then
+        WINDOWS="1"
+    else
+        WINDOWS="1,${LOOKBACK_HOURS}"
+    fi
+fi
+if ! [[ "$WINDOWS" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+    echo "error: WINDOWS must be comma-separated positive integers" >&2
     exit 2
 fi
 
@@ -143,22 +165,43 @@ if [[ "$lines" -eq 0 ]]; then
 fi
 
 # Aggregate. Python reads JSONL from $TMP (one fire per line),
-# accumulates per-(from→to) pair stats, and emits the markdown table.
+# accumulates per-(from→to) pair stats per WINDOWS bucket, and emits
+# one markdown table per window. The aggregator's "now" reference is
+# captured from wall-clock at start; pinned via NOW_OVERRIDE for tests.
 python3 - "$SORT_BY" "$LOOKBACK_HOURS" "$hosts_seen" "$hosts_with_data" \
-         "$TMP" "$EMPTY_HOSTS" <<'PYEOF'
+         "$TMP" "$EMPTY_HOSTS" "$WINDOWS" "${NOW_OVERRIDE:-}" <<'PYEOF'
 import json
 import statistics
 import sys
+import time
 from collections import defaultdict
 
-sort_by, lookback_h, hosts_seen, hosts_with_data, tmp_path, empty_path = \
-    sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), \
-    sys.argv[5], sys.argv[6]
+(
+    sort_by, lookback_h, hosts_seen, hosts_with_data, tmp_path, empty_path,
+    windows_arg, now_override,
+) = sys.argv[1:9]
+lookback_h = int(lookback_h)
+hosts_seen = int(hosts_seen)
+hosts_with_data = int(hosts_with_data)
+windows_h = [int(w) for w in windows_arg.split(",") if w]
+now_unix = float(now_override) if now_override else time.time()
 
-# pairs[(from, to)] = {samples, ok, fail_kinds: {kind: count}, rtts: [int]}
-pairs = defaultdict(lambda: {
-    "samples": 0, "ok": 0, "fail_kinds": defaultdict(int), "rtts": [],
-})
+# Stable order, dedup'd. 1h leads — it's the "right now" signal that
+# decays fast; longer buckets show historical trend.
+seen = set()
+windows_h = [w for w in windows_h if not (w in seen or seen.add(w))]
+windows_h.sort()
+
+
+def empty_slot():
+    return {
+        "samples": 0, "ok": 0,
+        "fail_kinds": defaultdict(int), "rtts": [],
+    }
+
+
+# buckets[window_h][(from, to)] = slot
+buckets = {w: defaultdict(empty_slot) for w in windows_h}
 malformed = 0
 
 with open(tmp_path) as f:
@@ -175,65 +218,83 @@ with open(tmp_path) as f:
         if not sender:
             malformed += 1
             continue
+        fire_at = doc.get("fire_at_unix")
+        # Drop the fire entirely if the timestamp is missing or absurd —
+        # without it we can't bucket. Older state-file schema lacked
+        # fire_at_unix; if those still exist on disk they'd skew here.
+        if not isinstance(fire_at, (int, float)):
+            malformed += 1
+            continue
+        age_h = (now_unix - float(fire_at)) / 3600.0
+        if age_h < 0:
+            # Future-dated fires (clock skew) — clamp to 0 so they land
+            # in every bucket rather than getting dropped silently.
+            age_h = 0.0
         for row in doc.get("results", []):
             peer = row.get("peer")
             result = row.get("result")
             if not peer or not result:
                 continue
             key = (sender, peer) if sender != peer else (sender + " (loopback)", "")
-            slot = pairs[key]
-            slot["samples"] += 1
-            if result == "ok":
-                slot["ok"] += 1
-                ms = row.get("rtt_ms")
-                if isinstance(ms, (int, float)):
-                    slot["rtts"].append(int(ms))
-            else:
-                slot["fail_kinds"][result] += 1
+            for w in windows_h:
+                if age_h > w:
+                    continue
+                slot = buckets[w][key]
+                slot["samples"] += 1
+                if result == "ok":
+                    slot["ok"] += 1
+                    ms = row.get("rtt_ms")
+                    if isinstance(ms, (int, float)):
+                        slot["rtts"].append(int(ms))
+                else:
+                    slot["fail_kinds"][result] += 1
 
-# Pretty pair label: loopback rows have empty "to", restore the original
-# rollup shape "host (loopback)" for them.
+
 def pair_label(key):
+    """Loopback rows have empty `to`; restore "host (loopback)" form."""
     sender, peer = key
     if peer == "" and sender.endswith(" (loopback)"):
         return sender
     return f"{sender} -> {peer}"
 
-rows = []
-for key, slot in pairs.items():
-    samples = slot["samples"]
-    ok = slot["ok"]
-    fail_pct = 100.0 * (samples - ok) / samples if samples else 0.0
-    rtts = slot["rtts"]
-    if rtts:
-        rtts_sorted = sorted(rtts)
-        mean_ms = int(round(statistics.fmean(rtts)))
-        # Nearest-rank, ceiling to match the existing awk behavior
-        # (int(0.95 * n + 0.999999)).
-        idx = max(1, min(len(rtts_sorted),
-                         int(0.95 * len(rtts_sorted) + 0.999999)))
-        p95_ms = rtts_sorted[idx - 1]
-    else:
-        mean_ms = None
-        p95_ms = None
-    breakdown_bits = [
-        f"{kind}={cnt}" for kind, cnt in
-        sorted(slot["fail_kinds"].items())
-    ]
-    breakdown = " ".join(breakdown_bits) if breakdown_bits else "(none)"
-    rows.append({
-        "label": pair_label(key),
-        "samples": samples, "ok": ok,
-        "mean_ms": mean_ms, "p95_ms": p95_ms,
-        "fail_pct": fail_pct, "breakdown": breakdown,
-    })
+
+def build_rows(pairs):
+    rows = []
+    for key, slot in pairs.items():
+        samples = slot["samples"]
+        ok = slot["ok"]
+        fail_pct = 100.0 * (samples - ok) / samples if samples else 0.0
+        rtts = slot["rtts"]
+        if rtts:
+            rtts_sorted = sorted(rtts)
+            mean_ms = int(round(statistics.fmean(rtts)))
+            # Nearest-rank, ceiling — matches the prior awk behavior
+            # (int(0.95 * n + 0.999999)).
+            idx = max(1, min(len(rtts_sorted),
+                             int(0.95 * len(rtts_sorted) + 0.999999)))
+            p95_ms = rtts_sorted[idx - 1]
+        else:
+            mean_ms = None
+            p95_ms = None
+        breakdown_bits = [
+            f"{kind}={cnt}" for kind, cnt in
+            sorted(slot["fail_kinds"].items())
+        ]
+        breakdown = " ".join(breakdown_bits) if breakdown_bits else "(none)"
+        rows.append({
+            "label": pair_label(key),
+            "samples": samples, "ok": ok,
+            "mean_ms": mean_ms, "p95_ms": p95_ms,
+            "fail_pct": fail_pct, "breakdown": breakdown,
+        })
+    return rows
+
 
 def sort_key(r):
     if sort_by == "fail":
-        # desc fail, then label asc as tiebreak
         return (-r["fail_pct"], r["label"])
     if sort_by == "rtt":
-        # Missing RTT (pure-fail pairs) leads the leaderboard.
+        # Pairs with no RTT (all-fail) lead the leaderboard.
         mean = r["mean_ms"]
         if mean is None:
             return (-1e18, r["label"])
@@ -242,18 +303,32 @@ def sort_key(r):
         return (-r["samples"], r["label"])
     return (r["label"],)
 
-rows.sort(key=sort_key)
+
+def window_heading(w):
+    if w == 1:
+        return "Last 1h (right-now signal)"
+    return f"Last {w}h"
+
 
 print()
 print("## Lab traffic rollup")
-print()
-print("| pair | samples | mean ms | p95 ms | fail % | breakdown |")
-print("|---|---:|---:|---:|---:|---|")
-for r in rows:
-    mean_s = "-" if r["mean_ms"] is None else str(r["mean_ms"])
-    p95_s = "-" if r["p95_ms"] is None else str(r["p95_ms"])
-    print(f"| {r['label']} | {r['samples']} | {mean_s} | {p95_s} | "
-          f"{r['fail_pct']:.1f} | {r['breakdown']} |")
+for w in windows_h:
+    pairs = buckets[w]
+    rows = build_rows(pairs)
+    rows.sort(key=sort_key)
+    print()
+    print(f"### {window_heading(w)}")
+    print()
+    if not rows:
+        print(f"_no tracer fires landed in the last {w}h._")
+        continue
+    print("| pair | samples | mean ms | p95 ms | fail % | breakdown |")
+    print("|---|---:|---:|---:|---:|---|")
+    for r in rows:
+        mean_s = "-" if r["mean_ms"] is None else str(r["mean_ms"])
+        p95_s = "-" if r["p95_ms"] is None else str(r["p95_ms"])
+        print(f"| {r['label']} | {r['samples']} | {mean_s} | {p95_s} | "
+              f"{r['fail_pct']:.1f} | {r['breakdown']} |")
 
 print()
 empty_hosts = []
@@ -264,13 +339,13 @@ except OSError:
     pass
 
 if empty_hosts:
-    print("_silent (no state files in window — tracer not firing, or "
-          "rollout hasn't reached this box):_")
+    print(f"_silent (no state files in last {lookback_h}h — tracer not "
+          f"firing, or rollout hasn't reached this box):_")
     for h in empty_hosts:
         print(f"- `{h}`")
     print()
 
-footer = (f"_window: last {lookback_h} h    "
+footer = (f"_fetch window: last {lookback_h} h    "
           f"hosts queried: {hosts_seen}    "
           f"hosts with data: {hosts_with_data}_")
 if malformed:
