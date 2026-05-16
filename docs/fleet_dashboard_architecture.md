@@ -100,9 +100,14 @@ real incidents.
   shipped in `meshanchor 902560e4` with on-demand fetch + per-host
   + per-unit picker. MA's own `/fleet/logs` route shipped in
   `meshanchor f10c7095` (peers hit each box's local endpoint).
-- **Tracer fire detail drilldown** — click a Federation Round-Trip
-  cell, see the per-fire JSON for that pair over the last hour.
-  Data already exists at `~/.local/state/meshforge/tracer/*.json`.
+- **Tracer fire detail drilldown** *(shipped 2026-05-16)* — click a
+  Federation Round-Trip row → fetch
+  `http://<src>:5000/fleet/tracer-fires?peer=<dst>&since=<unix>`
+  and render a per-fire inline detail row (timestamp · seq ·
+  result · rtt_ms). Backend in `utils.tracer_fires` (MF `47607bf` /
+  MA `658e1cbd`) with 20 tests per repo. Filename-stem pre-filter
+  avoids json.load on cold half of the tracer dir. Peer name
+  allowlisted; `since` clamped to 24h floor; limit hard-capped 200.
 - **Run Tests panel** *(shipped 2026-05-15)* — operator one-click
   triggers for `meshforge-tracer.service`, `meshforge-synth-soak`,
   `meshforge-lab-rollup`, `meshforge-ci-status`.
@@ -113,9 +118,13 @@ real incidents.
   whole add-a-test contract). Dashboard panel renders one button
   per test with last-fire-age chips; fires show green/red result
   inline + auto-refresh the list after 8s.
-- **CI status pill** — surface GitHub Actions state from the
-  existing `meshforge-ci-status.timer` user-scope poll. Already
-  fires; the data isn't on the dashboard yet.
+- **CI status pill** *(shipped 2026-05-16)* — surfaces ecosystem
+  CI state in the topbar. `ci_status` block flows through
+  `/fleet/slo` (MF `cd4e9d2` / MA `ce59058e`); MA picks the freshest
+  `available=true` block across self + peers and renders one of
+  five chip states (✓ / ✗ N / … N / ~ / stale). Tooltip carries
+  per-repo state lines + source-host + age. Stale threshold 14h
+  (~1.4× the 10h timer gap).
 
 ### T2 — Opportunity windows
 
