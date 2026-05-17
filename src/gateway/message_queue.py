@@ -33,6 +33,7 @@ from contextlib import contextmanager
 from utils.db_helpers import connect_tuned
 from utils.paths import get_real_user_home
 from utils.timeouts import MESSAGE_STALE as _MESSAGE_STALE_TIMEOUT
+from gateway import delivery_counters as _dc
 
 logger = logging.getLogger(__name__)
 
@@ -615,6 +616,16 @@ class PersistentMessageQueue:
             with self._lock:
                 self._stats["deduplicated"] += 1
             logger.debug(f"Duplicate message suppressed: {content_hash}")
+            # Fork C: dedup-drop is the simplest DROPPED reason — payload
+            # would never enter the queue, so the operator-visible
+            # message id is the content-hash prefix (the same shape
+            # enqueue would have stamped).
+            _dc.record(
+                _dc.DeliveryState.DROPPED,
+                msg_id=f"dedup-{content_hash[:8]}",
+                protocol=destination,
+                drop_reason=_dc.DropReason.DEDUP,
+            )
             return None
 
         # Periodic auto-cleanup of old delivered/dead_letter messages
@@ -633,6 +644,16 @@ class PersistentMessageQueue:
                     logger.warning(
                         f"Queue full ({depth}/{self._max_queue_size}), "
                         f"cannot enqueue message to {destination}"
+                    )
+                    # Fork C: incoming message bounced because the queue
+                    # is full and nothing was sheddable. Distinct from
+                    # QUEUE_SHED (eviction of an already-queued msg).
+                    _dc.record(
+                        _dc.DeliveryState.DROPPED,
+                        msg_id=f"rejected-{content_hash[:8]}",
+                        protocol=destination,
+                        drop_reason=_dc.DropReason.QUEUE_PRESSURE,
+                        note=f"depth={depth}/{self._max_queue_size}",
                     )
                     return None
 
@@ -665,6 +686,15 @@ class PersistentMessageQueue:
         with self._lock:
             self._stats["enqueued"] += 1
         logger.debug(f"Message enqueued: {msg_id} -> {destination}")
+
+        # Fork C: queue entry is the QUEUED transition. The same id
+        # carries through the rest of the lifecycle (SENT / CONFIRMED
+        # / DROPPED) so operators can follow one message end-to-end.
+        _dc.record(
+            _dc.DeliveryState.QUEUED,
+            msg_id=msg_id,
+            protocol=destination,
+        )
 
         return msg_id
 
@@ -716,6 +746,24 @@ class PersistentMessageQueue:
             if cursor.rowcount > 0:
                 with self._lock:
                     self._stats["delivered"] += 1
+                # Fork C: this is the SENT transition — payload left
+                # the gateway successfully. Receiver confirmation is
+                # CONFIRMED, surfaced separately by the LXMF delivery
+                # callback / wantAck path. Naming gap is intentional:
+                # the queue's column is named "delivered" for legacy
+                # reasons; the counter taxonomy calls it what it is.
+                # Protocol must be pulled from the row since callers
+                # don't pass it — keep this cheap by reusing the row
+                # we already have.
+                row = conn.execute(
+                    "SELECT destination FROM messages WHERE id = ?", (msg_id,),
+                ).fetchone()
+                protocol = row["destination"] if row else None
+                _dc.record(
+                    _dc.DeliveryState.SENT,
+                    msg_id=msg_id,
+                    protocol=protocol,
+                )
                 return True
             return False
 
@@ -754,6 +802,22 @@ class PersistentMessageQueue:
                     logger.warning(
                         f"Message {msg_id} moved to dead letter: {decision.reason}"
                     )
+                    # Fork C: terminal drop. Distinguish "retries
+                    # exhausted on a transient error" from "policy
+                    # judged the error non-retriable on first attempt"
+                    # — same operator surface, different remediation.
+                    if "permanent_error" in decision.reason or \
+                       "non_retriable" in decision.reason:
+                        reason = _dc.DropReason.NON_RETRIABLE_ERROR
+                    else:
+                        reason = _dc.DropReason.RETRIES_EXHAUSTED
+                    _dc.record(
+                        _dc.DeliveryState.DROPPED,
+                        msg_id=msg_id,
+                        protocol=message.destination,
+                        drop_reason=reason,
+                        note=decision.reason[:80],
+                    )
                 else:
                     # Policy says retry with calculated delay
                     message.retry_after = datetime.now() + timedelta(seconds=decision.delay)
@@ -774,6 +838,16 @@ class PersistentMessageQueue:
                     logger.warning(
                         f"Message {msg_id} moved to dead letter after "
                         f"{message.retry_count} retries"
+                    )
+                    # Fork C: terminal drop in the no-policy fallback
+                    # path. Always counted as retries-exhausted because
+                    # we have no error classifier here.
+                    _dc.record(
+                        _dc.DeliveryState.DROPPED,
+                        msg_id=msg_id,
+                        protocol=message.destination,
+                        drop_reason=_dc.DropReason.RETRIES_EXHAUSTED,
+                        note=f"retry_count={message.retry_count}",
                     )
                 else:
                     # Schedule retry with backoff

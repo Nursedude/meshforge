@@ -470,6 +470,8 @@ class MapRequestHandler(
             self._serve_fleet_tests_list()
         elif path_only == '/fleet/cascade':
             self._serve_fleet_cascade()
+        elif path_only == '/api/gateway/delivery':
+            self._serve_gateway_delivery()
         elif path_only == '/lab/rollup' or path_only == '/lab/rollup/':
             self._serve_lab_rollup(variant='leaderboard')
         elif path_only == '/lab/rollup/alphabetical':
@@ -1171,6 +1173,31 @@ class MapRequestHandler(
         except Exception as e:
             self._serve_json(
                 {"error": "detector_unavailable", "reason": str(e)},
+                status=500,
+            )
+
+    def _serve_gateway_delivery(self):
+        """Fork C — honest delivery lifecycle counters.
+
+        Returns the in-memory ``DeliveryCounters.snapshot()`` from the
+        gateway's per-process counter set: per-state totals
+        (QUEUED/SENT/CONFIRMED/DROPPED), drop-reason histogram,
+        per-protocol breakdown, confirmation_rate, and a recent-events
+        ring (last 50 by default).
+
+        Counters are process-lifetime monotonic. Restart resets — for
+        durable per-message trace, use the queue's
+        ``message_lifecycle`` table.
+
+        Pairs with ``/fleet/cascade`` (Fork A+B) so operators have
+        "what's wedging" + "what's actually delivering" in one place.
+        """
+        try:
+            from gateway.delivery_counters import snapshot as _delivery_snap
+            self._serve_json(_delivery_snap(), status=200)
+        except Exception as e:
+            self._serve_json(
+                {"error": "delivery_counters_unavailable", "reason": str(e)},
                 status=500,
             )
 

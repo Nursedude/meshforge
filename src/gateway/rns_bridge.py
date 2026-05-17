@@ -23,6 +23,7 @@ from .bridge_health import (
 )
 from utils.boundary_timing import call_boundary
 from gateway.bounded_rpc import bounded_call, default_on_wedge
+from gateway import delivery_counters as _dc
 from utils.safe_import import safe_import
 
 # MQTT bridge handler (zero-interference, recommended)
@@ -878,12 +879,33 @@ class RNSMeshtasticBridge(
             # Register LXMF delivery/failure callbacks
             def on_delivered(receipt):
                 self.delivery_tracker.confirm_delivery(msg_id)
+                # Fork C: receiver-confirmed delivery. Distinct from
+                # the queue's `mark_delivered` (which means "sent to
+                # network"); this fires when the recipient's LXMF
+                # stack acks the message.
+                _dc.record(
+                    _dc.DeliveryState.CONFIRMED,
+                    msg_id=msg_id,
+                    protocol="rns",
+                )
 
             def on_failed(receipt):
                 reason = "delivery_failed"
                 if hasattr(receipt, 'failure_reason'):
                     reason = str(receipt.failure_reason)
                 self.delivery_tracker.confirm_failure(msg_id, reason)
+                # Fork C: terminal drop at the LXMF layer. Distinct
+                # from queue-level RETRIES_EXHAUSTED because the
+                # gateway successfully reached the receiver's stack
+                # and the receiver rejected — different remediation
+                # (check receiver's filtering, not the path).
+                _dc.record(
+                    _dc.DeliveryState.DROPPED,
+                    msg_id=msg_id,
+                    protocol="rns",
+                    drop_reason=_dc.DropReason.RNS_DELIVERY_FAILED,
+                    note=reason[:80],
+                )
 
             try:
                 lxm.register_delivery_callback(on_delivered)
