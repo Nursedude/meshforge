@@ -31,7 +31,19 @@ from gateway.delivery_counters import (
 
 
 @pytest.fixture(autouse=True)
-def _reset_singleton():
+def _reset_singleton(tmp_path, monkeypatch):
+    """Reset the singleton AND point its DB at a per-test tmp file.
+
+    The module is SQLite-backed (cross-process visibility) — without
+    redirecting the path, tests would write to / read from the
+    operator's real ``~/.local/share/meshforge/delivery_counters.db``.
+    Pytest gives each test a unique ``tmp_path``, so cases stay
+    isolated even though they share the env-var-based path resolution.
+    """
+    monkeypatch.setenv(
+        "MESHFORGE_DELIVERY_COUNTERS_DB",
+        str(tmp_path / "singleton.db"),
+    )
     dc._reset_singleton_for_tests()
     yield
     dc._reset_singleton_for_tests()
@@ -310,7 +322,11 @@ class TestSnapshot:
         t0 = time.time()
         c.record(DeliveryState.QUEUED, "m", protocol="rns")
         snap = c.snapshot()
-        assert snap["first_event_ts"] >= t0
+        # SQLite stores ts as ms-precision INTEGER (see _persist) so
+        # the recovered value can be up to 1 ms below the wall-clock t0
+        # we sampled at fixture entry. Operator-visible tolerance is
+        # generous — these counters drive a 5-second dashboard refresh.
+        assert snap["first_event_ts"] >= t0 - 0.002
         assert snap["last_event_ts"] >= snap["first_event_ts"]
 
 

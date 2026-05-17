@@ -24,6 +24,17 @@ taxonomy. Each lifecycle event carries the message id (CanonicalMessage
 .id when available, the queue's auto-generated id otherwise) so an
 operator following one message can find every counter bump it caused.
 
+Storage: SQLite-backed at
+``~/.local/share/meshforge/delivery_counters.db`` (WAL via
+``utils.db_helpers.connect_tuned``, DBSpec entry in
+``utils.db_inventory``). The gateway daemon writes; the map daemon
+serves ``/api/gateway/delivery`` from a read of the same file. This
+closes the per-process gap that an in-memory singleton can't bridge
+without losing the architectural separation between the two daemons.
+Counters become true monotonic across the gateway's lifetime — restart
+no longer zeroes the operator's view. The events ring is FIFO-bounded
+at ``RING_BUFFER_CAP`` rows via prune-on-insert.
+
 Scope: this module is **observability only** — it does not change
 control flow, never validates state transitions, never raises. A
 caller that bumps ``confirmed`` without an earlier ``sent`` is fine
@@ -31,10 +42,9 @@ from this module's perspective; the queue's lifecycle history table
 (``record_lifecycle_event``) is the validator. These counters are the
 operator-facing aggregate.
 
-Wiring: see commit message + ``record(state, msg_id, ...)`` call sites
-in ``message_queue.py`` (queue transitions) and ``rns_bridge.py``
-(LXMF delivery callbacks). Adding new call sites is intentional — the
-module exists so they accumulate honestly.
+Wiring: see ``record(state, msg_id, ...)`` call sites in
+``message_queue.py`` (queue transitions) and ``rns_bridge.py`` (LXMF
+delivery callbacks).
 
 Surface: ``snapshot()`` returns a JSON-serializable dict suitable for
 splicing into ``/api/status.delivery`` or a dedicated
@@ -44,12 +54,17 @@ depends on its shape.
 from __future__ import annotations
 
 import logging
+import os
+import sqlite3
 import threading
 import time
-from collections import deque
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Deque, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from utils.db_helpers import connect_tuned
+from utils.paths import get_real_user_home
 
 
 logger = logging.getLogger(__name__)
@@ -99,71 +114,21 @@ class DropReason(Enum):
     """
 
     DEDUP = "dedup"
-    """Identical payload already in the queue (or recently delivered);
-    enqueue suppressed. Not a failure — desired behavior — but counted
-    as a drop because the message did not progress."""
-
     QUEUE_PRESSURE = "queue_pressure"
-    """Enqueue rejected because the queue was at capacity and no
-    lower-priority message could be shed. Operator signal: queue is
-    sustained-full; check downstream delivery rate."""
-
     QUEUE_SHED = "queue_shed"
-    """An already-queued lower-priority message was evicted to make
-    room for a higher-priority incoming message. Distinct from
-    QUEUE_PRESSURE: this one *was* admitted, then dropped under load."""
-
     RETRIES_EXHAUSTED = "retries_exhausted"
-    """Message was retried up to ``max_retries`` and never succeeded.
-    Moved to dead letter; counted as DROPPED here."""
-
     NON_RETRIABLE_ERROR = "non_retriable_error"
-    """Retry policy classified the error as permanent (e.g. 404,
-    malformed payload, no such destination). Moved to dead letter
-    immediately."""
-
     CIRCUIT_OPEN = "circuit_open"
-    """Per-destination circuit breaker rejected the send. The breaker
-    will half-open after its recovery timeout; meanwhile the message
-    is dropped (caller decides whether to re-enqueue)."""
-
     WEDGED = "wedged"
-    """The RNS RPC hot-path watchdog (Fork A) aborted the send via
-    process exit. Companion fingerprint: ``rns_rpc_wedge``."""
-
     DESTINATION_UNREACHABLE = "destination_unreachable"
-    """Routing layer couldn't resolve the destination (no path in
-    RNS path_table, no Meshtastic neighbor known, etc.)."""
-
     RNS_DELIVERY_FAILED = "rns_delivery_failed"
-    """LXMF delivery callback fired ``failed`` rather than
-    ``delivered`` — receiver got the packet but rejected, or
-    transport gave up. The receipt's ``failure_reason`` (when
-    available) is stamped in the event note."""
-
     DELIVERY_TIMEOUT = "delivery_timeout"
-    """``DeliveryTracker`` aged out a pending delivery without seeing
-    a confirm callback. The bytes left the gateway; whether they
-    arrived is unknown. Counted as a drop because the operator-visible
-    outcome is "no confirmation"."""
-
     EVICTED_OVERFLOW = "evicted_overflow"
-    """``DeliveryTracker._force_timeout_oldest`` evicted a pending
-    record because the in-memory tracker exceeded MAX_HISTORY. Rare
-    but worth a discrete bucket: an operator seeing this means the
-    tracker is undersized for current traffic."""
-
     INVALID_PAYLOAD = "invalid_payload"
-    """Payload failed pre-flight validation (e.g. non-UTF-8 where
-    text was required, oversized for protocol). Caller-side drop;
-    nothing was actually sent."""
-
     UNKNOWN = "unknown"
-    """Escape hatch for legacy call sites that haven't been migrated
-    to a precise reason yet. Treat its count as a TODO marker."""
 
 
-# ── Event record + ring buffer ───────────────────────────────────────
+# ── Event record ─────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -173,21 +138,18 @@ class DeliveryEvent:
     ``id`` is whatever string the caller has at the call site: the
     queue's auto-generated msg_id, the CanonicalMessage.id (uuid4),
     or — for bare-protocol paths that don't use either — a synthesized
-    "lxmf-<ts>" / similar. Stamping it lets operators correlate
-    across counter rings + the durable lifecycle table.
+    "lxmf-<ts>" / similar.
 
     ``protocol`` is the destination network ("meshtastic" / "rns" /
     "meshcore" / "mqtt"). None for transitions that don't have one
-    (a dedup drop at enqueue may not know the protocol if the queue
-    layer is upstream of routing).
+    (a dedup drop at enqueue may not know the protocol).
 
     ``drop_reason`` is required when ``state == DROPPED``. The
-    constructor accepts it for any state — non-drop states ignore it —
-    so callers don't have to branch on state shape.
+    constructor accepts it for any state — non-drop states ignore it.
 
     ``note`` is operator-friendly free text (e.g. "rc=1 unit not
-    found", "circuit half-open"). Kept short — this rides in a ring
-    buffer that operators scrape.
+    found", "circuit half-open"). Kept short — this rides in the
+    events table that operators scrape.
     """
 
     ts: float
@@ -214,55 +176,108 @@ class DeliveryEvent:
 
 
 RING_BUFFER_CAP = 500
-"""Most recent events retained in memory. Sized for ~1 hour of healthy
-gateway traffic on a 5-box fleet (a few dozen msgs/min peak); enough
-forensic context for incident investigation without bloating the
-process. Per-id history rolls into the queue's durable
-``message_lifecycle`` SQLite table — this in-memory ring is the fast
-"what just happened?" view."""
+"""Maximum rows retained in the events table. Sized for ~1 hour of
+healthy gateway traffic on a 5-box fleet (a few dozen msgs/min peak);
+enough forensic context for incident investigation without bloating
+the DB. Per-id history rolls into the queue's durable
+``message_lifecycle`` SQLite table — this events table is the fast
+"what just happened?" view for ``/api/gateway/delivery``.
+
+Pruned on insert via ``DELETE FROM events WHERE rowid IN (oldest)``,
+so the cap is enforced even when the gateway runs for weeks."""
 
 
-# ── Counters (the operator-facing aggregate) ─────────────────────────
+def default_db_path() -> Path:
+    """Resolve the counters DB path.
+
+    Env var ``MESHFORGE_DELIVERY_COUNTERS_DB`` wins (test seam; also
+    useful for ops who want the DB on a different volume). Otherwise
+    matches the standard MeshForge data dir layout per
+    ``utils.db_inventory._meshforge_data_dir``.
+    """
+    override = os.environ.get("MESHFORGE_DELIVERY_COUNTERS_DB")
+    if override:
+        return Path(override)
+    return get_real_user_home() / ".local" / "share" / "meshforge" / "delivery_counters.db"
+
+
+# ── Counters (DB-backed) ─────────────────────────────────────────────
 
 
 class DeliveryCounters:
-    """Process-wide delivery lifecycle counters + recent-events ring.
+    """Cross-process delivery lifecycle counters + events ring.
 
-    Constructor params exist for tests; production code uses
-    ``get_singleton()`` so call sites share a single counter set.
+    SQLite-backed at ``db_path``. The gateway daemon and map daemon
+    point at the same file: gateway writes, map reads. Counters are
+    monotonic across process lifecycle — restart no longer zeroes the
+    operator's view.
 
-    All public methods are thread-safe. Internally:
+    Two tables:
 
-    * A single ``threading.Lock`` serializes all writes. Reads
-      (``snapshot()``) hold the lock briefly to take a consistent
-      copy. The lock window is bounded by the dict / deque operation
-      cost — both O(1) — so contention from many publisher threads
-      is not a concern at gateway-traffic rates.
-    * Counters are plain Python ints. We don't use atomic primitives
-      because we always read them under the lock when snapshotting.
-    * The ring buffer is a single ``collections.deque(maxlen=cap)``;
-      eviction is O(1) on append.
+    * ``counters`` — KV pairs. State totals
+      (``state.<value>``), drop-reason histogram
+      (``drop.<value>``), per-protocol breakdown
+      (``state_proto.<state>.<protocol>``), first/last event ts
+      (``meta.first_event_ts``, ``meta.last_event_ts``). KV shape
+      keeps the schema sparse — a protocol we've never seen doesn't
+      occupy a row.
+    * ``events`` — FIFO ring. INTEGER PRIMARY KEY rowid orders
+      chronologically; prune-on-insert keeps row count at
+      ``ring_cap``.
 
-    Per-protocol breakdown is stored as a nested dict
-    ``state_by_protocol[state][protocol] -> count`` so the snapshot
-    shape is uniform regardless of which protocols this box has seen
-    traffic for.
+    Concurrency: a per-instance ``threading.Lock`` serializes writes
+    within one process. SQLite's WAL mode + per-connection
+    ``busy_timeout`` (30 s from ``connect_tuned``) handles cross-
+    process contention between the gateway writer and the map reader.
+
+    Each ``record()`` opens + closes a connection (cheap on a WAL DB).
+    The alternative — a long-lived connection — would require
+    ``check_same_thread=False`` plus an explicit GIL-aware locking
+    discipline; the open-per-call pattern matches the rest of
+    MeshForge (PersistentMessageQueue, NodeHistoryDB).
     """
 
-    def __init__(self, ring_cap: int = RING_BUFFER_CAP) -> None:
+    def __init__(
+        self,
+        *,
+        db_path: Optional[Path] = None,
+        ring_cap: int = RING_BUFFER_CAP,
+    ) -> None:
+        self._db_path = db_path or default_db_path()
+        self._ring_cap = int(ring_cap)
         self._lock = threading.Lock()
-        self._state_totals: Dict[str, int] = {
-            s.value: 0 for s in DeliveryState
-        }
-        self._drop_reasons: Dict[str, int] = {
-            r.value: 0 for r in DropReason
-        }
-        self._state_by_protocol: Dict[str, Dict[str, int]] = {
-            s.value: {} for s in DeliveryState
-        }
-        self._ring: Deque[DeliveryEvent] = deque(maxlen=ring_cap)
-        self._first_event_ts: Optional[float] = None
-        self._last_event_ts: Optional[float] = None
+        self._init_db()
+
+    # ── schema ──────────────────────────────────────────────────
+
+    def _init_db(self) -> None:
+        """Create the schema. Idempotent; safe to call from multiple
+        processes (CREATE TABLE IF NOT EXISTS guards both sides)."""
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS counters ("
+                " key TEXT PRIMARY KEY, value INTEGER NOT NULL DEFAULT 0"
+                ")"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS events ("
+                " ts REAL NOT NULL,"
+                " id TEXT NOT NULL DEFAULT '',"
+                " state TEXT NOT NULL,"
+                " protocol TEXT,"
+                " drop_reason TEXT,"
+                " note TEXT NOT NULL DEFAULT ''"
+                ")"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_events_id ON events(id)"
+            )
+            conn.commit()
+
+    def _connect(self) -> sqlite3.Connection:
+        """Open a tuned connection. Caller owns lifecycle."""
+        return connect_tuned(self._db_path)
 
     # ── ingest ──────────────────────────────────────────────────
 
@@ -278,19 +293,21 @@ class DeliveryCounters:
     ) -> DeliveryEvent:
         """Record one lifecycle transition.
 
-        Returns the resulting ``DeliveryEvent`` so callers can inspect
-        it in tests / log it without a second timestamp call. Never
-        raises (silently coerces unknown enums into UNKNOWN-flavored
-        equivalents) — the gateway's hot paths must not crash because
-        a counter call site has a typo.
+        Never raises (silently coerces unknown enums, swallows DB
+        errors after logging) — the gateway's hot paths must not
+        crash because a counter call site has a typo or the disk
+        is full.
+
+        Returns the constructed event so callers can inspect it in
+        tests without a second timestamp call.
         """
         if not isinstance(state, DeliveryState):
             logger.warning(
                 "delivery_counters.record: bad state %r — ignoring", state,
             )
             return DeliveryEvent(
-                ts=ts or time.time(),
-                id=msg_id,
+                ts=ts if ts is not None else time.time(),
+                id=str(msg_id) if msg_id is not None else "",
                 state=DeliveryState.DROPPED,
                 drop_reason=DropReason.UNKNOWN,
                 note=f"bad_state:{state!r}",
@@ -301,10 +318,6 @@ class DeliveryCounters:
                 drop_reason,
             )
             drop_reason = DropReason.UNKNOWN
-
-        # Enforce the only invariant we care about: DROPPED must have
-        # a reason. Soft-default to UNKNOWN rather than raise — the
-        # caller may have a legacy code path that hasn't been migrated.
         if state == DeliveryState.DROPPED and drop_reason is None:
             drop_reason = DropReason.UNKNOWN
 
@@ -317,99 +330,236 @@ class DeliveryCounters:
             note=note,
         )
 
-        with self._lock:
-            self._state_totals[state.value] += 1
-            if drop_reason is not None:
-                self._drop_reasons[drop_reason.value] += 1
-            if protocol:
-                bucket = self._state_by_protocol[state.value]
-                bucket[protocol] = bucket.get(protocol, 0) + 1
-            self._ring.append(event)
-            if self._first_event_ts is None:
-                self._first_event_ts = event.ts
-            self._last_event_ts = event.ts
-
+        try:
+            self._persist(event)
+        except sqlite3.Error as e:
+            logger.warning(
+                "delivery_counters: DB write failed (%s) — event lost", e,
+            )
         return event
+
+    def _persist(self, event: DeliveryEvent) -> None:
+        """Single-transaction write: bump counters + insert event +
+        prune oldest row(s) if over cap.
+
+        Held under ``self._lock`` so we don't issue overlapping
+        UPSERTs from the same process; cross-process serialization
+        is SQLite's busy_timeout."""
+        with self._lock, self._connect() as conn:
+            # Counter bumps via UPSERT. SQLite's ON CONFLICT clause is
+            # the idiomatic atomic increment.
+            counter_keys: List[str] = [f"state.{event.state.value}"]
+            if event.drop_reason is not None:
+                counter_keys.append(f"drop.{event.drop_reason.value}")
+            if event.protocol:
+                counter_keys.append(
+                    f"state_proto.{event.state.value}.{event.protocol}"
+                )
+            for key in counter_keys:
+                conn.execute(
+                    "INSERT INTO counters(key, value) VALUES(?, 1) "
+                    "ON CONFLICT(key) DO UPDATE SET value = value + 1",
+                    (key,),
+                )
+            # Meta: first/last ts. first_event_ts is set only on first
+            # write; last_event_ts is overwritten every time.
+            conn.execute(
+                "INSERT INTO counters(key, value) VALUES('meta.first_event_ts', ?) "
+                "ON CONFLICT(key) DO NOTHING",
+                (round(event.ts * 1000),),
+            )
+            conn.execute(
+                "INSERT INTO counters(key, value) VALUES('meta.last_event_ts', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (round(event.ts * 1000),),
+            )
+            # Event row.
+            conn.execute(
+                "INSERT INTO events(ts, id, state, protocol, drop_reason, note) "
+                "VALUES(?, ?, ?, ?, ?, ?)",
+                (
+                    event.ts,
+                    event.id,
+                    event.state.value,
+                    event.protocol,
+                    event.drop_reason.value if event.drop_reason else None,
+                    event.note,
+                ),
+            )
+            # Ring cap via prune-on-insert. SELECT COUNT(*) is O(N) on
+            # an unindexed scan but N is tiny (cap 500), and we only
+            # pay it on the writes that are likely to push us over.
+            count = conn.execute(
+                "SELECT COUNT(*) FROM events"
+            ).fetchone()[0]
+            if count > self._ring_cap:
+                excess = count - self._ring_cap
+                conn.execute(
+                    "DELETE FROM events WHERE rowid IN "
+                    "(SELECT rowid FROM events ORDER BY rowid ASC LIMIT ?)",
+                    (excess,),
+                )
+            conn.commit()
 
     # ── operator surface ───────────────────────────────────────
 
     def snapshot(self, recent_limit: int = 50) -> Dict[str, Any]:
-        """Operator-readable aggregate. Includes:
+        """Operator-readable aggregate. Same shape as the in-memory
+        predecessor — switching backends is invisible at the
+        ``/api/gateway/delivery`` boundary.
 
-        * ``state_totals`` — counter per ``DeliveryState`` value.
-        * ``drop_reasons`` — histogram across ``DropReason`` values.
-        * ``state_by_protocol`` — per-state breakdown across the
-          protocols this box has actually seen, sparse (no zero
-          entries for protocols we've never recorded).
-        * ``confirmation_rate`` — ``confirmed / sent`` ratio (or None
-          when sent == 0). Floors at 0; uncapped at the top — a single
-          rogue confirmed without a prior sent can push it above 1, by
-          design, because the counters are observability not validation.
-        * ``recent`` — last N events as dicts, newest last. Capped at
-          ``recent_limit`` (default 50) so the JSON stays small.
-        * ``first_event_ts`` / ``last_event_ts`` — window the operator
-          is reading. Useful to spot "no traffic since restart" vs
-          "active gateway".
+        Reads happen via the same WAL DB the gateway is writing into;
+        SQLite's snapshot isolation gives a consistent view. The
+        ``recent_limit`` argument caps the JSON size (default 50).
         """
-        with self._lock:
-            sent = self._state_totals[DeliveryState.SENT.value]
-            confirmed = self._state_totals[DeliveryState.CONFIRMED.value]
-            confirmation_rate = (
-                confirmed / sent if sent > 0 else None
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT key, value FROM counters"
+                ).fetchall()
+                events_rows = conn.execute(
+                    "SELECT ts, id, state, protocol, drop_reason, note "
+                    "FROM events ORDER BY rowid DESC "
+                    "LIMIT ?",
+                    (max(0, recent_limit),),
+                ).fetchall()
+                ring_capacity = self._ring_cap
+        except sqlite3.Error as e:
+            logger.warning(
+                "delivery_counters: snapshot read failed (%s) — "
+                "returning empty defaults", e,
             )
-            ring = list(self._ring)
-            state_totals = dict(self._state_totals)
-            drop_reasons = dict(self._drop_reasons)
-            state_by_protocol = {
-                s: dict(v) for s, v in self._state_by_protocol.items()
-            }
-            first_ts = self._first_event_ts
-            last_ts = self._last_event_ts
+            rows = []
+            events_rows = []
+            ring_capacity = self._ring_cap
 
-        recent = [e.to_dict() for e in ring[-recent_limit:]] if recent_limit > 0 else []
+        state_totals: Dict[str, int] = {s.value: 0 for s in DeliveryState}
+        drop_reasons: Dict[str, int] = {r.value: 0 for r in DropReason}
+        state_by_protocol: Dict[str, Dict[str, int]] = {
+            s.value: {} for s in DeliveryState
+        }
+        first_event_ts: Optional[float] = None
+        last_event_ts: Optional[float] = None
+
+        for key, value in rows:
+            if key.startswith("state."):
+                state_totals[key[6:]] = value
+            elif key.startswith("drop."):
+                drop_reasons[key[5:]] = value
+            elif key.startswith("state_proto."):
+                _, state_v, proto = key.split(".", 2)
+                state_by_protocol.setdefault(state_v, {})[proto] = value
+            elif key == "meta.first_event_ts":
+                first_event_ts = value / 1000.0
+            elif key == "meta.last_event_ts":
+                last_event_ts = value / 1000.0
+
+        sent = state_totals.get(DeliveryState.SENT.value, 0)
+        confirmed = state_totals.get(DeliveryState.CONFIRMED.value, 0)
+        confirmation_rate = confirmed / sent if sent > 0 else None
+
+        # events_rows comes back newest-first from the DESC ORDER BY;
+        # the snapshot contract is newest-LAST so the operator can
+        # tail a JSON dump and read the latest at the bottom.
+        recent: List[Dict[str, Any]] = []
+        for ts, msg_id, state, protocol, drop_reason, note in reversed(events_rows):
+            d: Dict[str, Any] = {
+                "ts": ts,
+                "id": msg_id,
+                "state": state,
+                "protocol": protocol,
+                "drop_reason": drop_reason,
+            }
+            if note:
+                d["note"] = note
+            recent.append(d)
+
         return {
             "state_totals": state_totals,
             "drop_reasons": drop_reasons,
             "state_by_protocol": state_by_protocol,
             "confirmation_rate": confirmation_rate,
             "recent": recent,
-            "first_event_ts": first_ts,
-            "last_event_ts": last_ts,
-            "ring_capacity": self._ring.maxlen,
+            "first_event_ts": first_event_ts,
+            "last_event_ts": last_event_ts,
+            "ring_capacity": ring_capacity,
         }
 
     def recent(self, limit: Optional[int] = None) -> List[DeliveryEvent]:
         """Return recent events (newest last). ``limit`` clamps the
-        returned list; ``None`` returns everything in the ring."""
-        with self._lock:
-            buf = list(self._ring)
-        if limit is None or limit >= len(buf):
-            return buf
-        if limit <= 0:
+        returned list; ``None`` returns everything in the events
+        table."""
+        try:
+            with self._connect() as conn:
+                if limit is None:
+                    cursor = conn.execute(
+                        "SELECT ts, id, state, protocol, drop_reason, note "
+                        "FROM events ORDER BY rowid ASC"
+                    )
+                elif limit <= 0:
+                    return []
+                else:
+                    cursor = conn.execute(
+                        "SELECT ts, id, state, protocol, drop_reason, note "
+                        "FROM events ORDER BY rowid DESC LIMIT ?",
+                        (limit,),
+                    )
+                rows = cursor.fetchall()
+        except sqlite3.Error:
             return []
-        return buf[-limit:]
+        if limit is not None and limit > 0:
+            rows = list(reversed(rows))
+        return [self._row_to_event(r) for r in rows]
 
     def history_for(self, msg_id: str) -> List[DeliveryEvent]:
         """All retained events for one message id, oldest first.
 
-        Bounded by the ring's capacity — older events for the same id
-        may have already aged out. The durable trace lives in
+        Bounded by the ring cap — older events may have aged out. The
+        durable trace lives in
         ``PersistentMessageQueue.message_lifecycle``; this is the
-        in-memory fast lookup."""
-        with self._lock:
-            return [e for e in self._ring if e.id == msg_id]
+        fast in-memory-ish lookup."""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT ts, id, state, protocol, drop_reason, note "
+                    "FROM events WHERE id = ? ORDER BY rowid ASC",
+                    (str(msg_id),),
+                ).fetchall()
+        except sqlite3.Error:
+            return []
+        return [self._row_to_event(r) for r in rows]
+
+    @staticmethod
+    def _row_to_event(
+        row: Tuple[float, str, str, Optional[str], Optional[str], str],
+    ) -> DeliveryEvent:
+        ts, msg_id, state, protocol, drop_reason, note = row
+        try:
+            state_enum = DeliveryState(state)
+        except ValueError:
+            state_enum = DeliveryState.DROPPED
+        dr_enum: Optional[DropReason] = None
+        if drop_reason:
+            try:
+                dr_enum = DropReason(drop_reason)
+            except ValueError:
+                dr_enum = DropReason.UNKNOWN
+        return DeliveryEvent(
+            ts=ts, id=msg_id, state=state_enum,
+            protocol=protocol, drop_reason=dr_enum, note=note or "",
+        )
 
     # ── test helpers ───────────────────────────────────────────
 
     def _reset_for_tests(self) -> None:
-        """Drop all counters + ring. Production code must never call."""
-        with self._lock:
-            self._state_totals = {s.value: 0 for s in DeliveryState}
-            self._drop_reasons = {r.value: 0 for r in DropReason}
-            self._state_by_protocol = {s.value: {} for s in DeliveryState}
-            self._ring.clear()
-            self._first_event_ts = None
-            self._last_event_ts = None
+        """Drop all rows. Production code must never call."""
+        try:
+            with self._connect() as conn:
+                conn.execute("DELETE FROM counters")
+                conn.execute("DELETE FROM events")
+                conn.commit()
+        except sqlite3.Error:
+            pass
 
 
 # ── Process-wide singleton ───────────────────────────────────────────
@@ -420,11 +570,11 @@ _singleton_lock = threading.Lock()
 
 
 def get_singleton() -> DeliveryCounters:
-    """Return the process-wide counter set, constructing on first call.
+    """Return the process-wide counter handle.
 
-    The gateway daemon and the map daemon each have their own
-    instance — they're independent processes — but within one process
-    all call sites land in the same counter set."""
+    All call sites in one process share this handle; multiple
+    processes (gateway daemon + map daemon) construct independent
+    handles that point at the same SQLite DB."""
     global _singleton
     with _singleton_lock:
         if _singleton is None:
@@ -440,11 +590,7 @@ def record(
     drop_reason: Optional[DropReason] = None,
     note: str = "",
 ) -> DeliveryEvent:
-    """Module-level convenience — bumps the singleton's counters.
-
-    Lets call sites avoid the ``get_singleton().record(...)`` dance;
-    matches the ``wedge_events.publish(...)`` ergonomic so the two
-    Fork A/Fork B/Fork C primitives feel symmetric."""
+    """Module-level convenience — bumps the singleton's counters."""
     return get_singleton().record(
         state, msg_id,
         protocol=protocol, drop_reason=drop_reason, note=note,
