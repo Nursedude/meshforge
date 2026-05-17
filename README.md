@@ -363,6 +363,7 @@ MeshForge retains MeshCore as an optional gateway handler.
 | **Grafana** | Dashboards require manual import | See `dashboards/README.md` for instructions |
 | **TCP:4403** | Only one client can connect | Gateway uses MQTT (v0.5.4+), TCP free for CLI |
 | **AREDN** | Correct API implemented, needs AREDN hardware | Code-ready, awaiting hardware |
+| **Fleet Monitor (multi-host)** | Handler-thread pile-up on Pi-class hardware under sustained dashboard polling. Field-stable but newer code. | In-flight semaphore + dashboard 429-retry shipped in sister project ([MA #128](https://github.com/Nursedude/meshanchor/issues/128)); follow-on improvements tracked in [MA #126](https://github.com/Nursedude/meshanchor/issues/126) / [#127](https://github.com/Nursedude/meshanchor/issues/127) / [#131](https://github.com/Nursedude/meshanchor/issues/131). **Single-box install is the most reliable mode today.** |
 
 ### Testing Reality Check
 
@@ -378,6 +379,14 @@ and radios** in a live deployment:
 
 **Field-validated features** (tested with real hardware): TUI, meshtasticd config,
 RF tools, RNS/rnsd integration, NomadNet, service management, standalone tools.
+
+**Reliability ratio — single-box vs fleet monitor:** The cross-host fleet
+rollup has the **least field time** of any subsystem and the most documented
+recurrence patterns. Single-box install (one Pi, one TUI, local map at
+`:5000`) is significantly more reliable than the multi-host fleet monitor
+view. Plan accordingly: start with single-box, layer in the cross-host
+dashboard once you've understood the restart cadence + known limitations
+above. See sister project [MeshAnchor's #131](https://github.com/Nursedude/meshanchor/issues/131) for the full failure-mode log.
 
 ---
 
