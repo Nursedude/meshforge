@@ -44,7 +44,18 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_POLL_INTERVAL = 60       # seconds between full federation polls
-DEFAULT_TIMEOUT = 5.0             # per-peer HTTP timeout
+# Per-peer HTTP timeout (applies to each socket recv, not the whole request —
+# urllib semantics). 5 s was correct when /api/nodes/directory was ~1 MB;
+# the directory has since grown ~30× (35 MB on hosts with the external
+# meshcore_public + worldmap collectors enabled, 2026-05-17), pushing the
+# whole-request stream right against the 5 s budget. 30 s gives Pi-class
+# peers enough headroom to stream 35 MB + Issue #50/#51's directory growth
+# without false-positive timeouts, while still tripping on a genuinely
+# wedged peer. Companion to Issue #55 (`/fleet/slo` parallelization) —
+# both are "bump the budget to match today's response size" fixes.
+# Poll cycle wall-time = max(timeout) across parallel workers, so 30 s here
+# stays comfortably under the 60 s poll interval.
+DEFAULT_TIMEOUT = 30.0            # per-peer HTTP timeout (was 5.0 pre-2026-05-17)
 DEFAULT_PORT = 5000               # peer map service port
 DEFAULT_MAX_RESPONSE_BYTES = 50 * 1024 * 1024  # 50 MB hard cap per peer
 

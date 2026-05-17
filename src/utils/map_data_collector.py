@@ -164,7 +164,11 @@ class MapDataCollector(
                 # Operators can edit map_settings.json to override.
                 "federation_peers": None,
                 "federation_poll_interval_seconds": 60,
-                "federation_timeout_seconds": 5,
+                # 30 s aligned with `map_federation.DEFAULT_TIMEOUT` post-
+                # Issue #56 — 35 MB directories on Pi-class peers don't
+                # fit in the old 5 s budget. Operator can override here
+                # if they have a smaller fleet / older directory.
+                "federation_timeout_seconds": 30,
                 "federation_port": 5000,
             },
             config_dir=self._config_dir_override,

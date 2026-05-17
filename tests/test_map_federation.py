@@ -23,6 +23,7 @@ from utils.map_federation import (
     FederationPeerStatus,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_PORT,
+    DEFAULT_TIMEOUT,
     DEFAULT_WAL_SKIP_THRESHOLD_BYTES,
     _peer_url,
     _extract_features,
@@ -519,6 +520,56 @@ class TestWalBackpressure:
         snap1.by_node[("rns", "fake")] = {"id": "fake"}
         snap2 = fc.get_snapshot()
         assert ("rns", "fake") not in snap2.by_node
+
+
+# ── Per-peer HTTP timeout default (Issue #56) ─────────────────────────────
+
+
+class TestDefaultTimeout:
+    """Lock in the 30 s federation per-peer timeout so a future drift back
+    to 5 s (or a casual bump higher) is a deliberate co-change with the
+    settings default in `map_data_collector.py`. The 5 s value was right
+    for ~1 MB directories pre-2026-04; 35 MB directories on Pi-class hosts
+    need ~30 s to stream over LAN without false-positive `TimeoutError`."""
+
+    def test_default_is_30_seconds(self):
+        assert DEFAULT_TIMEOUT == 30.0
+
+    def test_settings_default_matches_module_default(self):
+        """The `MapDataCollector` initializes federation with whatever the
+        operator's `map_settings.json` says — the bootstrap default for
+        `federation_timeout_seconds` MUST match `DEFAULT_TIMEOUT` or the
+        first-run experience silently bypasses this fix."""
+        # Walk the source for the bootstrap default; this avoids importing
+        # MapDataCollector (which pulls in heavy collector deps the test
+        # environment doesn't need).
+        from pathlib import Path
+        src = Path(__file__).resolve().parents[1] / "src" / "utils" / "map_data_collector.py"
+        text = src.read_text()
+        # The bootstrap default sits next to the comment "Issue #56" in
+        # the settings dict; a regex on the key/value pair tolerates
+        # whitespace + future comment reflows.
+        import re
+        m = re.search(
+            r'"federation_timeout_seconds"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+            text,
+        )
+        assert m is not None, (
+            "could not find federation_timeout_seconds default in "
+            "map_data_collector.py — has the settings dict moved?"
+        )
+        bootstrapped = float(m.group(1))
+        assert bootstrapped == DEFAULT_TIMEOUT, (
+            f"settings bootstrap default ({bootstrapped}) is out of sync "
+            f"with map_federation.DEFAULT_TIMEOUT ({DEFAULT_TIMEOUT}). "
+            f"Both must change together — see Issue #56."
+        )
+
+    def test_default_stays_under_poll_interval(self):
+        """Worst-case poll cycle wall time = max(timeout) across parallel
+        workers; if timeout ever exceeds poll_interval, cycles overlap
+        themselves. Defensive invariant — keeps a future bump honest."""
+        assert DEFAULT_TIMEOUT < DEFAULT_POLL_INTERVAL
 
 
 # ── Peer name plumbing (IP↔hostname correlation across views) ─────────────
