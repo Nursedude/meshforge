@@ -80,6 +80,13 @@ class FederationPeerStatus:
     last_latency_ms: int = 0               # round-trip ms of last successful sync
     consecutive_failures: int = 0
     ok: bool = False                       # last attempt succeeded
+    # Friendly fleet name from fleet.json (e.g. the box's hostname alias)
+    # when the operator addressed the peer by IP. `hostname` is what the
+    # collector actually hits (usually the IP); `peer_name` lets diagnostics
+    # line up with the tracer leaderboard and MA fleet rollup, which both
+    # use names. `None` when the collector wasn't given a name mapping or
+    # the entry is missing from fleet.json.
+    peer_name: Optional[str] = None
 
 
 @dataclass
@@ -303,6 +310,7 @@ class FederationCollector:
         db_path: Optional[Path] = None,
         wal_skip_threshold_bytes: int = DEFAULT_WAL_SKIP_THRESHOLD_BYTES,
         stat_fn: Callable[[Path], int] = _stat_size,
+        peer_names: Optional[Dict[str, str]] = None,
     ):
         self._peers = list(peers)
         self._poll_interval = max(10, int(poll_interval))
@@ -312,8 +320,16 @@ class FederationCollector:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+        # Endpoint → friendly fleet-name lookup. Plumbed in from fleet.json
+        # via map_data_collector._init_federation. Empty dict when unknown.
+        self._peer_names: Dict[str, str] = dict(peer_names or {})
         self._snapshot = FederationSnapshot(
-            peer_status={p: FederationPeerStatus(hostname=p) for p in self._peers},
+            peer_status={
+                p: FederationPeerStatus(
+                    hostname=p, peer_name=self._peer_names.get(p),
+                )
+                for p in self._peers
+            },
         )
 
         # Backpressure: when node_history.db's WAL is oversize, federation
@@ -391,6 +407,7 @@ class FederationCollector:
                         hostname=peer, last_attempt=attempt_ts,
                         last_error=f"crash: {type(e).__name__}: {e}",
                         consecutive_failures=prior_failures + 1,
+                        peer_name=self._peer_names.get(peer),
                     )
                     new_status[peer] = status
                     continue
@@ -399,6 +416,7 @@ class FederationCollector:
                     status.consecutive_failures = 0
                 else:
                     status.consecutive_failures = prior_failures + 1
+                status.peer_name = self._peer_names.get(peer)
                 new_status[peer] = status
 
                 for entry in entries:

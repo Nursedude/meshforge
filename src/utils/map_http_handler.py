@@ -910,6 +910,7 @@ class MapRequestHandler(
                     "peer_status": [
                         {
                             "hostname": s.hostname,
+                            "peer_name": s.peer_name,
                             "ok": s.ok,
                             "last_sync": s.last_sync,
                             "last_attempt": s.last_attempt,

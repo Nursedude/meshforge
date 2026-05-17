@@ -271,6 +271,34 @@ class MapDataCollector(
             logger.debug(f"Federation bootstrap from fleet.json failed: {e}")
             return []
 
+    def _load_fleet_peer_names(self) -> Dict[str, str]:
+        """Build endpoint→friendly-name mapping from fleet.json.
+
+        Best-effort companion to `_bootstrap_federation_peers`. Returns
+        `{ip: name}` (and `{name: name}` when the entry has no IP) so the
+        federation collector can stamp `peer_name` on each status without
+        re-reading the settings every cycle. Empty dict when fleet.json is
+        absent or malformed — federation still works, the `peer_name` field
+        just stays None.
+        """
+        try:
+            fleet_path = get_real_user_home() / ".config" / "meshforge" / "fleet.json"
+            if not fleet_path.exists():
+                return {}
+            with open(fleet_path, "r") as f:
+                cfg = json.load(f)
+            peers_dict = cfg.get("peers") or {}
+            out: Dict[str, str] = {}
+            for name, info in peers_dict.items():
+                if isinstance(info, dict) and info.get("ip"):
+                    out[info["ip"]] = name
+                else:
+                    out[name] = name
+            return out
+        except (OSError, json.JSONDecodeError, KeyError) as e:
+            logger.debug(f"Federation peer-name load from fleet.json failed: {e}")
+            return {}
+
     def _init_federation(self) -> None:
         """Construct the FederationCollector instance (does not start it).
 
@@ -299,6 +327,7 @@ class MapDataCollector(
                 )),
                 port=int(self._settings.get("federation_port", 5000)),
                 db_path=db_path,
+                peer_names=self._load_fleet_peer_names(),
             )
         except ImportError as e:
             logger.warning(f"Federation disabled (import failed): {e}")

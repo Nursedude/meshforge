@@ -53,8 +53,10 @@ import json
 import os
 import socket
 import subprocess
+import threading
 import time
-from typing import Any, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Optional, Tuple
 
 REQUIRED_SERVICES = ("meshtasticd", "mosquitto")
 OPTIONAL_SERVICES = (
@@ -63,6 +65,25 @@ OPTIONAL_SERVICES = (
     "meshforge-map",
     "meshforge-maps",
 )
+
+# TTL for cached `systemctl is-active` results in seconds. MA polls
+# /fleet/slo every 5–15s; a 2.0s TTL coalesces overlapping handlers
+# (dashboard tick + rollup tick that fire within the same window)
+# without showing the operator stale service state. Driven by
+# `project_fleet_monitor_reliability_assessment.md` finding #6 —
+# "audit subprocess.run holding the GIL." Field-observed: moc2
+# /fleet/slo at 2.43s right against MA's 3s peer-fetch timeout
+# (2026-05-17), with all six service probes serial on Pi-class hardware.
+_SYSTEMCTL_STATE_TTL_S = 2.0
+# Parallel-fanout worker pool size for service probes. Matches the
+# number of services we probe (REQUIRED + OPTIONAL = 6). Each worker
+# blocks on its own systemctl fork; the GIL is released during the
+# wait so concurrency is real. Cap at 6 even if we add services so
+# we never fork more than one process per service.
+_SERVICE_PROBE_MAX_WORKERS = 6
+
+_systemctl_state_cache: Dict[str, Tuple[str, float]] = {}
+_systemctl_state_cache_lock = threading.Lock()
 
 # Timer unit prefixes we surface in the schedules block. System timers
 # like apt-daily / man-db belong to the OS, not the fleet — they would
@@ -97,8 +118,10 @@ def _process_uptime_s() -> float:
         return 0.0
 
 
-def _systemctl_state(unit: str) -> str:
-    """Return the systemd unit state. Maps to MA's vocabulary:
+def _systemctl_state_uncached(unit: str) -> str:
+    """Return the systemd unit state from a fresh `systemctl is-active` call.
+
+    Maps to MA's vocabulary:
 
     - "available"    — `is-active` returns "active"
     - "not_running"  — anything else (inactive, failed, not-found, error)
@@ -115,10 +138,68 @@ def _systemctl_state(unit: str) -> str:
         return "not_running"
 
 
+def _systemctl_state(unit: str, ttl_s: float = _SYSTEMCTL_STATE_TTL_S) -> str:
+    """TTL-cached wrapper around `_systemctl_state_uncached`.
+
+    The cache is module-level + lock-protected so concurrent /fleet/slo
+    and /api/status handlers share the same result within the TTL window.
+    `ttl_s <= 0` skips the cache entirely (used by tests that want a
+    deterministic fresh call).
+    """
+    if ttl_s <= 0:
+        return _systemctl_state_uncached(unit)
+    now = time.monotonic()
+    with _systemctl_state_cache_lock:
+        cached = _systemctl_state_cache.get(unit)
+        if cached is not None and (now - cached[1]) < ttl_s:
+            return cached[0]
+    # Fork/wait happens outside the lock so concurrent callers for
+    # *different* units don't serialize on the cache lock.
+    state = _systemctl_state_uncached(unit)
+    with _systemctl_state_cache_lock:
+        _systemctl_state_cache[unit] = (state, now)
+    return state
+
+
+def _probe_services_parallel(units: Tuple[str, ...]) -> Dict[str, str]:
+    """Probe `_systemctl_state` for every unit concurrently.
+
+    On Pi-class hardware each `systemctl is-active` costs ~300–400 ms
+    of wall time (subprocess fork + systemd RPC). Six serial calls
+    pushed `/fleet/slo` to 2.43 s — within 19% of MA's 3 s peer-fetch
+    timeout, so any contention tipped it over to "peer fetch:
+    timeout: timed out" and the host dropped out of the rollup.
+
+    Fanning out keeps total wall time at max(unit_cost) ≈ 400 ms
+    regardless of unit count. Bounded at `_SERVICE_PROBE_MAX_WORKERS`
+    workers (= one per service) so a future service addition can't
+    fork an unbounded pool.
+    """
+    if not units:
+        return {}
+    n_workers = min(len(units), _SERVICE_PROBE_MAX_WORKERS)
+    with ThreadPoolExecutor(
+        max_workers=n_workers, thread_name_prefix="fleet-slo-probe"
+    ) as ex:
+        futures = {ex.submit(_systemctl_state, u): u for u in units}
+        out: Dict[str, str] = {}
+        for fut in futures:
+            unit = futures[fut]
+            try:
+                out[unit] = fut.result()
+            except Exception:
+                # _systemctl_state already swallows its own errors and
+                # returns "not_running"; this branch defends against a
+                # future refactor that lets exceptions escape.
+                out[unit] = "not_running"
+    return out
+
+
 def _services_rollup() -> Dict[str, Any]:
     """Roll required + optional services into the MA shape."""
-    req_states = {svc: _systemctl_state(svc) for svc in REQUIRED_SERVICES}
-    opt_states = {svc: _systemctl_state(svc) for svc in OPTIONAL_SERVICES}
+    all_states = _probe_services_parallel(REQUIRED_SERVICES + OPTIONAL_SERVICES)
+    req_states = {svc: all_states[svc] for svc in REQUIRED_SERVICES}
+    opt_states = {svc: all_states[svc] for svc in OPTIONAL_SERVICES}
 
     def bucket(states: Dict[str, str]) -> Dict[str, Any]:
         by_state: Dict[str, int] = {}

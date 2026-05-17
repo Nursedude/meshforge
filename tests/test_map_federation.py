@@ -519,3 +519,127 @@ class TestWalBackpressure:
         snap1.by_node[("rns", "fake")] = {"id": "fake"}
         snap2 = fc.get_snapshot()
         assert ("rns", "fake") not in snap2.by_node
+
+
+# ── Peer name plumbing (IP↔hostname correlation across views) ─────────────
+
+
+class TestPeerNamePlumbing:
+    """The federation collector usually addresses peers by IP (fleet.json
+    stores IPs); the tracer leaderboard and MA fleet rollup show friendly
+    fleet-names (`fleet-host-2`). When a peer goes black-hole, the
+    operator has to mentally map IP→name to correlate. Carrying the name
+    alongside the IP in `peer_status` closes that gap so /api/status is
+    self-correlating."""
+
+    def test_status_carries_peer_name_at_construction(self):
+        """Initial peer_status entries inherit the configured name mapping
+        — no poll required, so a freshly-started collector with zero
+        successful cycles already serializes the friendly name."""
+        fc = FederationCollector(
+            ["192.168.86.41", "192.168.86.20"],
+            poll_interval=3600,
+            peer_names={
+                "192.168.86.41": "fleet-host-1",
+                "192.168.86.20": "fleet-host-2",
+            },
+        )
+        snap = fc.get_snapshot()
+        assert snap.peer_status["192.168.86.41"].peer_name == "fleet-host-1"
+        assert snap.peer_status["192.168.86.20"].peer_name == "fleet-host-2"
+
+    def test_peer_name_defaults_to_none_when_unmapped(self):
+        """No peer_names arg = backwards-compatible: name field stays None
+        for callers that don't carry the fleet.json mapping (e.g. single-
+        box installs or operator-supplied bare-hostname lists)."""
+        fc = FederationCollector(["plain-host"], poll_interval=3600)
+        snap = fc.get_snapshot()
+        assert snap.peer_status["plain-host"].peer_name is None
+
+    def test_peer_name_stamped_after_successful_poll(self):
+        """fetch_peer_directory returns a status object that doesn't know
+        the friendly name — the collector must stamp peer_name onto each
+        returned status during poll_once, otherwise the field gets blown
+        away on the first successful cycle."""
+        fc = FederationCollector(
+            ["192.168.86.41"], poll_interval=10,
+            peer_names={"192.168.86.41": "fleet-host-1"},
+        )
+        # fetch_peer_directory returns a status WITHOUT peer_name set
+        # (mirrors the real fetch — only the collector owns the mapping).
+        good = FederationPeerStatus(
+            hostname="192.168.86.41", ok=True, last_sync=time.time(),
+            last_count=42, last_attempt=time.time(),
+        )
+        with patch("utils.map_federation.fetch_peer_directory",
+                   return_value=([], good)):
+            fc.poll_once()
+        snap = fc.get_snapshot()
+        assert snap.peer_status["192.168.86.41"].peer_name == "fleet-host-1"
+
+    def test_peer_name_stamped_after_failed_poll(self):
+        """The whole point of this field is to make failures correlatable —
+        when a peer times out, the operator needs `peer_name` on the
+        failure row, not on the success row."""
+        fc = FederationCollector(
+            ["192.168.86.41"], poll_interval=10,
+            peer_names={"192.168.86.41": "fleet-host-1"},
+        )
+        bad = FederationPeerStatus(
+            hostname="192.168.86.41", ok=False,
+            last_error="URLError: Connection refused",
+            last_attempt=time.time(),
+        )
+        with patch("utils.map_federation.fetch_peer_directory",
+                   return_value=([], bad)):
+            fc.poll_once()
+        snap = fc.get_snapshot()
+        assert snap.peer_status["192.168.86.41"].peer_name == "fleet-host-1"
+        assert snap.peer_status["192.168.86.41"].ok is False
+
+    def test_peer_name_stamped_on_executor_crash(self):
+        """The crash branch builds a fresh FederationPeerStatus rather than
+        reusing the fetch return — easy to forget to stamp peer_name here.
+        Explicit test prevents regression."""
+        fc = FederationCollector(
+            ["192.168.86.41"], poll_interval=10,
+            peer_names={"192.168.86.41": "fleet-host-1"},
+        )
+
+        def crash(*a, **kw):
+            raise RuntimeError("simulated peer fetch crash")
+
+        with patch("utils.map_federation.fetch_peer_directory",
+                   side_effect=crash):
+            fc.poll_once()
+        snap = fc.get_snapshot()
+        s = snap.peer_status["192.168.86.41"]
+        assert s.peer_name == "fleet-host-1"
+        assert s.ok is False
+        assert "crash" in (s.last_error or "")
+
+    def test_unmapped_peer_keeps_name_none_through_poll(self):
+        """Mixed fleet: one peer in fleet.json (mapping carries name), one
+        operator-added bare hostname (no mapping). The mapped peer gets a
+        name; the unmapped one stays None — neither steals the other's
+        name."""
+        fc = FederationCollector(
+            ["192.168.86.41", "operator-test-box"],
+            poll_interval=10,
+            peer_names={"192.168.86.41": "fleet-host-1"},
+        )
+        good = FederationPeerStatus(
+            hostname="x", ok=True, last_sync=time.time(),
+            last_count=0, last_attempt=time.time(),
+        )
+        with patch("utils.map_federation.fetch_peer_directory",
+                   side_effect=lambda peer, *a, **kw: (
+                       [], FederationPeerStatus(
+                           hostname=peer, ok=True, last_sync=time.time(),
+                           last_count=0, last_attempt=time.time(),
+                       )
+                   )):
+            fc.poll_once()
+        snap = fc.get_snapshot()
+        assert snap.peer_status["192.168.86.41"].peer_name == "fleet-host-1"
+        assert snap.peer_status["operator-test-box"].peer_name is None

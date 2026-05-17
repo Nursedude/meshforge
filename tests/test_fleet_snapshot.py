@@ -20,16 +20,31 @@ from utils.fleet_snapshot import (
     OPTIONAL_SERVICES,
     REQUIRED_SERVICES,
     SCHEDULE_STALE_MULTIPLIER,
+    _SYSTEMCTL_STATE_TTL_S,
     _ci_overall,
     _ci_status_block,
     _normalize_timer,
     _parse_ci_status_file,
     _probe_radio,
+    _probe_services_parallel,
     _schedules_block,
     _services_rollup,
     _systemctl_state,
+    _systemctl_state_uncached,
     build_slo_snapshot,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_systemctl_cache():
+    """Reset the module-level TTL cache between tests so subprocess
+    mocks aren't shadowed by a previous test's cached result.
+    Without this, test_systemctl_state_handles_timeout (unit="anything")
+    poisons test_systemctl_state_handles_missing_binary (also "anything")
+    and the second test never reaches its subprocess.run patch."""
+    fleet_snapshot._systemctl_state_cache.clear()
+    yield
+    fleet_snapshot._systemctl_state_cache.clear()
 
 
 # ─── Shape contract ────────────────────────────────────────────────────
@@ -153,6 +168,145 @@ def test_systemctl_state_inactive_maps_to_not_running():
     mock_result.stdout = "inactive\n"
     with patch("subprocess.run", return_value=mock_result):
         assert _systemctl_state("meshtasticd") == "not_running"
+
+
+# ─── TTL cache + parallel probe (2026-05-17 latency fix) ───────────────
+
+
+class TestSystemctlStateCache:
+    """The /fleet/slo handler ran 6 serial `systemctl is-active` calls;
+    on Pi-class hardware that pushed end-to-end response time to 2.43 s —
+    19% headroom under MA's 3 s peer-fetch timeout. Cache + parallel
+    fanout brings it back to a comfortable margin. These tests lock in
+    the contract."""
+
+    def test_cache_hit_skips_subprocess(self):
+        """Same unit within TTL → second call must not fork."""
+        mock_result = MagicMock()
+        mock_result.stdout = "active\n"
+        with patch("subprocess.run", return_value=mock_result) as run:
+            r1 = _systemctl_state("svc-x")
+            r2 = _systemctl_state("svc-x")
+        assert r1 == r2 == "available"
+        assert run.call_count == 1, (
+            "second call within TTL should hit the cache, not fork systemctl"
+        )
+
+    def test_cache_per_unit_independent(self):
+        """Different units must not alias each other in the cache."""
+        results = iter(["active\n", "inactive\n"])
+
+        def fake(*a, **kw):
+            mock = MagicMock()
+            mock.stdout = next(results)
+            return mock
+
+        with patch("subprocess.run", side_effect=fake):
+            assert _systemctl_state("svc-a") == "available"
+            assert _systemctl_state("svc-b") == "not_running"
+
+    def test_ttl_zero_bypasses_cache(self):
+        """ttl_s=0 disables caching — used by tests that want a fresh
+        subprocess call every time without managing the cache directly."""
+        mock_result = MagicMock()
+        mock_result.stdout = "active\n"
+        with patch("subprocess.run", return_value=mock_result) as run:
+            _systemctl_state("svc-z", ttl_s=0)
+            _systemctl_state("svc-z", ttl_s=0)
+        assert run.call_count == 2
+
+    def test_ttl_expiry_re_forks(self):
+        """After the TTL elapses, the cache MUST re-fork — otherwise a
+        crashed daemon would show 'available' indefinitely. Drive
+        time.monotonic() to simulate elapsed time without sleeping."""
+        mock_result = MagicMock()
+        mock_result.stdout = "active\n"
+        clock = {"now": 1000.0}
+        with patch("subprocess.run", return_value=mock_result) as run, \
+             patch("utils.fleet_snapshot.time.monotonic",
+                   side_effect=lambda: clock["now"]):
+            _systemctl_state("svc-aged", ttl_s=2.0)
+            clock["now"] += 5.0  # > TTL
+            _systemctl_state("svc-aged", ttl_s=2.0)
+        assert run.call_count == 2, "expired cache entry must re-fork"
+
+    def test_default_ttl_is_two_seconds(self):
+        """Lock in the 2 s default. Bumping it would coalesce more polls
+        but risk surfacing stale service state to the MA dashboard;
+        lowering it defeats the purpose. Either is a deliberate change."""
+        assert _SYSTEMCTL_STATE_TTL_S == 2.0
+
+    def test_uncached_helper_exists_for_direct_invocation(self):
+        """`_systemctl_state_uncached` is the bypass primitive — tests
+        and any future internal caller that wants a guaranteed fresh
+        result should use it directly rather than passing ttl_s=0."""
+        mock_result = MagicMock()
+        mock_result.stdout = "inactive\n"
+        with patch("subprocess.run", return_value=mock_result):
+            assert _systemctl_state_uncached("svc-direct") == "not_running"
+
+
+class TestProbeServicesParallel:
+    """The parallel fanout — its whole purpose is to keep total wall
+    time at max(unit_cost) instead of sum(unit_cost)."""
+
+    def test_returns_state_for_every_unit(self):
+        """Output dict must cover every input unit exactly once."""
+        with patch("utils.fleet_snapshot._systemctl_state",
+                   return_value="available"):
+            out = _probe_services_parallel(("a", "b", "c", "d"))
+        assert set(out.keys()) == {"a", "b", "c", "d"}
+        assert all(v == "available" for v in out.values())
+
+    def test_empty_input_returns_empty_dict(self):
+        """Edge case: zero units → empty dict, not a spawned executor."""
+        assert _probe_services_parallel(()) == {}
+
+    def test_per_unit_results_are_distinct(self):
+        """A failing service must not bleed its state into a healthy one."""
+        def state_for(unit):
+            return "available" if unit == "ok-svc" else "not_running"
+
+        with patch("utils.fleet_snapshot._systemctl_state",
+                   side_effect=state_for):
+            out = _probe_services_parallel(("ok-svc", "broken-svc"))
+        assert out == {"ok-svc": "available", "broken-svc": "not_running"}
+
+    def test_worker_exception_does_not_corrupt_dict(self):
+        """Defense-in-depth: if `_systemctl_state` ever stops swallowing
+        its own errors (refactor regression), the parallel fanout must
+        still produce a complete dict — missing units would crash the
+        `_services_rollup` consumer that does `req_states[svc]`."""
+        def state_for(unit):
+            if unit == "boom":
+                raise RuntimeError("simulated future-refactor leak")
+            return "available"
+
+        with patch("utils.fleet_snapshot._systemctl_state",
+                   side_effect=state_for):
+            out = _probe_services_parallel(("safe", "boom"))
+        assert set(out.keys()) == {"safe", "boom"}
+        assert out["safe"] == "available"
+        assert out["boom"] == "not_running"
+
+    def test_services_rollup_uses_parallel_probe(self):
+        """End-to-end: `_services_rollup` must drive the parallel path,
+        not regress to the old serial dict-comprehension. We assert by
+        intercepting the parallel helper — if `_services_rollup` ever
+        bypasses it, the captured call list goes empty."""
+        captured: list = []
+
+        def fake_parallel(units):
+            captured.append(units)
+            return {u: "available" for u in units}
+
+        with patch("utils.fleet_snapshot._probe_services_parallel",
+                   side_effect=fake_parallel):
+            rollup = _services_rollup()
+
+        assert len(captured) == 1
+        assert set(captured[0]) == set(REQUIRED_SERVICES + OPTIONAL_SERVICES)
+        assert rollup["available"] == rollup["total"]
 
 
 # ─── Radio probe ───────────────────────────────────────────────────────
