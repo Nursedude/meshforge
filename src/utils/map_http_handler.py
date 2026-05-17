@@ -1154,6 +1154,19 @@ class MapRequestHandler(
         try:
             from utils.cascade_detector import get_singleton
             snap = get_singleton().get_snapshot()
+            # Fork B — recovery actor state co-located here so operators
+            # have one place to see "what tripped" + "what we did about
+            # it." Missing block (early-boot or import failure) is
+            # treated as "not active" rather than failing the whole
+            # endpoint.
+            try:
+                from utils.cascade_recovery_actions import get_singleton as get_recovery
+                snap["recovery"] = get_recovery().snapshot()
+            except Exception as re:
+                snap["recovery"] = {
+                    "started": False,
+                    "error": f"recovery_unavailable: {re}",
+                }
             self._serve_json(snap, status=200)
         except Exception as e:
             self._serve_json(

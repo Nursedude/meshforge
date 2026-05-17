@@ -622,6 +622,21 @@ class MapServer:
         except Exception as e:
             logger.warning("CascadeDetector start failed (non-fatal): %s", e)
 
+        # Cascade recovery actor (Fork B) — subscribes to wedge_events
+        # and turns each watchdog fire into an audit row (and, if the
+        # operator opts in via map_settings.json's
+        # cascade_recovery_action, a systemctl restart rnsd). Must be
+        # registered AFTER the detector starts so the action gate has
+        # a populated snapshot to read. Failure is non-fatal: the
+        # detector + bounded_rpc Fork A keep working without recovery.
+        try:
+            from utils.cascade_recovery_actions import get_singleton as get_recovery
+            get_recovery().start()
+        except Exception as e:
+            logger.warning(
+                "CascadeRecoveryActor start failed (non-fatal): %s", e
+            )
+
         try:
             self._server.serve_forever()
         except KeyboardInterrupt:
@@ -702,6 +717,17 @@ class MapServer:
             get_singleton().start()
         except Exception as e:
             logger.warning("CascadeDetector start failed (non-fatal): %s", e)
+
+        # Cascade recovery actor (Fork B) — see start() for rationale.
+        # Same pairing pattern: detector first, then the subscriber so
+        # the action gate has a snapshot to consult.
+        try:
+            from utils.cascade_recovery_actions import get_singleton as get_recovery
+            get_recovery().start()
+        except Exception as e:
+            logger.warning(
+                "CascadeRecoveryActor start failed (non-fatal): %s", e
+            )
 
     def stop(self):
         """Stop the server."""
