@@ -379,6 +379,78 @@ else:
 PY
 fi
 
+# MF fleet.json — different schema (keyed dict, peer.ip not peer.host+port),
+# different bug class. MF carries a load-bearing self entry under this_host
+# (used for backup target identity AND for federation self-elimination at
+# src/utils/map_data_collector.py:_bootstrap_federation_peers). The risk
+# here is NOT a stray self peer — that one is intentional — but a
+# this_host VALUE that does not match the real local hostname / IP. When
+# that happens, federation_peers ends up including this box, and the
+# meshforge-map daemon HTTP-polls its own /api/nodes/directory every
+# federation cycle (60s default). Same handler-thread amplifier shape as
+# MA, just rarer and slower to surface.
+mf_fleet_json="$HOME/.config/meshforge/fleet.json"
+if [ -r "$mf_fleet_json" ]; then
+    python3 - "$mf_fleet_json" <<'PY' 2>/dev/null || true
+import json, socket, sys
+# Single-quote-free body — see MA smoke note above.
+try:
+    fp = sys.argv[1]
+    data = json.load(open(fp))
+except Exception as e:
+    print(f"WARN mf-fleet-json unparseable: {type(e).__name__}")
+    sys.exit(0)
+hn = socket.gethostname()
+self_tokens = {hn, hn.lower(), f"{hn}.local"}
+try:
+    for ip in socket.gethostbyname_ex(hn)[2]:
+        self_tokens.add(ip)
+except Exception:
+    pass
+# gethostbyname_ex often returns 127.0.1.1 from /etc/hosts on Debian
+# boxes — not the actual LAN IP. Augment with `hostname -I`, which
+# lists every non-loopback interface address. Without this, a peer
+# entry whose ip is the LAN address of this box would slip through.
+try:
+    import subprocess as _sp
+    out = _sp.run(["hostname", "-I"], capture_output=True, text=True, timeout=2)
+    for ip in (out.stdout or "").split():
+        if ip:
+            self_tokens.add(ip)
+except Exception:
+    pass
+self_tokens.update({"localhost", "127.0.0.1", "::1"})
+this_host = data.get("this_host")
+peers_dict = data.get("peers") or {}
+problems = []
+if not isinstance(this_host, str) or not this_host.strip():
+    problems.append("missing_this_host")
+elif this_host.lower() not in {t.lower() for t in self_tokens}:
+    # `this_host` is set, but does not match any local identity we recognize.
+    # The federation self-elim filters by EXACT name match against this_host
+    # (case-insensitive); a mismatch means the peer dict entry for THIS box
+    # will not be filtered out -> HTTP self-poll on every federation cycle.
+    problems.append(f"this_host_mismatch={this_host}")
+# Defense-in-depth: if some peer entry whose dict-key is NOT this_host
+# resolves to a local IP, federation will also poll self.
+if isinstance(peers_dict, dict) and isinstance(this_host, str):
+    for name, info in peers_dict.items():
+        if name.lower() == (this_host or "").lower():
+            continue
+        if not isinstance(info, dict):
+            continue
+        ip = str(info.get("ip", "")).strip().lower()
+        if ip and ip in {t.lower() for t in self_tokens}:
+            problems.append(f"peer_self_ip name={name} ip={ip}")
+if problems:
+    for prob in problems:
+        print(f"WARN mf-fleet-json {prob} — federation may HTTP-poll its own listener; check this_host + peer IPs in ~/.config/meshforge/fleet.json")
+else:
+    n = len(peers_dict) if isinstance(peers_dict, dict) else 0
+    print(f"PASS mf-fleet-json this_host={this_host} peers={n}")
+PY
+fi
+
 exit $(( ${rc1:-0} + ${rc1b:-0} + ${rc2:-0} ))
 '
 
@@ -558,13 +630,26 @@ sync_local_unit meshforge-gateway /opt/meshforge
 sync_local_unit meshforge-map     /opt/meshforge
 sync_local_unit meshforge-maps    /opt/meshforge-maps
 
-# Self-side rollup self-loopback smoke. Mirrors the remote check so the
+# Self-side fleet-config smokes. Mirrors the remote checks so the
 # canonical box (which fleet_hosts deliberately excludes) gets the same
-# advisory. Same WARN-not-FAIL semantics.
+# advisories. Same WARN-not-FAIL semantics.
+self_tag="self ($(hostname -s))"
+
+# Helper: print a tagged line + bump action counters.
+emit_self_smoke() {
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        printf '[%-30s] %s\n' "$self_tag" "$line"
+        case "$line" in
+            PASS*) action_pass=$((action_pass + 1)) ;;
+            WARN*) action_warn=$((action_warn + 1)) ;;
+        esac
+    done
+}
+
 self_fleet_json="$HOME/.config/meshanchor/fleet.json"
 if [ -r "$self_fleet_json" ]; then
-    self_tag="self ($(hostname -s))"
-    smoke_line="$(python3 - "$self_fleet_json" <<'PY' 2>/dev/null || true
+    python3 - "$self_fleet_json" <<'PY' 2>/dev/null | emit_self_smoke
 import json, socket, sys
 # Keep this body single-quote-free; it is duplicated verbatim above in
 # REMOTE_SCRIPT where outer bash single-quoting would mangle apostrophes.
@@ -597,15 +682,62 @@ else:
     n = len(peers)
     print(f"PASS ma-fleet-json no_self_loopback peers={n}")
 PY
-)"
-    while IFS= read -r line; do
-        [ -z "$line" ] && continue
-        printf '[%-30s] %s\n' "$self_tag" "$line"
-        case "$line" in
-            PASS*) action_pass=$((action_pass + 1)) ;;
-            WARN*) action_warn=$((action_warn + 1)) ;;
-        esac
-    done <<< "$smoke_line"
+fi
+
+self_mf_fleet_json="$HOME/.config/meshforge/fleet.json"
+if [ -r "$self_mf_fleet_json" ]; then
+    python3 - "$self_mf_fleet_json" <<'PY' 2>/dev/null | emit_self_smoke
+import json, socket, sys
+# Single-quote-free body — see MA smoke note above.
+try:
+    fp = sys.argv[1]
+    data = json.load(open(fp))
+except Exception as e:
+    print(f"WARN mf-fleet-json unparseable: {type(e).__name__}")
+    sys.exit(0)
+hn = socket.gethostname()
+self_tokens = {hn, hn.lower(), f"{hn}.local"}
+try:
+    for ip in socket.gethostbyname_ex(hn)[2]:
+        self_tokens.add(ip)
+except Exception:
+    pass
+# gethostbyname_ex often returns 127.0.1.1 from /etc/hosts on Debian
+# boxes — not the actual LAN IP. Augment with `hostname -I`, which
+# lists every non-loopback interface address. Without this, a peer
+# entry whose ip is the LAN address of this box would slip through.
+try:
+    import subprocess as _sp
+    out = _sp.run(["hostname", "-I"], capture_output=True, text=True, timeout=2)
+    for ip in (out.stdout or "").split():
+        if ip:
+            self_tokens.add(ip)
+except Exception:
+    pass
+self_tokens.update({"localhost", "127.0.0.1", "::1"})
+this_host = data.get("this_host")
+peers_dict = data.get("peers") or {}
+problems = []
+if not isinstance(this_host, str) or not this_host.strip():
+    problems.append("missing_this_host")
+elif this_host.lower() not in {t.lower() for t in self_tokens}:
+    problems.append(f"this_host_mismatch={this_host}")
+if isinstance(peers_dict, dict) and isinstance(this_host, str):
+    for name, info in peers_dict.items():
+        if name.lower() == (this_host or "").lower():
+            continue
+        if not isinstance(info, dict):
+            continue
+        ip = str(info.get("ip", "")).strip().lower()
+        if ip and ip in {t.lower() for t in self_tokens}:
+            problems.append(f"peer_self_ip name={name} ip={ip}")
+if problems:
+    for prob in problems:
+        print(f"WARN mf-fleet-json {prob} — federation may HTTP-poll its own listener; check this_host + peer IPs in ~/.config/meshforge/fleet.json")
+else:
+    n = len(peers_dict) if isinstance(peers_dict, dict) else 0
+    print(f"PASS mf-fleet-json this_host={this_host} peers={n}")
+PY
 fi
 
 echo
