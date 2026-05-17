@@ -244,7 +244,7 @@ FINGERPRINTS: List[Fingerprint] = [
         coupled_to=(
             "next lab tracer / echo fire wedges in RNS.Reticulum() init "
             "or LXMRouter.handle_outbound(); fleet rollup fail% spikes "
-            "within one timer interval (~10 min)"
+            "within one timer interval (~10 min)",
         ),
     ),
     Fingerprint(
@@ -257,7 +257,7 @@ FINGERPRINTS: List[Fingerprint] = [
             "cross-fleet tracer rollup row for this host begins accumulating "
             "100 % timeouts; downstream fingerprints (rns_rpc_wedge) may "
             "also fire, but this one trips first because it watches "
-            "consequence (no fires) rather than cause (SYN-SENT socks)"
+            "consequence (no fires) rather than cause (SYN-SENT socks)",
         ),
     ),
     # Future fingerprints (Track 3): wal_oversize, tcp_4403_contention,

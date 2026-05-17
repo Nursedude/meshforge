@@ -50,6 +50,29 @@ class TestCatalogShape:
         with pytest.raises((AttributeError, Exception)):
             fp.name = "mutated"  # frozen dataclass — must raise
 
+    def test_all_fingerprints_coupled_to_is_tuple_of_strings(self):
+        """`coupled_to: Tuple[str, ...]` — a missing trailing comma in
+        `coupled_to=("string")` makes it a bare string, which
+        `list(fp.coupled_to)` in cascade_detector then serializes as a
+        list of individual characters. Caught 2026-05-17 from moc2's
+        /fleet/cascade output ("n","e","x","t"," ","l","a","b",...).
+        Pin the contract so every entry in the catalog is genuinely a
+        tuple-of-strings, including future additions."""
+        for fp in cfp.FINGERPRINTS:
+            assert isinstance(fp.coupled_to, tuple), (
+                f"{fp.name}.coupled_to is {type(fp.coupled_to).__name__}, "
+                f"not tuple — likely missing trailing comma in the "
+                f"definition (e.g. `coupled_to=(\"x\",)` not `(\"x\")`)"
+            )
+            assert all(isinstance(s, str) for s in fp.coupled_to), (
+                f"{fp.name}.coupled_to must be tuple of str, got "
+                f"{[type(s).__name__ for s in fp.coupled_to]}"
+            )
+            assert all(len(s) > 1 for s in fp.coupled_to), (
+                f"{fp.name}.coupled_to has single-char entries — that's "
+                f"the iterate-over-string regression. Got: {fp.coupled_to!r}"
+            )
+
 
 # ── rns_rpc_wedge probe ───────────────────────────────────────────────────
 
