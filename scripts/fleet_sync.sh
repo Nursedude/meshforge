@@ -326,6 +326,59 @@ MFMAPS_PRE_HEAD=$(cd /opt/meshforge-maps 2>/dev/null && git rev-parse HEAD 2>/de
 sync_repo meshforge       /opt/meshforge       meshforge-gateway "$MF_PRE_HEAD"     || rc1=$?
 sync_repo meshforge-map   /opt/meshforge       meshforge-map     "$MF_PRE_HEAD"     || rc1b=$?
 sync_repo meshforge-maps  /opt/meshforge-maps  meshforge-maps    "$MFMAPS_PRE_HEAD" || rc2=$?
+
+# Smoke: catch rollup self-loopback in ~/.config/meshanchor/fleet.json.
+# An entry whose host resolves to this box (hostname / hostname.local /
+# 127.0.0.1 / ::1 / one of our interface IPs) makes the MA rollup
+# HTTP-poll its own listener on every dashboard tick, doubling
+# handler-thread arrival rate and reproducing MA Issue #34 in ~8 min.
+# `non_self_peers()` filters by NAME only (MA #130), so any operator-
+# composed fleet.json that names the self entry anything other than
+# the literal local hostname will silently regress. Catching at sync
+# time keeps the misconfiguration from sitting silently until the
+# blackout banner fires. Emits one WARN per offending peer; never
+# fails the sync.
+fleet_json="$HOME/.config/meshanchor/fleet.json"
+if [ -r "$fleet_json" ]; then
+    python3 - "$fleet_json" <<'PY' 2>/dev/null || true
+import json, socket, sys
+# NOTE: keep this body single-quote-free. REMOTE_SCRIPT (and the self-side
+# smoke_line capture) wraps this python source in an outer bash single-
+# quoted string; an apostrophe here terminates that string and concatenates
+# bare tokens into the heredoc body, silently mangling the python source.
+# Caught 2026-05-16: an earlier data.get with single-quoted key rendered
+# remotely as data.get(peers, []) -> NameError, swallowed by 2>/dev/null.
+try:
+    fp = sys.argv[1]
+    data = json.load(open(fp))
+except Exception as e:
+    print(f"WARN ma-fleet-json unparseable: {type(e).__name__}")
+    sys.exit(0)
+hn = socket.gethostname()
+self_hosts = {hn, hn.lower(), f"{hn}.local",
+              "localhost", "127.0.0.1", "::1", "0.0.0.0"}
+try:
+    for ip in socket.gethostbyname_ex(hn)[2]:
+        self_hosts.add(ip)
+except Exception:
+    pass
+peers = data.get("peers", []) or []
+hits = []
+for p in peers:
+    if not isinstance(p, dict):
+        continue
+    host = str(p.get("host", "")).strip().lower()
+    if host in self_hosts:
+        hits.append((p.get("name", "?"), host, p.get("port", "?")))
+if hits:
+    for name, host, port in hits:
+        print(f"WARN ma-fleet-json self_loopback name={name} host={host} port={port} — MA rollup will HTTP-poll its own listener, see MA Issue #130")
+else:
+    n = len(peers)
+    print(f"PASS ma-fleet-json no_self_loopback peers={n}")
+PY
+fi
+
 exit $(( ${rc1:-0} + ${rc1b:-0} + ${rc2:-0} ))
 '
 
@@ -364,6 +417,7 @@ skip_count=0
 action_pass=0
 action_fail=0
 action_skip=0
+action_warn=0
 
 while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     # strip leading/trailing whitespace, skip blank + comment
@@ -381,9 +435,12 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
                   "$host" "bash -s" <<< "$REMOTE_SCRIPT" 2>&1)"
     rc=$?
 
-    # Pull all summary lines (PASS/FAIL/SKIP), one per repo, then prepend the
-    # memory-mirror summaries from this box.
-    code_summaries="$(echo "$result" | grep -E '^(PASS|FAIL|SKIP) ')"
+    # Pull all summary lines (PASS/FAIL/SKIP/WARN), one per check, then
+    # prepend the memory-mirror summaries from this box. WARN is the
+    # advisory tier added by smoke checks (e.g. ma-fleet-json self-loopback):
+    # surfaced but never counted as failure since the underlying issue is
+    # a config misalignment the operator must fix manually.
+    code_summaries="$(echo "$result" | grep -E '^(PASS|FAIL|SKIP|WARN) ')"
     if [[ -n "$memory_summaries" && -n "$code_summaries" ]]; then
         summaries="$memory_summaries"$'\n'"$code_summaries"
     elif [[ -n "$memory_summaries" ]]; then
@@ -404,6 +461,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
         case "$line" in
             PASS*) action_pass=$((action_pass + 1)) ;;
             SKIP*) action_skip=$((action_skip + 1)) ;;
+            WARN*) action_warn=$((action_warn + 1)) ;;
             FAIL*) action_fail=$((action_fail + 1)); host_failed=1 ;;
         esac
     done <<< "$summaries"
@@ -500,11 +558,61 @@ sync_local_unit meshforge-gateway /opt/meshforge
 sync_local_unit meshforge-map     /opt/meshforge
 sync_local_unit meshforge-maps    /opt/meshforge-maps
 
+# Self-side rollup self-loopback smoke. Mirrors the remote check so the
+# canonical box (which fleet_hosts deliberately excludes) gets the same
+# advisory. Same WARN-not-FAIL semantics.
+self_fleet_json="$HOME/.config/meshanchor/fleet.json"
+if [ -r "$self_fleet_json" ]; then
+    self_tag="self ($(hostname -s))"
+    smoke_line="$(python3 - "$self_fleet_json" <<'PY' 2>/dev/null || true
+import json, socket, sys
+# Keep this body single-quote-free; it is duplicated verbatim above in
+# REMOTE_SCRIPT where outer bash single-quoting would mangle apostrophes.
+try:
+    fp = sys.argv[1]
+    data = json.load(open(fp))
+except Exception as e:
+    print(f"WARN ma-fleet-json unparseable: {type(e).__name__}")
+    sys.exit(0)
+hn = socket.gethostname()
+self_hosts = {hn, hn.lower(), f"{hn}.local",
+              "localhost", "127.0.0.1", "::1", "0.0.0.0"}
+try:
+    for ip in socket.gethostbyname_ex(hn)[2]:
+        self_hosts.add(ip)
+except Exception:
+    pass
+peers = data.get("peers", []) or []
+hits = []
+for p in peers:
+    if not isinstance(p, dict):
+        continue
+    host = str(p.get("host", "")).strip().lower()
+    if host in self_hosts:
+        hits.append((p.get("name", "?"), host, p.get("port", "?")))
+if hits:
+    for name, host, port in hits:
+        print(f"WARN ma-fleet-json self_loopback name={name} host={host} port={port} — MA rollup will HTTP-poll its own listener, see MA Issue #130")
+else:
+    n = len(peers)
+    print(f"PASS ma-fleet-json no_self_loopback peers={n}")
+PY
+)"
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        printf '[%-30s] %s\n' "$self_tag" "$line"
+        case "$line" in
+            PASS*) action_pass=$((action_pass + 1)) ;;
+            WARN*) action_warn=$((action_warn + 1)) ;;
+        esac
+    done <<< "$smoke_line"
+fi
+
 echo
 printf 'Hosts:   %d ok, %d failed, %d unreachable\n' \
     "$pass_count" "$fail_count" "$skip_count"
-printf 'Actions: %d ok, %d failed, %d skipped (no_repo)\n' \
-    "$action_pass" "$action_fail" "$action_skip"
+printf 'Actions: %d ok, %d failed, %d warn, %d skipped (no_repo)\n' \
+    "$action_pass" "$action_fail" "$action_warn" "$action_skip"
 
 # Exit non-zero if any action failed or any host was unreachable. SKIP from
 # no_repo is fine (idempotent install pattern); SKIP from ssh failure is not.
