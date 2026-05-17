@@ -282,6 +282,15 @@ class TestRoundTrip:
         rns_reply.content = "WH6GXZ de KH6ABC 73"
         rns_reply.title = None
         rns_reply.stamp = time.time()
+        # `_on_lxmf_receive` reads `message.fields` (LXMF's per-message
+        # extras dict) and threads it into the BridgedMessage metadata
+        # as `lxmf_fields`. Without explicit None here, MagicMock returns
+        # a truthy mock for the attribute, the xform layer reads
+        # `lxmf_fields.get('meshforge_relayed_by')` as another mock
+        # (also truthy), trips the relay-attribution branch, and
+        # `effective_source` ends up a MagicMock — corrupting the
+        # `[RNS:xxxx]` prefix at line 260 in _rns_bridge_xform.py.
+        rns_reply.fields = None
 
         bridge._on_lxmf_receive(rns_reply)
 

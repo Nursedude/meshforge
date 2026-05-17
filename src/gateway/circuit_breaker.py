@@ -210,6 +210,47 @@ class CircuitBreaker:
             self._half_open_calls = 0
             logger.info(f"Circuit manually reset for {self.destination}")
 
+    def trip_open(self, reason: str = "") -> bool:
+        """Fast-path to OPEN regardless of failure count.
+
+        A single-event-fatal condition (an rnsd RPC wedge surfacing
+        as a `WedgeTimeout`) should bounce the circuit immediately;
+        waiting for `failure_threshold` consecutive `record_failure`
+        calls is the wrong shape because the wedged path won't even
+        emit those calls — the process aborts first.
+
+        Returns True if the transition was CLOSED/HALF_OPEN → OPEN
+        (i.e. this call actually opened the circuit). Idempotent on
+        an already-open circuit: returns False without log spam.
+        Reason is recorded on the last-failure metadata so the
+        recovery actor's audit trail (Fork B) can correlate.
+        """
+        with self._lock:
+            if self._state == CircuitState.OPEN:
+                return False
+            now = time.time()
+            # `can_execute()` reads `_last_failure_time` (the dataclass
+            # field) to compute recovery-timeout elapsed; `get_stats()`
+            # surfaces `_stats.last_failure_time` (the sub-dataclass
+            # attribute). They are independent stores — update both, or
+            # the circuit will immediately transition to HALF_OPEN on the
+            # next `can_execute()` because `_last_failure_time=0.0` is
+            # ~unix-epoch ago.
+            self._last_failure_time = now
+            self._stats.last_failure_time = now
+            # Bump both internal counter AND stats counter — get_stats()
+            # merges `_stats.to_dict()` over the per-circuit dict, so a
+            # solo `_failure_count` write would be shadowed when surfaced
+            # to operators.
+            self._failure_count = self.failure_threshold
+            self._stats.failure_count += 1
+            self._transition_to(CircuitState.OPEN)
+            logger.warning(
+                f"Circuit {self.destination}: tripped open (reason: "
+                f"{reason or 'unspecified'})"
+            )
+            return True
+
     def get_stats(self) -> Dict[str, Any]:
         """Get circuit statistics."""
         with self._lock:
@@ -330,6 +371,24 @@ class CircuitBreakerRegistry:
         if was_closed and circuit.is_open:
             with self._lock:
                 self._total_opened += 1
+
+    def trip_open(self, destination: str, reason: str = "") -> bool:
+        """Force a destination's circuit to OPEN on a single event.
+
+        Convenience wrapper over `CircuitBreaker.trip_open` —
+        intended for `bounded_rpc.WedgeTimeout` handlers in the
+        gateway that must shed a wedged destination immediately,
+        bypassing the multi-failure threshold. Updates the registry's
+        opened-circuits counter when this call actually transitions
+        a previously-closed circuit. Idempotent on an already-open
+        circuit (returns False, no counter bump).
+        """
+        circuit = self._get_or_create(destination)
+        opened = circuit.trip_open(reason)
+        if opened:
+            with self._lock:
+                self._total_opened += 1
+        return opened
 
     def reset(self, destination: str) -> bool:
         """

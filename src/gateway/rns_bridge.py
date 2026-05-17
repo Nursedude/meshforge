@@ -22,6 +22,7 @@ from .bridge_health import (
     BridgeStatus, SubsystemState, MessageOrigin
 )
 from utils.boundary_timing import call_boundary
+from gateway.bounded_rpc import bounded_call, default_on_wedge
 from utils.safe_import import safe_import
 
 # MQTT bridge handler (zero-interference, recommended)
@@ -795,12 +796,33 @@ class RNSMeshtasticBridge(
             if destination_hash:
                 # Direct message
                 hash_short = destination_hash.hex()[:8]
-                if not call_boundary("rnsd.has_path",
-                                     RNS.Transport.has_path, destination_hash,
-                                     target=hash_short):
-                    call_boundary("rnsd.request_path",
-                                  RNS.Transport.request_path, destination_hash,
-                                  target=hash_short)
+                # On-wedge composite: trip the circuit breaker for this
+                # destination THEN run the default publish-+-counter hook.
+                # The watchdog calls `os._exit(2)` after we return, so the
+                # trip_open effect is process-local + brief — but it
+                # still produces an observable side effect during the
+                # abort window that tests with `exit_on_wedge=False`
+                # rely on.
+                def _on_wedge(label, target, timeout_s,
+                              _hash=hash_short):
+                    try:
+                        if self._circuit_breaker is not None:
+                            self._circuit_breaker.trip_open(
+                                _hash, f"wedge:{label}"
+                            )
+                    except Exception:
+                        pass
+                    default_on_wedge(label, target, timeout_s)
+                if not bounded_call("rnsd.has_path",
+                                    RNS.Transport.has_path, destination_hash,
+                                    target=hash_short,
+                                    timeout_s=3.0,
+                                    on_wedge=_on_wedge):
+                    bounded_call("rnsd.request_path",
+                                 RNS.Transport.request_path, destination_hash,
+                                 target=hash_short,
+                                 timeout_s=5.0,
+                                 on_wedge=_on_wedge)
                     # Wait briefly for path (interruptible on shutdown)
                     for _ in range(50):
                         if RNS.Transport.has_path(destination_hash):
@@ -812,9 +834,12 @@ class RNSMeshtasticBridge(
                     logger.warning("No path to destination")
                     return False
 
-                dest_identity = call_boundary("rnsd.identity_recall",
-                                              RNS.Identity.recall, destination_hash,
-                                              target=hash_short)
+                dest_identity = bounded_call("rnsd.identity_recall",
+                                             RNS.Identity.recall,
+                                             destination_hash,
+                                             target=hash_short,
+                                             timeout_s=3.0,
+                                             on_wedge=_on_wedge)
                 destination = RNS.Destination(
                     dest_identity,
                     RNS.Destination.OUT,
@@ -831,12 +856,17 @@ class RNSMeshtasticBridge(
                 )
                 return False
 
-            lxm = LXMF.LXMessage(
+            lxm = bounded_call(
+                "rnsd.lxmessage_ctor",
+                LXMF.LXMessage,
                 destination,
                 self._lxmf_source,
                 message,
                 title or "MeshForge Gateway",
                 fields=fields,
+                target=hash_short,
+                timeout_s=5.0,
+                on_wedge=_on_wedge,
             )
 
             # Track delivery confirmation
@@ -862,9 +892,11 @@ class RNSMeshtasticBridge(
                 # LXMF version may not support callbacks
                 logger.debug("LXMF callbacks not available, skipping delivery tracking")
 
-            call_boundary("rnsd.handle_outbound",
-                          self._lxmf_router.handle_outbound, lxm,
-                          target=hash_short)
+            bounded_call("rnsd.handle_outbound",
+                         self._lxmf_router.handle_outbound, lxm,
+                         target=hash_short,
+                         timeout_s=15.0,
+                         on_wedge=_on_wedge)
             return True
 
         except Exception as e:
@@ -894,12 +926,26 @@ class RNSMeshtasticBridge(
                 destination_hash = bytes.fromhex(destination_hash)
             hash_short = destination_hash.hex()[:8]
 
-            if not call_boundary("rnsd.has_path",
-                                 RNS.Transport.has_path, destination_hash,
-                                 target=hash_short):
-                call_boundary("rnsd.request_path",
-                              RNS.Transport.request_path, destination_hash,
-                              target=hash_short)
+            def _on_wedge(label, target, timeout_s, _hash=hash_short):
+                try:
+                    if self._circuit_breaker is not None:
+                        self._circuit_breaker.trip_open(
+                            _hash, f"wedge:{label}"
+                        )
+                except Exception:
+                    pass
+                default_on_wedge(label, target, timeout_s)
+
+            if not bounded_call("rnsd.has_path",
+                                RNS.Transport.has_path, destination_hash,
+                                target=hash_short,
+                                timeout_s=3.0,
+                                on_wedge=_on_wedge):
+                bounded_call("rnsd.request_path",
+                             RNS.Transport.request_path, destination_hash,
+                             target=hash_short,
+                             timeout_s=5.0,
+                             on_wedge=_on_wedge)
                 for _ in range(30):
                     if RNS.Transport.has_path(destination_hash):
                         break
@@ -909,18 +955,27 @@ class RNSMeshtasticBridge(
             if not RNS.Transport.has_path(destination_hash):
                 return False
 
-            dest_identity = call_boundary("rnsd.identity_recall",
-                                          RNS.Identity.recall, destination_hash,
-                                          target=hash_short)
+            dest_identity = bounded_call("rnsd.identity_recall",
+                                         RNS.Identity.recall, destination_hash,
+                                         target=hash_short,
+                                         timeout_s=3.0,
+                                         on_wedge=_on_wedge)
             destination = RNS.Destination(
                 dest_identity, RNS.Destination.OUT,
                 RNS.Destination.SINGLE, "lxmf", "delivery"
             )
 
-            lxm = LXMF.LXMessage(destination, self._lxmf_source, message, "MeshForge Gateway")
-            call_boundary("rnsd.handle_outbound",
-                          self._lxmf_router.handle_outbound, lxm,
-                          target=hash_short)
+            lxm = bounded_call(
+                "rnsd.lxmessage_ctor",
+                LXMF.LXMessage,
+                destination, self._lxmf_source, message, "MeshForge Gateway",
+                target=hash_short, timeout_s=5.0, on_wedge=_on_wedge,
+            )
+            bounded_call("rnsd.handle_outbound",
+                         self._lxmf_router.handle_outbound, lxm,
+                         target=hash_short,
+                         timeout_s=15.0,
+                         on_wedge=_on_wedge)
             return True
 
         except Exception as e:

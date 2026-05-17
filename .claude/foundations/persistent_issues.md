@@ -212,49 +212,16 @@ gateway. Inbound RNS link-packet auth follow-up landed in Issue #41.
 
 ## Issue #41: rpc_key pinning closes the Issue #37/#40 gateway inbound gap (2026-04-21)
 
-**Symptom**: After `ddb40de` the bridge stat `R→M` stayed at zero. Unit tests
-proved the bytes-decode path was correct; real inbound LXMF still never fired
-`_on_lxmf_receive`. Same root cause as Issue #37, but on the gateway side.
-
-**Root cause**: MeshForge writes three client-only configs in
-`/tmp/meshforge_rns_client/` (gateway, TUI RNS commands, map collector).
-Each caused `RNS.Reticulum(configdir=…)` to generate a fresh transport
-identity, and rnsd's `multiprocessing.connection` authkey is derived from
-identity private bytes. Divergent identities → divergent authkeys → every
-RPC to rnsd (`get_packet_rssi`, `first_hop_timeout`, etc.) fails
-`AuthenticationError: digest sent was rejected`. On the gateway this
-aborts inbound link-packet processing before LXMF delivery.
-
-**Fix**: propagate rnsd's `rpc_key` into each client config when pinned.
-Completes Issue #40's "Prevention / future work" option (b).
-
-- `src/utils/paths.py` — `ReticulumPaths.get_shared_rpc_key()`: strict
-  64-hex reader, lowercase-normalized, rejects malformed / commented-out
-  / missing-file. 6 new tests.
-- `src/commands/rns.py`, `src/gateway/node_tracker.py`,
-  `src/utils/_map_collector_rns.py` — each appends the key when available.
-  The `node_tracker.py` site is the R→M=0 unblocker.
-
-**Operator preflight**: `grep '^  rpc_key' /etc/reticulum/config`. If absent,
-generate (`openssl rand -hex 32`) and add under `[reticulum]`, then
-`sudo systemctl restart rnsd` and any MeshForge consumers. Verify:
-`grep '^  rpc_key\|^rpc_key' /tmp/meshforge_rns_client/config` matches.
-
-**Correction (2026-04-21)**: initial implementation shipped with option name
-`shared_instance_rpc_key`, which RNS 1.1.x silently ignores — only literal
-`rpc_key` is parsed (see `RNS/Reticulum.py` line ~477). The helper and all
-three callsites were renamed to write `rpc_key`. Any fleet box carrying the
-old option name is equivalent to unpinned — apply `sed -i
-s/shared_instance_rpc_key/rpc_key/` to every RNS config on the box (both
-`/etc/reticulum/config` and, on split-identity boxes, `/root/.reticulum/config`
-and `/home/*/.reticulum/config`) and restart rnsd.
-
-**Prevention**: future client-config writers should call
-`get_shared_rpc_key()` rather than hand-rolling a stanza. Worth adding a
-preflight warning when the pinned key is absent — today's silent-None
-regresses to Issue #37 behavior without a surface error. Cross-reference:
-closes out Issue #37 (NomadNet side masked by wrapper `1856b58`) and
-Issue #40 (bytes + TX landed in `ddb40de`; this is the inbound complement).
+**Resolved 2026-04-21**. MeshForge's three client-only RNS configs
+(gateway, TUI commands, map collector) each generated a fresh
+transport identity, producing divergent multiprocessing-RPC authkeys
+that rnsd rejected. **Fix**: propagate rnsd's `rpc_key` into each
+client config — `src/utils/paths.py:ReticulumPaths.get_shared_rpc_key()`
++ callers in `src/commands/rns.py`, `src/gateway/node_tracker.py`,
+`src/utils/_map_collector_rns.py`. RNS 1.1.x parses only the literal
+`rpc_key` name (not `shared_instance_rpc_key`); migration fleets must
+`sed s/shared_instance_rpc_key/rpc_key/` every RNS config.
+**Full body**: `persistent_issues_archive.md`.
 
 
 ---
@@ -773,3 +740,56 @@ that has since grown." #55 fixed `/fleet/slo` by making it faster;
 #56 gives the federation collector more time to consume the bigger
 `/api/nodes/directory`. Pairing matters — either alone leaves a
 class of timeouts uncovered.
+
+
+---
+
+## Issue #57: Gateway data-path watchdog — `bounded_call` over RNS RPC hot path (2026-05-17)
+
+**Symptom (latent, not yet field-validated post-fix)**: The gateway's
+hot-path RNS RPC calls (`RNS.Transport.has_path/request_path`,
+`Identity.recall`, `LXMRouter.handle_outbound`, `LXMF.LXMessage()`
+ctor) ran under `call_boundary()` which **logs slow calls but never
+aborts them**. If rnsd's RPC listener wedged after init (the kernel
+`unix_wait_for_peer` hang documented in
+`project_rnsd_rpc_listener_wedge`), gateway threads hung silently
+forever — no exception, downlinks just stopped, systemd reported
+`active (running)`. Lab tracer survived this via
+`_lab_common.bounded_block`; the actual production bridge didn't.
+
+**Fix (PR-1 of the A+B+C arc, Plan
+`fix-federation-persistent-issues-2026-05-17.md`)**:
+
+- New `src/utils/wedge_events.py` — bounded `deque(maxlen=200)` +
+  `publish/recent/subscribe` pub-sub. Forensic trail consumed by
+  `bridge_cli` (live debug) and Fork B's recovery actor (future PR).
+- New `src/gateway/bounded_rpc.py` — `bounded_call(label, fn, *args,
+  target, timeout_s, threshold_s, on_wedge, exit_on_wedge, **kwargs)`.
+  Composes `_lab_common.bounded_block` over `timed_boundary` so
+  p50/p95/p99 metrics keep populating. Default `on_wedge` bumps
+  `rns_call_wedge_total[label]` + publishes a `WedgeEvent`, then the
+  watchdog `os._exit(2)`s — systemd restarts the gateway (strictly
+  better than silent hang). Env-var per-label overrides
+  (`MESHFORGE_BOUNDED_RPC_TIMEOUT_*`) for operator escape.
+- `src/gateway/circuit_breaker.py` — added
+  `CircuitBreaker.trip_open(reason)` + registry wrapper. Single-event
+  fast-path to OPEN; idempotent on already-open. Used by the bridge's
+  composite `on_wedge` so a wedged destination is shed before
+  process abort.
+- `src/gateway/rns_bridge.py` — 11 call sites migrated from
+  `call_boundary` to `bounded_call` with per-kind budgets: `has_path`
+  3 s, `request_path` 5 s, `Identity.recall` 3 s, `LXMessage()` ctor
+  5 s, `handle_outbound` 15 s. Composite `on_wedge` hook trips the
+  circuit breaker on the destination's hash before calling default
+  publish-+-counter.
+- `src/gateway/node_tracker.py` — `path_table` access wrapped in
+  `bounded_call` (`rnsd.path_table`, 2 s) — the property has been
+  observed to block under wedge.
+
+**Tests** (42 new): `test_wedge_events.py` (17), `test_bounded_rpc.py`
+(19), `test_circuit_breaker.py` (+6 for `trip_open`).
+
+**Verify**: `ssh <box> 'pkill -STOP rnsd'` + gateway send → journal
+shows WEDGED + process exit + systemd restart; release with `-CONT`.
+PR-2 (Fork B) and PR-3 (Fork C) ship next on this substrate. Plan:
+`~/.claude/plans/fix-federation-persistent-issues-2026-05-17.md`.

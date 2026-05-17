@@ -28,6 +28,7 @@ from .node_models import (
 )
 
 from utils.boundary_timing import timed_boundary
+from gateway.bounded_rpc import bounded_call
 from utils.safe_import import safe_import
 
 # Import RNS service registry and topology (optional - graceful fallback)
@@ -316,10 +317,24 @@ class UnifiedNodeTracker:
             if current_time - last_check >= check_interval:
                 last_check = current_time
                 try:
-                    # Re-check path_table for newly discovered routes
+                    # Re-check path_table for newly discovered routes.
+                    # `path_table` is a property — under a wedged rnsd
+                    # RPC listener, accessing it has been observed to
+                    # block. Snapshot under a hard timeout so a slow
+                    # rnsd can't freeze the node-tracker scan thread.
                     new_count = 0
-                    if hasattr(RNS.Transport, 'path_table') and RNS.Transport.path_table:
-                        for dest_hash, path_data in RNS.Transport.path_table.items():
+                    path_table_snapshot = bounded_call(
+                        "rnsd.path_table",
+                        lambda: (
+                            dict(RNS.Transport.path_table)
+                            if hasattr(RNS.Transport, 'path_table')
+                            and RNS.Transport.path_table
+                            else {}
+                        ),
+                        timeout_s=2.0,
+                    )
+                    if path_table_snapshot:
+                        for dest_hash, path_data in path_table_snapshot.items():
                             try:
                                 if isinstance(dest_hash, bytes) and len(dest_hash) == 16:
                                     node_id = f"rns_{dest_hash.hex()[:16]}"

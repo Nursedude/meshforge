@@ -1265,3 +1265,51 @@ Or via TUI on the box: NomadNet → Service Control → Reinstall NomadNet.
 
 
 ---
+## Issue #41: rpc_key pinning closes the Issue #37/#40 gateway inbound gap (2026-04-21)
+
+**Symptom**: After `ddb40de` the bridge stat `R→M` stayed at zero. Unit tests
+proved the bytes-decode path was correct; real inbound LXMF still never fired
+`_on_lxmf_receive`. Same root cause as Issue #37, but on the gateway side.
+
+**Root cause**: MeshForge writes three client-only configs in
+`/tmp/meshforge_rns_client/` (gateway, TUI RNS commands, map collector).
+Each caused `RNS.Reticulum(configdir=…)` to generate a fresh transport
+identity, and rnsd's `multiprocessing.connection` authkey is derived from
+identity private bytes. Divergent identities → divergent authkeys → every
+RPC to rnsd (`get_packet_rssi`, `first_hop_timeout`, etc.) fails
+`AuthenticationError: digest sent was rejected`. On the gateway this
+aborts inbound link-packet processing before LXMF delivery.
+
+**Fix**: propagate rnsd's `rpc_key` into each client config when pinned.
+Completes Issue #40's "Prevention / future work" option (b).
+
+- `src/utils/paths.py` — `ReticulumPaths.get_shared_rpc_key()`: strict
+  64-hex reader, lowercase-normalized, rejects malformed / commented-out
+  / missing-file. 6 new tests.
+- `src/commands/rns.py`, `src/gateway/node_tracker.py`,
+  `src/utils/_map_collector_rns.py` — each appends the key when available.
+  The `node_tracker.py` site is the R→M=0 unblocker.
+
+**Operator preflight**: `grep '^  rpc_key' /etc/reticulum/config`. If absent,
+generate (`openssl rand -hex 32`) and add under `[reticulum]`, then
+`sudo systemctl restart rnsd` and any MeshForge consumers. Verify:
+`grep '^  rpc_key\|^rpc_key' /tmp/meshforge_rns_client/config` matches.
+
+**Correction (2026-04-21)**: initial implementation shipped with option name
+`shared_instance_rpc_key`, which RNS 1.1.x silently ignores — only literal
+`rpc_key` is parsed (see `RNS/Reticulum.py` line ~477). The helper and all
+three callsites were renamed to write `rpc_key`. Any fleet box carrying the
+old option name is equivalent to unpinned — apply `sed -i
+s/shared_instance_rpc_key/rpc_key/` to every RNS config on the box (both
+`/etc/reticulum/config` and, on split-identity boxes, `/root/.reticulum/config`
+and `/home/*/.reticulum/config`) and restart rnsd.
+
+**Prevention**: future client-config writers should call
+`get_shared_rpc_key()` rather than hand-rolling a stanza. Worth adding a
+preflight warning when the pinned key is absent — today's silent-None
+regresses to Issue #37 behavior without a surface error. Cross-reference:
+closes out Issue #37 (NomadNet side masked by wrapper `1856b58`) and
+Issue #40 (bytes + TX landed in `ddb40de`; this is the inbound complement).
+
+
+---

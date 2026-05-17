@@ -141,6 +141,67 @@ class TestCircuitBreaker:
         assert stats["total_blocked"] == 1
 
 
+class TestCircuitBreakerTripOpen:
+    """`trip_open` is the fast-path used by `bounded_rpc`'s on_wedge
+    hook — a wedged RNS RPC call is single-event-fatal and shouldn't
+    wait for `failure_threshold` consecutive `record_failure` calls
+    that the wedged path won't even emit."""
+
+    def test_trip_open_from_closed_transitions_to_open(self):
+        cb = CircuitBreaker(destination="d", failure_threshold=5)
+        assert cb.state == CircuitState.CLOSED
+        opened = cb.trip_open("wedge")
+        assert opened is True
+        assert cb.state == CircuitState.OPEN
+
+    def test_trip_open_is_idempotent_when_already_open(self):
+        cb = CircuitBreaker(destination="d", failure_threshold=1)
+        cb.record_failure("first")
+        assert cb.state == CircuitState.OPEN
+        opened = cb.trip_open("second")
+        assert opened is False  # was already open
+        assert cb.state == CircuitState.OPEN
+
+    def test_trip_open_makes_can_execute_false(self):
+        """The single visible-to-callers contract: after trip_open, the
+        destination must be blocked. `can_execute()` is the gate
+        operators and the bridge data path read."""
+        cb = CircuitBreaker(destination="d", failure_threshold=5)
+        assert cb.can_execute() is True
+        cb.trip_open("wedge")
+        assert cb.state == CircuitState.OPEN
+        assert cb.can_execute() is False
+
+    def test_trip_open_logs_reason(self, caplog):
+        import logging
+        cb = CircuitBreaker(destination="d", failure_threshold=5)
+        with caplog.at_level(logging.WARNING, logger="gateway.circuit_breaker"):
+            cb.trip_open("rns_rpc_wedge")
+        assert any(
+            "tripped open" in r.message.lower()
+            and "rns_rpc_wedge" in r.message
+            for r in caplog.records
+        )
+
+    def test_registry_trip_open_bumps_total_opened(self):
+        registry = CircuitBreakerRegistry()
+        before = registry.get_stats()["total_opened"]
+        opened = registry.trip_open("dest-a", "wedge")
+        after = registry.get_stats()["total_opened"]
+        assert opened is True
+        assert after == before + 1
+
+    def test_registry_trip_open_idempotent_does_not_bump(self):
+        """Second trip_open on already-open circuit must not double-count."""
+        registry = CircuitBreakerRegistry()
+        registry.trip_open("dest-b", "wedge")
+        before = registry.get_stats()["total_opened"]
+        opened_again = registry.trip_open("dest-b", "wedge2")
+        after = registry.get_stats()["total_opened"]
+        assert opened_again is False
+        assert after == before
+
+
 class TestCircuitBreakerRegistry:
     """Test circuit breaker registry."""
 
