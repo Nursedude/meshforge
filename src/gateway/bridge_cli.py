@@ -24,6 +24,7 @@ from gateway import (
     create_rns_transport,
 )
 from utils.service_check import check_service, check_port
+from utils.sandbox_check import assert_writable_or_exit
 
 # Setup logging — use canonical logging_config (avoids basicConfig conflicts)
 from utils.logging_config import setup_logging, get_logger
@@ -354,6 +355,14 @@ def main():
     print("\n" + "="*50)
     print("  MeshForge Gateway Bridge")
     print("="*50)
+
+    # Sandbox preflight (Issue #58 class). When systemd's
+    # ProtectHome=read-only + ReadWritePaths= drift from the data
+    # directories the gateway actually writes, we want to fail at
+    # startup with a precise operator-actionable error rather than
+    # hours later in an LXMF callback exception. See
+    # utils/sandbox_check.py and persistent_issues #58/#60.
+    assert_writable_or_exit("meshforge-gateway")
 
     # Load config
     try:

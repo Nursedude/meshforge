@@ -18,6 +18,7 @@ Checks:
 - MF013: Bare sqlite3.connect() outside db_helpers.py (must use connect_tuned)
 - MF014: Operator-specific values (hostnames, personal email, /home/<user>/) — break repo portability
 - MF016: @patch('src.utils.paths.…') in tests — production imports via bare 'utils.paths', divergent class objects
+- MF017: hardened systemd unit (ProtectHome=read-only) ReadWritePaths drift vs the three meshforge buckets (Issue #58)
 
 Usage:
     python3 scripts/lint.py [files...]
@@ -595,6 +596,84 @@ def check_context_doc_sizes(repo_root: str = '.') -> List[LintIssue]:
     return issues
 
 
+# MF017: hardened systemd units (ProtectHome=read-only) must whitelist all three
+# canonical MeshForge data buckets in ReadWritePaths=. The bucket-class taxonomy
+# is the contract documented in utils/sandbox_check.py:meshforge_writable_paths.
+# Drift between the code's data path (e.g. _meshforge_data_dir() in
+# utils/db_inventory.py) and the unit's ReadWritePaths= is the Issue #58 class:
+# the service stays "active (running)" while every write fails in a callback
+# exception. moc3 ran in that state for 18h on 2026-05-18 before detection.
+#
+# Audit rule: every contrib/systemd/*.service.in (and any other hardened
+# unit template) with ProtectHome=read-only must have ReadWritePaths= that
+# covers all three meshforge buckets. Use an inline comment
+# "# audit-skip: <reason>" on the ReadWritePaths line to explicitly opt out
+# (e.g. for a service that genuinely only needs .config — but think hard,
+# because Issue #58 was exactly the case where "only needs .config + .cache"
+# turned out to be wrong six months later).
+MF017_REQUIRED_BUCKETS = (".config/meshforge", ".local/share/meshforge", ".cache/meshforge")
+
+
+def check_systemd_sandbox_paths(repo_root: str = '.') -> List[LintIssue]:
+    """MF017: hardened systemd units must whitelist all three meshforge data buckets."""
+    issues: List[LintIssue] = []
+    contrib_dir = os.path.join(repo_root, 'contrib', 'systemd')
+    if not os.path.isdir(contrib_dir):
+        return issues
+
+    for fname in sorted(os.listdir(contrib_dir)):
+        if not fname.endswith('.service.in'):
+            continue
+        full = os.path.join(contrib_dir, fname)
+        rel_path = os.path.relpath(full, repo_root)
+        try:
+            with open(full, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except OSError:
+            continue
+
+        # Only audit hardened units. Units without ProtectHome (or with
+        # ProtectHome=false) aren't subject to the trap.
+        if 'ProtectHome=read-only' not in content and 'ProtectHome=yes' not in content:
+            continue
+
+        # Collect every ReadWritePaths line (systemd allows multiple). Each
+        # may be a space-separated list. Audit-skip is a per-line marker.
+        whitelisted = []  # entries (with @HOME@ → ~/.local style normalization not needed here)
+        rwp_lineno = 0
+        for lineno, line in enumerate(content.splitlines(), start=1):
+            stripped = line.split('#', 1)[0].strip()  # comments stripped for parsing
+            if stripped.startswith('ReadWritePaths='):
+                if '# audit-skip:' in line:
+                    # Operator explicitly acknowledged the gap on this line.
+                    # Defer to their judgment but require the marker — that's
+                    # the signal that the omission is deliberate, not drift.
+                    return issues  # short-circuit whole unit (rare path)
+                if rwp_lineno == 0:
+                    rwp_lineno = lineno
+                rest = stripped[len('ReadWritePaths='):]
+                whitelisted.extend(rest.split())
+
+        # If no ReadWritePaths at all, the unit is hardened-without-state —
+        # also a smell, but probably intentional (a pure compute service).
+        # Don't fire on this case; MF017 is specifically about the trap shape.
+        if not whitelisted:
+            continue
+
+        for bucket in MF017_REQUIRED_BUCKETS:
+            # Allow either literal "/.../meshforge" or "@HOME@/.../meshforge"
+            if not any(bucket in p for p in whitelisted):
+                issues.append(LintIssue(
+                    rel_path, rwp_lineno, Severity.ERROR, "MF017",
+                    f"hardened systemd unit (ProtectHome=read-only) missing "
+                    f"'{bucket}' in ReadWritePaths= — Issue #58 class. Add "
+                    f"'@HOME@/{bucket}' to the ReadWritePaths line, OR mark "
+                    f"the omission deliberate with an inline "
+                    f"'# audit-skip: <reason>' comment.",
+                ))
+    return issues
+
+
 def main():
     parser = argparse.ArgumentParser(description='MeshForge Linter')
     parser.add_argument('files', nargs='*', help='Files to lint')
@@ -634,6 +713,13 @@ def main():
         issues.extend(check_operator_values_in_files(get_staged_files_all_types()))
     else:
         issues.extend(check_operator_values_full_tree())
+
+    # MF017: systemd sandbox writable-path drift (Issue #58 class). Walks
+    # the whole contrib/systemd/ tree — drift in a unit not touched by this
+    # PR still matters. Skip in --staged mode so a one-file PR doesn't pay
+    # the audit cost.
+    if not args.staged:
+        issues.extend(check_systemd_sandbox_paths())
 
     # Filter by severity
     severity_order = {'error': 0, 'warning': 1, 'info': 2}

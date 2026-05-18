@@ -56,6 +56,8 @@ Full history in `persistent_issues_archive.md`.
 | #54 Federation peer_name correlation (2026-05-17) | `FederationPeerStatus.peer_name` plumbed end-to-end so `/api/status.federation` rows line up with MA `/fleet/rollup` + tracer leaderboard. Body in archive | `TestPeerNamePlumbing` (6 tests) |
 | #55 `/fleet/slo` latency cliff (2026-05-17) | TTL-cached + parallel `_systemctl_state` probes; cold call 2.4s → 400ms, well under MA's 3s peer-fetch budget. Body in archive | `tests/test_fleet_snapshot.py` (10 tests) |
 | #56 Federation directory timeout (2026-05-17) | `DEFAULT_TIMEOUT` 5s→30s in `map_federation`; 35 MB `/api/nodes/directory` couldn't fit the old budget. Body in archive | `TestDefaultTimeout` (3 tests) |
+| #47 NomadNet two-conversations UX (2026-04-25) | Known Nodes vs Conversations panel distinction; gateway thread vs peer LXMF thread. Operator seeding flow. Body in archive | UX/documentation |
+| #53 meshforge-map stale daemon (2026-05-02) | fleet_sync.sh now restarts `meshforge-map.service` alongside `meshforge` + `meshforge-maps`. Body in archive | `scripts/fleet_sync.sh` (commit `660f26f`) |
 
 ---
 
@@ -225,55 +227,6 @@ client config — `src/utils/paths.py:ReticulumPaths.get_shared_rpc_key()`
 `rpc_key` name (not `shared_instance_rpc_key`); migration fleets must
 `sed s/shared_instance_rpc_key/rpc_key/` every RNS config.
 **Full body**: `persistent_issues_archive.md`.
-
-
----
-
-## Issue #47: NomadNet operator confusion — two kinds of conversation in a gateway-equipped fleet (2026-04-25)
-
-**Symptom**: After single-gateway topology + multi-recipient deploy,
-operators report "fleet-host-1/fleet-host-2/fleet-host-3 NomadNets don't see each other."
-Mesh↔NomadNet gateway path is healthy, `rnpath` resolves peer LXMF
-hashes, every box's `~/.nomadnetwork/storage/directory` has the current
-peer hashes. Substrate is fine.
-
-**Root cause — UX, not transport.** NomadNet's **Conversations** panel
-populates only when an LXMF *message* arrives/sends; **Network / Known
-Nodes** populates from `lxmf.delivery` *announces*. Peers that have
-only exchanged announces show under Known Nodes but not Conversations.
-The peer is one keystroke away, not missing.
-
-**Two-conversation rubric** in a gateway-equipped fleet:
-
-- **MeshForge Gateway (\<hostname\>)** — single thread indexed by the
-  gateway's hash (e.g. `f68c2f56…`). All Mesh-bridged content,
-  `[Mesh:xxxx]` prefixed (Issue #35). One per gateway.
-- **Peer-NomadNet conversations** — one per operator, indexed by their
-  `lxmf.delivery` hash (e.g. `522c4ac1…`). Direct LXMF over RNS
-  Transport, no gateway, no `[Mesh:]` prefix.
-
-Both coexist; neither replaces the other.
-
-**Operator seeding flow** — Known-Nodes → Conversations:
-1. `ssh <box> -t 'tmux attach -t nomadnet'`
-2. Navigate to Network/Known Nodes panel (help bar shows the keybind).
-3. Highlight peer ("meshforge fleet-host-2 nomad"); press "Converse" key.
-4. Send a one-line hello. Recipient's Conversations panel auto-creates
-   within ~30s. One round trip per pair seeds both directions.
-
-**Verification — peer LXMF didn't accidentally route via gateway**:
-```bash
-ssh fleet-host-3 'sudo journalctl -u meshforge-gateway --since "5 min ago" \
-  --no-pager | grep -E "Bridge|delivery confirmed"'
-```
-Should stay quiet during peer-to-peer sends. Gateway in the data path
-for peer NomadNet would be a topology bug.
-
-**Future**: TUI helper to walk Known-Nodes and seed conversations
-(matches `feedback_user_audience_ux_bar.md`). Add to
-`docs/GATEWAY_DEPLOYMENT.md`. Open question: drop legacy
-`[[Regional RNS]]` TCPClient on fleet-host-1/fleet-host-2 to force the fleet-host-3 hub
-path; today both interfaces work, RNS picks whichever responds first.
 
 
 ---
@@ -517,62 +470,6 @@ row tuple) is the regression-prevention shape for similar future work.
 
 ---
 
-## Issue #53: meshforge-map.service stale daemon → :4403 contention starves :9443 web UI (2026-05-02)
-
-**Symptom**: User reported `<ip>:9443` "not functional" on a fleet box.
-The web UI's HTML shell loaded but the SPA's data calls hung. Survey
-showed `python pid=N (utils.map_data_service) ESTABLISHED` to
-`127.0.0.1:4403` on moc, moc1, and volcanoai (moc2 had a
-CLOSE-WAIT remnant; moc3 unaffected — gateway profile, no
-meshforge-map). `/api/v1/fromradio?all=true` returned `size=0` on
-the affected boxes — exactly the
-`project_tcp_contention_pattern` shape.
-
-**Root cause**: stale daemon, not a current-code regression. The
-running `meshforge-map.service` had been live since 2026-05-01 (~21h
-on moc1) and was loading pre-fix module code. Subsequent fleet
-syncs updated the working tree to current `main` but did NOT
-restart `meshforge-map.service` — `scripts/fleet_sync.sh` only
-restarts `meshforge` (gateway, this-repo) and `meshforge-maps`
-(sister :8808 service); the singular `meshforge-map.service`
-(:5000 map from this repo) is omitted from the restart loop.
-
-The map collector's HTTP path
-(`_collect_via_http` in `src/utils/_map_collector_meshtastic.py`)
-talks to meshtasticd on :9443. When :4403 is contended, that fetch
-is starved → returns empty → the collector falls through to
-`_collect_via_tcp_interface` (line 86), which opens its OWN
-:4403 socket via `get_connection_manager`, which the singleton
-caches between cycles → self-reinforcing starvation.
-
-**Fix** (immediate): `sudo systemctl restart meshforge-map.service`
-on each affected box. Post-restart, current code keeps :4403 clear
-across at least one full collect cycle (verified 75s on each box,
-moc / moc1 / volcanoai).
-
-**Operator diagnostic**:
-```bash
-sudo ss -tnp | grep ":4403" | grep python   # any output = contention
-curl -sk -o /dev/null -w "%{size_download}\n" \
-    "https://127.0.0.1:9443/api/v1/fromradio?all=true" -m 5
-# size=0 with python on :4403 = the failure mode
-# size=0 with no python on :4403 = normal empty-state (benign)
-```
-
-**Prevention** (shipped 2026-05-02, commit `660f26f`):
-`scripts/fleet_sync.sh` now restarts `meshforge-map.service`
-alongside the existing `meshforge` and `meshforge-maps` units —
-three sync_repo calls instead of two. The second call against
-`/opt/meshforge` re-pulls (no-op, ~50ms LAN) and try-restarts the
-map daemon only when it's already active, preserving operator-
-disabled state. Verified end-to-end on all five fleet boxes:
-PIDs changed and :4403 stayed clear through one full collect
-cycle. Tracker memory:
-`project_meshforge_map_stale_daemon_pattern.md`.
-
-
----
-
 ## Issue #57: Gateway data-path watchdog — `bounded_call` over RNS RPC hot path (2026-05-17)
 
 **Symptom (latent, not yet field-validated post-fix)**: The gateway's
@@ -710,6 +607,89 @@ latency cliff)**: the federation triad — diagnostics (#54), raw budget
 persistent issues" from a recurring class into a closed loop. moc3's
 roster cleanup (the design call deferred at the start of this turn)
 is now moot: the system handles it.
+
+
+---
+
+## Issue #60: Systemd sandbox path drift class — preflight + audit (2026-05-18)
+
+**Class**: A hardened systemd unit (``ProtectHome=read-only`` +
+curated ``ReadWritePaths=``) drifts from the dirs the code actually
+writes when a refactor moves state to a new bucket. The service stays
+``active (running)`` while every write fails inside a callback
+exception. Issue #58 was the canonical instance — commit ``a420829``
+moved delivery_counters to ``~/.local/share/meshforge/`` but the unit
+only whitelisted ``~/.config`` and ``~/.cache``. moc3 logged
+``sqlite3.OperationalError: unable to open database file`` ~48/hr for
+18h before detection — the entire "honest delivery counters" feature
+non-functional in production.
+
+**Why this class is dangerous**:
+- Code change (the path move) and ops change (ReadWritePaths) live in
+  separate files connected only by convention.
+- Runtime failure is in an exception handler, not main loop — service
+  reports `active`, monitoring doesn't fire.
+- Unit tests run outside the sandbox, so they can't see the trap.
+- Detection requires noticing the side-effect (empty table) or
+  grepping journal for the silent exception.
+
+**Surface audit (2026-05-18)**: Two MeshForge services run hardened
+— ``meshforge-gateway.service`` (this repo) and
+``meshforge-maps.service`` (sister :8808). Five SQLite DBs live in
+``_meshforge_data_dir() = ~/.local/share/meshforge/``: ``node_history``,
+``offline_sync``, ``traceroute_history``, ``presentation_capture``,
+``delivery_counters``. Eleven more DBs and settings/fleet.json live in
+``_meshforge_config_dir()``. The data-dir bucket is the newer addition
+(Issue #29 / db_inventory) and the most likely to be missed by
+predates-data-dir unit templates.
+
+**Cure (this commit) — two layers**:
+
+1. **Runtime preflight** (Option B). New
+   ``src/utils/sandbox_check.py`` with ``meshforge_writable_paths()``,
+   ``verify_writable_paths()``, and ``assert_writable_or_exit()``.
+   Wired into ``src/gateway/bridge_cli.py:main()`` near the top, before
+   any DB open. On drift, the gateway exits with code 2 and a precise
+   operator-actionable error message naming the missing bucket and the
+   ReadWritePaths line to add. Tests:
+   ``tests/test_sandbox_check.py`` (15 assertions) including a verbatim
+   reconstruction of the moc3 incident shape under
+   ``TestIssue58ClassRegression``.
+
+2. **CI audit** (Option A). New MF017 in ``scripts/lint.py`` walks
+   ``contrib/systemd/*.service.in``; any unit with
+   ``ProtectHome=read-only`` must include all three meshforge buckets
+   in ``ReadWritePaths=``. Inline ``# audit-skip: <reason>`` comment
+   opts out explicitly — the marker is the signal that the omission is
+   deliberate, not drift. Tests: ``tests/test_lint_mf017.py`` (8
+   assertions) including locking the real repo content via
+   ``TestMF017RealRepoUnits::test_real_contrib_systemd_passes``.
+
+**Latent risk closed in same turn**: moc1 and moc2's live
+``meshforge-gateway.service`` units still had the pre-Issue-#58
+ReadWritePaths shape (gateway is inactive on those boxes, so the
+trap was dormant). Patched in place via ``sed`` + ``daemon-reload``
+— now matches the repo template. The whole fleet is consistent.
+
+**Operator detection recipe** (for the next instance of this class):
+```bash
+# On startup: gateway either runs cleanly or exits with a specific
+# missing-path error. No more silent-callback-exception class.
+sudo journalctl -u meshforge-gateway --since "5 min ago" --no-pager \
+  | grep -E "sandbox writable-path check FAILED|ReadWritePaths"
+# At PR time: MF017 audit refuses to merge a hardened unit that
+# omits a required bucket without an # audit-skip: marker.
+python3 scripts/lint.py --all
+```
+
+**Design note — why both layers**: A catches the gap at PR time so it
+never ships; B catches it at install time on a fleet box whose unit
+predates the audit. A's failure mode is "your PR fails CI"; B's is
+"your service refuses to start with a precise error message." Two
+cheap layers, neither expensive. The "lab today, deploys tomorrow"
+framing (Issue #59's design call) drove the choice — the next operator
+inheriting this codebase doesn't need to know which file to update; the
+system either runs cleanly or tells them exactly what's wrong.
 
 
 ---

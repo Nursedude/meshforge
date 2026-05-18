@@ -9,6 +9,109 @@
 
 ---
 
+## Issue #53: meshforge-map.service stale daemon → :4403 contention starves :9443 web UI (2026-05-02)
+
+**Symptom**: User reported `<ip>:9443` "not functional" on a fleet box.
+The web UI's HTML shell loaded but the SPA's data calls hung. Survey
+showed `python pid=N (utils.map_data_service) ESTABLISHED` to
+`127.0.0.1:4403` on moc, moc1, and volcanoai (moc2 had a
+CLOSE-WAIT remnant; moc3 unaffected — gateway profile, no
+meshforge-map). `/api/v1/fromradio?all=true` returned `size=0` on
+the affected boxes — exactly the
+`project_tcp_contention_pattern` shape.
+
+**Root cause**: stale daemon, not a current-code regression. The
+running `meshforge-map.service` had been live since 2026-05-01 (~21h
+on moc1) and was loading pre-fix module code. Subsequent fleet
+syncs updated the working tree to current `main` but did NOT
+restart `meshforge-map.service` — `scripts/fleet_sync.sh` only
+restarts `meshforge` (gateway, this-repo) and `meshforge-maps`
+(sister :8808 service); the singular `meshforge-map.service`
+(:5000 map from this repo) is omitted from the restart loop.
+
+The map collector's HTTP path
+(`_collect_via_http` in `src/utils/_map_collector_meshtastic.py`)
+talks to meshtasticd on :9443. When :4403 is contended, that fetch
+is starved → returns empty → the collector falls through to
+`_collect_via_tcp_interface` (line 86), which opens its OWN
+:4403 socket via `get_connection_manager`, which the singleton
+caches between cycles → self-reinforcing starvation.
+
+**Fix** (immediate): `sudo systemctl restart meshforge-map.service`
+on each affected box. Post-restart, current code keeps :4403 clear
+across at least one full collect cycle (verified 75s on each box,
+moc / moc1 / volcanoai).
+
+**Operator diagnostic**:
+```bash
+sudo ss -tnp | grep ":4403" | grep python   # any output = contention
+curl -sk -o /dev/null -w "%{size_download}\n" \
+    "https://127.0.0.1:9443/api/v1/fromradio?all=true" -m 5
+# size=0 with python on :4403 = the failure mode
+# size=0 with no python on :4403 = normal empty-state (benign)
+```
+
+**Prevention** (shipped 2026-05-02, commit `660f26f`):
+`scripts/fleet_sync.sh` now restarts `meshforge-map.service`
+alongside the existing `meshforge` and `meshforge-maps` units —
+three sync_repo calls instead of two. The second call against
+`/opt/meshforge` re-pulls (no-op, ~50ms LAN) and try-restarts the
+map daemon only when it's already active, preserving operator-
+disabled state. Verified end-to-end on all five fleet boxes:
+PIDs changed and :4403 stayed clear through one full collect
+cycle. Tracker memory:
+`project_meshforge_map_stale_daemon_pattern.md`.
+
+---
+
+## Issue #47: NomadNet operator confusion — two kinds of conversation in a gateway-equipped fleet (2026-04-25)
+
+**Symptom**: After single-gateway topology + multi-recipient deploy,
+operators report "fleet-host-1/fleet-host-2/fleet-host-3 NomadNets don't see each other."
+Mesh↔NomadNet gateway path is healthy, `rnpath` resolves peer LXMF
+hashes, every box's `~/.nomadnetwork/storage/directory` has the current
+peer hashes. Substrate is fine.
+
+**Root cause — UX, not transport.** NomadNet's **Conversations** panel
+populates only when an LXMF *message* arrives/sends; **Network / Known
+Nodes** populates from `lxmf.delivery` *announces*. Peers that have
+only exchanged announces show under Known Nodes but not Conversations.
+The peer is one keystroke away, not missing.
+
+**Two-conversation rubric** in a gateway-equipped fleet:
+
+- **MeshForge Gateway (\<hostname\>)** — single thread indexed by the
+  gateway's hash (e.g. `f68c2f56…`). All Mesh-bridged content,
+  `[Mesh:xxxx]` prefixed (Issue #35). One per gateway.
+- **Peer-NomadNet conversations** — one per operator, indexed by their
+  `lxmf.delivery` hash (e.g. `522c4ac1…`). Direct LXMF over RNS
+  Transport, no gateway, no `[Mesh:]` prefix.
+
+Both coexist; neither replaces the other.
+
+**Operator seeding flow** — Known-Nodes → Conversations:
+1. `ssh <box> -t 'tmux attach -t nomadnet'`
+2. Navigate to Network/Known Nodes panel (help bar shows the keybind).
+3. Highlight peer ("meshforge fleet-host-2 nomad"); press "Converse" key.
+4. Send a one-line hello. Recipient's Conversations panel auto-creates
+   within ~30s. One round trip per pair seeds both directions.
+
+**Verification — peer LXMF didn't accidentally route via gateway**:
+```bash
+ssh fleet-host-3 'sudo journalctl -u meshforge-gateway --since "5 min ago" \
+  --no-pager | grep -E "Bridge|delivery confirmed"'
+```
+Should stay quiet during peer-to-peer sends. Gateway in the data path
+for peer NomadNet would be a topology bug.
+
+**Future**: TUI helper to walk Known-Nodes and seed conversations
+(matches `feedback_user_audience_ux_bar.md`). Add to
+`docs/GATEWAY_DEPLOYMENT.md`. Open question: drop legacy
+`[[Regional RNS]]` TCPClient on fleet-host-1/fleet-host-2 to force the fleet-host-3 hub
+path; today both interfaces work, RNS picks whichever responds first.
+
+---
+
 ## Issue #56: Federation peer timeout sized for ancient directories (2026-05-17)
 
 **Symptom**: After deploying #55 and restarting moc3, federation
