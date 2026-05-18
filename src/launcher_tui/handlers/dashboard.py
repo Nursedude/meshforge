@@ -72,6 +72,24 @@ class DashboardHandler(BaseHandler):
             self.ctx.safe_call(*entry)
 
     @staticmethod
+    def _meshtasticd_api_reachable() -> bool:
+        """2 s TCP probe of meshtasticd's HTTPS API port.
+
+        A meshtasticd daemon with no HAT configured (the classic
+        meshadv-30s-on-clean-trixie install) stays systemd-active but
+        never binds :9443. Without this probe, the Service Status row
+        shows "running" while the rest of MeshForge can't talk to the
+        daemon. Mirrors the rnsd zombie pattern in
+        ``status_bar._check_systemd_active``.
+        """
+        try:
+            from utils.service_check import check_port
+            from utils.ports import MESHTASTICD_WEB_PORT
+            return check_port(MESHTASTICD_WEB_PORT, host='127.0.0.1', timeout=2.0)
+        except Exception:
+            return False
+
+    @staticmethod
     def _check_webserver_config() -> str:
         """Check if meshtasticd config.yaml has Webserver section enabled."""
         from pathlib import Path
@@ -102,7 +120,10 @@ class DashboardHandler(BaseHandler):
         if self.ctx.env_state and _HAS_STARTUP_CHECKS:
             for name, info in self.ctx.env_state.services.items():
                 if info.state == ServiceRunState.RUNNING:
-                    print(f"  \033[0;32m●\033[0m {name:<18} running")
+                    if name == 'meshtasticd' and not self._meshtasticd_api_reachable():
+                        print(f"  \033[0;33m◐\033[0m {name:<18} active but unreachable (no radio? see Diagnostics)")
+                    else:
+                        print(f"  \033[0;32m●\033[0m {name:<18} running")
                 elif info.state == ServiceRunState.FAILED:
                     print(f"  \033[0;31m●\033[0m {name:<18} FAILED")
                 else:
@@ -116,7 +137,10 @@ class DashboardHandler(BaseHandler):
                     )
                     status = result.stdout.strip()
                     if status == 'active':
-                        print(f"  \033[0;32m●\033[0m {svc:<18} running")
+                        if svc == 'meshtasticd' and not self._meshtasticd_api_reachable():
+                            print(f"  \033[0;33m◐\033[0m {svc:<18} active but unreachable (no radio? see Diagnostics)")
+                        else:
+                            print(f"  \033[0;32m●\033[0m {svc:<18} running")
                     else:
                         print(f"  \033[2m○\033[0m {svc:<18} {status}")
                 except Exception:

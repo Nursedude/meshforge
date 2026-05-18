@@ -28,8 +28,15 @@ from typing import Dict, Optional, List
 logger = logging.getLogger(__name__)
 
 # Import centralized service checking
-from utils.service_check import check_systemd_service, check_process_running, check_udp_port, check_rns_shared_instance
+from utils.service_check import (
+    check_systemd_service,
+    check_process_running,
+    check_udp_port,
+    check_rns_shared_instance,
+    check_port,
+)
 from utils.paths import ReticulumPaths
+from utils.ports import MESHTASTICD_WEB_PORT
 
 # Import startup checker for enhanced status
 from startup_checks import StartupChecker, EnvironmentState, ServiceRunState
@@ -189,7 +196,10 @@ class StatusBar:
         Uses centralized service_check module when available.
         For rnsd, also verifies the RNS shared instance is reachable —
         systemd can report "active" while the service fails to bind its
-        socket (zombie).
+        socket (zombie). Same pattern applies to meshtasticd: a daemon
+        with no HAT configured stays active but its HTTPS API on :9443
+        never binds; the dashboard saying "running" then misleads
+        operators (Issue #20 / clean-trixie-meshadv-30s install).
 
         Args:
             service: Service unit name.
@@ -201,12 +211,20 @@ class StatusBar:
             is_running, _ = check_systemd_service(service)
             if not is_running:
                 return SYM_STOPPED
-            # rnsd zombie detection: systemd active but shared instance not available
+            # rnsd zombie: systemd active but shared instance not available
             if service == 'rnsd':
                 if not check_rns_shared_instance(
                     ReticulumPaths.get_configured_instance_name()
                 ):
                     logger.debug("rnsd active but shared instance not available")
+                    return SYM_STOPPED
+            # meshtasticd zombie: systemd active but HTTPS API not bound
+            elif service == 'meshtasticd':
+                if not check_port(MESHTASTICD_WEB_PORT, host='127.0.0.1', timeout=2.0):
+                    logger.debug(
+                        "meshtasticd active but :%d not reachable",
+                        MESHTASTICD_WEB_PORT,
+                    )
                     return SYM_STOPPED
             return SYM_RUNNING
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):

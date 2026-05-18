@@ -107,7 +107,10 @@ class TestServiceChecks:
     def test_active_service(self, mock_run):
         mock_run.return_value = MagicMock(stdout='active\n', returncode=0)
         bar = StatusBar()
-        result = bar._check_systemd_active('meshtasticd')
+        # meshtasticd's zombie check probes :9443 — mock it so an empty
+        # test box (no meshtasticd) doesn't flip the result to STOPPED.
+        with patch('status_bar.check_port', return_value=True):
+            result = bar._check_systemd_active('meshtasticd')
         assert result == SYM_RUNNING
         # Service check module may make multiple subprocess calls
         assert mock_run.called
@@ -188,6 +191,69 @@ class TestRnsdZombieDetection:
             with patch('status_bar.check_rns_shared_instance', side_effect=OSError("unavailable")):
                 result = bar._check_systemd_active('rnsd')
         # OSError caught by the try/except → SYM_UNKNOWN
+        assert result in (SYM_UNKNOWN, SYM_STOPPED)
+
+
+class TestMeshtasticdZombieDetection:
+    """Test meshtasticd zombie detection: systemd active but :9443 API not bound.
+
+    The classic shape: meshadv-30s HAT on clean trixie, daemon comes up
+    but config.d/ is empty, no radio, no Webserver bind. Without this
+    capability check the top bar (and dashboard fallback) would show
+    "running" while every consumer in MeshForge fails to talk to it.
+    Mirrors TestRnsdZombieDetection above.
+    """
+
+    def test_meshtasticd_zombie_shows_stopped(self):
+        """meshtasticd active in systemd but :9443 not reachable → stopped."""
+        bar = StatusBar(version="1.0")
+        with patch('status_bar.check_systemd_service', return_value=(True, True)):
+            with patch('status_bar.check_port', return_value=False):
+                result = bar._check_systemd_active('meshtasticd')
+        assert result == SYM_STOPPED
+
+    def test_meshtasticd_healthy_shows_running(self):
+        """meshtasticd active in systemd and :9443 reachable → running."""
+        bar = StatusBar(version="1.0")
+        with patch('status_bar.check_systemd_service', return_value=(True, True)):
+            with patch('status_bar.check_port', return_value=True):
+                result = bar._check_systemd_active('meshtasticd')
+        assert result == SYM_RUNNING
+
+    def test_meshtasticd_systemd_inactive_skips_api_check(self):
+        """meshtasticd not active → stopped without :9443 probe (no needless socket)."""
+        bar = StatusBar(version="1.0")
+        with patch('status_bar.check_systemd_service', return_value=(False, False)):
+            with patch('status_bar.check_port') as mock_port:
+                result = bar._check_systemd_active('meshtasticd')
+        mock_port.assert_not_called()
+        assert result == SYM_STOPPED
+
+    def test_rnsd_does_not_trigger_meshtasticd_api_check(self):
+        """rnsd zombie path is separate — must not probe :9443."""
+        bar = StatusBar(version="1.0")
+        with patch('status_bar.check_systemd_service', return_value=(True, True)):
+            with patch('status_bar.check_rns_shared_instance', return_value=True):
+                with patch('status_bar.check_port') as mock_port:
+                    result = bar._check_systemd_active('rnsd')
+        mock_port.assert_not_called()
+        assert result == SYM_RUNNING
+
+    def test_mosquitto_does_not_trigger_meshtasticd_api_check(self):
+        """Other services don't pay the :9443 probe tax."""
+        bar = StatusBar(version="1.0")
+        with patch('status_bar.check_systemd_service', return_value=(True, True)):
+            with patch('status_bar.check_port') as mock_port:
+                result = bar._check_systemd_active('mosquitto')
+        mock_port.assert_not_called()
+        assert result == SYM_RUNNING
+
+    def test_meshtasticd_api_check_oserror_falls_through(self):
+        """check_port raising OSError is caught by the outer try/except."""
+        bar = StatusBar(version="1.0")
+        with patch('status_bar.check_systemd_service', return_value=(True, True)):
+            with patch('status_bar.check_port', side_effect=OSError("unavailable")):
+                result = bar._check_systemd_active('meshtasticd')
         assert result in (SYM_UNKNOWN, SYM_STOPPED)
 
 
