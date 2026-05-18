@@ -53,6 +53,8 @@ Full history in `persistent_issues_archive.md`.
 | #44 Map server threading — RNS main-thread invariant (2026-04-22) | Pre-warm RNS on main thread; `get_instance()` not name-mangled attr; `_collect_lock` serializes. Body in archive | `TestCollectIsThreadSafe` + lint MF009 |
 | #45 NomadNet TUI tmux-wrapped service first-class (2026-04-23) | SSOT `_nomadnet_service_state()`; never `pkill` supervised processes; unified logs. Body in archive | 33 assertions in `tests/test_nomadnet_handler.py` |
 | #46 Fleet-wide RNS config alignment + canonical NomadNet installer (2026-04-25) | `rns_alignment.py audit/normalize`; pipx-first idempotent installer; wrapper v8 refuses-loud. Body in archive | `TestPlanNormalize::test_idempotent_on_already_normalized` |
+| #54 Federation peer_name correlation (2026-05-17) | `FederationPeerStatus.peer_name` plumbed end-to-end so `/api/status.federation` rows line up with MA `/fleet/rollup` + tracer leaderboard. Body in archive | `TestPeerNamePlumbing` (6 tests) |
+| #55 `/fleet/slo` latency cliff (2026-05-17) | TTL-cached + parallel `_systemctl_state` probes; cold call 2.4s → 400ms, well under MA's 3s peer-fetch budget. Body in archive | `tests/test_fleet_snapshot.py` (10 tests) |
 
 ---
 
@@ -570,137 +572,6 @@ cycle. Tracker memory:
 
 ---
 
-## Issue #54: Federation peer_status keyed by IP; cross-view diagnostics need name (2026-05-17)
-
-**Symptom**: Operator-visible state across three fleet diagnostic
-surfaces uses different identifiers for the same peer, forcing manual
-IP↔hostname mapping during incidents:
-- LXMF tracer leaderboard (`lab-traffic-rollup-leaderboard.md`) — fleet
-  hostnames (`fleet-host-2`, etc.).
-- MA `/fleet/rollup` — names from MA's `fleet.json` (`<host>-MF`).
-- MF `/api/status.federation.peer_status[]` — `hostname` was the
-  literal connection target, which is the IP from MF's `fleet.json`.
-
-When one box goes black-hole (the 2026-05-17 trigger: every peer
-reported 100% tracer timeout to one fleet host while MF federation
-showed the same host as `ok=true` 208 ms), the operator's first
-instinct — search `/api/status` for that hostname — returned no hits
-because federation only knew the IP. Diagnosing took longer than the
-underlying state change warranted.
-
-**Root cause**: `_bootstrap_federation_peers` in
-`src/utils/map_data_collector.py` extracts `peers.<name>.ip` from
-`fleet.json` and discards the name. `FederationCollector` accepted only
-a flat list of endpoints, with no slot for a friendly identifier.
-
-**Fix**:
-- `FederationPeerStatus.peer_name: Optional[str] = None` (the carry-
-  through field). Serialized by `_serve_status()` alongside `hostname`.
-- `FederationCollector(..., peer_names: Optional[Dict[str, str]] = None)`
-  — endpoint → friendly-name mapping. Stamps `peer_name` on the initial
-  per-peer status entries and on every status that flows through
-  `poll_once` (success, soft-fail, and executor-crash branches all
-  refreshed — easy to miss the crash branch, hence the explicit test).
-- New `MapDataCollector._load_fleet_peer_names()` reads `fleet.json` at
-  `_init_federation` time and passes the mapping. Cached settings
-  schema unchanged — backwards-compatible.
-
-**Diagnostic flow after this fix**:
-```bash
-curl -s http://localhost:5000/api/status | \
-  jq '.federation.peer_status[] | select(.ok == false) |
-      {peer_name, hostname, last_error, consecutive_failures}'
-# Now returns rows operators can correlate against the tracer
-# leaderboard and MA rollup without a fleet.json round-trip.
-```
-
-**Tests**: 6 new in `TestPeerNamePlumbing` (`tests/test_map_federation.py`)
-— construction-time stamping, default-None for unmapped peers, name
-stamped after successful poll, after soft-fail, after executor crash
-(the easy-to-miss branch), and the mixed-fleet case where one peer is
-mapped and another isn't (name doesn't leak across rows).
-
-**What this does NOT fix**: the underlying RNS/LXMF isolation that left
-one fleet host's tracer column at 100% timeout. That's an upstream
-transport state — the box itself remained healthy at the HTTP layer
-throughout, and federation continued to poll its `/api/nodes/directory`
-successfully. The fix here is purely operator-visibility: when the
-*next* black-hole happens (and per
-`project_fleet_monitor_reliability_assessment.md` it will), the cross-
-view correlation is no longer guesswork.
-
-
----
-
-## Issue #55: `/fleet/slo` serial systemctl probes consumed MA's peer-fetch budget (2026-05-17)
-
-**Symptom — `peer fetch: timeout: timed out`** in MA `/fleet/rollup`
-for one or more MF peers, even when those peers were healthy at the
-HTTP layer. Reproduced 2026-05-17: moc2's `/fleet/slo` from VolcanoAI
-returned `200 OK size=1106` but took **2.43 s** — only 19% headroom
-under MA's `PEER_HTTP_TIMEOUT_S = 3.0`. Any contention (a concurrent
-dashboard tick, a slow disk read in the schedules block) tipped it
-past 3 s and the host dropped out of the rollup with the "peer fetch:
-timeout" string.
-
-**Root cause**: `_services_rollup()` ran 6 × `_systemctl_state()` =
-6 × `subprocess.run(["systemctl", "is-active", svc], timeout=3)`
-serially. On Pi-class hardware each fork+systemd-RPC round trip
-costs ~300–400 ms. Six in series = ~2 s before any other block
-(`_probe_radio`, `_schedules_block`, `_path_table_summary`, etc.)
-got a turn. The 3 s MA budget had no margin.
-
-**Fix** (`src/utils/fleet_snapshot.py`):
-1. Module-level **TTL cache** for `_systemctl_state` (default 2.0 s).
-   MA polls `/fleet/slo` every 5–15 s; a 2 s TTL coalesces overlapping
-   handlers (dashboard fast-tick + rollup slow-tick that fire within
-   the same window) so each unit gets probed at most once per cache
-   window. `_systemctl_state_uncached` is the bypass primitive; tests
-   that want a guaranteed fresh fork use it.
-2. **Parallel fanout** via `_probe_services_parallel(units)` — small
-   `ThreadPoolExecutor` (cap = 6 workers, one per service). Total
-   wall-time drops from `Σ(unit_cost)` to `max(unit_cost)` ≈ 400 ms.
-   `subprocess.run` releases the GIL during the wait, so concurrency
-   is real.
-
-Together: cold `/fleet/slo` is now ~400 ms on Pi (~6× headroom under
-the 3 s MA timeout); a warm second call within 2 s is sub-50 ms (all
-services served from cache, no forks).
-
-**Tests** (10 new in `tests/test_fleet_snapshot.py`):
-- `TestSystemctlStateCache` (6 tests): cache hit skips subprocess; per-
-  unit independence; `ttl_s=0` bypasses cache; TTL expiry triggers
-  refresh; default-TTL value locked at 2.0 s; `_systemctl_state_uncached`
-  bypass exists and works.
-- `TestProbeServicesParallel` (5 tests): every unit returns; empty
-  input is a no-op (no executor spawn); per-unit states stay distinct;
-  a worker that raises gets normalized to `"not_running"` rather than
-  corrupting the result dict; `_services_rollup` is wired to the
-  parallel path (`patch` interception confirms it's no longer the
-  serial dict-comprehension).
-- Autouse fixture `_clear_systemctl_cache` resets state between tests
-  so the cache doesn't leak across them.
-
-**Operator verification**:
-```bash
-# Before fix (any Pi-class peer): ~2.4 s
-curl -sS -m 8 -o /dev/null \
-  -w "%{time_total}s code=%{http_code}\n" \
-  http://<peer-ip>:5000/fleet/slo
-# After fix on cold cache: ~400 ms.
-# Hit it again within 2 s: ~50 ms (all units cached).
-```
-
-**Companion to Issue #54**: #54 added operator-visibility for a peer
-that drops out of the rollup (peer_name correlation). #55 keeps the
-peer *in* the rollup in the first place by removing the latency cliff
-that was tipping marginal hosts over MA's timeout. Both close the
-"federation persistent issues" gap from different angles —
-diagnostics + raw latency budget.
-
-
----
-
 ## Issue #56: Federation peer timeout sized for ancient directories (2026-05-17)
 
 **Symptom**: After deploying #55 and restarting moc3, federation
@@ -793,3 +664,67 @@ forever — no exception, downlinks just stopped, systemd reported
 shows WEDGED + process exit + systemd restart; release with `-CONT`.
 PR-2 (Fork B) and PR-3 (Fork C) ship next on this substrate. Plan:
 `~/.claude/plans/fix-federation-persistent-issues-2026-05-17.md`.
+
+
+---
+
+## Issue #58: Upstream HAT template smuggled `Webserver: Port: 443` → :9443 silently moved (2026-05-18)
+
+**Symptom**: moc3's dashboard showed `meshtasticd` as the active-but-
+unreachable yellow ◐ surfaced by the new probe in commit `8b06ebd`.
+Daemon reported `active (running)` for 18h, `:4403` was bound, but
+nothing answered on `:9443`. Every MeshForge consumer that posts to
+`https://127.0.0.1:9443/api/v1/toradio` (the gateway TX SSOT in
+`meshtastic_protobuf_client.send_text_direct`) failed silently — moc3
+couldn't bridge a single RNS→Mesh downlink the whole time.
+
+**Root cause**: `/etc/meshtasticd/available.d/lora-MeshAdv-900M30S.yaml`
+shipped by `chrismyers2000/MeshAdv-Pi-Hat` (vendored into meshtasticd
+2.7.15) carries a stray `Webserver: Port: 443` block that has nothing
+to do with the HAT's radio config. The standard activation flow —
+`cp available.d/<hat>.yaml config.d/` — merges this overlay on top of
+`/etc/meshtasticd/config.yaml`, where `Port: 9443` lives. Overlay wins.
+Meshtasticd happily binds `:443` instead. The base config file is
+untouched (Issue #22's invariant holds), so visual inspection of
+`config.yaml` doesn't reveal the override; only checking the live
+listening port catches it. moc and moc2 use the same HAT name but
+installed earlier, before the upstream template gained this stray
+block, so their `config.d/` copies are clean.
+
+**Fix (code)**: `src/launcher_tui/handlers/meshtasticd_config.py` —
+`_HAT_OVERLAY_FORBIDDEN_KEYS = {Webserver, TCP, Logging, MQTT,
+Bluetooth, General}` plus `_sanitize_hat_overlay(text) -> (yaml,
+stripped[])`. `activate_hardware_config` now reads the source, strips
+forbidden top-level blocks, writes the cleaned text, and warns with
+the stripped key list. YAML parse errors pass through untouched —
+meshtasticd will surface them loudly rather than silently mangling
+operator content.
+
+**Fix (moc3)**: copied moc's clean `config.d/lora-MeshAdv-900M30S.yaml`
+over the broken one, restarted meshtasticd. `:9443` rebound in <5s,
+gateway HTTPS handshake + `/api/v1/fromradio` both returned 200, status
+bar flipped from `'-'` (SYM_STOPPED) back to `'*'` (SYM_RUNNING).
+
+**Tests** (`tests/test_hat_overlay_sanitizer.py`, 7 assertions):
+the moc3-actual broken template content is pinned inline as
+`MOC3_BROKEN_TEMPLATE`. `TestSanitizerStripsTheMoc3Webserver` asserts
+(a) Webserver vanishes from the parsed output, (b) the literal byte
+string `Port: 443` is nowhere in the sanitized text, (c) the Lora
+block survives intact. `TestSanitizerLeavesCleanTemplatesAlone` keeps
+the sanitizer from rewriting healthy templates. `TestSanitizerFailsSafe`
+covers YAML parse error + non-mapping top-level (both pass through
+unchanged). `TestForbiddenKeysContract::test_webserver_is_forbidden`
+locks `Webserver` in the forbidden set so a future cleanup can't
+silently drop it.
+
+**Operator detection recipe** (works on any fleet box):
+```bash
+ssh <box> "ss -tnlp 2>/dev/null | grep meshtasticd"
+# Healthy:    LISTEN ... 0.0.0.0:9443 + 0.0.0.0:4403
+# Zombie:     LISTEN ... 0.0.0.0:443  + 0.0.0.0:4403   ← upstream template bit you
+```
+
+**Companion to Issue #8b06ebd** (status_bar/dashboard distinguishing
+active-but-unreachable from running): the UI surfaces the zombie; the
+sanitizer prevents it on first activation; the upstream issue to
+`chrismyers2000/MeshAdv-Pi-Hat` will fix the source.

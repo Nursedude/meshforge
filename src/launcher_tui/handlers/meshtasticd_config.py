@@ -34,6 +34,46 @@ from utils.meshtastic_http import get_http_client as _get_http_client
 OVERLAY_PATH = Path('/etc/meshtasticd/config.d/meshforge-overrides.yaml')
 OVERRIDES_NAMES = {'meshforge-overrides.yaml', 'meshforge-overrides.yml'}
 
+# Top-level YAML keys that have no business in a HAT overlay and that MeshForge
+# guarantees come from the base /etc/meshtasticd/config.yaml. If an upstream-
+# vendored template (e.g. chrismyers2000's lora-MeshAdv-900M30S.yaml in
+# meshtasticd 2.7.x available.d/) ships these blocks, they silently override
+# operator state — most painfully `Webserver: Port: 443`, which moves the API
+# off MeshForge's expected :9443 and breaks every consumer that posts to
+# `/api/v1/toradio` (gateway TX SSOT). moc3 ran in this zombie state for 18h
+# on 2026-05-18 — meshtasticd "active", but :9443 silently bound to :443.
+_HAT_OVERLAY_FORBIDDEN_KEYS = frozenset({
+    'Webserver',
+    'TCP',
+    'Logging',
+    'MQTT',
+    'Bluetooth',
+    'General',
+})
+
+
+def _sanitize_hat_overlay(content: str):
+    """Strip non-Lora top-level blocks from a HAT overlay before activation.
+
+    Returns ``(sanitized_yaml_text, stripped_keys_list)``. If the input
+    doesn't parse as YAML or isn't a top-level mapping, returns it
+    unchanged with an empty strip list — the caller (and meshtasticd's
+    own load) will surface the parse error loudly rather than silently
+    mangling the operator's content.
+    """
+    try:
+        loaded = yaml.safe_load(content)
+    except yaml.YAMLError:
+        return content, []
+    if not isinstance(loaded, dict):
+        return content, []
+    stripped = sorted(k for k in loaded if k in _HAT_OVERLAY_FORBIDDEN_KEYS)
+    if not stripped:
+        return content, []
+    for key in stripped:
+        del loaded[key]
+    return yaml.safe_dump(loaded, sort_keys=False, default_flow_style=False), stripped
+
 
 def _glob_yaml(directory: Path) -> list:
     """Glob both .yaml and .yml files from a directory."""
@@ -141,7 +181,15 @@ def activate_hardware_config(config_name: str,
             logger.info("Removed old hardware config: %s", old.name)
 
     dst = config_d / config_name
-    shutil.copy(src, dst)
+    sanitized, stripped = _sanitize_hat_overlay(src.read_text())
+    dst.write_text(sanitized)
+    if stripped:
+        logger.warning(
+            "HAT overlay %s contained non-Lora blocks (%s) — stripped before "
+            "install. HAT templates must not override Webserver/TCP/etc.; "
+            "those belong in /etc/meshtasticd/config.yaml.",
+            config_name, ', '.join(stripped),
+        )
     logger.info("Activated hardware config: %s", config_name)
 
     apply_config_and_restart('meshtasticd')
