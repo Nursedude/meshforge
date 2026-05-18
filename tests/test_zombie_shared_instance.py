@@ -401,9 +401,15 @@ class TestStatusBarZombieDetection:
         result = sb._check_systemd_active('rnsd')
         assert result == SYM_STOPPED
 
+    @patch('src.launcher_tui.status_bar.check_port', return_value=True)
     @patch('src.launcher_tui.status_bar.check_systemd_service', return_value=(True, None))
-    def test_non_rnsd_service_skips_zombie_check(self, mock_systemd):
-        """Non-rnsd services (meshtasticd) don't need zombie detection."""
+    def test_non_rnsd_service_skips_zombie_check(self, mock_systemd, mock_port):
+        """Non-rnsd services (meshtasticd) don't need the RNS shared-instance check.
+
+        meshtasticd has its OWN zombie check (port :9443) — mock it green so an
+        empty test box doesn't flip the result. The assertion that matters here
+        is that the RNS-specific path is skipped for non-rnsd services.
+        """
         from src.launcher_tui.status_bar import StatusBar, SYM_RUNNING
         sb = StatusBar.__new__(StatusBar)
         result = sb._check_systemd_active('meshtasticd')
@@ -502,7 +508,7 @@ class TestTUIHandlersHonorConfiguredInstanceName:
 
     @patch('src.launcher_tui.handlers.quick_actions.check_rns_shared_instance',
            return_value=True)
-    @patch('src.utils.paths.ReticulumPaths.get_configured_instance_name',
+    @patch('utils.paths.ReticulumPaths.get_configured_instance_name',
            return_value='volcano ai rns')
     def test_quick_actions_port_check_passes_configured_name(
             self, mock_inst, mock_check):
@@ -517,7 +523,7 @@ class TestTUIHandlersHonorConfiguredInstanceName:
 
     @patch('src.launcher_tui.handlers.service_menu.check_rns_shared_instance',
            return_value=True)
-    @patch('src.utils.paths.ReticulumPaths.get_configured_instance_name',
+    @patch('utils.paths.ReticulumPaths.get_configured_instance_name',
            return_value='volcano ai rns')
     def test_service_menu_passes_configured_name(self, mock_inst, mock_check):
         import src.launcher_tui.handlers.service_menu as sm

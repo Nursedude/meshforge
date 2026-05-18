@@ -180,7 +180,10 @@ class TestRnsdZombieDetection:
         bar = StatusBar(version="1.0")
         with patch('status_bar.check_systemd_service', return_value=(True, True)):
             with patch('status_bar.check_rns_shared_instance') as mock_rns:
-                result = bar._check_systemd_active('meshtasticd')
+                # meshtasticd's :9443 zombie probe runs here too — mock it
+                # so an empty test box doesn't flip the result to STOPPED.
+                with patch('status_bar.check_port', return_value=True):
+                    result = bar._check_systemd_active('meshtasticd')
         mock_rns.assert_not_called()
         assert result == SYM_RUNNING
 
