@@ -694,3 +694,326 @@ class TestPeerNamePlumbing:
         snap = fc.get_snapshot()
         assert snap.peer_status["192.168.86.41"].peer_name == "fleet-host-1"
         assert snap.peer_status["operator-test-box"].peer_name is None
+
+
+# ── Exponential backoff (Issue #59) ───────────────────────────────────────
+
+
+def _fail_response(peer, *, ts):
+    """Helper: fetch_peer_directory return value for a failed poll."""
+    return [], FederationPeerStatus(
+        hostname=peer, ok=False, last_error="connection refused",
+        last_attempt=ts,
+    )
+
+
+def _ok_response(peer, *, ts):
+    """Helper: fetch_peer_directory return value for a successful poll."""
+    return [], FederationPeerStatus(
+        hostname=peer, ok=True, last_sync=ts, last_attempt=ts, last_count=0,
+    )
+
+
+class TestBackoffEngages:
+    """A peer that fails ``threshold`` times in a row enters backoff."""
+
+    def test_below_threshold_does_not_engage_backoff(self):
+        """2 failures with threshold=3 → still polled every cycle."""
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=3, backoff_base=2, backoff_max_multiplier=10,
+            time_fn=lambda: 1000.0,
+        )
+        with patch(
+            "utils.map_federation.fetch_peer_directory",
+            side_effect=lambda peer, *a, **kw: _fail_response(peer, ts=1000.0),
+        ):
+            fc.poll_once()
+            fc.poll_once()
+        s = fc.get_snapshot().peer_status["x"]
+        assert s.consecutive_failures == 2
+        assert s.in_backoff is False
+        assert s.backoff_multiplier == 1
+        assert s.next_eligible_poll_ts is None
+
+    def test_threshold_failure_engages_backoff(self):
+        """3rd failure (threshold=3) flips in_backoff and stamps next_eligible."""
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=3, backoff_base=2, backoff_max_multiplier=10,
+            time_fn=lambda: 1000.0,
+        )
+        with patch(
+            "utils.map_federation.fetch_peer_directory",
+            side_effect=lambda peer, *a, **kw: _fail_response(peer, ts=1000.0),
+        ):
+            for _ in range(3):
+                fc.poll_once()
+        s = fc.get_snapshot().peer_status["x"]
+        assert s.consecutive_failures == 3
+        assert s.in_backoff is True
+        # exponent = 3 - 3 = 0 → multiplier 2^0 = 1, so next attempt in 10s
+        assert s.backoff_multiplier == 1
+        assert s.next_eligible_poll_ts == 1010.0
+
+
+class TestBackoffEscalates:
+    """Multiplier doubles per additional failure, capped at max."""
+
+    def test_multiplier_grows_exponentially(self):
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=3, backoff_base=2, backoff_max_multiplier=100,
+            time_fn=lambda: 1000.0,
+        )
+        # Poll 6 times total. 1st & 2nd: below threshold (mult=1, no backoff).
+        # 3rd failure: mult=1 (2^0), 4th: 2 (2^1), 5th: 4 (2^2), 6th: 8 (2^3).
+        expected_mults = [1, 1, 1, 2, 4, 8]
+        with patch(
+            "utils.map_federation.fetch_peer_directory",
+            side_effect=lambda peer, *a, **kw: _fail_response(peer, ts=1000.0),
+        ):
+            for i, expected_mult in enumerate(expected_mults, start=1):
+                # Force the peer to be due each iteration by zeroing
+                # next_eligible_poll_ts. This test isolates the engagement
+                # math from skip-while-backoff'd behavior, which is covered
+                # by TestBackoffSkipsPolls.
+                with fc._lock:
+                    p = fc._snapshot.peer_status["x"]
+                    p.next_eligible_poll_ts = None
+                fc.poll_once()
+                s = fc.get_snapshot().peer_status["x"]
+                assert s.consecutive_failures == i
+                assert s.backoff_multiplier == expected_mult, (
+                    f"after {i} failures expected mult {expected_mult}, "
+                    f"got {s.backoff_multiplier}"
+                )
+                # Iterations 1..2 should NOT be in backoff; 3+ should be.
+                assert s.in_backoff == (i >= 3)
+
+    def test_multiplier_capped_at_max(self):
+        """Beyond the cap, multiplier stays at max_multiplier (no integer overflow)."""
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=3, backoff_base=2, backoff_max_multiplier=8,
+            time_fn=lambda: 1000.0,
+        )
+        with patch(
+            "utils.map_federation.fetch_peer_directory",
+            side_effect=lambda peer, *a, **kw: _fail_response(peer, ts=1000.0),
+        ):
+            # Push to 20 consecutive failures
+            for _ in range(20):
+                with fc._lock:
+                    fc._snapshot.peer_status["x"].next_eligible_poll_ts = None
+                fc.poll_once()
+        s = fc.get_snapshot().peer_status["x"]
+        assert s.consecutive_failures == 20
+        assert s.backoff_multiplier == 8  # capped
+        # next_eligible = 1000 + 8 * 10 = 1080
+        assert s.next_eligible_poll_ts == 1080.0
+
+
+class TestBackoffSkipsPolls:
+    """Once in backoff, the collector should not hit the peer until next_eligible."""
+
+    def test_peer_in_backoff_is_not_polled(self):
+        clock = [1000.0]
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=2, backoff_base=2, backoff_max_multiplier=10,
+            time_fn=lambda: clock[0],
+        )
+        call_count = {"x": 0}
+
+        def fake_fetch(peer, *a, **kw):
+            call_count[peer] += 1
+            return _fail_response(peer, ts=clock[0])
+
+        with patch("utils.map_federation.fetch_peer_directory",
+                   side_effect=fake_fetch):
+            # Two failures → engages backoff at threshold=2
+            fc.poll_once()
+            fc.poll_once()
+        s = fc.get_snapshot().peer_status["x"]
+        assert s.in_backoff
+        assert call_count["x"] == 2
+
+        # Advance clock LESS than the backoff interval (mult=1, interval=10)
+        clock[0] = 1005.0
+        with patch("utils.map_federation.fetch_peer_directory",
+                   side_effect=fake_fetch):
+            fc.poll_once()
+        # Peer should NOT have been polled — call count unchanged
+        assert call_count["x"] == 2, (
+            "peer was polled despite being in backoff window"
+        )
+
+    def test_peer_becomes_eligible_after_backoff_window(self):
+        clock = [1000.0]
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=2, backoff_base=2, backoff_max_multiplier=10,
+            time_fn=lambda: clock[0],
+        )
+        call_count = {"x": 0}
+
+        def fake_fetch(peer, *a, **kw):
+            call_count[peer] += 1
+            return _fail_response(peer, ts=clock[0])
+
+        with patch("utils.map_federation.fetch_peer_directory",
+                   side_effect=fake_fetch):
+            fc.poll_once()
+            fc.poll_once()
+        # In backoff. next_eligible = 1000 + 1 * 10 = 1010
+        assert fc.get_snapshot().peer_status["x"].next_eligible_poll_ts == 1010.0
+
+        # Advance past the window
+        clock[0] = 1011.0
+        with patch("utils.map_federation.fetch_peer_directory",
+                   side_effect=fake_fetch):
+            fc.poll_once()
+        # Now the peer should have been polled (and failed again, escalating)
+        assert call_count["x"] == 3, (
+            f"peer was not polled after backoff window expired (calls={call_count['x']})"
+        )
+
+
+class TestBackoffRecovery:
+    """A successful poll clears backoff entirely — no lingering state."""
+
+    def test_success_clears_all_backoff_state(self):
+        clock = [1000.0]
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=2, backoff_base=2, backoff_max_multiplier=10,
+            time_fn=lambda: clock[0],
+        )
+        responses = {"x": _fail_response}
+
+        def fake_fetch(peer, *a, **kw):
+            return responses[peer](peer, ts=clock[0])
+
+        with patch("utils.map_federation.fetch_peer_directory", side_effect=fake_fetch):
+            fc.poll_once()
+            fc.poll_once()
+        # Engaged
+        s = fc.get_snapshot().peer_status["x"]
+        assert s.in_backoff
+        assert s.consecutive_failures == 2
+
+        # Flip to success, advance past the backoff window
+        responses["x"] = _ok_response
+        clock[0] = 1011.0
+        with patch("utils.map_federation.fetch_peer_directory", side_effect=fake_fetch):
+            fc.poll_once()
+
+        s = fc.get_snapshot().peer_status["x"]
+        assert s.ok is True
+        assert s.consecutive_failures == 0
+        assert s.in_backoff is False
+        assert s.backoff_multiplier == 1
+        assert s.next_eligible_poll_ts is None
+
+
+class TestBackoffMultiPeerIsolation:
+    """One peer's backoff doesn't suppress polls on a healthy peer."""
+
+    def test_healthy_peer_keeps_polling_while_other_is_in_backoff(self):
+        clock = [1000.0]
+        fc = FederationCollector(
+            ["bad", "good"], poll_interval=10,
+            backoff_threshold=2, backoff_base=2, backoff_max_multiplier=10,
+            time_fn=lambda: clock[0],
+        )
+        call_count = {"bad": 0, "good": 0}
+
+        def fake_fetch(peer, *a, **kw):
+            call_count[peer] += 1
+            if peer == "bad":
+                return _fail_response(peer, ts=clock[0])
+            return _ok_response(peer, ts=clock[0])
+
+        with patch("utils.map_federation.fetch_peer_directory", side_effect=fake_fetch):
+            fc.poll_once()
+            fc.poll_once()
+        # bad → in backoff, good → healthy
+        snap = fc.get_snapshot()
+        assert snap.peer_status["bad"].in_backoff
+        assert snap.peer_status["good"].in_backoff is False
+        assert call_count == {"bad": 2, "good": 2}
+
+        # Tick forward, still inside bad's backoff window
+        clock[0] = 1005.0
+        with patch("utils.map_federation.fetch_peer_directory", side_effect=fake_fetch):
+            fc.poll_once()
+        # bad: not polled (still in window). good: polled.
+        assert call_count == {"bad": 2, "good": 3}, (
+            "healthy peer's polling was incorrectly suppressed by bad peer's backoff"
+        )
+
+
+class TestBackoffStateInCarriedSnapshot:
+    """A peer skipped this cycle must still surface in the snapshot with
+    in_backoff=True (so /api/status doesn't show a phantom-absent peer)."""
+
+    def test_carried_status_preserves_in_backoff_flag(self):
+        clock = [1000.0]
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=2, backoff_base=2, backoff_max_multiplier=10,
+            time_fn=lambda: clock[0],
+        )
+        with patch(
+            "utils.map_federation.fetch_peer_directory",
+            side_effect=lambda peer, *a, **kw: _fail_response(peer, ts=clock[0]),
+        ):
+            fc.poll_once()
+            fc.poll_once()
+        # Now in backoff. Tick forward less than backoff window.
+        clock[0] = 1005.0
+        with patch(
+            "utils.map_federation.fetch_peer_directory",
+            side_effect=lambda peer, *a, **kw: _fail_response(peer, ts=clock[0]),
+        ) as m:
+            fc.poll_once()
+            # Confirm we did NOT call fetch this cycle
+            assert m.call_count == 0
+        s = fc.get_snapshot().peer_status["x"]
+        # Row still present and labeled — not phantom-absent
+        assert s.in_backoff is True
+        assert s.consecutive_failures == 2
+        assert s.hostname == "x"
+
+
+class TestComputeBackoffPure:
+    """The classifier helper is pure — pinned here so the math can't drift."""
+
+    def test_below_threshold_returns_no_backoff(self):
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=3, backoff_base=2, backoff_max_multiplier=10,
+        )
+        in_b, mult, nxt = fc._compute_backoff(consecutive_failures=2, now=1000.0)
+        assert (in_b, mult, nxt) == (False, 1, None)
+
+    def test_at_threshold_returns_mult_1(self):
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=3, backoff_base=2, backoff_max_multiplier=10,
+        )
+        in_b, mult, nxt = fc._compute_backoff(consecutive_failures=3, now=1000.0)
+        assert in_b is True
+        assert mult == 1
+        assert nxt == 1010.0
+
+    def test_far_above_threshold_caps_at_max(self):
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=3, backoff_base=2, backoff_max_multiplier=10,
+        )
+        in_b, mult, nxt = fc._compute_backoff(consecutive_failures=50, now=1000.0)
+        assert in_b is True
+        assert mult == 10  # capped
+        assert nxt == 1100.0

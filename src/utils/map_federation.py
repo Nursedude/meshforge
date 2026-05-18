@@ -66,6 +66,17 @@ DEFAULT_MAX_RESPONSE_BYTES = 50 * 1024 * 1024  # 50 MB hard cap per peer
 # project_db_recurring_class.md, project_meshforge_map_cold_start_wal.md.
 DEFAULT_WAL_SKIP_THRESHOLD_BYTES = 64 * 1024 * 1024
 
+# Per-peer exponential backoff. After this many consecutive failures, the
+# collector stops polling the peer every cycle and instead waits
+# backoff_base ** (failures - threshold) cycles, capped at max_multiplier.
+# A successful poll clears the backoff. Surfaces in `/api/status.federation`
+# as `in_backoff: true` + `next_eligible_poll_ts` so operators see why a
+# peer that was failing has gone quiet. Solves the moc3-gateway-only case
+# (no :5000) and any future transient-outage case symmetrically (Issue #59).
+DEFAULT_BACKOFF_THRESHOLD = 3      # failures before backoff engages
+DEFAULT_BACKOFF_BASE = 2           # multiplier per additional failure
+DEFAULT_BACKOFF_MAX_MULTIPLIER = 10  # cap: at most 10× poll_interval between attempts
+
 
 def _wal_path_for(db_path: Path) -> Path:
     """SQLite WAL companion path next to the main DB file."""
@@ -98,6 +109,15 @@ class FederationPeerStatus:
     # use names. `None` when the collector wasn't given a name mapping or
     # the entry is missing from fleet.json.
     peer_name: Optional[str] = None
+    # Exponential backoff state (Issue #59). When `in_backoff` is True the
+    # collector is skipping this peer until `next_eligible_poll_ts`. The
+    # `backoff_multiplier` records the current wait multiple of poll_interval
+    # (e.g. 4 = next attempt in 4× normal interval). Operator-visible via
+    # `/api/status.federation.peer_status[]` so a quiet peer doesn't look
+    # like an absent one — the row stays present with a labeled state.
+    in_backoff: bool = False
+    next_eligible_poll_ts: Optional[float] = None
+    backoff_multiplier: int = 1
 
 
 @dataclass
@@ -322,6 +342,10 @@ class FederationCollector:
         wal_skip_threshold_bytes: int = DEFAULT_WAL_SKIP_THRESHOLD_BYTES,
         stat_fn: Callable[[Path], int] = _stat_size,
         peer_names: Optional[Dict[str, str]] = None,
+        backoff_threshold: int = DEFAULT_BACKOFF_THRESHOLD,
+        backoff_base: int = DEFAULT_BACKOFF_BASE,
+        backoff_max_multiplier: int = DEFAULT_BACKOFF_MAX_MULTIPLIER,
+        time_fn: Callable[[], float] = time.time,
     ):
         self._peers = list(peers)
         self._poll_interval = max(10, int(poll_interval))
@@ -334,6 +358,12 @@ class FederationCollector:
         # Endpoint → friendly fleet-name lookup. Plumbed in from fleet.json
         # via map_data_collector._init_federation. Empty dict when unknown.
         self._peer_names: Dict[str, str] = dict(peer_names or {})
+        # Backoff knobs — `time_fn` is injected so tests can fast-forward
+        # without manipulating real wall-clock.
+        self._backoff_threshold = max(1, int(backoff_threshold))
+        self._backoff_base = max(2, int(backoff_base))
+        self._backoff_max_multiplier = max(1, int(backoff_max_multiplier))
+        self._time_fn = time_fn
         self._snapshot = FederationSnapshot(
             peer_status={
                 p: FederationPeerStatus(
@@ -389,20 +419,93 @@ class FederationCollector:
                 last_attempt=self._snapshot.last_attempt,
             )
 
+    def _compute_backoff(
+        self, consecutive_failures: int, now: float,
+    ) -> Tuple[bool, int, Optional[float]]:
+        """Decide if a peer should enter backoff after this failure count.
+
+        Returns (in_backoff, multiplier, next_eligible_poll_ts). When
+        ``consecutive_failures < threshold`` the peer stays in active
+        polling (multiplier=1, no skip). At/above threshold, multiplier
+        grows as ``base ** (failures - threshold)``, capped at
+        ``max_multiplier``. ``next_eligible_poll_ts = now + multiplier *
+        poll_interval`` is when poll_once is allowed to attempt again.
+
+        Pulled out so the same shape is testable in isolation and reused
+        by both the success-clear and failure-engage branches in
+        ``poll_once``.
+        """
+        if consecutive_failures < self._backoff_threshold:
+            return False, 1, None
+        exponent = consecutive_failures - self._backoff_threshold
+        # Guard against giant exponents — past max we just cap.
+        if 2 ** exponent > self._backoff_max_multiplier:
+            multiplier = self._backoff_max_multiplier
+        else:
+            multiplier = min(
+                self._backoff_base ** exponent,
+                self._backoff_max_multiplier,
+            )
+        next_eligible = now + multiplier * self._poll_interval
+        return True, multiplier, next_eligible
+
     def poll_once(self) -> None:
-        """Run one full federation poll cycle. Public for tests + manual triggers."""
+        """Run one full federation poll cycle. Public for tests + manual triggers.
+
+        Peers in active backoff (``next_eligible_poll_ts > now``) are skipped
+        — their carried-forward status surfaces in /api/status with the
+        in_backoff flag so the operator sees the row, just labeled. A
+        successful poll clears backoff; an Nth failure (at/above threshold)
+        engages or extends it.
+        """
         if not self._peers:
             return
         merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
         new_status: Dict[str, FederationPeerStatus] = {}
-        attempt_ts = time.time()
+        attempt_ts = self._time_fn()
+
+        # Bucket: which peers get fetched this cycle, which stay in backoff.
+        # Lock around the snapshot read so we get a consistent view.
+        with self._lock:
+            due_peers: List[str] = []
+            skipped_peers: List[str] = []
+            for peer in self._peers:
+                prior = self._snapshot.peer_status.get(peer)
+                next_eligible = prior.next_eligible_poll_ts if prior else None
+                if next_eligible is not None and next_eligible > attempt_ts:
+                    skipped_peers.append(peer)
+                else:
+                    due_peers.append(peer)
+
+        # Skipped peers: carry forward prior status unchanged except for a
+        # refreshed snapshot so the in_backoff flag stays visible.
+        for peer in skipped_peers:
+            with self._lock:
+                prior = self._snapshot.peer_status.get(peer)
+            if prior is None:  # shouldn't happen — defensive
+                continue
+            carried = FederationPeerStatus(**asdict(prior))
+            carried.peer_name = self._peer_names.get(peer)
+            new_status[peer] = carried
+
+        if not due_peers:
+            # Every peer is in backoff — still need to refresh last_attempt
+            # so /api/status shows we're alive.
+            with self._lock:
+                for k, v in new_status.items():
+                    self._snapshot.peer_status[k] = v
+                self._snapshot.last_attempt = attempt_ts
+            logger.debug(
+                "FederationCollector poll: all %d peers in backoff", len(self._peers)
+            )
+            return
 
         with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
             futures = {
                 executor.submit(
                     fetch_peer_directory, peer, self._timeout, self._port
                 ): peer
-                for peer in self._peers
+                for peer in due_peers
             }
             for fut in as_completed(futures):
                 peer = futures[fut]
@@ -420,13 +523,49 @@ class FederationCollector:
                         consecutive_failures=prior_failures + 1,
                         peer_name=self._peer_names.get(peer),
                     )
+                    in_b, mult, next_t = self._compute_backoff(
+                        status.consecutive_failures, attempt_ts,
+                    )
+                    status.in_backoff = in_b
+                    status.backoff_multiplier = mult
+                    status.next_eligible_poll_ts = next_t
                     new_status[peer] = status
                     continue
 
                 if status.ok:
                     status.consecutive_failures = 0
+                    status.in_backoff = False
+                    status.backoff_multiplier = 1
+                    status.next_eligible_poll_ts = None
+                    # Operator-visible recovery: log the transition out
+                    # of backoff exactly once (when prior had it set).
+                    prior_in_backoff = (
+                        prior.in_backoff if prior is not None else False
+                    )
+                    if prior_in_backoff:
+                        logger.info(
+                            "FederationCollector: peer %s recovered, "
+                            "backoff cleared", peer,
+                        )
                 else:
                     status.consecutive_failures = prior_failures + 1
+                    in_b, mult, next_t = self._compute_backoff(
+                        status.consecutive_failures, attempt_ts,
+                    )
+                    prior_in_backoff = (
+                        prior.in_backoff if prior is not None else False
+                    )
+                    status.in_backoff = in_b
+                    status.backoff_multiplier = mult
+                    status.next_eligible_poll_ts = next_t
+                    if in_b and not prior_in_backoff:
+                        # Operator-visible engage: log the transition into
+                        # backoff exactly once (when prior didn't have it).
+                        logger.info(
+                            "FederationCollector: peer %s entering backoff "
+                            "(%d consecutive failures, %d× interval)",
+                            peer, status.consecutive_failures, mult,
+                        )
                 status.peer_name = self._peer_names.get(peer)
                 new_status[peer] = status
 

@@ -9,6 +9,48 @@
 
 ---
 
+## Issue #56: Federation peer timeout sized for ancient directories (2026-05-17)
+
+**Symptom**: After deploying #55 and restarting moc3, federation
+showed `consecutive_failures: 1, last_error: "TimeoutError: timed out"`
+on moc (and reciprocally, moc → moc3). All four MF peers had healthy
+`/fleet/slo` (sub-200 ms post-#55), so the diagnostic puzzle: which
+endpoint federation actually hits is `/api/nodes/directory`, not
+`/fleet/slo`.
+
+**Root cause**: `DEFAULT_TIMEOUT = 5.0` in `src/utils/map_federation.py`
+was set when `/api/nodes/directory` returned ~1 MB. After Issue #49
+(directory split) and the external-bulk collectors (Issue #50/#51 —
+meshcore_public, worldmap, etc.), the directory has grown ~30× —
+moc's response is **35 MB in 5.37 s** measured 2026-05-17. urllib's
+`urlopen(timeout=)` is a per-recv timeout, not a whole-request
+timeout, so a stream that takes >5 s total can succeed as long as
+each chunk arrives within 5 s; one slow chunk and the whole fetch
+fails. moc ↔ moc3 saw symmetric `TimeoutError` because each box's
+directory was too big for the other's 5 s budget.
+
+**Fix**:
+- `map_federation.DEFAULT_TIMEOUT`: 5.0 → **30.0** s.
+- `map_data_collector` bootstrap default `federation_timeout_seconds`:
+  5 → 30. `TestDefaultTimeout` (3 tests) pins both, asserts they stay
+  in sync, and pins `DEFAULT_TIMEOUT < DEFAULT_POLL_INTERVAL` so a
+  future bump can't make poll cycles overlap themselves.
+- Operator can override per-box via `map_settings.json`.
+
+The 50 MB `DEFAULT_MAX_RESPONSE_BYTES` cap still protects against
+unbounded directory growth — this isn't a slippery slope to a 60 s
+timeout. Follow-up roadmap (gzip on `/api/nodes/directory`,
+pagination) tracked in `project_federation_peer_name_correlation`
+memory.
+
+**Companion to Issue #55**: both are "timeout sized for a response
+that has since grown." #55 fixed `/fleet/slo` by making it faster;
+#56 gives the federation collector more time to consume the bigger
+`/api/nodes/directory`. Pairing matters — either alone leaves a
+class of timeouts uncovered.
+
+---
+
 ## Issue #55: `/fleet/slo` serial systemctl probes consumed MA's peer-fetch budget (2026-05-17)
 
 **Symptom — `peer fetch: timeout: timed out`** in MA `/fleet/rollup`

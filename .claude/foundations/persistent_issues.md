@@ -55,6 +55,7 @@ Full history in `persistent_issues_archive.md`.
 | #46 Fleet-wide RNS config alignment + canonical NomadNet installer (2026-04-25) | `rns_alignment.py audit/normalize`; pipx-first idempotent installer; wrapper v8 refuses-loud. Body in archive | `TestPlanNormalize::test_idempotent_on_already_normalized` |
 | #54 Federation peer_name correlation (2026-05-17) | `FederationPeerStatus.peer_name` plumbed end-to-end so `/api/status.federation` rows line up with MA `/fleet/rollup` + tracer leaderboard. Body in archive | `TestPeerNamePlumbing` (6 tests) |
 | #55 `/fleet/slo` latency cliff (2026-05-17) | TTL-cached + parallel `_systemctl_state` probes; cold call 2.4s → 400ms, well under MA's 3s peer-fetch budget. Body in archive | `tests/test_fleet_snapshot.py` (10 tests) |
+| #56 Federation directory timeout (2026-05-17) | `DEFAULT_TIMEOUT` 5s→30s in `map_federation`; 35 MB `/api/nodes/directory` couldn't fit the old budget. Body in archive | `TestDefaultTimeout` (3 tests) |
 
 ---
 
@@ -572,49 +573,6 @@ cycle. Tracker memory:
 
 ---
 
-## Issue #56: Federation peer timeout sized for ancient directories (2026-05-17)
-
-**Symptom**: After deploying #55 and restarting moc3, federation
-showed `consecutive_failures: 1, last_error: "TimeoutError: timed out"`
-on moc (and reciprocally, moc → moc3). All four MF peers had healthy
-`/fleet/slo` (sub-200 ms post-#55), so the diagnostic puzzle: which
-endpoint federation actually hits is `/api/nodes/directory`, not
-`/fleet/slo`.
-
-**Root cause**: `DEFAULT_TIMEOUT = 5.0` in `src/utils/map_federation.py`
-was set when `/api/nodes/directory` returned ~1 MB. After Issue #49
-(directory split) and the external-bulk collectors (Issue #50/#51 —
-meshcore_public, worldmap, etc.), the directory has grown ~30× —
-moc's response is **35 MB in 5.37 s** measured 2026-05-17. urllib's
-`urlopen(timeout=)` is a per-recv timeout, not a whole-request
-timeout, so a stream that takes >5 s total can succeed as long as
-each chunk arrives within 5 s; one slow chunk and the whole fetch
-fails. moc ↔ moc3 saw symmetric `TimeoutError` because each box's
-directory was too big for the other's 5 s budget.
-
-**Fix**:
-- `map_federation.DEFAULT_TIMEOUT`: 5.0 → **30.0** s.
-- `map_data_collector` bootstrap default `federation_timeout_seconds`:
-  5 → 30. `TestDefaultTimeout` (3 tests) pins both, asserts they stay
-  in sync, and pins `DEFAULT_TIMEOUT < DEFAULT_POLL_INTERVAL` so a
-  future bump can't make poll cycles overlap themselves.
-- Operator can override per-box via `map_settings.json`.
-
-The 50 MB `DEFAULT_MAX_RESPONSE_BYTES` cap still protects against
-unbounded directory growth — this isn't a slippery slope to a 60 s
-timeout. Follow-up roadmap (gzip on `/api/nodes/directory`,
-pagination) tracked in `project_federation_peer_name_correlation`
-memory.
-
-**Companion to Issue #55**: both are "timeout sized for a response
-that has since grown." #55 fixed `/fleet/slo` by making it faster;
-#56 gives the federation collector more time to consume the bigger
-`/api/nodes/directory`. Pairing matters — either alone leaves a
-class of timeouts uncovered.
-
-
----
-
 ## Issue #57: Gateway data-path watchdog — `bounded_call` over RNS RPC hot path (2026-05-17)
 
 **Symptom (latent, not yet field-validated post-fix)**: The gateway's
@@ -664,6 +622,94 @@ forever — no exception, downlinks just stopped, systemd reported
 shows WEDGED + process exit + systemd restart; release with `-CONT`.
 PR-2 (Fork B) and PR-3 (Fork C) ship next on this substrate. Plan:
 `~/.claude/plans/fix-federation-persistent-issues-2026-05-17.md`.
+
+
+---
+
+## Issue #59: Federation polls a permanently-failing peer every cycle — exponential backoff (2026-05-18)
+
+**Symptom**: Operational survey of moc/moc1/moc2/moc3 showed every box's
+`/api/status.federation.peer_status[]` had moc3 stuck at `ok=false,
+last_error=Connection refused, consecutive_failures` climbing.
+Reason: moc3 is gateway-only per the fleet topology — it has no
+`meshforge-map.service`, no `:5000` listener. Federation kept hitting
+it every 60s anyway, every cycle failed identically, the counter
+climbed forever. The row drowned out genuine failures that operators
+needed to spot in the rollup.
+
+Broader pattern: any peer that's been unreachable for a while (a box
+in a long reboot, a network partition, an intentionally-decommissioned
+host that's still in fleet.json) produces the same noise — fixed-
+interval polling has no way to step back.
+
+**Root cause**: `FederationCollector.poll_once` polled every peer in
+`self._peers` on every cycle, regardless of failure history. The
+`consecutive_failures` counter was already tracked (Issue #54), but
+nothing acted on it.
+
+**Fix** (Option B per the 2026-05-18 lab-vs-handoff design call —
+preferred over surgical roster cleanup because the lab is now a
+handoff target for an external dev, and code-shape fixes beat
+config-shape fixes when state drift across deployments is a risk):
+
+`src/utils/map_federation.py`:
+- New `FederationPeerStatus` fields: `in_backoff: bool`,
+  `next_eligible_poll_ts: Optional[float]`, `backoff_multiplier: int`.
+- New `FederationCollector` knobs (defaults exposed at module level):
+  `backoff_threshold=3` (failures before engaging), `backoff_base=2`
+  (exponential factor), `backoff_max_multiplier=10` (cap at 10×
+  poll_interval). `time_fn` injected for testable clock control.
+- New `_compute_backoff(consecutive_failures, now)` pure helper —
+  shared by both branches, math pinned by `TestComputeBackoffPure`.
+- `poll_once` now buckets peers into `due_peers` (next_eligible_poll_ts
+  is None or ≤ now) and `skipped_peers`. Skipped peers carry forward
+  their last status unchanged except for `peer_name` refresh, so
+  `/api/status` shows the labeled row, not a phantom-absent peer.
+- Engage/clear transitions log at INFO level once each so operators
+  see the state change without log flooding.
+
+`src/utils/map_http_handler.py`:
+- `/api/status.federation.peer_status[]` now serializes `in_backoff`,
+  `backoff_multiplier`, `next_eligible_poll_ts` per peer. Visibility
+  per the design principle: "A failed system saying I'm failing in
+  *this specific way* is worth more than a quiet one."
+
+**Tests** (13 new in `tests/test_map_federation.py`):
+- `TestBackoffEngages` (2): below-threshold stays active; threshold-th
+  failure flips in_backoff with multiplier=1 and stamps next_eligible.
+- `TestBackoffEscalates` (2): multiplier doubles per failure (1→2→4→8);
+  capped at `max_multiplier` past the integer-overflow horizon.
+- `TestBackoffSkipsPolls` (2): peer in active backoff window is NOT
+  fetched (call_count unchanged); becomes eligible exactly when clock
+  crosses next_eligible_poll_ts.
+- `TestBackoffRecovery` (1): one successful poll clears all backoff
+  state (multiplier=1, in_backoff=False, next_eligible=None,
+  consecutive_failures=0).
+- `TestBackoffMultiPeerIsolation` (1): healthy peer keeps getting
+  polled while a separate peer is in backoff — the bad peer doesn't
+  suppress the good one.
+- `TestBackoffStateInCarriedSnapshot` (1): a skipped peer still has
+  its row in `/api/status` with `in_backoff=True` (so the operator
+  sees "labeled, paused" not "missing").
+- `TestComputeBackoffPure` (3): the math helper is pinned in isolation
+  — below-threshold, at-threshold, far-above (capped).
+
+**Operator detection recipe**:
+```bash
+curl -s http://<box>:5000/api/status | \
+  jq '.federation.peer_status[] | select(.in_backoff) |
+      {peer_name, hostname, consecutive_failures, backoff_multiplier,
+       next_eligible_poll_ts, last_error}'
+# Empty output = no peers in backoff = federation is healthy
+# Rows = peers the collector has self-quieted; check last_error to see why
+```
+
+**Companion to Issues #54 (peer_name correlation) and #55 (`/fleet/slo`
+latency cliff)**: the federation triad — diagnostics (#54), raw budget
+(#55), and now self-pacing (#59) — collectively turn "federation
+persistent issues" from a recurring class into a closed loop. moc3's
+roster cleanup (the design call deferred at the start of this turn)
+is now moot: the system handles it.
 
 
 ---

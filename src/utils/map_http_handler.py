@@ -920,6 +920,14 @@ class MapRequestHandler(
                             "last_count": s.last_count,
                             "last_latency_ms": s.last_latency_ms,
                             "consecutive_failures": s.consecutive_failures,
+                            # Backoff state (Issue #59): a peer the collector
+                            # is intentionally not polling right now still
+                            # appears here, with these fields set, so the
+                            # operator sees a labeled row rather than a
+                            # mysteriously-absent peer.
+                            "in_backoff": s.in_backoff,
+                            "backoff_multiplier": s.backoff_multiplier,
+                            "next_eligible_poll_ts": s.next_eligible_poll_ts,
                         }
                         for s in snap.peer_status.values()
                     ],
