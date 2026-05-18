@@ -564,3 +564,90 @@ class TestOperatorValueContract:
         assert not unmatched, (
             "MF014 patterns failed self-test:\n" + "\n".join(unmatched)
         )
+
+
+class TestDeliveryCallbackSymmetry:
+    """Enforce: both RNS send paths register LXMF delivery-proof callbacks.
+
+    Background: the syn/ack fork-D session caught an asymmetry where
+    send_to_rns() registered register_delivery_callback /
+    register_failed_callback (so CONFIRMED + DROPPED(rns_delivery_failed)
+    bumped on receiver-side acks), but _queue_send_rns() did NOT, so
+    queue-retried messages silently bypassed the CONFIRMED ledger and
+    biased /api/gateway/delivery.confirmation_rate downward.
+
+    The behavioural test in tests/test_rns_bridge.py::TestSynAckCallbackSymmetry
+    catches *behavioural* deletion (the callback's side effect goes away).
+    This source-shape guard catches the *easy* deletion case: someone
+    removes the register_*_callback lines from either method, the
+    behavioural test still passes because LXMF is mocked, but the
+    operator-facing ledger silently regresses in production. The two
+    layers are complementary.
+    """
+
+    def test_both_rns_send_paths_register_callbacks(self):
+        import ast
+        import os
+
+        path = os.path.join(SRC_DIR, "gateway", "rns_bridge.py")
+        with open(path, "r", encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename=path)
+
+        # send_to_rns and _queue_send_rns delegate callback wiring to
+        # _register_lxmf_delivery_callbacks (the Fork-D helper).
+        # Either:
+        # (a) the method directly calls register_delivery_callback /
+        #     register_failed_callback, OR
+        # (b) the method calls self._register_lxmf_delivery_callbacks(...)
+        #     and the helper carries the two register_*_callback calls.
+        # Both shapes satisfy the contract.
+
+        def _method_calls(method_name):
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.FunctionDef)
+                        and node.name == method_name):
+                    return {
+                        n.attr for n in ast.walk(node)
+                        if isinstance(n, ast.Attribute)
+                    }
+            return None
+
+        helper_attrs = _method_calls("_register_lxmf_delivery_callbacks")
+        assert helper_attrs is not None, (
+            "Bridge no longer defines _register_lxmf_delivery_callbacks. "
+            "If callback wiring moved, update this test or inline-check "
+            "register_delivery_callback / register_failed_callback in "
+            "every RNS send path directly."
+        )
+        assert "register_delivery_callback" in helper_attrs, (
+            "_register_lxmf_delivery_callbacks no longer calls "
+            "register_delivery_callback — CONFIRMED ledger broken"
+        )
+        assert "register_failed_callback" in helper_attrs, (
+            "_register_lxmf_delivery_callbacks no longer calls "
+            "register_failed_callback — DROPPED(rns_delivery_failed) "
+            "ledger broken"
+        )
+
+        for method in ("send_to_rns", "_queue_send_rns"):
+            attrs = _method_calls(method)
+            assert attrs is not None, (
+                f"src/gateway/rns_bridge.py no longer defines {method} — "
+                f"this regression guard needs its target list refreshed."
+            )
+            directly_wires = (
+                "register_delivery_callback" in attrs
+                and "register_failed_callback" in attrs
+            )
+            delegates_to_helper = (
+                "_register_lxmf_delivery_callbacks" in attrs
+            )
+            assert directly_wires or delegates_to_helper, (
+                f"{method} no longer wires LXMF delivery-proof callbacks "
+                f"(neither directly nor via "
+                f"_register_lxmf_delivery_callbacks). This would silently "
+                f"break the operator-facing confirmation_rate in "
+                f"/api/gateway/delivery for this send path. See "
+                f"TestSynAckCallbackSymmetry in tests/test_rns_bridge.py "
+                f"for the behavioural counterpart."
+            )

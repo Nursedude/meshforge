@@ -2384,3 +2384,135 @@ class TestLXMFReceiveSnifferCapture:
         captured = sniffer._store_packet.call_args[0][0]
         assert captured.payload == b""
         assert captured.payload_size == 0
+
+
+# ---------------------------------------------------------------------------
+# Syn/ack callback symmetry — both RNS send paths wire LXMF delivery callbacks
+# ---------------------------------------------------------------------------
+#
+# Behavioural counterpart to TestDeliveryCallbackSymmetry in
+# test_regression_guards.py. The AST guard catches deletion of the
+# `register_*_callback` calls; these tests catch deletion of the *effect*
+# — i.e., that the callback, when fired by LXMF, actually records the
+# CONFIRMED transition against the right msg_id.
+
+class TestSynAckCallbackSymmetry:
+    """Both RNS send paths must register the delivery-proof callbacks."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_delivery_counters(self, tmp_path, monkeypatch):
+        """Point delivery_counters at a per-test SQLite file and reset."""
+        from gateway import delivery_counters as _dc
+        monkeypatch.setenv(
+            "MESHFORGE_DELIVERY_COUNTERS_DB",
+            str(tmp_path / "syn_ack.db"),
+        )
+        _dc._reset_singleton_for_tests()
+        yield
+        _dc._reset_singleton_for_tests()
+
+    @staticmethod
+    def _fake_rns_lxmf_modules():
+        """Build the minimum sys.modules entries send paths import."""
+        import sys
+        fake_rns = MagicMock(name="RNS")
+        fake_rns.Transport.has_path.return_value = True
+        fake_rns.Identity.recall.return_value = MagicMock(name="dest_identity")
+        fake_rns.Destination.OUT = "OUT"
+        fake_rns.Destination.SINGLE = "SINGLE"
+        fake_rns.Destination.return_value = MagicMock(name="destination")
+        fake_lxmf = MagicMock(name="LXMF")
+        fake_lxmessage = MagicMock(name="LXMessage_instance")
+        fake_lxmf.LXMessage.return_value = fake_lxmessage
+        return fake_rns, fake_lxmf, fake_lxmessage
+
+    def _prime_bridge_for_send(self, bridge):
+        bridge._connected_rns = True
+        bridge._lxmf_source = MagicMock(name="lxmf_source")
+        bridge._lxmf_router = MagicMock(name="lxmf_router")
+
+    def test_send_to_rns_registers_both_callbacks(self, bridge):
+        """Direct send wires CONFIRMED + DROPPED proof callbacks."""
+        import sys
+        fake_rns, fake_lxmf, fake_lxm = self._fake_rns_lxmf_modules()
+        self._prime_bridge_for_send(bridge)
+        with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
+            result = bridge.send_to_rns("hello", b"\xab" * 16)
+        assert result is True
+        assert fake_lxm.register_delivery_callback.called
+        assert fake_lxm.register_failed_callback.called
+
+    def test_queue_send_rns_registers_both_callbacks(self, bridge):
+        """Retry path wires the same callbacks — was the Fork-D gap."""
+        import sys
+        fake_rns, fake_lxmf, fake_lxm = self._fake_rns_lxmf_modules()
+        self._prime_bridge_for_send(bridge)
+        payload = {
+            "message": "hi",
+            "destination_hash": b"\xab" * 16,
+            "_queue_msg_id": "queue-row-7",
+        }
+        with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
+            result = bridge._queue_send_rns(payload)
+        assert result is True
+        assert fake_lxm.register_delivery_callback.called
+        assert fake_lxm.register_failed_callback.called
+
+    def test_queue_send_callback_increments_confirmed_for_queue_msg_id(
+        self, bridge
+    ):
+        """End-to-end: the queue row's id flows from the dispatched
+        payload through the LXMF callback registration to the counter.
+        history_for(queue_id) joins SENT (recorded by mark_delivered
+        elsewhere) with CONFIRMED (recorded here when LXMF fires the
+        delivery proof callback)."""
+        import sys
+        from gateway import delivery_counters as _dc
+        fake_rns, fake_lxmf, fake_lxm = self._fake_rns_lxmf_modules()
+        self._prime_bridge_for_send(bridge)
+        queue_id = "1700000000000-abcd1234"
+        payload = {
+            "message": "hi",
+            "destination_hash": b"\xab" * 16,
+            "_queue_msg_id": queue_id,
+        }
+        with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
+            bridge._queue_send_rns(payload)
+        # Simulate LXMF firing the delivery proof
+        delivered_cb = fake_lxm.register_delivery_callback.call_args[0][0]
+        delivered_cb(MagicMock(name="receipt"))
+        hist = [e.state for e in _dc.get_singleton().history_for(queue_id)]
+        assert _dc.DeliveryState.CONFIRMED in hist
+
+    def test_send_to_rns_callback_records_drop_on_failed_receipt(
+        self, bridge
+    ):
+        """Direct path on_failed callback records DROPPED with the
+        RNS_DELIVERY_FAILED reason — counter side of the syn/ack contract."""
+        import sys
+        from gateway import delivery_counters as _dc
+        fake_rns, fake_lxmf, fake_lxm = self._fake_rns_lxmf_modules()
+        self._prime_bridge_for_send(bridge)
+        with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
+            bridge.send_to_rns("hello", b"\xab" * 16)
+        failed_cb = fake_lxm.register_failed_callback.call_args[0][0]
+        receipt = MagicMock()
+        receipt.failure_reason = "no_path"
+        failed_cb(receipt)
+        snap = _dc.get_singleton().snapshot()
+        assert snap["drop_reasons"]["rns_delivery_failed"] == 1
+
+    def test_callback_helper_tolerates_old_lxmf_without_register_api(
+        self, bridge
+    ):
+        """If LXMF.LXMessage lacks register_delivery_callback the helper
+        logs and returns without crashing. The send path still completes."""
+        import sys
+        fake_rns, fake_lxmf, fake_lxm = self._fake_rns_lxmf_modules()
+        fake_lxm.register_delivery_callback.side_effect = AttributeError(
+            "old LXMF"
+        )
+        self._prime_bridge_for_send(bridge)
+        with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
+            result = bridge.send_to_rns("hello", b"\xab" * 16)
+        assert result is True

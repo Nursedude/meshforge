@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -231,6 +232,137 @@ def probe_tracer_stale_fire() -> Optional[ProbeHit]:
     )
 
 
+# ── Fingerprint 3: tcp_4403_contention ────────────────────────────────────
+
+# Regex extracting (pid, comm) from `ss -tnp` users:((...)) field.
+# Example line tail: `users:(("python3",pid=12345,fd=8))`
+_SS_PID_COMM_RE = re.compile(
+    r'users:\(\(\s*"([^"]+)"\s*,\s*pid=(\d+)'
+)
+
+
+def _read_proc_cmdline(pid: int) -> str:
+    """Return /proc/{pid}/cmdline as a space-joined string, '' on error.
+
+    Used to distinguish meshforge-map's python from meshforge-gateway's
+    python when both are otherwise visible only as ``comm=python3``.
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            raw = f.read()
+    except (OSError, FileNotFoundError):
+        return ""
+    # cmdline is NUL-separated; trailing NUL is normal.
+    return raw.decode("utf-8", errors="replace").replace("\x00", " ").strip()
+
+
+def probe_tcp_4403_contention() -> Optional[ProbeHit]:
+    """Detect a non-gateway python process holding :4403 ESTABLISHED.
+
+    Per Issue #53 in persistent_issues.md: when meshforge-map.service
+    goes stale across a fleet-sync (Phase-2 migration left old
+    daemons running on pre-fix code), the stale daemon holds a python
+    socket to 127.0.0.1:4403 (meshtasticd's TCP API port).
+    Steady-state the gateway is the sole local consumer; any second
+    python pid on :4403, OR a single python pid whose cmdline is
+    ``utils.map_data_service`` (the known-stale signature), is
+    contention.
+
+    Probe (no sudo needed for own-user processes): ``ss -tnpH state
+    established`` lists all established TCP connections with
+    ``users:(("comm",pid=N,fd=K))`` annotation. We grep for
+    127.0.0.1:4403, extract distinct (pid, comm) tuples, and surface a
+    ProbeHit when:
+      * 2+ distinct python pids are on :4403 (contention), OR
+      * exactly 1 pid is on :4403 and its cmdline reads
+        ``utils.map_data_service`` (the wrong-process signature).
+
+    Miss conditions:
+      * ``ss`` not installed
+      * No :4403 connections (no gateway, benign)
+      * Exactly one python pid AND its cmdline is NOT map_data_service
+        (steady state — assumed to be the gateway)
+
+    Honors ``MESHFORGE_CASCADE_PROBE_DISABLED``.
+    """
+    if _probes_disabled():
+        return None
+    if shutil.which("ss") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["ss", "-tnpH", "state", "established"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+
+    pid_to_comm: dict = {}
+    for line in result.stdout.splitlines():
+        if ":4403" not in line:
+            continue
+        match = _SS_PID_COMM_RE.search(line)
+        if not match:
+            continue
+        comm = match.group(1)
+        try:
+            pid = int(match.group(2))
+        except ValueError:
+            continue
+        # Dedup: ss can list the same pid multiple times across fds.
+        pid_to_comm.setdefault(pid, comm)
+
+    if not pid_to_comm:
+        return None
+
+    # Annotate each pid with cmdline so we can detect the stale-daemon
+    # signature even when it's the only consumer on the box.
+    annotated = [
+        (pid, comm, _read_proc_cmdline(pid))
+        for pid, comm in pid_to_comm.items()
+    ]
+    map_service_pids = [
+        (pid, comm) for pid, comm, cmd in annotated
+        if "utils.map_data_service" in cmd
+    ]
+
+    if len(pid_to_comm) >= 2:
+        sample = next(iter(pid_to_comm.items()))
+        return ProbeHit(
+            evidence=(
+                f"{len(pid_to_comm)} distinct processes on 127.0.0.1:4403 — "
+                "meshtasticd TCP API contention (only the gateway should "
+                "consume :4403 locally)"
+            ),
+            metric={
+                "pid_count": len(pid_to_comm),
+                "pids": sorted(pid_to_comm.keys()),
+                "sample_comm": sample[1],
+                "map_service_pids": [pid for pid, _ in map_service_pids],
+            },
+        )
+
+    if map_service_pids:
+        pid, comm = map_service_pids[0]
+        return ProbeHit(
+            evidence=(
+                "meshforge-map.service is bound to 127.0.0.1:4403 — Issue "
+                "#53 stale-daemon signature; restart meshforge-map.service "
+                "to release the contention"
+            ),
+            metric={
+                "pid_count": 1,
+                "pids": [pid],
+                "sample_comm": comm,
+                "map_service_pids": [pid],
+            },
+        )
+
+    return None
+
+
 # ── Catalog ───────────────────────────────────────────────────────────────
 
 
@@ -260,8 +392,19 @@ FINGERPRINTS: List[Fingerprint] = [
             "consequence (no fires) rather than cause (SYN-SENT socks)",
         ),
     ),
-    # Future fingerprints (Track 3): wal_oversize, tcp_4403_contention,
-    # oneshot_activating. See plan file.
+    Fingerprint(
+        name="tcp_4403_contention",
+        severity="pre_fail",
+        probe=probe_tcp_4403_contention,
+        cadence_s=60,
+        incident_refs=("project_meshforge_map_stale_daemon_pattern",),
+        coupled_to=(
+            "/api/v1/fromradio returns size=0; R→M sends silently starve; "
+            "gateway delivery counters show sent rising without confirmed; "
+            "ECONNREFUSED bursts in meshforge-gateway journal",
+        ),
+    ),
+    # Future fingerprints (Track 3): wal_oversize, oneshot_activating.
 ]
 
 

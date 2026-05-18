@@ -922,7 +922,14 @@ class PersistentMessageQueue:
                     continue
 
                 try:
-                    success = send_fn(message.payload)
+                    # Fork C / syn-ack: inject the queue row's id so
+                    # downstream handlers can pin LXMF delivery callbacks
+                    # to the same msg_id that QUEUED + SENT were recorded
+                    # against — history_for(msg_id) joins all three.
+                    dispatch_payload = {
+                        **message.payload, '_queue_msg_id': message.id,
+                    }
+                    success = send_fn(dispatch_payload)
 
                     if success:
                         self.mark_delivered(message.id)

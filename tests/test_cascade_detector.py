@@ -279,6 +279,195 @@ class TestProbeTracerStaleFire:
         assert fp.cadence_s == 60
 
 
+# ── tcp_4403_contention probe ────────────────────────────────────────────
+
+
+class TestProbeTcp4403Contention:
+    """Detects Issue #53's stale-meshforge-map signature on :4403.
+
+    Steady state on a gateway box: exactly one python process holds
+    127.0.0.1:4403 — the meshforge-gateway. Two flavors of contention:
+
+      (a) Two distinct python pids both ESTABLISHED to :4403 — usually
+          gateway + stale-or-rogue map daemon.
+      (b) One python pid whose cmdline is utils.map_data_service — the
+          map daemon talking directly to meshtasticd, which it should
+          never do; the gateway should be the sole local consumer.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _enable_probe(self, monkeypatch):
+        monkeypatch.delenv("MESHFORGE_CASCADE_PROBE_DISABLED", raising=False)
+
+    def test_returns_none_when_ss_missing(self):
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value=None):
+            assert cfp.probe_tcp_4403_contention() is None
+
+    def test_returns_none_when_ss_timeout(self):
+        def boom(*args, **kwargs):
+            raise subprocess.TimeoutExpired(args[0], 2)
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/ss"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   side_effect=boom):
+            assert cfp.probe_tcp_4403_contention() is None
+
+    def test_returns_none_when_ss_returns_nonzero(self):
+        result = MagicMock(returncode=1, stdout="", stderr="oops")
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/ss"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   return_value=result):
+            assert cfp.probe_tcp_4403_contention() is None
+
+    def test_returns_none_when_no_4403_connections(self):
+        """Steady state: ss returns established connections that
+        happen to NOT include :4403. Most boxes look like this."""
+        result = MagicMock(
+            returncode=0,
+            stdout=(
+                'ESTAB 0 0 192.168.1.5:55001 1.2.3.4:443 '
+                'users:(("curl",pid=999,fd=3))\n'
+            ),
+        )
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/ss"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   return_value=result):
+            assert cfp.probe_tcp_4403_contention() is None
+
+    def test_returns_none_for_single_gateway_python(self):
+        """One python pid on :4403, cmdline NOT map_data_service → the
+        steady-state shape; expected to be the gateway."""
+        result = MagicMock(
+            returncode=0,
+            stdout=(
+                'ESTAB 0 0 127.0.0.1:54286 127.0.0.1:4403 '
+                'users:(("python3",pid=12345,fd=8))\n'
+            ),
+        )
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/ss"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   return_value=result), \
+             patch("utils.cascade_fingerprints._read_proc_cmdline",
+                   return_value="python3 -m gateway.bridge_cli"):
+            assert cfp.probe_tcp_4403_contention() is None
+
+    def test_returns_hit_on_two_distinct_python_pids(self):
+        """Contention shape (a): two python pids on :4403."""
+        result = MagicMock(
+            returncode=0,
+            stdout=(
+                'ESTAB 0 0 127.0.0.1:54286 127.0.0.1:4403 '
+                'users:(("python3",pid=12345,fd=8))\n'
+                'ESTAB 0 0 127.0.0.1:54300 127.0.0.1:4403 '
+                'users:(("python3",pid=67890,fd=14))\n'
+            ),
+        )
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/ss"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   return_value=result), \
+             patch("utils.cascade_fingerprints._read_proc_cmdline",
+                   return_value="python3 something-unrelated"):
+            hit = cfp.probe_tcp_4403_contention()
+        assert hit is not None
+        assert hit.metric["pid_count"] == 2
+        assert set(hit.metric["pids"]) == {12345, 67890}
+        assert "contention" in hit.evidence
+
+    def test_returns_hit_on_map_service_signature_alone(self):
+        """Contention shape (b): single python pid, cmdline matches
+        utils.map_data_service. Issue #53 stale-daemon signature even
+        when no second consumer is present."""
+        result = MagicMock(
+            returncode=0,
+            stdout=(
+                'ESTAB 0 0 127.0.0.1:54286 127.0.0.1:4403 '
+                'users:(("python3",pid=42,fd=8))\n'
+            ),
+        )
+
+        def fake_cmdline(pid):
+            return "python3 -m utils.map_data_service"
+
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/ss"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   return_value=result), \
+             patch("utils.cascade_fingerprints._read_proc_cmdline",
+                   side_effect=fake_cmdline):
+            hit = cfp.probe_tcp_4403_contention()
+        assert hit is not None
+        assert hit.metric["pid_count"] == 1
+        assert hit.metric["map_service_pids"] == [42]
+        assert "Issue #53" in hit.evidence
+
+    def test_dedups_same_pid_across_multiple_fds(self):
+        """ss can list the same pid in multiple rows when a process has
+        several FDs to :4403. We must dedup on pid before judging the
+        contention level (one pid + many fds is NOT contention)."""
+        result = MagicMock(
+            returncode=0,
+            stdout=(
+                'ESTAB 0 0 127.0.0.1:54286 127.0.0.1:4403 '
+                'users:(("python3",pid=12345,fd=8))\n'
+                'ESTAB 0 0 127.0.0.1:54290 127.0.0.1:4403 '
+                'users:(("python3",pid=12345,fd=14))\n'
+            ),
+        )
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/ss"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   return_value=result), \
+             patch("utils.cascade_fingerprints._read_proc_cmdline",
+                   return_value="python3 -m gateway.bridge_cli"):
+            assert cfp.probe_tcp_4403_contention() is None
+
+    def test_handles_malformed_ss_output(self):
+        """Lines that match :4403 but lack the users:(()) annotation
+        must not crash the probe. Real ss output can omit -p details
+        for sockets the caller doesn't own."""
+        result = MagicMock(
+            returncode=0,
+            stdout=(
+                'ESTAB 0 0 127.0.0.1:54286 127.0.0.1:4403\n'
+                'ESTAB 0 0 127.0.0.1:54287 127.0.0.1:4403 garbage-tail\n'
+            ),
+        )
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/ss"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   return_value=result):
+            # No pids extracted → None (no contention detected, but
+            # no crash either).
+            assert cfp.probe_tcp_4403_contention() is None
+
+    def test_disabled_env_short_circuits(self, monkeypatch):
+        monkeypatch.setenv("MESHFORGE_CASCADE_PROBE_DISABLED", "1")
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/ss"), \
+             patch("utils.cascade_fingerprints.subprocess.run") as run:
+            assert cfp.probe_tcp_4403_contention() is None
+            assert not run.called  # short-circuit before subprocess
+
+    def test_fingerprint_is_registered_in_catalog(self):
+        names = [fp.name for fp in cfp.FINGERPRINTS]
+        assert "tcp_4403_contention" in names
+        fp = cfp.get_fingerprint_by_name("tcp_4403_contention")
+        assert fp is not None
+        assert fp.severity == "pre_fail"
+        assert fp.cadence_s == 60
+        # `coupled_to` must remain a tuple-of-strings; the catalog walk
+        # in TestCatalogShape already enforces this for every entry, but
+        # pin it explicitly here so a deletion of that catalog test
+        # doesn't silently regress this specific fingerprint.
+        assert isinstance(fp.coupled_to, tuple)
+        assert all(isinstance(s, str) and len(s) > 1 for s in fp.coupled_to)
+
+
 # ── CascadeDetector hysteresis ───────────────────────────────────────────
 
 

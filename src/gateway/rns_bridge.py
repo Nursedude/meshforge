@@ -767,6 +767,55 @@ class RNSMeshtasticBridge(
             return False
         return self._mesh_handler.send_text(message, destination, channel)
 
+    def _register_lxmf_delivery_callbacks(
+        self,
+        lxm,
+        msg_id: str,
+        destination_hash: bytes,
+        msg_preview: str,
+    ) -> None:
+        """Wire CONFIRMED + DROPPED(rns_delivery_failed) onto an LXMessage.
+
+        Called from BOTH send_to_rns() (direct send) and _queue_send_rns()
+        (persistent-queue retry). The symmetry is the load-bearing contract:
+        without it, queue-retried sends would bump SENT but never CONFIRMED,
+        biasing /api/gateway/delivery.confirmation_rate downward. See
+        TestDeliveryCallbackSymmetry in tests/test_regression_guards.py for
+        the source-shape guard.
+        """
+        self.delivery_tracker.track_message(
+            msg_id, destination_hash, msg_preview
+        )
+
+        def on_delivered(receipt):
+            self.delivery_tracker.confirm_delivery(msg_id)
+            _dc.record(
+                _dc.DeliveryState.CONFIRMED,
+                msg_id=msg_id,
+                protocol="rns",
+            )
+
+        def on_failed(receipt):
+            reason = "delivery_failed"
+            if hasattr(receipt, 'failure_reason'):
+                reason = str(receipt.failure_reason)
+            self.delivery_tracker.confirm_failure(msg_id, reason)
+            _dc.record(
+                _dc.DeliveryState.DROPPED,
+                msg_id=msg_id,
+                protocol="rns",
+                drop_reason=_dc.DropReason.RNS_DELIVERY_FAILED,
+                note=reason[:80],
+            )
+
+        try:
+            lxm.register_delivery_callback(on_delivered)
+            lxm.register_failed_callback(on_failed)
+        except (AttributeError, TypeError):
+            logger.debug(
+                "LXMF callbacks not available, skipping delivery tracking"
+            )
+
     def send_to_rns(
         self,
         message: str,
@@ -870,49 +919,10 @@ class RNSMeshtasticBridge(
                 on_wedge=_on_wedge,
             )
 
-            # Track delivery confirmation
             msg_id = f"lxmf-{int(time.time() * 1000)}"
-            self.delivery_tracker.track_message(
-                msg_id, destination_hash, message[:50]
+            self._register_lxmf_delivery_callbacks(
+                lxm, msg_id, destination_hash, message[:50],
             )
-
-            # Register LXMF delivery/failure callbacks
-            def on_delivered(receipt):
-                self.delivery_tracker.confirm_delivery(msg_id)
-                # Fork C: receiver-confirmed delivery. Distinct from
-                # the queue's `mark_delivered` (which means "sent to
-                # network"); this fires when the recipient's LXMF
-                # stack acks the message.
-                _dc.record(
-                    _dc.DeliveryState.CONFIRMED,
-                    msg_id=msg_id,
-                    protocol="rns",
-                )
-
-            def on_failed(receipt):
-                reason = "delivery_failed"
-                if hasattr(receipt, 'failure_reason'):
-                    reason = str(receipt.failure_reason)
-                self.delivery_tracker.confirm_failure(msg_id, reason)
-                # Fork C: terminal drop at the LXMF layer. Distinct
-                # from queue-level RETRIES_EXHAUSTED because the
-                # gateway successfully reached the receiver's stack
-                # and the receiver rejected — different remediation
-                # (check receiver's filtering, not the path).
-                _dc.record(
-                    _dc.DeliveryState.DROPPED,
-                    msg_id=msg_id,
-                    protocol="rns",
-                    drop_reason=_dc.DropReason.RNS_DELIVERY_FAILED,
-                    note=reason[:80],
-                )
-
-            try:
-                lxm.register_delivery_callback(on_delivered)
-                lxm.register_failed_callback(on_failed)
-            except (AttributeError, TypeError):
-                # LXMF version may not support callbacks
-                logger.debug("LXMF callbacks not available, skipping delivery tracking")
 
             bounded_call("rnsd.handle_outbound",
                          self._lxmf_router.handle_outbound, lxm,
@@ -993,6 +1003,21 @@ class RNSMeshtasticBridge(
                 destination, self._lxmf_source, message, "MeshForge Gateway",
                 target=hash_short, timeout_s=5.0, on_wedge=_on_wedge,
             )
+
+            # Carry the queue row's id through the syn/ack ledger so
+            # history_for(msg_id) joins QUEUED (enqueue) → SENT
+            # (mark_delivered) → CONFIRMED (LXMF delivery callback).
+            # _queue_msg_id is injected at dispatch time by the queue's
+            # _worker; fallback covers direct callers that bypass the
+            # queue plumbing (mostly tests).
+            msg_id = (
+                payload.get('_queue_msg_id')
+                or f"lxmf-{int(time.time() * 1000)}"
+            )
+            self._register_lxmf_delivery_callbacks(
+                lxm, msg_id, destination_hash, message[:50],
+            )
+
             bounded_call("rnsd.handle_outbound",
                          self._lxmf_router.handle_outbound, lxm,
                          target=hash_short,

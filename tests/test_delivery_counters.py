@@ -272,6 +272,84 @@ class TestRingBuffer:
         ]
 
 
+# ── State-transition contract ─────────────────────────────────────────
+#
+# These tests pin the end-to-end lifecycle for one msg_id traveling
+# through real call sites. test_history_for_filters_by_id (above) covers
+# the basic ordering; this class adds the operator-visible contract:
+# DROP terminates the lifecycle, and confirmation_rate is honest in
+# the SENT-then-DROP case (i.e., DROP after SEND is NOT a confirm).
+
+
+class TestStateTransitionContract:
+    def test_full_lifecycle_q_s_c_in_order(self):
+        c = DeliveryCounters()
+        msg_id = "lifecycle-1"
+        c.record(DeliveryState.QUEUED, msg_id, protocol="rns")
+        c.record(DeliveryState.SENT, msg_id, protocol="rns")
+        c.record(DeliveryState.CONFIRMED, msg_id, protocol="rns")
+        states = [e.state for e in c.history_for(msg_id)]
+        assert states == [
+            DeliveryState.QUEUED,
+            DeliveryState.SENT,
+            DeliveryState.CONFIRMED,
+        ]
+
+    def test_drop_after_send_is_not_a_confirm(self):
+        """SENT bumps the denominator of confirmation_rate; a subsequent
+        DROP bumps drop_reasons but NOT the numerator. So rate stays 0
+        even though the message had a terminal outcome."""
+        c = DeliveryCounters()
+        msg_id = "lifecycle-2"
+        c.record(DeliveryState.QUEUED, msg_id, protocol="rns")
+        c.record(DeliveryState.SENT, msg_id, protocol="rns")
+        c.record(
+            DeliveryState.DROPPED, msg_id, protocol="rns",
+            drop_reason=DropReason.RNS_DELIVERY_FAILED,
+            note="receiver rejected",
+        )
+        snap = c.snapshot()
+        assert snap["confirmation_rate"] == 0.0
+        states = [e.state for e in c.history_for(msg_id)]
+        assert states[-1] == DeliveryState.DROPPED
+
+    def test_lifecycle_independent_per_msg_id(self):
+        """Two messages in flight at once each carry their own history;
+        the snapshot's confirmation_rate is the aggregate, but
+        history_for keeps them separate."""
+        c = DeliveryCounters()
+        c.record(DeliveryState.QUEUED, "a", protocol="rns")
+        c.record(DeliveryState.QUEUED, "b", protocol="rns")
+        c.record(DeliveryState.SENT, "a", protocol="rns")
+        c.record(DeliveryState.SENT, "b", protocol="rns")
+        c.record(DeliveryState.CONFIRMED, "a", protocol="rns")  # only a
+        states_a = [e.state for e in c.history_for("a")]
+        states_b = [e.state for e in c.history_for("b")]
+        assert states_a == [
+            DeliveryState.QUEUED, DeliveryState.SENT,
+            DeliveryState.CONFIRMED,
+        ]
+        assert states_b == [DeliveryState.QUEUED, DeliveryState.SENT]
+        assert c.snapshot()["confirmation_rate"] == 0.5
+
+    def test_queue_retried_message_can_reach_confirmed(self):
+        """The Fork-D-fixed gap: messages reaching RNS via the persistent
+        queue retry path used to bump SENT (from mark_delivered) but
+        never CONFIRMED. With the retry path now wiring the LXMF
+        delivery callback against the queue row's id, the same msg_id
+        progresses Q→S→C. This test pins the counter-side of that
+        contract; tests/test_rns_bridge.py::TestSynAckCallbackSymmetry
+        pins the bridge wiring."""
+        c = DeliveryCounters()
+        queue_id = "1700000000000-abcd1234"  # shape of message_queue ids
+        c.record(DeliveryState.QUEUED, queue_id, protocol="rns")
+        c.record(DeliveryState.SENT, queue_id, protocol="rns")
+        c.record(DeliveryState.CONFIRMED, queue_id, protocol="rns")
+        assert c.snapshot()["confirmation_rate"] == 1.0
+        hist = [e.state for e in c.history_for(queue_id)]
+        assert DeliveryState.CONFIRMED in hist
+
+
 # ── Snapshot contract ────────────────────────────────────────────────
 
 

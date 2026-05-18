@@ -101,8 +101,21 @@ class MeshForgeLinter:
         # MF001: Path.home() violation
         # Skip the paths.py utility file that defines get_real_user_home()
         if 'Path.home()' in line and 'paths.py' not in filepath:
-            # Skip string literals (changelog entries, documentation)
-            is_string_literal = stripped.startswith('"') or stripped.startswith("'")
+            # Skip string literals (changelog entries, documentation).
+            # Recognize f-string prefixes (f", f', rf", rf', fr", fr') as
+            # string-literal starts — without this, an f-string assertion
+            # message that mentions Path.home() in its display text trips
+            # MF001 as a false positive.
+            is_string_literal = (
+                stripped.startswith('"')
+                or stripped.startswith("'")
+                or stripped.startswith('f"')
+                or stripped.startswith("f'")
+                or stripped.startswith('rf"')
+                or stripped.startswith("rf'")
+                or stripped.startswith('fr"')
+                or stripped.startswith("fr'")
+            )
             # Acceptable fallback patterns:
             # 1. return Path.home() in a fallback function
             # 2. else Path.home() in a ternary after SUDO_USER check
