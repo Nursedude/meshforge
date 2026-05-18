@@ -57,10 +57,11 @@ sed -e "s|@USER@|$TARGET_USER|g" \
 
 install -m 0644 "$TMP_UNIT" "$UNIT_PATH"
 
-# Ensure the user's config/cache dirs exist and are user-owned — systemd's
+# Ensure the user's config/cache/share dirs exist and are user-owned — systemd's
 # ProtectSystem=strict + ReadWritePaths= require these paths to exist at
-# start time, otherwise the unit fails.
-for dir in "$TARGET_HOME/.config/meshforge" "$TARGET_HOME/.cache/meshforge"; do
+# start time, otherwise the unit fails. The .local/share path holds
+# delivery_counters.db (commit a420829 / Issue #29) and node_history.db.
+for dir in "$TARGET_HOME/.config/meshforge" "$TARGET_HOME/.cache/meshforge" "$TARGET_HOME/.local/share/meshforge"; do
     if [[ ! -d "$dir" ]]; then
         install -d -o "$TARGET_USER" -g "$TARGET_USER" -m 0755 "$dir"
         echo "  created $dir"
