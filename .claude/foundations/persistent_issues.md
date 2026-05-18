@@ -58,6 +58,9 @@ Full history in `persistent_issues_archive.md`.
 | #56 Federation directory timeout (2026-05-17) | `DEFAULT_TIMEOUT` 5s→30s in `map_federation`; 35 MB `/api/nodes/directory` couldn't fit the old budget. Body in archive | `TestDefaultTimeout` (3 tests) |
 | #47 NomadNet two-conversations UX (2026-04-25) | Known Nodes vs Conversations panel distinction; gateway thread vs peer LXMF thread. Operator seeding flow. Body in archive | UX/documentation |
 | #53 meshforge-map stale daemon (2026-05-02) | fleet_sync.sh now restarts `meshforge-map.service` alongside `meshforge` + `meshforge-maps`. Body in archive | `scripts/fleet_sync.sh` (commit `660f26f`) |
+| #40 RNS→Mesh bridge bytes-payload + MQTT topic (2026-04-21) | Decode bytes→str at `_process_rns_to_mesh()` entry; reroute MQTT-bridge enqueue to `destination="meshtastic"` (HTTP `/api/v1/toradio` SSOT). Body in archive | `tests/test_rns_bridge.py` (5 tests) |
+| #41 rpc_key pinning for gateway inbound (2026-04-21) | Propagate rnsd's `rpc_key` into MeshForge's 3 client-only RNS configs (`paths.ReticulumPaths.get_shared_rpc_key()`); RNS 1.1.x literal `rpc_key`. Body in archive | — |
+| #48 Phase-2 migration inherits WAL → cold-start stall (2026-04-27) | `PRAGMA wal_checkpoint(TRUNCATE)` on source DB before cp; new service first-open is fast. Body in archive | `tests/test_migrate_map_service.py` (6 assertions) |
 
 ---
 
@@ -192,76 +195,6 @@ if MESHTASTIC_CONNECTION_LOCK.acquire(timeout=10):
 1. Add to `ALLOWLISTED` in `TestTCPConnectionContract`
 2. Add to `lock_aware_files` in lint.py MF007
 3. Acquire `MESHTASTIC_CONNECTION_LOCK` before creating
-
----
-
-## Issue #40: RNS→Mesh bridge — bytes payload crash + wrong-topic MQTT downlink (2026-04-21)
-
-**Resolved 2026-04-21**. Two independent defects on the R→M=0 path:
-(1) `_process_rns_to_mesh()` crashed on `bytes` LXMF content (str ops on
-bytes); (2) `publish_to_mqtt()` topic shape didn't match meshtasticd's
-literal `mqtt` channel-name subscription (`msh/{REGION}/2/json/mqtt/#`,
-firmware PR #3183 convention). **Fix**: decode bytes→str at entry to
-`_process_rns_to_mesh()` + `_requeue_failed_message()`; reroute
-MQTT-bridge-mode enqueue from `destination="mqtt"` to `destination="meshtastic"`
-(uses the Issue #29 HTTP `/api/v1/toradio` SSOT instead of MQTT downlink).
-`publish_to_mqtt()` is now dead code, retained for hypothetical pure-MQTT
-gateway. Inbound RNS link-packet auth follow-up landed in Issue #41.
-**Tests** in `tests/test_rns_bridge.py`: `test_bytes_content_is_decoded`,
-`test_bytes_content_with_at_prefix`, `test_invalid_utf8_uses_replacement`,
-`test_mqtt_bridge_mode_enqueues_to_meshtastic`,
-`test_bytes_content_serializes_as_str`.
-**Full body**: `persistent_issues_archive.md`.
-
----
-
-## Issue #41: rpc_key pinning closes the Issue #37/#40 gateway inbound gap (2026-04-21)
-
-**Resolved 2026-04-21**. MeshForge's three client-only RNS configs
-(gateway, TUI commands, map collector) each generated a fresh
-transport identity, producing divergent multiprocessing-RPC authkeys
-that rnsd rejected. **Fix**: propagate rnsd's `rpc_key` into each
-client config — `src/utils/paths.py:ReticulumPaths.get_shared_rpc_key()`
-+ callers in `src/commands/rns.py`, `src/gateway/node_tracker.py`,
-`src/utils/_map_collector_rns.py`. RNS 1.1.x parses only the literal
-`rpc_key` name (not `shared_instance_rpc_key`); migration fleets must
-`sed s/shared_instance_rpc_key/rpc_key/` every RNS config.
-**Full body**: `persistent_issues_archive.md`.
-
-
----
-
-## Issue #48: Phase-2 migration inherits source WAL → cold-start stall (2026-04-27)
-
-**Symptom**: After Phase-2 migration (User=root → User=$op), service
-restart hung ~3 min in D-state (`ext4_sync_file`) before binding
-`:5000`. WAL was 350 MB on the migrated DB.
-
-**Cause**: Migration cp's `*-wal`/`*-shm` sidecars verbatim. New
-service's first open checkpoints the inherited WAL → multi-min SD
-fsync stall. Phase 1.5 dedup bounds observation-table writes, not
-WAL between checkpoints.
-
-**Fix** (Phase A of map-arc): run `PRAGMA wal_checkpoint(TRUNCATE)` on
-source DB before cp. WAL → 0 bytes; new service first-open is fast.
-Idempotent on clean DB; non-fatal on busy-reader (warns, copies as-is).
-
-**Tests**: `tests/test_migrate_map_service.py` — 6 assertions
-(PRAGMA contract, script structure, idempotence, non-fatal path,
-end-to-end via subprocess).
-
-**Companion deferred** to Phase D (F3 in `project_map_arc_findings`):
-bind-first + 503/warming handler swap so cold starts surface as
-"warming" rather than "connection refused" to monitoring.
-
-**Operator diagnosis — stalled `:5000`**:
-```bash
-sudo cat /proc/$(systemctl show meshforge-map -p MainPID --value)/stack
-# ext4_sync_file → SD fsync stall (WAL replay)
-ls -lh ~/.local/share/meshforge/node_history.db-wal
-# >50MB = active replay, resolves 1-3 min on SD
-```
-
 
 ---
 
@@ -754,3 +687,49 @@ ssh <box> "ss -tnlp 2>/dev/null | grep meshtasticd"
 active-but-unreachable from running): the UI surfaces the zombie; the
 sanitizer prevents it on first activation; the upstream issue to
 `chrismyers2000/MeshAdv-Pi-Hat` will fix the source.
+
+
+---
+
+## Issue #61: `meshforge-map.service` daemon-mode SIGTERM deadlock (2026-05-18)
+
+**Symptom**: `meshforge-map.service` stuck `deactivating` 5+ min on
+moc2 during 2026-05-18 deploy. Sub-systems stopped cleanly at 10:55:05;
+main thread refused to join (`futex_wait` per `/proc/PID/stack`); past
+`TimeoutStopSec=300` → manual SIGKILL. Reliability backlog #3.
+
+**Root cause**: stdlib `socketserver.BaseServer.shutdown()` invariant —
+"must be called while serve_forever() is running in a different thread
+otherwise it will deadlock." MeshForge's daemon path (`--daemon` →
+`server.start()`) runs `serve_forever()` on the **main thread**
+(`map_data_service.py`). Python routes signals to the main thread, so
+the SIGTERM handler synchronously called `server.stop()` →
+`_server.shutdown()` → blocked on `__is_shut_down.wait()`, which only
+the `serve_forever` loop can set. Loop couldn't iterate because main
+was inside `wait()`. Classic single-thread `socketserver` deadlock;
+every restart since daemon-path introduction silently hit `TimeoutStopSec`
+and got SIGKILL'd — operator only caught it during a watched deploy.
+
+**Fix**: `_build_daemon_signal_handler()` (module-level, testable) —
+handler spawns a daemon thread `map-shutdown` for `server.stop()`. Main
+thread stays free to observe `__shutdown_request` next poll cycle and
+exit `serve_forever()` naturally. Second signal during shutdown →
+`os._exit(1)` so a wedged cleanup thread can't trap the process.
+
+**Tests** (`tests/test_map_daemon_shutdown.py`, 6 assertions):
+regression-pinning test deadlocks under pytest timeout if the handler
+ever inlines `stop()` again; thread-shape lock (name `map-shutdown`,
+daemon=True); escalation path; PID-file removal under both success
+and exception; positive control proving cross-thread `ThreadingHTTPServer.shutdown()` works.
+
+**Operator detection** (for the next instance of this class):
+```bash
+ssh <box> "ps -eLo pid,tid,comm | grep map-shutdown"
+# Thread present during a hang → something else wedged.
+# Thread absent during a hang → regression; re-run
+# tests/test_map_daemon_shutdown.py.
+```
+
+**Fleet exposure**: every box running `meshforge-map.service` (moc,
+moc1, moc2, moc3, volcanoai) was silently hitting this on every
+restart. Post-fix expected shutdown <1s.

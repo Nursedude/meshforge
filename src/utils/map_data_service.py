@@ -748,6 +748,59 @@ class MapServer:
         return f"http://{host}:{self.port}"
 
 
+def _build_daemon_signal_handler(server, pid_file):
+    """Build the SIGTERM/SIGINT handler used by the `--daemon` path.
+
+    CRITICAL: `BaseServer.shutdown()` must run on a different thread
+    from `serve_forever()` or it deadlocks (stdlib invariant). The
+    daemon path runs `serve_forever()` on the main thread; Python
+    routes signals to the main thread, so a handler that calls
+    `server.stop()` directly would block forever inside
+    `_server.shutdown()` waiting on an Event that only the
+    `serve_forever` loop can set. Result: futex_wait on the main
+    thread until systemd SIGKILL at `TimeoutStopSec=300s` — witnessed
+    on moc2 2026-05-18 (reliability backlog #3).
+
+    Returns a callable with `signal.signal(...)` signature. The handler
+    spawns a daemon thread to run `server.stop()` so the main thread
+    stays free to observe `__shutdown_request` and exit
+    `serve_forever()` cleanly. A second signal during shutdown
+    escalates via `os._exit` so a stuck cleanup thread can't trap the
+    process.
+    """
+    shutdown_started = threading.Event()
+
+    def _do_shutdown():
+        try:
+            server.stop()
+        except Exception as e:
+            logger.warning("Error during graceful shutdown: %s", e)
+        finally:
+            _remove_pid_file(pid_file)
+
+    def handle_signal(signum, frame):
+        import signal as _signal
+        sig_name = _signal.Signals(signum).name
+        if shutdown_started.is_set():
+            print(
+                f"\nReceived {sig_name} during shutdown — exiting immediately."
+            )
+            os._exit(1)
+        shutdown_started.set()
+        print(f"\nReceived {sig_name}, shutting down...")
+        threading.Thread(
+            target=_do_shutdown,
+            daemon=True,
+            name="map-shutdown",
+        ).start()
+
+    # Exposed for test inspection — verifies the handler does not call
+    # server.stop() inline on the calling (i.e. main) thread.
+    handle_signal._shutdown_started = shutdown_started  # type: ignore[attr-defined]
+    handle_signal._do_shutdown = _do_shutdown  # type: ignore[attr-defined]
+    return handle_signal
+
+
 def main():
     """Run the map server standalone.
 
@@ -851,15 +904,7 @@ Examples:
         cors_origins=cors_origins,
     )
 
-    # Signal handlers for graceful shutdown
-    def handle_signal(signum, frame):
-        sig_name = signal.Signals(signum).name
-        print(f"\nReceived {sig_name}, shutting down...")
-        server.stop()
-        _remove_pid_file(args.pid_file)
-        import sys
-        sys.exit(0)
-
+    handle_signal = _build_daemon_signal_handler(server, args.pid_file)
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 

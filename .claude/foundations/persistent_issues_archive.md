@@ -1587,3 +1587,36 @@ Issue #40 (bytes + TX landed in `ddb40de`; this is the inbound complement).
 
 
 ---
+
+## Issue #48: Phase-2 migration inherits source WAL → cold-start stall (2026-04-27)
+
+**Symptom**: After Phase-2 migration (User=root → User=$op), service
+restart hung ~3 min in D-state (`ext4_sync_file`) before binding
+`:5000`. WAL was 350 MB on the migrated DB.
+
+**Cause**: Migration cp's `*-wal`/`*-shm` sidecars verbatim. New
+service's first open checkpoints the inherited WAL → multi-min SD
+fsync stall. Phase 1.5 dedup bounds observation-table writes, not
+WAL between checkpoints.
+
+**Fix** (Phase A of map-arc): run `PRAGMA wal_checkpoint(TRUNCATE)` on
+source DB before cp. WAL → 0 bytes; new service first-open is fast.
+Idempotent on clean DB; non-fatal on busy-reader (warns, copies as-is).
+
+**Tests**: `tests/test_migrate_map_service.py` — 6 assertions
+(PRAGMA contract, script structure, idempotence, non-fatal path,
+end-to-end via subprocess).
+
+**Companion deferred** to Phase D (F3 in `project_map_arc_findings`):
+bind-first + 503/warming handler swap so cold starts surface as
+"warming" rather than "connection refused" to monitoring.
+
+**Operator diagnosis — stalled `:5000`**:
+```bash
+sudo cat /proc/$(systemctl show meshforge-map -p MainPID --value)/stack
+# ext4_sync_file → SD fsync stall (WAL replay)
+ls -lh ~/.local/share/meshforge/node_history.db-wal
+# >50MB = active replay, resolves 1-3 min on SD
+```
+
+---
