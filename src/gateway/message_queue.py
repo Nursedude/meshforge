@@ -928,6 +928,7 @@ class PersistentMessageQueue:
         origin_network: str,
         origin_address: str,
         timeout_seconds: int = 300,
+        allow_orphan: bool = False,
     ) -> bool:
         """
         Mark a queued message as expecting an application-layer ACK.
@@ -944,6 +945,18 @@ class PersistentMessageQueue:
                 synthesized back to (e.g. "meshcore", "meshtastic").
             origin_address: address on that network (e.g. "!aabbccdd").
             timeout_seconds: how long to wait before declaring TIMEOUT.
+            allow_orphan: when True and the message_id has no queue row
+                (e.g. MeshtasticBroadcastBridge does its own LXMF send
+                and doesn't go through enqueue()), INSERT a synthetic
+                bookkeeping row so the substrate's mark_acked /
+                find_overdue_acks / mark_timeout flow can still operate
+                on this id. The synthetic row is created with
+                status='delivered' so it never enters dispatch loops,
+                unique content_hash (the msg_id itself), and zero
+                max_retries. Caller still gets the same True/False
+                contract — True if the pending-ack now exists (either
+                via UPDATE of an existing row or INSERT of a synthetic
+                one), False only on hard DB error.
 
         Returns:
             True if a row was updated (msg exists), False otherwise.
@@ -962,7 +975,47 @@ class PersistentMessageQueue:
                  WHERE id = ?
             """, (timeout_at, origin_network, origin_address,
                   now.isoformat(), message_id))
-            return cursor.rowcount > 0
+            if cursor.rowcount > 0:
+                return True
+
+            if not allow_orphan:
+                return False
+
+            # Issue #66 first-caller: no enqueue() preceded this call —
+            # synthesize a bookkeeping row so the substrate's mark_acked
+            # / find_overdue_acks / mark_timeout flow can correlate the
+            # downstream LXMF callback to this msg_id. status='delivered'
+            # keeps it out of dispatch loops; auto_cleanup will purge it
+            # eventually like any other delivered row.
+            conn.execute("""
+                INSERT INTO messages
+                (id, payload, destination, priority, status, created_at,
+                 updated_at, retry_count, max_retries, retry_after,
+                 error_message, content_hash,
+                 ack_required, ack_status, ack_timeout_at,
+                 ack_origin_network, ack_origin_address)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?)
+            """, (
+                message_id,
+                '{"ack_bookkeeping": true}',
+                "ack_bookkeeping",
+                MessagePriority.NORMAL.value,
+                MessageStatus.DELIVERED.value,
+                now.isoformat(),
+                now.isoformat(),
+                0,
+                0,
+                None,
+                "",
+                message_id,  # content_hash = unique msg_id avoids dedup
+                1,
+                'pending',
+                timeout_at,
+                origin_network,
+                origin_address,
+            ))
+            return True
 
     def mark_acked(self, message_id: str) -> Optional[Dict[str, Any]]:
         """

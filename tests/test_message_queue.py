@@ -802,6 +802,72 @@ class TestPendingAckTrackingIssue66:
         ) is False
         assert queue.get_ack_status("ghost-id") is None
 
+    def test_register_pending_ack_allow_orphan_inserts_bookkeeping_row(
+        self, queue,
+    ):
+        """allow_orphan=True path used by MeshtasticBroadcastBridge — fan-out
+        bypasses enqueue() so there's no underlying row; we still need a
+        substrate record so mark_acked / find_overdue_acks correlate the
+        downstream LXMF receipt to this msg_id."""
+        msg_id = "mbcast-1234567890-ch2"
+        assert queue.register_pending_ack(
+            msg_id,
+            origin_network="meshtastic",
+            origin_address="channel:2",
+            timeout_seconds=60,
+            allow_orphan=True,
+        ) is True
+        assert queue.get_ack_status(msg_id) == 'pending'
+
+    def test_allow_orphan_makes_mark_acked_work_for_synthetic_rows(
+        self, queue,
+    ):
+        """End-to-end: orphan-inserted row participates in mark_acked
+        correlation so the LXMF delivery callback drives ACK synthesis
+        back to the originating channel placeholder address."""
+        msg_id = "mbcast-9999999999-ch7"
+        queue.register_pending_ack(
+            msg_id,
+            origin_network="meshtastic",
+            origin_address="channel:7",
+            timeout_seconds=60,
+            allow_orphan=True,
+        )
+        result = queue.mark_acked(msg_id)
+        assert result is not None
+        assert result['message_id'] == msg_id
+        assert result['origin_network'] == "meshtastic"
+        assert result['origin_address'] == "channel:7"
+
+    def test_allow_orphan_synthetic_row_has_delivered_status(self, queue):
+        """Synthetic bookkeeping rows must NOT enter dispatch loops —
+        status='delivered' is the gate."""
+        import sqlite3
+        msg_id = "mbcast-stat-check"
+        queue.register_pending_ack(
+            msg_id,
+            origin_network="meshtastic",
+            origin_address="channel:0",
+            allow_orphan=True,
+        )
+        with sqlite3.connect(str(queue._db_path)) as conn:
+            row = conn.execute(
+                "SELECT status, destination FROM messages WHERE id = ?",
+                (msg_id,),
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "delivered"
+        assert row[1] == "ack_bookkeeping"
+
+    def test_allow_orphan_false_is_default_behavior(self, queue):
+        """Default kwarg stays False — pre-existing callers see no change."""
+        assert queue.register_pending_ack(
+            "ghost-id-2",
+            origin_network="meshcore",
+            origin_address="abc",
+        ) is False
+        assert queue.get_ack_status("ghost-id-2") is None
+
     def test_mark_acked_returns_origin_for_correlation(self, queue):
         """
         mark_acked() returns the origin (network, address) so the caller
