@@ -62,6 +62,7 @@ Full history in `persistent_issues_archive.md`.
 | #41 rpc_key pinning for gateway inbound (2026-04-21) | Propagate rnsd's `rpc_key` into MeshForge's 3 client-only RNS configs (`paths.ReticulumPaths.get_shared_rpc_key()`); RNS 1.1.x literal `rpc_key`. Body in archive | — |
 | #48 Phase-2 migration inherits WAL → cold-start stall (2026-04-27) | `PRAGMA wal_checkpoint(TRUNCATE)` on source DB before cp; new service first-open is fast. Body in archive | `tests/test_migrate_map_service.py` (6 assertions) |
 | #49 Lean node directory — split persistent dir from time-series (2026-04-28) | New `nodes` table in `node_history.db` (one row per network,node_id) decoupled from time-series `node_observations`; tiered retention (local 30d / external 7d) + 50k LRU cap; sticky source-origin promotion. Body in archive | `tests/test_node_history.py` (17) + diagnostics (3) |
+| #50 Directory tier retention defeated by UPSERT `last_seen=now` (2026-04-30) | External-bulk republish reset tier clock every cycle; fix uses upstream `last_heard` + `MAX(nodes.last_seen, excluded.last_seen)` ON CONFLICT. Body in archive | `TestDirectoryUpstreamTimestamp` in `tests/test_node_history.py` (9 tests) |
 
 ---
 
@@ -196,81 +197,6 @@ if MESHTASTIC_CONNECTION_LOCK.acquire(timeout=10):
 1. Add to `ALLOWLISTED` in `TestTCPConnectionContract`
 2. Add to `lock_aware_files` in lint.py MF007
 3. Acquire `MESHTASTIC_CONNECTION_LOCK` before creating
-
----
-
-## Issue #50: Directory tier retention defeated by UPSERT last_seen rewrite (2026-04-30)
-
-**Symptom (fleet-wide)**: After Issue #49 shipped, `node_history.db`
-ballooned on every box that had external-bulk collectors enabled —
-volcanoai 2.0 GB, moc3 803 MB, moc1 692 MB, moc 654 MB. moc2 stayed at
-19 MB (no `meshcore_public` / `public_fallback` / `aredn_worldmap`).
-4 of 5 boxes pinned at exactly 60,298 directory rows — 20% over the
-50,000 LRU cap, with `oldest_last_seen == newest_last_seen` in
-`/api/status`. The 7d external retention tier never fired.
-
-**Root cause**: external-bulk sources republish their entire dataset
-every collect cycle (meshcore.dev = 41k nodes, public_fallback = 14k).
-`_apply_features_to_directory` stamped `last_seen = now` at INSERT and
-unconditionally overwrote it with `excluded.last_seen = now` on
-CONFLICT. Result: every row's tier clock reset to NOW each cycle, so
-`directory_retention_external = 7d` could never fire. Only the 50k LRU
-cap pruned anything; with 41k meshcore_public rows republished every
-cycle, eviction churned >5k rows/cycle and the next cycle re-INSERTed
-them immediately.
-
-**Fix** (in `src/utils/node_history.py`):
-1. `_build_directory_row` reads `properties.last_heard` from the feature
-   for external-bulk origins (`meshcore_public`, `aredn_worldmap`,
-   `mqtt_global`, `public_fallback`) and uses it as the row's `last_seen`
-   when present and `0 < ts ≤ now`. Local origins always use `now`.
-   Future-dated upstream timestamps are clamped to `now` so a misbehaving
-   source can't poison the prune horizon.
-2. ON CONFLICT clause changed from `last_seen = excluded.last_seen` to
-   `last_seen = MAX(nodes.last_seen, excluded.last_seen)`. Re-publishing
-   an unchanged upstream record leaves the tier clock alone; only a
-   genuinely newer upstream observation advances `last_seen`.
-3. `first_seen` decoupled from `last_seen` on INSERT — first_seen is
-   always `now` ("when WE first inserted this row"), `last_seen` is the
-   upstream-aware candidate. On a fresh row from an old upstream record,
-   `first_seen > last_seen` is intentional and accurate.
-
-**Why option 3 (upstream stamp)** over the alternatives in
-`project_map_arc_findings.md`:
-- "Skip directory writes for external bulk" loses the
-  "did we ever hear about this node" answer that Issue #49 added the
-  directory for.
-- "Conditional last_seen update" required a side-channel signal for
-  "is this fresh"; the upstream `last_heard` already encodes that.
-- All three external-bulk parsers
-  (`_parse_meshcore_public_node`, `_parse_worldmap_row`,
-  `_parse_*_public` in `_map_collector_public.py`) already emit
-  `properties.last_heard`, so option 3 was a precise low-blast-radius
-  edit.
-
-**Tests**: `TestDirectoryUpstreamTimestamp` in `tests/test_node_history.py`
-(9 tests) — upstream-stamp wiring, republish-no-advance, newer-upstream-
-advances, MAX-monotonic guard against regression, last_heard=0 fallback,
-future-clamp, local-origin ignore, unknown-origin ignore, end-to-end
-prune at 8d-old upstream.
-
-**Operator recipe — verify the fix on a fleet box**:
-```bash
-# Pre-fix smoking gun: oldest == newest in /api/status.directory.
-# Post-fix (after a collect cycle or two): oldest ages back to ~7d.
-curl -s http://<box>:5000/api/status | jq '.directory | {oldest_last_seen, newest_last_seen, total}'
-# Confirm divergence, then re-check after 24h: total should drop as
-# external rows whose upstream stamps cross the 7d boundary get pruned.
-```
-
-**One-time cleanup of pre-fix bloat**: existing rows still carry
-`last_seen ≈ NOW`, so the 7d tier won't catch up until they age out
-naturally over the next week (or operators force a one-shot prune by
-deleting rows where `last_seen > NOW - 60` for external origins, then
-letting the next cycle repopulate with correct upstream stamps). Risky
-on a busy DB — better to let the fix soak naturally; the hourly prune
-+ 50k LRU cap keeps growth bounded in the meantime.
-
 
 ---
 
@@ -701,3 +627,69 @@ removed; `selected_region=hawaii` preserved.
 2. Add `stale_defaults={"key": [OLD_VALUE]}` to the constructor
    (extend the list if there's already a stale history).
 3. Next fleet pull → migrates automatically; operator does nothing.
+
+
+---
+
+## Issue #63: delivery_counters write-path canary — surface silent failures (2026-05-18)
+
+**Symptom**: Issue #58 was "fixed" by patching the sandbox ReadWritePaths,
+but verification was a synthetic write inside the systemd profile. If
+something else broke the write path (mid-run permission change, schema
+corruption, disk full), nothing surfaced until natural traffic flowed
+hours later — Issue #58 itself burned 18h of silent `sqlite3.OperationalError`
+warnings before detection. Reliability backlog #2.
+
+**Root cause class**: `DeliveryCounters.record()` wraps `_persist()` in
+`try/except sqlite3.Error: logger.warning(...)`. Operator visibility into
+write-path failures required grep'ing journald — too slow when the
+delivery counters are the operator's primary view into bridge behavior.
+
+**Fix** (`src/gateway/delivery_counters.py`):
+1. **Startup preflight** at `DeliveryCounters.__init__`: writes `meta.preflight_ts` + `meta.preflight_ok` and reads back. Failure logs at **ERROR** and surfaces in `snapshot()["health"]`. Catches Issue #58 class at construction, not 18h later.
+2. **Runtime write-error tracking**: `record()` increments `consecutive_write_errors` on every failure, clears it on every success. First failure logs ERROR; subsequent throttle to DEBUG; recovery logs INFO with the prior failure count. snapshot surfaces `consecutive_write_errors`, `last_write_error_ts`, `last_write_error`.
+3. **Cross-process visibility**: preflight result persists to the DB so the map daemon's reader-side `snapshot()` sees the gateway's writer-side preflight. `health.last_successful_write_ts` aliases `meta.last_event_ts` — the natural heartbeat for "writes are flowing."
+
+**Health block shape** (returned in `/api/gateway/delivery.health`):
+```json
+{
+  "db_path": "/home/<op>/.local/share/meshforge/delivery_counters.db",
+  "preflight_ok": true,            // last writer's preflight result
+  "preflight_ts": 1779148881.1,    // when it ran
+  "preflight_error": null,         // populated in writer process only
+  "last_successful_write_ts": 1779148881.1,
+  "consecutive_write_errors": 0,
+  "last_write_error_ts": null,
+  "last_write_error": null
+}
+```
+
+**Tests** (11 new in `tests/test_delivery_counters.py`):
+- `TestPreflightHealthy` (3) — preflight runs at construction, populates health block, persists for cross-process reads.
+- `TestPreflightFailureSurfaces` (2) — failure logs at ERROR with the actual sqlite3 message; snapshot reflects `preflight_ok=False`.
+- `TestRuntimeWriteErrorTracking` (4) — counter increments, recovery clears, first-failure ERROR throttling, recovery INFO log.
+- `TestLastSuccessfulWriteTsHeartbeat` (2) — heartbeat aliases `last_event_ts`; doesn't advance on write failure (so stale heartbeat = real signal).
+
+**Operator detection recipes**:
+```bash
+# Is the write path working right now on a fleet box?
+curl -s http://<box>:5000/api/gateway/delivery \
+  | jq '.health | {preflight_ok, consecutive_write_errors, last_write_error,
+                   age_s: (now - .last_successful_write_ts)}'
+# Healthy: preflight_ok=true, consecutive_write_errors=0,
+#          last_write_error=null, age_s < expected traffic interval.
+# Broken: any field other than that.
+
+# Startup-time preflight failures:
+sudo journalctl -u meshforge-gateway --since "5 min ago" \
+  | grep -E "delivery_counters preflight (OK|FAILED)"
+```
+
+**Why not also a periodic heartbeat thread**: considered, deferred.
+The combination of (1) startup preflight + (2) runtime error tracking
++ (3) last-successful-write heartbeat already catches every Issue #58
+class. A dedicated heartbeat thread would catch the "process running,
+zero natural traffic, write path silently fails" case — currently
+unfalsifiable on a quiet fleet. If that case bites in practice, add a
+thread that bumps `meta.heartbeat_ts` every 60s; the test harness
+already handles instance state vs persisted state.

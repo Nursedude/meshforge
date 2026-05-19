@@ -242,11 +242,26 @@ class DeliveryCounters:
         *,
         db_path: Optional[Path] = None,
         ring_cap: int = RING_BUFFER_CAP,
+        run_preflight: bool = True,
     ) -> None:
         self._db_path = db_path or default_db_path()
         self._ring_cap = int(ring_cap)
         self._lock = threading.Lock()
+        # Write-path health (Issue #63 / reliability backlog #2).
+        # `preflight_ok` reflects the at-construction write+read canary;
+        # the `_write_error_*` fields track runtime regressions caught
+        # during real record() calls. Surfaced via snapshot().health
+        # so /api/gateway/delivery shows "writes are broken" without
+        # operators having to grep journald.
+        self._preflight_ok: bool = False
+        self._preflight_ts: Optional[float] = None
+        self._preflight_error: Optional[str] = None
+        self._consecutive_write_errors: int = 0
+        self._last_write_error_ts: Optional[float] = None
+        self._last_write_error: Optional[str] = None
         self._init_db()
+        if run_preflight:
+            self._run_preflight()
 
     # ── schema ──────────────────────────────────────────────────
 
@@ -278,6 +293,90 @@ class DeliveryCounters:
     def _connect(self) -> sqlite3.Connection:
         """Open a tuned connection. Caller owns lifecycle."""
         return connect_tuned(self._db_path)
+
+    # ── preflight / health canary (Issue #63) ──────────────────────────
+
+    def _run_preflight(self) -> None:
+        """One-shot write+read at construction. Catches the Issue #58
+        class — sandbox path drift, schema corruption, disk full, or any
+        other write-path failure — before natural traffic flows hours
+        later.
+
+        Persists `meta.preflight_ts` (ms) and `meta.preflight_ok` (1/0)
+        in the counters table so a reader (the map daemon) can include
+        them in its `/api/gateway/delivery.health` snapshot. The writer
+        ALSO holds the result in instance state for ERROR-level logging.
+
+        Failure is NOT fatal — the gateway keeps running; observability
+        just becomes degraded. Sandbox-path drift was already cured
+        loudly in Issue #60 (`assert_writable_or_exit`); this is a
+        defense-in-depth for the silent-failure classes that don't trip
+        `assert_writable_or_exit` (e.g. mid-run permission change, disk
+        full, schema corruption from an aborted upgrade).
+        """
+        canary_ts = time.time()
+        canary_ms = int(canary_ts * 1000)
+        try:
+            with self._lock, self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO counters(key, value) "
+                    "VALUES('meta.preflight_ts', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (canary_ms,),
+                )
+                conn.execute(
+                    "INSERT INTO counters(key, value) "
+                    "VALUES('meta.preflight_ok', 1) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                )
+                conn.commit()
+                # Read back to confirm — catches the (rare) class where
+                # the write returns success but the value doesn't land
+                # (e.g. a stale WAL on a read-only mount).
+                row = conn.execute(
+                    "SELECT value FROM counters WHERE key = 'meta.preflight_ts'"
+                ).fetchone()
+                if row is None or row[0] != canary_ms:
+                    raise RuntimeError(
+                        f"readback mismatch: wrote={canary_ms}, got={row}"
+                    )
+            self._preflight_ok = True
+            self._preflight_ts = canary_ts
+            self._preflight_error = None
+            logger.info(
+                "delivery_counters preflight OK at %s", self._db_path,
+            )
+        except (sqlite3.Error, OSError, RuntimeError) as e:
+            # Best-effort: persist the FAILED preflight state too, so the
+            # map daemon's snapshot reflects reality. If even THIS write
+            # fails (worst case: read-only filesystem), the local
+            # instance state + ERROR log are the canonical signals.
+            try:
+                with self._lock, self._connect() as conn:
+                    conn.execute(
+                        "INSERT INTO counters(key, value) "
+                        "VALUES('meta.preflight_ts', ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (canary_ms,),
+                    )
+                    conn.execute(
+                        "INSERT INTO counters(key, value) "
+                        "VALUES('meta.preflight_ok', 0) "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    )
+                    conn.commit()
+            except Exception:  # pragma: no cover — degenerate case
+                pass
+            self._preflight_ok = False
+            self._preflight_ts = canary_ts
+            self._preflight_error = str(e)
+            logger.error(
+                "delivery_counters preflight FAILED at %s: %s — "
+                "operator visibility into delivery events will silently "
+                "degrade until fixed. Check the database path, "
+                "permissions, and disk space.",
+                self._db_path, e,
+            )
 
     # ── ingest ──────────────────────────────────────────────────
 
@@ -332,10 +431,39 @@ class DeliveryCounters:
 
         try:
             self._persist(event)
+            # Successful write → clear runtime error state. If we had
+            # been failing, log the recovery so it's visible without
+            # operators having to diff timestamps.
+            with self._lock:
+                prior_errors = self._consecutive_write_errors
+                if prior_errors > 0:
+                    logger.info(
+                        "delivery_counters: write-path recovered after "
+                        "%d consecutive errors", prior_errors,
+                    )
+                self._consecutive_write_errors = 0
+                self._last_write_error = None
+                self._last_write_error_ts = None
         except sqlite3.Error as e:
-            logger.warning(
-                "delivery_counters: DB write failed (%s) — event lost", e,
-            )
+            with self._lock:
+                self._consecutive_write_errors += 1
+                self._last_write_error_ts = time.time()
+                self._last_write_error = str(e)
+                error_count = self._consecutive_write_errors
+            # First failure logs ERROR (operator-visible). Subsequent
+            # failures throttle to DEBUG to avoid flooding journald —
+            # snapshot.health.consecutive_write_errors keeps the count.
+            if error_count == 1:
+                logger.error(
+                    "delivery_counters: DB write FAILED (%s) — event "
+                    "lost. snapshot.health.last_write_error tracks this; "
+                    "next successful write logs recovery.", e,
+                )
+            else:
+                logger.debug(
+                    "delivery_counters: write failure #%d: %s",
+                    error_count, e,
+                )
         return event
 
     def _persist(self, event: DeliveryEvent) -> None:
@@ -440,6 +568,11 @@ class DeliveryCounters:
         }
         first_event_ts: Optional[float] = None
         last_event_ts: Optional[float] = None
+        # Cross-process health fields (set by the last writer's
+        # preflight; see `_run_preflight`). May be None when no writer
+        # has touched this DB yet.
+        db_preflight_ok: Optional[bool] = None
+        db_preflight_ts: Optional[float] = None
 
         for key, value in rows:
             if key.startswith("state."):
@@ -453,6 +586,10 @@ class DeliveryCounters:
                 first_event_ts = value / 1000.0
             elif key == "meta.last_event_ts":
                 last_event_ts = value / 1000.0
+            elif key == "meta.preflight_ts":
+                db_preflight_ts = value / 1000.0
+            elif key == "meta.preflight_ok":
+                db_preflight_ok = bool(value)
 
         sent = state_totals.get(DeliveryState.SENT.value, 0)
         confirmed = state_totals.get(DeliveryState.CONFIRMED.value, 0)
@@ -474,6 +611,35 @@ class DeliveryCounters:
                 d["note"] = note
             recent.append(d)
 
+        # Health block (Issue #63 / reliability backlog #2). The
+        # cross-process truth is what's persisted in the DB
+        # (`db_preflight_*` — set by the last writer). The local-only
+        # fields (preflight_error, consecutive_write_errors,
+        # last_write_error*) reflect THIS process's recent write
+        # outcomes — useful in the writer's own diagnostics but absent
+        # in the reader's snapshot (those fields stay at their init
+        # values). Operators interpret: `db_preflight_ok=false` → the
+        # last writer failed at startup. `last_event_ts` stale relative
+        # to expected traffic → mid-run write regression. `last_write_error`
+        # populated → THIS daemon's record() is currently failing.
+        with self._lock:
+            health = {
+                "db_path": str(self._db_path),
+                "preflight_ok": (
+                    db_preflight_ok if db_preflight_ok is not None
+                    else self._preflight_ok
+                ),
+                "preflight_ts": (
+                    db_preflight_ts if db_preflight_ts is not None
+                    else self._preflight_ts
+                ),
+                "preflight_error": self._preflight_error,
+                "last_successful_write_ts": last_event_ts,
+                "consecutive_write_errors": self._consecutive_write_errors,
+                "last_write_error_ts": self._last_write_error_ts,
+                "last_write_error": self._last_write_error,
+            }
+
         return {
             "state_totals": state_totals,
             "drop_reasons": drop_reasons,
@@ -483,6 +649,7 @@ class DeliveryCounters:
             "first_event_ts": first_event_ts,
             "last_event_ts": last_event_ts,
             "ring_capacity": ring_capacity,
+            "health": health,
         }
 
     def recent(self, limit: Optional[int] = None) -> List[DeliveryEvent]:

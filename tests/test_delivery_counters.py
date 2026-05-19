@@ -539,3 +539,263 @@ class TestEndToEndLifecycle:
             DeliveryState.QUEUED, DeliveryState.DROPPED,
         ]
         assert hist[-1].note == "3/3 attempts"
+
+
+# ── Write-path canary (Issue #63 / reliability backlog #2) ───────────
+
+
+class TestPreflightHealthy:
+    """The startup canary catches the Issue #58 class — sandbox path
+    drift, schema corruption, disk full at startup — at the moment of
+    construction, before natural traffic flows hours later. Healthy
+    case verifies preflight sets `preflight_ok=True` and is visible
+    in snapshot.health.
+    """
+
+    def test_preflight_runs_at_construction_and_passes(self, tmp_path):
+        c = DeliveryCounters(db_path=tmp_path / "h.db")
+        assert c._preflight_ok is True
+        assert c._preflight_error is None
+        assert c._preflight_ts is not None
+
+    def test_health_block_populated_in_snapshot(self, tmp_path):
+        c = DeliveryCounters(db_path=tmp_path / "h.db")
+        snap = c.snapshot()
+        assert "health" in snap, (
+            "snapshot must include a health block — operators read this "
+            "to confirm the write path works before trusting state_totals"
+        )
+        health = snap["health"]
+        assert health["preflight_ok"] is True
+        assert health["preflight_ts"] is not None
+        assert health["preflight_error"] is None
+        assert health["db_path"] == str(tmp_path / "h.db")
+        assert health["consecutive_write_errors"] == 0
+        assert health["last_write_error"] is None
+        assert health["last_write_error_ts"] is None
+
+    def test_preflight_persists_to_db_for_cross_process_read(self, tmp_path):
+        """The map daemon reads `meta.preflight_ts` / `meta.preflight_ok`
+        from the SAME DB the gateway wrote. Verify a fresh reader
+        instance (with run_preflight=False to avoid overwriting) picks
+        up the writer's preflight result."""
+        db_path = tmp_path / "x.db"
+        writer = DeliveryCounters(db_path=db_path)
+        assert writer._preflight_ok is True
+
+        reader = DeliveryCounters(db_path=db_path, run_preflight=False)
+        # Reader didn't run its own preflight, so instance state is
+        # default-False — BUT the snapshot pulls from the persisted
+        # `meta.preflight_*` keys, so health.preflight_ok reads True.
+        assert reader._preflight_ok is False  # local default
+        health = reader.snapshot()["health"]
+        assert health["preflight_ok"] is True, (
+            "Reader's snapshot must reflect the writer's persisted "
+            "preflight result — that's the cross-process contract "
+            "between the gateway (writer) and the map daemon (reader)."
+        )
+        assert health["preflight_ts"] is not None
+
+
+class TestPreflightFailureSurfaces:
+    """When the write path is broken at construction, preflight must
+    log loudly AND make the failure visible via the snapshot — so the
+    map daemon's `/api/gateway/delivery` shows "writes are broken"
+    without operators having to grep journald for warnings."""
+
+    def test_preflight_failure_logged_at_error_level(
+        self, tmp_path, caplog,
+    ):
+        """The Issue #58 18h-of-silent-warnings class — log loudly so
+        the failure is noticed immediately."""
+        import sqlite3
+        # Construct against a working DB first, then break it by
+        # patching _connect to fail. Mirrors a sandbox-tightening
+        # mid-run, or a disk-full or read-only-remount.
+        c = DeliveryCounters(db_path=tmp_path / "ok.db", run_preflight=False)
+
+        with caplog.at_level("ERROR"):
+            original_connect = c._connect
+
+            def broken_connect():
+                raise sqlite3.OperationalError("unable to open database file")
+
+            c._connect = broken_connect  # type: ignore[assignment]
+            c._run_preflight()
+            c._connect = original_connect  # type: ignore[assignment]
+
+        # Error log present and useful — operators reading journalctl
+        # see "FAILED" + the actual error, not just a generic message.
+        error_records = [
+            r for r in caplog.records
+            if r.levelname == "ERROR" and "preflight FAILED" in r.message
+        ]
+        assert len(error_records) == 1, (
+            "Preflight failure must log exactly once at ERROR level."
+        )
+        assert "unable to open database file" in error_records[0].message
+
+    def test_preflight_failure_visible_in_snapshot(self, tmp_path):
+        """snapshot.health.preflight_ok must be False after a failed
+        preflight — this is the API surface for /api/gateway/delivery."""
+        import sqlite3
+        c = DeliveryCounters(db_path=tmp_path / "ok.db", run_preflight=False)
+
+        original_connect = c._connect
+
+        def broken_connect():
+            raise sqlite3.OperationalError("disk I/O error")
+
+        c._connect = broken_connect  # type: ignore[assignment]
+        c._run_preflight()
+        c._connect = original_connect  # type: ignore[assignment]
+
+        # Snapshot reads from the DB (which the broken instance never
+        # wrote to with preflight_ok=0 — best-effort failed too) AND
+        # falls back to instance state. Instance state is now False.
+        health = c.snapshot()["health"]
+        assert health["preflight_ok"] is False
+        assert health["preflight_error"] is not None
+        assert "disk I/O error" in health["preflight_error"]
+
+
+class TestRuntimeWriteErrorTracking:
+    """Mid-run write failures (the more insidious cousin of preflight
+    failure) must surface too. consecutive_write_errors gives operators
+    the "writes are currently broken" signal at API level; recovery
+    clears it cleanly."""
+
+    def test_runtime_write_error_increments_counter(self, tmp_path):
+        import sqlite3
+        c = DeliveryCounters(db_path=tmp_path / "x.db")
+        # Healthy at construction.
+        assert c.snapshot()["health"]["consecutive_write_errors"] == 0
+
+        # Now break writes mid-run.
+        def broken_persist(event):
+            raise sqlite3.OperationalError("attempt to write a readonly database")
+
+        c._persist = broken_persist  # type: ignore[assignment]
+        c.record(DeliveryState.SENT, "m1", protocol="rns")
+        c.record(DeliveryState.SENT, "m2", protocol="rns")
+        c.record(DeliveryState.SENT, "m3", protocol="rns")
+
+        health = c.snapshot()["health"]
+        assert health["consecutive_write_errors"] == 3
+        assert health["last_write_error_ts"] is not None
+        assert "readonly database" in (health["last_write_error"] or "")
+
+    def test_runtime_write_recovery_clears_error_state(self, tmp_path):
+        """When the underlying issue is fixed (operator chowned the
+        file, fleet sync restored the unit, etc.) the next successful
+        write must clear the error counters — otherwise operators
+        chasing /api/gateway/delivery.health.consecutive_write_errors
+        never know things are healthy again."""
+        import sqlite3
+        c = DeliveryCounters(db_path=tmp_path / "x.db")
+        original_persist = c._persist
+
+        def broken_persist(event):
+            raise sqlite3.OperationalError("transient I/O")
+
+        c._persist = broken_persist  # type: ignore[assignment]
+        c.record(DeliveryState.SENT, "m1", protocol="rns")
+        c.record(DeliveryState.SENT, "m2", protocol="rns")
+        assert c.snapshot()["health"]["consecutive_write_errors"] == 2
+
+        # Restore + record once → error state must clear.
+        c._persist = original_persist  # type: ignore[assignment]
+        c.record(DeliveryState.SENT, "m3", protocol="rns")
+
+        health = c.snapshot()["health"]
+        assert health["consecutive_write_errors"] == 0
+        assert health["last_write_error"] is None
+        assert health["last_write_error_ts"] is None
+
+    def test_first_write_error_logged_at_error_level(self, tmp_path, caplog):
+        """Throttling: first failure logs ERROR; subsequent failures
+        log DEBUG so journald doesn't flood. The
+        consecutive_write_errors count keeps the running total."""
+        import sqlite3
+        c = DeliveryCounters(db_path=tmp_path / "x.db")
+
+        def broken_persist(event):
+            raise sqlite3.OperationalError("fail")
+
+        c._persist = broken_persist  # type: ignore[assignment]
+
+        with caplog.at_level("ERROR"):
+            c.record(DeliveryState.SENT, "m1", protocol="rns")
+            c.record(DeliveryState.SENT, "m2", protocol="rns")
+            c.record(DeliveryState.SENT, "m3", protocol="rns")
+
+        error_records = [
+            r for r in caplog.records
+            if r.levelname == "ERROR" and "DB write FAILED" in r.message
+        ]
+        assert len(error_records) == 1, (
+            f"Expected exactly 1 ERROR log (first failure), got "
+            f"{len(error_records)} — throttling regressed and journald "
+            f"will flood under sustained write outages."
+        )
+
+    def test_recovery_logs_at_info(self, tmp_path, caplog):
+        """The "writes are healthy again" event is operator-visible.
+        Otherwise an outage's resolution is invisible — the only way
+        to confirm recovery would be to keep polling the API."""
+        import sqlite3
+        c = DeliveryCounters(db_path=tmp_path / "x.db")
+        original_persist = c._persist
+
+        def broken_persist(event):
+            raise sqlite3.OperationalError("fail")
+
+        c._persist = broken_persist  # type: ignore[assignment]
+        c.record(DeliveryState.SENT, "m1", protocol="rns")
+        c._persist = original_persist  # type: ignore[assignment]
+
+        with caplog.at_level("INFO"):
+            c.record(DeliveryState.SENT, "m2", protocol="rns")
+
+        recovery_records = [
+            r for r in caplog.records
+            if r.levelname == "INFO" and "write-path recovered" in r.message
+        ]
+        assert len(recovery_records) == 1
+        assert "1 consecutive errors" in recovery_records[0].message
+
+
+class TestLastSuccessfulWriteTsHeartbeat:
+    """The cross-process heartbeat for "writes still flowing." If
+    `meta.last_event_ts` is stale relative to expected traffic, the
+    write path has been broken since that timestamp — even if the
+    process is still running and reporting preflight_ok=True from an
+    earlier successful start."""
+
+    def test_last_successful_write_ts_aliases_last_event_ts(self, tmp_path):
+        c = DeliveryCounters(db_path=tmp_path / "h.db")
+        c.record(DeliveryState.SENT, "m1", protocol="rns")
+        snap = c.snapshot()
+        assert snap["last_event_ts"] is not None
+        assert snap["health"]["last_successful_write_ts"] == snap["last_event_ts"]
+
+    def test_heartbeat_unchanged_when_writes_fail(self, tmp_path):
+        """If a write fails, last_event_ts must NOT advance — that's
+        what makes it a real heartbeat. Stale heartbeat = silent
+        write-path failure even if the process is running."""
+        import sqlite3
+        c = DeliveryCounters(db_path=tmp_path / "h.db")
+        c.record(DeliveryState.SENT, "m1", protocol="rns")
+        ts_after_first = c.snapshot()["health"]["last_successful_write_ts"]
+
+        def broken_persist(event):
+            raise sqlite3.OperationalError("fail")
+
+        c._persist = broken_persist  # type: ignore[assignment]
+        c.record(DeliveryState.SENT, "m2", protocol="rns")
+
+        ts_after_failed = c.snapshot()["health"]["last_successful_write_ts"]
+        assert ts_after_failed == ts_after_first, (
+            "last_successful_write_ts advanced even though the write "
+            "failed — the heartbeat is no longer a real heartbeat."
+        )
