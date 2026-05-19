@@ -64,6 +64,7 @@ Full history in `persistent_issues_archive.md`.
 | #49 Lean node directory — split persistent dir from time-series (2026-04-28) | New `nodes` table in `node_history.db` (one row per network,node_id) decoupled from time-series `node_observations`; tiered retention (local 30d / external 7d) + 50k LRU cap; sticky source-origin promotion. Body in archive | `tests/test_node_history.py` (17) + diagnostics (3) |
 | #50 Directory tier retention defeated by UPSERT `last_seen=now` (2026-04-30) | External-bulk republish reset tier clock every cycle; fix uses upstream `last_heard` + `MAX(nodes.last_seen, excluded.last_seen)` ON CONFLICT. Body in archive | `TestDirectoryUpstreamTimestamp` in `tests/test_node_history.py` (9 tests) |
 | #51 Issue #50 wiring unreachable — meshcore parser emitted ISO-8601 not Unix epoch (2026-04-30) | Inline ISO→epoch normalization in `_parse_meshcore_public_node`. Tests must use real upstream payload shape. Body in archive | 5 new in `TestMeshCorePublicCollector` |
+| #57 Gateway data-path watchdog — `bounded_call` over RNS RPC hot path (2026-05-17) | `bounded_call` wraps 11 RNS RPC sites; wedged peer trips circuit breaker + `os._exit(2)`; systemd restarts the gateway (better than silent hang). Body in archive | `test_wedge_events.py` (17) + `test_bounded_rpc.py` (19) + `test_circuit_breaker.py` (+6) |
 
 ---
 
@@ -198,59 +199,6 @@ if MESHTASTIC_CONNECTION_LOCK.acquire(timeout=10):
 1. Add to `ALLOWLISTED` in `TestTCPConnectionContract`
 2. Add to `lock_aware_files` in lint.py MF007
 3. Acquire `MESHTASTIC_CONNECTION_LOCK` before creating
-
----
-
-## Issue #57: Gateway data-path watchdog — `bounded_call` over RNS RPC hot path (2026-05-17)
-
-**Symptom (latent, not yet field-validated post-fix)**: The gateway's
-hot-path RNS RPC calls (`RNS.Transport.has_path/request_path`,
-`Identity.recall`, `LXMRouter.handle_outbound`, `LXMF.LXMessage()`
-ctor) ran under `call_boundary()` which **logs slow calls but never
-aborts them**. If rnsd's RPC listener wedged after init (the kernel
-`unix_wait_for_peer` hang documented in
-`project_rnsd_rpc_listener_wedge`), gateway threads hung silently
-forever — no exception, downlinks just stopped, systemd reported
-`active (running)`. Lab tracer survived this via
-`_lab_common.bounded_block`; the actual production bridge didn't.
-
-**Fix (PR-1 of the A+B+C arc, Plan
-`fix-federation-persistent-issues-2026-05-17.md`)**:
-
-- New `src/utils/wedge_events.py` — bounded `deque(maxlen=200)` +
-  `publish/recent/subscribe` pub-sub. Forensic trail consumed by
-  `bridge_cli` (live debug) and Fork B's recovery actor (future PR).
-- New `src/gateway/bounded_rpc.py` — `bounded_call(label, fn, *args,
-  target, timeout_s, threshold_s, on_wedge, exit_on_wedge, **kwargs)`.
-  Composes `_lab_common.bounded_block` over `timed_boundary` so
-  p50/p95/p99 metrics keep populating. Default `on_wedge` bumps
-  `rns_call_wedge_total[label]` + publishes a `WedgeEvent`, then the
-  watchdog `os._exit(2)`s — systemd restarts the gateway (strictly
-  better than silent hang). Env-var per-label overrides
-  (`MESHFORGE_BOUNDED_RPC_TIMEOUT_*`) for operator escape.
-- `src/gateway/circuit_breaker.py` — added
-  `CircuitBreaker.trip_open(reason)` + registry wrapper. Single-event
-  fast-path to OPEN; idempotent on already-open. Used by the bridge's
-  composite `on_wedge` so a wedged destination is shed before
-  process abort.
-- `src/gateway/rns_bridge.py` — 11 call sites migrated from
-  `call_boundary` to `bounded_call` with per-kind budgets: `has_path`
-  3 s, `request_path` 5 s, `Identity.recall` 3 s, `LXMessage()` ctor
-  5 s, `handle_outbound` 15 s. Composite `on_wedge` hook trips the
-  circuit breaker on the destination's hash before calling default
-  publish-+-counter.
-- `src/gateway/node_tracker.py` — `path_table` access wrapped in
-  `bounded_call` (`rnsd.path_table`, 2 s) — the property has been
-  observed to block under wedge.
-
-**Tests** (42 new): `test_wedge_events.py` (17), `test_bounded_rpc.py`
-(19), `test_circuit_breaker.py` (+6 for `trip_open`).
-
-**Verify**: `ssh <box> 'pkill -STOP rnsd'` + gateway send → journal
-shows WEDGED + process exit + systemd restart; release with `-CONT`.
-PR-2 (Fork B) and PR-3 (Fork C) ship next on this substrate. Plan:
-`~/.claude/plans/fix-federation-persistent-issues-2026-05-17.md`.
-
 
 ---
 
@@ -640,6 +588,75 @@ zero natural traffic, write path silently fails" case — currently
 unfalsifiable on a quiet fleet. If that case bites in practice, add a
 thread that bumps `meta.heartbeat_ts` every 60s; the test harness
 already handles instance state vs persisted state.
+
+
+---
+
+## Issue #65: Two-tier federation backoff cap — long-outage cadence (2026-05-18)
+
+**Class**: Issue #59 gave the federation collector exponential backoff
+with a single `max_multiplier` (default 10× = 10 min between polls).
+Operational survey on 2026-05-18 showed moc3 — a permanently gateway-
+only box with no `/api/nodes/directory` listener — sitting at `cf=9
+mult=10` within ~9 cycles and polling every 10 min forever (144
+doomed polls/day). The same single value picks the *transient outage*
+case (reboot/blip — needs ≤10 min recovery detection) and the
+*permanent outage* case (gateway-only box, never coming back) — two
+cases with different "right answers."
+
+**Fix** (`src/utils/map_federation.py`): second-tier cap. New defaults
+`DEFAULT_BACKOFF_EXTENDED_THRESHOLD=40` (failures past which tier-2
+kicks in, ≈6 h continuous failure at tier-1 cap + default 60 s poll
+interval) and `DEFAULT_BACKOFF_EXTENDED_MAX_MULTIPLIER=60` (≈1 h
+between polls). `_compute_backoff` picks tier-2 cap when
+`consecutive_failures ≥ extended_threshold`; tier-1 below. Exponential
+ramp continues smoothly toward whichever cap is active. New
+`backoff_extended_threshold` / `backoff_extended_max_multiplier`
+constructor knobs; both clamp so tier-2 is always strictly past tier-1
+(`threshold+1`, `≥ tier-1 cap`). Tier-2 entry logs at INFO exactly
+once on the transition where prior multiplier ≤ tier-1 cap and new
+multiplier > tier-1 cap — same one-shot pattern as the tier-1 engage
+log. `backoff_multiplier=60` in `/api/status.federation.peer_status[]`
+is the operator-visible signal "this peer has been gone for a long
+time" — different shape from tier-1 `=10`.
+
+**Why these numbers**: with default `poll_interval=60s` and tier-1 cap
+of 10, a peer reaches the cap at cf≈7 (~30 min of continuous failure)
+and then accumulates failures every 10 min. cf=40 corresponds to
+about 6 hours of continuous failure — well past any reboot/network
+blip, and the threshold above which "this is a real, long outage" is
+a safe inference. Tier-2 cap of 60 (= 1 hr between polls) keeps the
+peer in the rotation so genuine recovery is still detected, while
+cutting wasted traffic 6× compared to tier-1 cap.
+
+**Tests** (8 new in
+`tests/test_map_federation.py::TestBackoffExtendedCapIssue65`):
+below-extended-threshold uses tier-1 cap; at extended threshold steps
+to tier-2 cap; far above stays at tier-2 cap; clamping (extended
+threshold ≤ primary threshold ⇒ clamp; extended cap < tier-1 cap ⇒
+clamp); recovery clears tier-2 state; tier-2 entry logs exactly once;
+defaults lock test pinning the documented values. Existing
+`test_far_above_threshold_caps_at_max` updated to set
+`backoff_extended_threshold=10**6` so it still pins tier-1 behavior
+in isolation.
+
+**Operator detection recipe**:
+```bash
+curl -s http://<box>:5000/api/status | jq \
+  '.federation.peer_status[] |
+   select(.backoff_multiplier == 60) |
+   {peer_name, hostname, consecutive_failures, last_error,
+    next_eligible_poll_ts}'
+# Empty = no peers in long-outage cadence.
+# Rows = peers down ≥ ~6h continuous; check last_error/peer_name to
+# decide if it's a known-gateway-only box vs an unexpected long outage.
+```
+
+**Closes the federation triad's last open knob** (reliability backlog
+#1): Issues #54 (peer_name correlation), #55 (`/fleet/slo` budget),
+#56 (timeout for big bodies), #59 (single-tier backoff), #64 (gzip +
+size alarm), and now #65 (two-tier cap) collectively turn federation-
+persistent-issues from a recurring class into a closed loop.
 
 
 ---

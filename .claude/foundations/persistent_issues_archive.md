@@ -1825,3 +1825,53 @@ row tuple) is the regression-prevention shape for similar future work.
 
 ---
 
+## Issue #57: Gateway data-path watchdog — `bounded_call` over RNS RPC hot path (2026-05-17)
+
+**Symptom (latent, not yet field-validated post-fix)**: The gateway's
+hot-path RNS RPC calls (`RNS.Transport.has_path/request_path`,
+`Identity.recall`, `LXMRouter.handle_outbound`, `LXMF.LXMessage()`
+ctor) ran under `call_boundary()` which **logs slow calls but never
+aborts them**. If rnsd's RPC listener wedged after init (the kernel
+`unix_wait_for_peer` hang documented in
+`project_rnsd_rpc_listener_wedge`), gateway threads hung silently
+forever — no exception, downlinks just stopped, systemd reported
+`active (running)`. Lab tracer survived this via
+`_lab_common.bounded_block`; the actual production bridge didn't.
+
+**Fix (PR-1 of the A+B+C arc, Plan
+`fix-federation-persistent-issues-2026-05-17.md`)**:
+
+- New `src/utils/wedge_events.py` — bounded `deque(maxlen=200)` +
+  `publish/recent/subscribe` pub-sub. Forensic trail consumed by
+  `bridge_cli` (live debug) and Fork B's recovery actor (future PR).
+- New `src/gateway/bounded_rpc.py` — `bounded_call(label, fn, *args,
+  target, timeout_s, threshold_s, on_wedge, exit_on_wedge, **kwargs)`.
+  Composes `_lab_common.bounded_block` over `timed_boundary` so
+  p50/p95/p99 metrics keep populating. Default `on_wedge` bumps
+  `rns_call_wedge_total[label]` + publishes a `WedgeEvent`, then the
+  watchdog `os._exit(2)`s — systemd restarts the gateway (strictly
+  better than silent hang). Env-var per-label overrides
+  (`MESHFORGE_BOUNDED_RPC_TIMEOUT_*`) for operator escape.
+- `src/gateway/circuit_breaker.py` — added
+  `CircuitBreaker.trip_open(reason)` + registry wrapper. Single-event
+  fast-path to OPEN; idempotent on already-open. Used by the bridge's
+  composite `on_wedge` so a wedged destination is shed before
+  process abort.
+- `src/gateway/rns_bridge.py` — 11 call sites migrated from
+  `call_boundary` to `bounded_call` with per-kind budgets: `has_path`
+  3 s, `request_path` 5 s, `Identity.recall` 3 s, `LXMessage()` ctor
+  5 s, `handle_outbound` 15 s. Composite `on_wedge` hook trips the
+  circuit breaker on the destination's hash before calling default
+  publish-+-counter.
+- `src/gateway/node_tracker.py` — `path_table` access wrapped in
+  `bounded_call` (`rnsd.path_table`, 2 s) — the property has been
+  observed to block under wedge.
+
+**Tests** (42 new): `test_wedge_events.py` (17), `test_bounded_rpc.py`
+(19), `test_circuit_breaker.py` (+6 for `trip_open`).
+
+**Verify**: `ssh <box> 'pkill -STOP rnsd'` + gateway send → journal
+shows WEDGED + process exit + systemd restart; release with `-CONT`.
+PR-2 (Fork B) and PR-3 (Fork C) ship next on this substrate. Plan:
+`~/.claude/plans/fix-federation-persistent-issues-2026-05-17.md`.
+

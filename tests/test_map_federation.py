@@ -1146,8 +1146,165 @@ class TestComputeBackoffPure:
         fc = FederationCollector(
             ["x"], poll_interval=10,
             backoff_threshold=3, backoff_base=2, backoff_max_multiplier=10,
+            # Disable tier-2 by setting an unreachable extended threshold; the
+            # tier-2 case is exercised in TestBackoffExtendedCapIssue65.
+            backoff_extended_threshold=10**6,
         )
         in_b, mult, nxt = fc._compute_backoff(consecutive_failures=50, now=1000.0)
         assert in_b is True
-        assert mult == 10  # capped
+        assert mult == 10  # capped at tier-1
         assert nxt == 1100.0
+
+
+# ── Two-tier backoff cap (Issue #65) ───────────────────────────────────────
+
+
+class TestBackoffExtendedCapIssue65:
+    """Tier-2 cap activates after enough consecutive failures.
+
+    Tier 1 (today): handles transient outages (reboot, network blip) — peer
+    recovers within tier-1 cap × poll_interval of detection.
+    Tier 2 (Issue #65): peer has been failing long enough that it's almost
+    certainly permanently unreachable (e.g. gateway-only box with no map
+    listener). Slow to a longer interval without dropping it entirely, so
+    recovery is still detected if the peer ever comes back.
+    """
+
+    def test_below_extended_threshold_uses_tier1_cap(self):
+        """consecutive_failures < extended_threshold ⇒ cap = max_multiplier."""
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=3, backoff_base=2, backoff_max_multiplier=10,
+            backoff_extended_threshold=40,
+            backoff_extended_max_multiplier=60,
+        )
+        in_b, mult, nxt = fc._compute_backoff(consecutive_failures=39, now=1000.0)
+        assert in_b is True
+        assert mult == 10, "tier-1 cap should apply at cf=39"
+        assert nxt == 1100.0
+
+    def test_at_extended_threshold_steps_to_tier2_cap(self):
+        """consecutive_failures == extended_threshold ⇒ cap jumps to extended_max."""
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=3, backoff_base=2, backoff_max_multiplier=10,
+            backoff_extended_threshold=40,
+            backoff_extended_max_multiplier=60,
+        )
+        in_b, mult, nxt = fc._compute_backoff(consecutive_failures=40, now=1000.0)
+        assert in_b is True
+        assert mult == 60, "tier-2 cap should apply at cf=40"
+        assert nxt == 1600.0  # 1000 + 60 * 10
+
+    def test_far_above_extended_threshold_stays_at_tier2_cap(self):
+        """Once past extended_threshold, multiplier stays at extended_max."""
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=3, backoff_base=2, backoff_max_multiplier=10,
+            backoff_extended_threshold=40,
+            backoff_extended_max_multiplier=60,
+        )
+        for cf in (40, 50, 100, 1000):
+            _, mult, _ = fc._compute_backoff(consecutive_failures=cf, now=1000.0)
+            assert mult == 60, f"cf={cf} should still cap at tier-2"
+
+    def test_extended_threshold_clamps_above_primary_threshold(self):
+        """extended_threshold ≤ threshold is nonsensical — clamp to threshold+1."""
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=3, backoff_base=2, backoff_max_multiplier=10,
+            backoff_extended_threshold=1,  # invalid: below primary threshold
+            backoff_extended_max_multiplier=60,
+        )
+        # Should clamp so primary tier still has room
+        assert fc._backoff_extended_threshold > fc._backoff_threshold
+
+    def test_extended_max_clamps_above_tier1_max(self):
+        """extended_max < tier1_max is nonsensical — clamp up so tier-2 ≥ tier-1."""
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=3, backoff_base=2, backoff_max_multiplier=10,
+            backoff_extended_threshold=40,
+            backoff_extended_max_multiplier=5,  # invalid: below tier-1 cap
+        )
+        assert fc._backoff_extended_max_multiplier >= fc._backoff_max_multiplier
+
+    def test_recovery_clears_tier2_state(self):
+        """A single successful poll from deep tier-2 clears all backoff."""
+        clock = [1000.0]
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=2, backoff_base=2, backoff_max_multiplier=4,
+            backoff_extended_threshold=6,
+            backoff_extended_max_multiplier=20,
+            time_fn=lambda: clock[0],
+        )
+        # Push to tier-2 directly via state injection (avoids 6 mocked polls)
+        with fc._lock:
+            fc._snapshot.peer_status["x"].consecutive_failures = 10
+            fc._snapshot.peer_status["x"].in_backoff = True
+            fc._snapshot.peer_status["x"].backoff_multiplier = 20
+            fc._snapshot.peer_status["x"].next_eligible_poll_ts = None
+        # One success
+        with patch(
+            "utils.map_federation.fetch_peer_directory",
+            side_effect=lambda peer, *a, **kw: _ok_response(peer, ts=clock[0]),
+        ):
+            fc.poll_once()
+        s = fc.get_snapshot().peer_status["x"]
+        assert s.ok is True
+        assert s.consecutive_failures == 0
+        assert s.in_backoff is False
+        assert s.backoff_multiplier == 1
+        assert s.next_eligible_poll_ts is None
+
+    def test_tier2_entry_logged_once(self, caplog):
+        """Tier-2 transition logs at INFO with the 'extended backoff' marker."""
+        import logging
+        clock = [1000.0]
+        fc = FederationCollector(
+            ["x"], poll_interval=10,
+            backoff_threshold=2, backoff_base=2, backoff_max_multiplier=4,
+            backoff_extended_threshold=5,
+            backoff_extended_max_multiplier=20,
+            time_fn=lambda: clock[0],
+        )
+        # Seed prior state to one-below tier-2 entry, in tier-1 backoff
+        with fc._lock:
+            p = fc._snapshot.peer_status["x"]
+            p.consecutive_failures = 4
+            p.in_backoff = True
+            p.backoff_multiplier = 4
+            p.next_eligible_poll_ts = None  # force due
+        caplog.set_level(logging.INFO, logger="utils.map_federation")
+        with patch(
+            "utils.map_federation.fetch_peer_directory",
+            side_effect=lambda peer, *a, **kw: _fail_response(peer, ts=clock[0]),
+        ):
+            fc.poll_once()
+        s = fc.get_snapshot().peer_status["x"]
+        assert s.consecutive_failures == 5
+        # cf=5 ≥ ext_threshold=5 ⇒ cap rises to ext_max=20. Exponent =
+        # cf-threshold = 5-2 = 3; multiplier = min(2^3, 20) = 8. The tier-2
+        # cap is the new ceiling; the exponential continues until it hits.
+        assert s.backoff_multiplier == 8
+        # Trigger condition is "crossed tier-1 cap on this transition", not
+        # "hit tier-2 cap exactly" — prior_mult=4 (tier-1 cap), now 8 > 4.
+        ext_logs = [r for r in caplog.records if "extended backoff" in r.getMessage()]
+        assert len(ext_logs) == 1, (
+            f"expected exactly one tier-2 entry log, got {len(ext_logs)}: "
+            f"{[r.getMessage() for r in ext_logs]}"
+        )
+
+    def test_defaults_match_documented_values(self):
+        """The Issue #65 defaults are load-bearing for operator playbooks.
+
+        Lock the public defaults so a future tweak that wants to change
+        them has to update this test AND the persistent_issues doc.
+        """
+        from utils.map_federation import (
+            DEFAULT_BACKOFF_EXTENDED_THRESHOLD,
+            DEFAULT_BACKOFF_EXTENDED_MAX_MULTIPLIER,
+        )
+        assert DEFAULT_BACKOFF_EXTENDED_THRESHOLD == 40
+        assert DEFAULT_BACKOFF_EXTENDED_MAX_MULTIPLIER == 60

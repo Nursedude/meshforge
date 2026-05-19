@@ -82,7 +82,22 @@ DEFAULT_WAL_SKIP_THRESHOLD_BYTES = 64 * 1024 * 1024
 # (no :5000) and any future transient-outage case symmetrically (Issue #59).
 DEFAULT_BACKOFF_THRESHOLD = 3      # failures before backoff engages
 DEFAULT_BACKOFF_BASE = 2           # multiplier per additional failure
-DEFAULT_BACKOFF_MAX_MULTIPLIER = 10  # cap: at most 10× poll_interval between attempts
+DEFAULT_BACKOFF_MAX_MULTIPLIER = 10  # tier-1 cap: 10× poll_interval (≈10 min)
+
+# Two-tier cap (Issue #65). The first-tier cap (10×) is right for a
+# *transient* outage — a reboot, network blip, or single-cycle hiccup
+# recovers within 10 min of detection, so the operator sees the peer come
+# back fast. But it's wasteful for a *permanently* unreachable peer like a
+# gateway-only box (moc3 has no `/api/nodes/directory` listener and never
+# will): 144 doomed polls/day forever just to stay at 10× cap. After this
+# many consecutive failures (≈6 hours of continuous failure at the tier-1
+# cap with default poll_interval=60s), the cap rises to
+# extended_max_multiplier so the peer is checked at a slower cadence
+# without ever being fully dropped. Operator sees `backoff_multiplier=60`
+# in `/api/status.federation` and reads that as "this peer has been gone
+# for a long time" — different signal from the tier-1 `=10` shape.
+DEFAULT_BACKOFF_EXTENDED_THRESHOLD = 40     # failures past which tier-2 cap applies
+DEFAULT_BACKOFF_EXTENDED_MAX_MULTIPLIER = 60  # tier-2 cap: 60× poll_interval (≈1 hr)
 
 
 def _wal_path_for(db_path: Path) -> Path:
@@ -385,6 +400,8 @@ class FederationCollector:
         backoff_threshold: int = DEFAULT_BACKOFF_THRESHOLD,
         backoff_base: int = DEFAULT_BACKOFF_BASE,
         backoff_max_multiplier: int = DEFAULT_BACKOFF_MAX_MULTIPLIER,
+        backoff_extended_threshold: int = DEFAULT_BACKOFF_EXTENDED_THRESHOLD,
+        backoff_extended_max_multiplier: int = DEFAULT_BACKOFF_EXTENDED_MAX_MULTIPLIER,
         time_fn: Callable[[], float] = time.time,
     ):
         self._peers = list(peers)
@@ -403,6 +420,14 @@ class FederationCollector:
         self._backoff_threshold = max(1, int(backoff_threshold))
         self._backoff_base = max(2, int(backoff_base))
         self._backoff_max_multiplier = max(1, int(backoff_max_multiplier))
+        # Tier-2 cap activates at this many consecutive failures. Clamp so the
+        # tier-2 cap is always ≥ tier-1 cap (otherwise it's not "extended").
+        self._backoff_extended_threshold = max(
+            self._backoff_threshold + 1, int(backoff_extended_threshold)
+        )
+        self._backoff_extended_max_multiplier = max(
+            self._backoff_max_multiplier, int(backoff_extended_max_multiplier)
+        )
         self._time_fn = time_fn
         self._snapshot = FederationSnapshot(
             peer_status={
@@ -471,21 +496,29 @@ class FederationCollector:
         ``max_multiplier``. ``next_eligible_poll_ts = now + multiplier *
         poll_interval`` is when poll_once is allowed to attempt again.
 
+        Two-tier cap (Issue #65): once ``consecutive_failures`` crosses
+        ``extended_threshold``, the cap rises from ``max_multiplier`` to
+        ``extended_max_multiplier``. Operator-visible via the
+        ``backoff_multiplier`` field in /api/status.federation — a
+        permanently-down peer settles at the extended cap while a
+        transient outage recovers during the tier-1 phase.
+
         Pulled out so the same shape is testable in isolation and reused
         by both the success-clear and failure-engage branches in
         ``poll_once``.
         """
         if consecutive_failures < self._backoff_threshold:
             return False, 1, None
-        exponent = consecutive_failures - self._backoff_threshold
-        # Guard against giant exponents — past max we just cap.
-        if 2 ** exponent > self._backoff_max_multiplier:
-            multiplier = self._backoff_max_multiplier
+        if consecutive_failures >= self._backoff_extended_threshold:
+            cap = self._backoff_extended_max_multiplier
         else:
-            multiplier = min(
-                self._backoff_base ** exponent,
-                self._backoff_max_multiplier,
-            )
+            cap = self._backoff_max_multiplier
+        exponent = consecutive_failures - self._backoff_threshold
+        # Guard against giant exponents — past cap we just cap.
+        if 2 ** exponent > cap:
+            multiplier = cap
+        else:
+            multiplier = min(self._backoff_base ** exponent, cap)
         next_eligible = now + multiplier * self._poll_interval
         return True, multiplier, next_eligible
 
@@ -595,6 +628,9 @@ class FederationCollector:
                     prior_in_backoff = (
                         prior.in_backoff if prior is not None else False
                     )
+                    prior_mult = (
+                        prior.backoff_multiplier if prior is not None else 1
+                    )
                     status.in_backoff = in_b
                     status.backoff_multiplier = mult
                     status.next_eligible_poll_ts = next_t
@@ -604,6 +640,21 @@ class FederationCollector:
                         logger.info(
                             "FederationCollector: peer %s entering backoff "
                             "(%d consecutive failures, %d× interval)",
+                            peer, status.consecutive_failures, mult,
+                        )
+                    elif (
+                        in_b
+                        and prior_mult <= self._backoff_max_multiplier
+                        and mult > self._backoff_max_multiplier
+                    ):
+                        # Tier-2 entry: peer has been failing long enough
+                        # that we're slowing further. Log once so operators
+                        # have a journal-grep target for "this peer crossed
+                        # into long-outage cadence at <ts>".
+                        logger.info(
+                            "FederationCollector: peer %s entering extended "
+                            "backoff (%d consecutive failures, %d× interval) "
+                            "— long-outage cadence",
                             peer, status.consecutive_failures, mult,
                         )
                 status.peer_name = self._peer_names.get(peer)
