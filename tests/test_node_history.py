@@ -1194,6 +1194,98 @@ class TestDirectoryStatsCache:
         assert h2._directory_stats_cache is None
 
 
+class TestDirectorySizeBudgetAlarmIssue64:
+    """The size-budget alarm answers the reliability backlog #5 question:
+    'how do we know when we've hit too late?' on /api/nodes/directory
+    growth. record_directory_serialized_size() is called by the HTTP
+    serializer; get_directory_stats() surfaces the most recent size +
+    a boolean alarm when it crosses the threshold."""
+
+    @pytest.fixture
+    def hist(self, tmp_path: Path):
+        from utils.node_history import NodeHistoryDB
+        return NodeHistoryDB(db_path=tmp_path / "size.db")
+
+    def test_size_fields_default_to_none_before_first_serialize(self, hist):
+        """Fresh boxes that haven't served /api/nodes/directory yet show
+        nulls rather than fake zeros — operator can tell "we haven't
+        measured" apart from "we measured 0 bytes" (impossible)."""
+        s = hist.get_directory_stats()
+        assert s["size_bytes_raw"] is None
+        assert s["size_bytes_compressed"] is None
+        assert s["size_compression_ratio"] is None
+        assert s["size_last_serialized_ts"] is None
+        assert s["size_alarm"] is False
+
+    def test_record_then_stats_reflects_size(self, hist):
+        hist.record_directory_serialized_size(
+            raw_bytes=5_000_000,        # 5 MB raw
+            compressed_bytes=500_000,   # 500 KB on the wire
+        )
+        s = hist.get_directory_stats()
+        assert s["size_bytes_raw"] == 5_000_000
+        assert s["size_bytes_compressed"] == 500_000
+        assert s["size_compression_ratio"] == 10.0
+        assert s["size_last_serialized_ts"] is not None
+        assert s["size_alarm"] is False, (
+            "5 MB is well under the 40 MB alarm — no alarm expected"
+        )
+
+    def test_size_alarm_triggers_above_threshold(self, hist):
+        """At today's moc directory size (35 MB), no alarm. At 41 MB,
+        alarm triggers — the threshold is 40 MB."""
+        from utils.node_history import DEFAULT_DIRECTORY_SIZE_ALARM_BYTES
+
+        hist.record_directory_serialized_size(
+            raw_bytes=DEFAULT_DIRECTORY_SIZE_ALARM_BYTES + 1,
+            compressed_bytes=4_000_000,
+        )
+        s = hist.get_directory_stats()
+        assert s["size_alarm"] is True
+        assert s["size_alarm_threshold_bytes"] == DEFAULT_DIRECTORY_SIZE_ALARM_BYTES
+
+    def test_alarm_does_not_trigger_just_below_threshold(self, hist):
+        from utils.node_history import DEFAULT_DIRECTORY_SIZE_ALARM_BYTES
+
+        hist.record_directory_serialized_size(
+            raw_bytes=DEFAULT_DIRECTORY_SIZE_ALARM_BYTES - 1,
+            compressed_bytes=4_000_000,
+        )
+        s = hist.get_directory_stats()
+        assert s["size_alarm"] is False
+
+    def test_record_invalidates_stats_cache(self, hist):
+        """A new size measurement must invalidate the cached stats so
+        operators see the FRESH bytes, not a stale 5-min-old snapshot.
+        Without this, the alarm would lag the actual size by up to 5
+        minutes — useless when the operator is watching a runaway."""
+        first = hist.get_directory_stats()
+        assert first["size_bytes_raw"] is None
+        # The cache is now populated (first is hist._directory_stats_cache).
+        assert hist._directory_stats_cache is first
+
+        hist.record_directory_serialized_size(raw_bytes=10_000_000,
+                                              compressed_bytes=1_000_000)
+
+        # Cache must have been invalidated.
+        assert hist._directory_stats_cache is None
+        second = hist.get_directory_stats()
+        assert second is not first
+        assert second["size_bytes_raw"] == 10_000_000
+
+    def test_compressed_none_when_not_gzipped(self, hist):
+        """If the client didn't accept gzip (or the response was below
+        the gzip threshold), compressed bytes is None, ratio is None."""
+        hist.record_directory_serialized_size(
+            raw_bytes=8_000,
+            compressed_bytes=None,
+        )
+        s = hist.get_directory_stats()
+        assert s["size_bytes_raw"] == 8_000
+        assert s["size_bytes_compressed"] is None
+        assert s["size_compression_ratio"] is None
+
+
 class TestDirectorySnapshot:
     """get_directory_snapshot() returns features + position-less list."""
 

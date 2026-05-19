@@ -1771,3 +1771,57 @@ on a busy DB — better to let the fix soak naturally; the hourly prune
 
 ---
 
+## Issue #51: Issue #50 wiring unreachable — meshcore parser emitted ISO-8601 string, not Unix epoch (2026-04-30)
+
+**Symptom**: After fdee95e shipped Issue #50/F7 to the fleet, post-restart
+verification showed 0% upstream-stamped rows on volcanoai. All 58,598
+external-bulk rows had `last_seen ≈ NOW`. The 7d external-retention tier
+still did not fire; the smoking-gun "oldest == newest" pattern persisted.
+
+**Root cause**: `map.meshcore.dev/api/v1/nodes` returns `last_advert` as
+ISO-8601 string (`'2026-04-27T19:45:54.000Z'`), not Unix epoch.
+`_parse_meshcore_public_node` passed it through raw to
+`properties.last_heard`. Then `_build_directory_row`'s `float(upstream)`
+call raised `ValueError`, the bare `except (TypeError, ValueError)`
+swallowed it, and `last_seen` silently fell back to `now`. The Issue #50
+wiring was reachable in unit tests (which used already-normalized
+numeric `time.time() - delta` fixtures) but unreachable in production
+against the real upstream payload shape.
+
+**Fix** (4a9985e): inline ISO-8601 → Unix epoch normalization in
+`_parse_meshcore_public_node`, mirroring the existing pattern in
+`_parse_worldmap_row` (`datetime.fromisoformat(...).timestamp()`).
+Numeric pass-through preserves forward-compat. Failed parse →
+`last_heard=0.0`, which `_build_directory_row` treats as "no credible
+upstream stamp" → falls back to `now` (correct semantics for genuinely
+unstamped rows).
+
+**Tests**: 5 new in `TestMeshCorePublicCollector` covering real-shape
+ISO-8601 with `.000Z` suffix, numeric pass-through (forward-compat),
+invalid-string fallback to 0.0, missing field, and end-to-end round-trip
+through `_build_directory_row` to confirm the F7 contract holds against
+real upstream payload shape.
+
+**Verification post-rollout** (volcanoai, 2026-04-30 22:50 UTC):
+- 25.6% of meshcore_public rows are now upstream-stamped (`first_seen >
+  last_seen`); the remaining 74.4% are pre-fix-NOW rows that will age
+  out over 7d via the now-functional tier prune.
+- last_seen range stretches from 56-year-old upstream stamps (1970-ish
+  legitimate-or-zero entries upstream) to NOW.
+- Next prune cycle is expected to evict tens of thousands of rows whose
+  upstream `last_heard` is already > 7d old.
+
+**Deployment cost** (per-box, observed): ~7 min warming on volcanoai
+(480 MB WAL fsync on Pi-class SD). Other fleet boxes have
+`enable_meshcore_public: false` and clear in 60-90s — they federate
+meshcore_public rows from volcanoai instead of fetching independently.
+
+**Prevention**: tests must use real upstream payload shape, not
+synthetic already-normalized stand-ins. Audit other parsers for the
+same gap when introducing analogous schema-aware flow logic. The
+`TestMeshCorePublicCollector` round-trip pattern (parser → directory
+row tuple) is the regression-prevention shape for similar future work.
+
+
+---
+

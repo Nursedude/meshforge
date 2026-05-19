@@ -235,6 +235,140 @@ class TestFetchPeerDirectory:
         assert entries == []
 
 
+class TestGzipNegotiationIssue64:
+    """Federation client must negotiate Accept-Encoding: gzip and decode
+    gzipped peer responses. /api/nodes/directory is 35 MB on production
+    fleet boxes — gzip cuts wire bytes 5-10× on every federation poll.
+    """
+
+    def test_request_sends_accept_encoding_gzip(self):
+        """The server already supports gzip in _serve_json — the
+        federation client just had to ask for it. Pin the header
+        request so a future "let me clean up these headers" change
+        can't silently revert the bandwidth fix."""
+        captured_headers: Dict[str, str] = {}
+
+        def fake_urlopen(req, timeout=None):
+            # Capture the headers off the Request object so we can
+            # assert what we asked the peer for.
+            captured_headers.update(dict(req.headers))
+            cm = MagicMock()
+            cm.__enter__ = MagicMock(return_value=cm)
+            cm.__exit__ = MagicMock(return_value=False)
+            cm.status = 200
+            cm.read = MagicMock(return_value=json.dumps({
+                "features": [], "nodes_without_position": [],
+            }).encode())
+            cm.headers = {}
+            return cm
+
+        with patch("utils.map_federation.urllib.request.urlopen",
+                   side_effect=fake_urlopen):
+            fetch_peer_directory("moc3", timeout=1.0)
+
+        # urllib lowercases header names internally via capitalize().
+        lowered = {k.lower(): v for k, v in captured_headers.items()}
+        assert "accept-encoding" in lowered, (
+            f"Federation client must send Accept-Encoding: gzip — got "
+            f"headers {captured_headers}"
+        )
+        assert "gzip" in lowered["accept-encoding"].lower()
+
+    def test_gzipped_response_decoded(self):
+        """End-to-end: server returned Content-Encoding: gzip, client
+        decompresses, parses, and yields normal entries."""
+        import gzip as _gzip
+        payload = {
+            "features": [{
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [-155.3, 19.4]},
+                "properties": {"id": "!abc", "network": "meshtastic",
+                               "last_seen": 1700000000.0},
+            }],
+            "nodes_without_position": [],
+        }
+        compressed = _gzip.compress(json.dumps(payload).encode())
+
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=cm)
+        cm.__exit__ = MagicMock(return_value=False)
+        cm.status = 200
+        cm.read = MagicMock(return_value=compressed)
+        cm.headers = {"Content-Encoding": "gzip"}
+
+        with patch("utils.map_federation.urllib.request.urlopen",
+                   return_value=cm):
+            entries, status = fetch_peer_directory("moc3", timeout=1.0)
+
+        assert status.ok is True, f"got {status.last_error}"
+        assert status.last_count == 1
+        assert len(entries) == 1
+        assert entries[0]["id"] == "!abc"
+
+    def test_uncompressed_response_still_works(self):
+        """Backward compat: a peer running pre-fix code that ignores
+        Accept-Encoding still returns a plain JSON body. Client must
+        not break."""
+        payload = {"features": [], "nodes_without_position": []}
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=cm)
+        cm.__exit__ = MagicMock(return_value=False)
+        cm.status = 200
+        cm.read = MagicMock(return_value=json.dumps(payload).encode())
+        cm.headers = {}  # no Content-Encoding
+
+        with patch("utils.map_federation.urllib.request.urlopen",
+                   return_value=cm):
+            entries, status = fetch_peer_directory("moc3", timeout=1.0)
+
+        assert status.ok is True
+
+    def test_corrupt_gzip_marked_failed_not_crashed(self):
+        """A peer that lies (Content-Encoding: gzip + non-gzip body)
+        must produce status.ok=False, not raise out of the function."""
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=cm)
+        cm.__exit__ = MagicMock(return_value=False)
+        cm.status = 200
+        cm.read = MagicMock(return_value=b"not actually gzip")
+        cm.headers = {"Content-Encoding": "gzip"}
+
+        with patch("utils.map_federation.urllib.request.urlopen",
+                   return_value=cm):
+            entries, status = fetch_peer_directory("moc3", timeout=1.0)
+
+        assert status.ok is False
+        assert "gzip decode" in (status.last_error or "")
+        assert entries == []
+
+    def test_oversized_decompressed_rejected(self):
+        """Zip-bomb defense: a small compressed payload that
+        decompresses to a huge buffer must be rejected. The federation
+        layer trusts our fleet but the cap is cheap defense-in-depth."""
+        import gzip as _gzip
+        # Compress a 200-byte body; cap decompressed at 100 bytes.
+        compressed = _gzip.compress(b"x" * 200)
+
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=cm)
+        cm.__exit__ = MagicMock(return_value=False)
+        cm.status = 200
+        cm.read = MagicMock(return_value=compressed)
+        cm.headers = {"Content-Encoding": "gzip"}
+
+        with patch("utils.map_federation.urllib.request.urlopen",
+                   return_value=cm):
+            entries, status = fetch_peer_directory(
+                "moc3",
+                timeout=1.0,
+                max_decompressed_bytes=100,
+            )
+
+        assert status.ok is False
+        assert "decompressed" in (status.last_error or "")
+        assert entries == []
+
+
 # ── FederationCollector.poll_once ─────────────────────────────────────────
 
 

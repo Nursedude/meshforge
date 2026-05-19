@@ -103,6 +103,62 @@ class TestServeJsonGzip:
         assert "Accept-Encoding" in vary_headers
 
 
+class TestServeJsonSizeObserverIssue64:
+    """size_observer callback wires the HTTP serializer's actual byte
+    counts to the size-budget alarm. Without this, /api/status.directory
+    would never see the size measurement and the alarm could never fire.
+    """
+
+    def test_observer_called_with_raw_bytes_when_not_gzipped(self):
+        observed: list = []
+        h = _make_handler("")  # client didn't accept gzip
+        h._serve_json(
+            {"k": "v"},
+            size_observer=lambda raw, comp: observed.append((raw, comp)),
+        )
+        assert len(observed) == 1
+        raw, comp = observed[0]
+        assert raw > 0
+        assert comp is None, (
+            "Compressed bytes must be None when response wasn't gzipped — "
+            "operators distinguish 'no gzip negotiated' from 'gzipped to 0 bytes'"
+        )
+
+    def test_observer_called_with_compressed_bytes_when_gzipped(self):
+        observed: list = []
+        # Large payload + gzip-accepting client → response is gzipped.
+        payload = {"items": ["x" * 100 for _ in range(200)]}
+        h = _make_handler("gzip")
+        h._serve_json(
+            payload,
+            size_observer=lambda raw, comp: observed.append((raw, comp)),
+        )
+        assert len(observed) == 1
+        raw, comp = observed[0]
+        assert raw > comp > 0, (
+            f"Expected raw > compressed > 0, got raw={raw} comp={comp}"
+        )
+
+    def test_observer_exception_does_not_break_request(self, caplog):
+        """observability mustn't break the request — a broken observer
+        must be swallowed and logged."""
+        def explode(raw, comp):
+            raise RuntimeError("observer is broken")
+
+        h = _make_handler("")
+        h._serve_json({"k": "v"}, size_observer=explode)
+        # If observer broke the request, h.send_response wouldn't have
+        # been called. It's a MagicMock — assert it was reached.
+        h.send_response.assert_called_once()
+
+    def test_no_observer_is_default(self):
+        """Backward compat: callers that don't pass size_observer get
+        the original behavior with no overhead and no callback."""
+        h = _make_handler("")
+        # Just doesn't crash — the default signature path.
+        h._serve_json({"k": "v"})
+
+
 # ── F8: Server-side View preset filter ─────────────────────────────────
 from utils.map_http_handler import (
     VIEW_PRESETS,

@@ -54,7 +54,7 @@ import time
 from datetime import datetime
 from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs, unquote
 
 logger = logging.getLogger(__name__)
@@ -1114,7 +1114,17 @@ class MapRequestHandler(
             "nodes_without_position": position_less,
             "nodes_without_position_by_network": by_network,
         }
-        self._serve_json(body)
+
+        # Size-budget alarm (Issue #64): record the serialized byte
+        # count so `get_directory_stats()` can surface size_alarm in
+        # /api/status. Closes the backlog #5 question "how do we know
+        # when we've hit 'too late'?" by exposing the trajectory.
+        history = self.collector._history
+
+        def _record_size(raw: int, compressed: Optional[int]) -> None:
+            history.record_directory_serialized_size(raw, compressed)
+
+        self._serve_json(body, size_observer=_record_size)
 
     def _serve_trajectory(self, node_id: str):
         """Serve trajectory GeoJSON for a specific node."""
@@ -1347,15 +1357,40 @@ class MapRequestHandler(
             status=503,
         )
 
-    def _serve_json(self, obj: Any, status: int = 200):
-        """Helper to serve a JSON response, gzip-compressed when client supports it."""
+    def _serve_json(
+        self,
+        obj: Any,
+        status: int = 200,
+        size_observer: Optional[Callable[[int, Optional[int]], None]] = None,
+    ):
+        """Helper to serve a JSON response, gzip-compressed when client supports it.
+
+        Args:
+            obj: The Python value to JSON-serialize.
+            status: HTTP status code (default 200).
+            size_observer: Optional callback invoked with
+                ``(raw_bytes, compressed_bytes_or_None)`` after the
+                serializer decides whether to gzip. Used by
+                ``/api/nodes/directory`` to feed the size-budget alarm
+                (Issue #64). Observer exceptions are swallowed —
+                observability must never break the request.
+        """
         data = json.dumps(obj).encode()
+        raw_bytes = len(data)
         encoding: Optional[str] = None
         if len(data) >= self._GZIP_MIN_BYTES and self._client_accepts_gzip():
             # compresslevel=6 is the urllib default — ~30–80 ms for 20 MB on
             # Pi-class CPU, yielding ~5–10× shrink for GeoJSON-shaped data.
             data = gzip.compress(data, compresslevel=6)
             encoding = 'gzip'
+        if size_observer is not None:
+            try:
+                size_observer(
+                    raw_bytes,
+                    len(data) if encoding else None,
+                )
+            except Exception as e:
+                logger.debug("size_observer raised, ignoring: %s", e)
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(data)))

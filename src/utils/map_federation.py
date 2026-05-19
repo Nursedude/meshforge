@@ -27,6 +27,7 @@ Lifecycle:
 
 import json
 import logging
+import gzip
 import os
 import socket
 import threading
@@ -57,7 +58,13 @@ DEFAULT_POLL_INTERVAL = 60       # seconds between full federation polls
 # stays comfortably under the 60 s poll interval.
 DEFAULT_TIMEOUT = 30.0            # per-peer HTTP timeout (was 5.0 pre-2026-05-17)
 DEFAULT_PORT = 5000               # peer map service port
-DEFAULT_MAX_RESPONSE_BYTES = 50 * 1024 * 1024  # 50 MB hard cap per peer
+DEFAULT_MAX_RESPONSE_BYTES = 50 * 1024 * 1024  # 50 MB hard cap per peer (wire bytes)
+# Cap on the DECOMPRESSED size when the peer returned Content-Encoding: gzip.
+# Bound is 10× the wire cap because GeoJSON-shaped data gzips at ~5-10× —
+# anything past 500 MB decompressed from a 50 MB compressed body is either a
+# zip-bomb or a misconfigured peer. We trust our own fleet but the cap is
+# cheap defense-in-depth. Issue #64.
+DEFAULT_MAX_DECOMPRESSED_BYTES = DEFAULT_MAX_RESPONSE_BYTES * 10
 
 # Federation backpressure: skip polls when the node_history.db WAL is bigger
 # than this. 64 MB is the journal_size_limit set in db_helpers.connect_tuned,
@@ -273,8 +280,14 @@ def fetch_peer_directory(
     timeout: float = DEFAULT_TIMEOUT,
     port: int = DEFAULT_PORT,
     max_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+    max_decompressed_bytes: int = DEFAULT_MAX_DECOMPRESSED_BYTES,
 ) -> Tuple[List[Dict[str, Any]], FederationPeerStatus]:
     """Fetch one peer's /api/nodes/directory. Returns (entries, status).
+
+    Negotiates `Accept-Encoding: gzip` with the peer. /api/nodes/directory
+    is GeoJSON — gzips at ~5-10× — so this single header cuts the wire
+    bytes 5-10× on every poll cycle. Issue #64 buys multi-year runway
+    against the directory growth trajectory documented in Issue #56.
 
     On any failure returns ([], status) with `status.ok=False` and
     `status.last_error` populated. Never raises — federation must
@@ -285,7 +298,13 @@ def fetch_peer_directory(
     url = _peer_url(peer, port=port)
     started = time.perf_counter()
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "MeshForge/federation"})
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "MeshForge/federation",
+                "Accept-Encoding": "gzip",
+            },
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             if resp.status != 200:
                 status.last_error = f"HTTP {resp.status}"
@@ -294,6 +313,27 @@ def fetch_peer_directory(
             if len(raw) > max_bytes:
                 status.last_error = f"response > {max_bytes} bytes"
                 return [], status
+            # urllib does NOT auto-decode gzip — that's a `requests`
+            # behavior. We have to look at Content-Encoding and
+            # decompress ourselves. The pre-fix code silently accepted
+            # gzipped bytes and tried to json.loads them, getting an
+            # unhelpful UnicodeDecodeError instead of a real payload.
+            content_encoding = (
+                resp.headers.get("Content-Encoding", "") or ""
+            ).lower()
+        if "gzip" in content_encoding:
+            try:
+                decompressed = gzip.decompress(raw)
+            except (OSError, EOFError) as e:
+                status.last_error = f"gzip decode: {type(e).__name__}: {e}"
+                return [], status
+            if len(decompressed) > max_decompressed_bytes:
+                status.last_error = (
+                    f"decompressed > {max_decompressed_bytes} bytes "
+                    f"(peer may be malformed or zip-bomb)"
+                )
+                return [], status
+            raw = decompressed
         payload = json.loads(raw.decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, socket.timeout, OSError) as e:
         status.last_error = f"{type(e).__name__}: {e}"

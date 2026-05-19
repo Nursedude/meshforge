@@ -63,6 +63,18 @@ DEFAULT_DIRECTORY_RETENTION_LOCAL = 30 * 24 * 3600     # 30 days
 DEFAULT_DIRECTORY_RETENTION_EXTERNAL = 7 * 24 * 3600   # 7 days
 DEFAULT_DIRECTORY_MAX_ROWS = 50_000                    # hard cap, LRU evict
 
+# Size-budget alarm thresholds (Issue #64). Triggered when the LAST
+# /api/nodes/directory response exceeded the budget; surfaced in
+# /api/status.directory.size_alarm so operators see the cliff coming
+# instead of discovering it via federation timeouts. The threshold is
+# in RAW bytes — the federation client now negotiates gzip (Issue #64),
+# so wire bytes are 5-10× smaller, but worst case is a peer that
+# disables gzip and gets the raw payload. We size the alarm for that
+# worst case. 40 MB ≈ 80% of map_federation.DEFAULT_MAX_RESPONSE_BYTES
+# (50 MB hard cap) — gives operators ~6 months of growth headroom at
+# observed ~3 MB/year per Issue #56.
+DEFAULT_DIRECTORY_SIZE_ALARM_BYTES = 40 * 1024 * 1024
+
 # Cap rows deleted per prune BATCH (single transaction). Without this,
 # a retention shrink (e.g. observation-stream cut 7d → 48h) on a fleet
 # box that's been accumulating for weeks does ONE giant DELETE →
@@ -254,6 +266,15 @@ class NodeHistoryDB:
         self._directory_stats_cache: Optional[Dict[str, Any]] = None
         self._directory_stats_cache_expires: float = 0.0
         self._directory_stats_cache_ttl: float = 300.0
+        # Directory serialization size monitor (Issue #64). Updated by the
+        # HTTP layer after each /api/nodes/directory serialize so
+        # get_directory_stats() can surface a size-budget alarm. None
+        # until the endpoint has been served at least once. Python int/
+        # None assignment is GIL-atomic — no lock needed for these
+        # observability-only fields.
+        self._last_directory_bytes_raw: Optional[int] = None
+        self._last_directory_bytes_compressed: Optional[int] = None
+        self._last_directory_serialized_ts: Optional[float] = None
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -1102,6 +1123,35 @@ class NodeHistoryDB:
         finally:
             conn.close()
 
+    def record_directory_serialized_size(
+        self,
+        raw_bytes: int,
+        compressed_bytes: Optional[int],
+    ) -> None:
+        """Snapshot the most recent /api/nodes/directory response size.
+
+        Called from the HTTP serializer after building the response.
+        Observability-only: GIL-atomic field assignments, no lock.
+        Surfaced via `get_directory_stats().size_*` so operators see
+        directory size growth vs. the alarm threshold without having
+        to time `curl | wc -c` themselves.
+
+        Args:
+            raw_bytes: Serialized JSON byte count (pre-gzip).
+            compressed_bytes: Wire byte count after gzip, or None if
+                the client didn't accept gzip / response was below the
+                gzip threshold.
+        """
+        self._last_directory_bytes_raw = int(raw_bytes)
+        self._last_directory_bytes_compressed = (
+            int(compressed_bytes) if compressed_bytes is not None else None
+        )
+        self._last_directory_serialized_ts = time.time()
+        # Invalidate the stats cache so the next status request sees
+        # the fresh size measurement instead of a stale 5-min-old one.
+        self._directory_stats_cache = None
+        self._directory_stats_cache_expires = 0.0
+
     def get_directory_stats(self) -> Dict[str, Any]:
         """Aggregate stats for the `nodes` directory table.
 
@@ -1158,6 +1208,22 @@ class NodeHistoryDB:
             oldest = time_range[0]
             newest = time_range[1]
 
+            # Size-budget alarm (Issue #64) — surfaced so operators see
+            # /api/nodes/directory size growth before the cliff. Raw
+            # bytes is the budget axis because some peers may disable
+            # gzip; the wire (compressed) bytes are informational. The
+            # alarm IS the answer to "how do we know when we've hit
+            # 'too late'?" from the reliability backlog.
+            raw_bytes = self._last_directory_bytes_raw
+            compressed_bytes = self._last_directory_bytes_compressed
+            size_alarm = (
+                raw_bytes is not None
+                and raw_bytes >= DEFAULT_DIRECTORY_SIZE_ALARM_BYTES
+            )
+            ratio = None
+            if raw_bytes is not None and compressed_bytes is not None and raw_bytes > 0:
+                ratio = round(raw_bytes / compressed_bytes, 1)
+
             result = {
                 "total": total,
                 "with_position": with_position,
@@ -1169,6 +1235,12 @@ class NodeHistoryDB:
                 "retention_local_days": self.directory_retention_local // 86400,
                 "retention_external_days": self.directory_retention_external // 86400,
                 "max_rows": self.directory_max_rows,
+                "size_bytes_raw": raw_bytes,
+                "size_bytes_compressed": compressed_bytes,
+                "size_compression_ratio": ratio,
+                "size_alarm_threshold_bytes": DEFAULT_DIRECTORY_SIZE_ALARM_BYTES,
+                "size_alarm": size_alarm,
+                "size_last_serialized_ts": self._last_directory_serialized_ts,
             }
             self._directory_stats_cache = result
             self._directory_stats_cache_expires = time.time() + self._directory_stats_cache_ttl

@@ -63,6 +63,7 @@ Full history in `persistent_issues_archive.md`.
 | #48 Phase-2 migration inherits WAL → cold-start stall (2026-04-27) | `PRAGMA wal_checkpoint(TRUNCATE)` on source DB before cp; new service first-open is fast. Body in archive | `tests/test_migrate_map_service.py` (6 assertions) |
 | #49 Lean node directory — split persistent dir from time-series (2026-04-28) | New `nodes` table in `node_history.db` (one row per network,node_id) decoupled from time-series `node_observations`; tiered retention (local 30d / external 7d) + 50k LRU cap; sticky source-origin promotion. Body in archive | `tests/test_node_history.py` (17) + diagnostics (3) |
 | #50 Directory tier retention defeated by UPSERT `last_seen=now` (2026-04-30) | External-bulk republish reset tier clock every cycle; fix uses upstream `last_heard` + `MAX(nodes.last_seen, excluded.last_seen)` ON CONFLICT. Body in archive | `TestDirectoryUpstreamTimestamp` in `tests/test_node_history.py` (9 tests) |
+| #51 Issue #50 wiring unreachable — meshcore parser emitted ISO-8601 not Unix epoch (2026-04-30) | Inline ISO→epoch normalization in `_parse_meshcore_public_node`. Tests must use real upstream payload shape. Body in archive | 5 new in `TestMeshCorePublicCollector` |
 
 ---
 
@@ -197,60 +198,6 @@ if MESHTASTIC_CONNECTION_LOCK.acquire(timeout=10):
 1. Add to `ALLOWLISTED` in `TestTCPConnectionContract`
 2. Add to `lock_aware_files` in lint.py MF007
 3. Acquire `MESHTASTIC_CONNECTION_LOCK` before creating
-
----
-
-## Issue #51: Issue #50 wiring unreachable — meshcore parser emitted ISO-8601 string, not Unix epoch (2026-04-30)
-
-**Symptom**: After fdee95e shipped Issue #50/F7 to the fleet, post-restart
-verification showed 0% upstream-stamped rows on volcanoai. All 58,598
-external-bulk rows had `last_seen ≈ NOW`. The 7d external-retention tier
-still did not fire; the smoking-gun "oldest == newest" pattern persisted.
-
-**Root cause**: `map.meshcore.dev/api/v1/nodes` returns `last_advert` as
-ISO-8601 string (`'2026-04-27T19:45:54.000Z'`), not Unix epoch.
-`_parse_meshcore_public_node` passed it through raw to
-`properties.last_heard`. Then `_build_directory_row`'s `float(upstream)`
-call raised `ValueError`, the bare `except (TypeError, ValueError)`
-swallowed it, and `last_seen` silently fell back to `now`. The Issue #50
-wiring was reachable in unit tests (which used already-normalized
-numeric `time.time() - delta` fixtures) but unreachable in production
-against the real upstream payload shape.
-
-**Fix** (4a9985e): inline ISO-8601 → Unix epoch normalization in
-`_parse_meshcore_public_node`, mirroring the existing pattern in
-`_parse_worldmap_row` (`datetime.fromisoformat(...).timestamp()`).
-Numeric pass-through preserves forward-compat. Failed parse →
-`last_heard=0.0`, which `_build_directory_row` treats as "no credible
-upstream stamp" → falls back to `now` (correct semantics for genuinely
-unstamped rows).
-
-**Tests**: 5 new in `TestMeshCorePublicCollector` covering real-shape
-ISO-8601 with `.000Z` suffix, numeric pass-through (forward-compat),
-invalid-string fallback to 0.0, missing field, and end-to-end round-trip
-through `_build_directory_row` to confirm the F7 contract holds against
-real upstream payload shape.
-
-**Verification post-rollout** (volcanoai, 2026-04-30 22:50 UTC):
-- 25.6% of meshcore_public rows are now upstream-stamped (`first_seen >
-  last_seen`); the remaining 74.4% are pre-fix-NOW rows that will age
-  out over 7d via the now-functional tier prune.
-- last_seen range stretches from 56-year-old upstream stamps (1970-ish
-  legitimate-or-zero entries upstream) to NOW.
-- Next prune cycle is expected to evict tens of thousands of rows whose
-  upstream `last_heard` is already > 7d old.
-
-**Deployment cost** (per-box, observed): ~7 min warming on volcanoai
-(480 MB WAL fsync on Pi-class SD). Other fleet boxes have
-`enable_meshcore_public: false` and clear in 60-90s — they federate
-meshcore_public rows from volcanoai instead of fetching independently.
-
-**Prevention**: tests must use real upstream payload shape, not
-synthetic already-normalized stand-ins. Audit other parsers for the
-same gap when introducing analogous schema-aware flow logic. The
-`TestMeshCorePublicCollector` round-trip pattern (parser → directory
-row tuple) is the regression-prevention shape for similar future work.
-
 
 ---
 
@@ -693,3 +640,55 @@ zero natural traffic, write path silently fails" case — currently
 unfalsifiable on a quiet fleet. If that case bites in practice, add a
 thread that bumps `meta.heartbeat_ts` every 60s; the test harness
 already handles instance state vs persisted state.
+
+
+---
+
+## Issue #64: `/api/nodes/directory` gzip negotiation + size-budget alarm (2026-05-18)
+
+**Symptom**: `/api/nodes/directory` at 35 MB on moc; Issue #56 bumped
+federation timeout 5→30s to fit; trajectory unbounded (~30× since the
+1 MB original). Reliability backlog #5.
+
+**Root cause**: `_serve_json()` already supported gzip when clients
+sent `Accept-Encoding`, but `fetch_peer_directory` (`map_federation.py`)
+never asked. urllib doesn't auto-decode like `requests` — needed
+manual handling, so server-side gzip was wasted on the federation
+hot path.
+
+**Fix**:
+- `map_federation.fetch_peer_directory` now sends
+  `Accept-Encoding: gzip`, decodes via `gzip.decompress()`, with a
+  `max_decompressed_bytes` cap (10× wire cap) for zip-bomb defense.
+  Uncompressed responses still work for pre-fix peers.
+- `node_history.record_directory_serialized_size()` called by
+  `_serve_directory()` via a new `size_observer` callback on
+  `_serve_json()`. `get_directory_stats()` returns
+  `size_bytes_raw`/`_compressed`, `size_compression_ratio`,
+  `size_alarm_threshold_bytes`, `size_alarm`. Threshold
+  `DEFAULT_DIRECTORY_SIZE_ALARM_BYTES = 40 MB` (~80% of the federation
+  client's 50 MB hard cap). Cache invalidates on record so operators
+  see fresh bytes, not stale 5-min snapshots.
+
+**Live measurement on moc** (2026-05-18): 35.7 MB raw → 4.7 MB on the
+wire = **7.6× compression**. Federation poll wall-time well under the
+60s cycle again.
+
+**Tests** (15 new): `TestGzipNegotiationIssue64` (5) in
+`tests/test_map_federation.py`; `TestDirectorySizeBudgetAlarmIssue64`
+(6) in `tests/test_node_history.py`;
+`TestServeJsonSizeObserverIssue64` (4) in
+`tests/test_map_http_handler.py`.
+
+**Operator recipes**:
+```bash
+# Wire savings:
+curl -sv -H "Accept-Encoding: gzip" http://<box>:5000/api/nodes/directory \
+  -o /dev/null 2>&1 | grep -E "Content-(Length|Encoding)"
+# Size-budget gauge:
+curl -s http://<box>:5000/api/status | jq '.directory | {size_bytes_raw,
+  size_bytes_compressed, size_alarm, size_alarm_threshold_bytes}'
+```
+
+**Deferred**: cursor pagination + since-timestamp incremental sync
+remain available if/when gzip's multi-year runway runs out.
