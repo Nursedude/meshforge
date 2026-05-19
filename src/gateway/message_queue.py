@@ -567,6 +567,40 @@ class PersistentMessageQueue:
                 ON message_lifecycle(timestamp DESC)
             """)
 
+            # Issue #66: application-layer ack tracking columns. Additive
+            # migration — older DBs that predate Issue #66 get the columns
+            # ALTER'd in on first open. Adding via ALTER (rather than
+            # rebuilding the table) preserves existing rows + their content
+            # hashes for the dedup window.
+            cursor = conn.execute("PRAGMA table_info(messages)")
+            existing_cols = {row[1] for row in cursor.fetchall()}
+            for col, ddl in (
+                ('ack_required',
+                 "ALTER TABLE messages ADD COLUMN ack_required INTEGER DEFAULT 0"),
+                ('ack_of',
+                 "ALTER TABLE messages ADD COLUMN ack_of TEXT DEFAULT NULL"),
+                ('ack_status',
+                 "ALTER TABLE messages ADD COLUMN ack_status TEXT DEFAULT NULL"),
+                ('ack_timeout_at',
+                 "ALTER TABLE messages ADD COLUMN ack_timeout_at TEXT DEFAULT NULL"),
+                ('ack_at',
+                 "ALTER TABLE messages ADD COLUMN ack_at TEXT DEFAULT NULL"),
+                ('ack_origin_network',
+                 "ALTER TABLE messages ADD COLUMN ack_origin_network TEXT DEFAULT NULL"),
+                ('ack_origin_address',
+                 "ALTER TABLE messages ADD COLUMN ack_origin_address TEXT DEFAULT NULL"),
+            ):
+                if col not in existing_cols:
+                    conn.execute(ddl)
+
+            # Sweep index — supports find_overdue_acks() on busy boxes
+            # without table-scanning the whole messages table.
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ack_pending
+                ON messages(ack_status, ack_timeout_at)
+                WHERE ack_status = 'pending'
+            """)
+
     def _compute_hash(self, payload: Dict) -> str:
         """Compute content hash for deduplication."""
         # Hash key fields that identify a unique message
@@ -885,6 +919,160 @@ class PersistentMessageQueue:
             f"Retry policy configured: max_tries={policy.max_tries}, "
             f"timeout={policy.timeout}s"
         )
+
+    # --- Issue #66: application-layer ack tracking ---------------------
+
+    def register_pending_ack(
+        self,
+        message_id: str,
+        origin_network: str,
+        origin_address: str,
+        timeout_seconds: int = 300,
+    ) -> bool:
+        """
+        Mark a queued message as expecting an application-layer ACK.
+
+        Issue #66: when a CanonicalMessage with ack_required=True is
+        enqueued for delivery, call this to record where the ACK should
+        be routed back to. The receiving side calls mark_acked() when it
+        observes proof-of-delivery; find_overdue_acks() surfaces records
+        that never got one so the caller can emit a synthetic TIMEOUT.
+
+        Args:
+            message_id: id of the queued message that requested an ack.
+            origin_network: protocol name where the ACK should be
+                synthesized back to (e.g. "meshcore", "meshtastic").
+            origin_address: address on that network (e.g. "!aabbccdd").
+            timeout_seconds: how long to wait before declaring TIMEOUT.
+
+        Returns:
+            True if a row was updated (msg exists), False otherwise.
+        """
+        now = datetime.now()
+        timeout_at = (now + timedelta(seconds=timeout_seconds)).isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.execute("""
+                UPDATE messages
+                   SET ack_required = 1,
+                       ack_status = 'pending',
+                       ack_timeout_at = ?,
+                       ack_origin_network = ?,
+                       ack_origin_address = ?,
+                       updated_at = ?
+                 WHERE id = ?
+            """, (timeout_at, origin_network, origin_address,
+                  now.isoformat(), message_id))
+            return cursor.rowcount > 0
+
+    def mark_acked(self, message_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Transition a pending-ack record to 'acked'.
+
+        Idempotent: a second call after the first acked transition returns
+        None so the caller doesn't double-emit a synthetic ACK
+        CanonicalMessage.
+
+        Returns:
+            Dict with message_id, origin_network, origin_address on a
+            successful transition; None if the row doesn't exist, isn't
+            tracking an ack, or was already finalised (acked/timeout).
+        """
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.execute("""
+                SELECT id, ack_origin_network, ack_origin_address, ack_status
+                  FROM messages
+                 WHERE id = ? AND ack_required = 1
+            """, (message_id,))
+            row = cursor.fetchone()
+            if not row or row['ack_status'] != 'pending':
+                return None
+            conn.execute("""
+                UPDATE messages
+                   SET ack_status = 'acked',
+                       ack_at = ?,
+                       updated_at = ?
+                 WHERE id = ?
+            """, (now, now, message_id))
+            return {
+                'message_id': row['id'],
+                'origin_network': row['ack_origin_network'],
+                'origin_address': row['ack_origin_address'],
+            }
+
+    def find_overdue_acks(
+        self, now: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return pending-ack records whose ack_timeout_at has passed.
+
+        Caller is responsible for emitting synthetic TIMEOUT ACKs and
+        calling mark_timeout() on each id to finalise the record.
+        Records are not auto-finalised here so the sweep stays a pure
+        read — callers may want to batch + retry the ACK emission.
+
+        Args:
+            now: clock reference (injectable for tests). Defaults to
+                datetime.now().
+        """
+        if now is None:
+            now = datetime.now()
+        cutoff = now.isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.execute("""
+                SELECT id, ack_origin_network, ack_origin_address,
+                       ack_timeout_at
+                  FROM messages
+                 WHERE ack_required = 1
+                   AND ack_status = 'pending'
+                   AND ack_timeout_at IS NOT NULL
+                   AND ack_timeout_at <= ?
+                 ORDER BY ack_timeout_at ASC
+            """, (cutoff,))
+            return [
+                {
+                    'message_id': r['id'],
+                    'origin_network': r['ack_origin_network'],
+                    'origin_address': r['ack_origin_address'],
+                    'timeout_at': r['ack_timeout_at'],
+                }
+                for r in cursor.fetchall()
+            ]
+
+    def mark_timeout(self, message_id: str) -> bool:
+        """
+        Transition a pending-ack record to 'timeout' after the caller has
+        emitted the synthetic TIMEOUT ACK.
+
+        Returns True if a row was finalised (was 'pending'). Returns
+        False if the row was already 'acked' (raced) or 'timeout'
+        (idempotent) — caller should not double-emit.
+        """
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.execute("""
+                UPDATE messages
+                   SET ack_status = 'timeout',
+                       updated_at = ?
+                 WHERE id = ? AND ack_status = 'pending'
+            """, (now, message_id))
+            return cursor.rowcount > 0
+
+    def get_ack_status(self, message_id: str) -> Optional[str]:
+        """
+        Return the current ack_status of a message, or None if the message
+        doesn't exist or isn't tracking an ack.
+
+        Operator-visible values: 'pending', 'acked', 'timeout'.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute("""
+                SELECT ack_status
+                  FROM messages
+                 WHERE id = ? AND ack_required = 1
+            """, (message_id,))
+            row = cursor.fetchone()
+            return row['ack_status'] if row else None
 
     def register_sender(self, destination: str,
                         send_fn: Callable[[Dict], bool]) -> None:

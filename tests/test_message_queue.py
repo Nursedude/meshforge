@@ -767,3 +767,234 @@ class TestMQTTRetryPolicy:
         processed = queue.process_once()
         assert processed == 1
         sender.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Issue #66: application-layer ack tracking substrate
+# ---------------------------------------------------------------------------
+
+class TestPendingAckTrackingIssue66:
+    """
+    register_pending_ack / mark_acked / mark_timeout / find_overdue_acks /
+    get_ack_status — the queue-side substrate that step 3b will wire into
+    the LXMF delivery callback and the periodic overdue sweep.
+    """
+
+    def test_register_pending_ack_returns_true_for_existing_message(
+        self, queue,
+    ):
+        msg_id = queue.enqueue({"text": "weather pls"}, "rns")
+        assert queue.register_pending_ack(
+            msg_id,
+            origin_network="meshcore",
+            origin_address="abc123",
+            timeout_seconds=60,
+        ) is True
+        assert queue.get_ack_status(msg_id) == 'pending'
+
+    def test_register_pending_ack_returns_false_for_missing_message(
+        self, queue,
+    ):
+        assert queue.register_pending_ack(
+            "ghost-id",
+            origin_network="meshcore",
+            origin_address="abc123",
+        ) is False
+        assert queue.get_ack_status("ghost-id") is None
+
+    def test_mark_acked_returns_origin_for_correlation(self, queue):
+        """
+        mark_acked() returns the origin (network, address) so the caller
+        can synthesize a CanonicalMessage(type=ACK, ack_of=<id>) back to
+        the original sender.
+
+        Why pinned: this return contract is what bridges _on_ack /
+        LXMF delivery callbacks to the synthesis path.
+        """
+        msg_id = queue.enqueue({"text": "weather pls"}, "rns")
+        queue.register_pending_ack(
+            msg_id, origin_network="meshcore", origin_address="abc123",
+        )
+        result = queue.mark_acked(msg_id)
+        assert result is not None
+        assert result['message_id'] == msg_id
+        assert result['origin_network'] == "meshcore"
+        assert result['origin_address'] == "abc123"
+        assert queue.get_ack_status(msg_id) == 'acked'
+
+    def test_mark_acked_is_idempotent(self, queue):
+        """
+        A second mark_acked() on the same id returns None — caller must
+        not double-emit a synthetic ACK CanonicalMessage.
+        """
+        msg_id = queue.enqueue({"text": "hi"}, "rns")
+        queue.register_pending_ack(
+            msg_id, origin_network="meshcore", origin_address="abc123",
+        )
+        first = queue.mark_acked(msg_id)
+        second = queue.mark_acked(msg_id)
+        assert first is not None
+        assert second is None
+
+    def test_mark_acked_on_untracked_message_returns_none(self, queue):
+        msg_id = queue.enqueue({"text": "hi"}, "rns")
+        # Never called register_pending_ack — message has ack_required=0
+        assert queue.mark_acked(msg_id) is None
+
+    def test_mark_acked_on_ghost_id_returns_none(self, queue):
+        assert queue.mark_acked("ghost-id") is None
+
+    def test_find_overdue_acks_returns_only_past_deadline(self, queue):
+        """
+        Records whose ack_timeout_at is in the future stay invisible;
+        only past-due rows surface so the sweep emits one TIMEOUT per
+        pending-and-expired record.
+        """
+        now = datetime.now()
+        future_id = queue.enqueue({"text": "fresh"}, "rns")
+        past_id = queue.enqueue({"text": "stale"}, "rns")
+        queue.register_pending_ack(
+            future_id, origin_network="meshcore",
+            origin_address="abc", timeout_seconds=3600,  # 1h
+        )
+        queue.register_pending_ack(
+            past_id, origin_network="meshtastic",
+            origin_address="!aabb", timeout_seconds=1,  # 1s ago after sleep
+        )
+        # Look back from "now + 5s" — past_id is overdue, future_id is not.
+        overdue = queue.find_overdue_acks(now=now + timedelta(seconds=5))
+        ids = {r['message_id'] for r in overdue}
+        assert past_id in ids
+        assert future_id not in ids
+        past = next(r for r in overdue if r['message_id'] == past_id)
+        assert past['origin_network'] == "meshtastic"
+        assert past['origin_address'] == "!aabb"
+
+    def test_find_overdue_acks_excludes_already_acked(self, queue):
+        """
+        Acked records don't surface even if their timeout has passed —
+        the sweep should never emit a TIMEOUT for a message that was
+        delivery-confirmed.
+        """
+        now = datetime.now()
+        msg_id = queue.enqueue({"text": "hi"}, "rns")
+        queue.register_pending_ack(
+            msg_id, origin_network="meshcore",
+            origin_address="abc", timeout_seconds=1,
+        )
+        queue.mark_acked(msg_id)
+        overdue = queue.find_overdue_acks(now=now + timedelta(seconds=5))
+        assert msg_id not in {r['message_id'] for r in overdue}
+
+    def test_find_overdue_acks_excludes_already_timed_out(self, queue):
+        """
+        A record that's already been finalised by mark_timeout() doesn't
+        re-surface on subsequent sweeps — idempotent semantics keep the
+        sweep from re-emitting TIMEOUT ACKs.
+        """
+        now = datetime.now()
+        msg_id = queue.enqueue({"text": "hi"}, "rns")
+        queue.register_pending_ack(
+            msg_id, origin_network="meshcore",
+            origin_address="abc", timeout_seconds=1,
+        )
+        queue.mark_timeout(msg_id)
+        overdue = queue.find_overdue_acks(now=now + timedelta(seconds=5))
+        assert msg_id not in {r['message_id'] for r in overdue}
+
+    def test_mark_timeout_returns_false_after_ack(self, queue):
+        """
+        A race between an in-flight ACK and the timeout sweep: ACK wins,
+        timeout call returns False so the caller skips synthesising a
+        spurious TIMEOUT.
+        """
+        msg_id = queue.enqueue({"text": "hi"}, "rns")
+        queue.register_pending_ack(
+            msg_id, origin_network="meshcore", origin_address="abc",
+        )
+        queue.mark_acked(msg_id)
+        assert queue.mark_timeout(msg_id) is False
+        assert queue.get_ack_status(msg_id) == 'acked'  # not flipped
+
+    def test_get_ack_status_three_states(self, queue):
+        """get_ack_status returns 'pending', 'acked', 'timeout' across lifecycle."""
+        msg_id = queue.enqueue({"text": "hi"}, "rns")
+        assert queue.get_ack_status(msg_id) is None  # not yet tracking
+        queue.register_pending_ack(
+            msg_id, origin_network="meshcore", origin_address="abc",
+        )
+        assert queue.get_ack_status(msg_id) == 'pending'
+        queue.mark_timeout(msg_id)
+        assert queue.get_ack_status(msg_id) == 'timeout'
+
+    def test_default_timeout_is_300_seconds(self, queue):
+        """
+        Documents the default — 5 minutes balances false-TIMEOUT risk
+        (mesh latency, retries) against operator patience. Locked here
+        so a future refactor can't quietly change it.
+        """
+        import inspect
+        sig = inspect.signature(queue.register_pending_ack)
+        assert sig.parameters['timeout_seconds'].default == 300
+
+    def test_schema_migration_is_additive(self, tmp_path):
+        """
+        Issue #66 columns are ALTER'd in on first open, not dropped onto a
+        rebuilt table. Pre-Issue-#66 rows survive untouched (so dedup
+        windows + in-flight retries don't reset on upgrade).
+
+        Why: the lab is hardening for handoff; an upgrade that wiped
+        in-flight messages would be a regression. This test pins the
+        additive contract on the migration.
+        """
+        # Build a "pre-Issue-#66" DB: the messages table without ack_* cols.
+        import sqlite3
+        db_file = str(tmp_path / "legacy.db")
+        legacy = sqlite3.connect(db_file)
+        legacy.execute("""
+            CREATE TABLE messages (
+                id TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                destination TEXT NOT NULL,
+                priority INTEGER DEFAULT 2,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                retry_count INTEGER DEFAULT 0,
+                max_retries INTEGER DEFAULT 3,
+                retry_after TEXT,
+                error_message TEXT DEFAULT '',
+                content_hash TEXT DEFAULT ''
+            )
+        """)
+        legacy.execute("""
+            INSERT INTO messages
+            (id, payload, destination, status, created_at, updated_at,
+             content_hash)
+            VALUES ('legacy-1', '{}', 'rns', 'delivered',
+                    '2026-05-01T00:00:00', '2026-05-01T00:00:00', 'legacyhash')
+        """)
+        legacy.commit()
+        legacy.close()
+
+        # Open via PersistentMessageQueue — the migration should add ack
+        # columns without touching the legacy row.
+        q = PersistentMessageQueue(db_path=db_file)
+        try:
+            with q._get_connection() as conn:
+                cursor = conn.execute("PRAGMA table_info(messages)")
+                cols = {row[1] for row in cursor.fetchall()}
+                for col in ('ack_required', 'ack_of', 'ack_status',
+                            'ack_timeout_at', 'ack_at',
+                            'ack_origin_network', 'ack_origin_address'):
+                    assert col in cols, f"migration missed {col}"
+                # The legacy row survived and its ack tracking is at defaults.
+                row = conn.execute(
+                    "SELECT status, ack_required, ack_status "
+                    "FROM messages WHERE id = 'legacy-1'"
+                ).fetchone()
+                assert row['status'] == 'delivered'
+                assert row['ack_required'] == 0
+                assert row['ack_status'] is None
+        finally:
+            q.stop_processing()
