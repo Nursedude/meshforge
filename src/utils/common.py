@@ -59,7 +59,8 @@ class SettingsManager:
         self,
         name: str,
         defaults: Optional[Dict[str, Any]] = None,
-        config_dir: Optional[Path] = None
+        config_dir: Optional[Path] = None,
+        stale_defaults: Optional[Dict[str, List[Any]]] = None,
     ):
         """Initialize settings manager.
 
@@ -67,12 +68,27 @@ class SettingsManager:
             name: Settings file name (without .json extension)
             defaults: Default values dictionary
             config_dir: Optional custom config directory
+            stale_defaults: Map of key → list of values that used to be the
+                default. When loading the JSON file, any key whose saved
+                value matches an entry in its stale list is silently
+                discarded so the current default takes effect. Mechanism
+                for migrating fleets past a default-bump (e.g. Issue #56
+                bumped `federation_timeout_seconds` 5→30; ship
+                `stale_defaults={"federation_timeout_seconds": [5]}` and
+                every box's stale 5 is auto-corrected on next load).
+                Reliability backlog #6 / Issue #62.
         """
         self._name = name
         self._defaults = defaults or {}
         self._config_dir = config_dir or CONFIG_DIR
         self._settings_file = self._config_dir / f"{name}.json"
         self._settings: Dict[str, Any] = {}
+        self._stale_defaults: Dict[str, List[Any]] = stale_defaults or {}
+        # Tracks which keys are user-set (or loaded from file) vs derived
+        # from `defaults`. save() only persists explicit keys, so a default
+        # value that hasn't been overridden never gets pinned into the file
+        # — which keeps future default bumps reachable by the fleet.
+        self._explicit_keys: set = set()
         self._lock = threading.RLock()  # RLock allows reset() to call save() under lock
         self.load()
 
@@ -89,6 +105,8 @@ class SettingsManager:
         """
         with self._lock:
             self._settings = self._defaults.copy()
+            self._explicit_keys = set()
+            migration_fired = False
             try:
                 if self._settings_file.exists():
                     content = self._settings_file.read_text().strip()
@@ -97,6 +115,22 @@ class SettingsManager:
                         logger.info(f"Empty settings file {self._settings_file}, using defaults")
                     else:
                         saved = json.loads(content)
+                        # Stale-default migration: drop saved values that
+                        # match a known prior default. The current default
+                        # then flows through naturally. See class docstring
+                        # / Issue #62 for the why.
+                        for key, stale_values in self._stale_defaults.items():
+                            if key in saved and saved[key] in stale_values:
+                                logger.info(
+                                    f"Migrating stale default for "
+                                    f"{self._name}.{key}: dropping saved "
+                                    f"value {saved[key]!r}, reverting to "
+                                    f"current default "
+                                    f"{self._defaults.get(key)!r}"
+                                )
+                                saved.pop(key)
+                                migration_fired = True
+                        self._explicit_keys = set(saved.keys())
                         self._settings.update(saved)
             except json.JSONDecodeError as e:
                 logger.warning(f"Corrupted settings in {self._settings_file}: {e}")
@@ -110,6 +144,20 @@ class SettingsManager:
                     pass
             except IOError as e:
                 logger.error(f"Error reading {self._settings_file}: {e}")
+
+            # One-shot file rewrite when migration fired: persist the
+            # cleaned set of explicit keys so the next load() doesn't
+            # see the stale value (and re-log the migration). The
+            # rewrite is intentional — keeps the file aligned with the
+            # in-memory truth. Skipped on fresh installs (no migration
+            # → no save → no surprise file creation).
+            if migration_fired:
+                logger.info(
+                    f"Rewriting {self._settings_file} to drop migrated "
+                    f"stale defaults from disk."
+                )
+                self.save()
+
             return self._settings.copy()
 
     def save(self) -> bool:
@@ -117,13 +165,23 @@ class SettingsManager:
 
         Uses temp-file-then-rename to prevent partial writes on crash.
 
+        Only persists keys that were explicitly user-set or were already
+        present in the file at load time. Keys whose values come from
+        `defaults` are NOT written — this is the load-bearing invariant
+        that lets future code-default bumps reach fleet boxes whose JSON
+        predates the bump (see class docstring, Issue #62).
+
         Returns:
             True if save was successful
         """
         with self._lock:
             try:
                 self._config_dir.mkdir(parents=True, exist_ok=True)
-                content = json.dumps(self._settings, indent=2)
+                persistable = {
+                    k: v for k, v in self._settings.items()
+                    if k in self._explicit_keys
+                }
+                content = json.dumps(persistable, indent=2)
                 from utils.paths import atomic_write_text
                 atomic_write_text(self._settings_file, content)
                 return True
@@ -147,26 +205,39 @@ class SettingsManager:
     def set(self, key: str, value: Any) -> None:
         """Set a setting value (does not auto-save).
 
+        Marks `key` as explicitly-set so subsequent save() persists it
+        (defaults are otherwise omitted from the file).
+
         Args:
             key: Setting key
             value: Setting value
         """
         with self._lock:
             self._settings[key] = value
+            self._explicit_keys.add(key)
 
     def update(self, values: Dict[str, Any]) -> None:
         """Update multiple settings at once (does not auto-save).
+
+        Marks every key in `values` as explicitly-set.
 
         Args:
             values: Dictionary of key-value pairs to update
         """
         with self._lock:
             self._settings.update(values)
+            self._explicit_keys.update(values.keys())
 
     def reset(self) -> None:
-        """Reset settings to defaults and save."""
+        """Reset settings to defaults and save.
+
+        Clears all explicitly-set keys — after reset the on-disk file
+        contains `{}` (no keys persisted, everything flows from current
+        defaults).
+        """
         with self._lock:
             self._settings = self._defaults.copy()
+            self._explicit_keys = set()
             self.save()
 
     def all(self) -> Dict[str, Any]:

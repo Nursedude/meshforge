@@ -200,6 +200,238 @@ class TestSettingsManager:
         assert manager2.get("d") == 4   # New default
 
 
+class TestExplicitKeyTrackingIssue62:
+    """Regression coverage for Issue #62 — defaults must not bleed into
+    the saved file, so future code-default bumps reach the fleet.
+
+    Reliability backlog #6 root cause: pre-fix `save()` persisted the
+    entire merged dict (defaults + overrides). After a single save(),
+    every default became a "saved value" — code-default bumps then had
+    to climb over the stale saved value, which never happened. The
+    Issue #56 `federation_timeout_seconds` 5→30 bump was invisible on
+    every fleet box for that reason.
+    """
+
+    def test_save_omits_default_only_keys(self, tmp_path):
+        """The load-bearing invariant — pre-fix this would write
+        `{"a": 1, "b": 2}` and pin both defaults forever."""
+        defaults = {"a": 1, "b": 2}
+        manager = SettingsManager(
+            "test", defaults=defaults, config_dir=tmp_path
+        )
+        assert manager.save() is True
+
+        on_disk = json.loads((tmp_path / "test.json").read_text())
+        assert on_disk == {}, (
+            "save() must NOT persist default-only keys; doing so pins "
+            "the default value into the file and blocks future "
+            "code-default bumps. Pre-Issue-#62 regression."
+        )
+
+    def test_save_writes_only_explicit_keys(self, tmp_path):
+        defaults = {"a": 1, "b": 2, "c": 3}
+        manager = SettingsManager(
+            "test", defaults=defaults, config_dir=tmp_path
+        )
+        manager.set("a", 99)
+        manager.save()
+
+        on_disk = json.loads((tmp_path / "test.json").read_text())
+        assert on_disk == {"a": 99}, (
+            f"Expected only the explicitly-set key in the file, "
+            f"got {on_disk}"
+        )
+
+    def test_update_marks_all_keys_explicit(self, tmp_path):
+        defaults = {"a": 1, "b": 2}
+        manager = SettingsManager(
+            "test", defaults=defaults, config_dir=tmp_path
+        )
+        manager.update({"b": 20, "c": 30})
+        manager.save()
+
+        on_disk = json.loads((tmp_path / "test.json").read_text())
+        assert on_disk == {"b": 20, "c": 30}
+
+    def test_loaded_keys_remain_explicit_on_resave(self, tmp_path):
+        """If the file already has keys (legacy bloat OR genuine
+        operator choices), preserve them across load + save."""
+        legacy_file = tmp_path / "test.json"
+        legacy_file.write_text(json.dumps({
+            "a": 99,        # operator override
+            "b": 2,         # legacy bloat — matches default
+        }))
+
+        manager = SettingsManager(
+            "test",
+            defaults={"a": 1, "b": 2, "c": 3},  # `c` is a NEW default
+            config_dir=tmp_path,
+        )
+        manager.save()  # no other changes
+
+        on_disk = json.loads(legacy_file.read_text())
+        # Both `a` and `b` were in the file at load → both stay
+        # explicit and get re-persisted. `c` is default-only → omitted.
+        # Operators don't lose their explicit choices, but the file
+        # also stops growing default-only ballast.
+        assert on_disk == {"a": 99, "b": 2}
+        assert "c" not in on_disk
+
+    def test_reset_clears_explicit_keys_and_writes_empty_file(self, tmp_path):
+        defaults = {"a": 1, "b": 2}
+        manager = SettingsManager(
+            "test", defaults=defaults, config_dir=tmp_path
+        )
+        manager.set("a", 99)
+        manager.save()
+        assert json.loads((tmp_path / "test.json").read_text()) == {"a": 99}
+
+        manager.reset()
+
+        on_disk = json.loads((tmp_path / "test.json").read_text())
+        assert on_disk == {}
+        # And the in-memory view still reads defaults
+        assert manager.get("a") == 1
+        assert manager.get("b") == 2
+
+
+class TestStaleDefaultsRegistryIssue62:
+    """Migration mechanism: when a code default changes, ship a
+    `stale_defaults={key: [old_value]}` entry. Next load() drops the
+    saved match, current default flows through. Mechanism is opt-in
+    per-key; no schema versioning required.
+    """
+
+    def test_stale_value_dropped_at_load(self, tmp_path):
+        """The federation_timeout_seconds 5→30 scenario verbatim."""
+        # Simulate every fleet box's pre-Issue-#56 file shape.
+        (tmp_path / "map_settings.json").write_text(json.dumps({
+            "federation_timeout_seconds": 5,
+            "selected_region": "hawaii",
+        }))
+
+        manager = SettingsManager(
+            "map_settings",
+            defaults={
+                "federation_timeout_seconds": 30,
+                "selected_region": None,
+            },
+            config_dir=tmp_path,
+            stale_defaults={"federation_timeout_seconds": [5]},
+        )
+
+        # Current code default now wins, NOT the stale saved 5.
+        assert manager.get("federation_timeout_seconds") == 30
+        # But unrelated operator choices survive untouched.
+        assert manager.get("selected_region") == "hawaii"
+
+    def test_migration_auto_rewrites_file(self, tmp_path):
+        """One-shot file rewrite on migration so the next load doesn't
+        re-log the same migration message forever and the file stays
+        clean even after stale_defaults is later removed."""
+        (tmp_path / "test.json").write_text(json.dumps({
+            "x": 5, "y": "kept",
+        }))
+
+        # Just constructing the manager triggers the migration AND
+        # rewrites the file (no explicit save() call needed).
+        SettingsManager(
+            "test",
+            defaults={"x": 30, "y": None},
+            config_dir=tmp_path,
+            stale_defaults={"x": [5]},
+        )
+
+        on_disk = json.loads((tmp_path / "test.json").read_text())
+        assert on_disk == {"y": "kept"}, (
+            "Migration didn't rewrite the file — stale 5 will resurface "
+            "on the next default change, and the migration message will "
+            "log forever in journald."
+        )
+
+        # Re-open without stale_defaults — the file is already clean,
+        # so the current default flows through.
+        m2 = SettingsManager(
+            "test",
+            defaults={"x": 30, "y": None},
+            config_dir=tmp_path,
+        )
+        assert m2.get("x") == 30
+        assert m2.get("y") == "kept"
+
+    def test_no_file_means_no_auto_save_on_fresh_install(self, tmp_path):
+        """On a fresh install with no settings file, migration can't
+        fire, so we don't create an empty file at construction. Keeps
+        existing test expectations and avoids confusing operators with
+        empty `{}` files they didn't ask for."""
+        SettingsManager(
+            "test",
+            defaults={"x": 30},
+            config_dir=tmp_path,
+            stale_defaults={"x": [5]},
+        )
+
+        assert not (tmp_path / "test.json").exists()
+
+    def test_non_stale_saved_value_preserved(self, tmp_path):
+        """Operators who explicitly set a value that doesn't match the
+        stale list keep their choice. The migration is precise, not
+        a blanket "reset to default."
+        """
+        (tmp_path / "test.json").write_text(json.dumps({"x": 15}))
+
+        manager = SettingsManager(
+            "test",
+            defaults={"x": 30},
+            config_dir=tmp_path,
+            stale_defaults={"x": [5]},  # 15 is NOT in the stale list
+        )
+
+        assert manager.get("x") == 15
+
+    def test_stale_list_can_have_multiple_historical_values(self, tmp_path):
+        """A key may have changed defaults more than once — the stale
+        list accepts every prior default. Any match triggers migration."""
+        (tmp_path / "test.json").write_text(json.dumps({"x": 10}))
+
+        manager = SettingsManager(
+            "test",
+            defaults={"x": 30},
+            config_dir=tmp_path,
+            stale_defaults={"x": [5, 10, 20]},  # 10 matches
+        )
+
+        assert manager.get("x") == 30
+
+    def test_stale_defaults_does_not_affect_unset_keys(self, tmp_path):
+        """If the file doesn't contain a key listed in stale_defaults,
+        nothing special happens — current default applies as usual."""
+        (tmp_path / "test.json").write_text(json.dumps({"other": "value"}))
+
+        manager = SettingsManager(
+            "test",
+            defaults={"x": 30, "other": None},
+            config_dir=tmp_path,
+            stale_defaults={"x": [5]},
+        )
+
+        assert manager.get("x") == 30
+        assert manager.get("other") == "value"
+
+    def test_empty_stale_defaults_is_no_op(self, tmp_path):
+        """Backward-compat: constructing without stale_defaults behaves
+        exactly like the pre-Issue-#62 SettingsManager (modulo the
+        save-omits-defaults change, which is the load-bearing fix)."""
+        (tmp_path / "test.json").write_text(json.dumps({"x": 99}))
+
+        manager = SettingsManager(
+            "test",
+            defaults={"x": 1},
+            config_dir=tmp_path,
+        )
+        assert manager.get("x") == 99
+
+
 class TestEnsureConfigDir:
     """Tests for ensure_config_dir function."""
 

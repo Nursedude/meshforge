@@ -1620,3 +1620,79 @@ ls -lh ~/.local/share/meshforge/node_history.db-wal
 ```
 
 ---
+## Issue #49: Lean node directory — split "what we know" from "what we observed" (2026-04-28)
+
+**Why**: Single-table `node_observations` with 7d retention forced an
+impossible trade — extend retention to keep quiet nodes cached, balloon
+the time-series; cut retention to slim the DB, lose silent nodes after
+a week. External references (rmap.world, map.meshcore.io, KN6PLV
+MeshMap) all separate persistent node directory from time-series.
+MeshForge now does too.
+
+**Two tables in `node_history.db`**:
+1. `nodes` (new) — one row per `(network, node_id)`. first_seen,
+   last_seen, last_lat/lon/altitude, name, role, hardware,
+   source_origin, protocol_meta JSON, obs_count. Position **nullable**
+   so MeshCore adverts and RNS announces still produce a directory row.
+2. `node_observations` (existing) — retention 7d → **48h**. Trajectories
+   only; directory answers "did we ever hear this node?" on the long tail.
+
+**Tiered retention** (drives the prune SQL — module-level
+`EXTERNAL_BULK_ORIGINS` set is the SSOT):
+- Local origins (local_radio, rns_path_table, aredn_local, mqtt_local,
+  node_tracker, operator_positions): **30 days**.
+- External-bulk (meshcore_public, aredn_worldmap, mqtt_global): **7 days**.
+- Hard count cap **50_000 rows**, LRU evict by oldest last_seen.
+
+**Sticky source-origin promotion**: priority lookup
+(`local_radio`=100 > `rns_path_table`=90 > `aredn_local`=80 >
+`mqtt_local`=70 > `node_tracker`=60 > `operator_positions`=50 >
+external bulk=30 > `public_fallback`=20). UPSERT only overwrites
+source_origin when incoming priority ≥ existing. A node first heard
+via `meshcore_public` promotes to `local_radio` when the radio
+actually hears it (moves to 30d tier); reverse demotion never happens.
+SQL: `WHEN ? >= ({existing_case})` in the ON CONFLICT branch.
+
+**Endpoints**:
+- `GET /api/nodes/directory` — full directory dump as GeoJSON +
+  `nodes_without_position` sibling. Superset of `/api/nodes/geojson`.
+- `GET /api/status` extended with `directory` block: total, by_network,
+  by_source_origin, with/without-position counts, oldest/newest
+  last_seen, retention + cap config.
+
+**Files**: `src/utils/node_history.py` (schema +
+`_apply_features_to_directory()` + tiered `_maybe_prune()` +
+`get_directory_stats/snapshot()`); `src/utils/map_data_collector.py`
+(`_tag_source_origin()` per-merge-site, unified-tracker per-network);
+`src/utils/map_http_handler.py` (`_serve_directory()` + status block);
+`src/utils/db_inventory.py` (DBSpec note).
+
+**Tests** (17 in `tests/test_node_history.py` + 3 in
+`tests/test_map_data_collector_diagnostics.py`): UPSERT shape,
+position-null preservation, protocol_meta 4 KB cap, sticky promotion
+both directions, tiered prune at boundaries, count-cap LRU,
+observation retention cut, status block, snapshot split, origin
+priority invariant, malformed-feature tolerance.
+
+**Backfill**: lazy. `_init_db()` creates the table; next collect cycle
+populates it. No bulk replay from observations.
+
+**Deferred** (call out, separate PRs): cross-fleet federation
+("every map sees every box's nodes" — directory is the prerequisite,
+user framed "live is another issue"); frontend "offline cached" badge;
+meshforge-maps :8808 parallel directory.
+
+**Operator recipe — see what's cached / verify tiers**:
+```bash
+curl -s http://<box>:5000/api/status | jq '.directory'
+sqlite3 ~/.local/share/meshforge/node_history.db <<'EOF'
+SELECT source_origin, COUNT(*) AS n,
+       printf('%.1f', (julianday('now') - julianday(MIN(last_seen), 'unixepoch'))) AS oldest_d
+FROM nodes GROUP BY source_origin ORDER BY n DESC;
+EOF
+# Expect: meshcore_public oldest_d ≤ 7.0; local_radio oldest_d ≤ 30.0
+```
+
+
+---
+

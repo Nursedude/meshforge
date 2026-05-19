@@ -172,6 +172,16 @@ class MapDataCollector(
                 "federation_port": 5000,
             },
             config_dir=self._config_dir_override,
+            # Stale-default migration (Issue #62). Pre-Issue-#56 fleet
+            # boxes have `federation_timeout_seconds: 5` pinned in their
+            # JSON because SettingsManager used to persist defaults. Drop
+            # the stale 5 so the current 30 takes effect. Operators who
+            # deliberately set 5 (rare; smaller fleet, faster fail) need
+            # to re-set it post-migration — acceptable tradeoff per the
+            # fix-shape decision.
+            stale_defaults={
+                "federation_timeout_seconds": [5],
+            },
         )
 
         # Bootstrap federation_peers from fleet.json on first run if the key
@@ -326,8 +336,12 @@ class MapDataCollector(
                 poll_interval=int(self._settings.get(
                     "federation_poll_interval_seconds", 60
                 )),
+                # Fallback matches the SettingsManager default (30) — the
+                # pre-fix `, 5` here disagreed with `, 30` above, which is
+                # exactly the dual-default hazard the Issue #62 fix
+                # eliminates. Keep this aligned with the defaults block.
                 timeout=float(self._settings.get(
-                    "federation_timeout_seconds", 5
+                    "federation_timeout_seconds", 30
                 )),
                 port=int(self._settings.get("federation_port", 5000)),
                 db_path=db_path,

@@ -56,6 +56,85 @@ class TestFederationDefaults:
         assert c2._federation is None
 
 
+class TestStaleFederationTimeoutMigrationIssue62:
+    """End-to-end pin for the Issue #62 migration: a fleet box whose
+    map_settings.json predates the Issue #56 default bump
+    (`federation_timeout_seconds: 5`) must get the new default 30 after
+    construction, without operator intervention.
+    """
+
+    def test_stale_5_in_settings_is_migrated_to_30(self, tmp_path):
+        fake_home = tmp_path / "home"
+        cfg_dir = fake_home / ".config" / "meshforge"
+        cfg_dir.mkdir(parents=True)
+        # The exact shape every fleet box had on 2026-05-18, pre-fix.
+        (cfg_dir / "map_settings.json").write_text(json.dumps({
+            "federation_timeout_seconds": 5,
+            "federation_peers": ["10.0.0.2"],
+            "selected_region": "hawaii",
+        }))
+
+        with patch("utils.map_data_collector.get_real_user_home",
+                   return_value=fake_home):
+            c = MapDataCollector(
+                cache_dir=tmp_path / "cache",
+                enable_history=False,
+                config_dir=cfg_dir,
+            )
+
+        # The current code default — NOT the stale saved 5 — wins.
+        assert c._settings.get("federation_timeout_seconds") == 30, (
+            "Stale `federation_timeout_seconds: 5` from a pre-Issue-#56 "
+            "fleet box's map_settings.json was not migrated. "
+            "Issue #62 regression — every box's federation polls "
+            "go back to timing out at 5s on 35 MB directories."
+        )
+        # And the FederationCollector instance gets the new value too.
+        assert c._federation is not None
+        assert c._federation._timeout == 30.0
+        # Operator's unrelated choices survive.
+        assert c._settings.get("selected_region") == "hawaii"
+
+    def test_no_settings_file_uses_current_default(self, tmp_path):
+        """Fresh install (no map_settings.json) just reads the current
+        default — no special migration path needed."""
+        fake_home = tmp_path / "home"
+        cfg_dir = fake_home / ".config" / "meshforge"
+        cfg_dir.mkdir(parents=True)
+
+        with patch("utils.map_data_collector.get_real_user_home",
+                   return_value=fake_home):
+            c = MapDataCollector(
+                cache_dir=tmp_path / "cache",
+                enable_history=False,
+                config_dir=cfg_dir,
+            )
+
+        assert c._settings.get("federation_timeout_seconds") == 30
+
+    def test_operator_explicit_non_stale_value_preserved(self, tmp_path):
+        """An operator who deliberately set, say, 15s for a small fleet
+        keeps their choice — only the literal stale-list values get
+        migrated."""
+        fake_home = tmp_path / "home"
+        cfg_dir = fake_home / ".config" / "meshforge"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "map_settings.json").write_text(json.dumps({
+            "federation_timeout_seconds": 15,  # not in stale list
+            "federation_peers": [],
+        }))
+
+        with patch("utils.map_data_collector.get_real_user_home",
+                   return_value=fake_home):
+            c = MapDataCollector(
+                cache_dir=tmp_path / "cache",
+                enable_history=False,
+                config_dir=cfg_dir,
+            )
+
+        assert c._settings.get("federation_timeout_seconds") == 15
+
+
 class TestBootstrapFromFleetJson:
     def test_bootstrap_reads_peer_ips(self, tmp_path):
         fake_home = tmp_path / "home"
