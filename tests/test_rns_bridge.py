@@ -2516,3 +2516,285 @@ class TestSynAckCallbackSymmetry:
         with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
             result = bridge.send_to_rns("hello", b"\xab" * 16)
         assert result is True
+
+
+# ---------------------------------------------------------------------------
+# Issue #66: application-layer ack synthesis on the bridge
+# ---------------------------------------------------------------------------
+
+class TestAckSynthesisIssue66:
+    """
+    _format_ack_text / _emit_ack_to_origin / _maybe_emit_ack_for_msgid /
+    _sweep_overdue_acks — the rns_bridge-side wiring that turns LXMF
+    delivery proofs (and timeouts) into synthetic ACK CanonicalMessages
+    routed back to the origin sender.
+    """
+
+    def test_format_ack_text_delivered(self, bridge):
+        text = bridge._format_ack_text("abcdef0123456789", "delivered")
+        assert text == "[delivered: abcdef01]"
+
+    def test_format_ack_text_failed(self, bridge):
+        assert bridge._format_ack_text("abcdef01", "failed") == "[failed: abcdef01]"
+
+    def test_format_ack_text_timeout(self, bridge):
+        assert bridge._format_ack_text("abcdef01", "timeout") == "[timeout: abcdef01]"
+
+    def test_format_ack_text_unknown_kind(self, bridge):
+        """Unknown kinds still get a parseable form, not an exception."""
+        assert bridge._format_ack_text("abcdef01", "weird") == "[weird: abcdef01]"
+
+    def test_emit_ack_to_origin_meshtastic_dispatches_to_handler(self, bridge):
+        """meshtastic origin → mesh handler's send_text gets the textual ACK."""
+        mock_handler = MagicMock()
+        mock_handler.send_text.return_value = True
+        bridge._mesh_handler = mock_handler
+
+        ok = bridge._emit_ack_to_origin(
+            "abcdef01234567", "meshtastic", "!aabbccdd", "delivered",
+        )
+        assert ok is True
+        mock_handler.send_text.assert_called_once_with(
+            "[delivered: abcdef01]", destination="!aabbccdd", channel=0,
+        )
+
+    def test_emit_ack_to_origin_meshcore_dispatches_to_handler(self, bridge):
+        """meshcore origin → meshcore handler's send_text gets the textual ACK."""
+        mock_handler = MagicMock()
+        mock_handler.send_text.return_value = True
+        bridge._meshcore_handler = mock_handler
+
+        ok = bridge._emit_ack_to_origin(
+            "abcdef01", "meshcore", "publickey-prefix", "failed",
+        )
+        assert ok is True
+        mock_handler.send_text.assert_called_once_with(
+            "[failed: abcdef01]", destination="publickey-prefix",
+        )
+
+    def test_emit_ack_to_origin_rns_converts_hex_to_bytes(self, bridge):
+        """
+        rns origin → send_to_rns receives the destination_hash as bytes.
+
+        Why pinned: ack synthesis stores origin_address as the hex string
+        of the LXMF destination hash; the dispatch site must convert it
+        back, not pass the string through (which would silently fail on
+        an older RNS that doesn't accept hex).
+        """
+        with patch.object(bridge, 'send_to_rns', return_value=True) as ms:
+            ok = bridge._emit_ack_to_origin(
+                "abcdef01", "rns", "deadbeef00112233", "delivered",
+            )
+        assert ok is True
+        ms.assert_called_once()
+        args, kwargs = ms.call_args
+        # send_to_rns(text, destination_hash=<bytes>)
+        assert args[0] == "[delivered: abcdef01]"
+        assert kwargs['destination_hash'] == bytes.fromhex("deadbeef00112233")
+
+    def test_emit_ack_to_origin_rns_bad_hex_returns_false(self, bridge):
+        """Bad hex doesn't crash the callback; logs a warning, returns False."""
+        with patch.object(bridge, 'send_to_rns', return_value=True) as ms:
+            ok = bridge._emit_ack_to_origin(
+                "abcdef01", "rns", "not-hex-zzz", "delivered",
+            )
+        assert ok is False
+        ms.assert_not_called()
+
+    def test_emit_ack_to_origin_unknown_network_returns_false(self, bridge):
+        assert bridge._emit_ack_to_origin(
+            "abcdef01", "carrier-pigeon", "addr", "delivered",
+        ) is False
+
+    def test_emit_ack_to_origin_no_meshtastic_handler_returns_false(self, bridge):
+        """If the origin handler is absent (handler optional), don't crash."""
+        bridge._mesh_handler = None
+        assert bridge._emit_ack_to_origin(
+            "abcdef01", "meshtastic", "!aabbccdd", "delivered",
+        ) is False
+
+    def test_emit_ack_to_origin_handler_exception_returns_false(self, bridge):
+        """Handler raises → don't bubble; ack synthesis is best-effort."""
+        mock_handler = MagicMock()
+        mock_handler.send_text.side_effect = RuntimeError("radio offline")
+        bridge._mesh_handler = mock_handler
+        assert bridge._emit_ack_to_origin(
+            "abcdef01", "meshtastic", "!aabbccdd", "delivered",
+        ) is False
+
+    def test_maybe_emit_ack_no_queue_returns_false(self, bridge):
+        """When persistent queue is absent, synthesis is a no-op."""
+        bridge._persistent_queue = None
+        assert bridge._maybe_emit_ack_for_msgid("abc", "delivered") is False
+
+    def test_maybe_emit_ack_no_pending_record_returns_false(self, bridge):
+        """When mark_acked returns None (not tracked), no synthesis."""
+        bridge._persistent_queue = MagicMock()
+        bridge._persistent_queue.mark_acked.return_value = None
+        with patch.object(bridge, '_emit_ack_to_origin') as me:
+            ok = bridge._maybe_emit_ack_for_msgid("abc", "delivered")
+        assert ok is False
+        me.assert_not_called()
+
+    def test_maybe_emit_ack_routes_to_origin(self, bridge):
+        """mark_acked returns origin → _emit_ack_to_origin called with it."""
+        bridge._persistent_queue = MagicMock()
+        bridge._persistent_queue.mark_acked.return_value = {
+            'message_id': 'abc',
+            'origin_network': 'meshcore',
+            'origin_address': 'pubkey-abc',
+        }
+        with patch.object(bridge, '_emit_ack_to_origin', return_value=True) as me:
+            ok = bridge._maybe_emit_ack_for_msgid("abc", "delivered")
+        assert ok is True
+        me.assert_called_once_with(
+            "abc",
+            origin_network='meshcore',
+            origin_address='pubkey-abc',
+            kind='delivered',
+        )
+
+    def test_maybe_emit_ack_mark_acked_exception_does_not_raise(self, bridge):
+        """A queue exception is logged + swallowed; callback can't bubble."""
+        bridge._persistent_queue = MagicMock()
+        bridge._persistent_queue.mark_acked.side_effect = RuntimeError("db gone")
+        with patch.object(bridge, '_emit_ack_to_origin') as me:
+            ok = bridge._maybe_emit_ack_for_msgid("abc", "delivered")
+        assert ok is False
+        me.assert_not_called()
+
+    def test_sweep_overdue_emits_timeout_and_marks(self, bridge):
+        """
+        For each overdue record, the sweep emits a TIMEOUT ACK + calls
+        mark_timeout to finalise. Counts emitted records.
+        """
+        bridge._persistent_queue = MagicMock()
+        bridge._persistent_queue.find_overdue_acks.return_value = [
+            {
+                'message_id': 'aaa',
+                'origin_network': 'meshtastic',
+                'origin_address': '!aa',
+                'timeout_at': '2026-05-18T10:00:00',
+            },
+            {
+                'message_id': 'bbb',
+                'origin_network': 'meshcore',
+                'origin_address': 'bb',
+                'timeout_at': '2026-05-18T10:00:01',
+            },
+        ]
+        bridge._persistent_queue.mark_timeout.return_value = True
+        with patch.object(bridge, '_emit_ack_to_origin', return_value=True) as me:
+            count = bridge._sweep_overdue_acks()
+        assert count == 2
+        assert me.call_count == 2
+        # Both emissions are kind='timeout'
+        for call in me.call_args_list:
+            assert call.kwargs['kind'] == 'timeout'
+        # Both mark_timeout calls happened
+        assert bridge._persistent_queue.mark_timeout.call_count == 2
+
+    def test_sweep_skips_when_mark_timeout_loses_race(self, bridge):
+        """
+        If mark_timeout returns False (ack arrived between read+write),
+        the sweep does NOT emit a TIMEOUT ACK — the delivered ACK
+        already went out from the LXMF callback path.
+        """
+        bridge._persistent_queue = MagicMock()
+        bridge._persistent_queue.find_overdue_acks.return_value = [{
+            'message_id': 'aaa',
+            'origin_network': 'meshtastic',
+            'origin_address': '!aa',
+            'timeout_at': '2026-05-18T10:00:00',
+        }]
+        bridge._persistent_queue.mark_timeout.return_value = False  # raced
+        with patch.object(bridge, '_emit_ack_to_origin') as me:
+            count = bridge._sweep_overdue_acks()
+        assert count == 0
+        me.assert_not_called()
+
+    def test_sweep_no_queue_returns_zero(self, bridge):
+        bridge._persistent_queue = None
+        assert bridge._sweep_overdue_acks() == 0
+
+    def test_sweep_find_overdue_exception_returns_zero(self, bridge):
+        """Sweep robust to queue errors — never raises out."""
+        bridge._persistent_queue = MagicMock()
+        bridge._persistent_queue.find_overdue_acks.side_effect = RuntimeError("db")
+        assert bridge._sweep_overdue_acks() == 0
+
+    def test_enqueue_message_with_ack_calls_register_pending_ack(self, bridge):
+        """
+        enqueue_message(ack_required=True, origin_network/_address set)
+        registers a pending-ack record on the queue. Existing call sites
+        that don't pass the new params get default behavior (no record).
+        """
+        bridge._persistent_queue = MagicMock()
+        bridge._persistent_queue.enqueue.return_value = "msg-id-1"
+
+        msg_id = bridge.enqueue_message(
+            "weather pls",
+            destination="!aabbccdd",
+            dest_type="meshtastic",
+            ack_required=True,
+            ack_origin_network="meshcore",
+            ack_origin_address="pubkey-abc",
+        )
+        assert msg_id == "msg-id-1"
+        bridge._persistent_queue.register_pending_ack.assert_called_once_with(
+            "msg-id-1",
+            origin_network="meshcore",
+            origin_address="pubkey-abc",
+            timeout_seconds=300,
+        )
+
+    def test_enqueue_message_without_ack_does_not_register(self, bridge):
+        """ack_required=False (default) leaves register_pending_ack untouched."""
+        bridge._persistent_queue = MagicMock()
+        bridge._persistent_queue.enqueue.return_value = "msg-id-2"
+
+        bridge.enqueue_message(
+            "ordinary message",
+            destination="!aabbccdd",
+            dest_type="meshtastic",
+        )
+        bridge._persistent_queue.register_pending_ack.assert_not_called()
+
+    def test_enqueue_message_ack_required_without_origin_skips(self, bridge):
+        """
+        ack_required=True but origin fields missing → no register. Silent
+        skip is the contract: caller forgot one of (network, address),
+        no surprise side effects.
+
+        Why pinned: a future refactor that swaps origin fields for a
+        single dict needs to keep the "must have both" guard.
+        """
+        bridge._persistent_queue = MagicMock()
+        bridge._persistent_queue.enqueue.return_value = "msg-id-3"
+
+        bridge.enqueue_message(
+            "weather pls", destination="!aabbccdd",
+            dest_type="meshtastic", ack_required=True,
+            # ack_origin_network omitted
+            ack_origin_address="some-addr",
+        )
+        bridge._persistent_queue.register_pending_ack.assert_not_called()
+
+    def test_enqueue_message_register_pending_ack_exception_does_not_raise(
+        self, bridge,
+    ):
+        """A queue failure during register is logged, not raised — the
+        message itself was already enqueued and shouldn't be lost."""
+        bridge._persistent_queue = MagicMock()
+        bridge._persistent_queue.enqueue.return_value = "msg-id-4"
+        bridge._persistent_queue.register_pending_ack.side_effect = (
+            RuntimeError("db")
+        )
+
+        msg_id = bridge.enqueue_message(
+            "weather pls", destination="!aabbccdd",
+            dest_type="meshtastic", ack_required=True,
+            ack_origin_network="meshcore", ack_origin_address="abc",
+        )
+        # msg_id still returned — the message was enqueued successfully.
+        assert msg_id == "msg-id-4"
