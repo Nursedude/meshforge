@@ -96,6 +96,25 @@ class CanonicalMessage:
     # Protocol-specific extras (preserved for round-trip fidelity)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    # --- Issue #66: application-layer sync/ack semantics ---
+    # Sender's request: "I want to know this got there." When True, the
+    # receiving gateway is responsible for synthesizing an ACK
+    # CanonicalMessage back toward the sender once it observes proof-of-
+    # delivery from the destination protocol. Defaults False so existing
+    # callers keep their fire-and-forget semantics.
+    ack_required: bool = False
+
+    # When this message IS an ack, the id of the message it acknowledges.
+    # None for non-ack messages. Paired with message_type == ACK; receivers
+    # correlate inbound acks to their pending-ack table by this field.
+    ack_of: Optional[str] = None
+
+    # When the sender wants a *reply* (not just an ack) routed to a
+    # different protocol/address than its origin. Optional — most messages
+    # leave this None. Useful for cross-protocol bridges where the origin
+    # address isn't directly addressable by the destination protocol.
+    reply_to: Optional[str] = None
+
     # --- Factory Methods ---
 
     @classmethod
@@ -288,6 +307,13 @@ class CanonicalMessage:
         Args:
             msg: BridgedMessage dataclass from rns_bridge.py
         """
+        meta = dict(msg.metadata) if msg.metadata else {}
+        # Issue #66: BridgedMessage doesn't carry ack fields natively;
+        # to_bridged_message() stashes them under meshforge_ack_* keys so
+        # the Canonical → Bridged → Canonical round-trip stays lossless.
+        ack_required = bool(meta.pop('meshforge_ack_required', False))
+        ack_of = meta.pop('meshforge_ack_of', None)
+        reply_to = meta.pop('meshforge_reply_to', None)
         return cls(
             source_network=msg.source_network,
             source_address=msg.source_id,
@@ -298,7 +324,10 @@ class CanonicalMessage:
             via_internet=msg.via_internet,
             origin=msg.origin,
             timestamp=msg.timestamp or datetime.now(),
-            metadata=dict(msg.metadata) if msg.metadata else {},
+            metadata=meta,
+            ack_required=ack_required,
+            ack_of=ack_of,
+            reply_to=reply_to,
         )
 
     # --- Serialization Methods ---
@@ -336,6 +365,18 @@ class CanonicalMessage:
         # Import here to avoid circular dependency
         from .rns_bridge import BridgedMessage
 
+        merged_meta = dict(self.metadata)
+        # Issue #66: BridgedMessage has no native ack fields; stash under
+        # the meshforge_ack_* namespace so from_bridged_message() restores
+        # them. Only emit keys with non-default values to keep metadata
+        # tidy for existing consumers.
+        if self.ack_required:
+            merged_meta['meshforge_ack_required'] = True
+        if self.ack_of is not None:
+            merged_meta['meshforge_ack_of'] = self.ack_of
+        if self.reply_to is not None:
+            merged_meta['meshforge_reply_to'] = self.reply_to
+
         return BridgedMessage(
             source_network=self.source_network,
             source_id=self.source_address,
@@ -344,7 +385,7 @@ class CanonicalMessage:
             title=self.metadata.get('title'),
             timestamp=self.timestamp,
             is_broadcast=self.is_broadcast,
-            metadata=dict(self.metadata),
+            metadata=merged_meta,
             origin=self.origin,
             via_internet=self.via_internet,
         )

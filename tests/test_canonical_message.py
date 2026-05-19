@@ -551,3 +551,175 @@ class TestStringRepr:
         s = str(msg)
         assert '...' in s
         assert len(s) < 200
+
+
+# =============================================================================
+# Issue #66: application-layer ack fields
+# =============================================================================
+
+class TestAckFieldsIssue66:
+    """
+    ack_required / ack_of / reply_to wire application-layer delivery
+    semantics across the bridge boundary so the origin protocol learns
+    that its message reached the destination protocol's recipient.
+    """
+
+    def test_defaults_are_fire_and_forget(self):
+        """A vanilla CanonicalMessage carries no ack semantics."""
+        msg = CanonicalMessage(content="hello")
+        assert msg.ack_required is False
+        assert msg.ack_of is None
+        assert msg.reply_to is None
+
+    def test_factory_methods_default_ack_fields(self):
+        """All three factory methods leave ack fields at safe defaults."""
+        mt = CanonicalMessage.from_meshtastic({
+            'from': 0xAABBCCDD,
+            'to': 0xFFFFFFFF,
+            'fromId': '!aabbccdd',
+            'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'text': 'hi'},
+        })
+        mc = CanonicalMessage.from_meshcore(SimpleNamespace(
+            type='CONTACT_MSG_RECV',
+            payload=SimpleNamespace(text='hi', contact=None,
+                                    destination='!dest', is_channel=False),
+        ))
+        rns = CanonicalMessage.from_rns(SimpleNamespace(
+            content=b'hi',
+            source_hash=b'\xaa' * 16,
+            destination_hash=b'\xbb' * 16,
+            title=None,
+            fields={},
+        ))
+        for m in (mt, mc, rns):
+            assert m.ack_required is False
+            assert m.ack_of is None
+            assert m.reply_to is None
+
+    def test_explicit_ack_required(self):
+        """Sender can set ack_required=True at construction."""
+        msg = CanonicalMessage(content="weather pls", ack_required=True)
+        assert msg.ack_required is True
+
+    def test_ack_message_carries_ack_of(self):
+        """An ACK message references the id it acknowledges."""
+        original = CanonicalMessage(content="hello", ack_required=True)
+        ack = CanonicalMessage(
+            message_type=MessageType.ACK,
+            ack_of=original.id,
+            source_network='meshtastic',
+            destination_address=original.source_address,
+        )
+        assert ack.message_type == MessageType.ACK
+        assert ack.ack_of == original.id
+
+    def test_reply_to_routes_response_elsewhere(self):
+        """reply_to lets a sender redirect replies to another address."""
+        msg = CanonicalMessage(
+            source_network='meshcore',
+            source_address='abc123',
+            content="please respond",
+            reply_to='!ffeedd00',  # meshtastic node id
+        )
+        assert msg.reply_to == '!ffeedd00'
+
+    def test_round_trip_through_bridged_message(self):
+        """
+        CanonicalMessage → BridgedMessage → CanonicalMessage preserves
+        the ack fields. They stash in BridgedMessage.metadata under the
+        meshforge_ack_* namespace.
+        """
+        original = CanonicalMessage(
+            source_network='meshcore',
+            source_address='abc123',
+            destination_address='!aabbccdd',
+            content="weather pls",
+            ack_required=True,
+            reply_to='!dead0000',
+        )
+        bridged = original.to_bridged_message()
+        # The namespace lands in metadata so older consumers can see it.
+        assert bridged.metadata.get('meshforge_ack_required') is True
+        assert bridged.metadata.get('meshforge_reply_to') == '!dead0000'
+        # Round-trip restores the fields and cleans the namespace.
+        round_tripped = CanonicalMessage.from_bridged_message(bridged)
+        assert round_tripped.ack_required is True
+        assert round_tripped.reply_to == '!dead0000'
+        assert 'meshforge_ack_required' not in round_tripped.metadata
+        assert 'meshforge_reply_to' not in round_tripped.metadata
+
+    def test_round_trip_preserves_ack_of(self):
+        """Ack messages also survive the BridgedMessage round-trip."""
+        ack = CanonicalMessage(
+            message_type=MessageType.ACK,
+            source_network='rns',
+            source_address='aabb',
+            destination_address='ccdd',
+            ack_of='msg-uuid-1234',
+        )
+        bridged = ack.to_bridged_message()
+        assert bridged.metadata.get('meshforge_ack_of') == 'msg-uuid-1234'
+        restored = CanonicalMessage.from_bridged_message(bridged)
+        assert restored.ack_of == 'msg-uuid-1234'
+
+    def test_default_fields_not_stashed_in_bridged_metadata(self):
+        """
+        When ack fields are at defaults, to_bridged_message doesn't pollute
+        BridgedMessage.metadata with meshforge_ack_* keys.
+
+        Why: existing consumers of BridgedMessage shouldn't suddenly see
+        new keys appear on every message; only ack-bearing messages get
+        the stash.
+        """
+        msg = CanonicalMessage(content="ordinary message")
+        bridged = msg.to_bridged_message()
+        assert 'meshforge_ack_required' not in bridged.metadata
+        assert 'meshforge_ack_of' not in bridged.metadata
+        assert 'meshforge_reply_to' not in bridged.metadata
+
+    def test_pre_issue_66_bridged_message_deserializes_safely(self):
+        """
+        Backwards compat: a BridgedMessage produced by pre-Issue-#66 code
+        has no meshforge_ack_* keys in metadata. from_bridged_message
+        must return a CanonicalMessage with ack fields at defaults.
+
+        Why: gateway upgrades will roll out one box at a time. A newer
+        gateway must accept messages produced by an older gateway.
+        """
+        from gateway.rns_bridge import BridgedMessage
+        legacy = BridgedMessage(
+            source_network='rns',
+            source_id='aabb',
+            destination_id='ccdd',
+            content='hi',
+            metadata={'title': 'something', 'fields': {}},
+        )
+        restored = CanonicalMessage.from_bridged_message(legacy)
+        assert restored.ack_required is False
+        assert restored.ack_of is None
+        assert restored.reply_to is None
+        # And legacy metadata keys still come through untouched.
+        assert restored.metadata.get('title') == 'something'
+
+    def test_ack_fields_independent_of_message_type_enum(self):
+        """
+        ack_required can be True on a TEXT message (it's a request for an
+        ACK from the recipient, not an assertion that *this* message is
+        an ACK). MessageType.ACK is for the synthesized response.
+
+        Why: this distinction is the core of Issue #66 and tests should
+        pin it so a future refactor doesn't fuse the two concepts.
+        """
+        request = CanonicalMessage(
+            message_type=MessageType.TEXT,
+            content="please confirm",
+            ack_required=True,
+        )
+        response = CanonicalMessage(
+            message_type=MessageType.ACK,
+            ack_of=request.id,
+        )
+        assert request.message_type == MessageType.TEXT
+        assert request.ack_required is True
+        assert response.message_type == MessageType.ACK
+        assert response.ack_of == request.id
