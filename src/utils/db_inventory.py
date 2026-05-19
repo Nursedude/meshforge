@@ -186,6 +186,19 @@ INVENTORY: List[DBSpec] = [
         ),
     ),
     DBSpec(
+        name="meshtastic_broadcast_subs",
+        path_factory=lambda: _meshforge_config_dir() / "meshtastic_broadcast_subs.db",
+        creator_module="gateway.meshtastic_broadcast_bridge",
+        has_auto_prune=False,
+        retention_days=None,
+        notes=(
+            "Subscribers opted in to the Meshtastic→RNS LXMF broadcast "
+            "fan-out (symmetric mirror of MeshAnchor's lxmf_broadcast_subs). "
+            "One row per LXMF identity, never auto-pruned — operator "
+            "controls add/remove via the subscription protocol DM."
+        ),
+    ),
+    DBSpec(
         name="delivery_counters",
         path_factory=lambda: _meshforge_data_dir() / "delivery_counters.db",
         creator_module="gateway.delivery_counters",

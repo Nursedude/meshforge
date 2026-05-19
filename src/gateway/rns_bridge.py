@@ -220,6 +220,13 @@ class RNSMeshtasticBridge(
         self._identity = None
         self._lxmf_source = None
 
+        # Meshtastic broadcast bridge (Mesh→RNS LXMF fan-out plug-in,
+        # symmetric mirror of MeshAnchor's lxmf_broadcast bridge). Stays
+        # None unless config.meshtastic_broadcast.enabled. Started lazily
+        # from _rns_loop after the first successful RNS connect so it
+        # shares the process-wide RNS.Transport.
+        self._meshtastic_broadcast = None
+
         # Meshtastic handler (encapsulates connection and message handling)
         self._mesh_handler: Optional[MeshtasticHandler] = None
 
@@ -700,6 +707,13 @@ class RNSMeshtasticBridge(
             self._mesh_handler.disconnect()
         if self._meshcore_handler:
             self._meshcore_handler.disconnect()
+        # Stop Meshtastic broadcast bridge before RNS disconnect so its
+        # announce thread joins cleanly while RNS.Transport is still up.
+        if self._meshtastic_broadcast is not None:
+            try:
+                self._meshtastic_broadcast.stop()
+            except Exception as e:
+                logger.debug(f"Meshtastic broadcast stop error: {e}")
         self._disconnect_rns()
 
         # Wait for threads
@@ -1422,6 +1436,8 @@ class RNSMeshtasticBridge(
                         self.health.record_connection_event("rns", "connected")
                         self._update_subsystem_state("rns", SubsystemState.HEALTHY)
                         logger.info("RNS connection established")
+                        # Start Meshtastic broadcast bridge plug-in (idempotent)
+                        self._maybe_start_meshtastic_broadcast()
                     else:
                         self._rns_reconnect.record_failure()
                         self._rns_reconnect.wait(self._stop_event)
@@ -1458,6 +1474,53 @@ class RNSMeshtasticBridge(
                     self._update_subsystem_state("rns", SubsystemState.DISCONNECTED)
                     self._rns_reconnect.record_failure()
                     self._rns_reconnect.wait(self._stop_event)
+
+    def _maybe_start_meshtastic_broadcast(self) -> None:
+        """Start the Meshtastic broadcast bridge plug-in if configured.
+
+        Idempotent — safe to call on every RNS reconnect. The bridge
+        owns its own LXMRouter (LXMF 0.9.4 caps a router at one
+        delivery identity, so it can't share the gateway's). Symmetric
+        mirror of MeshAnchor's _maybe_start_lxmf_broadcast.
+        """
+        cfg = getattr(self.config, "meshtastic_broadcast", None)
+        # `is True` (not just truthy) so a MagicMock-attribute on a mocked
+        # GatewayConfig in unit tests doesn't accidentally trigger startup.
+        if cfg is None or getattr(cfg, "enabled", False) is not True:
+            return
+        if (self._meshtastic_broadcast is not None
+                and self._meshtastic_broadcast.is_running):
+            return
+        try:
+            from .meshtastic_broadcast_bridge import create_from_gateway_config
+            if self._meshtastic_broadcast is None:
+                # Issue #66 first-caller wiring: hand the broadcast bridge a
+                # reference to the persistent queue + our ack-emit callback
+                # so its per-subscriber LXMF delivery callbacks can drive
+                # synthetic [delivered:<id>] back to the originating
+                # Meshtastic channel via _maybe_emit_ack_for_msgid. No-op
+                # when meshtastic_broadcast.ack_required is False (default).
+                self._meshtastic_broadcast = create_from_gateway_config(
+                    self.config,
+                    persistent_queue=self._persistent_queue,
+                    ack_emit_callback=self._maybe_emit_ack_for_msgid,
+                )
+                if self._meshtastic_broadcast is None:
+                    return
+                # Meshtastic RX hook — every BridgedMessage that flows
+                # through _notify_message reaches on_meshtastic_message
+                # which filters for source_network=="meshtastic" +
+                # is_broadcast before fanning out.
+                self.register_message_callback(
+                    self._meshtastic_broadcast.on_meshtastic_message
+                )
+            if self._meshtastic_broadcast.start():
+                logger.info(
+                    "Meshtastic broadcast bridge started (%s)",
+                    self._meshtastic_broadcast.destination_hash_hex,
+                )
+        except Exception as e:
+            logger.error("Failed to start Meshtastic broadcast bridge: %s", e)
 
     def _bridge_loop(self):
         """Main loop for message bridging.

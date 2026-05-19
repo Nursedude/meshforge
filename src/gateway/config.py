@@ -483,6 +483,42 @@ class TelemetryConfig:
 
 
 @dataclass
+class MeshtasticBroadcastConfig:
+    """Meshtastic broadcast bridge — fan-out Meshtastic channels as LXMF DMs.
+
+    Symmetric mirror of MeshAnchor's LXMFBroadcastConfig: a separate LXMF
+    identity announces over RNS; subscribers DM the identity
+    ("subscribe" / "unsubscribe") and receive every Meshtastic channel
+    broadcast on the allowlisted channels as an LXMF DM. RX-only fan-out
+    today; no reverse path back into Meshtastic.
+    """
+    enabled: bool = False
+    # Meshtastic channels to fan out (channel indexes, e.g. 0=primary,
+    # 2=meshforge on moc-class boxes).
+    channels: List[int] = field(default_factory=lambda: [0])
+    # Display name shown to NomadNet/peer LXMF clients in announces.
+    display_name: str = "MeshForge Meshtastic Broadcast"
+    # Re-announce period (seconds). 0 disables periodic announce.
+    announce_interval_sec: int = 600
+    # Outbound message format. Available fields: channel, sender, text.
+    prefix_format: str = "[meshtastic ch{channel}:{sender}] {text}"
+    # If True, any LXMF source that announces is auto-subscribed.
+    # Default False — subscription is opt-in via "subscribe" DM.
+    autosubscribe: bool = False
+    # Optional override paths. Empty = default under ~/.config/meshforge/.
+    identity_file: str = ""
+    db_file: str = ""
+
+    # Issue #66 first-caller opt-in: when True, every broadcast fan-out
+    # registers ONE pending-ack record with the parent bridge's substrate
+    # and the first subscriber whose LXMF receipt confirms delivery causes
+    # a synthetic [delivered:<id>] to be emitted back to the originating
+    # Meshtastic channel as a placeholder origin (channel:<idx>). See
+    # [[sync-ack-gateway-arc]] and project_issue_66_first_caller_2026_05_18.md.
+    ack_required: bool = False
+
+
+@dataclass
 class GatewayConfig:
     """Complete gateway configuration"""
     enabled: bool = False
@@ -527,6 +563,13 @@ class GatewayConfig:
 
     # Telemetry
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
+
+    # Meshtastic broadcast bridge (symmetric mirror of MeshAnchor's
+    # lxmf_broadcast). Off by default — operator opts in on a gateway box
+    # to fan Meshtastic channels out as LXMF DMs to subscribed RNS peers.
+    meshtastic_broadcast: MeshtasticBroadcastConfig = field(
+        default_factory=MeshtasticBroadcastConfig
+    )
 
     # Logging
     log_level: str = "INFO"
@@ -630,6 +673,27 @@ class GatewayConfig:
             meshcore_data = data.get('meshcore', {})
             meshcore = MeshCoreConfig(**meshcore_data) if meshcore_data else MeshCoreConfig()
 
+            # Handle MeshtasticBroadcastConfig (channels list — explicit copy
+            # avoids shared-default mutability traps when multiple configs load
+            # in the same process during tests).
+            mb_data = data.get('meshtastic_broadcast', {}) or {}
+            meshtastic_broadcast = MeshtasticBroadcastConfig(
+                enabled=mb_data.get('enabled', False),
+                channels=list(mb_data.get('channels', [0])),
+                display_name=mb_data.get(
+                    'display_name', 'MeshForge Meshtastic Broadcast'
+                ),
+                announce_interval_sec=mb_data.get('announce_interval_sec', 600),
+                prefix_format=mb_data.get(
+                    'prefix_format',
+                    '[meshtastic ch{channel}:{sender}] {text}',
+                ),
+                autosubscribe=mb_data.get('autosubscribe', False),
+                identity_file=mb_data.get('identity_file', ''),
+                db_file=mb_data.get('db_file', ''),
+                ack_required=mb_data.get('ack_required', False),
+            )
+
             # Reconstruct nested dataclasses
             config = cls(
                 enabled=data.get('enabled', False),
@@ -645,6 +709,7 @@ class GatewayConfig:
                 routing_rules=[RoutingRule(**r) for r in data.get('routing_rules', [])],
                 default_route=data.get('default_route', 'bidirectional'),
                 telemetry=TelemetryConfig(**data.get('telemetry', {})),
+                meshtastic_broadcast=meshtastic_broadcast,
                 log_level=data.get('log_level', 'INFO'),
                 log_messages=data.get('log_messages', True),
                 ai_diagnostics_enabled=data.get('ai_diagnostics_enabled', False),
@@ -707,6 +772,7 @@ class GatewayConfig:
                 'routing_rules': [asdict(r) for r in self.routing_rules],
                 'default_route': self.default_route,
                 'telemetry': asdict(self.telemetry),
+                'meshtastic_broadcast': asdict(self.meshtastic_broadcast),
                 'log_level': self.log_level,
                 'log_messages': self.log_messages,
                 'ai_diagnostics_enabled': self.ai_diagnostics_enabled,
