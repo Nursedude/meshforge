@@ -103,6 +103,23 @@ _VERB_CHANNELS = "channels"
 _VERB_HELP = "help"
 
 
+# Issue #66 synthetic ACK content prefixes. When the gateway emits a synth
+# ACK back on the originating Meshtastic channel, the same packet round-
+# trips through LoRa (radio self-RX or MQTT-bridge re-emission on a peer
+# gateway) and re-enters MeshtasticHandler as a fresh BridgedMessage with
+# `is_broadcast=True` and `source_network="meshtastic"`. Without this
+# filter the bridge re-fans-out the ACK, mints a new pending-ack id, and
+# emits another ACK back — a tight loop observed in field smoke on moc3
+# at 22:21 HST (4+ ACK emissions in 10s before manual cutoff). The
+# meshforge_is_synth_ack metadata flag set by _emit_ack_to_origin only
+# survives in-process; over the wire only the textual content remains.
+_SYNTH_ACK_CONTENT_PREFIXES = (
+    "[delivered:",
+    "[timeout:",
+    "[failed:",
+)
+
+
 TIER_LOCAL = "local"
 TIER_FEDERATION = "federation"
 TIER_EXTERNAL = "external"
@@ -481,6 +498,7 @@ class MeshtasticBroadcastBridge:
             "unsubscribes": 0,
             "filtered_channel": 0,
             "filtered_non_meshtastic": 0,
+            "filtered_synth_ack": 0,
             "errors": 0,
             "skipped_backoff": 0,
         }
@@ -645,6 +663,18 @@ class MeshtasticBroadcastBridge:
             return
         content = _msg_content(msg)
         if not content:
+            return
+
+        # Loop guard: Issue #66 synth-ACKs round-trip through LoRa and
+        # come back into MeshtasticHandler as fresh broadcasts. Without
+        # this check the bridge re-fans them out, mints another
+        # pending-ack id, and emits another ACK — observed loop on moc3
+        # 2026-05-18 22:21 HST. The in-process meshforge_is_synth_ack
+        # metadata flag (checked below) doesn't survive the wire.
+        stripped = content.lstrip()
+        if any(stripped.startswith(p) for p in _SYNTH_ACK_CONTENT_PREFIXES):
+            with self._stats_lock:
+                self.stats["filtered_synth_ack"] += 1
             return
 
         meta = _msg_metadata(msg)

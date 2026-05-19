@@ -377,6 +377,97 @@ class TestMeshtasticFanout:
 
 
 # ---------------------------------------------------------------------------
+# Loop guard — Issue #66 synth-ACKs round-trip through LoRa and re-enter
+# MeshtasticHandler with the in-process metadata flag stripped. The bridge
+# must recognize them by textual content prefix.
+# ---------------------------------------------------------------------------
+
+
+class TestSynthAckLoopGuard:
+    """Field smoke on moc3 (2026-05-18 22:21 HST) caught a 4-emission loop:
+    bridge fan-out → synth ACK on Meshtastic → MQTT-bridge re-emit on peer
+    → MeshtasticHandler RX → bridge sees `[delivered: mbcast-...]` as a new
+    broadcast → fans out again. The wire only carries the textual ACK
+    body; the meshforge_is_synth_ack metadata flag is in-process only.
+    """
+
+    def test_skips_delivered_synth_ack(self, tmp_path, fake_rns_lxmf):
+        b = _make_bridge(tmp_path, fake_rns_lxmf, channels=[0])
+        b.start()
+        try:
+            b._subs.add("deadbeef00112233")
+            msg = _make_bridged(text="[delivered: mbcast-foo] orig", channel=0)
+            b.on_meshtastic_message(msg)
+            _rns, lxmf, _router = fake_rns_lxmf
+            lxmf.LXMessage.assert_not_called()
+            assert b.stats["filtered_synth_ack"] == 1
+        finally:
+            b.stop()
+
+    def test_skips_timeout_synth_ack(self, tmp_path, fake_rns_lxmf):
+        b = _make_bridge(tmp_path, fake_rns_lxmf, channels=[0])
+        b.start()
+        try:
+            b._subs.add("deadbeef00112233")
+            msg = _make_bridged(text="[timeout: mbcast-bar]", channel=0)
+            b.on_meshtastic_message(msg)
+            _rns, lxmf, _router = fake_rns_lxmf
+            lxmf.LXMessage.assert_not_called()
+            assert b.stats["filtered_synth_ack"] == 1
+        finally:
+            b.stop()
+
+    def test_skips_failed_synth_ack(self, tmp_path, fake_rns_lxmf):
+        b = _make_bridge(tmp_path, fake_rns_lxmf, channels=[0])
+        b.start()
+        try:
+            b._subs.add("deadbeef00112233")
+            msg = _make_bridged(text="[failed: mbcast-baz]", channel=0)
+            b.on_meshtastic_message(msg)
+            _rns, lxmf, _router = fake_rns_lxmf
+            lxmf.LXMessage.assert_not_called()
+            assert b.stats["filtered_synth_ack"] == 1
+        finally:
+            b.stop()
+
+    def test_skips_leading_whitespace_synth_ack(self, tmp_path, fake_rns_lxmf):
+        """Defensive: some emit paths may pad the body. lstrip first."""
+        b = _make_bridge(tmp_path, fake_rns_lxmf, channels=[0])
+        b.start()
+        try:
+            b._subs.add("deadbeef00112233")
+            msg = _make_bridged(text="   [delivered: mbcast-pad]", channel=0)
+            b.on_meshtastic_message(msg)
+            _rns, lxmf, _router = fake_rns_lxmf
+            lxmf.LXMessage.assert_not_called()
+            assert b.stats["filtered_synth_ack"] == 1
+        finally:
+            b.stop()
+
+    def test_does_not_skip_user_message_mentioning_delivered(
+        self, tmp_path, fake_rns_lxmf,
+    ):
+        """The guard checks for prefix shape, not the word — a user
+        message that happens to talk about delivery (`"ack received,
+        [delivered: ...] now relaying"`) is fine. Only the bridge's
+        own synth output starts with `[delivered:`."""
+        b = _make_bridge(tmp_path, fake_rns_lxmf, channels=[0])
+        b.start()
+        try:
+            b._subs.add("deadbeef00112233")
+            msg = _make_bridged(
+                text="ack received, [delivered: ...] now relaying", channel=0,
+            )
+            b.on_meshtastic_message(msg)
+            _rns, lxmf, _router = fake_rns_lxmf
+            lxmf.LXMessage.assert_called_once()
+            assert b.stats["filtered_synth_ack"] == 0
+            assert b.stats["fanouts"] == 1
+        finally:
+            b.stop()
+
+
+# ---------------------------------------------------------------------------
 # BridgedMessage compatibility — the production RX path uses source_id, not
 # source_address; the format/origin-routing helpers must pick the right one.
 # ---------------------------------------------------------------------------
