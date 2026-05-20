@@ -65,6 +65,7 @@ Full history in `persistent_issues_archive.md`.
 | #50 Directory tier retention defeated by UPSERT `last_seen=now` (2026-04-30) | External-bulk republish reset tier clock every cycle; fix uses upstream `last_heard` + `MAX(nodes.last_seen, excluded.last_seen)` ON CONFLICT. Body in archive | `TestDirectoryUpstreamTimestamp` in `tests/test_node_history.py` (9 tests) |
 | #51 Issue #50 wiring unreachable — meshcore parser emitted ISO-8601 not Unix epoch (2026-04-30) | Inline ISO→epoch normalization in `_parse_meshcore_public_node`. Tests must use real upstream payload shape. Body in archive | 5 new in `TestMeshCorePublicCollector` |
 | #57 Gateway data-path watchdog — `bounded_call` over RNS RPC hot path (2026-05-17) | `bounded_call` wraps 11 RNS RPC sites; wedged peer trips circuit breaker + `os._exit(2)`; systemd restarts the gateway (better than silent hang). Body in archive | `test_wedge_events.py` (17) + `test_bounded_rpc.py` (19) + `test_circuit_breaker.py` (+6) |
+| #12, #22, #23 | RNS configdir= (#12, lint MF009), don't overwrite meshtasticd `config.yaml` (#22, inverse companion of #58), post-install verification via `scripts/verify_post_install.sh` (#23). Bodies in archive. | — |
 
 ---
 
@@ -110,47 +111,6 @@ from gateway.rns_bridge import RNSMeshtasticBridge
 @patch('gateway.rns_bridge._HAS_RNS', True)  # CORRECT
 def test_rns(self): ...
 ```
-
----
-
-## Issue #12: RNS "Address Already in Use"
-
-**Rule**: Never call `RNS.Reticulum()` without `configdir=` when rnsd is running.
-
-MeshForge creates a client-only config in `/tmp/meshforge_rns_client/` with
-`share_instance = Yes` and no interface definitions, allowing connection to
-rnsd without binding ports.
-
-Location: `src/gateway/node_tracker.py` — `_init_rns_main_thread()`
-
----
-
-## Issue #22: Never Overwrite meshtasticd's config.yaml
-
-**Rule**: Check for existing valid config before touching it.
-
-```
-/etc/meshtasticd/
-├── config.yaml     # PROVIDED BY meshtasticd — DO NOT OVERWRITE
-├── available.d/    # HAT templates — PROVIDED BY meshtasticd — DO NOT CREATE
-└── config.d/       # User's active HAT config — COPY from available.d/
-```
-
-Radio parameters (Bandwidth, SpreadFactor, TXpower) are set via
-`meshtastic --set lora.modem_preset` and stored internally — **NEVER in yaml files**.
-
-MeshForge's job: Help users SELECT HATs from meshtasticd's `available.d/`, COPY to
-`config.d/`. Never overwrite `config.yaml` if it has a `Webserver:` section.
-
----
-
-## Issue #23: Post-Install Verification
-
-**Rule**: Never mark install "complete" until verification passes.
-
-`scripts/verify_post_install.sh` checks: meshtasticd binary, config.yaml validity,
-Webserver section, port 9443, radio detection, config.d/, rnsd, udev rules.
-Also available via `meshforge --verify-install`.
 
 ---
 
@@ -709,3 +669,46 @@ curl -s http://<box>:5000/api/status | jq '.directory | {size_bytes_raw,
 
 **Deferred**: cursor pagination + since-timestamp incremental sync
 remain available if/when gzip's multi-year runway runs out.
+
+
+---
+
+## Issue #68: rnsd hard-wedge → meshforge-map main thread silent-stuck in `unix_stream_connect` (2026-05-20)
+
+**Symptom**: moc1's `meshforge-map.service` was `active (running)` for
+56 min but never bound `:5000`. Background threads (WebSocket :5001,
+MQTT) kept logging normally. No error, no traceback. Visible only via
+federation peer_status showing moc1 unreachable.
+
+**Root cause**: rnsd hard-wedged — `active (running)` per systemd,
+but `rnstatus` timed out, journal silent, kernel showed `SYN-SENT`
+piling up on `@rns/default`. `MapServer.start()`
+(`src/utils/map_data_service.py:590`) calls `init_rns_singleton()`
+(`src/utils/_map_collector_rns.py:259`) → `_RNS.Reticulum(configdir=...)`
+which `connect()`s the shared-instance Unix socket uncapped. When
+rnsd doesn't accept, the syscall blocks indefinitely. Main thread
+wedged → HTTP bind never ran. Background threads were started before
+RNS init, so they kept logging.
+
+**Detection** — kernel signals are the only honest ones:
+```bash
+PID=$(systemctl show meshforge-map.service -p MainPID --value)
+sudo cat /proc/$PID/task/$PID/stack   # unix_wait_for_peer / unix_stream_connect
+timeout 5 rnstatus || echo "rnsd RPC wedged"
+sudo ss -xnp | grep '@rns/' | grep -c SYN-SENT   # >0 = clients piled up
+```
+
+**Recovery** (deterministic):
+```bash
+sudo systemctl stop meshforge-map.service     # release blocked connect()
+sudo systemctl restart rnsd.service           # may SIGKILL after TimeoutStopSec
+sudo systemctl start meshforge-map.service    # binds :5000 in ~1.4s
+```
+
+**Class**: variant of "service-running-but-not-serving" (cf #58, #61,
+#63). Novel shape: *main thread* stuck in a kernel syscall while
+background threads keep logging — all userspace signals say healthy.
+
+**Prevention (deferred)**: pre-flight `socket.AF_UNIX` probe with 5s
+timeout before `_RNS.Reticulum()`; on timeout fall through to the
+non-fatal `except Exception` in `_init_rns_main_thread`.

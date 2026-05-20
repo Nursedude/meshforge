@@ -1875,3 +1875,50 @@ shows WEDGED + process exit + systemd restart; release with `-CONT`.
 PR-2 (Fork B) and PR-3 (Fork C) ship next on this substrate. Plan:
 `~/.claude/plans/fix-federation-persistent-issues-2026-05-17.md`.
 
+
+---
+
+## Issue #12: RNS "Address Already in Use" (archived 2026-05-20)
+
+**Rule**: Never call `RNS.Reticulum()` without `configdir=` when rnsd is running.
+
+MeshForge creates a client-only config in `/tmp/meshforge_rns_client/` with
+`share_instance = Yes` and no interface definitions, allowing connection to
+rnsd without binding ports.
+
+Location: `src/gateway/node_tracker.py` — `_init_rns_main_thread()`
+
+Enforced by lint MF009 and regression test `TestRNSReticulumNoConfigdir`.
+
+---
+
+## Issue #22: Never Overwrite meshtasticd's config.yaml (archived 2026-05-20)
+
+**Rule**: Check for existing valid config before touching it.
+
+```
+/etc/meshtasticd/
+├── config.yaml     # PROVIDED BY meshtasticd — DO NOT OVERWRITE
+├── available.d/    # HAT templates — PROVIDED BY meshtasticd — DO NOT CREATE
+└── config.d/       # User's active HAT config — COPY from available.d/
+```
+
+Radio parameters (Bandwidth, SpreadFactor, TXpower) are set via
+`meshtastic --set lora.modem_preset` and stored internally — **NEVER in yaml files**.
+
+MeshForge's job: Help users SELECT HATs from meshtasticd's `available.d/`, COPY to
+`config.d/`. Never overwrite `config.yaml` if it has a `Webserver:` section.
+
+Superseded in part by Issue #58's HAT-overlay sanitizer (forbidden-keys list) that
+catches the inverse failure: a HAT template smuggling `Webserver:` overrides into
+`config.d/`.
+
+---
+
+## Issue #23: Post-Install Verification (archived 2026-05-20)
+
+**Rule**: Never mark install "complete" until verification passes.
+
+`scripts/verify_post_install.sh` checks: meshtasticd binary, config.yaml validity,
+Webserver section, port 9443, radio detection, config.d/, rnsd, udev rules.
+Also available via `meshforge --verify-install`.
