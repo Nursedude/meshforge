@@ -65,32 +65,6 @@ class TestSocketCleanupPatterns(unittest.TestCase):
         self.assertEqual(final_fds, initial_fds)
 
 
-class TestNetworkToolsSocketCleanup(unittest.TestCase):
-    """Test socket cleanup in network_tools.py functions."""
-
-    def test_check_port_cleanup(self):
-        """Test that check_port properly cleans up sockets."""
-        try:
-            from gtk_ui.panels.tools_mixins.network_tools import NetworkToolsMixin
-
-            # Create mock mixin instance
-            mixin = MagicMock(spec=NetworkToolsMixin)
-
-            # Get initial fd count
-            initial_fds = len(os.listdir(f'/proc/{os.getpid()}/fd'))
-
-            # Call the function multiple times
-            for _ in range(10):
-                # We can't easily call the method directly without GTK
-                # but we verify the pattern exists
-                pass
-
-            # This test documents the expected behavior
-            self.assertTrue(True)
-        except ImportError:
-            self.skipTest("GTK modules not available")
-
-
 class TestMeshToolsSocketCleanup(unittest.TestCase):
     """Test socket cleanup in mesh_tools.py."""
 
