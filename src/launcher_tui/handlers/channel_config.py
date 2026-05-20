@@ -379,14 +379,25 @@ class ChannelConfigHandler(BaseHandler):
 
             self.ctx.dialog.infobox("Adding", f"Adding channel {idx}...")
 
-            mesh_cmd.set_channel_name(idx, name[:12])
+            name_result = mesh_cmd.set_channel_name(idx, name[:12])
+            psk_result = mesh_cmd.set_channel_psk(
+                idx, "random" if use_psk else "none",
+            )
 
-            if use_psk:
-                mesh_cmd.set_channel_psk(idx, "random")
+            if name_result.success and psk_result.success:
+                self.ctx.dialog.msgbox(
+                    "Success", f"Channel {idx} configured!\n\nName: {name}",
+                )
             else:
-                mesh_cmd.set_channel_psk(idx, "none")
-
-            self.ctx.dialog.msgbox("Success", f"Channel {idx} configured!\n\nName: {name}")
+                fails = []
+                if not name_result.success:
+                    fails.append(f"name: {name_result.message}")
+                if not psk_result.success:
+                    fails.append(f"psk: {psk_result.message}")
+                self.ctx.dialog.msgbox(
+                    "Error",
+                    f"Channel {idx} configuration failed:\n\n" + "\n".join(fails),
+                )
 
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed:\n{e}")
@@ -426,13 +437,19 @@ class ChannelConfigHandler(BaseHandler):
 
             self.ctx.dialog.infobox("Disabling", f"Disabling channel {idx}...")
 
-            mesh_cmd._run_command([
+            result = mesh_cmd._run_command([
                 '--ch-index', str(idx),
                 '--ch-set', 'name', '',
                 '--ch-set', 'psk', 'none'
             ])
 
-            self.ctx.dialog.msgbox("Success", f"Channel {idx} disabled")
+            if result.success:
+                self.ctx.dialog.msgbox("Success", f"Channel {idx} disabled")
+            else:
+                self.ctx.dialog.msgbox(
+                    "Error",
+                    f"Failed to disable channel {idx}:\n\n{result.message}",
+                )
 
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed:\n{e}")
@@ -505,12 +522,24 @@ class ChannelConfigHandler(BaseHandler):
 
             self.ctx.dialog.infobox("Setting", "Configuring gateway channel...")
 
-            mesh_cmd.set_channel_name(7, "Gateway")
-            mesh_cmd.set_channel_psk(7, psk)
+            name_result = mesh_cmd.set_channel_name(7, "Gateway")
+            psk_result = mesh_cmd.set_channel_psk(7, psk)
 
-            self.ctx.dialog.msgbox("Success",
-                "Gateway channel configured on slot 8!\n\n"
-                "Use this channel for gateway bridging.")
+            if name_result.success and psk_result.success:
+                self.ctx.dialog.msgbox("Success",
+                    "Gateway channel configured on slot 8!\n\n"
+                    "Use this channel for gateway bridging.")
+            else:
+                fails = []
+                if not name_result.success:
+                    fails.append(f"name: {name_result.message}")
+                if not psk_result.success:
+                    fails.append(f"psk: {psk_result.message}")
+                self.ctx.dialog.msgbox(
+                    "Error",
+                    "Gateway channel configuration failed:\n\n"
+                    + "\n".join(fails),
+                )
 
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed:\n{e}")
@@ -617,13 +646,23 @@ class ChannelConfigHandler(BaseHandler):
             # Set gateway channel (index 7 = slot 8)
             sys.path.insert(0, str(self.ctx.src_dir))
             from commands import meshtastic as mesh_cmd
-            mesh_cmd.set_channel_name(7, tmpl['channel'])
+            name_result = mesh_cmd.set_channel_name(7, tmpl['channel'])
 
-            self.ctx.dialog.msgbox("Success",
-                f"{tmpl['name']} applied!\n\n"
-                f"Radio: {tmpl['preset']}\n"
-                f"Gateway Channel: {tmpl['channel']} (Slot 8)\n\n"
-                "Ready for RNS bridging.")
+            if name_result.success:
+                self.ctx.dialog.msgbox("Success",
+                    f"{tmpl['name']} applied!\n\n"
+                    f"Radio: {tmpl['preset']}\n"
+                    f"Gateway Channel: {tmpl['channel']} (Slot 8)\n\n"
+                    "Ready for RNS bridging.")
+            else:
+                self.ctx.dialog.msgbox(
+                    "Error",
+                    f"{tmpl['name']} template partially applied — gateway "
+                    f"channel setup failed:\n\n{name_result.message}\n\n"
+                    "Radio preset was set but the gateway channel was not "
+                    "configured. Re-run from Channel Config > Gateway "
+                    "Channel to retry.",
+                )
 
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Template failed:\n{e}")

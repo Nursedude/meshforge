@@ -119,12 +119,20 @@ class MeshtasticdRadioHandler(BaseHandler):
                     owner_data['long_name'] = long_name
                 if short_name:
                     owner_data['short_name'] = short_name
-                save_device_settings({'owner': owner_data})
+                saved = save_device_settings({'owner': owner_data})
 
-                self.ctx.dialog.msgbox("Success",
-                    f"Owner settings updated:\n\n"
-                    + "\n".join(changes_made)
-                    + "\n\nSaved for restart persistence.")
+                if saved:
+                    self.ctx.dialog.msgbox("Success",
+                        f"Owner settings updated:\n\n"
+                        + "\n".join(changes_made)
+                        + "\n\nSaved for restart persistence.")
+                else:
+                    self.ctx.dialog.msgbox("Partial Success",
+                        f"Owner settings updated on device:\n\n"
+                        + "\n".join(changes_made)
+                        + "\n\nWARNING: Failed to save for restart "
+                        "persistence. Settings will be lost on next "
+                        "meshtasticd restart.")
             else:
                 self.ctx.dialog.msgbox("Info", "No changes made.")
 
@@ -254,7 +262,7 @@ class MeshtasticdRadioHandler(BaseHandler):
                 slot_msg = f"\nFrequency slot: {freq_slot}"
 
             from utils.device_config_store import save_device_settings
-            save_device_settings({
+            saved = save_device_settings({
                 'lora': {
                     'modem_preset': preset,
                     'channel_num': freq_slot,
@@ -262,11 +270,23 @@ class MeshtasticdRadioHandler(BaseHandler):
             })
 
             verify_note = " (verified)" if verified else ""
-            self.ctx.dialog.msgbox("Success",
+            persistence_note = (
+                "Settings saved for restart persistence.\n"
+                "Will be re-applied if meshtasticd restarts."
+                if saved else
+                "WARNING: Failed to save for restart persistence.\n"
+                "Settings will be lost on next meshtasticd restart."
+            )
+            # The preset call already succeeded (we'd have returned earlier
+            # otherwise). Title reflects whether the secondary steps
+            # (channel slot + persistence save) all also succeeded.
+            fully_ok = slot_result.success and saved
+            self.ctx.dialog.msgbox(
+                "Success" if fully_ok else "Partial Success",
                 f"{preset} preset applied!{verify_note}\n\n"
                 f"Modem preset: {preset}{slot_msg}\n\n"
-                "Settings saved for restart persistence.\n"
-                "Will be re-applied if meshtasticd restarts.")
+                f"{persistence_note}",
+            )
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed to apply preset:\n{e}")
 
@@ -451,12 +471,24 @@ class MeshtasticdRadioHandler(BaseHandler):
 
         try:
             self.ctx.dialog.infobox("Activating", f"Activating {config_name}...")
-            activate_hardware_config(config_name, available_dir, config_d)
-            self.ctx.dialog.msgbox("Success",
-                f"Hardware config activated!\n\n"
-                f"Config: {config_d / config_name}\n\n"
-                "Old hardware configs removed.\n"
-                "Service restarted.")
+            ok = activate_hardware_config(
+                config_name, available_dir, config_d,
+            )
+            if ok:
+                self.ctx.dialog.msgbox("Success",
+                    f"Hardware config activated!\n\n"
+                    f"Config: {config_d / config_name}\n\n"
+                    "Old hardware configs removed.\n"
+                    "Service restarted.")
+            else:
+                self.ctx.dialog.msgbox(
+                    "Error",
+                    f"Hardware config activation failed.\n\n"
+                    f"Config: {config_name}\n\n"
+                    "Check `journalctl -u meshtasticd` for details. "
+                    "The unit may have failed to restart or the copy "
+                    "to config.d/ may have been rejected.",
+                )
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Activation failed:\n{e}")
 
