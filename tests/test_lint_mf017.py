@@ -161,6 +161,33 @@ class TestMF017AuditSkipMarker:
         issues = lint.check_systemd_sandbox_paths(repo_root=str(tmp_path))
         assert issues == []
 
+    def test_audit_skip_on_one_unit_does_not_suppress_others(self, tmp_path):
+        """Pattern-audit Finding #4 (2026-05-19): the pre-fix
+        implementation used `return issues` from inside the per-unit
+        iteration when it hit `# audit-skip:`, which exited the entire
+        MF017 audit function. That meant an audit-skip on the
+        alphabetically-first unit would silently suppress drift detection
+        on every later unit. The fix factors per-unit body into
+        `_audit_one_systemd_unit` so audit-skip only affects ITS unit.
+
+        Regression: two units in the same directory, one with
+        audit-skip and one with real drift — the drifting unit must
+        still be flagged.
+        """
+        # Alphabetical order: "aa-skip.service.in" comes before
+        # "bb-drift.service.in". Pre-fix the `aa-skip` audit-skip would
+        # exit the function before "bb-drift" got audited.
+        _write_unit(tmp_path, "aa-skip.service.in", HARDENED_UNIT_AUDIT_SKIP)
+        _write_unit(tmp_path, "bb-drift.service.in", HARDENED_UNIT_MISSING_DATA_DIR)
+        issues = lint.check_systemd_sandbox_paths(repo_root=str(tmp_path))
+        # bb-drift's missing data-dir MUST surface as one issue.
+        assert len(issues) == 1, (
+            f"expected 1 issue from bb-drift.service.in, got {len(issues)}: "
+            f"{[(i.file, i.code, i.message) for i in issues]}"
+        )
+        assert "bb-drift.service.in" in issues[0].file
+        assert ".local/share/meshforge" in issues[0].message
+
 
 class TestMF017HandlesMissingContribDir:
     """A repo without contrib/systemd/ shouldn't crash the audit."""

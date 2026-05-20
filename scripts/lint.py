@@ -614,6 +614,63 @@ def check_context_doc_sizes(repo_root: str = '.') -> List[LintIssue]:
 MF017_REQUIRED_BUCKETS = (".config/meshforge", ".local/share/meshforge", ".cache/meshforge")
 
 
+def _audit_one_systemd_unit(
+    rel_path: str,
+    content: str,
+    required_buckets: tuple,
+) -> List[LintIssue]:
+    """Audit one hardened systemd unit for ReadWritePaths bucket coverage.
+
+    Returns issues for this unit only. Outer caller iterates units and
+    accumulates. Factored out so a per-unit `audit-skip:` marker doesn't
+    suppress later units in the same run (the pre-2026-05-19 shape used
+    `return issues` from inside the iteration, which short-circuited the
+    entire MF017 audit — pattern-audit Finding #4).
+    """
+    issues: List[LintIssue] = []
+    # Only audit hardened units. Units without ProtectHome (or with
+    # ProtectHome=false) aren't subject to the trap.
+    if 'ProtectHome=read-only' not in content and 'ProtectHome=yes' not in content:
+        return issues
+
+    # Collect every ReadWritePaths line (systemd allows multiple). Each
+    # may be a space-separated list. Audit-skip is a per-line marker that
+    # suppresses the check for THIS UNIT ONLY.
+    whitelisted = []
+    rwp_lineno = 0
+    for lineno, line in enumerate(content.splitlines(), start=1):
+        stripped = line.split('#', 1)[0].strip()
+        if stripped.startswith('ReadWritePaths='):
+            if '# audit-skip:' in line:
+                # Operator explicitly acknowledged the gap on this line.
+                # Defer to their judgment for THIS UNIT but keep auditing
+                # the rest. Pre-2026-05-19 this returned out of the whole
+                # audit function — pattern-audit Finding #4.
+                return issues
+            if rwp_lineno == 0:
+                rwp_lineno = lineno
+            rest = stripped[len('ReadWritePaths='):]
+            whitelisted.extend(rest.split())
+
+    # If no ReadWritePaths at all, the unit is hardened-without-state —
+    # also a smell, but probably intentional (a pure compute service).
+    # Don't fire on this case; MF017 is specifically about the trap shape.
+    if not whitelisted:
+        return issues
+
+    for bucket in required_buckets:
+        if not any(bucket in p for p in whitelisted):
+            issues.append(LintIssue(
+                rel_path, rwp_lineno, Severity.ERROR, "MF017",
+                f"hardened systemd unit (ProtectHome=read-only) missing "
+                f"'{bucket}' in ReadWritePaths= — Issue #58 class. Add "
+                f"'@HOME@/{bucket}' to the ReadWritePaths line, OR mark "
+                f"the omission deliberate with an inline "
+                f"'# audit-skip: <reason>' comment.",
+            ))
+    return issues
+
+
 def check_systemd_sandbox_paths(repo_root: str = '.') -> List[LintIssue]:
     """MF017: hardened systemd units must whitelist all three meshforge data buckets."""
     issues: List[LintIssue] = []
@@ -632,45 +689,9 @@ def check_systemd_sandbox_paths(repo_root: str = '.') -> List[LintIssue]:
         except OSError:
             continue
 
-        # Only audit hardened units. Units without ProtectHome (or with
-        # ProtectHome=false) aren't subject to the trap.
-        if 'ProtectHome=read-only' not in content and 'ProtectHome=yes' not in content:
-            continue
-
-        # Collect every ReadWritePaths line (systemd allows multiple). Each
-        # may be a space-separated list. Audit-skip is a per-line marker.
-        whitelisted = []  # entries (with @HOME@ → ~/.local style normalization not needed here)
-        rwp_lineno = 0
-        for lineno, line in enumerate(content.splitlines(), start=1):
-            stripped = line.split('#', 1)[0].strip()  # comments stripped for parsing
-            if stripped.startswith('ReadWritePaths='):
-                if '# audit-skip:' in line:
-                    # Operator explicitly acknowledged the gap on this line.
-                    # Defer to their judgment but require the marker — that's
-                    # the signal that the omission is deliberate, not drift.
-                    return issues  # short-circuit whole unit (rare path)
-                if rwp_lineno == 0:
-                    rwp_lineno = lineno
-                rest = stripped[len('ReadWritePaths='):]
-                whitelisted.extend(rest.split())
-
-        # If no ReadWritePaths at all, the unit is hardened-without-state —
-        # also a smell, but probably intentional (a pure compute service).
-        # Don't fire on this case; MF017 is specifically about the trap shape.
-        if not whitelisted:
-            continue
-
-        for bucket in MF017_REQUIRED_BUCKETS:
-            # Allow either literal "/.../meshforge" or "@HOME@/.../meshforge"
-            if not any(bucket in p for p in whitelisted):
-                issues.append(LintIssue(
-                    rel_path, rwp_lineno, Severity.ERROR, "MF017",
-                    f"hardened systemd unit (ProtectHome=read-only) missing "
-                    f"'{bucket}' in ReadWritePaths= — Issue #58 class. Add "
-                    f"'@HOME@/{bucket}' to the ReadWritePaths line, OR mark "
-                    f"the omission deliberate with an inline "
-                    f"'# audit-skip: <reason>' comment.",
-                ))
+        issues.extend(_audit_one_systemd_unit(
+            rel_path, content, MF017_REQUIRED_BUCKETS,
+        ))
     return issues
 
 
