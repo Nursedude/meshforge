@@ -511,6 +511,16 @@ class NodeHistoryDB:
         #     We compute the existing priority in SQL via a CASE expression
         #     over the known origin tags (kept short — unknown origins map
         #     to 10, the same fallback as _origin_priority()).
+        #   - obs_count is an UPSERT counter: ticks on every record_
+        #     observations call for this (network, node_id), including
+        #     republishes. NOT a count of unique observations. Real
+        #     observation counts live in the node_observations table
+        #     (joined window-bound by aggregators). Consumers reaching
+        #     for "how many times did we observe this node" should query
+        #     node_observations, not nodes.obs_count. Pattern-audit
+        #     Finding #3 (2026-05-19) — node_rollups previously read
+        #     this field thinking it was a real observation count, and
+        #     the most_reliable leaderboard inherited the inflation.
         existing_case = (
             "CASE nodes.source_origin "
             "WHEN 'local_radio' THEN 100 "

@@ -49,7 +49,12 @@ class NodeRollup:
     last_packet_ts: Optional[float] = None
     port_distribution: Dict[str, int] = field(default_factory=dict)
 
-    # From node_history.node_observations (window-bound)
+    # From node_history.node_observations (window-bound).
+    # obs_count is the count of real per-window observations — what
+    # consumers think they're getting. NOT the directory's all-time
+    # upsert counter, which republishes from external bulk sources
+    # (meshcore_public, aredn_worldmap, mqtt_global) inflate every
+    # cycle. Pinned by tests/test_node_rollups.py.
     obs_count: int = 0
     avg_snr: Optional[float] = None
     snr_sample_count: int = 0
@@ -158,18 +163,24 @@ def collect_node_rollups(
             r.port_distribution[port_name] = int(n)
 
     # ── Step 2: enrich with directory info from node_history.nodes ────
+    # We deliberately DO NOT pull `obs_count` from the directory here.
+    # The directory's `obs_count` is a per-UPSERT counter — external-bulk
+    # sources (meshcore_public, aredn_worldmap, mqtt_global, public_fallback)
+    # republish their entire dataset every cycle, so the directory value
+    # inflates without corresponding to real observations. Real per-window
+    # observations live in `node_observations` and are joined in Step 3.
     with _open_ro(nh_path) as conn:
         rows = conn.execute(
             """
             SELECT node_id, name, role, hardware,
                    last_lat, last_lon, last_altitude,
-                   first_seen, last_seen, obs_count
+                   first_seen, last_seen
             FROM nodes
             WHERE network = 'meshtastic'
             """
         )
         for (node_id, name, role, hardware, lat, lon, alt,
-             first_seen, last_seen, obs_count) in rows:
+             first_seen, last_seen) in rows:
             if node_id_filter is not None and node_id not in node_id_filter:
                 continue
             r = rollups.get(node_id)
@@ -187,14 +198,21 @@ def collect_node_rollups(
             r.last_altitude = float(alt) if alt is not None else None
             r.first_seen = float(first_seen) if first_seen else None
             r.last_seen = float(last_seen) if last_seen else None
-            r.obs_count = int(obs_count or 0)
             r.has_position = (
                 r.last_lat is not None and r.last_lon is not None
                 and not (r.last_lat == 0.0 and r.last_lon == 0.0)
             )
             r.short_name = _parse_short_long(r.name)
 
-        # ── Step 3: SNR + uptime from node_observations (window-bound)
+        # ── Step 3: real observation count, SNR, and uptime from
+        # node_observations (window-bound). `obs_count` is `COUNT(*)`
+        # over real observation rows — what consumers (leaderboards,
+        # SNR floors) think they're getting. The pre-2026-05-19
+        # implementation pulled obs_count from the directory's
+        # all-time upsert counter, which inflates with every external-
+        # bulk republish; nodes with one local observation and many
+        # republishes crossed the leaderboard's min_obs threshold
+        # without real statistical basis. Pattern-audit Finding #3.
         # Restrict to bare ``!aabbccdd`` rows (network='meshtastic' AND
         # no namespace prefix). The ``mesh_!`` prefixed rows in this
         # table are federation echoes from other fleet boxes — they
@@ -206,6 +224,7 @@ def collect_node_rollups(
         rows = conn.execute(
             """
             SELECT node_id,
+                   COUNT(*) AS obs_n,
                    AVG(snr) AS avg_snr,
                    COUNT(snr) AS snr_n,
                    AVG(is_online) AS uptime_ratio
@@ -217,12 +236,13 @@ def collect_node_rollups(
             """,
             (win_start, win_end),
         )
-        for node_id, avg_snr, snr_n, uptime_ratio in rows:
+        for node_id, obs_n, avg_snr, snr_n, uptime_ratio in rows:
             if node_id_filter is not None and node_id not in node_id_filter:
                 continue
             r = rollups.get(node_id)
             if r is None:
                 continue
+            r.obs_count = int(obs_n or 0)
             r.avg_snr = float(avg_snr) if avg_snr is not None else None
             r.snr_sample_count = int(snr_n or 0)
             r.uptime_ratio = float(uptime_ratio) if uptime_ratio is not None else None
