@@ -367,13 +367,18 @@ class MapServer:
             logger.debug(f"Error stopping MessageListener: {e}")
 
     def _stop_all_services(self):
-        """Stop all background services (MessageListener, WebSocket, Federation)."""
+        """Stop all background services (MessageListener, WebSocket, Federation,
+        periodic refresh)."""
         self._stop_message_listener()
         self._stop_websocket_server()
         try:
             self.collector.stop_federation()
         except Exception as e:
             logger.debug(f"Error stopping federation: {e}")
+        try:
+            self.collector.stop_periodic_refresh()
+        except Exception as e:
+            logger.debug(f"Error stopping periodic refresh: {e}")
 
     def _prewarm_collector(self):
         """Run one collect() on the main thread before starting threaded HTTP.
@@ -507,6 +512,17 @@ class MapServer:
             self.collector.start_federation()
         except Exception as e:
             logger.warning("Federation start failed (non-fatal): %s", e)
+        # Periodic _collect_locked() driver. Without this, boxes whose
+        # map UI isn't visited freeze their node-history at the last
+        # visit. Verified 2026-05-20 on meshanchor-server (8.5 d stall).
+        # Setting `periodic_refresh_seconds: 0` in map_settings.json
+        # disables (tests, externally-driven boxes).
+        try:
+            self.collector.start_periodic_refresh()
+        except Exception as e:
+            logger.warning(
+                "Periodic refresh start failed (non-fatal): %s", e,
+            )
         # NB: Cascade detector start lives in `start_background` /
         # `start_synchronous`, NOT here. `_run_warmup` is exercised
         # directly by tests (test_map_warming_gate.py), so any

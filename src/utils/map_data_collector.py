@@ -84,6 +84,16 @@ class MapDataCollector(
     DEFAULT_RNS_THRESHOLD_MINUTES = 30   # RNS announces less frequently
     DEFAULT_AREDN_THRESHOLD_MINUTES = 60  # AREDN scans are infrequent
     DEFAULT_PUBLIC_FALLBACK_THRESHOLD_MINUTES = 240  # meshmap.net reports less frequently
+    # Periodic background refresh — without this, _collect_locked() runs
+    # only when /api/nodes/geojson is hit. A box whose map UI isn't
+    # visited accumulates no node-history writes; the directory freezes
+    # at the last visit. Verified 2026-05-20 on meshanchor-server:
+    # 8.5 d stall with the daemon running, because nothing was calling
+    # the trigger endpoint. 300 s keeps directory.last_seen well inside
+    # the fleet-collector's 60 s poll budget with headroom. Set to 0 in
+    # map_settings.json to disable (tests, or boxes that drive collect()
+    # from elsewhere).
+    DEFAULT_PERIODIC_REFRESH_SECONDS = 300
     # Meshtasticd connection defaults
     DEFAULT_MESHTASTICD_HOST = "localhost"
     DEFAULT_MESHTASTICD_PORT = 4403
@@ -112,6 +122,14 @@ class MapDataCollector(
         # Lock here means the second caller waits briefly and then gets
         # the freshly-populated cache from the first caller's run.
         self._collect_lock = threading.Lock()
+
+        # Periodic background refresh state — started via
+        # start_periodic_refresh() from the daemon entry point so unit
+        # tests / CLI usage that construct a collector don't spawn a
+        # surprise thread.
+        self._periodic_refresh_thread: Optional[threading.Thread] = None
+        self._periodic_refresh_stop = threading.Event()
+        self._periodic_refresh_interval: float = 0.0
 
         # User-configurable cache age settings
         self._settings = SettingsManager(
@@ -170,6 +188,9 @@ class MapDataCollector(
                 # if they have a smaller fleet / older directory.
                 "federation_timeout_seconds": 30,
                 "federation_port": 5000,
+                # Drives the periodic _collect_locked() heartbeat — see
+                # DEFAULT_PERIODIC_REFRESH_SECONDS comment for the why.
+                "periodic_refresh_seconds": self.DEFAULT_PERIODIC_REFRESH_SECONDS,
             },
             config_dir=self._config_dir_override,
             # Stale-default migration (Issue #62). Pre-Issue-#56 fleet
@@ -360,6 +381,70 @@ class MapDataCollector(
         """Stop the federation poll thread. Called by map service shutdown."""
         if self._federation:
             self._federation.stop()
+
+    def start_periodic_refresh(
+        self, interval_seconds: Optional[float] = None,
+    ) -> None:
+        """Drive _collect_locked() on a fixed cadence, independent of HTTP demand.
+
+        The cache TTL inside collect() (30 s default) only matters when a
+        caller actually invokes collect(). Without a periodic driver,
+        boxes whose map UI is unvisited accumulate zero node-history
+        writes, freezing /api/nodes/directory at the last visit.
+        Verified 2026-05-20 on meshanchor-server (8.5 d stall).
+
+        Interval comes from ``map_settings.periodic_refresh_seconds``
+        (default ``DEFAULT_PERIODIC_REFRESH_SECONDS``); pass an explicit
+        value to override. 0 or negative disables. Idempotent — a second
+        call stops any in-flight thread first.
+
+        Skips ticks while another collect() holds ``_collect_lock`` so a
+        slow cycle can't queue up backed-up refresh work.
+        """
+        if interval_seconds is None:
+            interval_seconds = float(self._settings.get(
+                "periodic_refresh_seconds",
+                self.DEFAULT_PERIODIC_REFRESH_SECONDS,
+            ))
+        if interval_seconds <= 0:
+            return
+        self.stop_periodic_refresh()
+        self._periodic_refresh_interval = interval_seconds
+        self._periodic_refresh_stop.clear()
+        self._periodic_refresh_thread = threading.Thread(
+            target=self._periodic_refresh_loop,
+            daemon=True,
+            name="MapDataCollector-periodic-refresh",
+        )
+        self._periodic_refresh_thread.start()
+
+    def stop_periodic_refresh(self) -> None:
+        """Stop the periodic refresh thread. Idempotent."""
+        self._periodic_refresh_stop.set()
+        thread = self._periodic_refresh_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=5)
+        self._periodic_refresh_thread = None
+
+    def _periodic_refresh_loop(self) -> None:
+        while not self._periodic_refresh_stop.is_set():
+            # Event.wait satisfies the MF010 lint rule (no time.sleep in
+            # daemon loops) and lets stop_periodic_refresh interrupt the
+            # wait without waiting for the next tick.
+            if self._periodic_refresh_stop.wait(
+                self._periodic_refresh_interval
+            ):
+                return
+            if not self._collect_lock.acquire(blocking=False):
+                # An on-demand collect() is in flight; skip this tick
+                # rather than queue up redundant work behind it.
+                continue
+            try:
+                self._collect_locked()
+            except Exception:
+                logger.exception("Periodic map data refresh failed")
+            finally:
+                self._collect_lock.release()
 
     @staticmethod
     def _is_valid_coordinate(lat, lon) -> bool:
