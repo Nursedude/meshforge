@@ -82,6 +82,108 @@ class TestMeshtasticCommands:
         assert result.success is False
 
 
+class TestRunCommandBoundaryTranslation:
+    """Pattern-audit Finding #11 (2026-05-19): ``_run_command`` had a
+    latent TypeError on the connection-refused-with-failed-autodetect
+    path because ``CommandResult.fail`` doesn't accept the ``fix_hint``
+    kwarg (only ``not_available`` does). The TypeError was caught by
+    the outer ``except Exception`` which surfaced the Python error
+    string to the operator instead of the intended helpful "start
+    meshtasticd" message. Fixed by switching to
+    ``CommandResult.not_available`` — semantically right (device
+    unreachable IS the not_available case)."""
+
+    def test_connection_refused_with_failed_autodetect_returns_not_available(self):
+        """When subprocess returns 'Connection refused' AND
+        ``auto_detect_connection`` returns success=False, the wrapper
+        must surface a structured ``CommandResult.not_available`` with
+        the operator-helpful message + ``fix_hint`` — NOT a Python
+        error string from a caught TypeError."""
+        from unittest.mock import patch, MagicMock
+
+        # subprocess.run returns non-zero with "Connection refused" in stderr
+        fake_proc = MagicMock(
+            returncode=1, stdout="", stderr="Error: Connection refused"
+        )
+        # auto_detect_connection finds no working device
+        fake_autodetect = meshtastic.CommandResult.fail(
+            "No Meshtastic device found", error="no_device"
+        )
+
+        with patch.object(meshtastic, '_find_cli', return_value='/usr/bin/meshtastic'), \
+             patch('commands.meshtastic.subprocess.run', return_value=fake_proc), \
+             patch.object(meshtastic, 'auto_detect_connection',
+                          return_value=fake_autodetect):
+            result = meshtastic._run_command(['--info'])
+
+        # Must be a structured not_available result, NOT a TypeError-formatted
+        # string from the outer except Exception.
+        assert result.success is False
+        assert result.status == ResultStatus.NOT_AVAILABLE, (
+            f"got status={result.status} — pre-fix this path raised "
+            "TypeError caught by outer except, surfacing as "
+            "ResultStatus.ERROR with a Python error string"
+        )
+        # The helpful operator message survives (not buried under
+        # "Command error: CommandResult.fail() got an unexpected ...")
+        assert "Cannot connect to Meshtastic device" in result.message
+        assert "meshtasticd" in result.message
+        assert "fix_hint" in result.data
+        assert "start meshtasticd" in result.data['fix_hint']
+        # Specific guard: no Python TypeError text leaked into the message
+        assert "TypeError" not in result.message
+        assert "unexpected keyword argument" not in result.message
+
+
+class TestBleScanReturncode:
+    """Pattern-audit Finding #12 (2026-05-19): ``ble_scan`` ignored
+    the subprocess returncode and unconditionally returned
+    "BLE scan complete" — so a BLE adapter that errored (missing,
+    permission denied, bluez not loaded) looked like a successful
+    scan with zero nearby devices. Fixed by gating the result on
+    returncode like ``_run_command`` does."""
+
+    def test_ble_scan_nonzero_returncode_returns_failure(self):
+        """A meshtastic --ble-scan that exits non-zero must produce
+        CommandResult.fail, not CommandResult.ok with empty devices."""
+        from unittest.mock import patch, MagicMock
+
+        fake_proc = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="Error: BLE adapter not available",
+        )
+
+        with patch.object(meshtastic, '_find_cli', return_value='/usr/bin/meshtastic'), \
+             patch('commands.meshtastic.subprocess.run', return_value=fake_proc):
+            result = meshtastic.ble_scan()
+
+        assert result.success is False, (
+            f"got success={result.success} — pre-fix the wrapper "
+            "reported 'BLE scan complete' regardless of returncode"
+        )
+        assert "BLE scan failed" in result.message
+        assert "BLE adapter not available" in (result.error or "")
+
+    def test_ble_scan_zero_returncode_returns_success(self):
+        """Sanity: a successful BLE scan still returns ok."""
+        from unittest.mock import patch, MagicMock
+
+        fake_proc = MagicMock(
+            returncode=0,
+            stdout="device1\tAA:BB:CC:DD:EE:FF\n",
+            stderr="",
+        )
+
+        with patch.object(meshtastic, '_find_cli', return_value='/usr/bin/meshtastic'), \
+             patch('commands.meshtastic.subprocess.run', return_value=fake_proc):
+            result = meshtastic.ble_scan()
+
+        assert result.success is True
+        assert "BLE scan complete" in result.message
+        assert "AA:BB:CC" in result.data.get('devices', '')
+
+
 class TestServiceCommands:
     """Test service command module."""
 

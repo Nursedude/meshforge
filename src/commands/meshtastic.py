@@ -116,14 +116,20 @@ def _run_command(args: List[str], timeout: int = 60, auto_detect: bool = True) -
                     # Retry with new connection
                     return _run_command(args, timeout, auto_detect=False)
 
-                # Provide helpful message for connection failure
-                return CommandResult.fail(
+                # Provide helpful message for connection failure. Use
+                # ``not_available`` (not ``fail``) — semantically right
+                # for "device unreachable" + ``fail()`` doesn't accept
+                # ``fix_hint`` and would raise TypeError here, caught
+                # only by the outer ``except Exception`` which would
+                # then surface the Python error string to the operator
+                # instead of this helpful message. Pattern-audit
+                # Finding #11 (2026-05-19).
+                return CommandResult.not_available(
                     message="Cannot connect to Meshtastic device.\n\n"
                             "For USB radios: Ensure device is connected\n"
                             "For HAT radios: Start meshtasticd service\n"
                             "  sudo systemctl start meshtasticd",
-                    error="connection_refused",
-                    fix_hint="Check device connection or start meshtasticd"
+                    fix_hint="Check device connection or start meshtasticd",
                 )
 
             return CommandResult.fail(
@@ -907,6 +913,18 @@ def ble_scan() -> CommandResult:
             text=True,
             timeout=60
         )
+        # Gate on returncode — meshtastic --ble-scan exits non-zero
+        # when the BLE adapter is missing / hcitool can't open it /
+        # bluez isn't loaded. Pre-2026-05-19 the wrapper reported
+        # "BLE scan complete" regardless, leaving the caller to
+        # interpret an empty `devices` field as "no nearby devices"
+        # when in fact the scan never ran. Pattern-audit Finding #12.
+        if result.returncode != 0:
+            return CommandResult.fail(
+                f"BLE scan failed: {result.stderr or result.stdout}",
+                error=result.stderr or "ble_scan_failed",
+                raw=result.stdout,
+            )
         return CommandResult.ok(
             "BLE scan complete",
             data={'devices': result.stdout},
