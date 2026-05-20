@@ -23,7 +23,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from monitoring.mqtt_subscriber import (
+from monitoring._mqtt_types import (
     MQTTMessage,
     MQTTNode,
     VALID_LAT_RANGE,
