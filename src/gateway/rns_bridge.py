@@ -888,6 +888,28 @@ class RNSMeshtasticBridge(
                         f"(msg_id={msg_id[:8]} kind={kind})"
                     )
                     return False
+                # Symmetric channel placeholder handling — mirrors the
+                # MeshCore branch below. MeshtasticBroadcastBridge mints
+                # the "channel:<idx>" origin_address when a broadcast
+                # arrives without a usable source_address/source_id
+                # (canonical_message synthesizes "!00000000" when fromId
+                # is missing, so this is a rare edge path today, but the
+                # asymmetry was a latent footgun — without parsing, the
+                # placeholder string was passed as destinationId to
+                # meshtastic-python, producing undefined behaviour).
+                if origin_address.startswith("channel:"):
+                    try:
+                        ch_idx = int(origin_address.split(":", 1)[1])
+                    except (ValueError, IndexError):
+                        logger.warning(
+                            "ack synthesis: bad channel placeholder %r "
+                            "for msg_id=%s",
+                            origin_address, msg_id[:8],
+                        )
+                        return False
+                    return bool(self._mesh_handler.send_text(
+                        text, destination=None, channel=ch_idx,
+                    ))
                 return bool(self._mesh_handler.send_text(
                     text, destination=origin_address, channel=0,
                 ))

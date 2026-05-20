@@ -421,3 +421,94 @@ class TestAckSynthesisOpts:
         assert bridge._persistent_queue.get_ack_status(msg_id) is None
         emitted = bridge._maybe_emit_ack_for_msgid(msg_id, kind='delivered')
         assert emitted is False
+
+
+class TestMeshtasticChannelPlaceholderDispatch:
+    """Pattern audit (2026-05-19): the channel:<idx> placeholder that
+    ``MeshtasticBroadcastBridge`` mints for source-less broadcasts must
+    dispatch as a Meshtastic CHANNEL broadcast (destination=None,
+    channel=idx), not as a DM with destination="channel:N". Mirrors the
+    symmetric MeshCore branch — closes the asymmetric placeholder bug
+    that would have produced an invalid destinationId on send_text.
+    """
+
+    def test_meshtastic_origin_channel_placeholder_dispatches_as_broadcast(
+        self, integrated_bridge,
+    ):
+        """ack_origin_address="channel:2" → send_text called with
+        destination=None, channel=2 (broadcast on slot 2). NEVER as
+        destination="channel:2"."""
+        bridge = integrated_bridge
+        bridge._mesh_handler = MagicMock()
+        bridge._mesh_handler.send_text.return_value = True
+
+        msg_id = bridge.enqueue_message(
+            "ping",
+            destination="!aabbccdd",
+            dest_type="meshtastic",
+            ack_required=True,
+            ack_origin_network="meshtastic",
+            ack_origin_address="channel:2",
+        )
+        emitted = bridge._maybe_emit_ack_for_msgid(msg_id, kind='delivered')
+
+        assert emitted is True
+        bridge._mesh_handler.send_text.assert_called_once_with(
+            f"[delivered: {msg_id[:8]}]",
+            destination=None,
+            channel=2,
+        )
+
+    def test_meshtastic_origin_dm_address_dispatches_as_dm(
+        self, integrated_bridge,
+    ):
+        """Non-placeholder address (e.g., "!senderaddr") must still
+        flow through the DM path with destination=address, channel=0.
+        Regression guard against the placeholder-parsing change
+        breaking the established DM contract."""
+        bridge = integrated_bridge
+        bridge._mesh_handler = MagicMock()
+        bridge._mesh_handler.send_text.return_value = True
+
+        msg_id = bridge.enqueue_message(
+            "ping",
+            destination="!aabbccdd",
+            dest_type="meshtastic",
+            ack_required=True,
+            ack_origin_network="meshtastic",
+            ack_origin_address="!senderaddr",
+        )
+        bridge._maybe_emit_ack_for_msgid(msg_id, kind='delivered')
+
+        bridge._mesh_handler.send_text.assert_called_once_with(
+            f"[delivered: {msg_id[:8]}]",
+            destination="!senderaddr",
+            channel=0,
+        )
+
+    def test_meshtastic_origin_malformed_channel_placeholder_logs_and_drops(
+        self, integrated_bridge, caplog,
+    ):
+        """A malformed placeholder ("channel:abc", "channel:") must
+        log a warning and return False — NEVER fall through to a
+        send with the literal string as destinationId."""
+        import logging
+        bridge = integrated_bridge
+        bridge._mesh_handler = MagicMock()
+
+        msg_id = bridge.enqueue_message(
+            "ping",
+            destination="!aabbccdd",
+            dest_type="meshtastic",
+            ack_required=True,
+            ack_origin_network="meshtastic",
+            ack_origin_address="channel:not-an-int",
+        )
+        with caplog.at_level(logging.WARNING, logger='gateway.rns_bridge'):
+            emitted = bridge._maybe_emit_ack_for_msgid(msg_id, kind='delivered')
+
+        assert emitted is False
+        bridge._mesh_handler.send_text.assert_not_called()
+        assert any(
+            "bad channel placeholder" in r.message for r in caplog.records
+        )
