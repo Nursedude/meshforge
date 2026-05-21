@@ -1922,3 +1922,158 @@ catches the inverse failure: a HAT template smuggling `Webserver:` overrides int
 `scripts/verify_post_install.sh` checks: meshtasticd binary, config.yaml validity,
 Webserver section, port 9443, radio detection, config.d/, rnsd, udev rules.
 Also available via `meshforge --verify-install`.
+
+---
+
+## Issue #58: Upstream HAT template smuggled `Webserver: Port: 443` → :9443 silently moved (2026-05-18)
+
+**Symptom**: moc3's dashboard showed `meshtasticd` as the active-but-
+unreachable yellow ◐ surfaced by the new probe in commit `8b06ebd`.
+Daemon reported `active (running)` for 18h, `:4403` was bound, but
+nothing answered on `:9443`. Every MeshForge consumer that posts to
+`https://127.0.0.1:9443/api/v1/toradio` (the gateway TX SSOT in
+`meshtastic_protobuf_client.send_text_direct`) failed silently — moc3
+couldn't bridge a single RNS→Mesh downlink the whole time.
+
+**Root cause**: `/etc/meshtasticd/available.d/lora-MeshAdv-900M30S.yaml`
+shipped by `chrismyers2000/MeshAdv-Pi-Hat` (vendored into meshtasticd
+2.7.15) carries a stray `Webserver: Port: 443` block that has nothing
+to do with the HAT's radio config. The standard activation flow —
+`cp available.d/<hat>.yaml config.d/` — merges this overlay on top of
+`/etc/meshtasticd/config.yaml`, where `Port: 9443` lives. Overlay wins.
+Meshtasticd happily binds `:443` instead. The base config file is
+untouched (Issue #22's invariant holds), so visual inspection of
+`config.yaml` doesn't reveal the override; only checking the live
+listening port catches it. moc and moc2 use the same HAT name but
+installed earlier, before the upstream template gained this stray
+block, so their `config.d/` copies are clean.
+
+**Fix (code)**: `src/launcher_tui/handlers/meshtasticd_config.py` —
+`_HAT_OVERLAY_FORBIDDEN_KEYS = {Webserver, TCP, Logging, MQTT,
+Bluetooth, General}` plus `_sanitize_hat_overlay(text) -> (yaml,
+stripped[])`. `activate_hardware_config` now reads the source, strips
+forbidden top-level blocks, writes the cleaned text, and warns with
+the stripped key list. YAML parse errors pass through untouched —
+meshtasticd will surface them loudly rather than silently mangling
+operator content.
+
+**Fix (moc3)**: copied moc's clean `config.d/lora-MeshAdv-900M30S.yaml`
+over the broken one, restarted meshtasticd. `:9443` rebound in <5s,
+gateway HTTPS handshake + `/api/v1/fromradio` both returned 200, status
+bar flipped from `'-'` (SYM_STOPPED) back to `'*'` (SYM_RUNNING).
+
+**Tests** (`tests/test_hat_overlay_sanitizer.py`, 7 assertions):
+the moc3-actual broken template content is pinned inline as
+`MOC3_BROKEN_TEMPLATE`. `TestSanitizerStripsTheMoc3Webserver` asserts
+(a) Webserver vanishes from the parsed output, (b) the literal byte
+string `Port: 443` is nowhere in the sanitized text, (c) the Lora
+block survives intact. `TestSanitizerLeavesCleanTemplatesAlone` keeps
+the sanitizer from rewriting healthy templates. `TestSanitizerFailsSafe`
+covers YAML parse error + non-mapping top-level (both pass through
+unchanged). `TestForbiddenKeysContract::test_webserver_is_forbidden`
+locks `Webserver` in the forbidden set so a future cleanup can't
+silently drop it.
+
+**Operator detection recipe** (works on any fleet box):
+```bash
+ssh <box> "ss -tnlp 2>/dev/null | grep meshtasticd"
+# Healthy:    LISTEN ... 0.0.0.0:9443 + 0.0.0.0:4403
+# Zombie:     LISTEN ... 0.0.0.0:443  + 0.0.0.0:4403   ← upstream template bit you
+```
+
+**Companion to Issue #8b06ebd** (status_bar/dashboard distinguishing
+active-but-unreachable from running): the UI surfaces the zombie; the
+sanitizer prevents it on first activation; the upstream issue to
+`chrismyers2000/MeshAdv-Pi-Hat` will fix the source.
+
+
+
+
+---
+
+## Issue #59: Federation polls a permanently-failing peer every cycle — exponential backoff (2026-05-18)
+
+**Symptom**: Operational survey of moc/moc1/moc2/moc3 showed every box's
+`/api/status.federation.peer_status[]` had moc3 stuck at `ok=false,
+last_error=Connection refused, consecutive_failures` climbing.
+Reason: moc3 is gateway-only per the fleet topology — it has no
+`meshforge-map.service`, no `:5000` listener. Federation kept hitting
+it every 60s anyway, every cycle failed identically, the counter
+climbed forever. The row drowned out genuine failures that operators
+needed to spot in the rollup.
+
+Broader pattern: any peer that's been unreachable for a while (a box
+in a long reboot, a network partition, an intentionally-decommissioned
+host that's still in fleet.json) produces the same noise — fixed-
+interval polling has no way to step back.
+
+**Root cause**: `FederationCollector.poll_once` polled every peer in
+`self._peers` on every cycle, regardless of failure history. The
+`consecutive_failures` counter was already tracked (Issue #54), but
+nothing acted on it.
+
+**Fix** (Option B per the 2026-05-18 lab-vs-handoff design call —
+preferred over surgical roster cleanup because the lab is now a
+handoff target for an external dev, and code-shape fixes beat
+config-shape fixes when state drift across deployments is a risk):
+
+`src/utils/map_federation.py`:
+- New `FederationPeerStatus` fields: `in_backoff: bool`,
+  `next_eligible_poll_ts: Optional[float]`, `backoff_multiplier: int`.
+- New `FederationCollector` knobs (defaults exposed at module level):
+  `backoff_threshold=3` (failures before engaging), `backoff_base=2`
+  (exponential factor), `backoff_max_multiplier=10` (cap at 10×
+  poll_interval). `time_fn` injected for testable clock control.
+- New `_compute_backoff(consecutive_failures, now)` pure helper —
+  shared by both branches, math pinned by `TestComputeBackoffPure`.
+- `poll_once` now buckets peers into `due_peers` (next_eligible_poll_ts
+  is None or ≤ now) and `skipped_peers`. Skipped peers carry forward
+  their last status unchanged except for `peer_name` refresh, so
+  `/api/status` shows the labeled row, not a phantom-absent peer.
+- Engage/clear transitions log at INFO level once each so operators
+  see the state change without log flooding.
+
+`src/utils/map_http_handler.py`:
+- `/api/status.federation.peer_status[]` now serializes `in_backoff`,
+  `backoff_multiplier`, `next_eligible_poll_ts` per peer. Visibility
+  per the design principle: "A failed system saying I'm failing in
+  *this specific way* is worth more than a quiet one."
+
+**Tests** (13 new in `tests/test_map_federation.py`):
+- `TestBackoffEngages` (2): below-threshold stays active; threshold-th
+  failure flips in_backoff with multiplier=1 and stamps next_eligible.
+- `TestBackoffEscalates` (2): multiplier doubles per failure (1→2→4→8);
+  capped at `max_multiplier` past the integer-overflow horizon.
+- `TestBackoffSkipsPolls` (2): peer in active backoff window is NOT
+  fetched (call_count unchanged); becomes eligible exactly when clock
+  crosses next_eligible_poll_ts.
+- `TestBackoffRecovery` (1): one successful poll clears all backoff
+  state (multiplier=1, in_backoff=False, next_eligible=None,
+  consecutive_failures=0).
+- `TestBackoffMultiPeerIsolation` (1): healthy peer keeps getting
+  polled while a separate peer is in backoff — the bad peer doesn't
+  suppress the good one.
+- `TestBackoffStateInCarriedSnapshot` (1): a skipped peer still has
+  its row in `/api/status` with `in_backoff=True` (so the operator
+  sees "labeled, paused" not "missing").
+- `TestComputeBackoffPure` (3): the math helper is pinned in isolation
+  — below-threshold, at-threshold, far-above (capped).
+
+**Operator detection recipe**:
+```bash
+curl -s http://<box>:5000/api/status | \
+  jq '.federation.peer_status[] | select(.in_backoff) |
+      {peer_name, hostname, consecutive_failures, backoff_multiplier,
+       next_eligible_poll_ts, last_error}'
+# Empty output = no peers in backoff = federation is healthy
+# Rows = peers the collector has self-quieted; check last_error to see why
+```
+
+**Companion to Issues #54 (peer_name correlation) and #55 (`/fleet/slo`
+latency cliff)**: the federation triad — diagnostics (#54), raw budget
+(#55), and now self-pacing (#59) — collectively turn "federation
+persistent issues" from a recurring class into a closed loop. moc3's
+roster cleanup (the design call deferred at the start of this turn)
+is now moot: the system handles it.
+
+

@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import socket
+import subprocess
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -116,6 +117,132 @@ def _identity_path_for(name: str) -> Path:
 
 RNS_INIT_TIMEOUT_S = float(os.environ.get("MESHFORGE_LAB_RNS_INIT_TIMEOUT", "60"))
 
+# Cmdline substrings that are legitimate owners of an `@rns/<instance>`
+# shared-instance LISTEN socket. Deliberately narrow: rnsd (canonical)
+# and `reticulum` (some distros' wrapper). Other daemons that host an
+# RNS instance via `share_instance = Yes` (MeshAnchor's daemon.py is the
+# concrete instance — see Issue #69 / 2026-05-20) are NOT allowed,
+# because their RPC subprocess speaks a different dialect than rnsd
+# and breaks every RNS client that joins as a shared-instance peer.
+# The right deployment for a box hosting both projects is to run only
+# one RNS host (rnsd) and have the other daemon join as a client.
+_RNS_LISTENER_ALLOWED_PATTERNS = ("rnsd", "reticulum")
+
+
+def _parse_ss_listener_line(line: str, instance_name: str) -> Optional[tuple]:
+    """Extract ``(pid:int, cmd:str)`` from one ``ss -xnpl`` line for the
+    `@rns/<instance>` socket. Returns None if the line doesn't match.
+
+    Tolerant of the kernel's varying field count (the address column
+    sometimes wraps). Anchors on the `@rns/<instance>` token and on the
+    ``users:(("<cmd>",pid=<n>,...))`` tail that ``ss -p`` appends.
+    """
+    needle = f"@rns/{instance_name}"
+    if needle not in line:
+        return None
+    m = re.search(r'users:\(\("([^"]+)",pid=(\d+),', line)
+    if not m:
+        return None
+    return int(m.group(2)), m.group(1)
+
+
+def _read_instance_name_from_config(configdir: str) -> Optional[str]:
+    """Parse ``instance_name = <name>`` out of ``<configdir>/config``.
+
+    Returns None if the file is absent or the directive isn't present —
+    a missing config is normal during first-ever RNS init.
+    """
+    try:
+        path = Path(configdir) / "config"
+        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw.strip()
+            if line.startswith("instance_name"):
+                _, _, rhs = line.partition("=")
+                name = rhs.strip()
+                if name:
+                    return name
+    except OSError:
+        pass
+    return None
+
+
+def check_rns_listener_owner(instance_name: str) -> Optional[str]:
+    """Verify ``@rns/<instance_name>`` LISTEN owner looks like a real RNS
+    process. Returns None on pass (or no listener found — let
+    ``RNS.Reticulum()`` create one). Raises ``RuntimeError`` with a
+    diagnostic message when the listener is owned by a process whose
+    cmdline doesn't match any pattern in ``_RNS_LISTENER_ALLOWED_PATTERNS``.
+
+    Why: a non-RNS process can claim ``@rns/<name>`` ahead of rnsd (e.g.
+    a manually-launched MeshAnchor daemon that orphans to PID 1 and
+    holds the abstract socket for hours). Every subsequent RNS client
+    connects to that process, receives non-RNS-protocol bytes, and dies
+    with EOFError from ``rpc_connection.recv()`` deep inside RNS — a
+    trace that takes 30+ minutes to root-cause. This preflight surfaces
+    the collision in one line at process start.
+
+    Variant of the rnsd-RPC fragility class — siblings: Issue #58 (HAT
+    overlay port hijack), #61 (single-thread socketserver deadlock),
+    #63 (delivery_counters write canary), #68 (unix_stream_connect
+    wedge).
+    """
+    try:
+        proc = subprocess.run(
+            ["ss", "-xnpl"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        # ss missing or hung — don't fail-loud here; let RNS proceed and
+        # surface its own error if there's a real problem.
+        logger.debug("lab: rns-listener preflight skipped (ss unavailable: %s)", exc)
+        return None
+
+    pids = set()
+    for line in proc.stdout.splitlines():
+        parsed = _parse_ss_listener_line(line, instance_name)
+        if parsed:
+            pids.add(parsed[0])
+
+    if not pids:
+        # No existing listener — RNS will create one. Nothing to check.
+        return None
+
+    # `ss -p` only reports the binary basename (e.g. "python3"), which
+    # is identical for rnsd and any rogue python daemon. Read the full
+    # cmdline from /proc to make the allowed-vs-suspicious determination.
+    suspicious = []
+    full_cmdlines: dict = {}
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                cmdline = fh.read().replace(b"\x00", b" ").decode(
+                    "utf-8", errors="replace").strip()
+        except OSError:
+            # Process died between ss and /proc read — treat as gone,
+            # no diagnostic possible.
+            cmdline = ""
+        full_cmdlines[pid] = cmdline
+        if not any(pat in cmdline.lower() for pat in _RNS_LISTENER_ALLOWED_PATTERNS):
+            suspicious.append(pid)
+
+    if suspicious:
+        pid = suspicious[0]
+        cmdline = full_cmdlines[pid] or "<unknown — process exited>"
+        raise RuntimeError(
+            f"RNS shared-instance listener @rns/{instance_name} is owned by "
+            f"pid={pid} cmd={cmdline!r} — not an RNS process. Every RNS "
+            f"client connecting to this socket will fail with EOFError on the "
+            f"first RPC call. Fix: identify and stop this process "
+            f"(`sudo kill {pid}`), then `sudo systemctl restart rnsd.service`."
+        )
+
+    owner_pid = next(iter(pids))
+    logger.info(
+        "lab: rns-listener preflight OK — @rns/%s owned by pid=%d (%s)",
+        instance_name, owner_pid, full_cmdlines[owner_pid],
+    )
+    return None
+
 
 def init_reticulum_with_watchdog(
     configdir: str,
@@ -144,8 +271,17 @@ def init_reticulum_with_watchdog(
     Returns the ``Reticulum`` instance on success. Re-raises whatever
     the constructor raised on failure (preserves existing try/except
     semantics in callers).
+
+    Before the constructor runs, verify the shared-instance LISTEN socket
+    isn't owned by a foreign process (see ``check_rns_listener_owner``).
+    The owner is parsed from the configdir's ``config`` file when present;
+    if absent or unparseable, the check is skipped silently.
     """
     import RNS
+
+    instance_name = _read_instance_name_from_config(configdir)
+    if instance_name:
+        check_rns_listener_owner(instance_name)
 
     done = threading.Event()
 
