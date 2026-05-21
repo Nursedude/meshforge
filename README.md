@@ -13,7 +13,7 @@
   <a href="https://github.com/Nursedude/meshforge"><img src="https://img.shields.io/badge/version-0.6.0--beta-blue.svg" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green.svg" alt="License"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.9+-yellow.svg" alt="Python"></a>
-  <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-4008%20passing-brightgreen.svg" alt="Tests"></a>
+  <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-4719%20passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 <p align="center">
@@ -234,7 +234,7 @@ These features have been used in actual mesh deployments with physical radios an
 
 | Category | Capabilities |
 |----------|-------------|
-| **TUI Interface** | Installer, service control, device config wizard, gateway config, diagnostics — 68 handlers via registry pattern |
+| **TUI Interface** | Installer, service control, device config wizard, gateway config, diagnostics — 93 handlers via registry pattern |
 | **Radio Management** | Install/configure meshtasticd, LoRa presets, channels, SPI/USB auto-detect |
 | **RF Engineering** | Link budget, Fresnel zone, path loss, site planning, space weather (NOAA), Cython-optimized |
 | **AI Diagnostics** | Offline knowledge base (20+ topics), rule-based troubleshooting, confidence scoring |
@@ -244,7 +244,7 @@ These features have been used in actual mesh deployments with physical radios an
 | **Service Management** | systemd integration via `service_check.py` (single source of truth), health monitoring |
 | **First-Run Wizard** | Hardware auto-detect templates, region selection, service verification |
 | **Standalone RF Tools** | Zero-dependency RF calculator, works without sudo or radio hardware |
-| **Multi-Mesh Gateway** | Meshtastic ↔ RNS/LXMF bridge via MQTT, composable-bridges model, refusal-on-inconsistency preflight, persistent SQLite queue. Field-deployed on moc / fleet-host-1 / fleet-host-2 / fleet-host-3 / fleet-host 2026-04-24 |
+| **Multi-Mesh Gateway** | Meshtastic ↔ RNS/LXMF bridge via MQTT, composable-bridges model, refusal-on-inconsistency preflight, persistent SQLite queue. Field-deployed across the operator's 5-box LAN fleet + 1 cloud peer (since 2026-04-24) |
 | **Gateway + RNode** | rnsd RNodeInterface on USB LoRa radio alongside Meshtastic HAT; RNS-LoRa egress at 903.625 MHz / SF7 — validated on fleet-host-3 |
 
 ### Beta (Automated Tests Pass, Needs Field Validation)
@@ -318,22 +318,32 @@ MeshForge retains MeshCore as an optional gateway handler.
 
 | Feature | Notes |
 |---------|-------|
-| Gateway field-deployed | Single canonical gateway live in the fleet; LXMF directed downlink via `@id` / `@short_name` |
+| Gateway field-deployed | Canonical gateway live in the fleet; LXMF directed downlink via `@id` / `@short_name`; bidirectional Meshtastic ↔ LXMF broadcast bridge symmetric on both ecosystems |
 | Live NOC map (`:5000`) | Field-validated on 5-Pi fleet; per-protocol counts, federation across fleet boxes |
 | Public cloud demo (`:8808` → VPS) | `https://meshforge-maps.ddns.net/` — static-push from on-prem, dark CartoDB tiles, NOAA space weather + alerts, slide-14-style network-layer pills |
 | Federation across fleet | Each box's map sees every other box's nodes (24h freshness window) |
+| Federation self-pacing | Two-tier exponential backoff per peer (Issues #59/#65): permanently-failing peers stop drowning the rollup; tier-2 cap (60×) for long outages preserves recovery detection |
+| Federation directory gzip + size alarm | `/api/nodes/directory` 35 MB→4.7 MB on the wire (~7.6× compression); 40 MB alarm threshold (Issue #64) |
 | Coverage maps | Folium generation field-tested with real GPS position data |
 | Tiered node-directory retention | 30d for local origins, 7d for external bulk; 50k LRU cap |
+| Honest delivery counters (Issue #66) | Sender→destination ack tracking substrate; SQLite-backed schema + LXMF synthesis + sweep; observability via `scripts/issue66_ack_status.py` |
+| Sandbox preflight + audit (Issue #60) | Hardened systemd units fail loud at startup if `ReadWritePaths=` is missing a required dir; MF017 audit lints unit templates at PR time |
+| `meshforge-tracer` lab measurement | Per-pair PING+ACK across the fleet; `/lab/rollup` aggregator with `Last 1h` and `Last 24h` tables (mean / p95 / fail % / breakdown) |
+| RNS listener-owner preflight (Issue #69) | `lab/_lab_common.py:check_rns_listener_owner` catches foreign daemons claiming `@rns/<instance>` before they EOF every RNS client |
 | Fleet-sync classifier | `scripts/fleet_sync.sh` skips daemon restarts on docs-only commits |
 | Memory persistence + mirror | Private GitHub backup of operator's Claude memory with secrets-grep gate |
+
+**Reliability arc (Issues #58-#69, 2026-05-18 → 2026-05-20)**
+
+A class of "service running but not serving" failures was identified across the fleet — hardened systemd sandboxes failing silently, single-thread `socketserver` deadlocks during shutdown, default-value drift defeating bumps, rnsd RPC fragility wedging map server main thread, and foreign daemons claiming RNS shared-instance listeners. Each closed in code (preflight, audit, or refusal-to-start) with a regression-pinning test against the actual incident shape. Full ledger in `.claude/foundations/persistent_issues.md`.
 
 **Currently Soaking**
 
 | Feature | Status |
 |---------|--------|
-| Gateway reliability counters | `R→M` drop rate audit (Issue #50/#51 lineage) |
 | Cross-broker MQTT bridge | LongFast ecosystem multi-broker visibility |
-| MeshAnchor `/fleet/rollup` parity | 6th fleet box stood up 2026-05-02 |
+| MeshAnchor `/fleet/rollup` parity | Federation triad (#54/#55/#56/#59/#64/#65) collectively closed |
+| Issue #66 ack first callers | Software path complete; radio-side smoke + MeshCore correlation are remaining operator handoffs |
 
 **MeshAnchor Track**
 
@@ -356,7 +366,6 @@ MeshForge retains MeshCore as an optional gateway handler.
 
 | Feature | Limitation | Workaround |
 |---------|-----------|------------|
-| **Gateway Bridge** | Not yet field-tested with real radio traffic | Unit tests pass (140+); field QA planned |
 | **Coverage Maps** | Not yet validated with real GPS position data | Requires MQTT subscriber collecting positions |
 | **Live NOC Map** | Node trails require historical data | Enable MQTT subscriber for data collection |
 | **MeshCore** | Optional handler on main; full support moving to MeshAnchor | Field testing on alpha branch |
@@ -367,18 +376,19 @@ MeshForge retains MeshCore as an optional gateway handler.
 
 ### Testing Reality Check
 
-MeshForge has **2,975 automated tests** across 81 files. However, automated tests
+MeshForge has **4,719 automated tests** across 143 files. However, automated tests
 validate code paths with mocks — they do not replace field testing. The following
 features have strong unit test coverage but have **not been run with real services
 and radios** in a live deployment:
 
-- Gateway bridge (140 tests — mocked MQTT/RNS/Meshtastic)
 - Coverage maps (tested with synthetic position data)
-- MeshCore handler (602 tests — mocked meshcore_py; full support moving to MeshAnchor)
-- Tri-bridge routing (684 tests — all three protocols mocked; moving to MeshAnchor)
+- MeshCore handler (mocked meshcore_py; full support moved to MeshAnchor)
+- Tri-bridge routing (all three protocols mocked; moved to MeshAnchor)
 
 **Field-validated features** (tested with real hardware): TUI, meshtasticd config,
-RF tools, RNS/rnsd integration, NomadNet, service management, standalone tools.
+RF tools, RNS/rnsd integration, NomadNet, service management, standalone tools,
+gateway bridge (Meshtastic ↔ LXMF directed + broadcast), lab tracer, federation
+across the fleet.
 
 **Reliability ratio — single-box vs fleet monitor:** The cross-host fleet
 rollup has the **least field time** of any subsystem and the most documented
@@ -706,7 +716,7 @@ src/
 │   ├── backend.py         # whiptail/dialog abstraction
 │   ├── startup_checks.py  # Environment checks + conflict resolution
 │   ├── status_bar.py      # Service status bar
-│   └── handlers/          # 64 registered command handlers
+│   └── handlers/          # 93 registered command handlers
 ├── commands/              # Command modules
 │   ├── propagation.py     # Space weather & HF propagation (NOAA primary)
 │   ├── rns.py             # RNS/Reticulum commands
@@ -932,7 +942,7 @@ connection (port 4403):
 
 ### Test Coverage
 
-**4,008 tests** across 119 test files (selected high-volume files below):
+**4,719 tests** across 143 test files (selected high-volume files below):
 
 | Test File | Tests | Covers |
 |-----------|-------|--------|
@@ -953,7 +963,7 @@ connection (port 4403):
 | `test_startup_health.py` | 20 | Startup health checks, service verification |
 | `test_compliance.py` | 13 | HAM compliance validation, encryption modes |
 
-*Note: Test suite was trimmed from 4,017 to 1,411 in v0.5.4 to focus on gateway-essential coverage. Since then, tests have grown to 2,975 across 81 files as new features were added with test coverage. All tests use mocked external services — field validation with real hardware is a separate QA track.*
+*Note: Test suite was trimmed from 4,017 to 1,411 in v0.5.4 to focus on gateway-essential coverage. Since then it has grown to 4,719 across 143 files as new features and the Issues #58-#69 reliability arc shipped with regression-pinning tests. All tests use mocked external services — field validation with real hardware is a separate QA track.*
 
 ```bash
 python3 -m pytest tests/ -v            # Run all tests
@@ -1056,7 +1066,7 @@ For upgrade paths see [Upgrading MeshForge](#upgrading-meshforge).
 
 Canonical deployment guide: **[docs/GATEWAY_DEPLOYMENT.md](docs/GATEWAY_DEPLOYMENT.md)** — architecture diagram, prereqs, per-box recipe, fleet truth table, known gotchas.
 
-Active gateway fleet (as of 2026-04-24): **moc**, **fleet-host-1**, **fleet-host-2**, **fleet-host-3**, **fleet-host** — all on the composable-bridges model below.
+Active gateway fleet (as of 2026-05-20): operator's 5-box LAN cluster + 1 cloud peer — all on the composable-bridges model below.
 
 #### Deploy a new gateway box
 
