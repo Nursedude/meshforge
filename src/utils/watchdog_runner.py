@@ -48,8 +48,10 @@ from utils.watchdog_probes import (
     Signal,
     probe_delivery_write_canary,
     probe_http_local,
+    probe_lxmf_process_wedge,
     probe_main_thread_wedge,
     probe_rns_namespace_collision,
+    probe_rns_shared_instance_responsive,
     probe_service_inactive,
     probe_tracer_peer_unreachable,
     signal_to_dict,
@@ -180,11 +182,27 @@ def run_all_probes(
         if sig is not None:
             signals.append(sig)
 
-    # Main-thread wedge — /proc read, root only.
+    # RNS shared-instance responsive — Unix socket connect with timeout.
+    # Catches today's (2026-05-21 moc1) wedge class where rnsd is alive
+    # but new shared-instance connects hang. Cheap: 2s timeout worst case.
+    if rns_instance_name:
+        sig = probe_rns_shared_instance_responsive(rns_instance_name)
+        if sig is not None:
+            signals.append(sig)
+
+    # Main-thread wedge — /proc read, root only. Now scans ALL task
+    # threads (not just main) so worker-thread wedges (today's class)
+    # surface too.
     for unit in services_wedge_check:
         sig = probe_main_thread_wedge(unit)
         if sig is not None:
             signals.append(sig)
+
+    # User-scope RNS-using processes — root can't easily query
+    # `systemctl --user`, so walk /proc and match by cmdline pattern.
+    # Catches meshforge-echo.service and similar user-scope units that
+    # would otherwise need DBUS env setup to query by name.
+    signals.extend(probe_lxmf_process_wedge())
 
     # HTTP local probe — only if the map service is supposed to be
     # active. A bound-but-wedged port is the Issue #61 class.

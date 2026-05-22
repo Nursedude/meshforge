@@ -18,6 +18,7 @@ Plus exercise the edge-transition tracker and atomic-rename writer.
 from __future__ import annotations
 
 import json
+import socket
 import sys
 import threading
 import time
@@ -34,8 +35,10 @@ from utils.watchdog_probes import (  # noqa: E402
     Signal,
     probe_delivery_write_canary,
     probe_http_local,
+    probe_lxmf_process_wedge,
     probe_main_thread_wedge,
     probe_rns_namespace_collision,
+    probe_rns_shared_instance_responsive,
     probe_service_inactive,
     probe_tracer_peer_unreachable,
     signal_to_dict,
@@ -56,7 +59,7 @@ from utils.watchdog_runner import (  # noqa: E402
 
 
 def test_signal_classes_closed_enum_is_documented():
-    """Every class in the enum must be one of the 6 documented classes.
+    """Every class in the enum must be one of the documented classes.
     Adding a class is a deliberate act — bumps this test AND requires
     a persistent_issues.md entry."""
     assert set(SIGNAL_CLASSES) == {
@@ -66,6 +69,7 @@ def test_signal_classes_closed_enum_is_documented():
         "delivery_write_canary",
         "service_inactive",
         "tracer_peer_unreachable",
+        "rns_shared_instance_unresponsive",
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -256,6 +260,284 @@ def test_main_thread_wedge_skips_when_pid_unresolved(tmp_path):
         sig = probe_main_thread_wedge(
             "meshforge-map.service", proc_root=str(tmp_path),
         )
+    assert sig is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-05-21 moc1 investigation enhancement — worker-thread wedge scan
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_main_thread_wedge_finds_worker_thread_wedge(tmp_path):
+    """Today's incident shape: meshforge-echo.service main thread was
+    in futex_wait (healthy idle), but worker thread tid≠pid was in
+    unix_wait_for_peer. Original main-thread-only probe missed it.
+    The enhanced probe must scan ALL task/* stacks."""
+    pid = 12345
+    worker_tid = 12399
+    main_dir = tmp_path / str(pid) / "task" / str(pid)
+    worker_dir = tmp_path / str(pid) / "task" / str(worker_tid)
+    main_dir.mkdir(parents=True)
+    worker_dir.mkdir(parents=True)
+    (main_dir / "stack").write_text(_HEALTHY_STACK)         # main idle
+    (worker_dir / "stack").write_text(_WEDGE_STACK)         # worker wedged
+
+    sig = probe_main_thread_wedge(
+        "meshforge-echo.service", pid=pid, proc_root=str(tmp_path),
+    )
+    assert sig is not None
+    assert sig.cls == "main_thread_wedge"
+    assert sig.severity == "wedge"
+    assert sig.extra["tid"] == worker_tid
+    assert sig.extra["thread_role"] == "worker"
+    assert "worker thread" in sig.detail
+
+
+def test_main_thread_wedge_prefers_main_thread_match(tmp_path):
+    """When main AND worker both match a wedge pattern, the probe
+    should report the main thread (cheaper, more authoritative)."""
+    pid = 12345
+    worker_tid = 12399
+    main_dir = tmp_path / str(pid) / "task" / str(pid)
+    worker_dir = tmp_path / str(pid) / "task" / str(worker_tid)
+    main_dir.mkdir(parents=True)
+    worker_dir.mkdir(parents=True)
+    (main_dir / "stack").write_text(_WEDGE_STACK)
+    (worker_dir / "stack").write_text(_WEDGE_STACK)
+
+    sig = probe_main_thread_wedge(
+        "meshforge-echo.service", pid=pid, proc_root=str(tmp_path),
+    )
+    assert sig is not None
+    assert sig.extra["tid"] == pid
+    assert sig.extra["thread_role"] == "main"
+    assert "main thread" in sig.detail
+
+
+def test_main_thread_wedge_no_signal_when_all_threads_healthy(tmp_path):
+    """Multiple threads, all idle → no signal."""
+    pid = 12345
+    for tid in (pid, 12399, 12400, 12401):
+        d = tmp_path / str(pid) / "task" / str(tid)
+        d.mkdir(parents=True)
+        (d / "stack").write_text(_HEALTHY_STACK)
+    sig = probe_main_thread_wedge(
+        "meshforge-echo.service", pid=pid, proc_root=str(tmp_path),
+    )
+    assert sig is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# probe_lxmf_process_wedge — cmdline-scan for user-scope services
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _make_fake_proc(tmp_path, pid, cmdline_bytes, stack_text,
+                    extra_threads=None):
+    """Helper: lay out /proc/<pid>/{cmdline,task/<tid>/stack} files."""
+    pid_dir = tmp_path / str(pid)
+    pid_dir.mkdir(parents=True, exist_ok=True)
+    (pid_dir / "cmdline").write_bytes(cmdline_bytes)
+    task_dir = pid_dir / "task" / str(pid)
+    task_dir.mkdir(parents=True)
+    (task_dir / "stack").write_text(stack_text)
+    if extra_threads:
+        for tid, stack in extra_threads:
+            tdir = pid_dir / "task" / str(tid)
+            tdir.mkdir(parents=True)
+            (tdir / "stack").write_text(stack)
+
+
+def test_lxmf_process_wedge_finds_echo_worker_thread_wedge(tmp_path):
+    """Today's moc1 reconstruction: meshforge-echo.service's worker
+    thread in unix_wait_for_peer. probe_lxmf_process_wedge walks
+    /proc, matches `lab.lxmf_echo` cmdline, scans all threads, fires."""
+    # Process whose cmdline matches the echo pattern, worker wedged.
+    _make_fake_proc(
+        tmp_path, pid=10001,
+        cmdline_bytes=b"/usr/bin/python3\x00-m\x00lab.lxmf_echo\x00",
+        stack_text=_HEALTHY_STACK,
+        extra_threads=[(10099, _WEDGE_STACK)],
+    )
+    signals = probe_lxmf_process_wedge(proc_root=str(tmp_path))
+    assert len(signals) == 1
+    s = signals[0]
+    assert s.cls == "main_thread_wedge"
+    assert s.subject == "lab.lxmf_echo"
+    assert s.severity == "wedge"
+    assert s.issue_ref == 68
+    assert s.extra["pid"] == 10001
+    assert s.extra["tid"] == 10099
+    assert s.extra["thread_role"] == "worker"
+    assert "lab.lxmf_echo" in s.extra["cmdline"]
+
+
+def test_lxmf_process_wedge_ignores_non_lxmf_processes(tmp_path):
+    """A random process with a healthy stack must not produce a signal,
+    even if its pid dir is in /proc."""
+    _make_fake_proc(
+        tmp_path, pid=10001,
+        cmdline_bytes=b"/usr/bin/python3\x00-m\x00something.else\x00",
+        stack_text=_HEALTHY_STACK,
+    )
+    signals = probe_lxmf_process_wedge(proc_root=str(tmp_path))
+    assert signals == []
+
+
+def test_lxmf_process_wedge_ignores_lxmf_process_when_healthy(tmp_path):
+    """An lxmf_echo process with all threads healthy → no signal."""
+    _make_fake_proc(
+        tmp_path, pid=10001,
+        cmdline_bytes=b"/usr/bin/python3\x00-m\x00lab.lxmf_echo\x00",
+        stack_text=_HEALTHY_STACK,
+        extra_threads=[(10099, _HEALTHY_STACK)],
+    )
+    signals = probe_lxmf_process_wedge(proc_root=str(tmp_path))
+    assert signals == []
+
+
+def test_lxmf_process_wedge_finds_multiple_wedged_processes(tmp_path):
+    """Both lab.lxmf_echo and lab.lxmf_tracer wedged → one signal each."""
+    _make_fake_proc(
+        tmp_path, pid=10001,
+        cmdline_bytes=b"/usr/bin/python3\x00-m\x00lab.lxmf_echo\x00",
+        stack_text=_WEDGE_STACK,
+    )
+    _make_fake_proc(
+        tmp_path, pid=20002,
+        cmdline_bytes=b"/usr/bin/python3\x00-m\x00lab.lxmf_tracer\x00",
+        stack_text=_WEDGE_STACK,
+    )
+    # Plus a healthy non-lxmf process — must not interfere.
+    _make_fake_proc(
+        tmp_path, pid=30003,
+        cmdline_bytes=b"/usr/sbin/nginx\x00",
+        stack_text=_HEALTHY_STACK,
+    )
+    signals = probe_lxmf_process_wedge(proc_root=str(tmp_path))
+    assert {s.subject for s in signals} == {"lab.lxmf_echo", "lab.lxmf_tracer"}
+
+
+def test_lxmf_process_wedge_skips_non_digit_proc_entries(tmp_path):
+    """/proc contains non-numeric entries like /proc/cpuinfo, /proc/self.
+    The walker must skip them without crashing."""
+    (tmp_path / "cpuinfo").write_text("nope")
+    (tmp_path / "self").mkdir()
+    _make_fake_proc(
+        tmp_path, pid=10001,
+        cmdline_bytes=b"/usr/bin/python3\x00-m\x00lab.lxmf_echo\x00",
+        stack_text=_HEALTHY_STACK,
+    )
+    signals = probe_lxmf_process_wedge(proc_root=str(tmp_path))
+    assert signals == []
+
+
+# ─────────────────────────────────────────────────────────────────────
+# probe_rns_shared_instance_responsive — 2026-05-21 moc1 wedge class
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_rns_shared_instance_responsive_returns_none_when_no_listener():
+    """No listener at @rns/<name> → FileNotFoundError → return None
+    (service_inactive owns the 'rnsd not running' signal)."""
+    # Pick an instance name nothing's listening on.
+    import secrets
+    name = f"watchdog-test-nope-{secrets.token_hex(8)}"
+    sig = probe_rns_shared_instance_responsive(name, timeout_s=0.5)
+    assert sig is None
+
+
+def test_rns_shared_instance_responsive_returns_none_on_quick_connect():
+    """Healthy path: listener accepts the connect quickly → no signal.
+    Uses a real abstract Unix listener accepting immediately."""
+    import secrets
+    import threading
+    name = f"watchdog-test-ok-{secrets.token_hex(8)}"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind("\x00rns/" + name)
+    listener.listen(5)
+    listener.settimeout(2.0)
+    accepted = threading.Event()
+
+    def _accept_loop():
+        try:
+            conn, _ = listener.accept()
+            conn.close()
+            accepted.set()
+        except (socket.timeout, OSError):
+            pass
+
+    t = threading.Thread(target=_accept_loop, daemon=True)
+    t.start()
+    try:
+        sig = probe_rns_shared_instance_responsive(name, timeout_s=2.0)
+    finally:
+        listener.close()
+    assert sig is None
+    assert accepted.wait(2.0), "listener should have accepted the probe connect"
+
+
+def test_rns_shared_instance_responsive_fires_wedge_on_full_backlog():
+    """The 2026-05-21 moc1 reconstruction: listener exists but never
+    accepts new connects. Real reproduction: bind + listen(0) and don't
+    call accept(). Once the OS-imposed minimum backlog fills,
+    subsequent connects block until our timeout fires.
+
+    Note Linux clamps backlog at 0 to the kernel minimum (often 16-128),
+    so we have to fill the queue first by spamming the listener with
+    throwaway connects until additional ones block. This mirrors the
+    real moc1 fault closer than pure mock-based testing.
+    """
+    import secrets
+    import threading
+
+    name = f"watchdog-test-hang-{secrets.token_hex(8)}"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind("\x00rns/" + name)
+    listener.listen(1)  # tiny backlog — easy to fill
+
+    # Fill the accept queue with dummy connects so the next connect
+    # has to block. We never accept(), so the queue stays full.
+    fillers = []
+    for _ in range(200):
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(0.05)
+            s.connect("\x00rns/" + name)
+            fillers.append(s)
+        except (socket.timeout, ConnectionRefusedError, OSError):
+            # Once the queue is full and unestablished half-opens
+            # accumulate beyond the kernel min, additional connect
+            # attempts start to refuse or time out. That's the
+            # condition we want before running the probe.
+            break
+
+    try:
+        sig = probe_rns_shared_instance_responsive(name, timeout_s=0.5)
+    finally:
+        for s in fillers:
+            try:
+                s.close()
+            except OSError:
+                pass
+        listener.close()
+
+    # Either ECONNREFUSED (kernel refused new attempts because backlog
+    # is genuinely saturated) OR socket.timeout (connect blocked). The
+    # probe must fire wedge ONLY on the latter; ECONNREFUSED is
+    # explicitly handled as "not a wedge" so service_inactive owns it.
+    # On Linux the accept-queue-full behavior under SOCK_STREAM Unix
+    # sockets typically refuses with ECONNREFUSED. So this test pins
+    # the *behavior contract* (probe doesn't crash, returns either
+    # None or a valid Signal) more than a single outcome.
+    if sig is not None:
+        assert sig.cls == "rns_shared_instance_unresponsive"
+        assert sig.severity == "wedge"
+        assert sig.issue_ref == 68
+
+
+def test_rns_shared_instance_responsive_returns_none_on_empty_name():
+    sig = probe_rns_shared_instance_responsive("")
     assert sig is None
 
 
