@@ -325,6 +325,12 @@ MF_PRE_HEAD=$(cd /opt/meshforge       2>/dev/null && git rev-parse HEAD 2>/dev/n
 MFMAPS_PRE_HEAD=$(cd /opt/meshforge-maps 2>/dev/null && git rev-parse HEAD 2>/dev/null || echo "")
 sync_repo meshforge       /opt/meshforge       meshforge-gateway "$MF_PRE_HEAD"     || rc1=$?
 sync_repo meshforge-map   /opt/meshforge       meshforge-map     "$MF_PRE_HEAD"     || rc1b=$?
+# Per-box watchdog (Phase 1 reliability — Issues #58-#69). Same repo as
+# meshforge-gateway/meshforge-map, so the re-pull is a no-op; the
+# try-restart picks up code changes in src/utils/watchdog_runner.py +
+# src/utils/watchdog_probes.py + src/utils/watchdog_actions.py.
+# Operator-disabled units stay disabled (try-restart semantics).
+sync_repo meshforge-watchdog /opt/meshforge   meshforge-watchdog "$MF_PRE_HEAD"     || rc1c=$?
 sync_repo meshforge-maps  /opt/meshforge-maps  meshforge-maps    "$MFMAPS_PRE_HEAD" || rc2=$?
 
 # Smoke: catch rollup self-loopback in ~/.config/meshanchor/fleet.json.
