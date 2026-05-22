@@ -56,6 +56,13 @@ from utils.watchdog_probes import (
     probe_tracer_peer_unreachable,
     signal_to_dict,
 )
+from utils.watchdog_actions import (
+    Phase2Config,
+    RestartHistory,
+    decide_restarts,
+    execute_restart,
+    parse_phase2_config,
+)
 
 
 logger = logging.getLogger("watchdog")
@@ -489,8 +496,15 @@ def run_loop(
     services_expected_active: Tuple[str, ...] = _DEFAULT_SERVICES_EXPECTED_ACTIVE,
     services_wedge_check: Tuple[str, ...] = _DEFAULT_SERVICES_WEDGE_CHECK,
     http_port: int = 5000,
+    phase2_config: Optional[Phase2Config] = None,
 ) -> None:
-    """Main probe loop. Returns on stop_event."""
+    """Main probe loop. Returns on stop_event.
+
+    ``phase2_config`` defaults to disabled — Phase 2 auto-restart is
+    only invoked when the parsed config sets ``enabled=True``. The
+    runner enforces this independently of the per-decision check in
+    ``decide_restarts`` (belt-and-suspenders: two independent layers).
+    """
     host = socket.gethostname().split(".")[0] or "unknown"
     tracker = SignalTracker()
     probe_count = 0
@@ -502,6 +516,20 @@ def run_loop(
             "watchdog: no rns instance_name in config; namespace-collision "
             "probe disabled until config readable"
         )
+
+    phase2_config = phase2_config or Phase2Config()
+    restart_history = RestartHistory()
+    if phase2_config.enabled:
+        logger.warning(
+            "watchdog: PHASE 2 auto-restart ENABLED dry_run=%s rules=%d",
+            phase2_config.dry_run, len(phase2_config.rules),
+        )
+        for rule in phase2_config.rules:
+            logger.info(
+                "watchdog: phase2 rule %s/%s ticks=%d cooldown=%.0fs rate=%d/h",
+                rule.signal_class, rule.service,
+                rule.consecutive_ticks, rule.cooldown_s, rule.max_restarts_per_hour,
+            )
 
     while not stop_event.is_set():
         now = time.time()
@@ -543,6 +571,33 @@ def run_loop(
             probe_count=probe_count,
             active_signals=active_with_first_seen,
         )
+
+        # Phase 2 — auto-restart actions. Skipped entirely when
+        # phase2_config.enabled is False (the default and only state
+        # this codebase ships in as of 2026-05-21). The decision logic
+        # also re-checks enabled internally; that's intentional belt-
+        # and-suspenders.
+        if phase2_config.enabled:
+            decisions = decide_restarts(
+                signals_with_first_seen=active_with_first_seen,
+                config=phase2_config,
+                history=restart_history,
+                now=now,
+                tick_s=tick_s,
+            )
+            for d in decisions:
+                logger.warning(
+                    "watchdog: PHASE 2 %s service=%s reason=%s",
+                    "DRY-RUN" if d.dry_run else "RESTART",
+                    d.service, d.reason,
+                )
+                if d.dry_run:
+                    continue
+                if execute_restart(d.service):
+                    restart_history.record(d.service, now)
+                    logger.info("watchdog: restart succeeded service=%s", d.service)
+                else:
+                    logger.error("watchdog: restart FAILED service=%s", d.service)
 
         stop_event.wait(tick_s)
 
@@ -606,6 +661,7 @@ def main(argv=None) -> int:
     services_expected, services_wedge, config_port = resolve_probe_targets(config)
     # CLI --http-port wins over config file when explicitly set.
     http_port = args.http_port if args.http_port is not None else config_port
+    phase2_config = parse_phase2_config(config)
 
     if args.one_shot:
         host = socket.gethostname().split(".")[0] or "unknown"
@@ -640,6 +696,7 @@ def main(argv=None) -> int:
             services_expected_active=services_expected,
             services_wedge_check=services_wedge,
             http_port=http_port,
+            phase2_config=phase2_config,
         )
     except Exception as exc:
         logger.error("watchdog: loop crashed: %s", exc, exc_info=True)
