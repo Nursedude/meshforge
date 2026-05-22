@@ -702,92 +702,132 @@ class MapRequestHandler(
         bbox preset), ?bbox= (explicit bbox), and ?preset= (View preset
         — origin/age/federation predicates). Preset is applied first so
         the bbox pass walks a smaller list.
+
+        Wrapped in a short-TTL response cache (Issue #71 / GitHub #1168).
+        ``collect()`` + ``json.dumps`` + ``gzip.compress`` on the ~47 MB
+        body holds the GIL for tens of seconds under cold load; concurrent
+        callers used to stack independently and starve the watchdog's
+        ``/healthz`` probe (same wedge class Issue #70 closed for the
+        directory endpoint). Cache key is ``(bbox_str, region_key,
+        preset_key)`` — each materially alters the response.
         """
-        if self.collector:
-            geojson = self.collector.collect()
-        else:
-            geojson = {"type": "FeatureCollection", "features": []}
-
-        # Resolve bbox from ?region= preset or explicit ?bbox= param
         query = getattr(self, '_query', {})
+        # Normalize cache key inputs to ``None`` when absent so a hit on
+        # the unparameterized request shares state across callers that
+        # pass empty strings vs. omit the param entirely.
+        preset_key = _safe_query_param(query, "preset") or None
+        region_key = _safe_query_param(query, "region") or None
+        bbox_str = _safe_query_param(query, "bbox") or None
+        cache_key = (bbox_str, region_key, preset_key)
 
-        # View preset filter — applied before bbox so federation's 50K
-        # features collapse to the preset slice (often <5K) before any
-        # geometry walk. Unknown/missing preset is a pass-through.
-        preset_key = _safe_query_param(query, "preset")
-        if preset_key in VIEW_PRESETS:
-            spec = VIEW_PRESETS[preset_key]
-            if spec.get("origins") or spec.get("exclude_federated") or spec.get("max_age_s"):
-                filtered_features = _apply_view_preset(
-                    geojson.get("features", []), preset_key
-                )
+        if self.collector is None:
+            # Without a collector there's nothing to cache or serve —
+            # return the empty FeatureCollection inline rather than
+            # caching a partial-state response.
+            self._serve_json({"type": "FeatureCollection", "features": []})
+            return
+
+        cache = self.collector._geojson_response_cache
+
+        def _build() -> tuple:
+            geojson = self.collector.collect()
+
+            # View preset filter — applied before bbox so federation's 50K
+            # features collapse to the preset slice (often <5K) before any
+            # geometry walk. Unknown/missing preset is a pass-through.
+            if preset_key in VIEW_PRESETS:
+                spec = VIEW_PRESETS[preset_key]
+                if spec.get("origins") or spec.get("exclude_federated") or spec.get("max_age_s"):
+                    filtered_features = _apply_view_preset(
+                        geojson.get("features", []), preset_key
+                    )
+                    geojson = dict(geojson)
+                    geojson["features"] = filtered_features
+                    props = dict(geojson.get("properties", {}))
+                    props["preset_filtered"] = True
+                    props["preset"] = preset_key
+                    props["nodes_with_position"] = len(filtered_features)
+                    geojson["properties"] = props
+
+            bboxes: list = []
+
+            if region_key and region_key in REGION_PRESETS:
+                preset_bbox = REGION_PRESETS[region_key]["bbox"]
+                if preset_bbox is not None:
+                    if isinstance(preset_bbox[0], list):
+                        bboxes = preset_bbox
+                    else:
+                        bboxes = [preset_bbox]
+
+            # Explicit ?bbox= overrides ?region=. Reject malformed or
+            # out-of-range coordinates so a crafted query can't stall the server
+            # (NaN/inf arithmetic) or bypass the region allowlist.
+            if bbox_str:
+                MAX_BBOXES = 8
+                parsed_bboxes: List[List[float]] = []
+                for part in bbox_str.split(";")[:MAX_BBOXES]:
+                    try:
+                        coords = [float(x) for x in part.split(",")]
+                    except (ValueError, TypeError):
+                        continue
+                    if len(coords) != 4:
+                        continue
+                    if not all(isinstance(c, float) and c == c and c not in (float("inf"), float("-inf")) for c in coords):
+                        continue
+                    south, west, north, east = coords
+                    if not (-90.0 <= south <= 90.0 and -90.0 <= north <= 90.0):
+                        continue
+                    if not (-180.0 <= west <= 180.0 and -180.0 <= east <= 180.0):
+                        continue
+                    if south >= north or west >= east:
+                        continue
+                    parsed_bboxes.append(coords)
+                if parsed_bboxes:
+                    bboxes = parsed_bboxes
+
+            if bboxes:
+                filtered = []
+                for f in geojson.get("features", []):
+                    gc = f.get("geometry", {}).get("coordinates", [])
+                    if len(gc) < 2:
+                        continue
+                    lon, lat = gc[0], gc[1]
+                    for south, west, north, east in bboxes:
+                        if south <= lat <= north and west <= lon <= east:
+                            filtered.append(f)
+                            break
                 geojson = dict(geojson)
-                geojson["features"] = filtered_features
+                geojson["features"] = filtered
                 props = dict(geojson.get("properties", {}))
-                props["preset_filtered"] = True
-                props["preset"] = preset_key
-                props["nodes_with_position"] = len(filtered_features)
+                props["nodes_with_position"] = len(filtered)
+                props["bbox_filtered"] = True
                 geojson["properties"] = props
 
-        bboxes = []
+            raw = json.dumps(geojson).encode()
+            gz = (
+                gzip.compress(raw, compresslevel=6)
+                if len(raw) >= self._GZIP_MIN_BYTES
+                else None
+            )
+            return raw, gz
 
-        region_key = _safe_query_param(query, "region")
-        if region_key and region_key in REGION_PRESETS:
-            preset_bbox = REGION_PRESETS[region_key]["bbox"]
-            if preset_bbox is not None:
-                if isinstance(preset_bbox[0], list):
-                    bboxes = preset_bbox
-                else:
-                    bboxes = [preset_bbox]
+        try:
+            raw_bytes, gzip_bytes, _was_built = cache.get_or_build(
+                cache_key, _build
+            )
+        except Exception as e:
+            logger.error(f"geojson build failed: {e}")
+            self._serve_json(
+                {
+                    "type": "FeatureCollection",
+                    "features": [],
+                    "properties": {"error": str(e)[:200]},
+                },
+                status=500,
+            )
+            return
 
-        # Explicit ?bbox= overrides ?region=. Reject malformed or
-        # out-of-range coordinates so a crafted query can't stall the server
-        # (NaN/inf arithmetic) or bypass the region allowlist.
-        bbox_str = _safe_query_param(query, "bbox")
-        if bbox_str:
-            # Cap how many bboxes a single request can declare.
-            MAX_BBOXES = 8
-            parsed_bboxes: List[List[float]] = []
-            for part in bbox_str.split(";")[:MAX_BBOXES]:
-                try:
-                    coords = [float(x) for x in part.split(",")]
-                except (ValueError, TypeError):
-                    continue
-                if len(coords) != 4:
-                    continue
-                if not all(isinstance(c, float) and c == c and c not in (float("inf"), float("-inf")) for c in coords):
-                    continue
-                south, west, north, east = coords
-                if not (-90.0 <= south <= 90.0 and -90.0 <= north <= 90.0):
-                    continue
-                if not (-180.0 <= west <= 180.0 and -180.0 <= east <= 180.0):
-                    continue
-                if south >= north or west >= east:
-                    continue
-                parsed_bboxes.append(coords)
-            if parsed_bboxes:
-                bboxes = parsed_bboxes
-
-        # Apply bbox filter if any bboxes resolved
-        if bboxes:
-            filtered = []
-            for f in geojson.get("features", []):
-                gc = f.get("geometry", {}).get("coordinates", [])
-                if len(gc) < 2:
-                    continue
-                lon, lat = gc[0], gc[1]
-                for south, west, north, east in bboxes:
-                    if south <= lat <= north and west <= lon <= east:
-                        filtered.append(f)
-                        break
-            geojson = dict(geojson)
-            geojson["features"] = filtered
-            props = dict(geojson.get("properties", {}))
-            props["nodes_with_position"] = len(filtered)
-            props["bbox_filtered"] = True
-            geojson["properties"] = props
-
-        self._serve_json(geojson)
+        self._send_prebuilt_json(raw_bytes, gzip_bytes, status=200)
 
     def _serve_region_presets(self):
         """Serve available region preset definitions."""
@@ -889,6 +929,36 @@ class MapRequestHandler(
                     status["directory"]["cache"]["ttl_s"] = cache.ttl_s
             except Exception as e:
                 logger.debug(f"directory cache stats lookup failed: {e}")
+
+        # /api/nodes/geojson response cache (Issue #71). Same shape as
+        # the directory cache block above. Surfaced under its own top-
+        # level key because geojson has no parent stats block to attach
+        # to. Missing-attr fallback covers fresh-after-upgrade collectors.
+        if self.collector:
+            try:
+                geo_cache = getattr(
+                    self.collector, "_geojson_response_cache", None
+                )
+                if geo_cache is not None:
+                    status["geojson"] = {
+                        "cache": {**geo_cache.stats(), "ttl_s": geo_cache.ttl_s}
+                    }
+            except Exception as e:
+                logger.debug(f"geojson cache stats lookup failed: {e}")
+
+            # /api/network/topology response cache (Issue #71). Same
+            # shape as the geojson block above; third instance of the
+            # wedge class that #70 + #71 closed across the daemon.
+            try:
+                topo_cache = getattr(
+                    self.collector, "_topology_response_cache", None
+                )
+                if topo_cache is not None:
+                    status["topology"] = {
+                        "cache": {**topo_cache.stats(), "ttl_s": topo_cache.ttl_s}
+                    }
+            except Exception as e:
+                logger.debug(f"topology cache stats lookup failed: {e}")
 
         # Per-source collection diagnostics from the most recent collect() call.
         # Operators use this to answer "why is source X empty" without a code reader.

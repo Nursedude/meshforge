@@ -134,8 +134,26 @@ class MapDataCollector(
         # /api/nodes/directory response cache (Issue #70). Short TTL +
         # single-flight rebuild keeps concurrent federation polls from
         # paying the 6-10 s json.dumps+gzip cost N times under GIL.
-        from utils._directory_response_cache import DirectoryResponseCache
-        self._directory_response_cache = DirectoryResponseCache(ttl_s=5.0)
+        from utils._response_byte_cache import ResponseByteCache
+        self._directory_response_cache = ResponseByteCache(ttl_s=5.0)
+
+        # /api/nodes/geojson response cache (Issue #71 / GitHub #1168).
+        # Generalized from #70's pattern — same wedge class, bigger
+        # body (47 MB raw, ~35 s cold collect+serialize). Shorter TTL
+        # because this endpoint is interactive (browser dashboard
+        # refresh, not federation polling), so we want fresh data
+        # without burning too many builds under burst load. Keyed by
+        # (bbox_str, region_key, preset_key) — each materially alters
+        # the response, so collapsing them would serve wrong bytes.
+        self._geojson_response_cache = ResponseByteCache(ttl_s=2.0)
+
+        # /api/network/topology response cache (Issue #71 / GitHub #1168).
+        # Third instance of the wedge class: ~24 MB body, ~1.4 s every
+        # request — no query params, so a single ``None`` cache key
+        # covers every caller. Longer TTL because topology changes
+        # slowly (gateway-gateway proximity links are computed from
+        # positions that move at human scale).
+        self._topology_response_cache = ResponseByteCache(ttl_s=5.0)
 
         # User-configurable cache age settings
         self._settings = SettingsManager(

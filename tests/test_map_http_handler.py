@@ -927,3 +927,449 @@ class TestStatusExposesDirectoryCache:
         assert "cache" not in body["directory"]
 
 
+# ── Issue #71: /api/nodes/geojson response cache ───────────────────────
+from utils._response_byte_cache import ResponseByteCache
+
+
+def _make_geojson_handler(
+    *,
+    accept_encoding: str = "gzip",
+    geojson_payload=None,
+    cache: ResponseByteCache = None,
+    raise_on_collect=False,
+    query=None,
+):
+    """Wire a handler with the minimum collector surface ``_serve_geojson``
+    touches: a ``collect()`` method that returns a FeatureCollection and a
+    ``_geojson_response_cache``. Shared across handler instances when a
+    single ``cache`` is passed in.
+    """
+    h = _make_handler(accept_encoding)
+
+    payload = geojson_payload or {
+        "type": "FeatureCollection",
+        "features": [],
+        "properties": {"nodes_with_position": 0},
+    }
+
+    class _Collector:
+        def __init__(self):
+            self.collect_call_count = 0
+            self._geojson_response_cache = (
+                cache if cache is not None else ResponseByteCache(ttl_s=2.0)
+            )
+
+        def collect(self):
+            self.collect_call_count += 1
+            if raise_on_collect:
+                raise RuntimeError("simulated collect failure")
+            return payload
+
+    h.collector = _Collector()
+    h._query = query or {}
+    return h
+
+
+class TestGeojsonHandlerCacheIssue71:
+    """Pin the contracts that close the /api/nodes/geojson wedge:
+
+    1. Two consecutive requests within TTL run ``collect()`` once.
+    2. Cached gzipped variant is reused for gzip-accepting clients;
+       cached raw variant is reused for non-accepting clients — both
+       served from a single build.
+    3. Collect errors propagate to a 500 and leave the cache empty.
+    4. Different bbox values cache independently.
+    5. Concurrent requests on the same key coalesce to one collect.
+    """
+
+    def test_consecutive_requests_within_ttl_invoke_collect_once(self):
+        h1 = _make_geojson_handler()
+        h1._serve_geojson()
+        h2 = _make_handler("gzip")
+        h2.collector = h1.collector
+        h2._query = {}
+        h2._serve_geojson()
+        assert h1.collector.collect_call_count == 1, (
+            "second request within TTL must not re-run collect()"
+        )
+
+    def test_gzip_and_non_gzip_clients_share_build(self):
+        # Build a payload big enough to cross _GZIP_MIN_BYTES so the
+        # gzip variant gets cached.
+        big_payload = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-157.8, 21.3]},
+                    "properties": {"id": f"!{i:08d}", "network": "meshtastic",
+                                   "name": "x" * 100},
+                }
+                for i in range(200)
+            ],
+        }
+        cache = ResponseByteCache(ttl_s=2.0)
+        h_gz = _make_geojson_handler(
+            accept_encoding="gzip", geojson_payload=big_payload, cache=cache
+        )
+        h_gz._serve_geojson()
+        body_gz = h_gz.wfile.getvalue()
+        assert body_gz.startswith(b"\x1f\x8b"), "gzip client must get gzip"
+
+        h_raw = _make_handler("")
+        h_raw.collector = h_gz.collector
+        h_raw._query = {}
+        h_raw._serve_geojson()
+        body_raw = h_raw.wfile.getvalue()
+        assert not body_raw.startswith(b"\x1f\x8b")
+        assert gzip.decompress(body_gz) == body_raw
+        assert h_gz.collector.collect_call_count == 1, (
+            "second client (different encoding) must NOT trigger rebuild"
+        )
+
+    def test_collect_failure_returns_500_and_does_not_cache(self):
+        h = _make_geojson_handler(raise_on_collect=True)
+        h._serve_geojson()
+        h.send_response.assert_called_with(500)
+        # Cache must remain empty so a recovered collect doesn't serve
+        # the cached failure body to the next caller.
+        assert h.collector._geojson_response_cache.stats()["entry_count"] == 0
+
+    def test_different_bbox_keys_cache_independently(self):
+        """bbox materially changes the response, so two distinct bboxes
+        must each get their own cache entry — not collapse to the same
+        key. Pins the (bbox, region, preset) key tuple."""
+        cache = ResponseByteCache(ttl_s=2.0)
+        h_a = _make_geojson_handler(
+            cache=cache, query={"bbox": "21.0,-158.0,22.0,-157.0"}
+        )
+        h_a._serve_geojson()
+        h_b = _make_handler("gzip")
+        h_b.collector = h_a.collector
+        h_b._query = {"bbox": "19.0,-156.0,20.0,-155.0"}
+        h_b._serve_geojson()
+        # Two distinct cache entries — one per bbox.
+        assert cache.stats()["entry_count"] == 2
+        # And collect ran twice — distinct keys = distinct builds.
+        assert h_a.collector.collect_call_count == 2
+
+    def test_concurrent_misses_coalesce_into_one_collect(self):
+        """The headline regression guard for the live-fleet wedge.
+        Multiple concurrent dashboard refreshes used to each pay the
+        ~35 s collect+serialize cost independently."""
+        big_payload = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-157.8, 21.3]},
+                    "properties": {"id": f"!{i:08d}", "network": "meshtastic"},
+                }
+                for i in range(100)
+            ],
+        }
+        cache = ResponseByteCache(ttl_s=2.0)
+        seed = _make_geojson_handler(geojson_payload=big_payload, cache=cache)
+        collector = seed.collector
+
+        ready = threading.Barrier(6)
+
+        def _worker():
+            h = _make_handler("gzip")
+            h.collector = collector
+            h._query = {}
+            ready.wait()
+            h._serve_geojson()
+
+        threads = [threading.Thread(target=_worker) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert collector.collect_call_count == 1, (
+            f"6 concurrent requests must coalesce to one collect; "
+            f"got {collector.collect_call_count}"
+        )
+
+
+class TestStatusExposesGeojsonCache:
+    """Pin the /api/status.geojson.cache observability surface.
+
+    Mirrors ``TestStatusExposesDirectoryCache`` but under the new
+    top-level ``geojson`` key (no parent stats block to attach to).
+    """
+
+    def _make_status_handler(self):
+        h = _make_handler("")
+
+        class _History:
+            def get_stats(self):
+                return {"total_observations": 0}
+
+            def get_directory_stats(self):
+                return {"total": 0, "by_network": {}}
+
+        class _Collector:
+            def __init__(self):
+                self._history = _History()
+                self._directory_response_cache = ResponseByteCache(ttl_s=5.0)
+                self._geojson_response_cache = ResponseByteCache(ttl_s=2.0)
+                self._federation = None
+
+            def get_source_diagnostics(self):
+                return {}
+
+            def get_nodes_without_position(self):
+                return []
+
+        h.collector = _Collector()
+        h._get_radio_status_summary = lambda: {"connected": False}
+        h._get_local_radio_config = lambda: {"available": False}
+        h._read_watchdog_state = lambda: None
+        return h
+
+    def test_cache_block_present_with_expected_fields(self):
+        h = self._make_status_handler()
+        h.collector._geojson_response_cache.get_or_build(
+            (None, None, None), lambda: (b"x", None)
+        )
+        h.collector._geojson_response_cache.get_or_build(
+            (None, None, None), lambda: (b"unused", None)
+        )
+
+        h._serve_status()
+        body = json.loads(h.wfile.getvalue())
+        cache = body["geojson"]["cache"]
+        assert cache["miss_count"] == 1
+        assert cache["hit_count"] == 1
+        assert cache["coalesced_count"] == 0
+        assert cache["entry_count"] == 1
+        assert cache["ttl_s"] == 2.0
+
+    def test_status_survives_missing_cache_attr(self):
+        """Backward-compat: a collector without _geojson_response_cache
+        (fresh after upgrade-before-restart) must NOT crash /api/status.
+        The block just goes missing."""
+        h = self._make_status_handler()
+        del h.collector._geojson_response_cache
+        h._serve_status()
+        body = json.loads(h.wfile.getvalue())
+        # Block absent — directory still present (independent cache).
+        assert "geojson" not in body
+        assert "directory" in body
+
+
+def _make_topology_handler(
+    *,
+    accept_encoding: str = "gzip",
+    geojson_payload=None,
+    cache: ResponseByteCache = None,
+    raise_on_collect=False,
+):
+    """Wire a handler with the surface ``_serve_network_topology`` touches:
+    a ``collect()`` method that returns a FeatureCollection, a
+    ``_topology_response_cache``, and ``_haversine`` (provided by
+    :class:`RadioEndpointsMixin` in prod). We stub haversine to a cheap
+    placeholder — distance values aren't load-bearing for these tests.
+    """
+    h = _make_handler(accept_encoding)
+    h._haversine = lambda lat1, lon1, lat2, lon2: 1.0
+
+    payload = geojson_payload or {
+        "type": "FeatureCollection",
+        "features": [],
+    }
+
+    class _Collector:
+        def __init__(self):
+            self.collect_call_count = 0
+            self._topology_response_cache = (
+                cache if cache is not None else ResponseByteCache(ttl_s=5.0)
+            )
+
+        def collect(self):
+            self.collect_call_count += 1
+            if raise_on_collect:
+                raise RuntimeError("simulated collect failure")
+            return payload
+
+    h.collector = _Collector()
+    return h
+
+
+class TestTopologyHandlerCacheIssue71:
+    """Pin the third instance of the cache pattern.
+
+    Smaller surface than geojson because there are no query params —
+    a single ``None`` cache key covers everything. Same single-flight
+    + 500-on-failure-without-caching contract.
+    """
+
+    def test_consecutive_requests_within_ttl_invoke_collect_once(self):
+        h1 = _make_topology_handler()
+        h1._serve_network_topology()
+        h2 = _make_handler("gzip")
+        h2._haversine = h1._haversine
+        h2.collector = h1.collector
+        h2._serve_network_topology()
+        assert h1.collector.collect_call_count == 1, (
+            "second request within TTL must not re-run collect()"
+        )
+
+    def test_response_shape_unchanged_by_cache(self):
+        """The cache wraps the build closure but the body shape must be
+        byte-identical to the pre-cache implementation. Pin the keys
+        D3.js + the dashboard depend on."""
+        h = _make_topology_handler(
+            geojson_payload={
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": {"type": "Point", "coordinates": [-157.8, 21.3]},
+                        "properties": {"id": "!a", "network": "meshtastic",
+                                       "is_online": True, "is_gateway": False},
+                    },
+                ],
+            },
+            accept_encoding="",
+        )
+        h._serve_network_topology()
+        body = json.loads(h.wfile.getvalue())
+        # The dashboard's D3 visualization breaks if any of these go missing.
+        assert "nodes" in body
+        assert "links" in body
+        assert "network_counts" in body
+        assert "timestamp" in body
+        assert isinstance(body["nodes"], list)
+        assert isinstance(body["links"], list)
+        assert isinstance(body["network_counts"], dict)
+
+    def test_gzip_and_non_gzip_clients_share_build(self):
+        # Need a payload above _GZIP_MIN_BYTES (10 KB) so gzip variant
+        # gets built and cached.
+        big_payload = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-157.8, 21.3]},
+                    "properties": {"id": f"!{i:08d}", "name": "x" * 80,
+                                   "network": "meshtastic", "is_online": True,
+                                   "is_gateway": False},
+                }
+                for i in range(200)
+            ],
+        }
+        cache = ResponseByteCache(ttl_s=5.0)
+        h_gz = _make_topology_handler(
+            accept_encoding="gzip", geojson_payload=big_payload, cache=cache
+        )
+        h_gz._serve_network_topology()
+        body_gz = h_gz.wfile.getvalue()
+        assert body_gz.startswith(b"\x1f\x8b"), "gzip client must get gzip"
+
+        h_raw = _make_handler("")
+        h_raw._haversine = h_gz._haversine
+        h_raw.collector = h_gz.collector
+        h_raw._serve_network_topology()
+        body_raw = h_raw.wfile.getvalue()
+        assert not body_raw.startswith(b"\x1f\x8b")
+        assert gzip.decompress(body_gz) == body_raw
+        assert h_gz.collector.collect_call_count == 1
+
+    def test_collect_failure_returns_500_and_does_not_cache(self):
+        h = _make_topology_handler(raise_on_collect=True)
+        h._serve_network_topology()
+        h.send_response.assert_called_with(500)
+        assert h.collector._topology_response_cache.stats()["entry_count"] == 0
+
+    def test_concurrent_misses_coalesce_into_one_collect(self):
+        cache = ResponseByteCache(ttl_s=5.0)
+        seed = _make_topology_handler(cache=cache)
+        collector = seed.collector
+
+        ready = threading.Barrier(6)
+
+        def _worker():
+            h = _make_handler("gzip")
+            h._haversine = lambda lat1, lon1, lat2, lon2: 1.0
+            h.collector = collector
+            ready.wait()
+            h._serve_network_topology()
+
+        threads = [threading.Thread(target=_worker) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert collector.collect_call_count == 1, (
+            f"6 concurrent requests must coalesce to one collect; "
+            f"got {collector.collect_call_count}"
+        )
+
+
+class TestStatusExposesTopologyCache:
+    """Pin the /api/status.topology.cache observability surface."""
+
+    def _make_status_handler(self):
+        h = _make_handler("")
+
+        class _History:
+            def get_stats(self):
+                return {"total_observations": 0}
+
+            def get_directory_stats(self):
+                return {"total": 0, "by_network": {}}
+
+        class _Collector:
+            def __init__(self):
+                self._history = _History()
+                self._directory_response_cache = ResponseByteCache(ttl_s=5.0)
+                self._geojson_response_cache = ResponseByteCache(ttl_s=2.0)
+                self._topology_response_cache = ResponseByteCache(ttl_s=5.0)
+                self._federation = None
+
+            def get_source_diagnostics(self):
+                return {}
+
+            def get_nodes_without_position(self):
+                return []
+
+        h.collector = _Collector()
+        h._get_radio_status_summary = lambda: {"connected": False}
+        h._get_local_radio_config = lambda: {"available": False}
+        h._read_watchdog_state = lambda: None
+        return h
+
+    def test_cache_block_present_with_expected_fields(self):
+        h = self._make_status_handler()
+        h.collector._topology_response_cache.get_or_build(
+            None, lambda: (b"x", None)
+        )
+        h.collector._topology_response_cache.get_or_build(
+            None, lambda: (b"unused", None)
+        )
+
+        h._serve_status()
+        body = json.loads(h.wfile.getvalue())
+        cache = body["topology"]["cache"]
+        assert cache["miss_count"] == 1
+        assert cache["hit_count"] == 1
+        assert cache["coalesced_count"] == 0
+        assert cache["entry_count"] == 1
+        assert cache["ttl_s"] == 5.0
+
+    def test_status_survives_missing_cache_attr(self):
+        h = self._make_status_handler()
+        del h.collector._topology_response_cache
+        h._serve_status()
+        body = json.loads(h.wfile.getvalue())
+        # Block absent — other caches still present.
+        assert "topology" not in body
+        assert "geojson" in body
+        assert "directory" in body
+
+
