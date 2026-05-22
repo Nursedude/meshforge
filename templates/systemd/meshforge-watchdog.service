@@ -1,0 +1,52 @@
+[Unit]
+Description=MeshForge per-box watchdog (reliability signal aggregator)
+Documentation=https://github.com/Nursedude/meshforge — see .claude/foundations/persistent_issues.md
+After=network.target rnsd.service meshforge-map.service
+# We probe these but don't require them — a wedged meshforge-map is
+# exactly the kind of state we want to detect, so this unit must come up
+# regardless of whether its targets are healthy.
+Wants=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Service]
+Type=simple
+# Root needed for /proc/<pid>/task/<pid>/stack reads (CAP_SYS_PTRACE
+# would also work but adds complexity for a single-system-call probe).
+User=root
+Group=root
+WorkingDirectory=/opt/meshforge
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/meshforge/src
+ExecStart=/usr/bin/python3 -m utils.watchdog_runner
+Restart=always
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+
+# /var/lib/meshforge is auto-created with mode 0755 owner root.
+StateDirectory=meshforge
+StateDirectoryMode=0755
+
+# Sandbox: keep this unit narrow but DO NOT enable ProtectHome=read-only.
+# We deliberately need to read the operator's ~/.local/state/meshforge/tracer/
+# directory (tracer probe), and the operator's ~/.reticulum/config (instance
+# name lookup). ProtectHome=read-only would still permit reads, but the
+# read-only sandbox tripwire (MF017 audit) is designed for hardened
+# services that write to ~ — we don't, so we don't take on its audit
+# surface. The watchdog writes only to /var/lib/meshforge/ via StateDirectory.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+# ProtectHome intentionally NOT set — see comment above.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

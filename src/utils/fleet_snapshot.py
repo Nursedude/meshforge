@@ -735,6 +735,26 @@ def build_slo_snapshot(*, collector: Optional[Any] = None) -> Dict[str, Any]:
             f"wedged={cascade['wedged']}"
         )
 
+    # Watchdog block (Phase 1 reliability layer — Issue stack #58–#69).
+    # Same JSON the watchdog writes to /var/lib/meshforge/watchdog.json
+    # rides /fleet/slo so MA's /fleet/rollup carries cross-box wedge
+    # signals without new HTTP plumbing.
+    watchdog = _watchdog_block()
+    if watchdog.get("installed") and not watchdog.get("ok", True):
+        overall_status = "degraded"
+        wedge_signals = [
+            s for s in watchdog.get("signals") or []
+            if s.get("severity") == "wedge"
+        ]
+        if wedge_signals:
+            errors.append(
+                f"watchdog wedge signals: "
+                + ", ".join(
+                    f"{s.get('class')}={s.get('subject')}"
+                    for s in wedge_signals[:5]
+                )
+            )
+
     return {
         "generated_at": time.time(),
         "host": socket.gethostname(),
@@ -751,4 +771,65 @@ def build_slo_snapshot(*, collector: Optional[Any] = None) -> Dict[str, Any]:
         "path_table": path_table,
         "interfaces": interfaces,
         "cascade": cascade,
+        "watchdog": watchdog,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Watchdog passthrough (Phase 1 reliability layer)
+# ─────────────────────────────────────────────────────────────────────
+
+_WATCHDOG_STATE_PATH = "/var/lib/meshforge/watchdog.json"
+_WATCHDOG_STALE_S = 300.0
+
+
+def _watchdog_block() -> Dict[str, Any]:
+    """Read /var/lib/meshforge/watchdog.json into the SLO snapshot.
+
+    Same shape as ``_serve_status``'s ``_read_watchdog_block`` so
+    consumers see one schema regardless of which endpoint they poll.
+    Degrades silently to ``{"installed": False}`` on boxes where the
+    watchdog hasn't been enabled yet.
+    """
+    import json
+    from pathlib import Path
+
+    p = Path(_WATCHDOG_STATE_PATH)
+    try:
+        raw = p.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"installed": False, "reason": "no_state_file"}
+    except OSError as exc:
+        return {"installed": False, "reason": f"read_error: {exc}"}
+
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        return {"installed": True, "ok": False,
+                "reason": f"malformed_json: {exc}"}
+
+    if not isinstance(payload, dict):
+        return {"installed": True, "ok": False,
+                "reason": "malformed_json: not an object"}
+
+    ts = payload.get("ts")
+    age_s = None
+    if isinstance(ts, (int, float)):
+        age_s = max(0.0, time.time() - float(ts))
+
+    stale = bool(age_s is not None and age_s > _WATCHDOG_STALE_S)
+    block = {
+        "installed": True,
+        "ok": bool(payload.get("ok", True)) and not stale,
+        "ts": ts,
+        "age_s": age_s,
+        "probe_count": payload.get("probe_count"),
+        "signals": payload.get("signals", []),
+    }
+    if stale:
+        block["reason"] = (
+            f"stale: last write {age_s:.0f}s ago "
+            f"(threshold {_WATCHDOG_STALE_S:.0f}s) — watchdog daemon "
+            f"may have crashed"
+        )
+    return block

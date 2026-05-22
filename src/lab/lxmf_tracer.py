@@ -34,6 +34,8 @@ logger = logging.getLogger("lab.tracer")
 
 DEFAULT_PATH_TIMEOUT_S = 8.0
 DEFAULT_ACK_TIMEOUT_S = 30.0
+DEFAULT_PATH_RETRIES = 3
+DEFAULT_PATH_RETRY_BACKOFF_S = 1.5
 
 # Per-fire JSON state. Survives volatile journals on Pi boxes (every
 # fleet box runs `Storage=volatile`, which rotates user-unit journal
@@ -62,6 +64,12 @@ class TraceResult:
     peer: str
     result: str  # "ok" | "timeout" | "no-route" | "send-error"
     rtt_ms: int  # 0 when result != "ok"
+    # Path-resolve attempts used before this peer's PING was sent (or
+    # before resolution gave up). 1 = first try succeeded; >1 = cold-
+    # start retried successfully; equal to --path-retries = exhausted.
+    # Phase-1 watchdog reads this from /fleet/tracer-fires to surface
+    # cold-start vs persistent unreachable in /api/status.watchdog.
+    path_retries_used: int = 1
 
 
 @dataclass
@@ -72,6 +80,7 @@ class _PendingPing:
     sent_at_monotonic: float
     ack_event: threading.Event = field(default_factory=threading.Event)
     rtt_ms: int = 0
+    path_retries_used: int = 1
 
 
 # --------------------------------------------------------------- peers file
@@ -174,16 +183,88 @@ def _build_client_config(tmpdir: Path) -> Path:
     return cfg
 
 
-def _resolve_path(RNS, dest_hash: bytes, timeout_s: float) -> bool:
-    """Block until RNS has a path or timeout. Returns True if path known."""
-    if not RNS.Transport.has_path(dest_hash):
-        RNS.Transport.request_path(dest_hash)
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if RNS.Transport.has_path(dest_hash):
-            return True
-        time.sleep(0.1)
-    return RNS.Transport.has_path(dest_hash)
+def _resolve_path(
+    RNS, dest_hash: bytes, timeout_s: float,
+    *,
+    retries: int = DEFAULT_PATH_RETRIES,
+    retry_backoff_s: float = DEFAULT_PATH_RETRY_BACKOFF_S,
+) -> Tuple[bool, int]:
+    """Block until RNS has a path or all retries exhausted.
+
+    Returns ``(resolved, attempts_used)``. ``attempts_used`` is 1 for
+    a first-try success, 2..retries for cold-start successes, and
+    equals ``retries`` when all attempts fail.
+
+    Why retries: today's /fleet symptom showed every box reporting
+    100% timeout against moc1 while moc1's echo responder was healthy
+    and answering. A single 8s ``request_path`` window doesn't tolerate
+    path_table cold-starts when the local RNS just initialized — by
+    the time the second-fire fires, the cache has populated and the
+    same probe succeeds. Re-issuing ``request_path`` between attempts
+    pokes RNS to re-flood the announce request, mirroring Issue #65's
+    two-tier transient/persistent backoff pattern: cold-start gets one
+    cheap retry, a real outage exhausts all and reports honestly.
+    """
+    retries = max(1, retries)
+    for attempt in range(1, retries + 1):
+        if not RNS.Transport.has_path(dest_hash):
+            try:
+                RNS.Transport.request_path(dest_hash)
+            except Exception as exc:
+                logger.debug(
+                    "tracer: request_path raised on attempt %d: %s",
+                    attempt, exc,
+                )
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if RNS.Transport.has_path(dest_hash):
+                return True, attempt
+            time.sleep(0.1)
+        # Backoff before next retry (except after the last attempt).
+        if attempt < retries:
+            time.sleep(retry_backoff_s)
+    return RNS.Transport.has_path(dest_hash), retries
+
+
+def parse_peer_timeout_overrides(
+    raw: List[str],
+) -> Dict[str, float]:
+    """Parse ``--peer-timeout NAME=SECS`` repeated args.
+
+    Per-peer override lets the operator dial up the budget for a peer
+    that reliably needs longer (e.g. a moc box that's two RNS hops
+    deep) without inflating the global timeout for fast peers. Mirrors
+    Issue #65's per-peer backoff_extended pattern.
+
+    Garbage entries log a warning and are skipped — the tracer is an
+    observability tool; a typo in a CLI arg shouldn't fail the fire.
+    """
+    overrides: Dict[str, float] = {}
+    for spec in raw or []:
+        if "=" not in spec:
+            logger.warning("tracer: --peer-timeout: missing '=' in %r", spec)
+            continue
+        name, _, secs = spec.partition("=")
+        name = name.strip()
+        if not name:
+            logger.warning("tracer: --peer-timeout: empty peer name in %r", spec)
+            continue
+        try:
+            secs_f = float(secs.strip())
+        except (TypeError, ValueError):
+            logger.warning(
+                "tracer: --peer-timeout: bad seconds value in %r — skipping",
+                spec,
+            )
+            continue
+        if secs_f <= 0:
+            logger.warning(
+                "tracer: --peer-timeout: %s=%.1f is non-positive — skipping",
+                name, secs_f,
+            )
+            continue
+        overrides[name] = secs_f
+    return overrides
 
 
 # ---------------------------------------------------------------- main flow
@@ -194,6 +275,10 @@ def run_trace(
     path_timeout_s: float = DEFAULT_PATH_TIMEOUT_S,
     ack_timeout_s: float = DEFAULT_ACK_TIMEOUT_S,
     seq_start: int = 1,
+    *,
+    path_retries: int = DEFAULT_PATH_RETRIES,
+    path_retry_backoff_s: float = DEFAULT_PATH_RETRY_BACKOFF_S,
+    peer_timeout_overrides: Optional[Dict[str, float]] = None,
 ) -> List[TraceResult]:
     """Send one PING per peer, wait for ACKs (concurrent), emit results.
 
@@ -239,11 +324,21 @@ def run_trace(
         # handle_outbound all open Unix-socket connections to rnsd's RPC
         # and can hang in unix_wait_for_peer if the listener wedges (the
         # init-only watchdog above has already disarmed by this point).
-        # Bound this whole region. Formula: per-peer path-resolve is
-        # sequential, ACK wait is concurrent, 20s buffer covers LXMRouter
-        # init + announce + send-loop overhead.
+        # Bound this whole region. Formula accounts for path_retries:
+        # per-peer can take up to retries*(timeout+backoff), ACK wait is
+        # concurrent, 20s buffer covers LXMRouter init + announce + send-
+        # loop overhead.
+        per_peer_max_s = path_retries * (path_timeout_s + path_retry_backoff_s)
+        # Honor per-peer overrides — pick the worst-case peer's budget.
+        overrides = peer_timeout_overrides or {}
+        if overrides:
+            override_max = max(
+                path_retries * (t + path_retry_backoff_s)
+                for t in overrides.values()
+            )
+            per_peer_max_s = max(per_peer_max_s, override_max)
         post_init_timeout_s = (
-            len(peers) * path_timeout_s + ack_timeout_s + 20.0
+            len(peers) * per_peer_max_s + ack_timeout_s + 20.0
         )
         with bounded_block(post_init_timeout_s, label="tracer post-init"):
             identity, _ = load_or_create_identity("lab_tracer")
@@ -283,16 +378,31 @@ def run_trace(
             results: List[TraceResult] = []
             seq = seq_start
             for peer in peers:
-                if not _resolve_path(RNS, peer.dest_hash, path_timeout_s):
+                effective_timeout = (peer_timeout_overrides or {}).get(
+                    peer.name, path_timeout_s,
+                )
+                resolved, attempts_used = _resolve_path(
+                    RNS, peer.dest_hash, effective_timeout,
+                    retries=path_retries,
+                    retry_backoff_s=path_retry_backoff_s,
+                )
+                if not resolved:
                     logger.info(
-                        "tracer: rtt seq=%d peer=%s result=no-route ms=0",
-                        seq, peer.name,
+                        "tracer: rtt seq=%d peer=%s result=no-route ms=0 retries=%d",
+                        seq, peer.name, attempts_used,
                     )
                     results.append(TraceResult(
                         seq=seq, peer=peer.name, result="no-route", rtt_ms=0,
+                        path_retries_used=attempts_used,
                     ))
                     seq += 1
                     continue
+
+                if attempts_used > 1:
+                    logger.info(
+                        "tracer: peer=%s path resolved on attempt %d (cold-start)",
+                        peer.name, attempts_used,
+                    )
 
                 dest_identity = RNS.Identity.recall(peer.dest_hash)
                 if dest_identity is None:
@@ -302,6 +412,7 @@ def run_trace(
                     )
                     results.append(TraceResult(
                         seq=seq, peer=peer.name, result="no-route", rtt_ms=0,
+                        path_retries_used=attempts_used,
                     ))
                     seq += 1
                     continue
@@ -316,6 +427,7 @@ def run_trace(
                 ping = _PendingPing(
                     seq=seq, peer_name=peer.name,
                     sent_at_monotonic=time.monotonic(),
+                    path_retries_used=attempts_used,
                 )
                 pending[seq] = ping
                 try:
@@ -328,6 +440,7 @@ def run_trace(
                     del pending[seq]
                     results.append(TraceResult(
                         seq=seq, peer=peer.name, result="send-error", rtt_ms=0,
+                        path_retries_used=attempts_used,
                     ))
                     seq += 1
                     continue
@@ -344,19 +457,22 @@ def run_trace(
                     results.append(TraceResult(
                         seq=ping.seq, peer=ping.peer_name,
                         result="ok", rtt_ms=ping.rtt_ms,
+                        path_retries_used=ping.path_retries_used,
                     ))
                     logger.info(
-                        "tracer: rtt seq=%d peer=%s result=ok ms=%d",
+                        "tracer: rtt seq=%d peer=%s result=ok ms=%d retries=%d",
                         ping.seq, ping.peer_name, ping.rtt_ms,
+                        ping.path_retries_used,
                     )
                 else:
                     results.append(TraceResult(
                         seq=ping.seq, peer=ping.peer_name,
                         result="timeout", rtt_ms=0,
+                        path_retries_used=ping.path_retries_used,
                     ))
                     logger.info(
-                        "tracer: rtt seq=%d peer=%s result=timeout ms=0",
-                        ping.seq, ping.peer_name,
+                        "tracer: rtt seq=%d peer=%s result=timeout ms=0 retries=%d",
+                        ping.seq, ping.peer_name, ping.path_retries_used,
                     )
 
             # Sort results by seq so journal output is monotonic.
@@ -413,6 +529,7 @@ def write_state_file(
                 "peer": r.peer,
                 "result": r.result,
                 "rtt_ms": r.rtt_ms,
+                "path_retries_used": r.path_retries_used,
             }
             for r in results
         ],
@@ -464,6 +581,32 @@ def main(argv=None) -> int:
              "(default ~/.config/meshforge/lab_peers)",
     )
     parser.add_argument(
+        "--path-retries", type=int, default=DEFAULT_PATH_RETRIES,
+        help=(
+            f"Path-resolve attempts per peer before giving up "
+            f"(default {DEFAULT_PATH_RETRIES}). Re-issues request_path "
+            f"between attempts to tolerate path_table cold-start."
+        ),
+    )
+    parser.add_argument(
+        "--path-retry-backoff", type=float,
+        default=DEFAULT_PATH_RETRY_BACKOFF_S,
+        help=(
+            f"Seconds between path-resolve retries "
+            f"(default {DEFAULT_PATH_RETRY_BACKOFF_S})."
+        ),
+    )
+    parser.add_argument(
+        "--peer-timeout", action="append", default=[],
+        metavar="NAME=SECS",
+        help=(
+            "Per-peer path-resolve timeout override. Repeatable. "
+            "Example: --peer-timeout moc1=12 --peer-timeout moc2=6. "
+            "Useful when one peer is two RNS hops deep and needs longer "
+            "than the global budget."
+        ),
+    )
+    parser.add_argument(
         "--path-timeout", type=float, default=DEFAULT_PATH_TIMEOUT_S,
         help=f"Seconds to wait for path resolution (default {DEFAULT_PATH_TIMEOUT_S})",
     )
@@ -501,10 +644,19 @@ def main(argv=None) -> int:
         logger.debug("tracer: pruned %d expired state files", deleted)
 
     fire_at_unix = time.time()
+    overrides = parse_peer_timeout_overrides(args.peer_timeout)
+    if overrides:
+        logger.info(
+            "tracer: per-peer timeout overrides: %s",
+            ", ".join(f"{n}={s:.1f}s" for n, s in sorted(overrides.items())),
+        )
     results = run_trace(
         peers,
         path_timeout_s=args.path_timeout,
         ack_timeout_s=args.ack_timeout,
+        path_retries=args.path_retries,
+        path_retry_backoff_s=args.path_retry_backoff,
+        peer_timeout_overrides=overrides,
     )
 
     # Durable per-fire state — the journal is volatile on the small

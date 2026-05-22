@@ -1,0 +1,675 @@
+"""Tests for src/utils/watchdog_probes.py and watchdog_runner.py.
+
+Regression-pinned against the documented Issue shapes
+(``.claude/foundations/persistent_issues.md``):
+
+* Issue #61 — socketserver-deadlock — HTTP local probe must surface a
+  bound-but-wedged port as a wedge signal.
+* Issue #63 — delivery_counters write canary — probe must surface
+  ``preflight_ok=False`` as wedge and ``consecutive_write_errors >= N``
+  as degraded.
+* Issue #68 — main-thread unix_stream_connect wedge — probe must match
+  kernel-stack patterns and NOT match the healthy ``do_sys_poll`` shape.
+* Issue #69 — foreign daemon owns ``@rns/<instance>`` — probe must match
+  the actual ss output shape from the 2026-05-20 incident.
+
+Plus exercise the edge-transition tracker and atomic-rename writer.
+"""
+from __future__ import annotations
+
+import json
+import sys
+import threading
+import time
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+from utils.watchdog_probes import (  # noqa: E402
+    SEVERITIES,
+    SIGNAL_CLASSES,
+    Signal,
+    probe_delivery_write_canary,
+    probe_http_local,
+    probe_main_thread_wedge,
+    probe_rns_namespace_collision,
+    probe_service_inactive,
+    probe_tracer_peer_unreachable,
+    signal_to_dict,
+)
+from utils.watchdog_runner import (  # noqa: E402
+    SignalTracker,
+    write_state,
+)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Closed enum + Signal shape
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_signal_classes_closed_enum_is_documented():
+    """Every class in the enum must be one of the 6 documented classes.
+    Adding a class is a deliberate act — bumps this test AND requires
+    a persistent_issues.md entry."""
+    assert set(SIGNAL_CLASSES) == {
+        "rns_namespace_collision",
+        "main_thread_wedge",
+        "http_local_unresponsive",
+        "delivery_write_canary",
+        "service_inactive",
+        "tracer_peer_unreachable",
+    }
+    assert set(SEVERITIES) == {"info", "degraded", "wedge"}
+
+
+def test_signal_key_is_class_subject_tuple():
+    sig = Signal(cls="rns_namespace_collision", subject="@rns/default",
+                 severity="wedge", detail="x")
+    assert sig.key() == ("rns_namespace_collision", "@rns/default")
+
+
+def test_signal_to_dict_includes_first_seen():
+    sig = Signal(cls="main_thread_wedge", subject="meshforge-map.service",
+                 severity="wedge", detail="x", issue_ref=68,
+                 extra={"pid": 1234})
+    out = signal_to_dict(sig, first_seen_ts=1779480000.5)
+    assert out["first_seen"] == 1779480000.5
+    assert out["class"] == "main_thread_wedge"
+    assert out["issue_ref"] == 68
+    assert out["extra"]["pid"] == 1234
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Issue #69 reconstruction — rns_namespace_collision
+# ─────────────────────────────────────────────────────────────────────
+
+
+# Real ss -xnpl output shape from the 2026-05-20 Issue #69 incident.
+# rnsd-shaped line first, then the rogue meshanchor-daemon line.
+_SS_RNSD_OWNED = """\
+Netid State    Recv-Q Send-Q Local Address:Port Peer Address:Port Process
+u_str LISTEN   0      0      @rns/volcano 12345 * 0 users:(("rnsd",pid=2286820,fd=4))
+u_str LISTEN   0      0      @rns/volcano/rpc 67890 * 0 users:(("rnsd",pid=2286820,fd=11))
+"""
+
+_SS_FOREIGN_OWNED = """\
+Netid State    Recv-Q Send-Q Local Address:Port Peer Address:Port Process
+u_str LISTEN   0      0      @rns/volcano 99999 * 0 users:(("python3",pid=200825,fd=4))
+"""
+
+
+def _make_subprocess_mock(stdout, returncode=0):
+    """Helper: produce a subprocess.run mock that returns the given stdout."""
+    class _Result:
+        def __init__(self):
+            self.stdout = stdout
+            self.returncode = returncode
+    def _runner(*args, **kwargs):
+        return _Result()
+    return _runner
+
+
+def test_rns_collision_returns_none_when_rnsd_owns_listener(tmp_path):
+    fake_proc = tmp_path / "1"
+    fake_proc.mkdir()
+    (fake_proc / "cmdline").write_bytes(
+        b"/usr/bin/python3\x00/opt/rnsd-bin/rnsd\x00"
+    )
+    # Override pid in our test: rewrite SS output to use pid=1
+    ss_out = _SS_RNSD_OWNED.replace("2286820", "1")
+    with patch("utils.watchdog_probes.subprocess.run",
+               side_effect=_make_subprocess_mock(ss_out)):
+        sig = probe_rns_namespace_collision(
+            "volcano", proc_root=str(tmp_path),
+        )
+    assert sig is None
+
+
+def test_rns_collision_fires_on_foreign_daemon(tmp_path):
+    """Issue #69 reconstruction: meshanchor-daemon claimed @rns/volcano."""
+    fake_proc = tmp_path / "1"
+    fake_proc.mkdir()
+    (fake_proc / "cmdline").write_bytes(
+        b"/usr/bin/python3\x00/opt/meshanchor/src/daemon.py\x00start\x00"
+        b"--foreground\x00"
+    )
+    ss_out = _SS_FOREIGN_OWNED.replace("200825", "1")
+    with patch("utils.watchdog_probes.subprocess.run",
+               side_effect=_make_subprocess_mock(ss_out)):
+        sig = probe_rns_namespace_collision(
+            "volcano", proc_root=str(tmp_path),
+        )
+    assert sig is not None
+    assert sig.cls == "rns_namespace_collision"
+    assert sig.severity == "wedge"
+    assert sig.issue_ref == 69
+    assert "foreign daemon" in sig.detail
+    assert "meshanchor" in sig.detail
+    assert "sudo kill 1" in sig.detail
+
+
+def test_rns_collision_returns_none_when_no_listener():
+    """No ss output line matches @rns/<instance> → nothing to check."""
+    with patch("utils.watchdog_probes.subprocess.run",
+               side_effect=_make_subprocess_mock(
+                   "Netid State Local Address:Port\n")):
+        sig = probe_rns_namespace_collision("volcano")
+    assert sig is None
+
+
+def test_rns_collision_returns_none_when_ss_unavailable():
+    """Don't false-alarm when ss is missing or hangs."""
+    import subprocess as sp
+    def _raise(*args, **kwargs):
+        raise FileNotFoundError("ss")
+    with patch("utils.watchdog_probes.subprocess.run", side_effect=_raise):
+        sig = probe_rns_namespace_collision("volcano")
+    assert sig is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Issue #68 reconstruction — main_thread_wedge
+# ─────────────────────────────────────────────────────────────────────
+
+
+# Real kernel stack from moc1's 2026-05-20 wedge (verbatim from
+# persistent_issues.md Issue #68).
+_WEDGE_STACK = """\
+[<0>] do_sys_poll+0x3b8/0x540
+[<0>] unix_wait_for_peer+0x80/0xd0
+[<0>] unix_stream_connect+0xa0/0x4f0
+[<0>] __sock_recvmsg+0x60/0x90
+[<0>] el0_svc+0x30/0xf8
+"""
+
+# Real healthy stack from a serving meshforge-map (this morning's
+# verification on moc1 — same shape do_sys_poll, no Unix-connect site).
+_HEALTHY_STACK = """\
+[<0>] do_sys_poll+0x3b8/0x540
+[<0>] __arm64_sys_ppoll+0xb4/0x148
+[<0>] invoke_syscall+0x50/0x120
+[<0>] el0_svc_common.constprop.0+0x48/0xf0
+[<0>] do_el0_svc+0x24/0x38
+[<0>] el0_svc+0x30/0xf8
+"""
+
+
+def test_main_thread_wedge_fires_on_unix_stream_connect(tmp_path):
+    """Issue #68 reconstruction: main thread blocked in unix_wait_for_peer."""
+    pid = 12345
+    proc_dir = tmp_path / str(pid) / "task" / str(pid)
+    proc_dir.mkdir(parents=True)
+    (proc_dir / "stack").write_text(_WEDGE_STACK)
+    sig = probe_main_thread_wedge(
+        "meshforge-map.service", pid=pid, proc_root=str(tmp_path),
+    )
+    assert sig is not None
+    assert sig.cls == "main_thread_wedge"
+    assert sig.severity == "wedge"
+    assert sig.issue_ref == 68
+    assert sig.extra["pid"] == pid
+    # Should match the first wedge pattern in the stack, not a later one
+    assert sig.extra["pattern"] in (
+        "unix_wait_for_peer", "unix_stream_connect", "do_unix_stream_connect",
+    )
+
+
+def test_main_thread_wedge_does_not_fire_on_healthy_poll(tmp_path):
+    """A healthy HTTP server spends its main-thread time in do_sys_poll.
+    Must NOT false-alarm — the operator stops trusting the panel."""
+    pid = 12345
+    proc_dir = tmp_path / str(pid) / "task" / str(pid)
+    proc_dir.mkdir(parents=True)
+    (proc_dir / "stack").write_text(_HEALTHY_STACK)
+    sig = probe_main_thread_wedge(
+        "meshforge-map.service", pid=pid, proc_root=str(tmp_path),
+    )
+    assert sig is None
+
+
+def test_main_thread_wedge_returns_none_when_stack_unreadable(tmp_path):
+    """No /proc/PID/stack (permission denied or process exited) →
+    no signal, no false alarm."""
+    sig = probe_main_thread_wedge(
+        "meshforge-map.service", pid=99999, proc_root=str(tmp_path),
+    )
+    assert sig is None
+
+
+def test_main_thread_wedge_skips_when_pid_unresolved(tmp_path):
+    """systemctl show MainPID=0 means inactive — let service_inactive
+    probe own that signal class."""
+    def _runner(*args, **kwargs):
+        class _R:
+            stdout = "0\n"
+            returncode = 0
+        return _R()
+    with patch("utils.watchdog_probes.subprocess.run", side_effect=_runner):
+        sig = probe_main_thread_wedge(
+            "meshforge-map.service", proc_root=str(tmp_path),
+        )
+    assert sig is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Issue #61 reconstruction — http_local_unresponsive
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_http_local_no_signal_when_response_arrives():
+    """Any HTTP response (including 503 during warming) means the
+    server loop is alive. Don't gate on status code."""
+    class _Resp:
+        def read(self, _n):
+            return b"OK"
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+    with patch("utils.watchdog_probes.urlopen", return_value=_Resp()):
+        sig = probe_http_local("meshforge-map.service")
+    assert sig is None
+
+
+def test_http_local_fires_on_timeout():
+    """Issue #61 class: TCP accept succeeded, but the handler thread
+    is wedged and no response comes back. Probe must surface this."""
+    import socket as sk
+    def _raise(*args, **kwargs):
+        raise sk.timeout("timed out")
+    with patch("utils.watchdog_probes.urlopen", side_effect=_raise):
+        sig = probe_http_local("meshforge-map.service")
+    assert sig is not None
+    assert sig.cls == "http_local_unresponsive"
+    assert sig.severity == "wedge"
+    assert sig.issue_ref == 61
+
+
+def test_http_local_skips_connection_refused():
+    """ConnectionRefused = port not bound = service inactive. That's a
+    different probe's domain — don't double-alarm."""
+    from urllib.error import URLError
+    def _raise(*args, **kwargs):
+        raise URLError("[Errno 111] Connection refused")
+    with patch("utils.watchdog_probes.urlopen", side_effect=_raise):
+        sig = probe_http_local("meshforge-map.service")
+    assert sig is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Issue #63 reconstruction — delivery_write_canary
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _http_json_mock(payload):
+    class _Resp:
+        def __init__(self):
+            self._body = json.dumps(payload).encode()
+        def read(self):
+            return self._body
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+    return _Resp()
+
+
+def test_delivery_canary_fires_wedge_on_preflight_false():
+    """Issue #63 reconstruction: preflight failed → every record() is
+    failing. Probe must surface this as wedge."""
+    payload = {"health": {
+        "preflight_ok": False,
+        "preflight_error": "unable to open database file",
+        "consecutive_write_errors": 47,
+        "last_write_error": "unable to open database file",
+        "db_path": "/home/op/.local/share/meshforge/delivery_counters.db",
+    }}
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        sig = probe_delivery_write_canary()
+    assert sig is not None
+    assert sig.cls == "delivery_write_canary"
+    assert sig.severity == "wedge"
+    assert sig.issue_ref == 63
+    assert "preflight" in sig.detail.lower()
+
+
+def test_delivery_canary_fires_degraded_above_error_threshold():
+    """Preflight passed but runtime writes are failing — degraded
+    (a different recovery: writes are happening at all, just rate-limited)."""
+    payload = {"health": {
+        "preflight_ok": True,
+        "consecutive_write_errors": 5,
+        "last_write_error": "database is locked",
+        "db_path": "/x/y/z.db",
+    }}
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        sig = probe_delivery_write_canary(error_threshold=3)
+    assert sig is not None
+    assert sig.severity == "degraded"
+    assert "5 consecutive" in sig.detail
+
+
+def test_delivery_canary_quiet_when_healthy():
+    payload = {"health": {
+        "preflight_ok": True,
+        "consecutive_write_errors": 0,
+        "last_write_error": None,
+        "db_path": "/x/y/z.db",
+    }}
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        sig = probe_delivery_write_canary()
+    assert sig is None
+
+
+def test_delivery_canary_quiet_when_endpoint_unreachable():
+    """Gateway not running or HTTP error → return None. A different
+    probe surfaces gateway-down."""
+    from urllib.error import URLError
+    def _raise(*args, **kwargs):
+        raise URLError("connection refused")
+    with patch("utils.watchdog_probes.urlopen", side_effect=_raise):
+        sig = probe_delivery_write_canary()
+    assert sig is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# service_inactive
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_service_inactive_fires_when_active_expected_but_failed():
+    def _runner(*args, **kwargs):
+        class _R:
+            stdout = "failed\n"
+            returncode = 3
+        return _R()
+    with patch("utils.watchdog_probes.subprocess.run", side_effect=_runner):
+        sig = probe_service_inactive("meshforge-map.service")
+    assert sig is not None
+    assert sig.severity == "wedge"
+    assert "failed" in sig.detail
+
+
+def test_service_inactive_quiet_when_active():
+    def _runner(*args, **kwargs):
+        class _R:
+            stdout = "active\n"
+            returncode = 0
+        return _R()
+    with patch("utils.watchdog_probes.subprocess.run", side_effect=_runner):
+        sig = probe_service_inactive("meshforge-map.service")
+    assert sig is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# tracer_peer_unreachable — today's symptom class
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _write_fire(tracer_dir: Path, fire_at_unix: float,
+                results: list) -> None:
+    """Helper: write one tracer-<unix>.json file."""
+    payload = {
+        "schema_version": 1,
+        "fire_at_unix": fire_at_unix,
+        "fire_at_iso": "2026-05-21T00:00:00Z",
+        "self_short": "moc1",
+        "results": results,
+    }
+    target = tracer_dir / f"tracer-{int(fire_at_unix)}.json"
+    target.write_text(json.dumps(payload))
+
+
+def test_tracer_persistent_unreachable_fires_after_three_consecutive_fails(tmp_path):
+    """Today's symptom reconstruction: 5 peers all failing to moc1.
+    A peer with N≥3 consecutive no-route fires must surface as wedge."""
+    tracer_dir = tmp_path
+    now = time.time()
+    # Three recent fires, all no-route to moc1, no good fires in window.
+    _write_fire(tracer_dir, now - 600,
+                [{"peer": "moc1", "seq": 1, "result": "no-route", "rtt_ms": 0}])
+    _write_fire(tracer_dir, now - 300,
+                [{"peer": "moc1", "seq": 2, "result": "timeout", "rtt_ms": 0}])
+    _write_fire(tracer_dir, now - 60,
+                [{"peer": "moc1", "seq": 3, "result": "no-route", "rtt_ms": 0}])
+    signals = probe_tracer_peer_unreachable(
+        tracer_dir=tracer_dir, persistent_cycles=3, now=now,
+    )
+    assert len(signals) == 1
+    s = signals[0]
+    assert s.cls == "tracer_peer_unreachable"
+    assert s.subject == "moc1"
+    assert s.severity == "wedge"
+    assert s.extra["tier"] == "persistent"
+    assert s.extra["leading_fail"] >= 3
+
+
+def test_tracer_transient_unreachable_classified_as_info(tmp_path):
+    """A single no-route fire after recent successes is transient — should
+    NOT surface as wedge. (This is the cold-start path the user hit today.)"""
+    tracer_dir = tmp_path
+    now = time.time()
+    _write_fire(tracer_dir, now - 600,
+                [{"peer": "moc1", "seq": 1, "result": "ok", "rtt_ms": 1500}])
+    _write_fire(tracer_dir, now - 60,
+                [{"peer": "moc1", "seq": 2, "result": "timeout", "rtt_ms": 0}])
+    signals = probe_tracer_peer_unreachable(
+        tracer_dir=tracer_dir, persistent_cycles=3, now=now,
+    )
+    assert len(signals) == 1
+    s = signals[0]
+    assert s.severity == "info"
+    assert s.extra["tier"] == "transient"
+
+
+def test_tracer_quiet_when_latest_fire_is_ok(tmp_path):
+    """Latest fire = ok → peer reachable now → nothing to report."""
+    tracer_dir = tmp_path
+    now = time.time()
+    _write_fire(tracer_dir, now - 600,
+                [{"peer": "moc1", "seq": 1, "result": "timeout", "rtt_ms": 0}])
+    _write_fire(tracer_dir, now - 60,
+                [{"peer": "moc1", "seq": 2, "result": "ok", "rtt_ms": 2200}])
+    signals = probe_tracer_peer_unreachable(
+        tracer_dir=tracer_dir, now=now,
+    )
+    assert signals == []
+
+
+def test_tracer_quiet_when_tracer_dir_missing(tmp_path):
+    """No tracer state → no signals (tracer not running on this box)."""
+    missing = tmp_path / "nope"
+    signals = probe_tracer_peer_unreachable(tracer_dir=missing)
+    assert signals == []
+
+
+def test_tracer_skips_malformed_files(tmp_path):
+    """A bad file in the dir doesn't poison the result."""
+    tracer_dir = tmp_path
+    (tracer_dir / "tracer-not-a-number.json").write_text("garbage")
+    (tracer_dir / "tracer-1779000000.json").write_text("not json at all")
+    now = time.time()
+    _write_fire(tracer_dir, now - 60,
+                [{"peer": "moc1", "seq": 1, "result": "ok", "rtt_ms": 100}])
+    signals = probe_tracer_peer_unreachable(tracer_dir=tracer_dir, now=now)
+    assert signals == []
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Runner — edge-transition tracker
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_tracker_first_seen_persists_across_ticks():
+    tracker = SignalTracker()
+    sig = Signal(cls="main_thread_wedge", subject="x",
+                 severity="wedge", detail="d")
+    # Tick 1
+    active, cleared = tracker.update([sig], now=100.0)
+    assert len(active) == 1
+    assert active[0][1] == 100.0
+    assert cleared == []
+    # Tick 2 — same signal, first_seen must still be 100.0
+    active, cleared = tracker.update([sig], now=130.0)
+    assert active[0][1] == 100.0
+    assert cleared == []
+
+
+def test_tracker_reports_cleared_on_disappear():
+    tracker = SignalTracker()
+    sig = Signal(cls="main_thread_wedge", subject="x",
+                 severity="wedge", detail="d")
+    tracker.update([sig], now=100.0)
+    active, cleared = tracker.update([], now=130.0)
+    assert active == []
+    assert cleared == [("main_thread_wedge", "x")]
+
+
+def test_tracker_distinct_subjects_dont_collide():
+    tracker = SignalTracker()
+    s1 = Signal(cls="service_inactive", subject="meshforge-map.service",
+                severity="degraded", detail="x")
+    s2 = Signal(cls="service_inactive", subject="rnsd.service",
+                severity="degraded", detail="y")
+    active, _ = tracker.update([s1, s2], now=100.0)
+    assert {(a[0].subject, a[1]) for a in active} == {
+        ("meshforge-map.service", 100.0),
+        ("rnsd.service", 100.0),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Runner — atomic-rename writer
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_write_state_emits_valid_json(tmp_path):
+    out = tmp_path / "watchdog.json"
+    sig = Signal(cls="main_thread_wedge", subject="meshforge-map.service",
+                 severity="wedge", detail="stuck", issue_ref=68)
+    write_state(out, host="moc1", now=1779480000.0, probe_count=1,
+                active_signals=[(sig, 1779480000.0)])
+    assert out.exists()
+    payload = json.loads(out.read_text())
+    assert payload["host"] == "moc1"
+    assert payload["ok"] is False  # wedge present
+    assert len(payload["signals"]) == 1
+    assert payload["signals"][0]["class"] == "main_thread_wedge"
+    assert payload["signals"][0]["first_seen"] == 1779480000.0
+
+
+def test_write_state_ok_true_when_no_wedge(tmp_path):
+    out = tmp_path / "watchdog.json"
+    info_sig = Signal(cls="tracer_peer_unreachable", subject="moc2",
+                      severity="info", detail="cold-start")
+    write_state(out, host="x", now=1.0, probe_count=1,
+                active_signals=[(info_sig, 1.0)])
+    payload = json.loads(out.read_text())
+    assert payload["ok"] is True
+
+
+def test_write_state_atomic_rename_leaves_no_tmpfile(tmp_path):
+    out = tmp_path / "watchdog.json"
+    write_state(out, host="x", now=1.0, probe_count=1, active_signals=[])
+    assert out.exists()
+    # No leftover tmp file
+    tmps = list(tmp_path.glob("*.tmp"))
+    assert tmps == []
+
+
+def test_write_state_handles_missing_parent_dir(tmp_path):
+    """Parent dir auto-create — atomic-rename writer must not require
+    the StateDirectory= line to have run first in dev/test."""
+    out = tmp_path / "newdir" / "watchdog.json"
+    write_state(out, host="x", now=1.0, probe_count=1, active_signals=[])
+    assert out.exists()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Federation passthrough — /fleet/slo + /api/status include watchdog
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_fleet_slo_includes_watchdog_block(tmp_path, monkeypatch):
+    """build_slo_snapshot must include a `watchdog` block. Federation
+    relies on this — without it, signals don't propagate to /fleet
+    rollup."""
+    from utils import fleet_snapshot
+    # Point the reader at a real file so we exercise the read path,
+    # not just the "no file" fallback.
+    state = tmp_path / "watchdog.json"
+    state.write_text(json.dumps({
+        "host": "moc1", "ts": time.time(), "probe_count": 7, "ok": True,
+        "signals": [],
+    }))
+    monkeypatch.setattr(fleet_snapshot, "_WATCHDOG_STATE_PATH", str(state))
+
+    snap = fleet_snapshot.build_slo_snapshot()
+    assert "watchdog" in snap
+    w = snap["watchdog"]
+    assert w["installed"] is True
+    assert w["ok"] is True
+    assert w["probe_count"] == 7
+
+
+def test_fleet_slo_degrades_overall_status_on_wedge_signal(tmp_path, monkeypatch):
+    """A wedge-severity watchdog signal must push overall_status to
+    `degraded`, mirroring the cascade-pre-fail behavior already in
+    build_slo_snapshot."""
+    from utils import fleet_snapshot
+    state = tmp_path / "watchdog.json"
+    state.write_text(json.dumps({
+        "host": "moc1", "ts": time.time(), "probe_count": 1, "ok": False,
+        "signals": [{
+            "class": "main_thread_wedge",
+            "subject": "meshforge-map.service",
+            "severity": "wedge",
+            "detail": "stuck in unix_wait_for_peer",
+            "issue_ref": 68,
+        }],
+    }))
+    monkeypatch.setattr(fleet_snapshot, "_WATCHDOG_STATE_PATH", str(state))
+
+    snap = fleet_snapshot.build_slo_snapshot()
+    assert snap["overall_status"] == "degraded"
+    assert any(
+        "main_thread_wedge" in err for err in snap["errors"]
+    ), f"errors should mention wedge signal class; got {snap['errors']!r}"
+
+
+def test_fleet_slo_degrades_when_watchdog_state_stale(tmp_path, monkeypatch):
+    """A stale watchdog (>5min since last write) means the watchdog
+    itself is broken — surface this rather than silently trusting
+    a frozen `ok=True` snapshot."""
+    from utils import fleet_snapshot
+    state = tmp_path / "watchdog.json"
+    state.write_text(json.dumps({
+        "host": "moc1",
+        "ts": time.time() - 600,  # 10 min old → stale
+        "probe_count": 1, "ok": True, "signals": [],
+    }))
+    monkeypatch.setattr(fleet_snapshot, "_WATCHDOG_STATE_PATH", str(state))
+
+    snap = fleet_snapshot.build_slo_snapshot()
+    assert snap["watchdog"]["ok"] is False
+    assert "stale" in snap["watchdog"]["reason"]
+
+
+def test_fleet_slo_watchdog_silent_when_not_installed(monkeypatch):
+    """Boxes during rollout: watchdog file missing → block reports
+    installed=False, doesn't trip overall_status. Backwards-compatible."""
+    from utils import fleet_snapshot
+    monkeypatch.setattr(
+        fleet_snapshot, "_WATCHDOG_STATE_PATH", "/nonexistent/path",
+    )
+    snap = fleet_snapshot.build_slo_snapshot()
+    assert snap["watchdog"]["installed"] is False
+    # overall_status decision isn't influenced by absent watchdog
+    # (only services + cascade matter when watchdog is offline).

@@ -246,6 +246,7 @@ def test_write_state_file_round_trip(tmp_path):
     assert len(doc["results"]) == 3
     assert doc["results"][0] == {
         "seq": 1, "peer": "box-a", "result": "ok", "rtt_ms": 42,
+        "path_retries_used": 1,
     }
 
 
@@ -315,3 +316,145 @@ def test_write_state_file_returns_none_on_oserror(tmp_path, monkeypatch):
         state_dir=blocker / "child",
     )
     assert result is None
+
+
+# --------------------------------- _resolve_path retries (today's symptom)
+
+
+class _FakeTransport:
+    """Stand-in for RNS.Transport with controllable path availability.
+
+    has_path() returns True only after ``request_path`` has been called
+    ``required_calls`` times. Simulates the path-table cold-start:
+    first request_path triggers an announce flood, but the path only
+    populates after a second/third pass.
+    """
+    def __init__(self, required_calls: int):
+        self._required = required_calls
+        self._request_calls = 0
+        self.has_path_calls = 0
+
+    def has_path(self, _dest_hash):
+        self.has_path_calls += 1
+        return self._request_calls >= self._required
+
+    def request_path(self, _dest_hash):
+        self._request_calls += 1
+
+
+class _FakeRNS:
+    def __init__(self, required_calls: int):
+        self.Transport = _FakeTransport(required_calls)
+
+
+def test_resolve_path_succeeds_first_try():
+    """Happy path: path_table already has the destination."""
+    from lab.lxmf_tracer import _resolve_path
+    fake = _FakeRNS(required_calls=0)
+    fake.Transport._request_calls = 1  # already populated
+    resolved, attempts = _resolve_path(
+        fake, b"\x00" * 16, timeout_s=0.1, retries=3,
+    )
+    assert resolved is True
+    assert attempts == 1
+
+
+def test_resolve_path_retries_on_cold_start():
+    """Today's symptom: first request_path hasn't propagated; second
+    succeeds. Attempts counter must reflect the retry."""
+    from lab.lxmf_tracer import _resolve_path
+    # Path becomes available after the second request_path. The wait
+    # loop checks has_path immediately after request_path, so attempt 1
+    # bumps request_calls to 1 (still needs 2), attempt 2 bumps to 2
+    # → has_path() returns True.
+    fake = _FakeRNS(required_calls=2)
+    resolved, attempts = _resolve_path(
+        fake, b"\x00" * 16,
+        timeout_s=0.05,
+        retries=3,
+        retry_backoff_s=0.01,
+    )
+    assert resolved is True
+    assert attempts == 2
+
+
+def test_resolve_path_exhausts_all_retries_on_persistent_outage():
+    """Real outage: path never populates. All retries must be used,
+    then return (False, retries). The watchdog uses this to classify
+    persistent-vs-transient."""
+    from lab.lxmf_tracer import _resolve_path
+    fake = _FakeRNS(required_calls=99999)  # never populates
+    resolved, attempts = _resolve_path(
+        fake, b"\x00" * 16,
+        timeout_s=0.02,
+        retries=3,
+        retry_backoff_s=0.001,
+    )
+    assert resolved is False
+    assert attempts == 3
+
+
+def test_resolve_path_request_path_error_does_not_crash():
+    """RNS bug or transient — request_path raising mid-retry must not
+    propagate; we just count the attempt as failed and try again."""
+    from lab.lxmf_tracer import _resolve_path
+
+    class _CrashyTransport:
+        def __init__(self):
+            self.has_path_calls = 0
+            self.request_path_calls = 0
+        def has_path(self, _h):
+            self.has_path_calls += 1
+            return False
+        def request_path(self, _h):
+            self.request_path_calls += 1
+            raise RuntimeError("simulated RNS hiccup")
+
+    fake = type("F", (), {})()
+    fake.Transport = _CrashyTransport()
+    resolved, attempts = _resolve_path(
+        fake, b"\x00" * 16,
+        timeout_s=0.01, retries=2, retry_backoff_s=0.001,
+    )
+    assert resolved is False
+    assert attempts == 2
+    assert fake.Transport.request_path_calls == 2
+
+
+# --------------------------------- --peer-timeout CLI override parser
+
+
+def test_parse_peer_timeout_overrides_basic():
+    from lab.lxmf_tracer import parse_peer_timeout_overrides
+    overrides = parse_peer_timeout_overrides(["moc1=12", "moc2=6.5"])
+    assert overrides == {"moc1": 12.0, "moc2": 6.5}
+
+
+def test_parse_peer_timeout_overrides_skips_garbage():
+    from lab.lxmf_tracer import parse_peer_timeout_overrides
+    overrides = parse_peer_timeout_overrides([
+        "moc1=12",
+        "missing-equals",          # skipped
+        "=5",                       # empty name
+        "moc2=not-a-float",         # bad seconds
+        "moc3=-1",                  # non-positive
+        "moc4=8",
+    ])
+    assert overrides == {"moc1": 12.0, "moc4": 8.0}
+
+
+def test_parse_peer_timeout_overrides_empty_input():
+    from lab.lxmf_tracer import parse_peer_timeout_overrides
+    assert parse_peer_timeout_overrides([]) == {}
+    assert parse_peer_timeout_overrides(None) == {}
+
+
+# --------------------------------- TraceResult includes retries field
+
+
+def test_trace_result_path_retries_used_default_is_one():
+    """TraceResult should default path_retries_used=1 so legacy callers
+    that don't pass it still write a coherent state file."""
+    from lab.lxmf_tracer import TraceResult
+    r = TraceResult(seq=1, peer="x", result="ok", rtt_ms=42)
+    assert r.path_retries_used == 1

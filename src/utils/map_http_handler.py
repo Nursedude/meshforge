@@ -943,6 +943,16 @@ class MapRequestHandler(
         status["radio"] = self._get_radio_status_summary()
         status["radio_config"] = self._get_local_radio_config()
 
+        # Watchdog passthrough (Phase 1 reliability layer). The watchdog
+        # daemon writes /var/lib/meshforge/watchdog.json atomic-rename
+        # every 30s; we just read and stitch into /api/status so the
+        # existing federation poll cycle carries the signal to the
+        # /fleet rollup. Degrades silently if the file's absent (the
+        # watchdog isn't installed yet on this box, or hasn't ticked
+        # since boot). Cheap: file is small (~1-2 KB even with many
+        # signals), one read per /api/status hit.
+        status["watchdog"] = self._read_watchdog_block()
+
         data = json.dumps(status).encode()
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
@@ -989,6 +999,62 @@ class MapRequestHandler(
             "usb_available": usb_available,
             "usb_devices": usb_devices if usb_available else [],
         }
+
+    _WATCHDOG_STATE_PATH = Path("/var/lib/meshforge/watchdog.json")
+    _WATCHDOG_STALE_S = 300.0  # 5 min — 10x the watchdog's 30s tick
+
+    def _read_watchdog_block(self) -> Dict[str, Any]:
+        """Stitch /var/lib/meshforge/watchdog.json into /api/status.
+
+        Federation polls /api/status across peers, so signals ride that
+        cycle to the /fleet rollup with no new HTTP plumbing. Issue #54
+        peer_name correlation labels rows for free.
+
+        Degrades silently when the watchdog isn't installed yet
+        (returns ``{"installed": false}``) so legacy boxes during
+        rollout report a coherent shape rather than a missing key.
+        Reports ``stale`` when the JSON exists but is older than
+        ``_WATCHDOG_STALE_S`` so the operator sees "watchdog wedged"
+        even when the watchdog itself is the wedged service.
+        """
+        try:
+            raw = self._WATCHDOG_STATE_PATH.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {"installed": False, "reason": "no_state_file"}
+        except OSError as exc:
+            return {"installed": False, "reason": f"read_error: {exc}"}
+
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, ValueError) as exc:
+            return {"installed": True, "ok": False,
+                    "reason": f"malformed_json: {exc}"}
+
+        if not isinstance(payload, dict):
+            return {"installed": True, "ok": False,
+                    "reason": "malformed_json: not an object"}
+
+        ts = payload.get("ts")
+        age_s: Optional[float] = None
+        if isinstance(ts, (int, float)):
+            age_s = max(0.0, time.time() - float(ts))
+
+        stale = bool(age_s is not None and age_s > self._WATCHDOG_STALE_S)
+        block = {
+            "installed": True,
+            "ok": bool(payload.get("ok", True)) and not stale,
+            "ts": ts,
+            "age_s": age_s,
+            "probe_count": payload.get("probe_count"),
+            "signals": payload.get("signals", []),
+        }
+        if stale:
+            block["reason"] = (
+                f"stale: last write {age_s:.0f}s ago "
+                f"(threshold {self._WATCHDOG_STALE_S:.0f}s) — watchdog "
+                f"daemon may have crashed"
+            )
+        return block
 
     def _get_local_radio_config(self) -> Dict[str, Any]:
         """Read the LOCAL Meshtastic HAT's LoRa config via meshtasticd HTTP /json/report.

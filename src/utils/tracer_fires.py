@@ -154,13 +154,81 @@ def get_recent_fires(
                 "seq": r.get("seq"),
                 "result": r.get("result"),
                 "rtt_ms": r.get("rtt_ms"),
+                "path_retries_used": r.get("path_retries_used"),
             })
 
     fires.sort(key=lambda e: e["fire_at_unix"], reverse=True)
     payload["fires_total_seen"] = seen
     payload["fires"] = fires[:limit]
     payload["truncated"] = len(fires) > limit
+    payload["classification"] = classify_peer_reachability(
+        peer=peer, fires=fires,
+    )
     return payload
+
+
+# Cross-cycle classifier — mirrors watchdog_probes.probe_tracer_peer_unreachable
+# but exposed here for /fleet/tracer-fires drilldown consumers (MA dashboard).
+TRACER_PERSISTENT_CYCLES = 3
+
+
+def classify_peer_reachability(
+    *,
+    peer: str,
+    fires: List[Dict[str, Any]],
+    persistent_cycles: int = TRACER_PERSISTENT_CYCLES,
+) -> Dict[str, Any]:
+    """Classify a peer's recent history into reachability tier.
+
+    Mirrors Issue #65's two-tier transient/persistent pattern. Today's
+    /fleet symptom (every box → moc1 reporting 100% timeout while moc1's
+    echo responder was healthy) was the canonical "transient" case —
+    cold-start blip the drilldown should demote rather than alarm. A
+    real outage with N consecutive failed fires earns the "persistent"
+    badge so operators don't have to eyeball history columns themselves.
+
+    Returns:
+        {
+          "tier": "reachable" | "transient" | "persistent",
+          "leading_fail": <int>,       # consecutive non-ok newest-first
+          "latest_result": <str|None>,
+          "persistent_cycles_threshold": <int>,
+        }
+
+    ``fires`` is the same newest-first list this module builds for the
+    drilldown — passing it back in avoids double-walking the dir.
+    """
+    if not fires:
+        return {
+            "tier": "reachable",
+            "leading_fail": 0,
+            "latest_result": None,
+            "persistent_cycles_threshold": persistent_cycles,
+        }
+
+    # fires is newest-first.
+    latest_result = fires[0].get("result")
+    if latest_result == "ok":
+        return {
+            "tier": "reachable",
+            "leading_fail": 0,
+            "latest_result": "ok",
+            "persistent_cycles_threshold": persistent_cycles,
+        }
+
+    leading_fail = 0
+    for f in fires:
+        if f.get("result") == "ok":
+            break
+        leading_fail += 1
+
+    tier = "persistent" if leading_fail >= persistent_cycles else "transient"
+    return {
+        "tier": tier,
+        "leading_fail": leading_fail,
+        "latest_result": latest_result,
+        "persistent_cycles_threshold": persistent_cycles,
+    }
 
 
 def _self_short_default() -> str:

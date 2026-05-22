@@ -243,3 +243,99 @@ def test_parse_query_rejects_non_integer_limit():
         "peer": ["moc1"], "limit": ["abc"],
     })
     assert err is not None
+
+
+# ─── classify_peer_reachability — two-tier transient/persistent ─────────
+
+
+def test_classify_reachable_when_no_fires():
+    from utils.tracer_fires import classify_peer_reachability
+    out = classify_peer_reachability(peer="moc1", fires=[])
+    assert out["tier"] == "reachable"
+    assert out["leading_fail"] == 0
+
+
+def test_classify_reachable_when_latest_ok():
+    """Latest fire is ok → peer reachable now, regardless of history."""
+    from utils.tracer_fires import classify_peer_reachability
+    fires = [
+        {"fire_at_unix": 1000, "result": "ok"},
+        {"fire_at_unix": 900, "result": "no-route"},
+        {"fire_at_unix": 800, "result": "no-route"},
+    ]
+    out = classify_peer_reachability(peer="moc1", fires=fires)
+    assert out["tier"] == "reachable"
+    assert out["leading_fail"] == 0
+
+
+def test_classify_transient_on_single_failure_after_ok_history():
+    """Today's symptom shape: one no-route fire after a sequence of ok.
+    Must be classified transient (cold-start), not persistent."""
+    from utils.tracer_fires import classify_peer_reachability
+    fires = [
+        {"fire_at_unix": 1000, "result": "timeout"},
+        {"fire_at_unix": 900, "result": "ok"},
+        {"fire_at_unix": 800, "result": "ok"},
+    ]
+    out = classify_peer_reachability(peer="moc1", fires=fires)
+    assert out["tier"] == "transient"
+    assert out["leading_fail"] == 1
+    assert out["latest_result"] == "timeout"
+
+
+def test_classify_persistent_after_three_consecutive_failures():
+    """A real outage: 3+ consecutive failed fires with no ok between.
+    Tier = persistent → /fleet rollup should escalate, not demote."""
+    from utils.tracer_fires import classify_peer_reachability
+    fires = [
+        {"fire_at_unix": 1000, "result": "no-route"},
+        {"fire_at_unix": 900, "result": "timeout"},
+        {"fire_at_unix": 800, "result": "no-route"},
+        {"fire_at_unix": 700, "result": "ok"},
+    ]
+    out = classify_peer_reachability(peer="moc1", fires=fires)
+    assert out["tier"] == "persistent"
+    assert out["leading_fail"] == 3
+
+
+def test_classify_persistent_cycles_threshold_configurable():
+    """Operator can dial the threshold per-deployment."""
+    from utils.tracer_fires import classify_peer_reachability
+    fires = [
+        {"fire_at_unix": 1000, "result": "no-route"},
+        {"fire_at_unix": 900, "result": "no-route"},
+    ]
+    # Default threshold is 3 → only 2 leading fails = transient
+    out_default = classify_peer_reachability(peer="moc1", fires=fires)
+    assert out_default["tier"] == "transient"
+    # With threshold=2, same input becomes persistent
+    out_strict = classify_peer_reachability(
+        peer="moc1", fires=fires, persistent_cycles=2,
+    )
+    assert out_strict["tier"] == "persistent"
+
+
+def test_get_recent_fires_includes_classification(tmp_path, monkeypatch):
+    """End-to-end through get_recent_fires: classification rides the
+    drilldown response so the MA dashboard can color-code without
+    re-walking the dir."""
+    monkeypatch.setattr(tracer_fires, "_tracer_dir", lambda: tmp_path)
+    _write_fire(tmp_path, NOW, "moc", [
+        {"seq": 1, "peer": "moc1", "result": "no-route", "rtt_ms": 0},
+    ])
+    out = get_recent_fires(peer="moc1", since_unix=NOW - 60)
+    assert "classification" in out
+    assert out["classification"]["latest_result"] == "no-route"
+
+
+def test_get_recent_fires_carries_path_retries_used(tmp_path, monkeypatch):
+    """The new path_retries_used field must round-trip through the
+    drilldown so MA can show 'cold-start' badges in the table."""
+    monkeypatch.setattr(tracer_fires, "_tracer_dir", lambda: tmp_path)
+    _write_fire(tmp_path, NOW, "moc", [
+        {"seq": 1, "peer": "moc1", "result": "ok", "rtt_ms": 100,
+         "path_retries_used": 2},
+    ])
+    out = get_recent_fires(peer="moc1", since_unix=NOW - 60)
+    assert len(out["fires"]) == 1
+    assert out["fires"][0]["path_retries_used"] == 2
