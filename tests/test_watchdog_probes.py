@@ -42,7 +42,11 @@ from utils.watchdog_probes import (  # noqa: E402
 )
 from utils.watchdog_runner import (  # noqa: E402
     SignalTracker,
+    load_config_file,
+    resolve_probe_targets,
     write_state,
+    _DEFAULT_SERVICES_EXPECTED_ACTIVE,
+    _DEFAULT_SERVICES_WEDGE_CHECK,
 )
 
 
@@ -673,3 +677,86 @@ def test_fleet_slo_watchdog_silent_when_not_installed(monkeypatch):
     assert snap["watchdog"]["installed"] is False
     # overall_status decision isn't influenced by absent watchdog
     # (only services + cascade matter when watchdog is offline).
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Per-box config override (moc3 expected-state)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_load_config_file_returns_empty_on_missing(tmp_path):
+    """No config file → empty dict → defaults preserved by resolve_probe_targets."""
+    cfg = load_config_file(tmp_path / "nope.json")
+    assert cfg == {}
+
+
+def test_load_config_file_returns_empty_on_malformed(tmp_path):
+    """Malformed JSON → empty dict + warning logged. Daemon keeps starting."""
+    p = tmp_path / "watchdog.json"
+    p.write_text("not json at all {{{")
+    cfg = load_config_file(p)
+    assert cfg == {}
+
+
+def test_load_config_file_returns_empty_on_non_object_root(tmp_path):
+    """JSON array at root → empty dict (defensive)."""
+    p = tmp_path / "watchdog.json"
+    p.write_text('["service_a", "service_b"]')
+    cfg = load_config_file(p)
+    assert cfg == {}
+
+
+def test_load_config_file_parses_valid_object(tmp_path):
+    p = tmp_path / "watchdog.json"
+    p.write_text(json.dumps({"http_port": 8080}))
+    cfg = load_config_file(p)
+    assert cfg == {"http_port": 8080}
+
+
+def test_resolve_probe_targets_uses_defaults_for_empty_config():
+    sea, swc, port = resolve_probe_targets({})
+    assert sea == _DEFAULT_SERVICES_EXPECTED_ACTIVE
+    assert swc == _DEFAULT_SERVICES_WEDGE_CHECK
+    assert port == 5000
+
+
+def test_resolve_probe_targets_moc3_override_drops_meshforge_map():
+    """The moc3 use case: drop meshforge-map.service from expected-active
+    because the box is gateway-only by design (project_moc3_hardware_constraint
+    memory). Override fully replaces the default list."""
+    sea, swc, port = resolve_probe_targets({
+        "services_expected_active": ["rnsd.service"],
+        "services_wedge_check": [],
+    })
+    assert sea == ("rnsd.service",)
+    assert "meshforge-map.service" not in sea
+    assert swc == ()
+    # http_port still defaults when not overridden
+    assert port == 5000
+
+
+def test_resolve_probe_targets_partial_override_keeps_other_defaults():
+    """Only overriding one key shouldn't touch the others."""
+    sea, swc, port = resolve_probe_targets({"http_port": 8808})
+    assert sea == _DEFAULT_SERVICES_EXPECTED_ACTIVE
+    assert swc == _DEFAULT_SERVICES_WEDGE_CHECK
+    assert port == 8808
+
+
+def test_resolve_probe_targets_rejects_garbage_overrides():
+    """Bad types fall back to defaults silently (warning logged), don't crash."""
+    sea, swc, port = resolve_probe_targets({
+        "services_expected_active": "not a list",
+        "services_wedge_check": [1, 2, 3],
+        "http_port": "8080",   # string, not int
+    })
+    assert sea == _DEFAULT_SERVICES_EXPECTED_ACTIVE
+    assert swc == _DEFAULT_SERVICES_WEDGE_CHECK
+    assert port == 5000
+
+
+def test_resolve_probe_targets_rejects_out_of_range_port():
+    sea, swc, port = resolve_probe_targets({"http_port": 99999})
+    assert port == 5000  # falls back
+    sea, swc, port = resolve_probe_targets({"http_port": -1})
+    assert port == 5000  # falls back

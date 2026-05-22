@@ -61,6 +61,21 @@ logger = logging.getLogger("watchdog")
 DEFAULT_OUTPUT_PATH = Path("/var/lib/meshforge/watchdog.json")
 DEFAULT_TICK_S = 30.0
 
+# Optional per-box override file. JSON, lives in operator home next to
+# the other meshforge config. Allows boxes with intentionally-different
+# service topology (moc3 is gateway-only — no meshforge-map.service)
+# to suppress false-positive signals without changing the closed-enum
+# probe set. Schema:
+#   {
+#     "services_expected_active": ["rnsd.service"],       # optional, full replacement
+#     "services_wedge_check": ["meshforge-map.service"],   # optional, full replacement
+#     "http_port": 5000                                    # optional
+#   }
+# Missing keys fall back to hardcoded defaults. Missing file = pure
+# defaults. Malformed file logs a WARNING and falls back to defaults —
+# never blocks the watchdog from starting.
+DEFAULT_CONFIG_FILE = Path("~/.config/meshforge/watchdog.json")
+
 # Services every fleet box has and that should be active in the
 # standard ``full``/``gateway`` profiles. Boxes that intentionally don't
 # run a unit (e.g. moc3 is gateway-only, meshforge-map is disabled
@@ -259,6 +274,113 @@ def write_state(
 # ─────────────────────────────────────────────────────────────────────
 
 
+def load_config_file(
+    config_path: Optional[Path] = None,
+) -> Dict[str, object]:
+    """Load per-box override config from operator home.
+
+    Returns an empty dict on any read/parse failure — the watchdog must
+    keep starting even if the override file is bad. Logs a WARNING so
+    the operator sees the failure without burying it.
+
+    Resolution of ``~`` follows the same operator-home pattern as the
+    rest of the lab tooling: watchdog runs as root, but the config
+    lives in the operator user's home (consistent with how
+    ``_read_rns_instance_name`` already looks up RNS config).
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_FILE
+    try:
+        from utils.paths import get_real_user_home
+        # Expand ~ against the operator's real home, not root's.
+        if str(config_path).startswith("~/"):
+            config_path = get_real_user_home() / str(config_path)[2:]
+        else:
+            config_path = Path(config_path).expanduser()
+    except Exception:
+        config_path = Path(str(config_path)).expanduser()
+
+    try:
+        raw = config_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        logger.warning(
+            "watchdog: config file %s unreadable: %s — falling back to defaults",
+            config_path, exc,
+        )
+        return {}
+
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning(
+            "watchdog: config file %s malformed: %s — falling back to defaults",
+            config_path, exc,
+        )
+        return {}
+
+    if not isinstance(data, dict):
+        logger.warning(
+            "watchdog: config file %s root is not a JSON object — "
+            "falling back to defaults", config_path,
+        )
+        return {}
+    logger.info("watchdog: loaded per-box overrides from %s", config_path)
+    return data
+
+
+def resolve_probe_targets(
+    config: Dict[str, object],
+) -> Tuple[Tuple[str, ...], Tuple[str, ...], int]:
+    """Layer config-file overrides on top of hardcoded defaults.
+
+    Returns ``(services_expected_active, services_wedge_check, http_port)``.
+
+    A list override is a *full replacement* of the default list. We
+    deliberately don't do "add to default" or "subtract from default"
+    semantics — the operator sees exactly what's probed by reading the
+    file. Cuts ambiguity at the cost of slightly more typing.
+    """
+    services_expected = config.get("services_expected_active")
+    if isinstance(services_expected, list) and all(
+        isinstance(s, str) for s in services_expected
+    ):
+        sea: Tuple[str, ...] = tuple(services_expected)
+    else:
+        if services_expected is not None:
+            logger.warning(
+                "watchdog: services_expected_active override is not a list "
+                "of strings — ignoring",
+            )
+        sea = _DEFAULT_SERVICES_EXPECTED_ACTIVE
+
+    services_wedge = config.get("services_wedge_check")
+    if isinstance(services_wedge, list) and all(
+        isinstance(s, str) for s in services_wedge
+    ):
+        swc: Tuple[str, ...] = tuple(services_wedge)
+    else:
+        if services_wedge is not None:
+            logger.warning(
+                "watchdog: services_wedge_check override is not a list "
+                "of strings — ignoring",
+            )
+        swc = _DEFAULT_SERVICES_WEDGE_CHECK
+
+    port_raw = config.get("http_port")
+    if isinstance(port_raw, int) and 1 <= port_raw <= 65535:
+        port = port_raw
+    else:
+        if port_raw is not None:
+            logger.warning(
+                "watchdog: http_port override %r is not a valid port — "
+                "ignoring", port_raw,
+            )
+        port = 5000
+    return sea, swc, port
+
+
 def _read_rns_instance_name() -> Optional[str]:
     """Best-effort lookup of this box's RNS instance_name.
 
@@ -365,8 +487,23 @@ def main(argv=None) -> int:
         help=f"Seconds between probe ticks (default {DEFAULT_TICK_S})",
     )
     parser.add_argument(
-        "--http-port", type=int, default=5000,
-        help="Local map server HTTP port (default 5000)",
+        "--http-port", type=int, default=None,
+        help=(
+            "Local map server HTTP port. Defaults to 5000 unless overridden "
+            "by the config file's http_port field. CLI takes precedence over "
+            "config."
+        ),
+    )
+    parser.add_argument(
+        "--config", type=Path, default=None,
+        help=(
+            f"Per-box override file (JSON). Defaults to "
+            f"{DEFAULT_CONFIG_FILE} resolved against the operator home. "
+            f"Schema: services_expected_active (list[str]), "
+            f"services_wedge_check (list[str]), http_port (int). "
+            f"Missing file = pure defaults; malformed file logs WARNING "
+            f"and falls back."
+        ),
     )
     parser.add_argument(
         "--loglevel", default="INFO",
@@ -393,13 +530,22 @@ def main(argv=None) -> int:
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
 
+    # Resolve probe targets: hardcoded defaults → config file → CLI args.
+    config = load_config_file(args.config)
+    services_expected, services_wedge, config_port = resolve_probe_targets(config)
+    # CLI --http-port wins over config file when explicitly set.
+    http_port = args.http_port if args.http_port is not None else config_port
+
     if args.one_shot:
         host = socket.gethostname().split(".")[0] or "unknown"
         tracker = SignalTracker()
         now = time.time()
         rns_instance = _read_rns_instance_name()
         signals = run_all_probes(
-            rns_instance_name=rns_instance, http_port=args.http_port,
+            rns_instance_name=rns_instance,
+            services_expected_active=services_expected,
+            services_wedge_check=services_wedge,
+            http_port=http_port,
         )
         active_with_first_seen, _ = tracker.update(signals, now=now)
         write_state(
@@ -420,7 +566,9 @@ def main(argv=None) -> int:
             output_path=args.output,
             tick_s=args.tick,
             stop_event=stop_event,
-            http_port=args.http_port,
+            services_expected_active=services_expected,
+            services_wedge_check=services_wedge,
+            http_port=http_port,
         )
     except Exception as exc:
         logger.error("watchdog: loop crashed: %s", exc, exc_info=True)
