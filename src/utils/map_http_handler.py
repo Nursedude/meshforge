@@ -874,6 +874,22 @@ class MapRequestHandler(
                 logger.debug(f"directory stats lookup failed: {e}")
                 status["directory"] = None
 
+            # Response-cache observability (Issue #70). Surfaces hit/miss
+            # counts so operators can spot regressions where the cache
+            # gets bypassed — e.g. a future endpoint refactor that
+            # stops calling get_or_build, or a TTL too short to coalesce
+            # the federation poll pattern. Pattern mirrors Issue #63's
+            # always-on canary visibility.
+            try:
+                cache = getattr(
+                    self.collector, "_directory_response_cache", None
+                )
+                if cache is not None and isinstance(status.get("directory"), dict):
+                    status["directory"]["cache"] = cache.stats()
+                    status["directory"]["cache"]["ttl_s"] = cache.ttl_s
+            except Exception as e:
+                logger.debug(f"directory cache stats lookup failed: {e}")
+
         # Per-source collection diagnostics from the most recent collect() call.
         # Operators use this to answer "why is source X empty" without a code reader.
         if self.collector:

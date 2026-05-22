@@ -859,3 +859,71 @@ class TestDirectoryHandlerCacheIssue70:
         assert len(collector._history.record_calls) == 1
 
 
+class TestStatusExposesDirectoryCache:
+    """Pin the cache observability surface (Issue #70 follow-up #1).
+
+    /api/status.directory.cache surfaces the cache's hit/miss counters
+    so an operator can spot regressions — e.g. a future endpoint
+    refactor stops going through get_or_build, hit_count stays at 0.
+    """
+
+    def _make_status_handler(self):
+        h = _make_handler("")
+
+        class _History:
+            def get_stats(self):
+                return {"total_observations": 0}
+
+            def get_directory_stats(self):
+                return {"total": 0, "by_network": {}}
+
+        class _Collector:
+            def __init__(self):
+                self._history = _History()
+                self._directory_response_cache = DirectoryResponseCache(ttl_s=5.0)
+                self._federation = None
+
+            def get_source_diagnostics(self):
+                return {}
+
+            def get_nodes_without_position(self):
+                return []
+
+        h.collector = _Collector()
+        h._get_radio_status_summary = lambda: {"connected": False}
+        h._get_local_radio_config = lambda: {"available": False}
+        h._read_watchdog_state = lambda: None
+        return h
+
+    def test_cache_block_present_with_expected_fields(self):
+        h = self._make_status_handler()
+        # Run a hit + miss so the counters are non-default.
+        h.collector._directory_response_cache.get_or_build(
+            None, lambda: (b"x", None)
+        )
+        h.collector._directory_response_cache.get_or_build(
+            None, lambda: (b"unused", None)
+        )
+
+        h._serve_status()
+        body = json.loads(h.wfile.getvalue())
+        cache = body["directory"]["cache"]
+        assert cache["miss_count"] == 1
+        assert cache["hit_count"] == 1
+        assert cache["coalesced_count"] == 0
+        assert cache["entry_count"] == 1
+        assert cache["ttl_s"] == 5.0
+
+    def test_status_survives_missing_cache_attr(self):
+        """Backward-compat: a collector without _directory_response_cache
+        (e.g. fresh after upgrade-before-restart) must NOT crash
+        /api/status. The block just goes missing — Issue #62-style
+        graceful degradation."""
+        h = self._make_status_handler()
+        del h.collector._directory_response_cache
+        h._serve_status()
+        body = json.loads(h.wfile.getvalue())
+        assert "directory" in body
+        assert "cache" not in body["directory"]
+
+
