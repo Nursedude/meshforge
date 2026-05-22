@@ -1,6 +1,9 @@
 [Unit]
 Description=MeshForge per-box watchdog (reliability signal aggregator)
-Documentation=https://github.com/Nursedude/meshforge — see .claude/foundations/persistent_issues.md
+# Background: .claude/foundations/persistent_issues.md (Phase 1 plan
+# deep-discovering-owl). Documentation= takes URLs only; systemd splits
+# on whitespace and chokes on em-dashes / "see X" prose.
+Documentation=https://github.com/Nursedude/meshforge
 After=network.target rnsd.service meshforge-map.service
 # We probe these but don't require them — a wedged meshforge-map is
 # exactly the kind of state we want to detect, so this unit must come up
