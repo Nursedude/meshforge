@@ -449,17 +449,27 @@ def test_rns_shared_instance_responsive_returns_none_when_no_listener():
 
 def test_rns_shared_instance_responsive_returns_none_on_quick_connect():
     """Healthy path: listener accepts the connect quickly → no signal.
-    Uses a real abstract Unix listener accepting immediately."""
+    Uses a real abstract Unix listener accepting immediately.
+
+    Timeouts are generous because this test runs on shared CI runners
+    where thread scheduling can lag by hundreds of ms under load. The
+    timeouts only consume wall-time on real test failures; the happy
+    path completes in <50 ms.
+    """
     import secrets
     import threading
     name = f"watchdog-test-ok-{secrets.token_hex(8)}"
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind("\x00rns/" + name)
     listener.listen(5)
-    listener.settimeout(2.0)
+    listener.settimeout(10.0)
     accepted = threading.Event()
+    ready = threading.Event()
 
     def _accept_loop():
+        # Signal "thread reached accept()" so the test can avoid racing
+        # the probe's connect against thread startup on a loaded runner.
+        ready.set()
         try:
             conn, _ = listener.accept()
             conn.close()
@@ -470,11 +480,15 @@ def test_rns_shared_instance_responsive_returns_none_on_quick_connect():
     t = threading.Thread(target=_accept_loop, daemon=True)
     t.start()
     try:
+        assert ready.wait(5.0), "accept thread failed to start"
         sig = probe_rns_shared_instance_responsive(name, timeout_s=2.0)
+        # Wait for accept BEFORE closing the listener — close-mid-accept
+        # raises OSError in the thread which never sets `accepted` and
+        # used to flake CI (Issue #68 watchdog probe coverage).
+        assert accepted.wait(5.0), "listener should have accepted the probe connect"
     finally:
         listener.close()
     assert sig is None
-    assert accepted.wait(2.0), "listener should have accepted the probe connect"
 
 
 def test_rns_shared_instance_responsive_fires_wedge_on_full_backlog():
