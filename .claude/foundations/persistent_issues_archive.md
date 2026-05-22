@@ -2077,3 +2077,241 @@ roster cleanup (the design call deferred at the start of this turn)
 is now moot: the system handles it.
 
 
+
+
+---
+
+## Issue #60: Systemd sandbox path drift class — preflight + audit (2026-05-18)
+
+**Class**: A hardened systemd unit (``ProtectHome=read-only`` +
+curated ``ReadWritePaths=``) drifts from the dirs the code actually
+writes when a refactor moves state to a new bucket. The service stays
+``active (running)`` while every write fails inside a callback
+exception. Issue #58 was the canonical instance — commit ``a420829``
+moved delivery_counters to ``~/.local/share/meshforge/`` but the unit
+only whitelisted ``~/.config`` and ``~/.cache``. moc3 logged
+``sqlite3.OperationalError: unable to open database file`` ~48/hr for
+18h before detection — the entire "honest delivery counters" feature
+non-functional in production.
+
+**Why this class is dangerous**:
+- Code change (the path move) and ops change (ReadWritePaths) live in
+  separate files connected only by convention.
+- Runtime failure is in an exception handler, not main loop — service
+  reports `active`, monitoring doesn't fire.
+- Unit tests run outside the sandbox, so they can't see the trap.
+- Detection requires noticing the side-effect (empty table) or
+  grepping journal for the silent exception.
+
+**Surface audit (2026-05-18)**: Two MeshForge services run hardened
+— ``meshforge-gateway.service`` (this repo) and
+``meshforge-maps.service`` (sister :8808). Five SQLite DBs live in
+``_meshforge_data_dir() = ~/.local/share/meshforge/``: ``node_history``,
+``offline_sync``, ``traceroute_history``, ``presentation_capture``,
+``delivery_counters``. Eleven more DBs and settings/fleet.json live in
+``_meshforge_config_dir()``. The data-dir bucket is the newer addition
+(Issue #29 / db_inventory) and the most likely to be missed by
+predates-data-dir unit templates.
+
+**Cure (this commit) — two layers**:
+
+1. **Runtime preflight** (Option B). New
+   ``src/utils/sandbox_check.py`` with ``meshforge_writable_paths()``,
+   ``verify_writable_paths()``, and ``assert_writable_or_exit()``.
+   Wired into ``src/gateway/bridge_cli.py:main()`` near the top, before
+   any DB open. On drift, the gateway exits with code 2 and a precise
+   operator-actionable error message naming the missing bucket and the
+   ReadWritePaths line to add. Tests:
+   ``tests/test_sandbox_check.py`` (15 assertions) including a verbatim
+   reconstruction of the moc3 incident shape under
+   ``TestIssue58ClassRegression``.
+
+2. **CI audit** (Option A). New MF017 in ``scripts/lint.py`` walks
+   ``contrib/systemd/*.service.in``; any unit with
+   ``ProtectHome=read-only`` must include all three meshforge buckets
+   in ``ReadWritePaths=``. Inline ``# audit-skip: <reason>`` comment
+   opts out explicitly — the marker is the signal that the omission is
+   deliberate, not drift. Tests: ``tests/test_lint_mf017.py`` (8
+   assertions) including locking the real repo content via
+   ``TestMF017RealRepoUnits::test_real_contrib_systemd_passes``.
+
+**Latent risk closed in same turn**: moc1 and moc2's live
+``meshforge-gateway.service`` units still had the pre-Issue-#58
+ReadWritePaths shape (gateway is inactive on those boxes, so the
+trap was dormant). Patched in place via ``sed`` + ``daemon-reload``
+— now matches the repo template. The whole fleet is consistent.
+
+**Operator detection recipe** (for the next instance of this class):
+```bash
+# On startup: gateway either runs cleanly or exits with a specific
+# missing-path error. No more silent-callback-exception class.
+sudo journalctl -u meshforge-gateway --since "5 min ago" --no-pager \
+  | grep -E "sandbox writable-path check FAILED|ReadWritePaths"
+# At PR time: MF017 audit refuses to merge a hardened unit that
+# omits a required bucket without an # audit-skip: marker.
+python3 scripts/lint.py --all
+```
+
+**Design note — why both layers**: A catches the gap at PR time so it
+never ships; B catches it at install time on a fleet box whose unit
+predates the audit. A's failure mode is "your PR fails CI"; B's is
+"your service refuses to start with a precise error message." Two
+cheap layers, neither expensive. The "lab today, deploys tomorrow"
+framing (Issue #59's design call) drove the choice — the next operator
+inheriting this codebase doesn't need to know which file to update; the
+system either runs cleanly or tells them exactly what's wrong.
+
+
+---
+
+## Issue #61: `meshforge-map.service` daemon-mode SIGTERM deadlock (2026-05-18)
+
+**Symptom**: `meshforge-map.service` stuck `deactivating` 5+ min on
+moc2 during 2026-05-18 deploy. Sub-systems stopped cleanly at 10:55:05;
+main thread refused to join (`futex_wait` per `/proc/PID/stack`); past
+`TimeoutStopSec=300` → manual SIGKILL. Reliability backlog #3.
+
+**Root cause**: stdlib `socketserver.BaseServer.shutdown()` invariant —
+"must be called while serve_forever() is running in a different thread
+otherwise it will deadlock." MeshForge's daemon path (`--daemon` →
+`server.start()`) runs `serve_forever()` on the **main thread**
+(`map_data_service.py`). Python routes signals to the main thread, so
+the SIGTERM handler synchronously called `server.stop()` →
+`_server.shutdown()` → blocked on `__is_shut_down.wait()`, which only
+the `serve_forever` loop can set. Loop couldn't iterate because main
+was inside `wait()`. Classic single-thread `socketserver` deadlock;
+every restart since daemon-path introduction silently hit `TimeoutStopSec`
+and got SIGKILL'd — operator only caught it during a watched deploy.
+
+**Fix**: `_build_daemon_signal_handler()` (module-level, testable) —
+handler spawns a daemon thread `map-shutdown` for `server.stop()`. Main
+thread stays free to observe `__shutdown_request` next poll cycle and
+exit `serve_forever()` naturally. Second signal during shutdown →
+`os._exit(1)` so a wedged cleanup thread can't trap the process.
+
+**Tests** (`tests/test_map_daemon_shutdown.py`, 6 assertions):
+regression-pinning test deadlocks under pytest timeout if the handler
+ever inlines `stop()` again; thread-shape lock (name `map-shutdown`,
+daemon=True); escalation path; PID-file removal under both success
+and exception; positive control proving cross-thread `ThreadingHTTPServer.shutdown()` works.
+
+**Operator detection** (for the next instance of this class):
+```bash
+ssh <box> "ps -eLo pid,tid,comm | grep map-shutdown"
+# Thread present during a hang → something else wedged.
+# Thread absent during a hang → regression; re-run
+# tests/test_map_daemon_shutdown.py.
+```
+
+**Fleet exposure**: every box running `meshforge-map.service` (moc,
+moc1, moc2, moc3, volcanoai) was silently hitting this on every
+restart. Post-fix expected shutdown <1s.
+
+
+---
+
+## Issue #62: Config-layering — saved defaults block future default bumps (2026-05-18)
+
+**Symptom**: Issue #56's `DEFAULT_TIMEOUT` 5→30 bump never took effect
+on the fleet — every box's `map_settings.json` had stale
+`federation_timeout_seconds: 5` pinned. Required manual `jq` edits per
+box on 2026-05-18 deploy. Same trap for every future default bump.
+Reliability backlog #6.
+
+**Root cause**: `SettingsManager.save()` persisted the **entire**
+merged dict (`defaults | overrides`). First save() for any change made
+every default a "saved value" — code-default bumps could never climb
+over the stale persisted value. Secondary dual-default hazard at
+`map_data_collector.py:330` (`.get(..., 5)` while SettingsManager
+default was 30).
+
+**Fix** (`src/utils/common.py`): `SettingsManager` now tracks
+`_explicit_keys` — which keys are user-set vs default-derived.
+`save()` only persists explicit keys, so defaults never get baked in.
+Plus `stale_defaults={key: [old_value, ...]}` constructor param:
+load() drops saved matches and reverts to current default, then
+auto-rewrites the file once so the stale value is purged from disk
+(no repeated log spam, no resurfacing). Dual-default cleanup aligns
+the `.get()` fallback with the SettingsManager default.
+
+**Live validation** against VolcanoAI's stale file (2026-05-18):
+`federation_timeout_seconds`: 5 on-disk → 30 in-memory; on-disk key
+removed; `selected_region=hawaii` preserved.
+
+**Tests** (15): `TestExplicitKeyTrackingIssue62` (5),
+`TestStaleDefaultsRegistryIssue62` (6) in `tests/test_common.py`;
+`TestStaleFederationTimeoutMigrationIssue62` (3) in
+`tests/test_map_collector_federation.py`; plus
+`test_no_file_means_no_auto_save_on_fresh_install`.
+
+**Going-forward recipe** for the next default bump:
+1. Change the value in the `defaults={}` block.
+2. Add `stale_defaults={"key": [OLD_VALUE]}` to the constructor
+   (extend the list if there's already a stale history).
+3. Next fleet pull → migrates automatically; operator does nothing.
+
+
+---
+
+## Issue #63: delivery_counters write-path canary — surface silent failures (2026-05-18)
+
+**Symptom**: Issue #58 was "fixed" by patching the sandbox ReadWritePaths,
+but verification was a synthetic write inside the systemd profile. If
+something else broke the write path (mid-run permission change, schema
+corruption, disk full), nothing surfaced until natural traffic flowed
+hours later — Issue #58 itself burned 18h of silent `sqlite3.OperationalError`
+warnings before detection. Reliability backlog #2.
+
+**Root cause class**: `DeliveryCounters.record()` wraps `_persist()` in
+`try/except sqlite3.Error: logger.warning(...)`. Operator visibility into
+write-path failures required grep'ing journald — too slow when the
+delivery counters are the operator's primary view into bridge behavior.
+
+**Fix** (`src/gateway/delivery_counters.py`):
+1. **Startup preflight** at `DeliveryCounters.__init__`: writes `meta.preflight_ts` + `meta.preflight_ok` and reads back. Failure logs at **ERROR** and surfaces in `snapshot()["health"]`. Catches Issue #58 class at construction, not 18h later.
+2. **Runtime write-error tracking**: `record()` increments `consecutive_write_errors` on every failure, clears it on every success. First failure logs ERROR; subsequent throttle to DEBUG; recovery logs INFO with the prior failure count. snapshot surfaces `consecutive_write_errors`, `last_write_error_ts`, `last_write_error`.
+3. **Cross-process visibility**: preflight result persists to the DB so the map daemon's reader-side `snapshot()` sees the gateway's writer-side preflight. `health.last_successful_write_ts` aliases `meta.last_event_ts` — the natural heartbeat for "writes are flowing."
+
+**Health block shape** (returned in `/api/gateway/delivery.health`):
+```json
+{
+  "db_path": "/home/<op>/.local/share/meshforge/delivery_counters.db",
+  "preflight_ok": true,
+  "preflight_ts": 1779148881.1,
+  "preflight_error": null,
+  "last_successful_write_ts": 1779148881.1,
+  "consecutive_write_errors": 0,
+  "last_write_error_ts": null,
+  "last_write_error": null
+}
+```
+
+**Tests** (11 new in `tests/test_delivery_counters.py`):
+- `TestPreflightHealthy` (3) — preflight runs at construction, populates health block, persists for cross-process reads.
+- `TestPreflightFailureSurfaces` (2) — failure logs at ERROR with the actual sqlite3 message; snapshot reflects `preflight_ok=False`.
+- `TestRuntimeWriteErrorTracking` (4) — counter increments, recovery clears, first-failure ERROR throttling, recovery INFO log.
+- `TestLastSuccessfulWriteTsHeartbeat` (2) — heartbeat aliases `last_event_ts`; doesn't advance on write failure (so stale heartbeat = real signal).
+
+**Operator detection recipes**:
+```bash
+# Is the write path working right now on a fleet box?
+curl -s http://<box>:5000/api/gateway/delivery \
+  | jq '.health | {preflight_ok, consecutive_write_errors, last_write_error,
+                   age_s: (now - .last_successful_write_ts)}'
+# Healthy: preflight_ok=true, consecutive_write_errors=0,
+#          last_write_error=null, age_s < expected traffic interval.
+
+# Startup-time preflight failures:
+sudo journalctl -u meshforge-gateway --since "5 min ago" \
+  | grep -E "delivery_counters preflight (OK|FAILED)"
+```
+
+**Why not also a periodic heartbeat thread**: considered, deferred.
+The combination of (1) startup preflight + (2) runtime error tracking
++ (3) last-successful-write heartbeat already catches every Issue #58
+class. A dedicated heartbeat thread would catch the "process running,
+zero natural traffic, write path silently fails" case — currently
+unfalsifiable on a quiet fleet. If that case bites in practice, add a
+thread that bumps `meta.heartbeat_ts` every 60s; the test harness
+already handles instance state vs persisted state.
+
