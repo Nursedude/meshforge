@@ -78,11 +78,27 @@ DEFAULT_TICK_S = 30.0
 #   {
 #     "services_expected_active": ["rnsd.service"],       # optional, full replacement
 #     "services_wedge_check": ["meshforge-map.service"],   # optional, full replacement
-#     "http_port": 5000                                    # optional
+#     "http_port": 5000,                                   # optional
+#     "phase2_auto_restart": {                             # optional, default OFF
+#       "enabled": false,                                  # master switch
+#       "dry_run": false,                                  # log decisions, skip execute
+#       "allowlist": [
+#         { "signal_class": "rns_shared_instance_unresponsive",
+#           "service": "rnsd.service",
+#           "consecutive_ticks": 5,
+#           "cooldown_s": 600,
+#           "max_restarts_per_hour": 2 }
+#       ]
+#     }
 #   }
 # Missing keys fall back to hardcoded defaults. Missing file = pure
 # defaults. Malformed file logs a WARNING and falls back to defaults —
 # never blocks the watchdog from starting.
+#
+# Phase 2 auto-restart: `enabled` MUST be literal JSON true (truthy
+# non-bools rejected); see `watchdog_actions.parse_phase2_config` for
+# the safety-gate inventory. Default state across the fleet on
+# 2026-05-21 ship: Phase 2 OFF on every box.
 DEFAULT_CONFIG_FILE = Path("~/.config/meshforge/watchdog.json")
 
 # Services every fleet box has and that should be active in the
