@@ -803,6 +803,30 @@ class MapRequestHandler(
                 props["bbox_filtered"] = True
                 geojson["properties"] = props
 
+            # Cross-protocol collapse (node count opt §C). Applied here
+            # — inside the per-request _build() closure, AFTER preset
+            # and bbox filters — so the response cache (Issue #71)
+            # stores the post-collapse bytes and per-request flags
+            # like `?bbox=` still slice the underlying canonical
+            # collection correctly. NOT applied to /api/nodes/directory
+            # because federation peers consume that endpoint and need
+            # raw (network, node_id) rows to merge cleanly.
+            try:
+                from utils.cross_protocol_collapse import collapse_cross_protocol
+                collapsed_features, collapsed_pairs = collapse_cross_protocol(
+                    geojson.get("features", [])
+                )
+                geojson = dict(geojson)
+                geojson["features"] = collapsed_features
+                props = dict(geojson.get("properties", {}))
+                props["collapsed_pairs"] = collapsed_pairs
+                # Updated count post-collapse — frontend uses this to
+                # render the "N nodes" badge.
+                props["nodes_with_position"] = len(collapsed_features)
+                geojson["properties"] = props
+            except Exception as e:
+                logger.debug(f"cross-protocol collapse skipped: {e}")
+
             raw = json.dumps(geojson).encode()
             gz = (
                 gzip.compress(raw, compresslevel=6)
@@ -929,6 +953,23 @@ class MapRequestHandler(
                     status["directory"]["cache"]["ttl_s"] = cache.ttl_s
             except Exception as e:
                 logger.debug(f"directory cache stats lookup failed: {e}")
+
+            # External-bulk bbox-filter + federation-skip counters (node
+            # count optimization §E). Same shape pattern as the cache
+            # blocks above. Surfaces:
+            #   - bbox: the active filter rectangle (None if disabled)
+            #   - bbox_dropped: per-source counts of out-of-bbox features
+            #     dropped during the most recent collect()
+            #   - federated_skipped_persistence: federation rows held in
+            #     memory only and not UPSERTed to nodes/
+            try:
+                if (hasattr(self.collector, "get_bbox_filter_stats")
+                        and isinstance(status.get("directory"), dict)):
+                    status["directory"]["bbox_filter"] = (
+                        self.collector.get_bbox_filter_stats()
+                    )
+            except Exception as e:
+                logger.debug(f"bbox_filter stats lookup failed: {e}")
 
         # /api/nodes/geojson response cache (Issue #71). Same shape as
         # the directory cache block above. Surfaced under its own top-

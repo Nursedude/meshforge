@@ -1103,7 +1103,7 @@ class TestDirectoryStats:
         assert s["by_source_origin"]["aredn_local"] == 1
         assert s["retention_local_days"] == 30
         assert s["retention_external_days"] == 7
-        assert s["max_rows"] == 50_000
+        assert s["max_rows"] == 15_000
 
 
 class TestStatsCache:
@@ -1337,3 +1337,146 @@ class TestOriginPriority:
         assert _origin_priority("totally_unknown") == 10
         assert _origin_priority("") == 0
         assert _origin_priority(None) == 0
+
+
+# ------------------------------------------------------------------
+# Node count optimization §D — DB hygiene
+# (lower LRU cap, _meta table, weekly gated VACUUM)
+# ------------------------------------------------------------------
+
+class TestLoweredLRUCap:
+    """The hard count cap on `nodes` dropped 50_000 → 15_000.
+
+    With the §A bbox filter shedding external-bulk volume and §B
+    federation off-persistence, the realistic upper bound on a
+    regional Pi-class box is ~3k total. The new default gives ~5×
+    headroom; bigger fleets can override the ctor arg.
+    """
+
+    def test_default_cap_is_15000(self):
+        from utils.node_history import DEFAULT_DIRECTORY_MAX_ROWS
+        assert DEFAULT_DIRECTORY_MAX_ROWS == 15_000
+
+    def test_db_uses_new_default(self, tmp_path):
+        h = NodeHistoryDB(db_path=tmp_path / "n.db", retention_seconds=86400)
+        assert h.directory_max_rows == 15_000
+
+    def test_ctor_arg_still_overrides(self, tmp_path):
+        h = NodeHistoryDB(db_path=tmp_path / "n.db",
+                          retention_seconds=86400,
+                          directory_max_rows=50_000)
+        assert h.directory_max_rows == 50_000
+
+
+class TestMetaTable:
+    """The tiny key/value `_meta` table holds persisted maintenance state
+    (currently only last_vacuum_ts). MF013-compliant — extension inside
+    the existing node_history.db, not a new DBSpec."""
+
+    def test_init_creates_meta_table(self, hist):
+        # Direct SQLite probe — table must exist after _init_db.
+        conn = hist._connect()
+        try:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='_meta'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+
+    def test_get_default_when_missing(self, hist):
+        assert hist._meta_get_float("not_a_key", default=42.0) == 42.0
+
+    def test_set_then_get_roundtrip(self, hist):
+        hist._meta_set_float("last_vacuum_ts", 1234567.89)
+        assert hist._meta_get_float("last_vacuum_ts") == pytest.approx(1234567.89)
+
+    def test_set_overwrites_existing(self, hist):
+        hist._meta_set_float("k", 1.0)
+        hist._meta_set_float("k", 2.0)
+        assert hist._meta_get_float("k") == 2.0
+
+    def test_persists_across_instances(self, tmp_path):
+        db_path = tmp_path / "n.db"
+        a = NodeHistoryDB(db_path=db_path, retention_seconds=86400)
+        a._meta_set_float("last_vacuum_ts", 1000.0)
+        b = NodeHistoryDB(db_path=db_path, retention_seconds=86400)
+        assert b._meta_get_float("last_vacuum_ts") == 1000.0
+
+    def test_corrupt_value_returns_default(self, hist):
+        # Stuff a non-float into the table to simulate a corrupt row.
+        conn = hist._connect()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)",
+                ("bad", "not a number"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        assert hist._meta_get_float("bad", default=99.0) == 99.0
+
+
+class TestWeeklyGatedVacuumIssue_D:
+    """Phase 4 of _maybe_prune runs VACUUM under TWO gates:
+       1. DB file size ≥ DEFAULT_VACUUM_DB_SIZE_THRESHOLD_BYTES (200 MB)
+       2. time since last_vacuum_ts ≥ DEFAULT_VACUUM_INTERVAL_SECONDS (7 d)
+
+    The hourly path skips VACUUM otherwise — Pi SD rewrite is multi-
+    minute. Weekly is acceptable; never is how 1.95 GB DBs go
+    invisible until they wedge fleet boxes (2026-04-26).
+    """
+
+    def _force_db_size_ge_threshold(self, hist, monkeypatch):
+        """Stub Path.stat so size gate fires without producing a 200 MB DB."""
+        from pathlib import Path as _P
+        original = _P.stat
+
+        def fake_stat(self, *args, **kwargs):
+            if self == hist.db_path:
+                class S:
+                    st_size = 300 * 1024 * 1024
+                return S()
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(_P, "stat", fake_stat)
+
+    def test_vacuum_skipped_when_db_small(self, hist, monkeypatch):
+        # Fresh tmp DB is well under 200 MB.
+        hist.record_observations([_feature("!a")])
+        # Cadence reached → _maybe_prune body runs, including Phase 4.
+        hist._last_prune_ts = 0.0
+        before = hist._meta_get_float("last_vacuum_ts", 0.0)
+        hist.record_observations([_feature("!b")])
+        after = hist._meta_get_float("last_vacuum_ts", 0.0)
+        assert before == 0.0
+        assert after == 0.0   # gate did not fire — VACUUM didn't run
+
+    def test_vacuum_skipped_when_recent(self, hist, monkeypatch):
+        # Force the size gate, but pin last_vacuum_ts to "just now".
+        self._force_db_size_ge_threshold(hist, monkeypatch)
+        now = time.time()
+        hist._meta_set_float("last_vacuum_ts", now - 60)  # ran 60 s ago
+        hist._last_prune_ts = 0.0  # force cadence
+        hist.record_observations([_feature("!a")])
+        assert hist._meta_get_float("last_vacuum_ts") == pytest.approx(now - 60, rel=1e-3)
+
+    def test_vacuum_runs_when_both_gates_pass(self, hist, monkeypatch):
+        self._force_db_size_ge_threshold(hist, monkeypatch)
+        # last_vacuum_ts unset (default 0.0) → "ages" past the 7d interval
+        # whatever `now` is.
+        assert hist._meta_get_float("last_vacuum_ts", 0.0) == 0.0
+        hist._last_prune_ts = 0.0
+        hist.record_observations([_feature("!a")])
+        # last_vacuum_ts must now be set to roughly the current time.
+        new = hist._meta_get_float("last_vacuum_ts")
+        assert new > 0.0
+        assert abs(time.time() - new) < 5.0
+
+    def test_vacuum_interval_constant(self):
+        from utils.node_history import (
+            DEFAULT_VACUUM_INTERVAL_SECONDS,
+            DEFAULT_VACUUM_DB_SIZE_THRESHOLD_BYTES,
+        )
+        assert DEFAULT_VACUUM_INTERVAL_SECONDS == 7 * 24 * 3600
+        assert DEFAULT_VACUUM_DB_SIZE_THRESHOLD_BYTES == 200 * 1024 * 1024

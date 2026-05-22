@@ -247,7 +247,7 @@ class TestMergeFederationBlock:
         assert feat["properties"]["federated"] is True
         assert feat["properties"]["federated_from"] == "peer-a"
         assert feat["geometry"]["coordinates"][:2] == [-155.3, 19.4]
-        assert position_less == []
+
 
     def test_merge_adds_position_less_federated_node(self, collector):
         self._stub_federation(collector, {
@@ -429,6 +429,175 @@ class TestMergeFederationBlock:
         block = collector._merge_federation({}, [])
         assert block["enabled"] is False
         assert block["total"] == 0
+
+
+class TestFederationMemoryOnlyPersistence:
+    """Federation memory-only (node count optimization §B).
+
+    Federated peer entries continue to render in the geojson response
+    (operators still see what their peers see), but they must NOT be
+    UPSERTed into NodeHistoryDB. Each fleet box otherwise persists the
+    union of every peer's directory, producing N-way multiplicative
+    inflation across the fleet. Cold start sees no federation rows in
+    /api/nodes/directory until the first poll (~60s); acceptable.
+    """
+
+    def _silence_all_collectors(self, collector):
+        """Stub every source collector to yield nothing.
+
+        Keeps the test focused on the federation → history filter chain
+        without dragging in real meshtasticd/MQTT/AREDN/RNS state.
+        """
+        collector._collect_unified_tracker = lambda: []
+        collector._collect_meshtasticd = lambda: []
+        collector._collect_direct_radio = lambda: []
+        collector._collect_mqtt = lambda: []
+        collector._collect_node_tracker = lambda: []
+        collector._collect_aredn = lambda: []
+        collector._collect_aredn_worldmap = lambda: []
+        collector._collect_rns_direct = lambda: []
+        collector._collect_meshcore_public = lambda: []
+        collector._collect_public_fallbacks = lambda current_feature_count=0: []
+
+    def _make_collector_with_history(self, tmp_path):
+        from utils.map_data_collector import MapDataCollector
+        fake_home = tmp_path / "home"
+        cfg_dir = fake_home / ".config" / "meshforge"
+        cfg_dir.mkdir(parents=True)
+        with patch("utils.map_data_collector.get_real_user_home",
+                   return_value=fake_home):
+            c = MapDataCollector(
+                cache_dir=tmp_path / "cache",
+                enable_history=True,
+                config_dir=cfg_dir,
+            )
+        return c
+
+    def _stub_federation(self, collector, by_node):
+        fc = MagicMock(spec=FederationCollector)
+        fc.peers = ["peer-a"]
+        snap = FederationSnapshot(
+            by_node=by_node,
+            peer_status={"peer-a": FederationPeerStatus(
+                hostname="peer-a", ok=True,
+                last_sync=100, last_attempt=100,
+                last_count=len(by_node),
+            )},
+            last_sync=100,
+            last_attempt=100,
+        )
+        fc.get_snapshot.return_value = snap
+        collector._federation = fc
+
+    def test_positioned_federated_feature_not_persisted(self, tmp_path):
+        c = self._make_collector_with_history(tmp_path)
+        self._silence_all_collectors(c)
+        c._history.record_observations = MagicMock()
+
+        self._stub_federation(c, {
+            ("rns", "abc"): {
+                "id": "abc", "network": "rns", "name": "Peer-only Node",
+                "lat": 19.4, "lon": -155.3, "altitude": None,
+                "last_seen": 100, "source_origin": "rns_path_table",
+                "federated_from": "peer-a", "seen_by_peers": ["peer-a"],
+            },
+        })
+
+        c._collect_locked()
+
+        all_persisted = []
+        for call in c._history.record_observations.call_args_list:
+            args = call.args[0] if call.args else call.kwargs.get("features", [])
+            all_persisted.extend(args)
+        for f in all_persisted:
+            props = f.get("properties", {})
+            assert not props.get("federated"), (
+                f"Federated feature leaked into history: {props}"
+            )
+            assert not props.get("federated_from"), (
+                f"federated_from leaked into history: {props}"
+            )
+        assert c._federated_skipped_persistence_count == 1
+
+    def test_position_less_federated_entry_not_persisted(self, tmp_path):
+        c = self._make_collector_with_history(tmp_path)
+        self._silence_all_collectors(c)
+        c._history.record_observations = MagicMock()
+
+        self._stub_federation(c, {
+            ("meshcore", "xyz"): {
+                "id": "xyz", "network": "meshcore", "name": "PeerCore",
+                "lat": None, "lon": None, "altitude": None,
+                "last_seen": 100, "source_origin": "meshcore_public",
+                "federated_from": "peer-a", "seen_by_peers": ["peer-a"],
+            },
+        })
+
+        c._collect_locked()
+
+        all_persisted = []
+        for call in c._history.record_observations.call_args_list:
+            args = call.args[0] if call.args else call.kwargs.get("features", [])
+            all_persisted.extend(args)
+        for f in all_persisted:
+            assert f.get("properties", {}).get("id") != "xyz", (
+                "Position-less federated stub leaked into history"
+            )
+        assert c._federated_skipped_persistence_count == 1
+
+    def test_local_features_still_persisted_alongside_federated(self, tmp_path):
+        c = self._make_collector_with_history(tmp_path)
+        self._silence_all_collectors(c)
+        c._history.record_observations = MagicMock()
+
+        c._collect_meshtasticd = lambda: [{
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [-155.3, 19.4, 0]},
+            "properties": {
+                "id": "local-1", "name": "Local Radio",
+                "network": "meshtastic",
+            },
+        }]
+        self._stub_federation(c, {
+            ("meshtastic", "peer-only"): {
+                "id": "peer-only", "network": "meshtastic", "name": "Peer Only",
+                "lat": 19.5, "lon": -155.2, "altitude": None,
+                "last_seen": 100, "source_origin": "local_radio",
+                "federated_from": "peer-a", "seen_by_peers": ["peer-a"],
+            },
+        })
+
+        c._collect_locked()
+
+        all_persisted = []
+        for call in c._history.record_observations.call_args_list:
+            args = call.args[0] if call.args else call.kwargs.get("features", [])
+            all_persisted.extend(args)
+        ids = [f.get("properties", {}).get("id") for f in all_persisted]
+        assert "local-1" in ids
+        assert "peer-only" not in ids
+        assert c._federated_skipped_persistence_count == 1
+
+    def test_counter_resets_per_collect(self, tmp_path):
+        c = self._make_collector_with_history(tmp_path)
+        self._silence_all_collectors(c)
+        c._history.record_observations = MagicMock()
+
+        self._stub_federation(c, {
+            ("rns", "a"): {
+                "id": "a", "network": "rns", "name": "A",
+                "lat": 19.4, "lon": -155.3,
+                "last_seen": 100, "source_origin": "rns_path_table",
+                "federated_from": "peer-a", "seen_by_peers": ["peer-a"],
+            },
+        })
+
+        c._collect_locked()
+        assert c._federated_skipped_persistence_count == 1
+        c._collect_locked()
+        # Second cycle: counter reset to 0 at start, then re-incremented
+        # to 1 for the same federation entry.
+        assert c._federated_skipped_persistence_count == 1
 
 
 class TestGeoJSONIncludesFederationBlock:

@@ -927,6 +927,92 @@ class TestStatusExposesDirectoryCache:
         assert "cache" not in body["directory"]
 
 
+class TestStatusExposesBboxFilter:
+    """Pin /api/status.directory.bbox_filter (node count opt §E).
+
+    Operators read this block to see how aggressive the geo-filter is
+    being for external-bulk sources and how many federation features
+    are being kept out of node_history.db.
+    """
+
+    def _make_status_handler(self, *, bbox_filter_stats=None,
+                             collector_supports_filter=True):
+        h = _make_handler("")
+
+        class _History:
+            def get_stats(self):
+                return {"total_observations": 0}
+
+            def get_directory_stats(self):
+                return {"total": 0, "by_network": {}}
+
+        class _Collector:
+            def __init__(self):
+                self._history = _History()
+                self._directory_response_cache = DirectoryResponseCache(ttl_s=5.0)
+                self._federation = None
+
+            def get_source_diagnostics(self):
+                return {}
+
+            def get_nodes_without_position(self):
+                return []
+
+            if collector_supports_filter:
+                def get_bbox_filter_stats(self):
+                    return bbox_filter_stats or {
+                        "bbox": None,
+                        "bbox_dropped": {},
+                        "federated_skipped_persistence": 0,
+                    }
+
+        h.collector = _Collector()
+        h._get_radio_status_summary = lambda: {"connected": False}
+        h._get_local_radio_config = lambda: {"available": False}
+        h._read_watchdog_state = lambda: None
+        return h
+
+    def test_block_present_with_expected_fields(self):
+        stats = {
+            "bbox": {
+                "lat_min": 15.0, "lat_max": 24.0,
+                "lon_min": -160.0, "lon_max": -150.0,
+            },
+            "bbox_dropped": {"meshcore_public": 12345, "aredn_worldmap": 678},
+            "federated_skipped_persistence": 42,
+        }
+        h = self._make_status_handler(bbox_filter_stats=stats)
+        h._serve_status()
+        body = json.loads(h.wfile.getvalue())
+        assert "bbox_filter" in body["directory"]
+        bf = body["directory"]["bbox_filter"]
+        assert bf["bbox"]["lat_min"] == 15.0
+        assert bf["bbox_dropped"]["meshcore_public"] == 12345
+        assert bf["federated_skipped_persistence"] == 42
+
+    def test_block_present_when_filter_disabled(self):
+        h = self._make_status_handler(bbox_filter_stats={
+            "bbox": None,
+            "bbox_dropped": {},
+            "federated_skipped_persistence": 0,
+        })
+        h._serve_status()
+        body = json.loads(h.wfile.getvalue())
+        bf = body["directory"]["bbox_filter"]
+        assert bf["bbox"] is None
+        assert bf["bbox_dropped"] == {}
+        assert bf["federated_skipped_persistence"] == 0
+
+    def test_status_survives_missing_helper(self):
+        """A collector without get_bbox_filter_stats (fresh-after-upgrade
+        before restart) must not crash the status endpoint."""
+        h = self._make_status_handler(collector_supports_filter=False)
+        h._serve_status()
+        body = json.loads(h.wfile.getvalue())
+        assert "directory" in body
+        assert "bbox_filter" not in body["directory"]
+
+
 # ── Issue #71: /api/nodes/geojson response cache ───────────────────────
 from utils._response_byte_cache import ResponseByteCache
 
@@ -996,6 +1082,9 @@ class TestGeojsonHandlerCacheIssue71:
     def test_gzip_and_non_gzip_clients_share_build(self):
         # Build a payload big enough to cross _GZIP_MIN_BYTES so the
         # gzip variant gets cached.
+        # Unique names per feature so the cross-protocol collapse layer
+        # (node count opt §C) leaves each row alone — the test exists to
+        # pin cache sharing between gzip + non-gzip clients, not collapse.
         big_payload = {
             "type": "FeatureCollection",
             "features": [
@@ -1003,7 +1092,7 @@ class TestGeojsonHandlerCacheIssue71:
                     "type": "Feature",
                     "geometry": {"type": "Point", "coordinates": [-157.8, 21.3]},
                     "properties": {"id": f"!{i:08d}", "network": "meshtastic",
-                                   "name": "x" * 100},
+                                   "name": f"node-{i:08d}-{'x' * 80}"},
                 }
                 for i in range(200)
             ],
@@ -1091,6 +1180,82 @@ class TestGeojsonHandlerCacheIssue71:
             f"6 concurrent requests must coalesce to one collect; "
             f"got {collector.collect_call_count}"
         )
+
+
+class TestCrossProtocolCollapseAtGeojsonHandler:
+    """Cross-protocol collapse (node count opt §C) runs inside _serve_geojson's
+    per-request _build() closure. Federation peers consume
+    /api/nodes/directory, NOT /api/nodes/geojson, so the federation
+    contract stays intact.
+    """
+
+    def test_same_name_different_networks_collapses_in_response(self):
+        payload = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-155.5, 19.5, 0]},
+                    "properties": {
+                        "id": "mt1", "name": "WH6GXZ",
+                        "network": "meshtastic",
+                        "source_origin": "local_radio",
+                    },
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-155.5, 19.5, 0]},
+                    "properties": {
+                        "id": "rns1", "name": "WH6GXZ",
+                        "network": "rns",
+                        "source_origin": "rns_path_table",
+                    },
+                },
+            ],
+            "properties": {"nodes_with_position": 2},
+        }
+        h = _make_geojson_handler(accept_encoding="", geojson_payload=payload)
+        h._serve_geojson()
+        body = json.loads(h.wfile.getvalue())
+        assert len(body["features"]) == 1
+        assert body["features"][0]["properties"]["collapsed"] is True
+        assert set(body["features"][0]["properties"]["networks"]) == {
+            "meshtastic", "rns"
+        }
+        assert body["properties"]["collapsed_pairs"] == 1
+        assert body["properties"]["nodes_with_position"] == 1
+
+    def test_unrelated_features_pass_through_unchanged(self):
+        payload = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-155.5, 19.5, 0]},
+                    "properties": {"id": "a", "name": "Alpha", "network": "meshtastic"},
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-155.4, 19.4, 0]},
+                    "properties": {"id": "b", "name": "Bravo", "network": "rns"},
+                },
+            ],
+            "properties": {"nodes_with_position": 2},
+        }
+        h = _make_geojson_handler(accept_encoding="", geojson_payload=payload)
+        h._serve_geojson()
+        body = json.loads(h.wfile.getvalue())
+        assert len(body["features"]) == 2
+        assert body["properties"]["collapsed_pairs"] == 0
+
+    def test_empty_features_no_crash(self):
+        payload = {"type": "FeatureCollection", "features": [],
+                   "properties": {"nodes_with_position": 0}}
+        h = _make_geojson_handler(accept_encoding="", geojson_payload=payload)
+        h._serve_geojson()
+        body = json.loads(h.wfile.getvalue())
+        assert body["features"] == []
+        assert body["properties"]["collapsed_pairs"] == 0
 
 
 class TestStatusExposesGeojsonCache:

@@ -61,7 +61,14 @@ _LAT_LON_PRECISION = 6
 # (own radios, RNS path table) are bounded by what's actually heard.
 DEFAULT_DIRECTORY_RETENTION_LOCAL = 30 * 24 * 3600     # 30 days
 DEFAULT_DIRECTORY_RETENTION_EXTERNAL = 7 * 24 * 3600   # 7 days
-DEFAULT_DIRECTORY_MAX_ROWS = 50_000                    # hard cap, LRU evict
+# Hard cap, LRU evict. Lowered 50_000 → 15_000 on 2026-05-22 as part of
+# the node count optimization: with the geo-filter shedding 30k+ rows
+# from external-bulk firehoses and federation no longer persisting peer
+# directories, the realistic upper bound on a regional Pi-class box is
+# ~3k total. 15k gives ~5× headroom without LRU thrashing while keeping
+# the worst-case /api/nodes/directory body inside the 5s response cache
+# budget. Operators with bigger fleets can override via the ctor arg.
+DEFAULT_DIRECTORY_MAX_ROWS = 15_000
 
 # Size-budget alarm thresholds (Issue #64). Triggered when the LAST
 # /api/nodes/directory response exceeded the budget; surfaced in
@@ -97,6 +104,17 @@ DEFAULT_PRUNE_BATCH_LIMIT = 10_000
 # legacy single-batch behavior (tests that want deterministic
 # per-cycle deletion).
 DEFAULT_PRUNE_MAX_BATCHES_PER_CYCLE = 12
+
+# Weekly gated VACUUM (node count optimization §D). The hourly auto-prune
+# explicitly skips VACUUM because on a Pi-class SD the full DB rewrite
+# can run multi-minute. Once a week is acceptable, and skipping it
+# entirely is what made an earlier 1.95 GB DB invisible until the
+# 2026-04-26 fleet wedge surfaced it. Gated on (DB file size ≥
+# threshold) AND (time since last VACUUM ≥ interval) so small DBs
+# never pay the rewrite cost. last_vacuum_ts persists in the _meta
+# key/value table so the gate survives daemon restarts.
+DEFAULT_VACUUM_INTERVAL_SECONDS = 7 * 24 * 3600        # 7 days
+DEFAULT_VACUUM_DB_SIZE_THRESHOLD_BYTES = 200 * 1024 * 1024   # 200 MB
 
 # source_origin tags. The writer derives these from the feature properties;
 # the prune query filters on them. Single source of truth so prune SQL and
@@ -352,9 +370,60 @@ class NodeHistoryDB:
                     CREATE INDEX IF NOT EXISTS idx_nodes_network
                     ON nodes(network)
                 """)
+                # Tiny key/value table for persisted maintenance state
+                # (currently: last_vacuum_ts for the weekly gated VACUUM
+                # in _maybe_prune). MF013-compliant — extension inside
+                # the existing DB, not a new DBSpec.
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS _meta (
+                        key   TEXT PRIMARY KEY,
+                        value TEXT
+                    )
+                """)
                 conn.commit()
             finally:
                 conn.close()
+
+    def _meta_get_float(self, key: str, default: float = 0.0) -> float:
+        """Read a float from the _meta key/value table.
+
+        Returns ``default`` when the key is missing, the row's value is
+        NULL/empty, or the stored string doesn't parse as a float.
+        Operations on _meta don't share the prune lock — callers that
+        need atomicity must acquire ``self._lock`` themselves.
+        """
+        try:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT value FROM _meta WHERE key = ?", (key,),
+                ).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            logger.debug(f"_meta read failed for {key}: {e}")
+            return default
+        if not row or row[0] is None:
+            return default
+        try:
+            return float(row[0])
+        except (TypeError, ValueError):
+            return default
+
+    def _meta_set_float(self, key: str, value: float) -> None:
+        """Persist a float to the _meta key/value table."""
+        try:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)",
+                    (key, repr(float(value))),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            logger.debug(f"_meta write failed for {key}: {e}")
 
     @staticmethod
     def _build_directory_row(feature: Dict[str, Any], now: float) -> Optional[
@@ -916,6 +985,44 @@ class NodeHistoryDB:
                 logger.error(f"Auto-prune failed: {e}")
             finally:
                 conn.close()
+
+        # Phase 4 — weekly gated VACUUM (node count optimization §D).
+        # The hourly path above skips VACUUM because Pi SD rewrite is
+        # multi-minute. Once a week is acceptable, and skipping it
+        # entirely is how a 1.95 GB DB stayed invisible until the
+        # 2026-04-26 fleet wedge. Gated on (DB size ≥ threshold) AND
+        # (time since last VACUUM ≥ interval). VACUUM must run outside
+        # any transaction — we drop the prune connection above and
+        # open a fresh one. last_vacuum_ts is persisted in _meta so
+        # the gate survives daemon restarts.
+        try:
+            db_size = self.db_path.stat().st_size
+        except OSError:
+            db_size = 0
+        if db_size >= DEFAULT_VACUUM_DB_SIZE_THRESHOLD_BYTES:
+            last_vac = self._meta_get_float("last_vacuum_ts", 0.0)
+            if (now - last_vac) >= DEFAULT_VACUUM_INTERVAL_SECONDS:
+                vacuum_start = time.perf_counter()
+                try:
+                    with self._lock:
+                        conn = self._connect()
+                        try:
+                            conn.execute("VACUUM")
+                        finally:
+                            conn.close()
+                    self._meta_set_float("last_vacuum_ts", now)
+                    try:
+                        new_size = self.db_path.stat().st_size
+                    except OSError:
+                        new_size = db_size
+                    logger.info(
+                        f"node_history VACUUM completed in "
+                        f"{int((time.perf_counter() - vacuum_start) * 1000)}ms: "
+                        f"{db_size / 1e6:.1f} MB → {new_size / 1e6:.1f} MB"
+                    )
+                except sqlite3.Error as e:
+                    logger.warning(f"node_history VACUUM failed: {e}")
+
         # Prune deletes rows from both node_observations and nodes —
         # invalidate stats caches so totals don't lag the new ground truth.
         self._invalidate_stats_caches()

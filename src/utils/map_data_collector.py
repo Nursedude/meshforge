@@ -215,6 +215,18 @@ class MapDataCollector(
                 # Drives the periodic _collect_locked() heartbeat — see
                 # DEFAULT_PERIODIC_REFRESH_SECONDS comment for the why.
                 "periodic_refresh_seconds": self.DEFAULT_PERIODIC_REFRESH_SECONDS,
+                # External-bulk geographic filter. External-bulk sources
+                # (meshcore_public ~40k worldwide, aredn_worldmap,
+                # public_fallback, mqtt_global) ingest the whole planet
+                # by default; on a Pi-class fleet box that has no RF
+                # reach to 99% of those nodes, the result is a multi-GB
+                # node_history.db and a slow geojson cold path. None
+                # for the explicit bbox means "auto-derive from
+                # operator_position.json + radius"; radius=0 or no
+                # operator position disables the filter entirely (fresh
+                # installs pass everything until the operator opts in).
+                "external_bulk_bbox": None,
+                "external_bulk_radius_km": 500,
             },
             config_dir=self._config_dir_override,
             # Stale-default migration (Issue #62). Pre-Issue-#56 fleet
@@ -265,6 +277,20 @@ class MapDataCollector(
         self._source_diagnostics: Dict[str, Dict[str, Any]] = {}
         # Rate-limit for actionable INFO logs (source_name -> last-log-timestamp)
         self._last_info_log: Dict[str, float] = {}
+
+        # External-bulk bbox-filter state (node count optimization). The
+        # bbox is resolved once per collect() cycle and cached so the
+        # four external-bulk source lists share one settings+file read.
+        # Counts reset at the start of each collect() so /api/status
+        # reflects the most recent cycle — same semantics as
+        # _source_diagnostics.
+        self._cached_external_bulk_bbox: Optional[Dict[str, float]] = None
+        self._cached_external_bulk_bbox_ts: float = 0.0
+        self._bbox_dropped_counts: Dict[str, int] = {}
+        # Federation-skipped-persistence counter (node count opt §B).
+        # Incremented for every federated feature filtered out before
+        # NodeHistoryDB.record_observations(). Surfaces in /api/status.
+        self._federated_skipped_persistence_count: int = 0
 
         # Node history database for position/state tracking over time
         self._history = None
@@ -647,6 +673,27 @@ class MapDataCollector(
         """
         return dict(self._source_diagnostics)
 
+    def get_bbox_filter_stats(self) -> Dict[str, Any]:
+        """Bbox-filter + federation-skip counters from the most recent collect().
+
+        Surfaced at /api/status.directory.bbox_filter so operators can
+        see how much external-bulk traffic the filter is shedding and
+        how many federation features are being kept out of the DB.
+        Counts reset at the start of each collect() — same semantics
+        as get_source_diagnostics.
+        """
+        return {
+            "bbox": (
+                dict(self._cached_external_bulk_bbox)
+                if self._cached_external_bulk_bbox is not None
+                else None
+            ),
+            "bbox_dropped": dict(self._bbox_dropped_counts),
+            "federated_skipped_persistence": (
+                self._federated_skipped_persistence_count
+            ),
+        }
+
     def _record_diagnostic(
         self,
         source: str,
@@ -760,6 +807,54 @@ class MapDataCollector(
 
             return self._collect_locked()
 
+    def _apply_external_bulk_bbox(
+        self,
+        features: List[Dict[str, Any]],
+        source_name: str,
+    ) -> List[Dict[str, Any]]:
+        """Drop out-of-bbox external-bulk features at ingestion.
+
+        External-bulk firehoses (meshcore_public, aredn_worldmap,
+        public_fallback) ship the entire planet. On a Pi-class fleet box
+        that has no RF reach to 99% of those nodes, the result is a
+        multi-GB node_history.db and a slow /api/nodes/geojson cold
+        path. Filtering at ingestion to a configurable bbox cuts
+        external-bulk volume by 10-50× without touching local-radio
+        sources.
+
+        Bbox resolution happens once per collect() cycle (cached on
+        self._cached_external_bulk_bbox). None bbox = filter disabled,
+        features pass through unchanged. Features missing coordinates
+        are dropped too — without a position we can't say they're
+        operator-relevant.
+
+        Drop counts surface in /api/status.directory.bbox_filter for
+        operator-side observability.
+        """
+        if self._cached_external_bulk_bbox is None:
+            return features
+        from utils.geo_filter import is_within_bbox
+        bbox = self._cached_external_bulk_bbox
+        kept: List[Dict[str, Any]] = []
+        dropped = 0
+        for f in features:
+            geom = f.get("geometry") or {}
+            coords = geom.get("coordinates") if isinstance(geom, dict) else None
+            # GeoJSON convention: [lon, lat] (longitude first).
+            if not (isinstance(coords, (list, tuple)) and len(coords) >= 2):
+                dropped += 1
+                continue
+            lon, lat = coords[0], coords[1]
+            if is_within_bbox(lat, lon, bbox):
+                kept.append(f)
+            else:
+                dropped += 1
+        if dropped:
+            self._bbox_dropped_counts[source_name] = (
+                self._bbox_dropped_counts.get(source_name, 0) + dropped
+            )
+        return kept
+
     @staticmethod
     def _tag_source_origin(features: List[Dict[str, Any]], origin: str) -> List[Dict[str, Any]]:
         """Stamp `properties.source_origin` on every feature in-place.
@@ -790,6 +885,20 @@ class MapDataCollector(
         # Reset per-call state so diagnostics/nodes_without_position reflect THIS run only.
         self._nodes_without_position = []
         self._source_diagnostics = {}
+        # Reset bbox-filter counters so /api/status reflects the most
+        # recent cycle. Resolve the bbox once per collect() — the
+        # operator can change settings or operator_position.json at any
+        # time; re-checking each cycle keeps the filter fresh without
+        # making every feature loop touch the filesystem.
+        self._bbox_dropped_counts = {}
+        self._federated_skipped_persistence_count = 0
+        try:
+            from utils.geo_filter import load_external_bulk_bbox
+            self._cached_external_bulk_bbox = load_external_bulk_bbox(self._settings)
+        except Exception as e:
+            logger.debug(f"external-bulk bbox resolution failed: {e}")
+            self._cached_external_bulk_bbox = None
+        self._cached_external_bulk_bbox_ts = time.time()
 
         features: Dict[str, Dict] = {}  # id -> feature (dedup by id)
         collect_start = time.perf_counter()
@@ -865,8 +974,11 @@ class MapDataCollector(
         # Source 4.5: AREDN worldmap (public CSV, always runs when enabled —
         # NOT threshold-gated. Provides geographic context alongside local
         # Meshtastic/RNS, not a fill-when-sparse fallback.)
-        aredn_worldmap_features = self._tag_source_origin(
-            self._timed_collect("aredn_worldmap", self._collect_aredn_worldmap),
+        aredn_worldmap_features = self._apply_external_bulk_bbox(
+            self._tag_source_origin(
+                self._timed_collect("aredn_worldmap", self._collect_aredn_worldmap),
+                "aredn_worldmap",
+            ),
             "aredn_worldmap",
         )
         for f in aredn_worldmap_features:
@@ -886,8 +998,11 @@ class MapDataCollector(
 
         # Source 5.5: MeshCore public map (always runs when enabled — NOT gated by
         # feature count threshold, because this is the primary MeshCore visibility path).
-        meshcore_public_features = self._tag_source_origin(
-            self._timed_collect("meshcore_public", self._collect_meshcore_public),
+        meshcore_public_features = self._apply_external_bulk_bbox(
+            self._tag_source_origin(
+                self._timed_collect("meshcore_public", self._collect_meshcore_public),
+                "meshcore_public",
+            ),
             "meshcore_public",
         )
         for f in meshcore_public_features:
@@ -896,11 +1011,14 @@ class MapDataCollector(
                 features[fid] = f
 
         # Source 6: Public data fallbacks (conditional — only when local data sparse)
-        public_features = self._tag_source_origin(
-            self._timed_collect(
+        public_features = self._apply_external_bulk_bbox(
+            self._tag_source_origin(
+                self._timed_collect(
+                    "public_fallback",
+                    self._collect_public_fallbacks,
+                    current_feature_count=len(features),
+                ),
                 "public_fallback",
-                self._collect_public_fallbacks,
-                current_feature_count=len(features),
             ),
             "public_fallback",
         )
@@ -1033,11 +1151,30 @@ class MapDataCollector(
         # writer in record_observations skips position-less rows itself
         # (it requires lat/lon for the time-series); the directory
         # writer handles them via NULL last_lat/last_lon.
+        #
+        # Federation memory-only (node count optimization §B): peer-
+        # injected features merged by _merge_federation are visible in
+        # the response but must NOT flow into NodeHistoryDB. Each fleet
+        # box otherwise persists the union of every peer's directory,
+        # producing N-way multiplicative inflation. Cold-start sees no
+        # federation rows in /api/nodes/directory for ~60s until the
+        # first poll; acceptable per design decision.
         if self._history:
-            history_features = list(geojson["features"])
+            history_features = []
+            for f in geojson["features"]:
+                props = f.get("properties") or {}
+                if props.get("federated") or props.get("federated_from"):
+                    self._federated_skipped_persistence_count += 1
+                    continue
+                history_features.append(f)
             for entry in self._nodes_without_position:
                 nid = entry.get("id")
                 if not nid:
+                    continue
+                # Same federation skip on the position-less path —
+                # _merge_federation deposits stubs here too.
+                if entry.get("federated") or entry.get("federated_from"):
+                    self._federated_skipped_persistence_count += 1
                     continue
                 # Tier-aware origin tagging mirrors the per-source path:
                 # MeshCore via the unified tracker is local-RX (gateway
