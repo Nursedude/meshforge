@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 import gzip
 import json
+import threading
 
 import pytest
 
@@ -683,3 +684,178 @@ class TestServeText:
         h = _make_handler("")
         h._serve_text("oops", status=503)
         h.send_response.assert_called_once_with(503)
+
+
+# ── Issue #70: /api/nodes/directory response cache ─────────────────────
+from utils._directory_response_cache import DirectoryResponseCache
+
+
+def _make_directory_handler(
+    *,
+    accept_encoding: str = "gzip",
+    snapshot=None,
+    cache: DirectoryResponseCache = None,
+    record_size_observer=None,
+    raise_on_snapshot=False,
+    query=None,
+):
+    """Wire a handler with the minimum collector surface ``_serve_directory``
+    touches: a history with ``get_directory_snapshot`` +
+    ``record_directory_serialized_size`` and a real response cache.
+    """
+    h = _make_handler(accept_encoding)
+
+    class _History:
+        def __init__(self):
+            self.snapshot_call_count = 0
+            self.record_calls: list = []
+
+        def get_directory_snapshot(self, include_position_less=True):
+            self.snapshot_call_count += 1
+            if raise_on_snapshot:
+                raise RuntimeError("simulated DB failure")
+            return snapshot or ([], [])
+
+        def record_directory_serialized_size(self, raw, compressed):
+            self.record_calls.append((raw, compressed))
+            if record_size_observer is not None:
+                record_size_observer(raw, compressed)
+
+    class _Collector:
+        def __init__(self):
+            self._history = _History()
+            self._directory_response_cache = (
+                cache if cache is not None else DirectoryResponseCache(ttl_s=5.0)
+            )
+
+    h.collector = _Collector()
+    h._query = query or {}
+    return h
+
+
+class TestDirectoryHandlerCacheIssue70:
+    """Pin the headline contracts:
+
+    1. Two consecutive requests within TTL run get_directory_snapshot once
+       (and json.dumps once — implied by the snapshot count).
+    2. size_observer fires exactly once across N within-TTL requests, so
+       the Issue #64 stats cache isn't churned.
+    3. Cached gzipped variant is reused for gzip-accepting clients;
+       cached raw variant is reused for non-accepting clients — both
+       served from a single build.
+    4. DB errors still propagate to a 500 response (no caching the failure).
+    """
+
+    def test_consecutive_requests_within_ttl_invoke_snapshot_once(self):
+        snapshot = ([], [{"id": "!a", "network": "rns"}])
+        h1 = _make_directory_handler(snapshot=snapshot)
+        h1._serve_directory()
+        # h2 shares the same collector → cache + history are the same instances
+        h2 = _make_handler("gzip")
+        h2.collector = h1.collector
+        h2._query = {}
+        h2._serve_directory()
+        assert h1.collector._history.snapshot_call_count == 1, (
+            "second request within TTL must not re-run get_directory_snapshot"
+        )
+
+    def test_size_observer_fires_only_on_cache_miss(self):
+        h1 = _make_directory_handler(snapshot=([], []))
+        h1._serve_directory()
+        h2 = _make_handler("gzip")
+        h2.collector = h1.collector
+        h2._query = {}
+        h2._serve_directory()
+        # Issue #64 record_directory_serialized_size fires once across two
+        # requests — cache hits reuse the size already recorded.
+        assert len(h1.collector._history.record_calls) == 1, (
+            f"size_observer must fire only on cache miss; got "
+            f"{h1.collector._history.record_calls}"
+        )
+
+    def test_gzip_and_non_gzip_clients_share_build(self):
+        # Build a payload big enough to cross _GZIP_MIN_BYTES so the
+        # gzip variant gets cached.
+        big_snapshot = (
+            [],
+            [{"id": f"!{i:08d}", "network": "rns", "name": "x" * 100}
+             for i in range(200)],
+        )
+        cache = DirectoryResponseCache(ttl_s=5.0)
+        h_gz = _make_directory_handler(
+            accept_encoding="gzip", snapshot=big_snapshot, cache=cache
+        )
+        h_gz._serve_directory()
+        body_gz = h_gz.wfile.getvalue()
+        assert body_gz.startswith(b"\x1f\x8b"), "gzip client must get gzip"
+
+        # Second handler, same collector + cache, but client doesn't
+        # accept gzip → must get raw bytes from the SAME cached build
+        # (collector._history.snapshot_call_count stays 1).
+        h_raw = _make_handler("")
+        h_raw.collector = h_gz.collector
+        h_raw._query = {}
+        h_raw._serve_directory()
+        body_raw = h_raw.wfile.getvalue()
+        assert not body_raw.startswith(b"\x1f\x8b"), (
+            "non-gzip client must get raw bytes"
+        )
+        assert gzip.decompress(body_gz) == body_raw, (
+            "raw and gzipped served from the same cache must round-trip"
+        )
+        assert h_gz.collector._history.snapshot_call_count == 1, (
+            "second client (different encoding) must NOT trigger rebuild"
+        )
+
+    def test_snapshot_failure_returns_500_and_does_not_cache(self):
+        h = _make_directory_handler(raise_on_snapshot=True)
+        h._serve_directory()
+        h.send_response.assert_called_with(500)
+        # Cache must remain empty so a recovered DB doesn't serve a
+        # cached failure body to the next caller.
+        assert h.collector._directory_response_cache.stats()["entry_count"] == 0
+
+    def test_concurrent_misses_coalesce_into_one_snapshot(self):
+        """The headline regression guard for the live-fleet wedge.
+
+        Federation peers polling at the same TTL boundary used to each
+        pay json.dumps + gzip independently — stacked under GIL until
+        the slowest one cleared. With single-flight, exactly one
+        get_directory_snapshot runs across N concurrent requests; the
+        rest receive the originating build's bytes.
+        """
+        snapshot = (
+            [],
+            [{"id": f"!{i:08d}", "network": "rns", "name": "x" * 50}
+             for i in range(100)],
+        )
+        cache = DirectoryResponseCache(ttl_s=5.0)
+        # Share one collector across all handler instances so they
+        # share the cache and the history.
+        seed = _make_directory_handler(snapshot=snapshot, cache=cache)
+        collector = seed.collector
+
+        ready = threading.Barrier(6)
+
+        def _worker():
+            h = _make_handler("gzip")
+            h.collector = collector
+            h._query = {}
+            ready.wait()
+            h._serve_directory()
+
+        threads = [threading.Thread(target=_worker) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert collector._history.snapshot_call_count == 1, (
+            f"6 concurrent requests must coalesce to one DB scan + serialize; "
+            f"got {collector._history.snapshot_call_count}"
+        )
+        # record_directory_serialized_size also fires only once — Issue
+        # #64 stats cache stays warm across the burst.
+        assert len(collector._history.record_calls) == 1
+
+

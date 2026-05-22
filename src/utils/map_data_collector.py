@@ -131,6 +131,12 @@ class MapDataCollector(
         self._periodic_refresh_stop = threading.Event()
         self._periodic_refresh_interval: float = 0.0
 
+        # /api/nodes/directory response cache (Issue #70). Short TTL +
+        # single-flight rebuild keeps concurrent federation polls from
+        # paying the 6-10 s json.dumps+gzip cost N times under GIL.
+        from utils._directory_response_cache import DirectoryResponseCache
+        self._directory_response_cache = DirectoryResponseCache(ttl_s=5.0)
+
         # User-configurable cache age settings
         self._settings = SettingsManager(
             "map_settings",

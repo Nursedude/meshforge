@@ -1125,11 +1125,74 @@ class MapRequestHandler(
             })
             return
 
-        try:
-            features, position_less = (
-                self.collector._history.get_directory_snapshot(
-                    include_position_less=True
+        # Optional ?preset= filter (same shape the live geojson endpoint
+        # accepts). Directory features carry numeric `last_seen` epoch
+        # (Issue #49) so age-based presets work here without the
+        # last_heard fallback the live path needs.
+        query = getattr(self, '_query', {})
+        preset_key = _safe_query_param(query, "preset")
+        # active_preset is the cache key + the value passed to the
+        # filter. Pass-through presets (empty spec) produce bytes
+        # identical to the unfiltered case, so we collapse them to
+        # None to share the cache entry.
+        active_preset: Optional[str] = None
+        if preset_key in VIEW_PRESETS:
+            spec = VIEW_PRESETS[preset_key]
+            if spec.get("origins") or spec.get("exclude_federated") or spec.get("max_age_s"):
+                active_preset = preset_key
+
+        history = self.collector._history
+        cache = self.collector._directory_response_cache
+
+        def _build() -> tuple:
+            # Single-flight build (Issue #70): the cache calls this at
+            # most once per TTL window per preset across all concurrent
+            # callers. The expensive work — DB scan + json.dumps + gzip
+            # — runs once and the bytes are reused for ~5 s.
+            features, position_less = history.get_directory_snapshot(
+                include_position_less=True
+            )
+            preset_applied = active_preset is not None
+            if preset_applied:
+                features = _apply_view_preset(features, active_preset)
+                position_less = _apply_view_preset_to_position_less(
+                    position_less, active_preset
                 )
+
+            # Per-network breakdown alongside the full list — same shape
+            # /api/status uses, so dashboards can consume either.
+            by_network: Dict[str, int] = {}
+            for entry in position_less:
+                net = entry.get("network", "unknown")
+                by_network[net] = by_network.get(net, 0) + 1
+
+            properties = {
+                "generated_at": datetime.now().isoformat(),
+                "total_features": len(features),
+                "total_position_less": len(position_less),
+            }
+            if preset_applied:
+                properties["preset_filtered"] = True
+                properties["preset"] = active_preset
+
+            body = {
+                "type": "FeatureCollection",
+                "features": features,
+                "properties": properties,
+                "nodes_without_position": position_less,
+                "nodes_without_position_by_network": by_network,
+            }
+            raw = json.dumps(body).encode()
+            gz = (
+                gzip.compress(raw, compresslevel=6)
+                if len(raw) >= self._GZIP_MIN_BYTES
+                else None
+            )
+            return raw, gz
+
+        try:
+            raw_bytes, gzip_bytes, was_built = cache.get_or_build(
+                active_preset, _build
             )
         except Exception as e:
             logger.error(f"directory snapshot failed: {e}")
@@ -1141,56 +1204,20 @@ class MapRequestHandler(
             }, status=500)
             return
 
-        # Optional ?preset= filter (same shape the live geojson endpoint
-        # accepts). Directory features carry numeric `last_seen` epoch
-        # (Issue #49) so age-based presets work here without the
-        # last_heard fallback the live path needs.
-        query = getattr(self, '_query', {})
-        preset_key = _safe_query_param(query, "preset")
-        preset_applied = False
-        if preset_key in VIEW_PRESETS:
-            spec = VIEW_PRESETS[preset_key]
-            if spec.get("origins") or spec.get("exclude_federated") or spec.get("max_age_s"):
-                features = _apply_view_preset(features, preset_key)
-                position_less = _apply_view_preset_to_position_less(
-                    position_less, preset_key
+        if was_built:
+            # Size-budget alarm (Issue #64): record the serialized byte
+            # count so `get_directory_stats()` can surface size_alarm in
+            # /api/status. Only fired on cache miss — cache hits reuse
+            # the value recorded by the originating build.
+            try:
+                history.record_directory_serialized_size(
+                    len(raw_bytes),
+                    len(gzip_bytes) if gzip_bytes else None,
                 )
-                preset_applied = True
+            except Exception as e:
+                logger.debug("record_directory_serialized_size failed: %s", e)
 
-        # Per-network breakdown alongside the full list — same shape
-        # /api/status uses, so dashboards can consume either.
-        by_network: Dict[str, int] = {}
-        for entry in position_less:
-            net = entry.get("network", "unknown")
-            by_network[net] = by_network.get(net, 0) + 1
-
-        properties = {
-            "generated_at": datetime.now().isoformat(),
-            "total_features": len(features),
-            "total_position_less": len(position_less),
-        }
-        if preset_applied:
-            properties["preset_filtered"] = True
-            properties["preset"] = preset_key
-
-        body = {
-            "type": "FeatureCollection",
-            "features": features,
-            "properties": properties,
-            "nodes_without_position": position_less,
-            "nodes_without_position_by_network": by_network,
-        }
-
-        # Size-budget alarm (Issue #64): record the serialized byte
-        # count so `get_directory_stats()` can surface size_alarm in
-        # /api/status. Closes the backlog #5 question "how do we know
-        # when we've hit 'too late'?" by exposing the trajectory.
-        history = self.collector._history
-
-        def _record_size(raw: int, compressed: Optional[int]) -> None:
-            history.record_directory_serialized_size(raw, compressed)
-
-        self._serve_json(body, size_observer=_record_size)
+        self._send_prebuilt_json(raw_bytes, gzip_bytes, status=200)
 
     def _serve_trajectory(self, node_id: str):
         """Serve trajectory GeoJSON for a specific node."""
@@ -1477,6 +1504,42 @@ class MapRequestHandler(
             # keeps the journal clean; the bare exception used to surface as
             # a noisy traceback per abandoned request.
             logger.debug(f"Client disconnected during _serve_json: {e}")
+
+    def _send_prebuilt_json(
+        self,
+        raw_bytes: bytes,
+        gzip_bytes: Optional[bytes],
+        status: int = 200,
+    ) -> None:
+        """Emit a JSON response from already-serialized bytes (Issue #70).
+
+        Used by short-TTL response caches that pre-build both the raw
+        and gzipped variants. The per-request decision — gzip or not —
+        depends on this specific client's ``Accept-Encoding``, but the
+        expensive serialization work happens once per TTL window.
+
+        ``gzip_bytes=None`` means the cached body is below the gzip
+        threshold and gzip was never built; the response is always raw.
+        """
+        if gzip_bytes is not None and self._client_accepts_gzip():
+            data = gzip_bytes
+            encoding: Optional[str] = 'gzip'
+        else:
+            data = raw_bytes
+            encoding = None
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(data)))
+        if encoding:
+            self.send_header('Content-Encoding', encoding)
+        self.send_header('Vary', 'Accept-Encoding')
+        self._send_cors_header()
+        self.send_header('Cache-Control', 'no-cache')
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as e:
+            logger.debug(f"Client disconnected during _send_prebuilt_json: {e}")
 
     def _serve_fleet_slo(self):
         """Serve the MeshAnchor `/fleet/slo` peer contract.
