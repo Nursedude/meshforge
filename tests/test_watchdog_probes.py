@@ -760,3 +760,65 @@ def test_resolve_probe_targets_rejects_out_of_range_port():
     assert port == 5000  # falls back
     sea, swc, port = resolve_probe_targets({"http_port": -1})
     assert port == 5000  # falls back
+
+
+def test_load_config_file_candidate_resolution_walks_to_etc(tmp_path, monkeypatch):
+    """When the watchdog runs as root with no SUDO_USER (the systemd
+    case), the operator-home lookup must NOT cause us to silently use
+    /root/.config — we walk the candidate list and pick the first
+    existing-and-parseable file. /etc/meshforge/watchdog.json is the
+    documented fallback."""
+    from utils import watchdog_runner
+
+    # Stub the operator-home resolver to point at our tmp_path so we
+    # don't actually touch a real user's home.
+    op_home = tmp_path / "op-home"
+    op_home.mkdir()
+    monkeypatch.setattr(
+        watchdog_runner, "_operator_home_for_root", lambda: op_home,
+    )
+
+    # Stub /etc/meshforge/watchdog.json to a real file under tmp_path.
+    etc_path = tmp_path / "etc-watchdog.json"
+    etc_path.write_text(json.dumps({"http_port": 8808}))
+
+    original_resolver = watchdog_runner._resolve_config_candidates
+    def _patched_resolver(explicit):
+        if explicit is not None:
+            return [Path(str(explicit)).expanduser()]
+        # The operator-home candidate doesn't exist; the next one does.
+        return [
+            op_home / ".config" / "meshforge" / "watchdog.json",  # missing
+            etc_path,                                              # present
+        ]
+    monkeypatch.setattr(
+        watchdog_runner, "_resolve_config_candidates", _patched_resolver,
+    )
+
+    cfg = load_config_file()
+    assert cfg == {"http_port": 8808}
+
+
+def test_load_config_file_operator_home_wins_over_etc(tmp_path, monkeypatch):
+    """When both candidates exist, the operator-home file takes
+    precedence — it's the per-box config the operator actually writes."""
+    from utils import watchdog_runner
+
+    op_cfg_dir = tmp_path / "op-home" / ".config" / "meshforge"
+    op_cfg_dir.mkdir(parents=True)
+    op_cfg = op_cfg_dir / "watchdog.json"
+    op_cfg.write_text(json.dumps({"http_port": 1111}))
+
+    etc_cfg = tmp_path / "etc-watchdog.json"
+    etc_cfg.write_text(json.dumps({"http_port": 9999}))
+
+    def _patched_resolver(explicit):
+        if explicit is not None:
+            return [Path(str(explicit)).expanduser()]
+        return [op_cfg, etc_cfg]
+    monkeypatch.setattr(
+        watchdog_runner, "_resolve_config_candidates", _patched_resolver,
+    )
+
+    cfg = load_config_file()
+    assert cfg == {"http_port": 1111}

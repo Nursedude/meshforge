@@ -274,60 +274,113 @@ def write_state(
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _operator_home_for_root() -> Optional[Path]:
+    """Resolve the operator's home dir when this daemon runs as root.
+
+    systemd starts us with ``User=root`` and ``LOGNAME=root`` — neither
+    ``SUDO_USER`` nor a non-root ``LOGNAME`` is set, so the standard
+    ``get_real_user_home()`` falls back to ``/root``. The watchdog's
+    config file lives in the operator's home (consistent with
+    ``~/.config/meshforge/`` everywhere else), so we use the same
+    UID-1000 / pwd-lookup pattern ``tracer_fires._operator_home`` uses.
+    Returns None when no operator user can be resolved.
+    """
+    import os
+    if os.geteuid() != 0:
+        try:
+            from utils.paths import get_real_user_home
+            return get_real_user_home()
+        except Exception:
+            return None
+    try:
+        from utils.fleet_test_runner import _find_operator_user
+    except ImportError:
+        return None
+    op = _find_operator_user()
+    if op is None:
+        return None
+    op_uid, _ = op
+    try:
+        import pwd
+        return Path(pwd.getpwuid(op_uid).pw_dir)
+    except (KeyError, ImportError, OSError):
+        return None
+
+
+def _resolve_config_candidates(
+    explicit_path: Optional[Path],
+) -> List[Path]:
+    """Build the ordered candidate list for the config file.
+
+    Order:
+      1. Explicit ``--config`` path (CLI override) — taken as-is.
+      2. ``<operator_home>/.config/meshforge/watchdog.json`` — primary
+         per-box location. Same dir as ``~/.config/meshforge/lab_peers``,
+         settings.json, etc.
+      3. ``/etc/meshforge/watchdog.json`` — system fallback for boxes
+         where the operator home isn't resolvable (mirrors how
+         ``_read_rns_instance_name`` falls back to ``/etc/reticulum/config``).
+    """
+    if explicit_path is not None:
+        return [Path(str(explicit_path)).expanduser()]
+
+    candidates: List[Path] = []
+    op_home = _operator_home_for_root()
+    if op_home is not None:
+        candidates.append(op_home / ".config" / "meshforge" / "watchdog.json")
+    candidates.append(Path("/etc/meshforge/watchdog.json"))
+    return candidates
+
+
 def load_config_file(
     config_path: Optional[Path] = None,
 ) -> Dict[str, object]:
-    """Load per-box override config from operator home.
+    """Load per-box override config from operator home or /etc.
 
     Returns an empty dict on any read/parse failure — the watchdog must
     keep starting even if the override file is bad. Logs a WARNING so
     the operator sees the failure without burying it.
 
-    Resolution of ``~`` follows the same operator-home pattern as the
-    rest of the lab tooling: watchdog runs as root, but the config
-    lives in the operator user's home (consistent with how
-    ``_read_rns_instance_name`` already looks up RNS config).
+    Tries multiple candidate paths (see ``_resolve_config_candidates``).
+    The first existing-and-parseable file wins; subsequent candidates
+    are not consulted.
     """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_FILE
-    try:
-        from utils.paths import get_real_user_home
-        # Expand ~ against the operator's real home, not root's.
-        if str(config_path).startswith("~/"):
-            config_path = get_real_user_home() / str(config_path)[2:]
-        else:
-            config_path = Path(config_path).expanduser()
-    except Exception:
-        config_path = Path(str(config_path)).expanduser()
+    candidates = _resolve_config_candidates(config_path)
+    last_attempted: Optional[Path] = None
 
-    try:
-        raw = config_path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return {}
-    except OSError as exc:
-        logger.warning(
-            "watchdog: config file %s unreadable: %s — falling back to defaults",
-            config_path, exc,
-        )
-        return {}
+    for path in candidates:
+        last_attempted = path
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue  # try next candidate
+        except OSError as exc:
+            logger.warning(
+                "watchdog: config file %s unreadable: %s — trying next candidate",
+                path, exc,
+            )
+            continue
 
-    try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning(
-            "watchdog: config file %s malformed: %s — falling back to defaults",
-            config_path, exc,
-        )
-        return {}
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning(
+                "watchdog: config file %s malformed: %s — falling back to defaults",
+                path, exc,
+            )
+            return {}
 
-    if not isinstance(data, dict):
-        logger.warning(
-            "watchdog: config file %s root is not a JSON object — "
-            "falling back to defaults", config_path,
-        )
-        return {}
-    logger.info("watchdog: loaded per-box overrides from %s", config_path)
-    return data
+        if not isinstance(data, dict):
+            logger.warning(
+                "watchdog: config file %s root is not a JSON object — "
+                "falling back to defaults", path,
+            )
+            return {}
+        logger.info("watchdog: loaded per-box overrides from %s", path)
+        return data
+
+    # No candidate existed — quiet (the file is optional).
+    return {}
 
 
 def resolve_probe_targets(
