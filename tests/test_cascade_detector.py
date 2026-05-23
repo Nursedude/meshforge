@@ -378,10 +378,13 @@ class TestProbeTcp4403Contention:
         assert set(hit.metric["pids"]) == {12345, 67890}
         assert "contention" in hit.evidence
 
-    def test_returns_hit_on_map_service_signature_alone(self):
-        """Contention shape (b): single python pid, cmdline matches
-        utils.map_data_service. Issue #53 stale-daemon signature even
-        when no second consumer is present."""
+    def test_returns_hit_on_map_service_signature_when_pid_is_orphan(self):
+        """Contention shape (b): single python pid running
+        utils.map_data_service that does NOT match systemd's MainPID
+        for meshforge-map.service. Issue #53 stale-daemon signature —
+        the orphaned old process survived a restart and is still
+        holding the meshtasticd client socket.
+        """
         result = MagicMock(
             returncode=0,
             stdout=(
@@ -398,12 +401,83 @@ class TestProbeTcp4403Contention:
              patch("utils.cascade_fingerprints.subprocess.run",
                    return_value=result), \
              patch("utils.cascade_fingerprints._read_proc_cmdline",
-                   side_effect=fake_cmdline):
+                   side_effect=fake_cmdline), \
+             patch("utils.cascade_fingerprints._resolve_meshforge_map_main_pid",
+                   return_value=99999):  # MainPID != 42 → orphan
             hit = cfp.probe_tcp_4403_contention()
         assert hit is not None
         assert hit.metric["pid_count"] == 1
         assert hit.metric["map_service_pids"] == [42]
+        assert hit.metric["systemd_main_pid"] == 99999
         assert "Issue #53" in hit.evidence
+        assert "stale-daemon" in hit.evidence
+
+    def test_returns_none_when_map_service_pid_matches_systemd_main_pid(self):
+        """Long-standing false-positive class on every box running
+        meshforge-map.service AND meshtasticd together: the map daemon
+        legitimately holds an established client connection to local
+        :4403 to read node state. The pre-tighten probe matched on
+        "any utils.map_data_service pid on :4403" and fired pre_fail
+        for the healthy steady state. Now we cross-check against
+        systemd MainPID — match means current/healthy → skip.
+
+        Field evidence: two fleet boxes both showed cascade.pre_fail=1
+        with tcp_4403_contention firing for the legitimate steady-state
+        client connection from meshforge-map.service to meshtasticd.
+        """
+        result = MagicMock(
+            returncode=0,
+            stdout=(
+                'ESTAB 0 0 127.0.0.1:54286 127.0.0.1:4403 '
+                'users:(("python3",pid=636099,fd=13))\n'
+            ),
+        )
+
+        def fake_cmdline(pid):
+            return ("/opt/meshforge/venv/bin/python -m utils.map_data_service "
+                    "--daemon --host 0.0.0.0 --port 5000")
+
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/ss"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   return_value=result), \
+             patch("utils.cascade_fingerprints._read_proc_cmdline",
+                   side_effect=fake_cmdline), \
+             patch("utils.cascade_fingerprints._resolve_meshforge_map_main_pid",
+                   return_value=636099):  # MainPID == pid → healthy
+            assert cfp.probe_tcp_4403_contention() is None
+
+    def test_returns_hit_when_systemd_main_pid_is_zero(self):
+        """Edge case: meshforge-map.service is stopped (MainPID=0,
+        which our helper normalizes to None) but a previous-run pid
+        is still holding the meshtasticd socket. That's a real Issue
+        #53 orphan — the probe must still fire so the operator sees
+        the dangling consumer.
+        """
+        result = MagicMock(
+            returncode=0,
+            stdout=(
+                'ESTAB 0 0 127.0.0.1:54286 127.0.0.1:4403 '
+                'users:(("python3",pid=42,fd=8))\n'
+            ),
+        )
+
+        def fake_cmdline(pid):
+            return "python3 -m utils.map_data_service"
+
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/ss"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   return_value=result), \
+             patch("utils.cascade_fingerprints._read_proc_cmdline",
+                   side_effect=fake_cmdline), \
+             patch("utils.cascade_fingerprints._resolve_meshforge_map_main_pid",
+                   return_value=None):  # service stopped / unresolvable
+            hit = cfp.probe_tcp_4403_contention()
+        assert hit is not None
+        assert hit.metric["map_service_pids"] == [42]
+        assert hit.metric["systemd_main_pid"] is None
+        assert "unresolved" in hit.evidence
 
     def test_dedups_same_pid_across_multiple_fds(self):
         """ss can list the same pid in multiple rows when a process has
@@ -466,6 +540,59 @@ class TestProbeTcp4403Contention:
         # doesn't silently regress this specific fingerprint.
         assert isinstance(fp.coupled_to, tuple)
         assert all(isinstance(s, str) and len(s) > 1 for s in fp.coupled_to)
+
+
+class TestResolveMeshforgeMapMainPid:
+    """Pins parsing of ``systemctl show -p MainPID --value`` for the
+    tcp_4403_contention probe's false-positive cross-check.
+    """
+
+    def test_returns_pid_when_service_running(self):
+        result = MagicMock(returncode=0, stdout="636099\n")
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/systemctl"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   return_value=result):
+            assert cfp._resolve_meshforge_map_main_pid() == 636099
+
+    def test_returns_none_when_service_inactive(self):
+        # MainPID=0 from systemd → normalize to None.
+        result = MagicMock(returncode=0, stdout="0\n")
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/systemctl"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   return_value=result):
+            assert cfp._resolve_meshforge_map_main_pid() is None
+
+    def test_returns_none_when_systemctl_missing(self):
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value=None):
+            assert cfp._resolve_meshforge_map_main_pid() is None
+
+    def test_returns_none_on_subprocess_timeout(self):
+        def boom(*args, **kwargs):
+            raise subprocess.TimeoutExpired(args[0], 2)
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/systemctl"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   side_effect=boom):
+            assert cfp._resolve_meshforge_map_main_pid() is None
+
+    def test_returns_none_on_nonzero_returncode(self):
+        result = MagicMock(returncode=1, stdout="")
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/systemctl"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   return_value=result):
+            assert cfp._resolve_meshforge_map_main_pid() is None
+
+    def test_returns_none_on_malformed_output(self):
+        result = MagicMock(returncode=0, stdout="not-a-number\n")
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/systemctl"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   return_value=result):
+            assert cfp._resolve_meshforge_map_main_pid() is None
 
 
 # ── CascadeDetector hysteresis ───────────────────────────────────────────

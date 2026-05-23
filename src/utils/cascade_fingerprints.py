@@ -256,17 +256,50 @@ def _read_proc_cmdline(pid: int) -> str:
     return raw.decode("utf-8", errors="replace").replace("\x00", " ").strip()
 
 
+def _resolve_meshforge_map_main_pid() -> Optional[int]:
+    """``systemctl show -p MainPID --value meshforge-map.service``.
+
+    Returns the int pid when systemd reports a live MainPID (>1).
+    Returns None on subprocess failure, when systemctl is missing,
+    or when MainPID is 0/1 (service inactive). Mirrors the helper
+    pattern in ``utils.watchdog_probes._resolve_main_pid``; kept
+    local here so the cascade layer doesn't import the watchdog
+    layer.
+    """
+    if shutil.which("systemctl") is None:
+        return None
+    try:
+        proc = subprocess.run(
+            ["systemctl", "show", "-p", "MainPID", "--value",
+             "meshforge-map.service"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        pid = int(proc.stdout.strip())
+    except (ValueError, TypeError):
+        return None
+    return pid if pid > 1 else None
+
+
 def probe_tcp_4403_contention() -> Optional[ProbeHit]:
-    """Detect a non-gateway python process holding :4403 ESTABLISHED.
+    """Detect a stale/foreign python process holding :4403 ESTABLISHED.
 
     Per Issue #53 in persistent_issues.md: when meshforge-map.service
     goes stale across a fleet-sync (Phase-2 migration left old
     daemons running on pre-fix code), the stale daemon holds a python
     socket to 127.0.0.1:4403 (meshtasticd's TCP API port).
-    Steady-state the gateway is the sole local consumer; any second
-    python pid on :4403, OR a single python pid whose cmdline is
-    ``utils.map_data_service`` (the known-stale signature), is
-    contention.
+
+    The legitimate steady-state shape on a fully-stacked box is:
+    one ``utils.map_data_service`` python process — the current
+    ``meshforge-map.service`` MainPID — holds a single client
+    connection to local meshtasticd's :4403. The probe distinguishes
+    that healthy shape from the Issue #53 stale-daemon shape by
+    checking whether the map_data_service pid on :4403 matches
+    systemd's MainPID for ``meshforge-map.service``.
 
     Probe (no sudo needed for own-user processes): ``ss -tnpH state
     established`` lists all established TCP connections with
@@ -274,14 +307,20 @@ def probe_tcp_4403_contention() -> Optional[ProbeHit]:
     127.0.0.1:4403, extract distinct (pid, comm) tuples, and surface a
     ProbeHit when:
       * 2+ distinct python pids are on :4403 (contention), OR
-      * exactly 1 pid is on :4403 and its cmdline reads
-        ``utils.map_data_service`` (the wrong-process signature).
+      * exactly 1 ``utils.map_data_service`` pid is on :4403 AND it is
+        NOT systemd's MainPID for ``meshforge-map.service`` (orphan /
+        stale signature). Includes the MainPID==0 case (service
+        stopped, dangling pid still holding the socket).
 
     Miss conditions:
       * ``ss`` not installed
       * No :4403 connections (no gateway, benign)
       * Exactly one python pid AND its cmdline is NOT map_data_service
         (steady state — assumed to be the gateway)
+      * Exactly one ``utils.map_data_service`` pid AND it equals
+        systemd's MainPID for ``meshforge-map.service`` (steady-state
+        client connect to local meshtasticd — was a long-standing
+        false positive on every box running both services together)
 
     Honors ``MESHFORGE_CASCADE_PROBE_DISABLED``.
     """
@@ -346,17 +385,33 @@ def probe_tcp_4403_contention() -> Optional[ProbeHit]:
 
     if map_service_pids:
         pid, comm = map_service_pids[0]
+        # Steady state: map_data_service legitimately holds a client
+        # connection to local meshtasticd. The Issue #53 stale-daemon
+        # shape is specifically an OLD pid that survived a restart —
+        # i.e., a map_data_service pid that does NOT match the current
+        # systemd MainPID. If MainPID matches → healthy, skip. If
+        # systemctl is unavailable, we can't tell — preserve the
+        # conservative original behavior and fire (better to surface a
+        # false positive in that one edge than miss a real stale on a
+        # box with broken systemctl).
+        main_pid = _resolve_meshforge_map_main_pid()
+        if main_pid is not None and main_pid == pid:
+            return None
         return ProbeHit(
             evidence=(
-                "meshforge-map.service is bound to 127.0.0.1:4403 — Issue "
-                "#53 stale-daemon signature; restart meshforge-map.service "
-                "to release the contention"
+                "meshforge-map.service stale-daemon signature on "
+                "127.0.0.1:4403 — utils.map_data_service pid "
+                f"{pid} does not match systemd MainPID "
+                f"({main_pid if main_pid is not None else 'unresolved'}); "
+                "restart meshforge-map.service to release the contention "
+                "(Issue #53)"
             ),
             metric={
                 "pid_count": 1,
                 "pids": [pid],
                 "sample_comm": comm,
                 "map_service_pids": [pid],
+                "systemd_main_pid": main_pid,
             },
         )
 
