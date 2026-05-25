@@ -604,26 +604,37 @@ class PersistentMessageQueue:
     def _compute_hash(self, payload: Dict) -> str:
         """Compute content hash for deduplication.
 
-        Bridge paths use different payload shapes: Meshtastic ingress
-        carries ``from``/``to``/``text``/``type``; the RNS→Mesh and
-        queued-RNS paths carry ``message``/``source_id``/``destination``/
-        ``channel``. Keying only on the first shape made EVERY
-        message-shaped payload hash identically (all four keys absent →
-        constant hash), so within ``DEDUP_WINDOW`` all but the first such
-        message — including every chunk after the first in a multi-chunk
-        RNS→Mesh reply — were dropped as false duplicates. Fall back across
-        both shapes so the hash reflects the actual content.
+        Bridge paths use different payload shapes. Keying only on the
+        Meshtastic-ingress shape (``from``/``to``/``text``/``type``) made
+        EVERY ``message``-shaped payload (RNS→Mesh / queued-RNS) hash
+        identically — all four keys absent → constant hash — so within
+        ``DEDUP_WINDOW`` all but the first such message were dropped as
+        false duplicates. So we branch on the shape:
+
+        - ``message``-shaped (RNS→Mesh): key on the message CONTENT plus
+          route (destination + channel). Deliberately NOT the transport
+          ``source_id`` — the body already encodes its origin (the
+          ``[RNS:src]`` prefix), and the SAME logical message can reach us
+          via two transport paths (a direct send and a peer-gateway relay)
+          with different ``source_id``s. Keying on source_id let those
+          multi-path duplicates escape dedup (observed: identical
+          ``[RNS:627f] [ch0:p4] wx`` enqueued twice 0.3s apart).
+        - ``text``-shaped (Meshtastic ingress): key on from/to/text/type,
+          where ``from`` is the originating node and is meaningful.
         """
-        text = payload.get("text")
-        if text is None:
-            text = payload.get("message")
-        key_data = json.dumps({
-            "from": payload.get("from") or payload.get("source_id"),
-            "to": payload.get("to") or payload.get("destination"),
-            "text": text,
-            "type": payload.get("type"),
-            "channel": payload.get("channel"),
-        }, sort_keys=True)
+        if payload.get("message") is not None:
+            key_data = json.dumps({
+                "message": payload.get("message"),
+                "destination": payload.get("destination"),
+                "channel": payload.get("channel"),
+            }, sort_keys=True)
+        else:
+            key_data = json.dumps({
+                "from": payload.get("from"),
+                "to": payload.get("to"),
+                "text": payload.get("text"),
+                "type": payload.get("type"),
+            }, sort_keys=True)
         return hashlib.sha256(key_data.encode()).hexdigest()[:16]
 
     def _is_duplicate(self, content_hash: str, destination: str) -> bool:

@@ -304,6 +304,21 @@ class TestDeduplication:
         assert id1 is not None
         assert id2 is None
 
+    def test_multipath_duplicate_dedups_despite_different_source(self, queue):
+        """The SAME logical RNS→Mesh message arriving via two transport paths
+        (direct vs peer-gateway relay → different source_id) must dedup. The
+        body already encodes origin via its prefix, so source_id must NOT be
+        in the key. Regression for identical [RNS:627f] commands enqueued 2x."""
+        p1 = {"message": "[RNS:627f] [ch0:p4] wx", "channel": 2,
+              "source_id": "627fa566...", "destination": None}
+        p2 = {"message": "[RNS:627f] [ch0:p4] wx", "channel": 2,
+              "source_id": "f68c2f56...", "destination": None}  # relayed: diff source
+        assert queue._compute_hash(p1) == queue._compute_hash(p2)
+        id1 = queue.enqueue(p1, "meshtastic")
+        id2 = queue.enqueue(p2, "meshtastic")
+        assert id1 is not None
+        assert id2 is None  # multi-path duplicate suppressed
+
 
 # ---------------------------------------------------------------------------
 # PersistentMessageQueue — get_pending / priority ordering
