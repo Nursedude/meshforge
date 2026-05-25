@@ -100,10 +100,12 @@ count, non-zero exit if any required item failed. Operator-legible, greppable.
   nonzero on violation). All five MeshForge boxes assigned roles via `--set-role`
   (fleet is now self-describing: primary / full-gateway×2 / cloud-publisher /
   gateway-only); live `--fleet-check` reports invariants OK. 32 tests.
-  *Deferred to v2.1:* `fleet_sync` auto-invoking `--fleet-check` each sync
-  (read-only drift visibility) — the hook is small but edits the critical sync
-  script, so it's intentionally separate. `meshanchor-noc` resolved as external
-  (skipped) — see Resolved decisions.
+  `meshanchor-noc` resolved as external (skipped) — see Resolved decisions.
+- **v2.1 — fleet_sync hook (SHIPPED 2026-05-24):** `fleet_sync.sh` runs
+  `--fleet-check` after the per-host + self-sync work, surfacing role/singleton
+  drift in the sync report. Read-only + advisory (counts as a warn, never fails
+  the sync or mutates); opt out with `MESHFORGE_SKIP_ROLE_CHECK=1`. Verified
+  live (full role table + invariants OK, 0 warn).
 - **v3 — closes the loop with the watchdog:** drift detected at runtime →
   provisioner re-converges (this is the "encode judgment into the system" step;
   pairs with watchdog auto-remediation off dry-run).
