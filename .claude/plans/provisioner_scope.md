@@ -94,9 +94,16 @@ count, non-zero exit if any required item failed. Operator-legible, greppable.
   23 unit tests; validated on a live box (clean role → exit 0 all PASS; drifted
   role → exit 1 WOULD-CHANGE, mutates nothing). Run:
   `sudo python3 scripts/provision_role.py [--apply]`.
-- **v2 — fleet-aware:** singleton enforcement across `fleet_hosts`; `fleet_sync`
-  optionally invokes `provision_role.py --apply` after a code sync; MeshAnchor
-  port for `meshanchor-noc`.
+- **v2 — fleet-aware (SHIPPED 2026-05-24):** `--print-role`, `validate_fleet`
+  (pure singleton/role check), `--fleet-check` (gathers peer roles over a
+  configurable `$MESHFORGE_SSH`, validates, prints the fleet role table + exits
+  nonzero on violation). All five MeshForge boxes assigned roles via `--set-role`
+  (fleet is now self-describing: primary / full-gateway×2 / cloud-publisher /
+  gateway-only); live `--fleet-check` reports invariants OK. 32 tests.
+  *Deferred to v2.1:* `fleet_sync` auto-invoking `--fleet-check` each sync
+  (read-only drift visibility) — the hook is small but edits the critical sync
+  script, so it's intentionally separate. `meshanchor-noc` resolved as external
+  (skipped) — see Resolved decisions.
 - **v3 — closes the loop with the watchdog:** drift detected at runtime →
   provisioner re-converges (this is the "encode judgment into the system" step;
   pairs with watchdog auto-remediation off dry-run).
