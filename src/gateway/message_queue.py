@@ -602,13 +602,27 @@ class PersistentMessageQueue:
             """)
 
     def _compute_hash(self, payload: Dict) -> str:
-        """Compute content hash for deduplication."""
-        # Hash key fields that identify a unique message
+        """Compute content hash for deduplication.
+
+        Bridge paths use different payload shapes: Meshtastic ingress
+        carries ``from``/``to``/``text``/``type``; the RNS→Mesh and
+        queued-RNS paths carry ``message``/``source_id``/``destination``/
+        ``channel``. Keying only on the first shape made EVERY
+        message-shaped payload hash identically (all four keys absent →
+        constant hash), so within ``DEDUP_WINDOW`` all but the first such
+        message — including every chunk after the first in a multi-chunk
+        RNS→Mesh reply — were dropped as false duplicates. Fall back across
+        both shapes so the hash reflects the actual content.
+        """
+        text = payload.get("text")
+        if text is None:
+            text = payload.get("message")
         key_data = json.dumps({
-            "from": payload.get("from"),
-            "to": payload.get("to"),
-            "text": payload.get("text"),
+            "from": payload.get("from") or payload.get("source_id"),
+            "to": payload.get("to") or payload.get("destination"),
+            "text": text,
             "type": payload.get("type"),
+            "channel": payload.get("channel"),
         }, sort_keys=True)
         return hashlib.sha256(key_data.encode()).hexdigest()[:16]
 

@@ -307,10 +307,17 @@ class MessageTransformMixin:
                         'source_id': msg.source_id,
                         'destination': destination,
                     }
+                    # deduplicate=False: chunks are intentional fragments of
+                    # ONE message, not independent messages. A repeated line
+                    # (e.g. "amts: < 0.1in." twice in a wx forecast) is real
+                    # content that must be delivered, and sibling chunks must
+                    # never suppress each other. With dedup off here, a falsy
+                    # return now means only a genuinely full queue.
                     if not self._persistent_queue.enqueue(
                         payload=payload,
                         destination="meshtastic",
                         priority=MessagePriority.NORMAL,
+                        deduplicate=False,
                     ):
                         all_queued = False
                         break

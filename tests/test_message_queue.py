@@ -278,6 +278,32 @@ class TestDeduplication:
         assert id1 is not None
         assert id2 is not None
 
+    def test_message_shaped_payloads_hash_distinctly(self, queue):
+        """Regression: RNS→Mesh payloads use `message`/`destination`, not
+        `text`/`from`/`to`. The old hash keyed only on the latter, so every
+        such payload hashed identically and all but the first within
+        DEDUP_WINDOW were dropped as false duplicates."""
+        h1 = queue._compute_hash({"message": "Memorial Day: rain", "destination": None})
+        h2 = queue._compute_hash({"message": "Tonight: clear", "destination": None})
+        assert h1 != h2
+
+    def test_distinct_message_payloads_all_enqueue(self, queue):
+        """Two different `message`-shaped payloads to the same destination
+        within the dedup window must BOTH enqueue (the degenerate hash
+        collapsed them, dropping the second)."""
+        id1 = queue.enqueue({"message": "chunk one", "channel": 2}, "meshtastic")
+        id2 = queue.enqueue({"message": "chunk two", "channel": 2}, "meshtastic")
+        assert id1 is not None
+        assert id2 is not None
+
+    def test_message_payload_dedup_still_works_for_identical(self, queue):
+        """The hash is still content-sensitive: a genuinely identical
+        `message` payload within the window dedups (multi-path protection)."""
+        id1 = queue.enqueue({"message": "same", "destination": "x"}, "meshtastic")
+        id2 = queue.enqueue({"message": "same", "destination": "x"}, "meshtastic")
+        assert id1 is not None
+        assert id2 is None
+
 
 # ---------------------------------------------------------------------------
 # PersistentMessageQueue — get_pending / priority ordering

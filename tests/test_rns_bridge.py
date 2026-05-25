@@ -1518,6 +1518,9 @@ class TestRNSToMeshChunking:
             for c in mesh_enqueues:
                 payload_msg = c.kwargs["payload"]["message"]
                 assert len(payload_msg.encode("utf-8")) <= _MAX
+                # Chunks are fragments of one message — must not dedup against
+                # each other (a repeated line would otherwise drop + abort).
+                assert c.kwargs.get("deduplicate") is False
             assert b.stats['messages_rns_to_mesh'] == 1
 
 
