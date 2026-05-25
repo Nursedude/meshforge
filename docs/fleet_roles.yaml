@@ -1,0 +1,109 @@
+# MeshForge fleet role definitions — machine-readable companion to fleet_manifest.md.
+#
+# GENERIC + DUPLICABLE. Contains no instance values (hostnames, LAN IPs, LXMF
+# hashes, coordinates) — those live in ~/.config/ and are never committed (MF015).
+# Intended to eventually DRIVE a role-aware provisioner; today it is the source of
+# truth for what each role runs. Service values: enabled | disabled | absent.
+#   enabled  = unit installed, enabled+active
+#   disabled = unit installed but deliberately enabled=false/inactive (not a fault)
+#   absent   = unit not installed for this role
+version: 0
+updated: "2026-05-24"
+
+# Hard rules that hold on every node (see fleet_manifest.md "Design invariants").
+invariants:
+  one_rnsd_per_box: "Only rnsd hosts RNS; every other RNS user joins via share_instance=Yes. Mask (not disable) any rival RNS host on the box."
+  one_canonical_writer: "Exactly one node (singleton: primary) authors Claude memory + pushes; others are read-only replicas via fleet_sync.sh."
+  one_cloud_publisher: "The VPS snapshot push runs on exactly one node (singleton: cloud-publisher)."
+  software_fits_the_box: "Memory-saving defaults stay ON on small boards; they are why constrained Pis bear the load."
+  fail_loud_restart_clean: "Watchdog on every node; services systemd-supervised with Restart=."
+
+# Cross-cutting settings every MAP-running role must apply.
+defaults:
+  node_directory:
+    bbox_filter: true
+    node_cap: 15000
+    operator_position_required: true   # bbox auto-derives from it
+  response_caches:        # prevent GIL-bound serialization wedges on the HTTP server
+    directory: true
+    geojson: true
+    topology: true
+  watchdog:
+    enabled: true
+    auto_remediation: dry_run   # gate live remediation per-box until field-proven
+
+roles:
+
+  primary:
+    singleton: true
+    board_tier: pi4_or_pi5_min_4gb
+    install_profile: full
+    repo: meshforge
+    services:
+      meshtasticd: enabled
+      rnsd: enabled
+      mosquitto: enabled
+      meshforge-map: enabled
+      meshforge-maps: disabled        # tiles served by full-gateway nodes
+      meshforge-watchdog: enabled
+      meshforge-cloud-push.timer: disabled
+    flags:
+      canonical_memory_writer: true   # invariant: one_canonical_writer
+      cloud_push_source: true         # cloud-publisher pulls snapshots from this node's API
+
+  full-gateway:
+    board_tier: pi4_min_4gb
+    install_profile: full
+    repo: meshforge
+    services:
+      meshtasticd: enabled
+      rnsd: enabled
+      mosquitto: enabled
+      meshforge-map: enabled
+      meshforge-maps: enabled
+      meshforge-watchdog: enabled
+      meshforge-cloud-push.timer: disabled
+
+  cloud-publisher:
+    singleton: true                   # invariant: one_cloud_publisher
+    inherits: full-gateway
+    board_tier: pi4_or_pi5_min_4gb
+    services:
+      meshforge-cloud-push.timer: enabled
+    flags:
+      cloud_push_publisher: true
+
+  gateway-only:
+    board_tier: pi3b_1gb_ok           # constrained board
+    install_profile: full
+    repo: meshforge
+    services:
+      meshtasticd: enabled
+      rnsd: enabled
+      mosquitto: enabled
+      meshforge-map: disabled         # DELIBERATE: map server too heavy for ~1GB
+      meshforge-maps: absent
+      meshforge-watchdog: enabled
+
+  meshanchor-noc:
+    board_tier: pi4_min_4gb
+    repo: meshanchor                  # sister app, MeshCore-primary; no MeshForge stack
+    services:
+      meshtasticd: absent             # radio-less; egresses to a peer meshtasticd
+      rnsd: enabled
+      mosquitto: enabled
+      meshanchor-daemon: enabled
+    config:
+      meshtastic_egress.want_ack: true  # retransmit over lossy LongFast; false to save airtime
+
+  bot:
+    fleet_member: false               # not a MeshForge node
+    board_tier: zero_class_zero2w_recommended
+    repo: meshing-around              # SpudGunMan/meshing-around
+    services: {}                      # reaches the mesh via a companion radio, not systemd here
+
+# Where a non-rnsd daemon could grab the RNS listener on a box, MASK the loser.
+# mask survives restart-timers and dependencies; disable does not.
+masking_rule:
+  applies_when: "a box runs both a MeshForge stack (rnsd) and a rival RNS host (e.g. meshanchor-daemon)"
+  action: "systemctl mask <rival-unit>   # NOT just disable"
