@@ -27,6 +27,11 @@ import provision_role as pr  # noqa: E402
 
 CATALOG = {
     "roles": {
+        "primary": {
+            "singleton": True,
+            "services": {"meshtasticd": "enabled", "rnsd": "enabled",
+                         "meshforge-map": "enabled"},
+        },
         "full-gateway": {
             "services": {"meshtasticd": "enabled", "rnsd": "enabled",
                          "meshforge-map": "enabled", "meshforge-maps": "enabled"},
@@ -230,3 +235,65 @@ class TestRoleReadWrite:
     def test_read_role_missing_file_is_none(self, tmp_path, monkeypatch):
         monkeypatch.setattr(pr, "DEPLOYMENT_JSON", tmp_path / "nope.json")
         assert pr.read_role() is None
+
+
+# --------------------------------------------------------------------------
+# Fleet-aware singleton enforcement (v2)
+# --------------------------------------------------------------------------
+
+class TestParseFleetHosts:
+    def test_strips_comments_and_blanks(self, tmp_path):
+        f = tmp_path / "fleet_hosts"
+        f.write_text("# header\nmoc\n\nmoc1  # inline\n  moc2\n#full-line\n")
+        assert pr.parse_fleet_hosts(f) == ["moc", "moc1", "moc2"]
+
+    def test_missing_file_empty(self, tmp_path):
+        assert pr.parse_fleet_hosts(tmp_path / "nope") == []
+
+
+class TestValidateFleet:
+    def test_clean_fleet_no_violations(self):
+        rm = {"(self)": "primary", "moc": "full-gateway",
+              "moc1": "cloud-publisher", "moc2": "full-gateway",
+              "moc3": "gateway-only"}
+        assert pr.validate_fleet(CATALOG, rm) == []
+
+    def test_duplicate_singleton_flagged(self):
+        rm = {"(self)": "cloud-publisher", "moc1": "cloud-publisher"}
+        v = pr.validate_fleet(CATALOG, rm)
+        assert len(v) == 1 and "cloud-publisher" in v[0] and "2 hosts" in v[0]
+
+    def test_unknown_role_flagged(self):
+        rm = {"moc": "frobnicator"}
+        v = pr.validate_fleet(CATALOG, rm)
+        assert any("unknown role 'frobnicator'" in x for x in v)
+
+    def test_unset_role_not_a_violation(self):
+        rm = {"moc": None, "(self)": "primary"}
+        assert pr.validate_fleet(CATALOG, rm) == []
+
+    def test_two_full_gateways_ok_not_singleton(self):
+        # full-gateway is not a singleton — multiples are fine
+        rm = {"moc": "full-gateway", "moc2": "full-gateway"}
+        assert pr.validate_fleet(CATALOG, rm) == []
+
+
+class TestGatherFleetRoles:
+    def test_self_and_peers_via_injected_ssh(self):
+        # peer query is `<ssh> <host> <remote>`; fake ssh echoes a role per host
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            host = argv[1]
+            out = {"moc": "full-gateway", "moc1": "cloud-publisher"}.get(host, "")
+            return MagicMock(returncode=0, stdout=out + "\n", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            rm = pr.gather_fleet_roles(["moc", "moc1"], self_role="primary")
+        assert rm == {"(self)": "primary", "moc": "full-gateway", "moc1": "cloud-publisher"}
+
+    def test_unreachable_peer_is_none(self):
+        with patch("subprocess.run", side_effect=OSError("no ssh")):
+            rm = pr.gather_fleet_roles(["dead"], self_role="primary")
+        assert rm["dead"] is None

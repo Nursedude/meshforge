@@ -54,6 +54,10 @@ from utils.service_check import (  # noqa: E402
 
 DEFAULT_ROLES_FILE = _SCRIPT_DIR.parent / "docs" / "fleet_roles.yaml"
 DEPLOYMENT_JSON = get_real_user_home() / ".config" / "meshforge" / "deployment.json"
+FLEET_HOSTS = get_real_user_home() / ".config" / "meshforge" / "fleet_hosts"
+# Remote role-gathering shells out to ssh; the command is operator-configurable
+# (no key/host hardcoded here — MF014). fleet_sync's environment provides auth.
+SSH_CMD = "ssh"
 
 # RNS hosts that must NEVER own the listener on a box that runs rnsd (one rnsd
 # per box — Issue #69). Narrow, explicit list; mask each if present + unmasked.
@@ -227,6 +231,71 @@ def write_role(role: str) -> None:
 
 
 # --------------------------------------------------------------------------
+# Fleet-aware: singleton enforcement across fleet_hosts (v2)
+# --------------------------------------------------------------------------
+
+def parse_fleet_hosts(path: Path) -> List[str]:
+    """Return the host list from a fleet_hosts file (one per line, '#' comments)."""
+    if not path.exists():
+        return []
+    hosts = []
+    for line in path.read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            hosts.append(line)
+    return hosts
+
+
+def validate_fleet(catalog: dict, role_map: Dict[str, Optional[str]]) -> List[str]:
+    """Pure check of a {host: role} assignment against the catalog.
+
+    Flags: a `singleton: true` role claimed by more than one host; a role name
+    not in the catalog. Hosts with no role (None) are reported by the caller,
+    not treated as a violation here. Returns a list of human-readable violations
+    (empty == valid).
+    """
+    roles = catalog.get("roles", {})
+    violations: List[str] = []
+
+    # Unknown role names
+    for host, role in role_map.items():
+        if role and role not in roles:
+            violations.append(f"{host}: unknown role '{role}' (not in catalog)")
+
+    # Singleton uniqueness
+    for rname, rdef in roles.items():
+        if not rdef.get("singleton"):
+            continue
+        claimants = [h for h, r in role_map.items() if r == rname]
+        if len(claimants) > 1:
+            violations.append(
+                f"singleton role '{rname}' claimed by {len(claimants)} hosts: "
+                f"{', '.join(sorted(claimants))} (must be exactly one)"
+            )
+    return violations
+
+
+def gather_fleet_roles(
+    hosts: List[str], self_role: Optional[str], ssh_cmd: str = SSH_CMD
+) -> Dict[str, Optional[str]]:
+    """Collect {host: role} for the fleet. Self comes from the local role; each
+    peer is queried with ``<ssh_cmd> <host> python3 <repo>/scripts/provision_role.py
+    --print-role``. Unreachable/role-less peers map to None.
+    """
+    import subprocess
+    role_map: Dict[str, Optional[str]] = {"(self)": self_role}
+    remote = "python3 /opt/meshforge/scripts/provision_role.py --print-role"
+    for host in hosts:
+        argv = ssh_cmd.split() + [host, remote]
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=20)
+            role_map[host] = (r.stdout.strip() or None) if r.returncode == 0 else None
+        except (subprocess.SubprocessError, OSError):
+            role_map[host] = None
+    return role_map
+
+
+# --------------------------------------------------------------------------
 # Render + main
 # --------------------------------------------------------------------------
 
@@ -252,7 +321,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--role", help="override role (else read from deployment.json)")
     p.add_argument("--roles-file", type=Path, default=DEFAULT_ROLES_FILE)
     p.add_argument("--set-role", help="write role into deployment.json and exit")
+    p.add_argument("--print-role", action="store_true",
+                   help="print this box's assigned role and exit (machine-readable)")
+    p.add_argument("--fleet-check", action="store_true",
+                   help="gather roles across fleet_hosts and validate singleton invariants")
     args = p.parse_args(argv)
+
+    if args.print_role:
+        print(read_role() or "")
+        return 0
 
     if args.set_role:
         write_role(args.set_role)
@@ -264,6 +341,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     except (OSError, ValueError, yaml.YAMLError) as e:
         print(f"ERROR loading {args.roles_file}: {e}", file=sys.stderr)
         return 2
+
+    if args.fleet_check:
+        hosts = parse_fleet_hosts(FLEET_HOSTS)
+        role_map = gather_fleet_roles(hosts, read_role())
+        print("# fleet role assignment")
+        for host, role in role_map.items():
+            print(f"  {host:24} {role or '(unset/unreachable)'}")
+        violations = validate_fleet(catalog, role_map)
+        if violations:
+            print("# VIOLATIONS:")
+            for v in violations:
+                print(f"  ! {v}")
+            return 1
+        print("# fleet invariants OK (singletons unique, roles known)")
+        return 0
 
     role = args.role or read_role()
     if not role:
