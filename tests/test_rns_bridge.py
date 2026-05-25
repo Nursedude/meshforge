@@ -1288,6 +1288,180 @@ class TestProcessRNSToMesh:
 
 
 # ---------------------------------------------------------------------------
+# RNS→Mesh byte-aware chunking (leaderboard "missing info" fix)
+# ---------------------------------------------------------------------------
+
+# A leaderboard-shaped reply: many short emoji lines. 446 UTF-8 bytes — well
+# over the 228-byte Meshtastic cap. Before the fix this was truncated to one
+# packet by _truncate_if_needed, silently dropping every line past ~line 6.
+_LEADERBOARD = (
+    "📊Leaderboard📊\n🪫 Low Battery: 23.0% !d38d6b0b\n🕰️ Uptime: 190d !164b3229\n"
+    "🚓 Speed: 6.2 mph !6095faf9\n🪜 Tallest: 9997ft !6d9ee8c7\n🚀 Altitude: 3500ft !96393e02\n"
+    "✈️ Airspeed: 120 mph node\n🥶 Coldest: 71.4°F node2\n🥵 Hottest: 92°F node3\n"
+    "💨 Worst IAQ: 150 node4\n📶 Weakest RF: -120 dBm node5\n📶 Best RF: -45 dBm node6\n"
+    "📊 Most Telemetry: 234 node7\n🤪 Most Emojis: 132 node8\n💬 Most Messages: 639 moc3"
+)
+_MAX = 228  # MAX_MESHTASTIC_MSG_LENGTH
+
+
+class TestChunkForMesh:
+    """Unit tests for the chunk_for_mesh primitive."""
+
+    def test_short_message_single_chunk_unchanged(self):
+        from gateway.base_handler import chunk_for_mesh
+        assert chunk_for_mesh("hello") == ["hello"]
+
+    def test_empty_returns_empty_list(self):
+        from gateway.base_handler import chunk_for_mesh
+        assert chunk_for_mesh("") == []
+
+    def test_leaderboard_splits_into_byte_bounded_chunks(self):
+        from gateway.base_handler import chunk_for_mesh
+        chunks = chunk_for_mesh(_LEADERBOARD)
+        assert len(chunks) > 1
+        for c in chunks:
+            assert len(c.encode("utf-8")) <= _MAX
+
+    def test_no_content_lost_when_chunked(self):
+        """Every original line must survive somewhere in the chunk set."""
+        from gateway.base_handler import chunk_for_mesh
+        joined = "\n".join(chunk_for_mesh(_LEADERBOARD))
+        for line in _LEADERBOARD.split("\n"):
+            assert line in joined
+
+    def test_oversize_single_word_hard_splits_on_codepoint(self):
+        """A space-less multibyte run still chunks; bytes are never lost or
+        split mid-codepoint (no replacement chars introduced)."""
+        from gateway.base_handler import chunk_for_mesh
+        wall = "🥵" * 100  # 400 bytes, no spaces
+        chunks = chunk_for_mesh(wall)
+        assert len(chunks) > 1
+        for c in chunks:
+            assert len(c.encode("utf-8")) <= _MAX
+        assert "".join(chunks) == wall  # nothing dropped, no mojibake
+
+    def test_respects_custom_max_bytes(self):
+        from gateway.base_handler import chunk_for_mesh
+        chunks = chunk_for_mesh("word " * 40, max_bytes=50)
+        for c in chunks:
+            assert len(c.encode("utf-8")) <= 50
+
+
+class TestRNSToMeshChunking:
+    """The RNS→Mesh bridge must chunk oversize content, not truncate it."""
+
+    def test_direct_path_sends_each_chunk_under_limit(self, bridge):
+        from gateway.rns_bridge import BridgedMessage
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content=_LEADERBOARD,
+        )
+        sent = []
+
+        def capture_send(content, destination=None, channel=0):
+            sent.append(content)
+            return True
+
+        with patch.object(bridge, 'send_to_meshtastic', side_effect=capture_send):
+            bridge._process_rns_to_mesh(msg)
+
+        assert len(sent) > 1  # chunked, not one truncated packet
+        for chunk in sent:
+            assert len(chunk.encode("utf-8")) <= _MAX
+        # No data lost: every leaderboard line lands in some chunk
+        joined = "\n".join(sent)
+        for line in _LEADERBOARD.split("\n"):
+            assert line.lstrip("📊") in joined or line in joined
+        # One source message → one delivered increment regardless of chunk count
+        assert bridge.stats['messages_rns_to_mesh'] == 1
+        assert bridge.stats['rns_to_mesh_delivered'] == 1
+
+    def test_prefix_only_on_first_chunk(self, bridge):
+        """[RNS:xxxx] attribution rides chunk 0 only — byte-efficient, and the
+        bot strips leading brackets anyway."""
+        from gateway.rns_bridge import BridgedMessage
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content=_LEADERBOARD,
+        )
+        sent = []
+        with patch.object(bridge, 'send_to_meshtastic',
+                          side_effect=lambda content, destination=None, channel=0: sent.append(content) or True):
+            bridge._process_rns_to_mesh(msg)
+
+        assert sent[0].startswith("[RNS:abcd] ")
+        for chunk in sent[1:]:
+            assert not chunk.startswith("[RNS:")
+
+    def test_direct_partial_failure_counts_dropped(self, bridge):
+        """If not every chunk goes out, the message is a drop, not a success."""
+        from gateway.rns_bridge import BridgedMessage
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content=_LEADERBOARD,
+        )
+        # First chunk succeeds, rest fail
+        results = iter([True])
+
+        def flaky(content, destination=None, channel=0):
+            try:
+                return next(results)
+            except StopIteration:
+                return False
+
+        with patch.object(bridge, 'send_to_meshtastic', side_effect=flaky), \
+             patch.object(bridge, '_requeue_failed_message', return_value=True):
+            bridge._process_rns_to_mesh(msg)
+
+        assert bridge.stats['rns_to_mesh_delivered'] == 0
+        assert bridge.stats['rns_to_mesh_dropped'] == 1
+
+    def test_queue_path_enqueues_one_item_per_chunk(self):
+        """In mqtt_bridge mode each chunk is its own queue item (independent
+        retry), and every enqueued message is within the byte cap."""
+        with patch("gateway.rns_bridge.GatewayConfig") as MockConfig, \
+             patch("gateway.rns_bridge.UnifiedNodeTracker"), \
+             patch("gateway.rns_bridge.BridgeHealthMonitor"), \
+             patch("gateway.rns_bridge.DeliveryTracker"), \
+             patch("gateway.rns_bridge.MeshtasticHandler"), \
+             patch("gateway.rns_bridge.MQTTBridgeHandler") as MockMQTT, \
+             patch("gateway.rns_bridge.ReconnectStrategy"), \
+             patch("gateway.rns_bridge.HAS_CIRCUIT_BREAKER", False), \
+             patch("gateway.rns_bridge.HAS_MQTT_BRIDGE", True), \
+             patch("gateway.rns_bridge.HAS_PERSISTENT_QUEUE", True), \
+             patch("gateway.rns_bridge.PersistentMessageQueue") as MockQueue, \
+             patch("gateway.message_routing.CLASSIFIER_AVAILABLE", False), \
+             patch("gateway.rns_bridge.HAS_SERVICE_CHECK", False), \
+             patch("gateway.rns_bridge.HAS_EVENT_BUS", False), \
+             patch("gateway.rns_bridge.HAS_RNS_SNIFFER", False):
+
+            config = _mock_gateway_config(bridge_mode="mqtt_bridge")
+            MockConfig.load.return_value = config
+            mock_queue = MagicMock()
+            mock_queue.enqueue.return_value = "msg-id"
+            MockQueue.return_value = mock_queue
+            MockMQTT.return_value = MagicMock()
+
+            from gateway.rns_bridge import RNSMeshtasticBridge, BridgedMessage
+            b = RNSMeshtasticBridge(config=config)
+            msg = BridgedMessage(
+                source_network="rns", source_id="abcdef01",
+                destination_id=None, content=_LEADERBOARD,
+            )
+            b._process_rns_to_mesh(msg)
+
+            mesh_enqueues = [
+                c for c in mock_queue.enqueue.call_args_list
+                if c.kwargs.get("destination") == "meshtastic"
+            ]
+            assert len(mesh_enqueues) > 1  # one per chunk
+            for c in mesh_enqueues:
+                payload_msg = c.kwargs["payload"]["message"]
+                assert len(payload_msg.encode("utf-8")) <= _MAX
+            assert b.stats['messages_rns_to_mesh'] == 1
+
+
+# ---------------------------------------------------------------------------
 # Phase-1 fluid bridge — relay-on-receive
 # ---------------------------------------------------------------------------
 

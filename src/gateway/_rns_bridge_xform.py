@@ -21,6 +21,7 @@ import logging
 import re
 from typing import Optional
 
+from .base_handler import chunk_for_mesh
 from .message_queue import MessagePriority
 
 logger = logging.getLogger(__name__)
@@ -260,24 +261,42 @@ class MessageTransformMixin:
             prefix = f"[RNS:{(effective_source or '')[:4]}] "
             content = prefix + body
 
-            # In mqtt_bridge mode, use persistent queue for reliable delivery
+            # Split oversize content into Meshtastic-byte-bounded packets.
+            # Without this, content >228 bytes (e.g. a multi-line leaderboard
+            # reply) was silently truncated to one packet by the handler's
+            # _truncate_if_needed, dropping every line past the cap. The
+            # [RNS:xxxx] prefix lands on chunk 0 only (byte-efficient; the
+            # bot strips leading brackets anyway). A short message yields a
+            # single chunk == content, so the common path is unchanged.
+            chunks = chunk_for_mesh(content)
+            tag = f" -> {destination}" if destination else ""
+            multi = f" [{len(chunks)} chunks]" if len(chunks) > 1 else ""
+
+            # In mqtt_bridge mode, use persistent queue for reliable delivery.
+            # Each chunk is enqueued as its own item so it retries
+            # independently (one failed chunk never re-sends the others).
             if (self._persistent_queue
                     and self.config.bridge_mode == "mqtt_bridge"
                     and HAS_PERSISTENT_QUEUE):
-                payload = {
-                    'message': content,
-                    'channel': self.config.meshtastic.channel,
-                    'source_id': msg.source_id,
-                    'destination': destination,
-                }
-                msg_id = self._persistent_queue.enqueue(
-                    payload=payload,
-                    destination="meshtastic",
-                    priority=MessagePriority.NORMAL,
-                )
-                if msg_id:
-                    tag = f" -> {destination}" if destination else ""
-                    logger.info(f"Bridge RNS→Mesh (queued{tag}): {content[:50]}...")
+                all_queued = True
+                for chunk in chunks:
+                    payload = {
+                        'message': chunk,
+                        'channel': self.config.meshtastic.channel,
+                        'source_id': msg.source_id,
+                        'destination': destination,
+                    }
+                    if not self._persistent_queue.enqueue(
+                        payload=payload,
+                        destination="meshtastic",
+                        priority=MessagePriority.NORMAL,
+                    ):
+                        all_queued = False
+                        break
+                if all_queued:
+                    logger.info(
+                        f"Bridge RNS→Mesh (queued{tag}{multi}): {content[:50]}..."
+                    )
                     with self._stats_lock:
                         self.stats['messages_rns_to_mesh'] += 1
                         self.stats['rns_to_mesh_delivered'] += 1
@@ -285,22 +304,26 @@ class MessageTransformMixin:
                     if not relayed_by:
                         self._maybe_relay_to_peers(msg, original_body)
                     return
-                # enqueue returned None — queue rejected the message
-                logger.warning("Failed to enqueue RNS→Mesh to persistent queue")
+                # enqueue returned None — queue rejected a chunk
+                logger.warning("Failed to enqueue RNS→Mesh chunk to persistent queue")
                 with self._stats_lock:
                     self.stats['errors'] += 1
                     self.stats['rns_to_mesh_dropped'] += 1
                 self.health.record_message_failed("rns_to_mesh", requeued=False)
                 return
 
-            # Direct send (non-MQTT mode or queue unavailable)
-            if self.send_to_meshtastic(
-                content,
-                destination=destination,
-                channel=self.config.meshtastic.channel,
-            ):
-                tag = f" -> {destination}" if destination else ""
-                logger.info(f"Bridge RNS→Mesh{tag}: {content[:50]}...")
+            # Direct send (non-MQTT mode or queue unavailable). Send every
+            # chunk; success requires all of them to go out.
+            sent = sum(
+                1 for chunk in chunks
+                if self.send_to_meshtastic(
+                    chunk,
+                    destination=destination,
+                    channel=self.config.meshtastic.channel,
+                )
+            )
+            if sent == len(chunks):
+                logger.info(f"Bridge RNS→Mesh{tag}{multi}: {content[:50]}...")
                 with self._stats_lock:
                     self.stats['messages_rns_to_mesh'] += 1
                     self.stats['rns_to_mesh_delivered'] += 1
@@ -308,7 +331,9 @@ class MessageTransformMixin:
                 if not relayed_by:
                     self._maybe_relay_to_peers(msg, original_body)
             else:
-                logger.warning("Failed to bridge RNS→Mesh")
+                logger.warning(
+                    f"Failed to bridge RNS→Mesh ({sent}/{len(chunks)} chunks sent)"
+                )
                 with self._stats_lock:
                     self.stats['errors'] += 1
                     self.stats['rns_to_mesh_dropped'] += 1
