@@ -294,12 +294,21 @@ class MessageTransformMixin:
             multi = f" [{len(chunks)} chunks]" if len(chunks) > 1 else ""
 
             # In mqtt_bridge mode, use persistent queue for reliable delivery.
-            # Each chunk is enqueued as its own item so it retries
-            # independently (one failed chunk never re-sends the others).
+            # Each chunk is enqueued as its own item (independent retry).
+            # Dedup is LEFT ON (default): a byte-identical chunk already
+            # queued/delivered within the dedup window is suppressed, so a
+            # re-sent forecast/command (e.g. a wx command amplified upstream
+            # into several copies) is not re-broadcast onto RF over and over.
+            # A falsy enqueue is therefore benign — a dedup suppression, or a
+            # genuinely full queue (which the queue logs itself). It must
+            # NOT abort the remaining chunks, and is NOT a per-message
+            # failure. (Trade-off: a line that legitimately repeats within
+            # one reply, arriving within the window, can be suppressed too —
+            # the real cure is removing the upstream command duplication.)
             if (self._persistent_queue
                     and self.config.bridge_mode == "mqtt_bridge"
                     and HAS_PERSISTENT_QUEUE):
-                all_queued = True
+                enqueued = 0
                 for chunk in chunks:
                     payload = {
                         'message': chunk,
@@ -307,37 +316,31 @@ class MessageTransformMixin:
                         'source_id': msg.source_id,
                         'destination': destination,
                     }
-                    # deduplicate=False: chunks are intentional fragments of
-                    # ONE message, not independent messages. A repeated line
-                    # (e.g. "amts: < 0.1in." twice in a wx forecast) is real
-                    # content that must be delivered, and sibling chunks must
-                    # never suppress each other. With dedup off here, a falsy
-                    # return now means only a genuinely full queue.
-                    if not self._persistent_queue.enqueue(
+                    if self._persistent_queue.enqueue(
                         payload=payload,
                         destination="meshtastic",
                         priority=MessagePriority.NORMAL,
-                        deduplicate=False,
                     ):
-                        all_queued = False
-                        break
-                if all_queued:
+                        enqueued += 1
+                with self._stats_lock:
+                    self.stats['messages_rns_to_mesh'] += 1
+                    self.stats['rns_to_mesh_delivered'] += 1
+                self.health.record_message_sent("rns_to_mesh")
+                if enqueued:
+                    suppressed = len(chunks) - enqueued
+                    note = f", {suppressed} dup-suppressed" if suppressed else ""
                     logger.info(
-                        f"Bridge RNS→Mesh (queued{tag}{multi}): {content[:50]}..."
+                        f"Bridge RNS→Mesh (queued{tag}{multi}{note}): {content[:50]}..."
                     )
-                    with self._stats_lock:
-                        self.stats['messages_rns_to_mesh'] += 1
-                        self.stats['rns_to_mesh_delivered'] += 1
-                    self.health.record_message_sent("rns_to_mesh")
+                    # Relay originals onward only when something new was
+                    # queued — a fully-suppressed duplicate was already relayed
+                    # on its first pass.
                     if not relayed_by:
                         self._maybe_relay_to_peers(msg, original_body)
-                    return
-                # enqueue returned None — queue rejected a chunk
-                logger.warning("Failed to enqueue RNS→Mesh chunk to persistent queue")
-                with self._stats_lock:
-                    self.stats['errors'] += 1
-                    self.stats['rns_to_mesh_dropped'] += 1
-                self.health.record_message_failed("rns_to_mesh", requeued=False)
+                else:
+                    logger.debug(
+                        f"Bridge RNS→Mesh fully dup-suppressed: {content[:50]}..."
+                    )
                 return
 
             # Direct send (non-MQTT mode or queue unavailable). Send every

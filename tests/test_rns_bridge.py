@@ -1518,10 +1518,72 @@ class TestRNSToMeshChunking:
             for c in mesh_enqueues:
                 payload_msg = c.kwargs["payload"]["message"]
                 assert len(payload_msg.encode("utf-8")) <= _MAX
-                # Chunks are fragments of one message — must not dedup against
-                # each other (a repeated line would otherwise drop + abort).
-                assert c.kwargs.get("deduplicate") is False
+                # Dedup is left ON (default) so a re-sent forecast/command is
+                # not re-broadcast onto RF — must not pass deduplicate=False.
+                assert c.kwargs.get("deduplicate") is not False
             assert b.stats['messages_rns_to_mesh'] == 1
+
+    def _queue_bridge(self, enqueue_side_effect):
+        """Build an mqtt_bridge bridge whose persistent queue.enqueue uses the
+        given side_effect, returning (bridge, mock_queue)."""
+        with patch("gateway.rns_bridge.GatewayConfig") as MockConfig, \
+             patch("gateway.rns_bridge.UnifiedNodeTracker"), \
+             patch("gateway.rns_bridge.BridgeHealthMonitor"), \
+             patch("gateway.rns_bridge.DeliveryTracker"), \
+             patch("gateway.rns_bridge.MeshtasticHandler"), \
+             patch("gateway.rns_bridge.MQTTBridgeHandler") as MockMQTT, \
+             patch("gateway.rns_bridge.ReconnectStrategy"), \
+             patch("gateway.rns_bridge.HAS_CIRCUIT_BREAKER", False), \
+             patch("gateway.rns_bridge.HAS_MQTT_BRIDGE", True), \
+             patch("gateway.rns_bridge.HAS_PERSISTENT_QUEUE", True), \
+             patch("gateway.rns_bridge.PersistentMessageQueue") as MockQueue, \
+             patch("gateway.message_routing.CLASSIFIER_AVAILABLE", False), \
+             patch("gateway.rns_bridge.HAS_SERVICE_CHECK", False), \
+             patch("gateway.rns_bridge.HAS_EVENT_BUS", False), \
+             patch("gateway.rns_bridge.HAS_RNS_SNIFFER", False):
+            config = _mock_gateway_config(bridge_mode="mqtt_bridge")
+            MockConfig.load.return_value = config
+            mock_queue = MagicMock()
+            mock_queue.enqueue.side_effect = enqueue_side_effect
+            MockQueue.return_value = mock_queue
+            MockMQTT.return_value = MagicMock()
+            from gateway.rns_bridge import RNSMeshtasticBridge
+            return RNSMeshtasticBridge(config=config), mock_queue
+
+    def test_deduped_chunk_does_not_abort_or_error(self):
+        """A falsy enqueue (dedup suppression) must NOT abort remaining chunks
+        nor count as a failure — the regression that re-truncated replies."""
+        from gateway.rns_bridge import BridgedMessage
+        from gateway.base_handler import chunk_for_mesh
+        # First chunk "dedups" (enqueue -> None); the rest succeed.
+        calls = {"n": 0}
+        def side_effect(*a, **k):
+            calls["n"] += 1
+            return None if calls["n"] == 1 else "msg-id"
+        b, mock_queue = self._queue_bridge(side_effect)
+        msg = BridgedMessage(source_network="rns", source_id="abcdef01",
+                             destination_id=None, content=_LEADERBOARD)
+        expected = len(chunk_for_mesh("[RNS:abcd] " + _LEADERBOARD))
+        assert expected >= 2
+        b._process_rns_to_mesh(msg)
+        mesh_enqueues = [c for c in mock_queue.enqueue.call_args_list
+                         if c.kwargs.get("destination") == "meshtastic"]
+        assert len(mesh_enqueues) == expected  # every chunk attempted, no abort
+        assert b.stats['rns_to_mesh_dropped'] == 0
+        assert b.stats['errors'] == 0
+        assert b.stats['rns_to_mesh_delivered'] == 1
+
+    def test_fully_deduped_message_is_not_a_failure(self):
+        """Every chunk suppressed (an exact duplicate forecast/command) is the
+        system working — not an error, not a drop."""
+        from gateway.rns_bridge import BridgedMessage
+        b, _ = self._queue_bridge(lambda *a, **k: None)  # everything dedups
+        msg = BridgedMessage(source_network="rns", source_id="abcdef01",
+                             destination_id=None, content="wx")
+        b._process_rns_to_mesh(msg)
+        assert b.stats['errors'] == 0
+        assert b.stats['rns_to_mesh_dropped'] == 0
+        assert b.stats['messages_rns_to_mesh'] == 1
 
 
 # ---------------------------------------------------------------------------
