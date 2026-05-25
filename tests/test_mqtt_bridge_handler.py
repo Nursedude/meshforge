@@ -211,3 +211,61 @@ class TestSelfEchoFilter:
             topic="msh/US/2/json/meshforge/!ebfa1b11",
         )
         handler._message_queue.put.assert_called_once()
+
+
+class TestSourceAttribution:
+    """Mesh→RNS must attribute to the ORIGINATING node (`from`), not the
+    last-hop `sender`. Using `sender` collapsed every multi-hop source (the
+    bot, reached over several hops) into whichever node last rebroadcast it,
+    so they all surfaced as one identity (and then one [RNS:<gw>] tag)."""
+
+    def test_source_id_is_originator_not_last_hop(self):
+        handler = _make_bridge_handler(own_id="!32962f10")
+        handler._bridge_text_message(
+            {
+                "from": 0xa2e95ba4,        # the bot (originator)
+                "sender": "!ebfa1b11",     # last-hop rebroadcaster
+                "to": 0xFFFFFFFF,
+                "payload": {"text": "wx reply"},
+                "channel": 2,
+            },
+            topic="msh/US/2/json/meshforge/!ebfa1b11",
+        )
+        handler._message_queue.put.assert_called_once()
+        msg = handler._message_queue.put.call_args.args[0]
+        assert msg.source_id == "!a2e95ba4"   # originator, not !ebfa1b11
+
+    def test_two_origins_via_same_last_hop_stay_distinct(self):
+        """Two different originators relayed by the SAME last hop must keep
+        distinct source_ids (the bug collapsed them to the last hop)."""
+        handler = _make_bridge_handler(own_id="!32962f10")
+        for frm in (0xa2e95ba4, 0x11112222):
+            handler._bridge_text_message(
+                {
+                    "from": frm,
+                    "sender": "!ebfa1b11",
+                    "to": 0xFFFFFFFF,
+                    "payload": {"text": "hi"},
+                    "channel": 2,
+                },
+                topic="msh/US/2/json/meshforge/!ebfa1b11",
+            )
+        ids = [c.args[0].source_id for c in handler._message_queue.put.call_args_list]
+        assert ids == ["!a2e95ba4", "!11112222"]
+
+    def test_falls_back_to_sender_when_from_absent(self):
+        """Older/edge payloads without `from` still attribute to sender
+        rather than dropping the message."""
+        handler = _make_bridge_handler(own_id="!32962f10")
+        handler._bridge_text_message(
+            {
+                "sender": "!aabb0042",
+                "to": 0xFFFFFFFF,
+                "payload": {"text": "no from field"},
+                "channel": 2,
+            },
+            topic="msh/US/2/json/meshforge/!aabb0042",
+        )
+        handler._message_queue.put.assert_called_once()
+        msg = handler._message_queue.put.call_args.args[0]
+        assert msg.source_id == "!aabb0042"

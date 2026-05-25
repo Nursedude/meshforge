@@ -1098,6 +1098,66 @@ class TestProcessRNSToMesh:
         assert captured["content"].startswith("[RNS:abcd] ")
         assert captured["destination"] is None
 
+    def test_meshtastic_origin_prefix_uses_original_node(self, bridge):
+        """Content that originated as a Meshtastic broadcast at a PEER gateway
+        must be tagged with the ORIGINAL node, not the relaying gateway's RNS
+        hash. (Bug: every bot reply moc re-injected showed [RNS:f68c]=moc3.)"""
+        from gateway.rns_bridge import BridgedMessage
+        msg = BridgedMessage(
+            source_network="rns",
+            source_id="dead0000beef1111cafe2222f00d3333",  # moc3 (relaying gw)
+            destination_id=None,
+            content="Memorial Day: chance of rain",
+            metadata={"lxmf_fields": {
+                "meshforge_source_network": "meshtastic",
+                "meshforge_from_short": "BORG",
+                "meshforge_from_id": "!a2e95ba4",
+            }},
+        )
+        captured = {}
+        with patch.object(bridge, 'send_to_meshtastic',
+                          side_effect=lambda content, destination=None, channel=0: captured.update(content=content) or True):
+            bridge._process_rns_to_mesh(msg)
+        # Tagged with the real origin, not the relaying gateway hash
+        assert captured["content"].startswith("[RNS:BORG] ")
+        assert "dead" not in captured["content"]  # relaying-gw hash not leaked
+
+    def test_meshtastic_origin_prefix_falls_back_to_from_id(self, bridge):
+        """No short name → use the originating node id (sans '!'), still not
+        the relaying gateway."""
+        from gateway.rns_bridge import BridgedMessage
+        msg = BridgedMessage(
+            source_network="rns",
+            source_id="dead0000beef1111cafe2222f00d3333",
+            destination_id=None,
+            content="wx",
+            metadata={"lxmf_fields": {
+                "meshforge_source_network": "meshtastic",
+                "meshforge_from_short": "",
+                "meshforge_from_long": "",
+                "meshforge_from_id": "!a2e95ba4",
+            }},
+        )
+        captured = {}
+        with patch.object(bridge, 'send_to_meshtastic',
+                          side_effect=lambda content, destination=None, channel=0: captured.update(content=content) or True):
+            bridge._process_rns_to_mesh(msg)
+        assert captured["content"].startswith("[RNS:a2e95ba4] ")
+
+    def test_rns_origin_prefix_keeps_source_hash(self, bridge):
+        """Genuinely RNS-origin content (NomadNet etc., no meshforge_source_network)
+        keeps the source RNS hash prefix — unchanged behavior."""
+        from gateway.rns_bridge import BridgedMessage
+        msg = BridgedMessage(
+            source_network="rns", source_id="abcdef0123456789",
+            destination_id=None, content="from nomadnet",
+        )
+        captured = {}
+        with patch.object(bridge, 'send_to_meshtastic',
+                          side_effect=lambda content, destination=None, channel=0: captured.update(content=content) or True):
+            bridge._process_rns_to_mesh(msg)
+        assert captured["content"].startswith("[RNS:abcd] ")
+
     def test_hex_prefix_targets_node(self, bridge):
         """'@!ebfa1b11 reply' is a DM to !ebfa1b11; the @token is stripped."""
         from gateway.rns_bridge import BridgedMessage

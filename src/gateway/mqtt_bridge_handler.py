@@ -379,7 +379,17 @@ class MQTTBridgeHandler(BaseMessageHandler):
         from .rns_bridge import BridgedMessage
         from .bridge_health import MessageOrigin
 
+        # `sender` is the LAST-HOP node that delivered the packet to this
+        # gateway's radio (often a rebroadcaster, or the gateway's own node);
+        # `from` is the ORIGINATING node. Attribution must use `from` — using
+        # `sender` collapsed every multi-hop source (e.g. the bot, reached
+        # over several hops) into whichever node last rebroadcast it, so all
+        # of them surfaced as one identity downstream (and then one
+        # [RNS:<gw>] tag after the RNS hop). `sender` is still used below for
+        # the self-echo filter, which legitimately needs the last hop.
         sender = data.get('sender', '')
+        from_num = data.get('from', 0)
+        from_id = f"!{from_num:08x}" if from_num else (sender or "unknown")
         to_num = data.get('to', 0)
         payload = data.get('payload', {})
         text = payload.get('text', '') if isinstance(payload, dict) else str(payload)
@@ -407,7 +417,7 @@ class MQTTBridgeHandler(BaseMessageHandler):
 
         msg = BridgedMessage(
             source_network="meshtastic",
-            source_id=sender,
+            source_id=from_id,
             destination_id=to_id,
             content=text,
             is_broadcast=is_broadcast,
@@ -426,7 +436,7 @@ class MQTTBridgeHandler(BaseMessageHandler):
             from commands import messaging
             dest = None if is_broadcast else to_id
             messaging.store_incoming(
-                from_id=sender,
+                from_id=from_id,
                 content=text,
                 network="meshtastic",
                 to_id=dest,

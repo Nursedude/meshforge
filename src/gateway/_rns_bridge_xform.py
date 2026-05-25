@@ -258,7 +258,28 @@ class MessageTransformMixin:
                             f"falling through to broadcast"
                         )
 
-            prefix = f"[RNS:{(effective_source or '')[:4]}] "
+            # Attribution label for the [RNS:xxxx] tag. When the LXMF
+            # originated as a Meshtastic broadcast at a PEER gateway
+            # (meshforge_source_network == "meshtastic"), surface the
+            # ORIGINAL mesh node — otherwise every node a given gateway
+            # relays collapses to that gateway's RNS hash (e.g. every bot
+            # reply re-injected by moc showing [RNS:f68c] = moc3's hash
+            # rather than the bot). For genuinely RNS-origin content
+            # (NomadNet etc.) keep the source RNS hash. The "[RNS:" shape is
+            # preserved either way so the self-echo loop filter
+            # (startswith('[RNS:')) and the bot's leading-bracket strip both
+            # still match.
+            if lxmf_fields.get('meshforge_source_network') == 'meshtastic':
+                label = (
+                    (lxmf_fields.get('meshforge_from_short') or '').strip()
+                    or (lxmf_fields.get('meshforge_from_long') or '').strip()
+                    or (lxmf_fields.get('meshforge_from_id') or '').lstrip('!')
+                    or (effective_source or '')[:4]
+                )
+                label = str(label)[:10]
+            else:
+                label = (effective_source or '')[:4]
+            prefix = f"[RNS:{label}] "
             content = prefix + body
 
             # Split oversize content into Meshtastic-byte-bounded packets.
