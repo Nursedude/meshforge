@@ -746,6 +746,25 @@ else:
 PY
 fi
 
+# --------------------------------------------------------------------------
+# Fleet role check (v2.1) — read-only singleton/role-invariant validation via
+# the provisioner. Advisory: surfaces role drift in the sync report, never
+# mutates anything and never fails the sync (counts as a warn). Reuses the
+# script's own ssh auth via $MESHFORGE_SSH. Skip with MESHFORGE_SKIP_ROLE_CHECK=1.
+# --------------------------------------------------------------------------
+if [[ -z "${MESHFORGE_SKIP_ROLE_CHECK:-}" && -f /opt/meshforge/scripts/provision_role.py ]]; then
+    echo
+    echo "Fleet role check:"
+    role_out="$(MESHFORGE_SSH='ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new' \
+        python3 /opt/meshforge/scripts/provision_role.py --fleet-check 2>&1)"
+    role_rc=$?
+    echo "$role_out" | sed 's/^/  /'
+    if [[ $role_rc -ne 0 ]]; then
+        printf '[%-30s] WARN fleet role invariant — see above\n' "role-check"
+        action_warn=$((action_warn + 1))
+    fi
+fi
+
 echo
 printf 'Hosts:   %d ok, %d failed, %d unreachable\n' \
     "$pass_count" "$fail_count" "$skip_count"
