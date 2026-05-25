@@ -21,6 +21,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def is_already_bridged(text: str) -> bool:
+    """True if ``text`` carries a leading ``[RNS:…]`` bridge-routing tag.
+
+    Such content was injected onto the mesh FROM the RNS network by a
+    gateway, so it is already present in RNS. Bridging it back to RNS
+    (Mesh→RNS) is always a loop / duplicate. The original self-echo filter
+    only caught a gateway's OWN echo (sender == its node); on a shared-RNS
+    fleet where several gateways sit on the same channel, each one hears the
+    others' injections and would otherwise re-bridge them — so the guard
+    must fire regardless of sender. Genuine operator content (web UI / CLI
+    sends) has no ``[RNS:]`` prefix and is unaffected.
+
+    Scoped to ``[RNS:]`` (MeshForge's own injection marker) — the
+    demonstrated loop. MeshAnchor/MeshCore tags (``[MC:]``, ``[ch0:]``) are
+    deliberately NOT included here to avoid touching cross-project interop.
+    """
+    return bool(text) and text.lstrip().startswith("[RNS:")
+
+
 def chunk_for_mesh(message: str,
                    max_bytes: int = MAX_MESHTASTIC_MSG_LENGTH) -> List[str]:
     """Split text into UTF-8-byte-bounded chunks for Meshtastic TX.

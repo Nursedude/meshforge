@@ -168,21 +168,23 @@ class TestSelfEchoFilter:
         )
         handler._message_queue.put.assert_called_once()
 
-    def test_other_sender_with_rns_prefix_passes(self):
-        """A different node forwarding [RNS:] content is real mesh traffic
-        we did NOT originate — bridge it normally. (Multi-hop / repeater
-        scenarios where another gateway in the area also injects RNS text.)"""
+    def test_other_sender_with_rns_prefix_dropped(self):
+        """A SIBLING fleet gateway's [RNS:] injection, heard on the shared
+        channel, must NOT be re-bridged — that content is already in RNS, so
+        re-bridging loops (e.g. moc1 re-bridging moc's injection). This
+        reverses the older behavior that bridged other-sender [RNS:] text."""
         handler = _make_bridge_handler(own_id="!ebfa1b11")
         handler._bridge_text_message(
             {
+                "from": 0xaabb0042,
                 "sender": "!aabb0042",
                 "to": 0xFFFFFFFF,
-                "payload": {"text": "[RNS:abcd] from elsewhere"},
+                "payload": {"text": "[RNS:abcd] from sibling gateway"},
                 "channel": 2,
             },
             topic="msh/US/2/json/meshforge/!aabb0042",
         )
-        handler._message_queue.put.assert_called_once()
+        handler._message_queue.put.assert_not_called()
 
     def test_other_sender_passes_through(self):
         handler = _make_bridge_handler(own_id="!ebfa1b11")
@@ -197,9 +199,10 @@ class TestSelfEchoFilter:
         )
         handler._message_queue.put.assert_called_once()
 
-    def test_filter_disabled_when_unset(self):
-        """gateway_node_id='' (default) means no filter; everything passes,
-        including [RNS:]-prefixed echoes (legacy behavior)."""
+    def test_rns_tagged_dropped_regardless_of_gateway_node_id(self):
+        """The loop guard no longer depends on gateway_node_id — [RNS:]-tagged
+        content is already-bridged RNS content and is dropped even when
+        gateway_node_id is unset."""
         handler = _make_bridge_handler(own_id="")
         handler._bridge_text_message(
             {
@@ -210,7 +213,23 @@ class TestSelfEchoFilter:
             },
             topic="msh/US/2/json/meshforge/!ebfa1b11",
         )
-        handler._message_queue.put.assert_called_once()
+        handler._message_queue.put.assert_not_called()
+
+
+class TestIsAlreadyBridged:
+    """The shared loop-guard predicate."""
+
+    def test_rns_tagged_true(self):
+        from gateway.base_handler import is_already_bridged
+        assert is_already_bridged("[RNS:f68c] wx reply")
+        assert is_already_bridged("   [RNS:abcd] leading space")
+
+    def test_plain_and_other_tags_false(self):
+        from gateway.base_handler import is_already_bridged
+        assert not is_already_bridged("wx")
+        assert not is_already_bridged("")
+        assert not is_already_bridged("[MC:p4] from meshcore")  # not our marker
+        assert not is_already_bridged("[ch0:p4] something")
 
 
 class TestSourceAttribution:

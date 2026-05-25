@@ -37,7 +37,7 @@ from datetime import datetime
 from queue import Full
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
-from .base_handler import BaseMessageHandler
+from .base_handler import BaseMessageHandler, is_already_bridged
 from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
@@ -398,17 +398,18 @@ class MQTTBridgeHandler(BaseMessageHandler):
         if not text:
             return
 
-        # Self-echo filter: meshtasticd republishes the gateway's own outbound
-        # TX back through MQTT. The only loopback we want to drop is the
-        # RNS→Mesh path — those messages were transformed by the gateway with
-        # a [RNS:xxxx] prefix before going to TX, so the same prefix coming
-        # back as "incoming Meshtastic" is unambiguously our own echo.
-        # Genuine Meshtastic content from the gateway box (web UI sends,
-        # `meshtastic --sendtext`, etc.) has no [RNS:] prefix and must still
-        # bridge to RNS so operators see their own activity.
-        own_id = getattr(self.config.meshtastic, 'gateway_node_id', '') if self.config else ''
-        if own_id and sender == own_id and text.startswith('[RNS:'):
-            logger.debug(f"Self-echo filtered (RNS→Mesh loopback): {text[:40]}")
+        # Loop guard: a leading [RNS:xxxx] tag marks content a gateway
+        # already injected FROM the RNS network — it is by definition already
+        # in RNS, so bridging it back (Mesh→RNS) loops/duplicates. This drops
+        # both this gateway's own echo (meshtasticd republishes our TX via
+        # MQTT) AND a sibling fleet gateway's injection heard on the shared
+        # channel (which previously got re-bridged → cross-gateway loop:
+        # a co-located gateway re-bridging a peer's [RNS:] injection back
+        # into RNS, duplicating it for upstream peers). Genuine
+        # operator content (web UI / CLI sends) has no [RNS:] prefix and still
+        # bridges so operators see their own activity in NomadNet.
+        if is_already_bridged(text):
+            logger.debug(f"Not re-bridging RNS-tagged content (loop guard): {text[:40]}")
             return
 
         # Determine destination

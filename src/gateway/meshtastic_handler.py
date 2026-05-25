@@ -20,7 +20,7 @@ from datetime import datetime
 from queue import Full
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
-from .base_handler import BaseMessageHandler
+from .base_handler import BaseMessageHandler, is_already_bridged
 from .config import GatewayConfig
 from .node_tracker import UnifiedNode
 from .reconnect import ReconnectStrategy
@@ -404,6 +404,12 @@ class MeshtasticHandler(BaseMessageHandler):
             text = payload.decode('utf-8', errors='ignore')
         else:
             text = str(payload)
+
+        # Loop guard: [RNS:xxxx]-tagged content was injected from RNS and is
+        # already there — never bridge it back (see is_already_bridged).
+        if is_already_bridged(text):
+            logger.debug(f"Not re-bridging RNS-tagged content (loop guard): {text[:40]}")
+            return
 
         to_id = packet.get('toId')
         msg = BridgedMessage(
