@@ -33,9 +33,9 @@ fixes. `fleet_roles.yaml` now *declares* the target; nothing yet *enforces* it.
 - Not fleet-wide orchestration — converges the *local* box only. Singleton
   invariants (one `primary`, one `cloud-publisher`) get a *local* assertion plus a
   flagged cross-box check; full enforcement is v2.
-- Not the MeshAnchor (`meshanchor-noc`) box in v1 — that host has no
-  `/opt/meshforge`; either port the tool to MeshAnchor or handle it there (open
-  question below).
+- Not the MeshAnchor (`meshanchor-noc`) box — that host has no `/opt/meshforge`.
+  Resolved: it's marked `provisioned_by: meshanchor` and the provisioner skips it
+  (see Resolved decisions).
 
 ## Design
 
@@ -117,11 +117,22 @@ count, non-zero exit if any required item failed. Operator-legible, greppable.
    required daemon (`--install`), or always defer to the operator? Lean: report in
    v1, `--install` opt-in later.
 
+## Resolved decisions
+
+- **MeshAnchor box (2026-05-24):** the MeshForge provisioner owns **MeshForge
+  roles only**. `meshanchor-noc` stays in `fleet_roles.yaml` for the complete
+  fleet topology but is marked `provisioned_by: meshanchor`; the provisioner
+  **skips** any role with a `provisioned_by` key. Rationale: porting a tool that
+  doesn't exist yet is premature; sister-repo duplication is a known drift hazard;
+  the MeshAnchor host is one box with a small, stable, already-documented config
+  (want_ack shipped; rnsd legitimately owns the listener, daemon is a client — no
+  masking there). **Forward design:** the engine is built repo-agnostic (reads a
+  roles file + uses the local repo's `service_check` SSOT) so MeshAnchor can adopt
+  it later by shipping the engine + its own roles file — shared-contract pattern,
+  low drift. MeshAnchor self-provisioning is a separate future workstream.
+
 ## Open questions
 
-- **MeshAnchor box:** port the provisioner (and ship `fleet_roles.yaml`) to the
-  MeshAnchor repo, or keep `meshanchor-noc` provisioned MeshAnchor-side? (It's a
-  different repo/host with no `/opt/meshforge`.)
 - **Singleton source of truth:** assert via a flag in `deployment.json`
   (`role: primary` is inherently singleton) + a cross-box `fleet_hosts` probe, or
   a dedicated fleet manifest field? v1 asserts locally + warns.

@@ -10,6 +10,14 @@
 version: 0
 updated: "2026-05-24"
 
+# Role ownership: the MeshForge provisioner converges only roles WITHOUT a
+# `provisioned_by` key. A role with `provisioned_by: <repo>` is documented here
+# for the complete fleet topology but is owned by that repo's own provisioning.
+# The provisioner ENGINE is intended to be repo-agnostic (reads a roles file +
+# uses the local repo's service_check SSOT), so MeshAnchor can adopt it later by
+# shipping the same engine + its own roles file — sister-repo shared-contract
+# pattern, minimizing drift.
+
 # Hard rules that hold on every node (see fleet_manifest.md "Design invariants").
 invariants:
   one_rnsd_per_box: "Only rnsd hosts RNS; every other RNS user joins via share_instance=Yes. Mask (not disable) any rival RNS host on the box."
@@ -88,6 +96,11 @@ roles:
   meshanchor-noc:
     board_tier: pi4_min_4gb
     repo: meshanchor                  # sister app, MeshCore-primary; no MeshForge stack
+    provisioned_by: meshanchor        # EXTERNAL: the MeshForge provisioner SKIPS this role
+                                      # (host has no /opt/meshforge). Listed here for the
+                                      # complete fleet topology; MeshAnchor self-provisions.
+                                      # rnsd legitimately owns the RNS listener on this host;
+                                      # meshanchor-daemon joins as a client — no masking here.
     services:
       meshtasticd: absent             # radio-less; egresses to a peer meshtasticd
       rnsd: enabled
@@ -98,8 +111,9 @@ roles:
 
   bot:
     fleet_member: false               # not a MeshForge node
+    provisioned_by: meshing-around    # EXTERNAL: upstream SpudGunMan/meshing-around; provisioner skips
     board_tier: zero_class_zero2w_recommended
-    repo: meshing-around              # SpudGunMan/meshing-around
+    repo: meshing-around
     services: {}                      # reaches the mesh via a companion radio, not systemd here
 
 # Where a non-rnsd daemon could grab the RNS listener on a box, MASK the loser.
