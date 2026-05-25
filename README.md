@@ -85,6 +85,32 @@ To stand up your own VPS demo, see `scripts/cloud/README.md` — one-shot setup 
 
 > **Already running MeshForge?** See [Upgrading](#upgrading-meshforge) for upgrade paths.
 
+### Hardware
+
+MeshForge runs on a Raspberry Pi. The tested baseline is a mix of **Pi 3B, Pi 4,
+and Pi 5** boards (all 64-bit / `aarch64`) — any of these runs the full NOC stack
+(map server, gateway bridge, Reticulum, MQTT) comfortably.
+
+**You don't need a Pi 4 to start.** Small boards are workable — not a deal-breaker —
+*because the software is tuned to fit the box*, not because the hardware is roomy.
+A **Pi Zero 2 W** (quad-core, 512 MB, ~$15) is the recommended low-cost board for a
+lightweight or single-purpose node, and a dedicated bot node has run for weeks on the
+original (1st-gen) **Pi Zero W**. On a 512 MB board:
+
+- **Keep the memory-saving defaults on.** The node directory uses a bounding-box
+  filter plus a node-count cap, and the large API responses (`/api/nodes/directory`,
+  `/api/nodes/geojson`, `/api/network/topology`) are byte-cached. Together these keep
+  RAM and the on-disk DB small — on one box the node DB dropped from multiple GB to
+  single-digit MB once the bbox filter and cap were set. Don't disable them on a
+  constrained board.
+- **Expect some swap** under the map service on a large mesh; a high-endurance SD card
+  (or a USB SSD) helps latency and reduces card wear.
+- **Single-purpose roles do best on Zero-class boards** (a dedicated gateway or bot).
+  The full NOC stack is happier on a Pi 3B or larger.
+- **1st-gen Pi Zero W (`armv6`):** fine for a dedicated lightweight node, but its single
+  core and aging `armv6` Python-package support make a **Pi Zero 2 W or Pi 3B+ the
+  better entry choice** for anything new.
+
 ### Fresh Install
 
 ```bash
