@@ -850,6 +850,115 @@ def disable_service(
         return False, f"Error: {e}"
 
 
+def mask_service(
+    service_name: str, timeout: int = 30, user: bool = False
+) -> Tuple[bool, str]:
+    """Mask a systemd unit so it cannot be started by anyone.
+
+    Stronger than ``disable_service``: a *disabled* unit can still be started
+    by a ``restart`` timer, a dependency, or a manual ``systemctl start``;
+    a *masked* unit (symlinked to /dev/null) refuses ``start``/``restart``
+    from every source. This is the durable fix for a rival RNS host on a box
+    where it must never own the listener (fleet invariant: one rnsd per box).
+
+    Args:
+        service_name: Name of the systemd unit to mask.
+        timeout: Subprocess timeout in seconds (default: 30).
+        user: When True, operate on the user-scope manager.
+
+    Returns:
+        Tuple of (success: bool, message: str).
+    """
+    try:
+        result = subprocess.run(
+            _systemctl_argv(['mask', service_name], user=user),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            error_msg = result.stderr.strip() or f"mask {service_name} failed"
+            logger.error(f"mask {service_name} failed: {error_msg}")
+            return False, f"mask {service_name} failed: {error_msg}"
+        logger.info(f"Successfully masked {service_name}")
+        return True, f"{service_name} masked"
+    except subprocess.TimeoutExpired:
+        logger.error(f"Timeout while masking {service_name}")
+        return False, f"Timeout while masking {service_name}"
+    except FileNotFoundError:
+        logger.error("systemctl not found")
+        return False, "systemctl not found - is this a systemd system?"
+    except Exception as e:
+        logger.error(f"Error masking {service_name}: {e}")
+        return False, f"Error: {e}"
+
+
+def unmask_service(
+    service_name: str, timeout: int = 30, user: bool = False
+) -> Tuple[bool, str]:
+    """Reverse :func:`mask_service` so the unit can be started again.
+
+    Note: unmasking only removes the /dev/null symlink; if the real unit
+    file was moved aside to mask a unit whose file lives in
+    ``/etc/systemd/system`` directly, that file must also be restored.
+
+    Args:
+        service_name: Name of the systemd unit to unmask.
+        timeout: Subprocess timeout in seconds (default: 30).
+        user: When True, operate on the user-scope manager.
+
+    Returns:
+        Tuple of (success: bool, message: str).
+    """
+    try:
+        result = subprocess.run(
+            _systemctl_argv(['unmask', service_name], user=user),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            error_msg = result.stderr.strip() or f"unmask {service_name} failed"
+            logger.error(f"unmask {service_name} failed: {error_msg}")
+            return False, f"unmask {service_name} failed: {error_msg}"
+        logger.info(f"Successfully unmasked {service_name}")
+        return True, f"{service_name} unmasked"
+    except subprocess.TimeoutExpired:
+        logger.error(f"Timeout while unmasking {service_name}")
+        return False, f"Timeout while unmasking {service_name}"
+    except FileNotFoundError:
+        logger.error("systemctl not found")
+        return False, "systemctl not found - is this a systemd system?"
+    except Exception as e:
+        logger.error(f"Error unmasking {service_name}: {e}")
+        return False, f"Error: {e}"
+
+
+def is_service_masked(
+    service_name: str, timeout: int = 5, user: bool = False
+) -> bool:
+    """Return True iff the unit is currently masked.
+
+    Read-only (``systemctl is-enabled`` prints ``masked`` for a masked unit);
+    lets callers make masking idempotent — don't re-mask what's already masked.
+
+    Returns False on any error or non-masked state.
+    """
+    argv = (
+        ['systemctl', '--user', 'is-enabled', service_name]
+        if user
+        else ['systemctl', 'is-enabled', service_name]
+    )
+    try:
+        result = subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout
+        )
+        return result.stdout.strip() == 'masked'
+    except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
+        logger.debug("is_service_masked(%s) failed: %s", service_name, e)
+        return False
+
+
 def start_service(
     service_name: str, timeout: int = 30, user: bool = False
 ) -> Tuple[bool, str]:

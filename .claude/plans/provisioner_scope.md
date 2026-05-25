@@ -87,9 +87,13 @@ count, non-zero exit if any required item failed. Operator-legible, greppable.
 
 ## Phasing
 
-- **v1 — local converge (this scope):** plan + diff + `--apply`, unit-state +
-  the four concrete deltas, dry-run default, SSOT service ops, `role` in
-  `deployment.json`. Standalone: `sudo python3 scripts/provision_role.py [--apply]`.
+- **v1 — local converge (SHIPPED 2026-05-24):** `scripts/provision_role.py` —
+  plan/diff/`--apply` (dry-run default), unit-state convergence + masking
+  invariant via the `service_check` SSOT (added `mask_service`/`unmask_service`/
+  `is_service_masked`), config deltas as advisories, external-role skip, `--set-role`.
+  23 unit tests; validated on a live box (clean role → exit 0 all PASS; drifted
+  role → exit 1 WOULD-CHANGE, mutates nothing). Run:
+  `sudo python3 scripts/provision_role.py [--apply]`.
 - **v2 — fleet-aware:** singleton enforcement across `fleet_hosts`; `fleet_sync`
   optionally invokes `provision_role.py --apply` after a code sync; MeshAnchor
   port for `meshanchor-noc`.
