@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,8 +57,9 @@ DEFAULT_ROLES_FILE = _SCRIPT_DIR.parent / "docs" / "fleet_roles.yaml"
 DEPLOYMENT_JSON = get_real_user_home() / ".config" / "meshforge" / "deployment.json"
 FLEET_HOSTS = get_real_user_home() / ".config" / "meshforge" / "fleet_hosts"
 # Remote role-gathering shells out to ssh; the command is operator-configurable
-# (no key/host hardcoded here — MF014). fleet_sync's environment provides auth.
-SSH_CMD = "ssh"
+# via $MESHFORGE_SSH (no key/host hardcoded here — MF014). The operator's ssh
+# config/agent normally provides auth, so the default bare "ssh" works.
+SSH_CMD = os.environ.get("MESHFORGE_SSH", "ssh")
 
 # RNS hosts that must NEVER own the listener on a box that runs rnsd (one rnsd
 # per box — Issue #69). Narrow, explicit list; mask each if present + unmasked.
