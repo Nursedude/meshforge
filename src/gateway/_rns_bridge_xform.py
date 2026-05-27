@@ -171,6 +171,37 @@ class MessageTransformMixin:
             logger.error(f"Failed to persist message for retry: {e}")
             return False
 
+    def _requeue_failed_chunks(self, chunks, destination_node,
+                               target: str = "meshtastic") -> bool:
+        """Persist already-chunked, byte-bounded RNS→Mesh content for retry.
+
+        Used by the direct-send path on PARTIAL failure. Each chunk is
+        enqueued as its own ``message``-shaped item (key ``destination`` — what
+        the queue's meshtastic sender reads to route a DM) so the retry ships
+        bounded packets to the right target, rather than re-queuing the whole
+        un-chunked original (which the retry would truncate and broadcast).
+        Returns True if at least one chunk was persisted.
+        """
+        if not self._persistent_queue or not chunks:
+            return False
+        requeued = 0
+        for chunk in chunks:
+            try:
+                if self._persistent_queue.enqueue(
+                    payload={
+                        'message': chunk,
+                        'channel': self.config.meshtastic.channel,
+                        'source_id': '',
+                        'destination': destination_node,
+                    },
+                    destination=target,
+                    priority=MessagePriority.HIGH,
+                ):
+                    requeued += 1
+            except Exception as e:
+                logger.error(f"Failed to persist RNS→Mesh chunk for retry: {e}")
+        return requeued > 0
+
     def _resolve_mesh_destination(self, addr_token: str) -> Optional[str]:
         """Resolve an ``@address`` token to a Meshtastic node id.
 
@@ -299,16 +330,24 @@ class MessageTransformMixin:
             # queued/delivered within the dedup window is suppressed, so a
             # re-sent forecast/command (e.g. a wx command amplified upstream
             # into several copies) is not re-broadcast onto RF over and over.
-            # A falsy enqueue is therefore benign — a dedup suppression, or a
-            # genuinely full queue (which the queue logs itself). It must
-            # NOT abort the remaining chunks, and is NOT a per-message
-            # failure. (Trade-off: a line that legitimately repeats within
-            # one reply, arriving within the window, can be suppressed too —
-            # the real cure is removing the upstream command duplication.)
+            #
+            # A falsy enqueue has TWO causes and they are NOT the same:
+            #   - dedup suppression — benign: the chunk is already on its way,
+            #     so it must not abort the others and is not a failure;
+            #   - queue rejection (full + unsheddable) — a real DROP: that
+            #     chunk's content is lost and must be counted as such, not
+            #     silently booked as delivered. is_recent_duplicate() tells
+            #     the two apart (enqueue checks dedup before the size limit, so
+            #     a rejected chunk is by construction not a recent duplicate).
+            # (Trade-off on the dedup side: a line that legitimately repeats
+            # within one reply, arriving within the window, can be suppressed
+            # too — the real cure is removing the upstream command duplication.)
             if (self._persistent_queue
                     and self.config.bridge_mode == "mqtt_bridge"
                     and HAS_PERSISTENT_QUEUE):
                 enqueued = 0
+                suppressed = 0
+                rejected = 0
                 for chunk in chunks:
                     payload = {
                         'message': chunk,
@@ -322,12 +361,37 @@ class MessageTransformMixin:
                         priority=MessagePriority.NORMAL,
                     ):
                         enqueued += 1
+                    elif self._persistent_queue.is_recent_duplicate(
+                            payload, "meshtastic"):
+                        suppressed += 1
+                    else:
+                        rejected += 1
+
+                if rejected:
+                    # At least one chunk was dropped under queue pressure —
+                    # genuine data loss, not a benign duplicate. Surface it.
+                    logger.warning(
+                        f"Bridge RNS→Mesh dropped under queue pressure "
+                        f"({rejected}/{len(chunks)} chunks rejected{tag}): "
+                        f"{content[:50]}..."
+                    )
+                    with self._stats_lock:
+                        self.stats['errors'] += 1
+                        self.stats['rns_to_mesh_dropped'] += 1
+                    self.health.record_message_failed(
+                        "rns_to_mesh", requeued=False)
+                    # Still relay whatever DID get queued so peers aren't
+                    # starved of the chunks that made it.
+                    if enqueued and not relayed_by:
+                        self._maybe_relay_to_peers(msg, original_body)
+                    return
+
+                # Every chunk was queued or benignly dedup-suppressed.
                 with self._stats_lock:
                     self.stats['messages_rns_to_mesh'] += 1
                     self.stats['rns_to_mesh_delivered'] += 1
                 self.health.record_message_sent("rns_to_mesh")
                 if enqueued:
-                    suppressed = len(chunks) - enqueued
                     note = f", {suppressed} dup-suppressed" if suppressed else ""
                     logger.info(
                         f"Bridge RNS→Mesh (queued{tag}{multi}{note}): {content[:50]}..."
@@ -345,15 +409,15 @@ class MessageTransformMixin:
 
             # Direct send (non-MQTT mode or queue unavailable). Send every
             # chunk; success requires all of them to go out.
-            sent = sum(
-                1 for chunk in chunks
-                if self.send_to_meshtastic(
+            failed_chunks = [
+                chunk for chunk in chunks
+                if not self.send_to_meshtastic(
                     chunk,
                     destination=destination,
                     channel=self.config.meshtastic.channel,
                 )
-            )
-            if sent == len(chunks):
+            ]
+            if not failed_chunks:
                 logger.info(f"Bridge RNS→Mesh{tag}{multi}: {content[:50]}...")
                 with self._stats_lock:
                     self.stats['messages_rns_to_mesh'] += 1
@@ -362,13 +426,22 @@ class MessageTransformMixin:
                 if not relayed_by:
                     self._maybe_relay_to_peers(msg, original_body)
             else:
+                sent = len(chunks) - len(failed_chunks)
                 logger.warning(
                     f"Failed to bridge RNS→Mesh ({sent}/{len(chunks)} chunks sent)"
                 )
                 with self._stats_lock:
                     self.stats['errors'] += 1
                     self.stats['rns_to_mesh_dropped'] += 1
-                requeued = self._requeue_failed_message(msg, "meshtastic")
+                # Re-queue ONLY the chunks that failed — each already
+                # byte-bounded and carrying the resolved destination. Re-queuing
+                # the whole un-chunked original (the old behavior) made the
+                # retry exceed the byte cap → _truncate_if_needed dropped every
+                # line past the cap, and the payload also lost the DM target
+                # (broadcast to ^all). This preserves the full content and the
+                # destination, and never re-sends the chunks that already went.
+                requeued = self._requeue_failed_chunks(
+                    failed_chunks, destination, "meshtastic")
                 self.health.record_message_failed("rns_to_mesh", requeued=requeued)
 
         except Exception as e:

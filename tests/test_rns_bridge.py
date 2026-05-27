@@ -1079,6 +1079,42 @@ class TestProcessRNSToMesh:
         assert bridge.stats['rns_to_mesh_dropped'] == 1
         bridge.health.record_message_failed.assert_called_once_with("rns_to_mesh", requeued=True)
 
+    def test_partial_direct_failure_requeues_chunks_not_whole(self, bridge):
+        """Regression: on PARTIAL direct-send failure, the FAILED chunks must be
+        re-queued individually — each byte-bounded and carrying the resolved
+        `destination`. Re-queuing the whole un-chunked original (old behavior)
+        made the retry exceed the byte cap (_truncate_if_needed drops lines) and
+        lose the DM target (broadcast to ^all). Already-sent chunks must NOT be
+        re-queued."""
+        from gateway.rns_bridge import BridgedMessage
+        from gateway.base_handler import chunk_for_mesh
+        mock_queue = MagicMock()
+        mock_queue.enqueue.return_value = "msg-id"
+        bridge._persistent_queue = mock_queue  # direct path still uses it to requeue
+        msg = BridgedMessage(source_network="rns", source_id="abcdef01",
+                             destination_id=None, content=_LEADERBOARD)
+        expected_chunks = chunk_for_mesh("[RNS:abcd] " + _LEADERBOARD)
+        assert len(expected_chunks) >= 2
+        # First chunk sends; every remaining chunk fails.
+        calls = {"n": 0}
+
+        def send(chunk, destination=None, channel=0):
+            calls["n"] += 1
+            return calls["n"] == 1
+
+        with patch.object(bridge, 'send_to_meshtastic', side_effect=send):
+            bridge._process_rns_to_mesh(msg)
+
+        requeued = [c.kwargs['payload'] for c in mock_queue.enqueue.call_args_list]
+        # Only the chunks that FAILED were re-queued (not the already-sent one,
+        # not the whole original).
+        assert len(requeued) == len(expected_chunks) - 1
+        for p in requeued:
+            assert len(p['message'].encode('utf-8')) <= _MAX
+            assert 'destination' in p  # the key queue_send routes on, not destination_id
+        assert bridge.stats['rns_to_mesh_dropped'] == 1
+        assert bridge.stats['rns_to_mesh_delivered'] == 0
+
     def test_prefix_includes_rns_source(self, bridge):
         from gateway.rns_bridge import BridgedMessage
         msg = BridgedMessage(
@@ -1577,13 +1613,31 @@ class TestRNSToMeshChunking:
         """Every chunk suppressed (an exact duplicate forecast/command) is the
         system working — not an error, not a drop."""
         from gateway.rns_bridge import BridgedMessage
-        b, _ = self._queue_bridge(lambda *a, **k: None)  # everything dedups
+        b, mock_queue = self._queue_bridge(lambda *a, **k: None)  # all dedup
+        # A MagicMock queue reports is_recent_duplicate() truthy by default, so
+        # the falsy enqueue is classified as dedup-suppression (benign).
         msg = BridgedMessage(source_network="rns", source_id="abcdef01",
                              destination_id=None, content="wx")
         b._process_rns_to_mesh(msg)
         assert b.stats['errors'] == 0
         assert b.stats['rns_to_mesh_dropped'] == 0
         assert b.stats['messages_rns_to_mesh'] == 1
+
+    def test_queue_pressure_rejection_is_a_drop_not_a_delivery(self):
+        """A falsy enqueue that is NOT a recent duplicate (queue full /
+        unsheddable) is genuine data loss — it must count as a drop, NOT be
+        booked as a delivery. Regression: pressure drops were masked as
+        rns_to_mesh_delivered + record_message_sent and only debug-logged."""
+        from gateway.rns_bridge import BridgedMessage
+        b, mock_queue = self._queue_bridge(lambda *a, **k: None)  # all reject
+        mock_queue.is_recent_duplicate.return_value = False  # not a dup → drop
+        msg = BridgedMessage(source_network="rns", source_id="abcdef01",
+                             destination_id=None, content="wx")
+        b._process_rns_to_mesh(msg)
+        assert b.stats['rns_to_mesh_delivered'] == 0
+        assert b.stats['rns_to_mesh_dropped'] == 1
+        assert b.stats['errors'] == 1
+        assert b.stats['messages_rns_to_mesh'] == 0
 
 
 # ---------------------------------------------------------------------------

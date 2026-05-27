@@ -319,6 +319,45 @@ class TestDeduplication:
         assert id1 is not None
         assert id2 is None  # multi-path duplicate suppressed
 
+    def test_content_shaped_spill_payloads_hash_distinctly(self, queue):
+        """Regression: the Mesh→RNS spill payload (_spill_to_persistent_queue)
+        is `content`-shaped — no `message`, no from/to/text/type. The shape
+        branch missed it, so it hit the degenerate all-None text hash and
+        every distinct spilled message collapsed to one hash (dropped as false
+        duplicates exactly during the outage the spill exists to survive)."""
+        h1 = queue._compute_hash(
+            {"content": "hello via mesh", "source_id": "!a", "destination_id": "!z"})
+        h2 = queue._compute_hash(
+            {"content": "different body", "source_id": "!a", "destination_id": "!z"})
+        assert h1 != h2
+
+    def test_distinct_content_spills_all_enqueue(self, queue):
+        """Two different `content`-shaped spills to the same destination within
+        the dedup window must BOTH enqueue (the degenerate hash collapsed
+        them)."""
+        id1 = queue.enqueue({"content": "spill one", "source_id": "!a"}, "rns_xform")
+        id2 = queue.enqueue({"content": "spill two", "source_id": "!a"}, "rns_xform")
+        assert id1 is not None
+        assert id2 is not None
+
+    def test_content_spill_dedup_still_works_for_identical(self, queue):
+        """Content hash stays content-sensitive: an identical spill within the
+        window still dedups."""
+        p = {"content": "same body", "source_id": "!a", "destination_id": "!z"}
+        assert queue.enqueue(dict(p), "rns_xform") is not None
+        assert queue.enqueue(dict(p), "rns_xform") is None
+
+    def test_is_recent_duplicate_distinguishes_dedup_from_pressure(self, queue):
+        """is_recent_duplicate() lets a caller tell a benign dedup-suppression
+        (enqueue→None because already queued) from a real queue rejection
+        (enqueue→None because full): only the former is a 'recent duplicate'."""
+        p = {"message": "hi", "channel": 2, "destination": None}
+        assert queue.is_recent_duplicate(p, "meshtastic") is False  # not seen yet
+        assert queue.enqueue(p, "meshtastic") is not None
+        # Now it IS a recent duplicate (a second enqueue would dedup-drop).
+        assert queue.is_recent_duplicate(p, "meshtastic") is True
+        assert queue.enqueue(p, "meshtastic") is None
+
 
 # ---------------------------------------------------------------------------
 # PersistentMessageQueue — get_pending / priority ordering

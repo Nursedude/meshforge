@@ -619,6 +619,15 @@ class PersistentMessageQueue:
           with different ``source_id``s. Keying on source_id let those
           multi-path duplicates escape dedup (observed: identical
           ``[RNS:627f] [ch0:p4] wx`` enqueued twice 0.3s apart).
+        - ``content``-shaped (Mesh→RNS spill, ``_spill_to_persistent_queue``):
+          carries its text under ``content`` and, like the ``message`` shape,
+          NONE of the from/to/text/type ingress keys. Without an explicit
+          branch it fell into the text branch below with all four keys absent
+          → the SAME degenerate constant hash, so distinct spilled messages
+          collapsed to one hash and all but the first were dropped as false
+          duplicates within ``DEDUP_WINDOW`` — exactly when an outage makes the
+          spill matter most. Key on the content + origin/route fields it does
+          carry.
         - ``text``-shaped (Meshtastic ingress): key on from/to/text/type,
           where ``from`` is the originating node and is meaningful.
         """
@@ -627,6 +636,12 @@ class PersistentMessageQueue:
                 "message": payload.get("message"),
                 "destination": payload.get("destination"),
                 "channel": payload.get("channel"),
+            }, sort_keys=True)
+        elif payload.get("content") is not None:
+            key_data = json.dumps({
+                "content": payload.get("content"),
+                "source_id": payload.get("source_id"),
+                "destination_id": payload.get("destination_id"),
             }, sort_keys=True)
         else:
             key_data = json.dumps({
@@ -651,6 +666,20 @@ class PersistentMessageQueue:
 
             count = cursor.fetchone()[0]
             return count > 0
+
+    def is_recent_duplicate(self, payload: Dict[str, Any],
+                            destination: str) -> bool:
+        """True if ``payload`` matches a message already queued/delivered to
+        ``destination`` within ``DEDUP_WINDOW``.
+
+        Lets a caller distinguish a benign dedup-suppression from a genuine
+        enqueue rejection (queue full / unsheddable): BOTH make ``enqueue``
+        return ``None``, but only the latter loses data. ``enqueue`` checks
+        dedup BEFORE the size limit, so a payload that reached the pressure
+        path is by construction not a recent duplicate — classifying the two
+        cases here is therefore unambiguous.
+        """
+        return self._is_duplicate(self._compute_hash(payload), destination)
 
     def enqueue(self, payload: Dict[str, Any], destination: str,
                 priority: MessagePriority = MessagePriority.NORMAL,
