@@ -8,7 +8,7 @@
 #   disabled = unit installed but deliberately enabled=false/inactive (not a fault)
 #   absent   = unit not installed for this role
 version: 0
-updated: "2026-05-24"
+updated: "2026-05-27"
 
 # Role ownership: the MeshForge provisioner converges only roles WITHOUT a
 # `provisioned_by` key. A role with `provisioned_by: <repo>` is documented here
@@ -51,6 +51,8 @@ roles:
       meshtasticd: enabled
       rnsd: enabled
       mosquitto: enabled
+      meshforge-gateway: absent       # primary authors memory + serves the map; it does
+                                      # not host the Meshtastic<->RNS/LXMF bridge
       meshforge-map: enabled
       meshforge-maps: disabled        # tiles served by full-gateway nodes
       meshforge-watchdog: enabled
@@ -67,6 +69,8 @@ roles:
       meshtasticd: enabled
       rnsd: enabled
       mosquitto: enabled
+      meshforge-gateway: enabled      # the Meshtastic<->RNS/LXMF bridge daemon — the
+                                      # unit that makes this node an actual gateway
       meshforge-map: enabled
       meshforge-maps: enabled
       meshforge-watchdog: enabled
@@ -77,6 +81,9 @@ roles:
     inherits: full-gateway
     board_tier: pi4_or_pi5_min_4gb
     services:
+      meshforge-gateway: disabled     # OVERRIDE full-gateway: this node publishes the
+                                      # cloud snapshot, it does not bridge RF — unit
+                                      # installed but deliberately off (not a fault)
       meshforge-cloud-push.timer: enabled
     flags:
       cloud_push_publisher: true
@@ -89,6 +96,8 @@ roles:
       meshtasticd: enabled
       rnsd: enabled
       mosquitto: enabled
+      meshforge-gateway: enabled      # the bridge daemon — a gateway-only node's whole
+                                      # job; lighter than the map, fits the ~1GB board
       meshforge-map: disabled         # DELIBERATE: map server too heavy for ~1GB
       meshforge-maps: absent
       meshforge-watchdog: enabled

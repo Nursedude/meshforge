@@ -49,14 +49,14 @@ fleet degrades in a way that's expensive to debug.
 
 ## Role catalog
 
-| Role | Board tier | meshtasticd | rnsd | mosquitto | map server | tile server | cloud-push | watchdog | Notes |
-|------|-----------|:-:|:-:|:-:|:-:|:-:|:-:|:-:|-------|
-| `primary` | Pi 4 / Pi 5 (≥4 GB) | ✓ | ✓ | ✓ | ✓ | — | — | ✓ | Canonical memory/repo writer. Drives the cloud-push *source* API. |
-| `full-gateway` | Pi 4 (≥4 GB) | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Full NOC node: radio + bridge + map + tiles. |
-| `cloud-publisher` | Pi 4 / Pi 5 (≥4 GB) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | `full-gateway` **+** the cloud-push timer. Exactly one in the fleet. |
-| `gateway-only` | Pi 3B+ (~1 GB ok) | ✓ | ✓ | ✓ | **disabled** | — | — | ✓ | Constrained board: bridge + radio, **map server off** (too heavy for ~1 GB). |
-| `meshanchor-noc` | Pi 4 (≥4 GB) | — | ✓ | ✓ | (meshanchor map) | — | — | (meshanchor wd) | Sister app ([MeshAnchor](https://github.com/Nursedude/meshanchor)), MeshCore-primary. No MeshForge stack. Radio-less egress to a peer meshtasticd. Provisioned by the MeshAnchor repo, not the MeshForge provisioner. |
-| `bot` *(optional, non-fleet)* | Zero-class (Zero 2 W rec.) | — | — | — | — | — | — | — | A dedicated [meshing-around](https://github.com/SpudGunMan/meshing-around) bot. Not a MeshForge node; reaches the mesh via a companion radio. |
+| Role | Board tier | meshtasticd | rnsd | mosquitto | bridge | map server | tile server | cloud-push | watchdog | Notes |
+|------|-----------|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|-------|
+| `primary` | Pi 4 / Pi 5 (≥4 GB) | ✓ | ✓ | ✓ | — | ✓ | — | — | ✓ | Canonical memory/repo writer. Drives the cloud-push *source* API. Does not host the bridge. |
+| `full-gateway` | Pi 4 (≥4 GB) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Full NOC node: radio + bridge + map + tiles. |
+| `cloud-publisher` | Pi 4 / Pi 5 (≥4 GB) | ✓ | ✓ | ✓ | **disabled** | ✓ | ✓ | ✓ | ✓ | `full-gateway` **+** the cloud-push timer, **−** the bridge (publishes snapshots, does not bridge RF). Exactly one in the fleet. |
+| `gateway-only` | Pi 3B+ (~1 GB ok) | ✓ | ✓ | ✓ | ✓ | **disabled** | — | — | ✓ | Constrained board: bridge + radio, **map server off** (too heavy for ~1 GB). |
+| `meshanchor-noc` | Pi 4 (≥4 GB) | — | ✓ | ✓ | — | (meshanchor map) | — | — | (meshanchor wd) | Sister app ([MeshAnchor](https://github.com/Nursedude/meshanchor)), MeshCore-primary. No MeshForge stack. Radio-less egress to a peer meshtasticd. Provisioned by the MeshAnchor repo, not the MeshForge provisioner. |
+| `bot` *(optional, non-fleet)* | Zero-class (Zero 2 W rec.) | — | — | — | — | — | — | — | — | A dedicated [meshing-around](https://github.com/SpudGunMan/meshing-around) bot. Not a MeshForge node; reaches the mesh via a companion radio. |
 
 > Machine-readable companion: **[`fleet_roles.yaml`](fleet_roles.yaml)** — the same
 > catalog + deltas in structured form, intended to drive a role-aware provisioner.
