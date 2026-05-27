@@ -126,13 +126,39 @@ def _unit_current(name: str) -> str:
     return f"{'active' if running else 'inactive'}/{'enabled' if enabled else 'disabled'}"
 
 
-def plan(role_def: dict) -> List[Action]:
+def plan(role_def: dict, overrides: Optional[Dict[str, dict]] = None) -> List[Action]:
     """Build the ordered action list to converge to `role_def`. Pure w.r.t.
-    the SSOT observe functions (which read the live system)."""
+    the SSOT observe functions (which read the live system).
+
+    `overrides` is the box's instance-local `service_overrides` (from
+    deployment.json): per-unit intentional exceptions to the role's service
+    map. A waived unit is reported as a NON-blocking advisory carrying the
+    reason — visible and auditable, never silently dropped — and is skipped by
+    convergence (left as the operator set it). A waiver WITHOUT a `reason` is
+    NOT honored (it stays a blocking warning) — an unexplained exception is
+    just hidden drift.
+    """
     actions: List[Action] = []
     services: Dict[str, str] = role_def.get("services", {})
+    overrides = overrides or {}
 
     for unit, desired in services.items():
+        ov = overrides.get(unit)
+        if ov is not None:
+            reason = (ov.get("reason") or "").strip() if isinstance(ov, dict) else ""
+            waived = ov.get("state", "?") if isinstance(ov, dict) else str(ov)
+            cur = _unit_current(unit)
+            if reason:
+                actions.append(Action(unit, cur, f"waived:{waived}", "warn",
+                                      required=False,
+                                      detail=f"intentional per-node exception: {reason}"))
+            else:
+                actions.append(Action(unit, cur, f"waived:{waived}", "warn",
+                                      required=True,
+                                      detail="service_override missing required 'reason' "
+                                             "— NOT honored (an unexplained waiver is "
+                                             "hidden drift)"))
+            continue
         if desired not in VALID_UNIT_STATES:
             actions.append(Action(unit, "?", str(desired), "warn", required=False,
                                   detail=f"unknown desired state '{desired}'"))
@@ -218,6 +244,23 @@ def read_role() -> Optional[str]:
         return json.loads(DEPLOYMENT_JSON.read_text()).get("role")
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def read_overrides() -> Dict[str, dict]:
+    """Instance-local per-unit exceptions from deployment.json `service_overrides`.
+
+    Shape: ``{"<unit>": {"state": "disabled"|"absent"|..., "reason": "<why>"}}``.
+    Instance specifics (which box, why) live HERE, never in the committed roles
+    file (MF014/MF015). Honored by ``plan()``; a waiver without a ``reason`` is
+    rejected there.
+    """
+    if not DEPLOYMENT_JSON.exists():
+        return {}
+    try:
+        ov = json.loads(DEPLOYMENT_JSON.read_text()).get("service_overrides") or {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return ov if isinstance(ov, dict) else {}
 
 
 def write_role(role: str) -> None:
@@ -378,8 +421,11 @@ def main(argv: Optional[List[str]] = None) -> int:
               f"— the MeshForge provisioner does not converge it.", file=sys.stderr)
         return 2
 
+    overrides = read_overrides()
     print(f"# role: {role}  (mode: {'APPLY' if args.apply else 'dry-run'})")
-    actions = plan(role_def)
+    if overrides:
+        print(f"# service_overrides active: {', '.join(sorted(overrides))}")
+    actions = plan(role_def, overrides)
     render(actions, args.apply)
 
     changes = [a for a in actions if a.verb in ("enable", "disable", "mask")]
