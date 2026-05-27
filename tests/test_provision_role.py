@@ -135,6 +135,70 @@ class TestPlanUnitStates:
         assert a.verb == "noop"
 
 
+class TestPlanServiceOverrides:
+    """Per-node service_overrides (instance-local deployment.json) waivers."""
+
+    def _plan_with_override(self, override, running, enabled, installed):
+        # full-gateway expects meshforge-gateway enabled; the override waives it.
+        role_def = {"services": {"meshforge-gateway": "enabled"}}
+        m1, m2, m3 = _mock_observe(running, enabled, installed)
+        with m1, m2, m3:
+            return pr.plan(role_def, {"meshforge-gateway": override})
+
+    def test_waiver_with_reason_is_nonblocking_advisory(self):
+        """moc2 case: unit absent, role wants enabled, but a reasoned waiver
+        downgrades the would-be blocking warn to a non-blocking advisory — so
+        the box stops failing the drift check."""
+        a = [x for x in self._plan_with_override(
+                {"state": "disabled", "reason": "RF-sparse site, bridge intentionally off"},
+                running=False, enabled=False, installed=False)
+             if x.item == "meshforge-gateway"][0]
+        assert a.verb == "warn"
+        assert a.required is False                      # non-blocking → dry-run exit 0
+        assert "RF-sparse" in a.detail                  # reason is surfaced (loud)
+        assert a.desired == "waived:disabled"
+
+    def test_waiver_without_reason_stays_blocking(self):
+        """An unexplained waiver is hidden drift — NOT honored."""
+        a = [x for x in self._plan_with_override(
+                {"state": "disabled"}, running=False, enabled=False, installed=False)
+             if x.item == "meshforge-gateway"][0]
+        assert a.verb == "warn"
+        assert a.required is True                       # still blocks
+        assert "NOT honored" in a.detail
+
+    def test_waived_unit_is_not_converged(self):
+        """A waived unit produces no enable/disable action even when it diverges
+        from the role (left as the operator set it)."""
+        actions = self._plan_with_override(
+            {"state": "disabled", "reason": "x"},
+            running=False, enabled=False, installed=True)
+        verbs = {x.verb for x in actions if x.item == "meshforge-gateway"}
+        assert verbs == {"warn"}                         # never enable/disable
+
+    def test_no_override_unchanged_behavior(self):
+        """Without an override, the unit converges normally (regression guard)."""
+        a = [x for x in _plan_one("meshforge-gateway", "enabled", False, False, True)
+             if x.item == "meshforge-gateway"][0]
+        assert a.verb == "enable"
+
+    def test_read_overrides_parses_deployment_json(self, tmp_path, monkeypatch):
+        dj = tmp_path / "deployment.json"
+        dj.write_text(json.dumps({
+            "role": "full-gateway",
+            "service_overrides": {"meshforge-gateway": {"state": "disabled", "reason": "y"}},
+        }))
+        monkeypatch.setattr(pr, "DEPLOYMENT_JSON", dj)
+        ov = pr.read_overrides()
+        assert ov["meshforge-gateway"]["reason"] == "y"
+
+    def test_read_overrides_absent_key_is_empty(self, tmp_path, monkeypatch):
+        dj = tmp_path / "deployment.json"
+        dj.write_text(json.dumps({"role": "full-gateway"}))
+        monkeypatch.setattr(pr, "DEPLOYMENT_JSON", dj)
+        assert pr.read_overrides() == {}
+
+
 class TestPlanMaskingInvariant:
     def _plan_with_rival(self, rnsd_enabled, rival_installed, rival_masked):
         role_def = {"services": {"rnsd": "enabled" if rnsd_enabled else "disabled"}}
