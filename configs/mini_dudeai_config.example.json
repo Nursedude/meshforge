@@ -1,0 +1,46 @@
+{
+  "_comment": "Standalone (wireclaw-like) config example. Run with: python3 -m mini_dudeai --config this_file.json",
+  "interval_s": 30,
+  "rules_path": "~/my_mini_dudeai_rules.json",
+  "candidate_path": "~/my_mini_dudeai_rules.json.candidate",
+  "state_path": "~/my_mini_dudeai_state.json",
+  "history_path": "~/my_mini_dudeai_history.jsonl",
+  "sources": [
+    {
+      "_comment": "Watch a JSON file for items; emit one Condition per item.",
+      "kind": "json_file",
+      "path": "~/sensors.json",
+      "condition_kind": "sensor_reading",
+      "items_path": "readings"
+    },
+    {
+      "_comment": "Watch an HTTP endpoint. items_path dots through nested objects.",
+      "kind": "http_json",
+      "url": "http://localhost:8080/health",
+      "condition_kind": "service_health",
+      "items_path": "components",
+      "subject_field": "component_name",
+      "detail_field": "message"
+    },
+    {
+      "_comment": "Watch a file for staleness. Fires when mtime is older than max_age_s.",
+      "kind": "file_mtime",
+      "path": "~/heartbeat",
+      "condition_kind": "heartbeat_stale",
+      "max_age_s": 300
+    }
+  ],
+  "actions": {
+    "ntfy": {
+      "kind": "ntfy",
+      "topic": "your-ntfy-topic-here",
+      "default_priority": "default"
+    },
+    "annotate": {
+      "kind": "annotate",
+      "path": "~/my_annotations.md"
+    },
+    "propose_escalation": {"kind": "propose_escalation"},
+    "none": {"kind": "none"}
+  }
+}

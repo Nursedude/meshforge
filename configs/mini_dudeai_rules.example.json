@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "generated_by": "example — copy to your-box's home and edit",
+  "notes": "Rule schema: id (required), match (required), action (required), cooldown_s (optional, default 0), annotation (optional, free-form). match.kind must equal a Condition.kind a Source emits. match.subject_glob (or legacy peer_glob/source_glob) is fnmatch'd against Condition.subject. Any additional match.* key is checked against Condition.extras for equality. action.kind must be a key registered in the engine's actions dict (e.g. 'ntfy', 'annotate', 'none').",
+  "rules": [
+    {
+      "id": "watchdog_signal_to_ntfy",
+      "match": {"kind": "signal_class", "subject_glob": "*"},
+      "action": {"kind": "ntfy", "title": "[mini-dudeai] watchdog signal",
+                 "message": "{subject}: {detail}", "priority": "high"},
+      "cooldown_s": 1800,
+      "annotation": "Fires on any watchdog signal class. Refine by adding match.class to scope to one class."
+    },
+    {
+      "id": "specific_class_only",
+      "match": {"kind": "signal_class", "class": "main_thread_wedge", "subject_glob": "*"},
+      "action": {"kind": "ntfy", "title": "[RED] main-thread wedge",
+                 "message": "{subject}: {detail}", "priority": "urgent",
+                 "tags": ["rotating_light"]},
+      "cooldown_s": 1800
+    },
+    {
+      "id": "known_normal_suppressor",
+      "match": {"kind": "federation_peer_unhealthy", "subject_glob": "*moc3*"},
+      "action": {"kind": "annotate_digest"},
+      "cooldown_s": 86400,
+      "annotation": "Suppress ntfy for an expected non-OK peer; annotate-only."
+    },
+    {
+      "id": "stale_canary",
+      "match": {"kind": "digest_stale"},
+      "action": {"kind": "ntfy", "title": "[AMBER] digest stale",
+                 "message": "{subject}: {detail}"},
+      "cooldown_s": 1800,
+      "annotation": "Fires when the digest file mtime is older than its source's threshold."
+    },
+    {
+      "id": "escalate_to_cloud_session",
+      "match": {"kind": "source_error", "subject_glob": "*"},
+      "action": {"kind": "propose_escalation"},
+      "cooldown_s": 3600,
+      "annotation": "When mini goes blind on a source, leave a structured note in history.jsonl for the cloud Claude session to pick up on warm invocation."
+    }
+  ]
+}
