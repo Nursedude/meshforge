@@ -174,7 +174,7 @@ headless can only static-trace).
 | 100 | system | `network` | NetworkToolsHandler | ping/dns/traceroute/ports/ifaces | READ | yes | low | none | keep | `_detect_network_range` parses `ip route` without guards (network_tools.py:437) — minor | DONE |
 | 101 | system | `reboot` | RebootHandler | safe reboot/shutdown | READ | yes | low | none | keep | confirm + _sudo_cmd | DONE |
 | 102 | system | `discover` | ServiceDiscoveryHandler | auto-discover mesh services | READ | yes | medium | none | keep | nmap 120s timeout can stall UI; network regex loose | DONE |
-| 103 | system | `shell` | SystemToolsHandler | drop to bash | READ | yes | low | dead | keep+cut | shell is intentional escape-hatch (keep); BUT `_system_tools_menu` + submethods (system_tools.py:56-1351) are DEAD — execute() only dispatches `shell`. **Operator-ratify cut of ~1300 dead lines.** | TODO |
+| 103 | system | `shell` | SystemToolsHandler | drop to bash | READ | yes | low | none | keep | `shell` kept (intentional escape-hatch). **CUT DONE (operator-ratified 2026-05-29)**: removed dead `_system_tools_menu` + 30 submethods (1329 lines, file 1381→66). Verified unreachable: execute() only dispatches `shell`, 0 external refs to the menu or any leaf helper (`_user_systemctl_argv` collisions are independent copies in meshchatx/nomadnet). No capability lost — network/hardware/logs/services have live handlers; rest reachable via shell. | DONE |
 
 ### Already touched this session (expect green; re-verify, don't assume)
 - `dashboard / mini_dudeai` (MiniDudeaiHandler) — findings → fixes via surface. In-app. RAN(tests).
@@ -239,7 +239,14 @@ steering, not a blind batch:
 - #36 meshing-around install shows spinner once then goes silent during long
   git/venv/pip steps — wants per-step infobox progress. Cosmetic, not a bug.
 
-**Cut candidate (operator-ratify):** #103 `_system_tools_menu` ~1300 dead lines.
+**Cut DONE (operator-ratified):** #103 `_system_tools_menu` — 1329 dead lines
+removed (file 1381→66). Verify-the-work-holder confirmed: unreachable + no
+capability loss + `_user_systemctl_argv` external refs are independent copies.
+
+**Noted (not acted):** `_user_systemctl_argv` is independently duplicated in
+`_meshchatx_service_ops.py`, `_nomadnet_service_ops.py` (+ meshchatx.py) — a
+real root→real-user systemctl helper that wants promoting to a shared util
+(`utils.service_check`?). Future dedup candidate, low priority.
 
 **Lesson:** subagent "dup/dead" verdicts ran ~30% over-flag (2 of 6 dead/crash
 claims I spot-checked were wrong); crash-class verdicts I personally verified
