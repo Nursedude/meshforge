@@ -95,6 +95,11 @@ SCHEDULE_UNIT_PREFIXES = ("meshforge", "meshanchor", "moc-")
 # derived from the gap between successive fires when available;
 # otherwise the heuristic falls back to "next_fire is None" only.
 SCHEDULE_STALE_MULTIPLIER = 2.0
+# A timer with NEXT unset is only stale if it ALSO has no recent fire.
+# systemd momentarily reports NEXT=0 at the fire instant while it
+# recomputes the next elapse (notably monotonic OnUnitActiveSec timers);
+# such a timer just ran and must not flicker the Subsystem Health banner.
+SCHEDULE_NO_NEXT_GRACE_S = 3600.0
 
 
 def _process_uptime_s() -> float:
@@ -344,18 +349,27 @@ def _normalize_timer(raw: Dict[str, Any], scope: str,
     last_unix = _us_to_unix(raw.get("last"))
     age_s = (now_unix - last_unix) if last_unix is not None else None
 
-    # Stale signature 1: NEXT is unset. moc1's wedged tracer.timer
-    # 2026-05-14 12:30 HST → 2026-05-15 06:48 HST sat exactly here.
-    stale = next_unix is None
-
+    # Stale signature 1: NEXT is unset AND there is no recent fire to
+    # vouch for the timer. moc1's wedged tracer.timer (2026-05-14 12:30
+    # → 2026-05-15 06:48 HST) sat here ~18h with NEXT unset and a stale
+    # `last` — genuinely dead. But systemd ALSO momentarily reports
+    # NEXT=0 at the fire instant while it recomputes the next elapse
+    # (notably monotonic OnUnitActiveSec timers), and that timer's
+    # `last` is ~now — it just ran. Gate the missing-NEXT signal on a
+    # recent fire so a healthy timer doesn't flicker the banner stale.
+    if next_unix is None:
+        stale = age_s is None or age_s > SCHEDULE_NO_NEXT_GRACE_S
     # Stale signature 2: last fire is older than 2× the nominal
-    # interval. Interval is inferred only when we have both next + last
-    # (interval ≈ next - last). For timers with no last_unix yet (boxes
-    # that just booted) skip — they're not stale, just fresh.
-    if not stale and last_unix is not None and next_unix is not None:
+    # interval (interval ≈ next - last). For timers with no last_unix
+    # yet (boxes that just booted) skip — they're not stale, just
+    # fresh. Negative age (clock skew on a just-fired timer) is never
+    # stale — the comparison handles it.
+    elif last_unix is not None:
         interval = next_unix - last_unix
-        if interval > 0 and age_s is not None:
-            stale = age_s > SCHEDULE_STALE_MULTIPLIER * interval
+        stale = bool(interval > 0 and age_s is not None
+                     and age_s > SCHEDULE_STALE_MULTIPLIER * interval)
+    else:
+        stale = False
 
     return {
         "name": name,

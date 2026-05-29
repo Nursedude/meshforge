@@ -407,14 +407,40 @@ def test_normalize_timer_converts_microseconds_to_unix_seconds():
     assert entry["stale"] is False
 
 
-def test_normalize_timer_zero_means_unset():
-    """systemctl emits 0 for timers with no scheduled fire (the moc1 case)."""
-    raw = {"unit": "broken.timer", "last": 1778869400000000, "next": 0}
+def test_normalize_timer_unset_next_and_old_last_is_stale():
+    """The real moc1 signature: NEXT unset AND `last` fire ~18h ago.
+    A genuinely wedged timer — must flag stale."""
+    raw = {
+        "unit": "broken.timer",
+        "last": int((NOW - 18 * 3600) * 1_000_000),  # 18h ago, like moc1
+        "next": 0,
+    }
     entry = _normalize_timer(raw, "user", NOW)
     assert entry["next_fire_unix"] is None
     assert entry["stale"] is True, (
-        "next=None must flag stale — this is the moc1 18h-freeze signature"
+        "next=None with an 18h-old last must flag stale — moc1 freeze signature"
     )
+
+
+def test_normalize_timer_unset_next_but_just_fired_not_stale():
+    """Fire-instant transient: systemd briefly reports NEXT=0 while it
+    recomputes the next elapse (monotonic OnUnitActiveSec timers like
+    meshanchor-map-poke.timer). `last` is ~now, so the timer just ran —
+    it must NOT flicker the banner stale. Regression for the 2026-05-29
+    meshanchor-server poke-timer false positive."""
+    raw = {"unit": "meshanchor-map-poke.timer", "last": int(NOW * 1_000_000), "next": 0}
+    entry = _normalize_timer(raw, "user", NOW)
+    assert entry["next_fire_unix"] is None
+    assert entry["age_s"] == pytest.approx(0.0, abs=0.5)
+    assert entry["stale"] is False
+
+
+def test_normalize_timer_unset_next_negative_age_not_stale():
+    """Clock skew: a just-fired timer can record `last` a hair ahead of
+    our sampled now, giving a slightly negative age. Never stale."""
+    raw = {"unit": "skewed.timer", "last": int((NOW + 0.1) * 1_000_000), "next": 0}
+    entry = _normalize_timer(raw, "user", NOW)
+    assert entry["stale"] is False
 
 
 def test_normalize_timer_no_last_run_yet_not_stale():
