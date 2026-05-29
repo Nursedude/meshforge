@@ -1,8 +1,17 @@
 # MeshForge RNS Dependencies (gateway, full profiles)
 
-# Reticulum Network Stack
-rns>=0.7.0
-lxmf>=0.4.0
+# Reticulum Network Stack — PINNED (RNS T2-isolate arc, sub-arc A, 2026-05-29).
+#
+# RNS upstream withdrew public support (Carrier Switch, Dec 2025) — no issue/PR
+# responses, no security-disclosure channel. So we OWN the version: a bump is a
+# reviewed decision, never an automatic `pip install` grabbing latest. The old
+# floating `rns>=0.7.0` had already skewed the fleet (1.1.4 / 1.1.9 / 1.2.5).
+#
+# Pinned to the combo proven on the majority of gateway boxes (moc/moc1/moc2).
+# Verify drift with: python3 scripts/rns_version_check.py
+# See .claude/plans/rns_t2_isolate_arc.md and the project_rns_upstream_withdrawal memory.
+rns==1.1.9
+lxmf==0.9.6
 
 # Cryptography / PyOpenSSL version alignment:
 # RNS pulls in cryptography 46.x (its constraint is >=3.4.7, so pip grabs latest).
