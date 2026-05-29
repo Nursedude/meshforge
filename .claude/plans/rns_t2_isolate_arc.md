@@ -165,10 +165,30 @@ forward bump, LXMF already 0.9.4); **moc/moc1/moc2 DRIFT** (RNS 1.1.9->1.2.5 UP
   Verified: drift-check OK, rnsd interfaces up (AutoIface 3 peers, TCP :4242,
   RNode LoRa), gateway log `Meshtastic: connected`/`RNS: connected`,
   `rpc[rnsd.path_table] ok`. The low-risk converge is the proof-of-recipe.
-- moc/moc1/moc2: same pip, but watch the LXMF downgrade (propagation-node /
-  message-format compat) — converge ONE gateway, soak, then the rest. STILL PENDING.
+- moc: ✅ CONVERGED + SOAKING (2026-05-29). The LXMF-downgrade canary (only moc
+  runs `meshforge-gateway` → exercises the LXMF bridging path). Verified runtime:
+  drift-check OK *in the service env*, rnsd reclaimed `@rns` (AutoIface 3 peers,
+  HawaiiNet TCP :4242 Up), gateway `Meshtastic: connected`/`RNS: connected`, MQTT
+  + broadcast bridge up, NO LXMF errors on the 0.9.6->0.9.4 downgrade, map :5000
+  healthz/api_status=200, shared instance serving 4 programs. ⚠️ see SPLIT-ENV below.
+- moc1, moc2: map-only (no gateway bridge), moc1 also = cloud-push. STILL PENDING
+  — converge after moc soak is clean. Re-run the SPLIT-ENV check on each first.
 - VolcanoAI: no action (already on the pin).
-- Goal: `rns_version_check.py` all-OK fleet-wide. (federator + moc3 OK; 3 gateways left.)
+- Goal: `rns_version_check.py` all-OK fleet-wide. (federator + moc3 OK, moc soaking; moc1/moc2 left.)
+
+**⚠️ SPLIT-ENV FINDING (2026-05-29) — drift-check has a per-user blind spot.**
+moc runs ALL RNS services (rnsd, gateway, map, maps) as `User=wh6gxz`, importing
+from `/home/wh6gxz/.local/lib/python3.13/site-packages`. moc3 runs them as `root`
+from `/usr/local/...`. So "what version is the service actually running" depends
+on the SERVICE'S user — and `rns_version_check.py` reports the env of whoever runs
+it. On moc it was GREEN as root (where `sudo pip3` had installed) while every
+service was still on 1.1.9 in wh6gxz's `~/.local`. Converge fix: install into the
+SERVICE's env — `pip3 install --break-system-packages rns==1.2.5 lxmf==0.9.4` AS
+the service user (non-sudo → ~/.local), not `sudo -r requirements`. Two follow-ups:
+(a) **step-2 generalization** must make the drift-check service-env-aware (resolve
+each RNS unit's `User=` and check that user's env), and (b) fleet has inconsistent
+service `User=` (root vs wh6gxz) + a `~/.local` shadow on moc — a standardization
+cleanup (single install location / consistent service user) belongs in that pass.
 
 **Open decisions:** (1) ~~pin reconciliation~~ RESOLVED above (rebaselined to
 1.2.5+0.9.4); (2) B scope (all 25 vs hot-paths first); (3) vendor depth = sub-arc
@@ -183,7 +203,9 @@ apply. This is meaty -> a fresh session with this file as warm-start is ideal.
 Sub-arc **A DONE** (`e8c5d9c`): pinned + drift-check deployed fleet-wide.
 **DECISION 1 RESOLVED (2026-05-29)**: pin REBASELINED `rns==1.1.9`/`lxmf==0.9.6`
 -> `rns==1.2.5`/`lxmf==0.9.4` (converge gateways UP to the federator-proven, last-
-GitHub-published combo; VolcanoAI now a no-op). **moc3 CONVERGED + verified
-2026-05-29** (proof-of-recipe); moc/moc1/moc2 still pending (watch the LXMF
-downgrade — converge one, soak, then the rest). **B+C scoped & handed off
+GitHub-published combo; VolcanoAI now a no-op). **moc3 CONVERGED + verified;
+moc CONVERGED + SOAKING (the LXMF-downgrade canary) — 2026-05-29.** moc1/moc2
+still pending (map-only; converge after moc soak is clean; re-check SPLIT-ENV per
+box). ⚠️ SPLIT-ENV finding logged (drift-check is per-user; install into the
+service's env). **B+C scoped & handed off
 above** — awaiting a fresh session. D deferred. This file survives `/clear`.
