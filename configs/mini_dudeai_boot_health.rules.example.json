@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "generated_by": "DRAFT — on-boot crash-detect rules (2026-05-29). NOT live.",
+  "notes": "These two rules match the unexpected_reboot Condition emitted by BootHealthSource (src/mini_dudeai/sources/boot_health.py). They are inert until (a) BootHealthSource is wired into the fleet preset and (b) these objects are merged into the live ~/mini_dudeai_rules.json (or dropped as ~/mini_dudeai_rules.json.candidate for daemon promotion). Both rules match the SAME condition: the engine evaluates every rule against every condition, so one fires ntfy and the other annotates the digest on a single unclean boot — exactly 'alert the operator AND seed the next warm cloud session'.",
+  "rules": [
+    {
+      "id": "unexpected_reboot_alert",
+      "match": {"kind": "unexpected_reboot", "subject_glob": "*"},
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] Unexpected reboot",
+        "message": "{subject}: {detail}",
+        "priority": "urgent",
+        "tags": ["rotating_light", "electric_plug"]
+      },
+      "cooldown_s": 3600,
+      "annotation": "Box hard-reset with no clean shutdown. Forensic method: tail ~/power_history.log (throttled bit 0x10000 = brownout occurred) + journalctl -b -1 -o short-precise | tail (healthy-then-cut = hard reset; OOM/panic = grep them). NOT pytest unless boot -1 logs show it ran. See memory project_volcanoai_hard_reset_2026_05_28."
+    },
+    {
+      "id": "unexpected_reboot_annotate",
+      "match": {"kind": "unexpected_reboot", "subject_glob": "*"},
+      "action": {"kind": "annotate_digest"},
+      "cooldown_s": 3600,
+      "annotation": "Crash forensic seed for the next warm cloud session — surfaces the unclean-boot verdict + last pre-cut power reading in situation_digest."
+    }
+  ]
+}
