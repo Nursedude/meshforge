@@ -171,6 +171,12 @@ forward bump, LXMF already 0.9.4); **moc/moc1/moc2 DRIFT** (RNS 1.1.9->1.2.5 UP
   HawaiiNet TCP :4242 Up), gateway `Meshtastic: connected`/`RNS: connected`, MQTT
   + broadcast bridge up, NO LXMF errors on the 0.9.6->0.9.4 downgrade, map :5000
   healthz/api_status=200, shared instance serving 4 programs. ⚠️ see SPLIT-ENV below.
+  SOAK baseline 2026-05-29 23:16Z: federator reaches moc (cf=0, no backoff), gateway
+  0 errors, rnsd pid 2532792 stable. SOAK RE-CHECK (clean = converge moc1/moc2):
+  `ssh moc 'python3 /opt/meshforge/scripts/rns_version_check.py'` still OK; rnsd
+  MainPID unchanged (no silent wedge/restart); `journalctl -u meshforge-gateway`
+  no new error/traceback + "Messages bridged" M->R/R->M incrementing once mesh
+  traffic flows (the real LXMF-0.9.4 proof); federator `/api/status` keeps moc cf=0.
 - moc1, moc2: map-only (no gateway bridge), moc1 also = cloud-push. STILL PENDING
   — converge after moc soak is clean. Re-run the SPLIT-ENV check on each first.
 - VolcanoAI: no action (already on the pin).
