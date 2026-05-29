@@ -41,7 +41,7 @@ Make RNS **owned and degradable**, not load-bearing-and-floating:
 
 ## Sub-arcs (sequenced quick-win → structural → own-it)
 
-### A. Pin & converge the RNS version  ·  effort: SMALL  ·  risk: LOW  ·  value: HIGH
+### A. Pin & converge the RNS version  ·  ✅ DONE (commit `e8c5d9c`, 2026-05-29)  ·  effort: SMALL  ·  risk: LOW  ·  value: HIGH
 The version-control quick win.
 - Pin `rns==<known-good>`, `lxmf==<known-good>` (exact, not floating) in
   `requirements/rns.txt`, with a comment citing the research (upstream withdrawn;
@@ -105,6 +105,69 @@ lint guard + 25-site migration). **D when a real patch need arises.**
 3. **Scope of B**: migrate all 25 sites in one arc, or just the hot paths
    (gateway bridge + map server, the #68 cascade surface) first?
 
+---
+
+## ▶ B+C HANDOFF — START HERE (fresh session)
+
+**Load first:** this file + memory `project_rns_upstream_withdrawal_2026_05_29`.
+Sub-arc A (pin + drift-check) is DONE. B+C are coupled — build together.
+
+**Goal:** ONE guarded RNS-init chokepoint with a **bounded connect**, so a wedged
+rnsd **degrades instead of hanging**, and raw `RNS.Reticulum()` is banned outside
+it. This makes NOC Home's "still routing on the other transport(s)" line literally
+true.
+
+**Grounded facts (verified 2026-05-29):**
+- **25** `RNS.Reticulum()` sites across ~10 files: `utils/cascade_fingerprints.py`,
+  `utils/_map_collector_rns.py`, `commands/rns.py`, `utils/gateway_diagnostic.py`,
+  `utils/watchdog_runner.py`, `gateway/meshtastic_broadcast_bridge.py`,
+  `lab/_lab_common.py`, `gateway/_rns_bridge_connection.py`, `gateway/node_tracker.py`,
+  `launcher_tui/handlers/rns_interfaces.py`.
+- **Build on existing primitives:** `_lab_common.init_reticulum_with_watchdog`
+  (+ `check_rns_listener_owner`, the #69 listener-owner preflight),
+  `_map_collector_rns.init_rns_singleton`. Transport home: `gateway/rns_transport.py`.
+  Lint MF009 already requires `configdir=`.
+- **The #68 cascade (deferred, still UNFIXED) is the target:** a main-thread
+  `RNS.Reticulum()` hangs in `unix_stream_connect` when rnsd is wedged → the map
+  server's `:5000` bind never runs (running-but-not-serving). Fix = a timed
+  `socket.AF_UNIX` pre-probe before constructing, fail-OPEN on timeout.
+
+**Steps:**
+1. **(C, the core)** Define the canonical guarded constructor — extend
+   `init_reticulum_with_watchdog` OR add `rns_transport.open_reticulum(configdir=...)`
+   — doing, every time: `configdir` (MF009) · #69 listener-owner preflight ·
+   **timed AF_UNIX pre-probe -> fail-open on timeout (#68 fix)** · shared-instance
+   reuse. The timeout lives HERE.
+2. **(B)** Migrate the 25 sites to call it. DECISION 3: all 25 in one arc, OR
+   hot paths first (`_rns_bridge_connection.py` + `_map_collector_rns.py` /
+   `map_data_service.py` — the actual #68 surface) then the rest.
+3. **(B)** Add a lint rule (next MF number) + regression guard: no raw
+   `RNS.Reticulum()` outside the chokepoint allowlist — mirror MF007 /
+   `TestTCPConnectionContract`. Add to CLAUDE.md's "NEVER" list.
+4. **Verify C** with the #68 recipe (persistent_issues #68): wedge rnsd, confirm
+   the caller fails-open within the timeout and `:5000` still binds.
+
+**Convergence of the live fleet (watched — do with/after B+C, NOT auto):**
+current `rns_version_check.py` state -> moc/moc1/moc2 = OK; **moc3 DRIFT** (1.1.4,
+forward bump to 1.1.9 — low risk); **VolcanoAI DRIFT** (1.2.5 -> 1.1.9 is a
+**DOWNGRADE**, config-format risk).
+- moc3: `pip install 'rns==1.1.9' 'lxmf==0.9.6'` (mind venv vs `--break-system-packages`,
+  see `updates.py:_pip_install_meshtastic` for the install-path logic) -> verify with
+  `scripts/_noc_fix_probe.py` + `scripts/rns_version_check.py`.
+- VolcanoAI: **DECISION 1** — downgrade-and-verify, OR rebaseline the pin to 1.2.5
+  and converge the gateways UP instead. Do NOT auto-downgrade the federator.
+- Goal: `rns_version_check.py` all-OK fleet-wide.
+
+**Open decisions:** (1) pin reconciliation (downgrade VolcanoAI vs rebaseline to
+1.2.5); (2) B scope (all 25 vs hot-paths first); (3) vendor depth = sub-arc D,
+defer until a patch is needed.
+
+**Done-when:** one guarded constructor, 25 sites routed (or hot-paths + plan for
+rest), lint+guard banning raw construction, #68 fail-open verified, fleet
+converged + `rns_version_check.py` green. Pre-push checklist + `fleet_sync.sh`
+apply. This is meaty -> a fresh session with this file as warm-start is ideal.
+
 ## Status
-SCOPED 2026-05-29. Awaiting operator decisions before building. Nothing
-implemented yet — this file is the plan, survives `/clear`.
+Sub-arc **A DONE** (`e8c5d9c`): pinned `rns==1.1.9`/`lxmf==0.9.6`, drift-check
+deployed fleet-wide (moc/moc1/moc2 OK, moc3+VolcanoAI flagged). **B+C scoped &
+handed off above** — awaiting a fresh session. D deferred. This file survives `/clear`.
