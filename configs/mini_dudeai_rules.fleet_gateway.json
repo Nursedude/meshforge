@@ -1,0 +1,157 @@
+{
+  "_comment": "mini-dudeai gateway rules seed. Watchdog-only: each box watches its own /var/lib/meshforge/watchdog.json signal classes + the watchdog self-error. Federation/digest rules are omitted (those sources are disabled on gateway boxes via MINI_DUDEAI_ENABLE_FEDERATION=0 / _ENABLE_DIGEST=0). Per-box file; the daemon promotes ~/mini_dudeai_rules.json.candidate over this.",
+  "rules": [
+    {
+      "id": "rns_namespace_collision_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "rns_namespace_collision",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] RNS namespace collision",
+        "message": "{subject}: {detail}",
+        "priority": "urgent",
+        "tags": [
+          "rotating_light",
+          "rns"
+        ]
+      },
+      "cooldown_s": 1800,
+      "annotation": "Issue #69 \u2014 foreign daemon hijacked @rns/<instance>. Recovery: stop the foreign daemon, restart rnsd, restart RNS-using services."
+    },
+    {
+      "id": "main_thread_wedge_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "main_thread_wedge",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] Main-thread wedge",
+        "message": "{subject}: {detail}",
+        "priority": "urgent",
+        "tags": [
+          "rotating_light",
+          "wedge"
+        ]
+      },
+      "cooldown_s": 1800,
+      "annotation": "Issue #68 \u2014 main thread silent-stuck in syscall while background threads keep logging. Check /proc/PID/task/PID/stack."
+    },
+    {
+      "id": "http_local_unresponsive_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "http_local_unresponsive",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] HTTP local unresponsive",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning"
+        ]
+      },
+      "cooldown_s": 1800,
+      "annotation": "Issue #61 / #70 / #71 class \u2014 GIL-bound serialization or socketserver deadlock. Check cache hit-rates at /api/status.{directory,geojson,topology}.cache."
+    },
+    {
+      "id": "delivery_write_canary_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "delivery_write_canary",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] Delivery write canary",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning"
+        ]
+      },
+      "cooldown_s": 1800,
+      "annotation": "Issue #63 \u2014 write-path silent failure (sandbox path drift). Audit ReadWritePaths= against actual write sites."
+    },
+    {
+      "id": "service_inactive_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "service_inactive",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] Service inactive",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning"
+        ]
+      },
+      "cooldown_s": 900
+    },
+    {
+      "id": "tracer_peer_unreachable_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "tracer_peer_unreachable",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] Tracer peer unreachable",
+        "message": "{subject}: {detail}",
+        "priority": "default",
+        "tags": [
+          "satellite"
+        ]
+      },
+      "cooldown_s": 1800
+    },
+    {
+      "id": "rns_shared_instance_unresponsive_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "rns_shared_instance_unresponsive",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] RNS shared-instance unresponsive",
+        "message": "{subject}: {detail}",
+        "priority": "urgent",
+        "tags": [
+          "rotating_light",
+          "rns"
+        ]
+      },
+      "cooldown_s": 1800,
+      "annotation": "Listener UP + no SYN-SENT pile-up but new connects hang. Recovery: systemctl restart rnsd.service then restart RNS-using services."
+    },
+    {
+      "id": "source_error_watchdog",
+      "match": {
+        "kind": "source_error",
+        "source_glob": "watchdog"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] mini-dudeai blind on watchdog",
+        "message": "{detail}",
+        "priority": "default",
+        "tags": [
+          "see_no_evil"
+        ]
+      },
+      "cooldown_s": 3600,
+      "annotation": "watchdog.json unreadable \u2014 meshforge-watchdog.service may be down."
+    }
+  ]
+}

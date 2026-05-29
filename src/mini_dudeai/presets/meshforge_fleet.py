@@ -32,17 +32,18 @@ DEFAULT_DIGEST_STALE_THRESHOLD_S = 1800
 def _watchdog_extractor(data):
     """Project watchdog.json signals[] to Condition-ready dicts.
 
-    Maps Signal dataclass (cls, subject, severity, detail, issue_ref, extra)
-    onto Condition shape. The condition kind becomes 'signal_class' so seed
-    rules' match.kind: signal_class works directly. The 'class' filter lives
-    in cond.extras and is matched by rule.match.class.
+    The on-disk shape (utils.watchdog_probes.signal_to_dict) serializes the
+    Signal dataclass field `cls` to the JSON key **"class"** — NOT "cls". Read
+    "class" (with a "cls" fallback for any legacy file). The condition kind
+    becomes 'signal_class' so seed rules' match.kind: signal_class work directly;
+    the class filter lives in cond.extras["class"] and is matched by rule.match.class.
     """
     out = []
     for sig in data.get("signals") or []:
         out.append({
             "subject": sig.get("subject", "unknown"),
             "detail": sig.get("detail", ""),
-            "class": sig.get("cls", "unknown"),
+            "class": sig.get("class") or sig.get("cls") or "unknown",
             "severity": sig.get("severity", "info"),
             "issue_ref": sig.get("issue_ref"),
         })
@@ -104,12 +105,25 @@ def build_engine(
     federator_url: str | None = None,
     ntfy_topic: str | None = None,
     digest_stale_threshold_s: int = DEFAULT_DIGEST_STALE_THRESHOLD_S,
+    enable_federation: bool | None = None,
+    enable_digest: bool | None = None,
 ) -> RuleEngine:
     """Wire up the engine the way the fleet's primary node runs it today.
 
     All paths/URLs/topics are overridable for testing. Operator-runtime defaults
     pull from env / standard locations.
+
+    enable_federation / enable_digest: which optional sources to wire. Both
+    default ON (env MINI_DUDEAI_ENABLE_FEDERATION / _ENABLE_DIGEST = "0" to
+    disable, or pass explicitly). The federator (the primary box) runs both; gateway
+    boxes that have no local :5000 and no situation_digest set both "0" so mini
+    watches only their own watchdog.json (no per-tick source_error noise/pages).
+    The watchdog source is always wired — it is every box's local-health feed.
     """
+    if enable_federation is None:
+        enable_federation = os.environ.get("MINI_DUDEAI_ENABLE_FEDERATION", "1") != "0"
+    if enable_digest is None:
+        enable_digest = os.environ.get("MINI_DUDEAI_ENABLE_DIGEST", "1") != "0"
     home = home or os.path.expanduser("~")
     rules_path = rules_path or os.path.join(home, "mini_dudeai_rules.json")
     state_path = state_path or os.path.join(home, "mini_dudeai_state.json")
@@ -128,22 +142,27 @@ def build_engine(
             "loaded by the systemd unit via EnvironmentFile= (MF014 keeps them out of repo)."
         )
 
-    sources = [
+    # The watchdog source is every box's local-health feed — always wired.
+    sources: list[Source] = [
         JsonFileSource(
             path=watchdog_path,
             kind="signal_class",
             extractor=_watchdog_extractor,
             name="watchdog",
         ),
-        FederationPeerSource(url=federator_url),
-        FileMtimeSource(
+    ]
+    # Federation + digest are federator-specific (the primary box). Gateway boxes
+    # disable them so a missing :5000 / digest doesn't emit per-tick source_error.
+    if enable_federation:
+        sources.append(FederationPeerSource(url=federator_url))
+    if enable_digest:
+        sources.append(FileMtimeSource(
             path=digest_path,
             max_age_s=float(digest_stale_threshold_s),
             kind="digest_stale",
             subject="situation_digest.md",
             name="digest",
-        ),
-    ]
+        ))
     actions = {
         "ntfy": NtfyAction(topic=ntfy_topic),
         "annotate_digest": FileAnnotateAction(path=annotate_path),
