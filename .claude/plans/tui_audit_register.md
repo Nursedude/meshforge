@@ -218,11 +218,16 @@ symptom (no task spine), not the disease.
   Interactive whiptail UX = operator hands-on test pending.
 
 ### Next steps (NOC Workflow Arc)
-1. **Stack Health (FleetHealthHandler)** — wire the same primitive. ⚠️ Stack
-   Health DOES surface gateway/map/bridge — so it needs an "expected on this
-   box's profile" gate before offering to start them, or gateway-only boxes
-   (moc3) get nagged to start intentionally-off services. (Dashboard is immune
-   only because its set is the {meshtasticd,rnsd} core.)
+1. ✅ **DONE (commit `b74d5f1`)** — **Stack Health + profile gate.** Wired the
+   primitive into `FleetHealthHandler._render_overview` for degraded {rnsd,
+   meshtasticd, meshforge-gateway, meshforge-map}. **The gate is NOT the
+   deployment profile** — moc3 runs the `full` profile (maps=True) yet DISABLES
+   the map unit, so a feature-flag gate would still nag. The gate is
+   `service_enabled_here()` = systemd unit installed AND **enabled-at-boot** —
+   the accurate per-box signal. Dashboard now shares the gated chooser too.
+   On-box VERIFIED: moc3 meshforge-map `down but DISABLED → GATED (no nag)`;
+   moc1 bridge services GATED; healthy core no-offer. `_noc_fix_probe.py` shows
+   GATED vs WOULD-OFFER. +7 tests.
 2. **rnsd guided repair** — add the `_rns_repair_menu` wizard as a 2nd action
    alongside restart (richer fix for "running but shared-instance wedged").
 3. **mini-dudeai dedup** — fold its `_restart_action`/`_fixes_for` onto the shared
