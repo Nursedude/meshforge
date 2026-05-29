@@ -44,9 +44,17 @@ def _match_rule(rule: dict, cond: Condition) -> bool:
     glob = m.get("subject_glob") or m.get("peer_glob") or m.get("source_glob") or "*"
     if not fnmatch.fnmatchcase(cond.subject, glob):
         return False
+    # subject EXCLUSION globs — if the subject matches any, this rule does NOT
+    # apply. Lets a catch-all rule (subject_glob="*") coexist with a specific
+    # known-normal suppressor: e.g. an "unexpected peer unhealthy" escalation
+    # that excludes "*moc3*" (gateway-only, permanent backoff is expected).
+    for ex in m.get("subject_exclude_globs") or []:
+        if fnmatch.fnmatchcase(cond.subject, ex):
+            return False
     # extras filter — any extra match.* key (other than glob aliases and kind)
     # must equal the corresponding entry in cond.extras.
-    glob_keys = {"kind", "subject_glob", "peer_glob", "source_glob"}
+    glob_keys = {"kind", "subject_glob", "peer_glob", "source_glob",
+                 "subject_exclude_globs"}
     for k, v in m.items():
         if k in glob_keys:
             continue

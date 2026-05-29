@@ -202,6 +202,46 @@ def test_missing_subject_glob_matches_all(tmp_path):
     assert len(rec.calls) == 1
 
 
+def test_subject_exclude_globs(tmp_path):
+    """A catch-all rule fires on everything EXCEPT excluded subjects — lets an
+    'unexpected peer' rule coexist with a known-normal suppressor (B2)."""
+    rec = RecordingAction()
+    src = StaticSource([
+        Condition(kind="federation_peer_unhealthy", subject="peer-alpha", detail=""),
+        Condition(kind="federation_peer_unhealthy", subject="peer-beta", detail=""),
+    ])
+    engine = _engine(
+        tmp_path, [src],
+        [{"id": "catch_all",
+          "match": {"kind": "federation_peer_unhealthy", "subject_glob": "*",
+                    "subject_exclude_globs": ["*alpha*"]},
+          "action": {"kind": "recorder"}}],
+        actions={"recorder": rec},
+    )
+    engine.tick()
+    # alpha excluded; beta fires
+    assert [c[1] for c in rec.calls] == ["peer-beta"]
+
+
+def test_subject_exclude_globs_multiple_patterns(tmp_path):
+    rec = RecordingAction()
+    src = StaticSource([
+        Condition(kind="x", subject="a", detail=""),
+        Condition(kind="x", subject="b", detail=""),
+        Condition(kind="x", subject="c", detail=""),
+    ])
+    engine = _engine(
+        tmp_path, [src],
+        [{"id": "r1",
+          "match": {"kind": "x", "subject_glob": "*",
+                    "subject_exclude_globs": ["a", "c"]},
+          "action": {"kind": "recorder"}}],
+        actions={"recorder": rec},
+    )
+    engine.tick()
+    assert [c[1] for c in rec.calls] == ["b"]
+
+
 # === resilience ==================================================
 
 def test_action_crash_does_not_break_tick(tmp_path):

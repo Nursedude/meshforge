@@ -8,6 +8,12 @@ Type=simple
 # SDK-driven daemon. Reads rules + writes state in operator home; reads
 # watchdog.json from /var/lib/meshforge; reads /api/status; posts to ntfy.
 Environment=PYTHONPATH=/opt/meshforge/src
+# WorkingDirectory MUST NOT be the operator home: `python3 -m mini_dudeai`
+# searches the cwd FIRST, so a stray ~/mini_dudeai.py (e.g. the pre-SDK
+# single-file daemon kept for rollback) would SHADOW the package and the
+# daemon would silently run old code. Pin cwd to the repo root (no
+# mini_dudeai.py there) so the package always resolves via PYTHONPATH.
+WorkingDirectory=/opt/meshforge
 # Operator-specific values (ntfy topic, federator URL) live in this env file,
 # NOT in the repo (MF014). Leading `-` makes it optional so first-boot doesn't
 # fail before the file exists; the preset will fail loud if MINI_DUDEAI_NTFY_TOPIC

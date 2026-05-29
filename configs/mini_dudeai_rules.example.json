@@ -1,7 +1,7 @@
 {
   "version": 1,
   "generated_by": "example — copy to your-box's home and edit",
-  "notes": "Rule schema: id (required), match (required), action (required), cooldown_s (optional, default 0), annotation (optional, free-form). match.kind must equal a Condition.kind a Source emits. match.subject_glob (or legacy peer_glob/source_glob) is fnmatch'd against Condition.subject. Any additional match.* key is checked against Condition.extras for equality. action.kind must be a key registered in the engine's actions dict (e.g. 'ntfy', 'annotate', 'none').",
+  "notes": "Rule schema: id (required), match (required), action (required), cooldown_s (optional, default 0), annotation (optional, free-form). match.kind must equal a Condition.kind a Source emits. match.subject_glob (or legacy peer_glob/source_glob) is fnmatch'd against Condition.subject. match.subject_exclude_globs (optional list) — if the subject matches any, the rule does NOT apply (lets a catch-all coexist with a known-normal suppressor). Any additional match.* key is checked against Condition.extras for equality. action.kind must be a key registered in the engine's actions dict (e.g. 'ntfy', 'annotate', 'none').",
   "rules": [
     {
       "id": "watchdog_signal_to_ntfy",
@@ -25,6 +25,14 @@
       "action": {"kind": "annotate_digest"},
       "cooldown_s": 86400,
       "annotation": "Suppress ntfy for an expected non-OK peer; annotate-only."
+    },
+    {
+      "id": "unexpected_peer_unhealthy",
+      "match": {"kind": "federation_peer_unhealthy", "subject_glob": "*",
+                "subject_exclude_globs": ["*moc3*"]},
+      "action": {"kind": "propose_escalation"},
+      "cooldown_s": 1800,
+      "annotation": "Catch-all for an UNEXPECTED unhealthy peer. subject_exclude_globs lets this fire on every peer EXCEPT moc3 (handled by known_normal_suppressor above), so the two coexist. Side-effect-free escalation — leaves a marker in history for the cloud session to chase, no page."
     },
     {
       "id": "stale_canary",

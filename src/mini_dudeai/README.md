@@ -89,7 +89,10 @@ error at once.
 
 A rule matches Conditions by `kind` + `subject_glob` (+ any extra `match.*` key
 that must equal the Condition's `extras`), and runs one action. Edge-triggered,
-auto-off, with `cooldown_s`. See `configs/mini_dudeai_rules.example.json`.
+auto-off, with `cooldown_s`. `match.subject_exclude_globs` (optional list) makes
+a rule skip subjects matching any pattern — so a catch-all (`subject_glob: "*"`)
+can coexist with a specific known-normal suppressor. See
+`configs/mini_dudeai_rules.example.json`.
 
 ```json
 {
