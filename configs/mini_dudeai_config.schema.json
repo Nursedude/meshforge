@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://meshforge/mini_dudeai_config.schema.json",
+  "title": "mini-dudeai standalone config",
+  "description": "Reference schema for `python3 -m mini_dudeai --config <file>`. mini-dudeai validates configs with a hand-rolled dep-free validator (validate_config); this JSON Schema documents the same shape for editors/humans. Custom source/action kinds registered via register_source()/register_action() are also accepted at runtime even though they are not enumerated here.",
+  "type": "object",
+  "required": ["rules_path"],
+  "properties": {
+    "interval_s": {"type": "number", "default": 30, "description": "Tick interval in seconds."},
+    "rules_path": {"type": "string", "description": "Path to the canonical rules JSON (the daemon reads, never writes, this)."},
+    "candidate_path": {"type": "string", "description": "Optional path the cloud/editor writes proposed rules to; daemon validates + atomic-promotes."},
+    "state_path": {"type": "string", "description": "Per-rule edge state. Defaults to rules_path + '.state'."},
+    "history_path": {"type": "string", "description": "Append-only fire log. Defaults to rules_path + '.history.jsonl'."},
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind": {"enum": ["file_mtime", "json_file", "http_json", "boot_health"]},
+          "name": {"type": "string"},
+          "condition_kind": {"type": "string"},
+          "path": {"type": "string"},
+          "url": {"type": "string"},
+          "max_age_s": {"type": "number"},
+          "items_path": {"type": "string", "description": "Dotted path into nested JSON, e.g. 'federation.peer_status'."},
+          "subject_field": {"type": "string", "default": "subject"},
+          "detail_field": {"type": "string", "default": "detail"},
+          "timeout_s": {"type": "number", "default": 8},
+          "state_path": {"type": "string", "description": "boot_health: mini's state file (read for last_tick_ts)."},
+          "clean_exit_path": {"type": "string", "description": "boot_health: clean-exit marker path."},
+          "assessment_path": {"type": "string", "description": "boot_health: per-boot verdict latch."},
+          "power_log_path": {"type": "string", "description": "boot_health: optional power_history.log for evidence."},
+          "boot_window_s": {"type": "number", "default": 900},
+          "clean_slack_s": {"type": "number", "default": 180},
+          "uptime_path": {"type": "string", "default": "/proc/uptime"}
+        },
+        "allOf": [
+          {"if": {"properties": {"kind": {"const": "file_mtime"}}}, "then": {"required": ["path", "max_age_s"]}},
+          {"if": {"properties": {"kind": {"const": "json_file"}}}, "then": {"required": ["path", "condition_kind"]}},
+          {"if": {"properties": {"kind": {"const": "http_json"}}}, "then": {"required": ["url", "condition_kind"]}},
+          {"if": {"properties": {"kind": {"const": "boot_health"}}}, "then": {"required": ["state_path", "clean_exit_path", "assessment_path"]}}
+        ]
+      }
+    },
+    "actions": {
+      "type": "object",
+      "description": "Map of action-name -> action spec. Rules reference actions by these names.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind": {"enum": ["ntfy", "annotate", "propose_escalation", "none"]},
+          "topic": {"type": "string", "description": "ntfy: required topic."},
+          "base_url": {"type": "string", "default": "https://ntfy.sh"},
+          "default_priority": {"type": "string", "default": "default"},
+          "default_tags": {"type": "array", "items": {"type": "string"}},
+          "path": {"type": "string", "description": "annotate: file to append to."}
+        },
+        "allOf": [
+          {"if": {"properties": {"kind": {"const": "ntfy"}}}, "then": {"required": ["topic"]}},
+          {"if": {"properties": {"kind": {"const": "annotate"}}}, "then": {"required": ["path"]}}
+        ]
+      }
+    }
+  }
+}

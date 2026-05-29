@@ -28,6 +28,14 @@
       "path": "~/heartbeat",
       "condition_kind": "heartbeat_stale",
       "max_age_s": 300
+    },
+    {
+      "_comment": "Detect an unclean/unexpected reboot from stdlib signals only (no subprocess). Emits kind=unexpected_reboot. power_log_path is optional evidence; works on any Linux box.",
+      "kind": "boot_health",
+      "state_path": "~/my_mini_dudeai_state.json",
+      "clean_exit_path": "~/my_mini_dudeai_clean_exit",
+      "assessment_path": "~/my_mini_dudeai_boot_assessment.json",
+      "power_log_path": "~/power_history.log"
     }
   ],
   "actions": {

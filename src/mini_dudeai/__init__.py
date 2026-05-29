@@ -40,7 +40,16 @@ from .actions import (
     Outcome,
     ProposeEscalationAction,
 )
-from .config import build_engine_from_config, load_config
+from .brief import build_brief, write_brief
+from .config import (
+    build_engine_from_config,
+    load_config,
+    register_action,
+    register_source,
+    registered_action_kinds,
+    registered_source_kinds,
+    validate_config,
+)
 from .engine import RuleEngine
 from .history import HistoryWriter
 from .sources import (
@@ -67,6 +76,13 @@ __all__ = [
     "RuleEngine",
     "Source",
     "StateStore",
+    "build_brief",
     "build_engine_from_config",
     "load_config",
+    "register_action",
+    "register_source",
+    "registered_action_kinds",
+    "registered_source_kinds",
+    "validate_config",
+    "write_brief",
 ]

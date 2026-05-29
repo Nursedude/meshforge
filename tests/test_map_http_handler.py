@@ -160,6 +160,58 @@ class TestServeJsonSizeObserverIssue64:
         h._serve_json({"k": "v"})
 
 
+class TestMiniDudeaiStatusBlock:
+    """_read_mini_state_block stitches ~/mini_dudeai_state.json into /api/status."""
+
+    def _handler_with_home(self, monkeypatch, home):
+        import utils.paths as paths_mod
+        monkeypatch.setattr(paths_mod, "get_real_user_home", lambda: home)
+        return MapRequestHandler.__new__(MapRequestHandler)
+
+    def test_not_installed_when_no_state_file(self, tmp_path, monkeypatch):
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_mini_state_block()
+        assert block == {"installed": False, "reason": "no_state_file"}
+
+    def test_healthy_block_when_fresh(self, tmp_path, monkeypatch):
+        import time as _t
+        (tmp_path / "mini_dudeai_state.json").write_text(json.dumps({
+            "last_tick_ts": _t.time(), "last_tick_iso": "now", "host": "testbox",
+            "rule_count": 11, "error_count": 0,
+            "rules": {
+                "r1::moc3": {"rule_id": "r1", "subject": "moc3",
+                             "currently_active": True, "last_detail": "backoff",
+                             "fire_count_24h": 3},
+                "r2::x": {"rule_id": "r2", "subject": "x",
+                          "currently_active": False, "fire_count_24h": 7},
+            },
+        }))
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_mini_state_block()
+        assert block["installed"] is True and block["ok"] is True
+        assert block["rule_count"] == 11
+        assert [r["subject"] for r in block["active_rules"]] == ["moc3"]
+        # top_rules_24h sorted desc by fire_count_24h
+        assert block["top_rules_24h"][0]["fire_count_24h"] == 7
+
+    def test_stale_flagged_when_tick_old(self, tmp_path, monkeypatch):
+        import time as _t
+        (tmp_path / "mini_dudeai_state.json").write_text(json.dumps({
+            "last_tick_ts": _t.time() - 9999, "rules": {},
+        }))
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_mini_state_block()
+        assert block["installed"] is True and block["ok"] is False
+        assert "stale" in block["reason"]
+
+    def test_malformed_json_reported(self, tmp_path, monkeypatch):
+        (tmp_path / "mini_dudeai_state.json").write_text("{not json")
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_mini_state_block()
+        assert block["installed"] is True and block["ok"] is False
+        assert "malformed_json" in block["reason"]
+
+
 # ── F8: Server-side View preset filter ─────────────────────────────────
 from utils.map_http_handler import (
     VIEW_PRESETS,

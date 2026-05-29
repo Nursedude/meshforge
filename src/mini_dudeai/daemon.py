@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import sys
 
 from .config import build_engine_from_config, load_config
@@ -41,6 +42,10 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--config", help="Path to JSON config file describing sources + actions.")
     p.add_argument("--once", action="store_true",
                    help="Run one tick and exit. Useful for cron and smoke tests.")
+    p.add_argument("--brief", metavar="OUT_PATH", nargs="?", const="",
+                   help="Write a warm-start brief from current state+history and exit "
+                        "(no tick). Optional path; defaults next to the state file as "
+                        "mini_dudeai_brief.md.")
     p.add_argument("--interval", type=float, default=None,
                    help="Override tick interval (seconds). Default: preset's default "
                         "or config.interval_s or 30.")
@@ -54,6 +59,15 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(args.config)
         engine, interval_default = build_engine_from_config(config)
         interval = args.interval if args.interval is not None else interval_default
+
+    if args.brief is not None:
+        from .brief import write_brief
+        state_path = engine.state_store.path
+        out = args.brief or os.path.join(
+            os.path.dirname(state_path) or ".", "mini_dudeai_brief.md")
+        write_brief(state_path, engine.history.path, out)
+        print(f"mini-dudeai brief: wrote {out}")
+        return 0
 
     if args.once:
         state = engine.tick()

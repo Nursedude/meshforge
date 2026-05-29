@@ -42,6 +42,17 @@ Repository = "https://github.com/Nursedude/meshforge"
 Issues = "https://github.com/Nursedude/meshforge/issues"
 
 # ============================================================================
+# CONSOLE SCRIPTS
+# ============================================================================
+# mini-dudeai is a standalone, dep-free agent SDK living under src/mini_dudeai/.
+# This entry point records the intended console command. It becomes active once
+# the repo gains a [build-system] + package discovery (the Option-2 packaging
+# follow-on); until then run it as `python3 -m mini_dudeai`. See
+# src/mini_dudeai/README.md.
+[project.scripts]
+mini-dudeai = "mini_dudeai.daemon:main"
+
+# ============================================================================
 # PYTEST CONFIGURATION
 # ============================================================================
 

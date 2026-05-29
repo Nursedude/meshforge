@@ -1080,6 +1080,13 @@ class MapRequestHandler(
         # signals), one read per /api/status hit.
         status["watchdog"] = self._read_watchdog_block()
 
+        # mini-dudeai passthrough (the local 24/7 sub-agent). Same pattern as
+        # the watchdog block: read its operator-home state file and stitch it
+        # in so federation carries "is the local watcher alive + what's it
+        # seeing" to the /fleet rollup and to a warm cloud session. Degrades
+        # silently if mini isn't installed on this box.
+        status["mini_dudeai"] = self._read_mini_state_block()
+
         data = json.dumps(status).encode()
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
@@ -1179,6 +1186,76 @@ class MapRequestHandler(
             block["reason"] = (
                 f"stale: last write {age_s:.0f}s ago "
                 f"(threshold {self._WATCHDOG_STALE_S:.0f}s) — watchdog "
+                f"daemon may have crashed"
+            )
+        return block
+
+    _MINI_STALE_S = 300.0  # 5 min — 10x mini-dudeai's 30s tick
+
+    def _read_mini_state_block(self) -> Dict[str, Any]:
+        """Stitch ~/mini_dudeai_state.json into /api/status.
+
+        mini-dudeai is the local 24/7 sub-agent; surfacing its state here lets
+        the federation poll carry "is the watcher alive, what's active, what's
+        firing" to the fleet rollup and to a warm cloud session — the same
+        zero-new-plumbing trick as the watchdog block. Operator-home path (the
+        daemon runs as the operator, not root), so resolve via
+        get_real_user_home() (MF001). Degrades silently when mini isn't
+        installed on this box; reports stale when the tick clock has stopped.
+        """
+        try:
+            from utils.paths import get_real_user_home
+            path = get_real_user_home() / "mini_dudeai_state.json"
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {"installed": False, "reason": "no_state_file"}
+        except OSError as exc:
+            return {"installed": False, "reason": f"read_error: {exc}"}
+
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, ValueError) as exc:
+            return {"installed": True, "ok": False, "reason": f"malformed_json: {exc}"}
+        if not isinstance(payload, dict):
+            return {"installed": True, "ok": False, "reason": "malformed_json: not an object"}
+
+        ts = payload.get("last_tick_ts")
+        age_s: Optional[float] = None
+        if isinstance(ts, (int, float)):
+            age_s = max(0.0, time.time() - float(ts))
+        stale = bool(age_s is not None and age_s > self._MINI_STALE_S)
+
+        rules = payload.get("rules") or {}
+        active = [
+            {"rule_id": rs.get("rule_id"), "subject": rs.get("subject"),
+             "detail": rs.get("last_detail", "")}
+            for rs in rules.values()
+            if isinstance(rs, dict) and rs.get("currently_active")
+        ]
+        top = sorted(
+            ({"rule_id": rs.get("rule_id"), "subject": rs.get("subject"),
+              "fire_count_24h": rs.get("fire_count_24h", 0)}
+             for rs in rules.values()
+             if isinstance(rs, dict) and rs.get("fire_count_24h")),
+            key=lambda r: r["fire_count_24h"], reverse=True,
+        )[:5]
+
+        block = {
+            "installed": True,
+            "ok": not stale,
+            "ts": ts,
+            "last_tick_iso": payload.get("last_tick_iso"),
+            "age_s": age_s,
+            "host": payload.get("host"),
+            "rule_count": payload.get("rule_count"),
+            "error_count": payload.get("error_count"),
+            "active_rules": active,
+            "top_rules_24h": top,
+        }
+        if stale:
+            block["reason"] = (
+                f"stale: last tick {age_s:.0f}s ago "
+                f"(threshold {self._MINI_STALE_S:.0f}s) — mini-dudeai "
                 f"daemon may have crashed"
             )
         return block

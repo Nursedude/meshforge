@@ -33,14 +33,52 @@ unconditionally.
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Callable
 
 from ._util import read_json
 from .actions import (
     Action, FileAnnotateAction, NoopAction, NtfyAction, ProposeEscalationAction,
 )
 from .engine import RuleEngine
-from .sources import FileMtimeSource, HttpJsonSource, JsonFileSource, Source
+from .sources import (
+    BootHealthSource, FileMtimeSource, HttpJsonSource, JsonFileSource, Source,
+)
+
+# Registries: config `kind` string -> builder callable that takes the spec dict
+# and returns a Source/Action. Standalone users extend these by name at import
+# time via register_source()/register_action() — no need to edit this module.
+SourceBuilder = Callable[[dict], Source]
+ActionBuilder = Callable[[dict], Action]
+_SOURCE_REGISTRY: dict[str, SourceBuilder] = {}
+_ACTION_REGISTRY: dict[str, ActionBuilder] = {}
+
+
+def register_source(kind: str, builder: SourceBuilder) -> None:
+    """Register a config-instantiable Source under `kind`.
+
+    `builder` receives the source spec dict (the JSON object with its "kind"
+    key) and returns a Source. Lets third-party / uConsole code add custom
+    sources a JSON config can then reference by string:
+
+        from mini_dudeai import register_source
+        register_source("my_sensor", lambda spec: MySensorSource(spec["dev"]))
+    """
+    _SOURCE_REGISTRY[kind] = builder
+
+
+def register_action(kind: str, builder: ActionBuilder) -> None:
+    """Register a config-instantiable Action under `kind`. See register_source."""
+    _ACTION_REGISTRY[kind] = builder
+
+
+def registered_source_kinds() -> list[str]:
+    """Sorted list of source kinds a config may reference (for validation/docs)."""
+    return sorted(_SOURCE_REGISTRY)
+
+
+def registered_action_kinds() -> list[str]:
+    """Sorted list of action kinds a config may reference (for validation/docs)."""
+    return sorted(_ACTION_REGISTRY)
 
 
 def _dig(data: Any, dotted: str) -> Any:
@@ -77,63 +115,181 @@ def _make_extractor(items_path: str | None,
     return extract
 
 
+# --- seed builders (the kinds shipped in the box) ---------------------
+
+def _seed_file_mtime(spec: dict) -> Source:
+    return FileMtimeSource(
+        path=os.path.expanduser(spec["path"]),
+        max_age_s=float(spec.get("max_age_s", 1800)),
+        kind=spec.get("condition_kind", "file_stale"),
+        subject=spec.get("subject"),
+        name=spec.get("name"),
+    )
+
+
+def _seed_json_file(spec: dict) -> Source:
+    return JsonFileSource(
+        path=os.path.expanduser(spec["path"]),
+        kind=spec["condition_kind"],
+        extractor=_make_extractor(
+            spec.get("items_path"),
+            spec.get("subject_field", "subject"),
+            spec.get("detail_field", "detail"),
+        ),
+        name=spec.get("name"),
+    )
+
+
+def _seed_http_json(spec: dict) -> Source:
+    return HttpJsonSource(
+        url=spec["url"],
+        kind=spec["condition_kind"],
+        extractor=_make_extractor(
+            spec.get("items_path"),
+            spec.get("subject_field", "subject"),
+            spec.get("detail_field", "detail"),
+        ),
+        timeout=float(spec.get("timeout_s", 8)),
+        name=spec.get("name"),
+    )
+
+
+def _seed_boot_health(spec: dict) -> Source:
+    pl = spec.get("power_log_path")
+    return BootHealthSource(
+        state_path=os.path.expanduser(spec["state_path"]),
+        clean_exit_path=os.path.expanduser(spec["clean_exit_path"]),
+        assessment_path=os.path.expanduser(spec["assessment_path"]),
+        power_log_path=os.path.expanduser(pl) if pl else None,
+        boot_window_s=float(spec.get("boot_window_s", 900)),
+        clean_slack_s=float(spec.get("clean_slack_s", 180)),
+        uptime_path=spec.get("uptime_path", "/proc/uptime"),
+        name=spec.get("name", "boot_health"),
+    )
+
+
+def _seed_ntfy(spec: dict) -> Action:
+    return NtfyAction(
+        topic=spec["topic"],
+        base_url=spec.get("base_url", "https://ntfy.sh"),
+        default_priority=spec.get("default_priority", "default"),
+        default_tags=spec.get("default_tags"),
+    )
+
+
+_SOURCE_REGISTRY.update({
+    "file_mtime": _seed_file_mtime,
+    "json_file": _seed_json_file,
+    "http_json": _seed_http_json,
+    "boot_health": _seed_boot_health,
+})
+_ACTION_REGISTRY.update({
+    "ntfy": _seed_ntfy,
+    "annotate": lambda spec: FileAnnotateAction(path=os.path.expanduser(spec["path"])),
+    "propose_escalation": lambda spec: ProposeEscalationAction(),
+    "none": lambda spec: NoopAction(),
+})
+
+
 def _build_source(spec: dict) -> Source:
     kind = spec.get("kind")
-    name = spec.get("name")
-    if kind == "file_mtime":
-        return FileMtimeSource(
-            path=os.path.expanduser(spec["path"]),
-            max_age_s=float(spec.get("max_age_s", 1800)),
-            kind=spec.get("condition_kind", "file_stale"),
-            subject=spec.get("subject"),
-            name=name,
+    builder = _SOURCE_REGISTRY.get(kind)
+    if builder is None:
+        raise ValueError(
+            f"unknown source kind {kind!r} (registered: {registered_source_kinds()})"
         )
-    if kind == "json_file":
-        return JsonFileSource(
-            path=os.path.expanduser(spec["path"]),
-            kind=spec["condition_kind"],
-            extractor=_make_extractor(
-                spec.get("items_path"),
-                spec.get("subject_field", "subject"),
-                spec.get("detail_field", "detail"),
-            ),
-            name=name,
-        )
-    if kind == "http_json":
-        return HttpJsonSource(
-            url=spec["url"],
-            kind=spec["condition_kind"],
-            extractor=_make_extractor(
-                spec.get("items_path"),
-                spec.get("subject_field", "subject"),
-                spec.get("detail_field", "detail"),
-            ),
-            timeout=float(spec.get("timeout_s", 8)),
-            name=name,
-        )
-    raise ValueError(f"unknown source kind {kind!r}")
+    return builder(spec)
 
 
 def _build_action(spec: dict) -> Action:
     kind = spec.get("kind")
-    if kind == "ntfy":
-        return NtfyAction(
-            topic=spec["topic"],
-            base_url=spec.get("base_url", "https://ntfy.sh"),
-            default_priority=spec.get("default_priority", "default"),
-            default_tags=spec.get("default_tags"),
+    builder = _ACTION_REGISTRY.get(kind)
+    if builder is None:
+        raise ValueError(
+            f"unknown action kind {kind!r} (registered: {registered_action_kinds()})"
         )
-    if kind == "annotate":
-        return FileAnnotateAction(path=os.path.expanduser(spec["path"]))
-    if kind == "propose_escalation":
-        return ProposeEscalationAction()
-    if kind == "none":
-        return NoopAction()
-    raise ValueError(f"unknown action kind {kind!r}")
+    return builder(spec)
+
+
+# Per-kind required fields for the built-in kinds. Third-party kinds registered
+# via register_source/action are validated only for kind-existence (we can't
+# know their required fields); they may add an entry here if they want field
+# checks. Keep in sync with the seed builders above.
+_SOURCE_REQUIRED: dict[str, list[str]] = {
+    "file_mtime": ["path", "max_age_s"],
+    "json_file": ["path", "condition_kind"],
+    "http_json": ["url", "condition_kind"],
+    "boot_health": ["state_path", "clean_exit_path", "assessment_path"],
+}
+_ACTION_REQUIRED: dict[str, list[str]] = {
+    "ntfy": ["topic"],
+    "annotate": ["path"],
+    "propose_escalation": [],
+    "none": [],
+}
+
+
+def validate_config(config: dict) -> list[str]:
+    """Return a list of human-readable config errors (empty list = valid).
+
+    Hand-rolled (no jsonschema dep — keeps the Pi/uConsole runtime dep-free).
+    Checks top-level shape, that every source/action `kind` is registered, and
+    that built-in kinds carry their required fields. Reports the bad field +
+    its path so a stranger can fix the config without reading the source.
+    """
+    errors: list[str] = []
+    if not isinstance(config, dict):
+        return ["config top-level must be a JSON object"]
+    if not config.get("rules_path"):
+        errors.append("missing required top-level field 'rules_path'")
+
+    sources = config.get("sources")
+    if sources is not None and not isinstance(sources, list):
+        errors.append("'sources' must be a list")
+        sources = []
+    for i, spec in enumerate(sources or []):
+        where = f"sources[{i}]"
+        if not isinstance(spec, dict):
+            errors.append(f"{where}: must be an object")
+            continue
+        kind = spec.get("kind")
+        if kind not in _SOURCE_REGISTRY:
+            errors.append(f"{where}: unknown source kind {kind!r} "
+                          f"(registered: {registered_source_kinds()})")
+            continue
+        for field in _SOURCE_REQUIRED.get(kind, []):
+            if field not in spec:
+                errors.append(f"{where} (kind={kind}): missing required field {field!r}")
+
+    actions = config.get("actions")
+    if actions is not None and not isinstance(actions, dict):
+        errors.append("'actions' must be an object mapping name -> spec")
+        actions = {}
+    for name, spec in (actions or {}).items():
+        where = f"actions[{name!r}]"
+        if not isinstance(spec, dict):
+            errors.append(f"{where}: must be an object")
+            continue
+        kind = spec.get("kind")
+        if kind not in _ACTION_REGISTRY:
+            errors.append(f"{where}: unknown action kind {kind!r} "
+                          f"(registered: {registered_action_kinds()})")
+            continue
+        for field in _ACTION_REQUIRED.get(kind, []):
+            if field not in spec:
+                errors.append(f"{where} (kind={kind}): missing required field {field!r}")
+    return errors
 
 
 def build_engine_from_config(config: dict) -> tuple[RuleEngine, float]:
-    """Build a RuleEngine from a parsed config dict. Returns (engine, interval_s)."""
+    """Build a RuleEngine from a parsed config dict. Returns (engine, interval_s).
+
+    Validates the config first (validate_config) and raises ValueError listing
+    every problem, so users see all errors at once rather than one-per-run.
+    """
+    errors = validate_config(config)
+    if errors:
+        raise ValueError("invalid mini-dudeai config:\n  - " + "\n  - ".join(errors))
     sources = [_build_source(s) for s in config.get("sources") or []]
     actions = {k: _build_action(v) for k, v in (config.get("actions") or {}).items()}
     rules_path = os.path.expanduser(config["rules_path"])
