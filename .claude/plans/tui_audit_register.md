@@ -228,12 +228,42 @@ symptom (no task spine), not the disease.
    On-box VERIFIED: moc3 meshforge-map `down but DISABLED → GATED (no nag)`;
    moc1 bridge services GATED; healthy core no-offer. `_noc_fix_probe.py` shows
    GATED vs WOULD-OFFER. +7 tests.
-2. **rnsd guided repair** — add the `_rns_repair_menu` wizard as a 2nd action
-   alongside restart (richer fix for "running but shared-instance wedged").
+2. ✅ **DONE (commit `036844c`)** — **rnsd guided repair.** The fix chooser now
+   offers the `_rns_repair_menu` wizard (route via `_rns_repair_action(ctx)`) as
+   an escalation alongside start/restart, for rnsd only. Escalation: Start →
+   Restart → Repair(guided). +5 tests. (RNS is the fleet's #1 fragility — see
+   the RNS Dependency Risk note below.)
 3. **mini-dudeai dedup** — fold its `_restart_action`/`_fixes_for` onto the shared
    `service_remediation` primitive.
 4. **NOC Home reframe** — once fix-routing is everywhere, restructure the top
    menu around the monitor→fix spine (presentation-layer; handlers intact).
+
+### ⚠️ RNS Dependency Risk (operator concern, 2026-05-29) — strategic, OPEN
+RNS/rnsd is the fleet's single largest incident source (66 RNS-class lines in
+persistent_issues; Issues #12/24/25/26/28/30/32/37/41/44/68/69). Coupling: 30
+files import RNS, 112 reference rnsd, 63 touch LXMF. Operator: "100s of hrs to
+RNS — can we do better? will RNS dev continue?"
+
+**Mitigating reality (already true):** the gateway routing layer is ALREADY
+transport-agnostic — `CanonicalMessage` contract + transport pairs over
+{meshtastic, meshcore, rns} (`message_routing.py:57-62`). RNS is ONE leg, not
+the spine; mesh↔meshcore keeps working if RNS dies. Sister project MeshAnchor is
+MeshCore-primary — the ecosystem already hedges. Fragility is concentrated in
+(a) the rnsd shared-instance daemon (single point, RPC-brittle), (b) RNS-native
+messaging (NomadNet/LXMF).
+
+**Three tiers of "better"** (full reasoning in chat 2026-05-29):
+- T1 CONTAIN (in flight): watchdog + preflight (#69) + in-app repair (this arc) +
+  circuit breakers + bounded_call (#57) → failures detectable & recoverable.
+- T2 ISOLATE: make RNS degrade gracefully (don't let rnsd wedge stall non-RNS
+  paths); per-client configdir vs one shared rnsd; pin RNS version.
+- T3 HEDGE: lean on the transport-agnostic layer so RNS is replaceable, not
+  load-bearing. MeshCore is the existing alternative leg.
+
+**The factual unknown ("will RNS dev continue?")** = a researchable question
+about Reticulum project health (single-maintainer bus-factor, release cadence,
+funding, community). NOT answerable from training data (cutoff Jan 2026) —
+needs live research. Offered to the operator.
 
 ---
 
