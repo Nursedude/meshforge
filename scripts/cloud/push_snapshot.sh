@@ -184,8 +184,18 @@ try:
         sys.exit(1)
     raw = (r.data or {}).get('alerts') or []
     cutoff = datetime.utcnow() - timedelta(hours=72)
-    out = []
-    type_re = re.compile(r'\b(ALERT|WARNING|WATCH|SUMMARY)\s*:\s*([^|\n]+)')
+    # NOAA re-issues the same product as a storm evolves: a WARNING
+    # becomes "EXTENDED WARNING" (same subject, new issue time) and an
+    # ALERT can be "CANCELLED ALERT". Left raw, the banner shows the same
+    # subject 2-3x (the K-index dup). Collapse to one row per subject,
+    # keeping the most recent issuance; if that latest issuance is a
+    # cancellation the subject is no longer active, so drop it. The
+    # optional qualifier group also stops "CANCELLED ALERT" from
+    # rendering as a bare (still-active-looking) "ALERT".
+    type_re = re.compile(
+        r'\b(?:(EXTENDED|CONTINUED|CANCELLED|CANCELED)\s+)?'
+        r'(ALERT|WARNING|WATCH|SUMMARY)\s*:\s*([^|\n]+)')
+    by_subject = {}
     for a in raw:
         msg = (a.get('message') or '').strip()
         ts = (a.get('issue_datetime') or '').strip()
@@ -198,18 +208,28 @@ try:
             continue
         m = type_re.search(msg)
         if m:
-            alert_type, title = m.group(1), m.group(2).strip()
+            qualifier = (m.group(1) or '').upper()
+            alert_type, title = m.group(2), m.group(3).strip()
         else:
-            alert_type, title = 'ALERT', msg.split('|')[0].strip()[:80]
+            qualifier, alert_type, title = '', 'ALERT', msg.split('|')[0].strip()[:80]
         # Trim title for banner display
         title = title.strip()[:120]
-        out.append({
-            'type': alert_type,
-            'title': title,
-            'issue_datetime': ts.split('.')[0] + 'Z',
-        })
-        if len(out) >= 3:
-            break
+        key = title.lower()
+        prev = by_subject.get(key)
+        if prev is None or issued > prev['issued']:
+            by_subject[key] = {
+                'type': alert_type,
+                'title': title,
+                'issued': issued,
+                'issue_datetime': ts.split('.')[0] + 'Z',
+                'cancelled': qualifier in ('CANCELLED', 'CANCELED'),
+            }
+    # Active subjects only (latest issuance not a cancellation), newest first.
+    out = [
+        {'type': v['type'], 'title': v['title'], 'issue_datetime': v['issue_datetime']}
+        for v in sorted(by_subject.values(), key=lambda v: v['issued'], reverse=True)
+        if not v['cancelled']
+    ][:3]
     payload = {
         'alerts': out,
         'count': len(out),

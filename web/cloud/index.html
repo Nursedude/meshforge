@@ -169,6 +169,12 @@
       font-weight: 700;
       font-size: 9px;
     }
+    /* Severity colors the type chip so ALERT (observed) reads at a glance
+       against WARNING (expected) / WATCH. */
+    #alerts .alert-item .t.t--alert   { color: #FF6B6B; }
+    #alerts .alert-item .t.t--warning { color: #FFA94D; }
+    #alerts .alert-item .t.t--watch   { color: #FFD43B; }
+    #alerts .alert-item .t.t--summary { color: #9AA7B2; }
     #alerts .alert-item .msg { color: #FFD7C2; }
     #alerts .sep { color: #7A4A35; user-select: none; }
 
@@ -419,18 +425,29 @@
 
   function renderAlerts(alerts) {
     const panel = document.getElementById("alerts");
-    const list = (alerts && alerts.alerts) || [];
+    let list = (alerts && alerts.alerts) || [];
     if (!list.length) {
       panel.classList.add("hidden");
       return;
     }
+    // Belt-and-suspenders dedup: the producer already collapses NOAA's
+    // re-issued products by subject, but a stale alerts.json could still
+    // carry repeats — never show the same subject twice in the ticker.
+    const seen = new Set();
+    list = list.filter(a => {
+      const k = ("" + (a.title || a.message || "")).toLowerCase();
+      if (seen.has(k)) return false;
+      seen.add(k); return true;
+    });
     panel.classList.remove("hidden");
     // Comma-joined ticker — vertical space matters more than per-item
-    // dates. The most recent alerts win the foreground.
+    // dates. Severity colors the type chip (see #alerts .t--* CSS).
+    const SEV = { alert: "t--alert", warning: "t--warning", watch: "t--watch", summary: "t--summary" };
     document.getElementById("alerts-list").innerHTML = list.map(a => {
       const t = htmlEscape(a.type || "ALERT");
       const msg = htmlEscape(a.title || a.message || "");
-      return `<span class="alert-item"><span class="t">${t}</span><span class="msg">${msg}</span></span>`;
+      const sev = SEV[("" + (a.type || "ALERT")).toLowerCase()] || "t--alert";
+      return `<span class="alert-item"><span class="t ${sev}">${t}</span><span class="msg">${msg}</span></span>`;
     }).join(' <span class="sep">·</span> ');
   }
 
