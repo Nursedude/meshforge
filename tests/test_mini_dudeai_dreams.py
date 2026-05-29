@@ -261,8 +261,37 @@ def test_resolve_delta_then_redetect_reproposes(tmp_path):
                        note="known-normal gateway box", now_ts=NOW + 10)
     assert ok is True
     assert count_pending_deltas(str(dp)) == 0
-    # once resolved, the next pass is free to re-propose (still active) -> appends
-    s2 = write_dreams(str(sp), str(hp), str(dp), str(np_), now_ts=NOW + 86400)
+    # past the resolve-suppress window, a still-active condition re-proposes
+    s2 = write_dreams(str(sp), str(hp), str(dp), str(np_), now_ts=NOW + 8 * 86400)
+    assert s2["appended"] == 1
+    assert count_pending_deltas(str(dp)) == 1
+
+
+def test_resolved_delta_not_reproposed_within_window(tmp_path):
+    """After ratify/reject, the same key is NOT re-proposed by the next pass while
+    the signal still detects — prevents the nightly timer resurrecting handled work."""
+    sp, hp = _persistent_state_file(tmp_path)
+    dp = tmp_path / "deltas.jsonl"
+    np_ = tmp_path / "dreams.md"
+    write_dreams(str(sp), str(hp), str(dp), str(np_), now_ts=NOW)
+    assert resolve_delta(str(dp), "persistent_active::r::moc3", "ratified", now_ts=NOW + 10)
+    # next pass shortly after: signal still present (moc3 still active) but resolved recently
+    s2 = write_dreams(str(sp), str(hp), str(dp), str(np_), now_ts=NOW + 3600)
+    assert s2["appended"] == 0
+    assert s2["deduped"] == 1
+    assert count_pending_deltas(str(dp)) == 0
+
+
+def test_resolved_delta_resurfaces_after_window(tmp_path):
+    """Past the suppress window, a still-detecting condition re-surfaces (it's
+    genuinely persistent, so worth another look)."""
+    sp, hp = _persistent_state_file(tmp_path)
+    dp = tmp_path / "deltas.jsonl"
+    np_ = tmp_path / "dreams.md"
+    write_dreams(str(sp), str(hp), str(dp), str(np_), now_ts=NOW)
+    resolve_delta(str(dp), "persistent_active::r::moc3", "rejected", now_ts=NOW + 10)
+    # 8 days later (> 7d default suppress window) — re-propose
+    s2 = write_dreams(str(sp), str(hp), str(dp), str(np_), now_ts=NOW + 8 * 86400)
     assert s2["appended"] == 1
     assert count_pending_deltas(str(dp)) == 1
 

@@ -37,6 +37,11 @@ DEFAULT_LOOKBACK_S = 86400.0          # 24h synthesis window
 FLAP_MIN_FIRES = 4                    # >= this many fires/24h to consider flapping
 FLAP_MAX_MEAN_ACTIVE_S = 120.0        # ...and mean active duration under this = flap
 PERSISTENT_MIN_ACTIVE_S = 3600.0      # currently_active >= 1h = a persistent condition
+# Once a delta is resolved (ratified/rejected), don't re-propose the same key for
+# this long — otherwise the nightly pass resurrects already-handled findings every
+# run until the 24h state window ages out the signal. After the window, if the
+# condition still detects, it re-surfaces (genuinely persistent → worth another look).
+DEFAULT_RESOLVE_SUPPRESS_S = 604800.0  # 7 days
 
 
 # --- small helpers ------------------------------------------------------------
@@ -376,6 +381,24 @@ def _unresolved_keys(deltas: list[dict]) -> set[str]:
             if d.get("status") == "proposed" and d.get("key")}
 
 
+def _skip_keys(deltas: list[dict], now_ts: float,
+               resolve_suppress_s: float = DEFAULT_RESOLVE_SUPPRESS_S) -> set[str]:
+    """Keys a fresh pass must NOT re-propose: still-proposed ones (outstanding),
+    plus ones resolved (ratified/rejected) within resolve_suppress_s. Uses the
+    most-recent entry per key so a key resolved long ago can re-surface."""
+    skip = _unresolved_keys(deltas)
+    latest: dict[str, dict] = {}
+    for d in deltas:
+        k = d.get("key")
+        if k:
+            latest[k] = d  # last write wins → most-recent entry per key
+    cutoff = now_ts - resolve_suppress_s
+    for k, d in latest.items():
+        if d.get("status") in ("ratified", "rejected") and float(d.get("resolved_ts", 0) or 0) >= cutoff:
+            skip.add(k)
+    return skip
+
+
 def write_dreams(state_path: str, history_path: str, deltas_path: str,
                  narrative_path: str, history_tail: int = 500,
                  now_ts: float | None = None) -> dict:
@@ -389,7 +412,7 @@ def write_dreams(state_path: str, history_path: str, deltas_path: str,
     narrative, detected = build_dreams(state or {}, history, now_ts)
 
     existing = _load_deltas(deltas_path)
-    skip = _unresolved_keys(existing)
+    skip = _skip_keys(existing, now_ts)
     fresh = [d for d in detected if d.get("key") not in skip]
 
     appended_err = None
