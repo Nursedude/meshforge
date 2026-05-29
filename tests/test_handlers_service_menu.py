@@ -66,45 +66,6 @@ class TestServiceMenuNavigation:
         h.ctx.safe_call.assert_called()
 
 
-class TestBridgeManagement:
-
-    @patch('handlers.service_menu.check_process_running')
-    def test_is_bridge_running_true(self, mock_check):
-        mock_check.return_value = True
-        h = _make_service_menu()
-        assert h._is_bridge_running() is True
-
-    @patch('handlers.service_menu.check_process_running')
-    def test_is_bridge_running_false(self, mock_check):
-        mock_check.return_value = False
-        h = _make_service_menu()
-        assert h._is_bridge_running() is False
-
-    @patch('handlers.service_menu.check_process_running')
-    def test_is_bridge_running_error(self, mock_check):
-        mock_check.side_effect = OSError("Process check failed")
-        h = _make_service_menu()
-        assert h._is_bridge_running() is False
-
-    @patch('handlers.service_menu.check_process_running')
-    def test_run_bridge_back(self, mock_check):
-        mock_check.return_value = False
-        h = _make_service_menu()
-        h.ctx.dialog._menu_returns = [None]
-        h.ctx.daemon_active = False
-        h._run_bridge()
-
-    @patch('subprocess.run')
-    @patch('handlers.service_menu.check_process_running')
-    def test_stop_bridge_success(self, mock_check, mock_run):
-        mock_check.side_effect = [True, False]  # Running, then stopped
-        mock_run.return_value = MagicMock(returncode=0)
-        h = _make_service_menu()
-        h.ctx.dialog._yesno_returns = [True]
-        h._stop_bridge()
-        mock_run.assert_called()
-
-
 class TestServiceStatus:
 
     @patch('subprocess.run')

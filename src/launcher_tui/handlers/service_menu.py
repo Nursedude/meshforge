@@ -1,14 +1,17 @@
 """
-Service Menu Handler — Service and bridge management for the TUI.
+Service Menu Handler — service management for the TUI.
 
 Converted from service_menu_mixin.py as part of the mixin-to-registry migration.
-Provides bridge start/stop, service management, port lockdown, OpenHamClock Docker,
-MQTT setup wizard, and meshtasticd installation.
+Provides systemd service control (meshtasticd/rnsd), port 9443 lockdown,
+OpenHamClock Docker, MQTT setup wizard, and meshtasticd installation.
+
+The in-TUI gateway-bridge launcher was removed 2026-05-29 (TUI audit #66) as
+dead code — it had no menu path; the production bridge runs as
+meshforge-gateway.service. RNS<->Meshtastic bridge config lives in GatewayHandler.
 """
 
 import logging
 import os
-import sys
 import shutil
 import subprocess
 from pathlib import Path
@@ -23,7 +26,7 @@ logger = logging.getLogger(__name__)
 from utils.service_check import (
     check_systemd_service, check_process_running, check_service,
     apply_config_and_restart, enable_service, start_service, stop_service,
-    restart_service, ServiceState, _sudo_cmd, check_udp_port,
+    restart_service, ServiceState,
     check_rns_shared_instance,
 )
 from utils._service_iptables import (
@@ -34,23 +37,15 @@ from utils._service_iptables import (
 # Sudo-safe home directory — first-party, always available (MF001)
 from utils.paths import get_real_user_home, ReticulumPaths
 
-# Import RNS identity helpers
-from commands.rns import get_identity_path
-from commands.rns import create_identities
-
 # Import propagation module
 from commands import propagation
 
 
 class ServiceMenuHandler(BaseHandler):
-    """TUI handler for service and bridge management."""
+    """TUI handler for service management."""
 
     handler_id = "service_menu"
     menu_section = "mesh_networks"
-
-    def __init__(self):
-        super().__init__()
-        self._bridge_log_path = None
 
     def menu_items(self):
         return [
@@ -60,356 +55,6 @@ class ServiceMenuHandler(BaseHandler):
     def execute(self, action):
         if action == "services":
             self._service_menu()
-
-    def _run_bridge(self):
-        """Gateway bridge start/stop/status menu."""
-        while True:
-            bridge_running = self._is_bridge_running()
-            daemon_managed = self.ctx.daemon_active
-
-            if daemon_managed and bridge_running:
-                choices = [
-                    ("status", "Bridge Status"),
-                    ("logs", "View Bridge Logs"),
-                    ("back", "Back"),
-                ]
-                subtitle = "Gateway bridge is RUNNING (managed by daemon)"
-            elif bridge_running:
-                choices = [
-                    ("status", "Bridge Status"),
-                    ("logs", "View Bridge Logs"),
-                    ("stop", "Stop Bridge"),
-                    ("back", "Back"),
-                ]
-                subtitle = "Gateway bridge is RUNNING (background)"
-            else:
-                choices = [
-                    ("start", "Start Bridge (background)"),
-                    ("start-fg", "Start Bridge (foreground, live logs)"),
-                    ("back", "Back"),
-                ]
-                subtitle = "Gateway bridge is STOPPED"
-
-            choice = self.ctx.dialog.menu(
-                "Gateway Bridge",
-                f"RNS <-> Meshtastic bridge:\n\n{subtitle}",
-                choices
-            )
-
-            if choice is None or choice == "back":
-                break
-
-            dispatch = {
-                "start": ("Start Bridge (bg)", self._start_bridge_background),
-                "start-fg": ("Start Bridge (fg)", self._start_bridge_foreground),
-                "status": ("Bridge Status", self._show_bridge_status),
-                "stop": ("Stop Bridge", self._stop_bridge),
-                "logs": ("Bridge Logs", self._show_bridge_logs),
-            }
-            entry = dispatch.get(choice)
-            if entry:
-                self.ctx.safe_call(*entry)
-
-    def _is_bridge_running(self) -> bool:
-        """Check if the gateway bridge process is running."""
-        try:
-            return check_process_running('bridge_cli.py')
-        except (subprocess.SubprocessError, OSError) as e:
-            logger.debug("Bridge process check failed: %s", e)
-            return False
-
-    def _bridge_preflight(self) -> bool:
-        """Pre-flight checks before starting the gateway bridge.
-
-        Returns True if all checks pass and bridge can start.
-        """
-        import time
-        issues = []
-
-        # 1. Check rnsd is running
-        rnsd_running = False
-        status = check_service('rnsd')
-        rnsd_running = status.available
-
-        if not rnsd_running:
-            issues.append("rnsd is not running (required for RNS connectivity)")
-
-        # 2. Check for NomadNet port conflict
-        nomadnet_conflict = False
-        try:
-            result = subprocess.run(
-                ['pgrep', '-f', 'nomadnet'],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.returncode == 0 and not rnsd_running:
-                nomadnet_conflict = True
-                issues.append("NomadNet is holding port 37428 (rnsd can't start)")
-        except (subprocess.SubprocessError, OSError):
-            pass
-
-        # 3. Check gateway identity exists
-        gw_id = get_identity_path()
-        if not gw_id.exists():
-            issues.append("Gateway identity not created yet")
-
-        # 4. Validate gateway config
-        try:
-            from gateway.config import GatewayConfig
-            gw_config = GatewayConfig.load()
-            is_valid, errors = gw_config.validate()
-            if not is_valid:
-                first_err = errors[0].message if errors else "unknown error"
-                issues.append(f"Gateway config invalid: {first_err}")
-        except FileNotFoundError:
-            issues.append("Gateway config not found (run Gateway > Configure first)")
-        except Exception as e:
-            logger.debug("Gateway config validation failed: %s", e)
-
-        # 5. Check meshtasticd is reachable
-        mt_status = check_service('meshtasticd')
-        if not mt_status.available:
-            issues.append("meshtasticd is not running (required for Meshtastic connectivity)")
-
-        if not issues:
-            return True
-
-        # Build fix menu
-        msg = "Pre-flight checks found issues:\n\n"
-        for i, issue in enumerate(issues, 1):
-            msg += f"  {i}. {issue}\n"
-        msg += "\nMeshForge can fix these automatically."
-
-        if not self.ctx.dialog.yesno("Bridge Pre-Flight", msg + "\n\nFix now?"):
-            return False
-
-        clear_screen()
-        print("=== Bridge Pre-Flight Fix ===\n")
-
-        # Fix NomadNet conflict first
-        if nomadnet_conflict:
-            print("[1] Stopping NomadNet (holds port 37428)...")
-            try:
-                subprocess.run(
-                    ['pkill', '-f', 'nomadnet'],
-                    capture_output=True, timeout=5
-                )
-                time.sleep(1)
-                print("  NomadNet stopped.")
-                print("  It will reconnect as a client after rnsd starts.\n")
-            except (subprocess.SubprocessError, OSError) as e:
-                print(f"  Warning: {e}")
-
-        # Start rnsd if not running
-        if not rnsd_running:
-            print("[2] Starting rnsd (shared instance)...")
-            try:
-                success, msg_text = apply_config_and_restart('rnsd')
-                if success:
-                    print("  rnsd started via systemctl.")
-                else:
-                    start_service('rnsd')
-                # Poll for rnsd readiness instead of fixed 2s sleep
-                status = None
-                for _ in range(10):
-                    time.sleep(0.5)
-                    status = check_service('rnsd')
-                    if status.available:
-                        break
-                if status and status.available:
-                    print("  rnsd is now running.\n")
-                else:
-                    print(f"  Warning: {status.message}\n")
-            except (subprocess.SubprocessError, OSError) as e:
-                print(f"  Error starting rnsd: {e}")
-                print("  Bridge may fail to connect.\n")
-
-        # Create gateway identity if missing
-        gw_id = get_identity_path()
-        if not gw_id.exists():
-            print("[3] Creating gateway identity...")
-            result = create_identities()
-            if result.success:
-                print(f"  {result.message}\n")
-            else:
-                print(f"  Warning: {result.message}\n")
-
-        # Restart NomadNet as client (if we stopped it)
-        if nomadnet_conflict:
-            print("[4] Restarting NomadNet as rnsd client...")
-            try:
-                result = subprocess.run(
-                    ['systemctl', '--user', 'start', 'nomadnet'],
-                    capture_output=True, text=True, timeout=10
-                )
-                if result.returncode == 0:
-                    print("  NomadNet restarted via systemctl --user.\n")
-                else:
-                    print("  NomadNet not managed by systemd.")
-                    print("  Start manually: nomadnet --daemon &\n")
-            except (subprocess.SubprocessError, OSError):
-                print("  Start NomadNet manually: nomadnet --daemon &\n")
-
-        print("Pre-flight complete. Starting bridge...\n")
-        time.sleep(1)
-        return True
-
-    def _start_bridge_background(self):
-        """Start gateway bridge as a background process."""
-        if self._is_bridge_running():
-            self.ctx.dialog.msgbox("Already Running", "Gateway bridge is already running.")
-            return
-
-        if not self._bridge_preflight():
-            return
-
-        self.ctx.dialog.infobox("Starting", "Starting gateway bridge in background...")
-
-        try:
-            import tempfile
-            prev_log = self._bridge_log_path
-            if prev_log and prev_log.exists():
-                try:
-                    prev_log.unlink()
-                except OSError:
-                    pass
-            log_fd, log_path_str = tempfile.mkstemp(
-                suffix='.log', prefix='meshforge-gateway-'
-            )
-            log_path = Path(log_path_str)
-            self._bridge_log_path = log_path
-            log_file = os.fdopen(log_fd, 'w')
-            subprocess.Popen(
-                [sys.executable, str(self.ctx.src_dir / 'gateway' / 'bridge_cli.py')],
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                start_new_session=True
-            )
-            log_file.close()
-
-            # Poll for bridge startup instead of fixed 3s sleep
-            import time
-            bridge_up = False
-            for _ in range(6):
-                time.sleep(0.5)
-                if self._is_bridge_running():
-                    bridge_up = True
-                    break
-
-            if bridge_up:
-                self.ctx.dialog.msgbox("Started",
-                    "Gateway bridge started in background.\n\n"
-                    f"Logs: {log_path}\n\n"
-                    "Use 'Stop Bridge' to shut it down.")
-            else:
-                try:
-                    error_text = log_path.read_text()[-300:]
-                except OSError as e:
-                    logger.debug("Bridge log read failed: %s", e)
-                    error_text = "(no log output)"
-                self.ctx.dialog.msgbox("Failed",
-                    f"Bridge failed to start.\n\n{error_text}")
-
-        except Exception as e:
-            self.ctx.dialog.msgbox("Error", f"Failed to start bridge:\n{e}")
-
-    def _start_bridge_foreground(self):
-        """Start gateway bridge in foreground with live output."""
-        if self._is_bridge_running():
-            self.ctx.dialog.msgbox("Already Running",
-                "Gateway bridge is already running in background.\n\n"
-                "Stop it first to run in foreground.")
-            return
-
-        if not self._bridge_preflight():
-            return
-
-        clear_screen()
-        print("Starting Gateway Bridge (foreground)...")
-        print("Press Ctrl+C to stop\n")
-        try:
-            subprocess.run(
-                [sys.executable, str(self.ctx.src_dir / 'gateway' / 'bridge_cli.py')],
-                timeout=None
-            )
-        except KeyboardInterrupt:
-            print("\nBridge stopped.")
-        try:
-            self.ctx.wait_for_enter()
-        except KeyboardInterrupt:
-            print()
-
-    def _stop_bridge(self):
-        """Stop the background gateway bridge."""
-        if not self._is_bridge_running():
-            self.ctx.dialog.msgbox("Not Running", "Gateway bridge is not running.")
-            return
-
-        if not self.ctx.dialog.yesno("Stop Bridge", "Stop the gateway bridge?"):
-            return
-
-        try:
-            subprocess.run(
-                ['pkill', '-f', 'bridge_cli.py'],
-                capture_output=True, timeout=10
-            )
-            import time
-            time.sleep(1)
-
-            if self._is_bridge_running():
-                subprocess.run(
-                    ['pkill', '-9', '-f', 'bridge_cli.py'],
-                    capture_output=True, timeout=10
-                )
-
-            self.ctx.dialog.msgbox("Stopped", "Gateway bridge stopped.")
-        except Exception as e:
-            self.ctx.dialog.msgbox("Error", f"Failed to stop bridge:\n{e}")
-
-    def _find_bridge_log(self) -> Optional[Path]:
-        """Find the gateway bridge log file."""
-        if self._bridge_log_path and self._bridge_log_path.exists():
-            return self._bridge_log_path
-
-        try:
-            logs = sorted(
-                Path('/tmp').glob('meshforge-gateway-*.log'),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True
-            )
-        except OSError:
-            logs = []
-        if logs:
-            self._bridge_log_path = logs[0]
-            return logs[0]
-
-        return None
-
-    def _show_bridge_status(self):
-        """Show gateway bridge log tail."""
-        log_path = self._find_bridge_log()
-        if not log_path:
-            self.ctx.dialog.msgbox("No Logs", "No gateway log found.")
-            return
-
-        try:
-            lines = log_path.read_text().strip().split('\n')
-            tail = '\n'.join(lines[-30:])
-            self.ctx.dialog.msgbox(f"Bridge Status (last 30 lines)\n{log_path}", tail)
-        except Exception as e:
-            self.ctx.dialog.msgbox("Error", f"Failed to read log:\n{e}")
-
-    def _show_bridge_logs(self):
-        """Show full gateway bridge logs in less."""
-        log_path = self._find_bridge_log()
-        if not log_path:
-            self.ctx.dialog.msgbox("No Logs", "No gateway log found.")
-            return
-
-        clear_screen()
-        try:
-            subprocess.run(['less', '-R', '-X', '+G', str(log_path)], timeout=300)
-        except KeyboardInterrupt:
-            pass
 
     def _service_menu(self):
         """Service management menu."""

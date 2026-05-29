@@ -137,7 +137,7 @@ headless can only static-trace).
 | 63 | mesh_networks | `nomadnet` | NomadNetHandler | NomadNet install/config/launch | READ | mixed | low | dup | fix | tmux/terminal launch escape; 7 helper mixins; _nomadnet_submenus dup menu layer | DONE |
 | 64 | mesh_networks | `rns` | RNSMenuHandler | RNS submenu dispatcher | READ | yes | low | none | keep | clean dispatcher | DONE |
 | 65 | mesh_networks | `meshtastic` | RadioMenuHandler | Meshtastic radio/channels/CLI | READ | mixed | low | none | keep | subprocess CLI output (clear_screen+print) | DONE |
-| 66 | mesh_networks | `services` | ServiceMenuHandler | start/stop/restart services | READ | mixed | low | dup | fix | 168-line handler; `_run_bridge` dup top-level items; split candidate | DONE |
+| 66 | mesh_networks | `services` | ServiceMenuHandler | start/stop/restart services | READ | yes | low | none | fix | **CUT DONE (operator-ratified 2026-05-29)**: NOT a split — subagent's "168-line/split" was wrong (file was 1403). Real issue = ~350 dead lines: the in-TUI gateway-bridge launcher (`_run_bridge`+8 helpers) had NO menu path (verified: not in `_service_menu` dispatch, only a self-test called it; prod bridge = meshforge-gateway.service). Cut block + dead imports (sys, commands.rns, _sudo_cmd, check_udp_port). File 1403→1044. 3 concerns left (svc-control/OpenHamClock/MQTT) — no split needed. | DONE |
 | 67 | mesh_networks | `test_gateway_rx` | TestGatewayRxHandler | MQTT→RNS→NomadNet e2e test | READ | mixed | low | none | keep | mosquitto_pub subproc; valuable cross-service check | DONE |
 | 68 | meshtasticd | `mqtt` | MeshtasticdDeviceMQTTHandler | device MQTT via meshtastic CLI | READ | yes | low | none | keep | no config.yaml overwrite; device_config_store | DONE |
 | 69 | meshtasticd | `lora` | MeshtasticdLoRaHandler | SPI/GPIO pins → overrides overlay | READ | yes | low | none | keep | overlay only, _offer_restart via surface | DONE |
@@ -233,7 +233,12 @@ priority) and none is a crash/wrong-result. Do one-per-commit with operator
 steering, not a blind batch:
 - #8 channels view-dup · #44 topology two-backend export dup · #48 ham ARES
   submenu dup · #52 dual_failover status-dup · #63 nomadnet submenu-layer dup ·
-  #66 services handler split (168 lines) · #70 cleanup restart-dup.
+  #70 cleanup restart-dup.
+- **#66 services — RESOLVED via CUT (not split)**: the "split candidate" was a
+  mis-diagnosis. Underneath it was ~350 lines of dead in-TUI bridge launcher;
+  cut it (1403→1044), and the split need dissolved. Pattern: when a "split"
+  flag fires, check for dead code first — the file may be big because it carries
+  unreachable weight, not because its live concerns need separating.
 
 **UX hardening (DEFERRED):**
 - #36 meshing-around install shows spinner once then goes silent during long
