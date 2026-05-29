@@ -743,7 +743,8 @@ MF018_BASELINE = {
     'src/launcher_tui/handlers/favorites.py': 1,
     'src/launcher_tui/handlers/meshtasticd_config.py': 6,
     'src/launcher_tui/handlers/meshtasticd_nodedb.py': 1,
-    'src/launcher_tui/handlers/meshtasticd_radio.py': 2,
+    # meshtasticd_radio.py: 0 (Arc 3 — bootstrap "run with sudo to auto-create"
+    # escapes replaced by an in-app "Create hardware templates now" action)
     'src/launcher_tui/handlers/metrics.py': 2,
     'src/launcher_tui/handlers/mqtt.py': 2,
     'src/launcher_tui/handlers/nomadnet.py': 4,

@@ -340,6 +340,37 @@ class MeshtasticdRadioHandler(BaseHandler):
             pass
         return config_path.stem
 
+    def _offer_create_templates(self, available_dir) -> bool:
+        """Offer to generate the missing meshtasticd hardware templates in-app.
+
+        Returns True if templates now exist (caller should proceed/re-check),
+        False otherwise. Creating files under /etc needs root, so the action is
+        Admin-gated; the remediation surface handles the Viewer/Admin boundary
+        (it tells the operator to relaunch with sudo rather than escaping to a
+        shell). In-Domain Principle — no shell instruction for config bootstrap.
+        """
+        from remediation import RemediationAction, propose_remediation
+
+        def _create():
+            from core.meshtasticd_config import MeshtasticdConfig
+            MeshtasticdConfig().ensure_structure()
+            if available_dir.exists():
+                return (True, f"Hardware templates created at {available_dir}.")
+            return (False, "Template creation ran but the directory is still missing.")
+
+        result = propose_remediation(
+            self.ctx,
+            "Hardware Templates Missing",
+            f"meshtasticd hardware templates were not found at:\n  {available_dir}",
+            [RemediationAction(
+                label="Create hardware templates now",
+                description="generate /etc/meshtasticd/available.d templates",
+                apply=_create,
+                requires_admin=True,
+            )],
+        )
+        return bool(result and result[0])
+
     def _hardware_config_menu(self):
         """Hardware configuration selection with USB/SPI categorization."""
         try:
@@ -355,18 +386,14 @@ class MeshtasticdRadioHandler(BaseHandler):
         config_d = Path('/etc/meshtasticd/config.d')
 
         if not available_dir.exists():
-            self.ctx.dialog.msgbox("Error",
-                "Hardware templates not found.\n\n"
-                f"Expected: {available_dir}\n\n"
-                "Run with sudo to auto-create, or run the installer.")
-            return
+            if not self._offer_create_templates(available_dir):
+                return
 
         while True:
             available = _glob_yaml(available_dir)
             if not available:
-                self.ctx.dialog.msgbox("Error",
-                    "No hardware templates found.\n\n"
-                    "Run with sudo to auto-create, or run the installer.")
+                if self._offer_create_templates(available_dir):
+                    continue
                 return
 
             active = set()
