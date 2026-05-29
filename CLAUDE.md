@@ -208,6 +208,7 @@ If any line says "no", fix before pushing — every fleet box pulls within secon
 | `foundations/persistent_issues.md` | **Known issues & fixes** |
 | `plans/branch_convergence_guide.md` | main ↔ alpha merge strategy |
 | `plans/qa_field_testing_plan.md` | Gateway, maps, MeshCore field-test protocol |
+| `plans/standalone_wireclaw_variant.md` | mini-dudeai standalone (Pi-brain + ESP32-edge, chat-compiler) design |
 | `INDEX.md` | Full doc index with quick lookups |
 | `research/README.md` | 22 technical deep dives (RNS, AREDN, RF, etc.) |
 
