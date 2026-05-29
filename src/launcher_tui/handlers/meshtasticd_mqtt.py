@@ -82,11 +82,15 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
         try:
             result = subprocess.run(
                 [cli, '--host', 'localhost', '--get', 'mqtt'],
-                timeout=15
+                capture_output=True, text=True, timeout=15
             )
-            if result.returncode != 0:
+            if result.returncode == 0:
+                print(result.stdout.strip() or "(no output)")
+            else:
                 print("\nFailed to get MQTT settings.")
                 print("Is meshtasticd running?")
+                if result.stderr:
+                    print(f"\n{result.stderr.strip()[:500]}")
         except FileNotFoundError:
             print("meshtastic CLI not found. Install via Radio Tools menu.")
         except subprocess.TimeoutExpired:
@@ -110,7 +114,7 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
         try:
             result = subprocess.run(
                 [cli, '--host', 'localhost', '--set', 'mqtt.enabled', str(enabled).lower()],
-                timeout=15
+                capture_output=True, text=True, timeout=15
             )
             if result.returncode == 0:
                 print(f"\nMQTT {'enabled' if enabled else 'disabled'} successfully.")
@@ -118,6 +122,8 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
                 save_device_setting('mqtt', 'enabled', enabled)
             else:
                 print("\nCommand failed.")
+                if result.stderr:
+                    print(result.stderr.strip()[:500])
         except Exception as e:
             print(f"\nError: {e}")
         self.ctx.wait_for_enter()
@@ -151,7 +157,7 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
         try:
             result = subprocess.run(
                 [cli, '--host', 'localhost', '--set', 'mqtt.address', broker.strip()],
-                timeout=15
+                capture_output=True, text=True, timeout=15
             )
             if result.returncode == 0:
                 print(f"\nMQTT broker set to: {broker}")
@@ -159,6 +165,8 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
                 save_device_setting('mqtt', 'address', broker.strip())
             else:
                 print("\nCommand failed.")
+                if result.stderr:
+                    print(result.stderr.strip()[:500])
         except Exception as e:
             print(f"\nError: {e}")
         self.ctx.wait_for_enter()
@@ -194,7 +202,7 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
                 cmd.extend(['--set', 'mqtt.password', password])
 
             if len(cmd) > 3:
-                result = subprocess.run(cmd, timeout=15)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
                 if result.returncode == 0:
                     print("\nMQTT credentials updated.")
                     from utils.device_config_store import save_device_settings
@@ -207,6 +215,8 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
                         save_device_settings({'mqtt': cred_data})
                 else:
                     print("\nCommand failed.")
+                    if result.stderr:
+                        print(result.stderr.strip()[:500])
             else:
                 print("No credentials to set.")
         except Exception as e:
@@ -232,7 +242,7 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
         try:
             result = subprocess.run(
                 [cli, '--host', 'localhost', '--set', 'mqtt.root', topic.strip()],
-                timeout=15
+                capture_output=True, text=True, timeout=15
             )
             if result.returncode == 0:
                 print(f"\nMQTT root topic set to: {topic}")
@@ -240,6 +250,8 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
                 save_device_setting('mqtt', 'root_topic', topic.strip())
             else:
                 print("\nCommand failed.")
+                if result.stderr:
+                    print(result.stderr.strip()[:500])
         except Exception as e:
             print(f"\nError: {e}")
         self.ctx.wait_for_enter()
@@ -280,26 +292,36 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
         if choice == "json":
             print("=== Setting JSON Mode ===\n")
             try:
-                subprocess.run(
+                result = subprocess.run(
                     [cli, '--host', 'localhost',
                      '--set', 'mqtt.json_enabled', 'true',
                      '--set', 'mqtt.encryption_enabled', 'false'],
-                    timeout=15
+                    capture_output=True, text=True, timeout=15
                 )
-                print("\nMQTT set to JSON mode (plaintext).")
+                if result.returncode == 0:
+                    print("\nMQTT set to JSON mode (plaintext).")
+                else:
+                    print("\nCommand failed.")
+                    if result.stderr:
+                        print(result.stderr.strip()[:500])
             except Exception as e:
                 print(f"\nError: {e}")
         else:
             print("=== Setting Encrypted Mode ===\n")
             try:
-                subprocess.run(
+                result = subprocess.run(
                     [cli, '--host', 'localhost',
                      '--set', 'mqtt.json_enabled', 'false',
                      '--set', 'mqtt.encryption_enabled', 'true'],
-                    timeout=15
+                    capture_output=True, text=True, timeout=15
                 )
-                print("\nMQTT set to encrypted mode (PKC).")
-                print("Messages will be encrypted with channel PSK.")
+                if result.returncode == 0:
+                    print("\nMQTT set to encrypted mode (PKC).")
+                    print("Messages will be encrypted with channel PSK.")
+                else:
+                    print("\nCommand failed.")
+                    if result.stderr:
+                        print(result.stderr.strip()[:500])
             except Exception as e:
                 print(f"\nError: {e}")
 
@@ -325,12 +347,17 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
             clear_screen()
             print("=== Enabling Uplink ===\n")
             try:
-                subprocess.run(
+                result = subprocess.run(
                     [cli, '--host', 'localhost',
                      '--ch-index', '0', '--ch-set', 'uplink_enabled', 'true'],
-                    timeout=15
+                    capture_output=True, text=True, timeout=15
                 )
-                print("\nUplink enabled on primary channel.")
+                if result.returncode == 0:
+                    print("\nUplink enabled on primary channel.")
+                else:
+                    print("\nCommand failed.")
+                    if result.stderr:
+                        print(result.stderr.strip()[:500])
             except Exception as e:
                 print(f"\nError: {e}")
             self.ctx.wait_for_enter()
@@ -355,12 +382,17 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
             clear_screen()
             print("=== Enabling Downlink ===\n")
             try:
-                subprocess.run(
+                result = subprocess.run(
                     [cli, '--host', 'localhost',
                      '--ch-index', '0', '--ch-set', 'downlink_enabled', 'true'],
-                    timeout=15
+                    capture_output=True, text=True, timeout=15
                 )
-                print("\nDownlink enabled on primary channel.")
+                if result.returncode == 0:
+                    print("\nDownlink enabled on primary channel.")
+                else:
+                    print("\nCommand failed.")
+                    if result.stderr:
+                        print(result.stderr.strip()[:500])
             except Exception as e:
                 print(f"\nError: {e}")
             self.ctx.wait_for_enter()

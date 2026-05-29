@@ -391,7 +391,7 @@ class RNSSnifferHandler(BaseHandler):
             f"  Links Tracked:    {stats.get('link_count', 0)}",
             f"  Active Links:     {stats.get('active_links', 0)}",
             "",
-            "Links Established: {stats.get('links_established', 0)}",
+            f"Links Established: {stats.get('links_established', 0)}",
         ]
 
         self.ctx.dialog.msgbox(

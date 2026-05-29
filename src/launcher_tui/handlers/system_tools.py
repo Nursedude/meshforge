@@ -14,10 +14,12 @@ Provides full Linux terminal-like diagnostic capabilities:
 - Log analysis (journalctl, dmesg, syslog)
 """
 
+import os
+import pwd
 import subprocess
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 import logging
 
 from backend import clear_screen
@@ -1118,6 +1120,30 @@ class SystemToolsHandler(BaseHandler):
 
             self.ctx.safe_call(f"Service: {choice}", self._run_service_command, choice)
 
+    @staticmethod
+    def _user_systemctl_argv(verbs: List[str]) -> List[str]:
+        """Build argv for ``systemctl --user <verbs>`` honoring sudo.
+
+        Mirrors ``_NomadNetServiceOps._user_systemctl_argv``: when MeshForge
+        was launched via ``sudo`` we must run as the real user with their
+        XDG_RUNTIME_DIR/DBUS env set, or the user manager is unreachable and
+        every call fails with "Failed to connect to bus".
+        """
+        sudo_user = os.environ.get('SUDO_USER')
+        if not sudo_user or sudo_user == 'root':
+            return ['systemctl', '--user'] + verbs
+        try:
+            uid = pwd.getpwnam(sudo_user).pw_uid
+        except KeyError:
+            return ['systemctl', '--user'] + verbs
+        runtime_dir = f"/run/user/{uid}"
+        return [
+            'sudo', '-u', sudo_user, '-H', 'env',
+            f'XDG_RUNTIME_DIR={runtime_dir}',
+            f'DBUS_SESSION_BUS_ADDRESS=unix:path={runtime_dir}/bus',
+            'systemctl', '--user',
+        ] + verbs
+
     def _run_service_command(self, cmd_type: str):
         """Run service management command."""
         clear_screen()
@@ -1128,13 +1154,26 @@ class SystemToolsHandler(BaseHandler):
 
         elif cmd_type == 'status_mesh':
             print("=== Mesh Services Status ===\n")
-            for svc in ['meshtasticd', 'rnsd', 'lxmf.delivery', 'nomadnetd']:
+            # System-scope units that actually ship with this project.
+            # (Was ['lxmf.delivery', 'nomadnetd'] — neither is a real unit:
+            #  MQTT is 'mosquitto' and NomadNet runs as a *user* unit, so a
+            #  system-scope query always printed a misleading "Not found".)
+            for svc in ['meshtasticd', 'rnsd', 'mosquitto']:
                 print(f"\n--- {svc} ---")
                 result = subprocess.run(
                     ['systemctl', 'status', svc, '--no-pager', '-l'],
                     capture_output=True, text=True, timeout=10
                 )
                 print(result.stdout[:1000] if result.stdout else "Not found")
+            # NomadNet is a tmux-wrapped *user* unit (Issue #38/#45). Query it
+            # in user scope, honoring SUDO_USER so we reach the operator's
+            # user manager rather than root's (or a nonexistent system unit).
+            print("\n--- nomadnet (user) ---")
+            result = subprocess.run(
+                self._user_systemctl_argv(['status', 'nomadnet', '--no-pager', '-l']),
+                capture_output=True, text=True, timeout=10
+            )
+            print(result.stdout[:1000] if result.stdout else "Not found")
 
         elif cmd_type == 'failed':
             print("=== Failed Services ===\n")

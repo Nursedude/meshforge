@@ -48,8 +48,10 @@ class RebootHandler(BaseHandler):
                 break
 
             if choice == "reboot":
-                if self.ctx.dialog.yesno("Confirm Reboot", "Reboot the system now?"):
+                if self.ctx.dialog.yesno("Confirm Reboot", "Reboot the system now?",
+                                         default_no=True):
                     subprocess.run(_sudo_cmd(['systemctl', 'reboot']), timeout=30)
             elif choice == "shutdown":
-                if self.ctx.dialog.yesno("Confirm Shutdown", "Shutdown the system now?"):
+                if self.ctx.dialog.yesno("Confirm Shutdown", "Shutdown the system now?",
+                                         default_no=True):
                     subprocess.run(_sudo_cmd(['systemctl', 'poweroff']), timeout=30)
