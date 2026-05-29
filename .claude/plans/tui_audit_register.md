@@ -184,6 +184,54 @@ headless can only static-trace).
 
 ---
 
+## NOC Workflow Arc (started 2026-05-29) — IA / "who is this for"
+
+The per-selection audit measured functionality + reliability but NOT **workflow**
+(findability / journeys). Operator reframed: the TUI is "the command center for
+humans"; the real pain is hunting for where things are. Assessment: the menu is
+organized by **technical domain** (mirrors the handler code), not user task —
+builder-centric, grown by accretion (22 handler batches). The dup findings are a
+symptom (no task spine), not the disease.
+
+- **Persona decision (operator-ratified)**: primary spine = **NOC operator**
+  (daily monitor→diagnose→fix loop; composes the other roles).
+- **Core diagnosis**: the daily loop is broken across the IA — you SEE a degraded
+  service on the Dashboard, then hunt the fix across Mesh Networks / System /
+  Configuration (rnsd repair is depth-4). Monitoring is findable; the *fix for
+  what monitoring shows* is not.
+- **Direction (operator-ratified)**: BOTH inline-Fix routing + menu reframe, in
+  that order — fix-routing is the substance, the reframe layers on top.
+
+### Shipped — first instance (commit `5d74eb2`, fleet-synced)
+- NEW `service_remediation.py` — reusable primitive `service_fix_actions(svc,
+  running)` + `offer_service_fix()`, generalizing mini-dudeai's `_fixes_for`
+  to the service domain, feeding the existing `remediation` surface. Conservative
+  (only box-owned services).
+- `dashboard.py _service_status_display` — collects degraded services, offers a
+  "Fix a Degraded Service" chooser in place of bare "press Enter". The fix comes
+  to the operator (In-Domain extended: never even leave the status view to fix it).
+- Tests: `test_service_remediation.py` (6) + 2 dashboard-path tests. `scripts/_noc_fix_probe.py` on-box validator.
+- **On-box verified** (VolcanoAI/moc1/moc3): routing correct. The Dashboard's
+  service set = `startup_checks.SERVICES_TO_CHECK` = **{meshtasticd, rnsd}** only
+  (+ mosquitto in the no-startup-checks fallback) — so intended-off services
+  (e.g. moc3 meshforge-map) are NEVER surfaced/nagged. Safe on all profiles.
+  Interactive whiptail UX = operator hands-on test pending.
+
+### Next steps (NOC Workflow Arc)
+1. **Stack Health (FleetHealthHandler)** — wire the same primitive. ⚠️ Stack
+   Health DOES surface gateway/map/bridge — so it needs an "expected on this
+   box's profile" gate before offering to start them, or gateway-only boxes
+   (moc3) get nagged to start intentionally-off services. (Dashboard is immune
+   only because its set is the {meshtasticd,rnsd} core.)
+2. **rnsd guided repair** — add the `_rns_repair_menu` wizard as a 2nd action
+   alongside restart (richer fix for "running but shared-instance wedged").
+3. **mini-dudeai dedup** — fold its `_restart_action`/`_fixes_for` onto the shared
+   `service_remediation` primitive.
+4. **NOC Home reframe** — once fix-routing is everywhere, restructure the top
+   menu around the monitor→fix spine (presentation-layer; handlers intact).
+
+---
+
 ## Rollup (Phase 1 complete — 2026-05-29)
 
 - selections total: **103** (75 handlers; StartupHealthHandler = hook, no items)
