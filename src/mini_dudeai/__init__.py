@@ -41,6 +41,7 @@ from .actions import (
     ProposeEscalationAction,
 )
 from .brief import build_brief, recent_escalations, write_brief
+from .candidate import validate_rules_document, write_candidate
 from .dreams import (
     build_dreams,
     count_pending_deltas,
@@ -95,5 +96,7 @@ __all__ = [
     "registered_action_kinds",
     "registered_source_kinds",
     "validate_config",
+    "validate_rules_document",
     "write_brief",
+    "write_candidate",
 ]

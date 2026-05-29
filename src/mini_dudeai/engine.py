@@ -98,26 +98,10 @@ class RuleEngine:
     # --- rules loading + candidate promotion --------------------------
 
     def _validate_rules(self, data: Any) -> tuple[list[dict], list[str]]:
-        errors: list[str] = []
-        out: list[dict] = []
-        if not isinstance(data, dict) or "rules" not in data:
-            errors.append("rules file has no top-level 'rules' list")
-            return out, errors
-        for i, r in enumerate(data.get("rules") or []):
-            if not isinstance(r, dict):
-                errors.append(f"rule[{i}] not an object")
-                continue
-            if not r.get("id"):
-                errors.append(f"rule[{i}] missing id")
-                continue
-            if not isinstance(r.get("match"), dict):
-                errors.append(f"rule[{r.get('id', i)}] missing match")
-                continue
-            if not isinstance(r.get("action"), dict):
-                errors.append(f"rule[{r.get('id', i)}] missing action")
-                continue
-            out.append(r)
-        return out, errors
+        # Single source of truth: the same validator the candidate-authoring API
+        # uses, so a candidate the TUI/chat-compiler accepts is one we promote.
+        from .candidate import validate_rules_document
+        return validate_rules_document(data)
 
     def _promote_candidate(self) -> dict | None:
         if not self.candidate_path or not os.path.exists(self.candidate_path):

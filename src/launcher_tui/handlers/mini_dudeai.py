@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
+from pathlib import Path
 from typing import List
 
 from handler_protocol import BaseHandler
@@ -145,11 +147,16 @@ class MiniDudeaiHandler(BaseHandler):
     menu_section = "dashboard"
 
     def menu_items(self):
-        return [("mini_dudeai", "mini-dudeai (local watcher + fixes)", None)]
+        return [
+            ("mini_dudeai", "mini-dudeai (local watcher + fixes)", None),
+            ("mini_dudeai_rules", "mini-dudeai: edit rules (in-app)", None),
+        ]
 
     def execute(self, action):
         if action == "mini_dudeai":
             self.ctx.safe_call("mini-dudeai", self._render)
+        elif action == "mini_dudeai_rules":
+            self.ctx.safe_call("mini-dudeai rules", self._edit_rules)
 
     def _render(self):
         state_p, hist_p = _mini_paths()
@@ -194,3 +201,124 @@ class MiniDudeaiHandler(BaseHandler):
                     f"No local fix on this box: the affected subject is elsewhere "
                     f"(another box), or this finding is informational. Review it "
                     f"via Fleet tools, or address it on {f['subject']}.")
+
+    # --- in-app rule editor (the candidate-authoring front-end) ----------
+    #
+    # The trust model: the operator edits a rule's noise knobs here and writes a
+    # *candidate*; the daemon validates + promotes it (it never auto-writes the
+    # canonical file). This is the in-app sibling of the standalone WireClaw-style
+    # chat-compiler — both produce a candidate through mini_dudeai.write_candidate.
+
+    def _rules_paths(self):
+        rules = get_real_user_home() / "mini_dudeai_rules.json"
+        return rules, Path(str(rules) + ".candidate")
+
+    def _edit_rules(self):
+        rules_p, cand_p = self._rules_paths()
+        doc = _read_json(rules_p)
+        raw = doc.get("rules")
+        if not isinstance(raw, list) or not raw:
+            self.ctx.dialog.msgbox(
+                "mini-dudeai rules",
+                f"No rules found at:\n  {rules_p}\n\n"
+                "The daemon seeds rules on first run.")
+            return
+        rules = [dict(r) for r in raw]  # edit a copy; nothing applies until write
+        dirty = False
+        while True:
+            choices = []
+            for i, r in enumerate(rules):
+                kind = (r.get("match") or {}).get("kind", "?")
+                choices.append((str(i + 1),
+                                f"{r.get('id', '?')} [{kind}] "
+                                f"grace={r.get('grace_s')} cooldown={r.get('cooldown_s')}"))
+            choices.append(("write", "★ Write candidate (apply edits)"
+                            + (" — unsaved *" if dirty else "")))
+            choices.append(("back", "Back"))
+            sel = self.ctx.dialog.menu(
+                "mini-dudeai rules",
+                "Tune a rule's noise knobs, then Write candidate. The daemon "
+                "validates + promotes within ~30s — you propose, it ratifies "
+                "(the canonical file is never auto-written).",
+                choices)
+            if not sel or sel == "back":
+                if dirty and not self.ctx.dialog.yesno(
+                        "Discard edits?", "You have unwritten edits. Discard them?"):
+                    continue
+                return
+            if sel == "write":
+                if self._write_rules_candidate(cand_p, rules):
+                    dirty = False
+                continue
+            try:
+                rule = rules[int(sel) - 1]
+            except (ValueError, IndexError):
+                continue
+            if self._edit_one_rule(rule):
+                dirty = True
+
+    def _edit_one_rule(self, rule) -> bool:
+        """Edit grace_s / cooldown_s on `rule` in place. Returns True if changed."""
+        changed = False
+        while True:
+            sel = self.ctx.dialog.menu(
+                f"Rule: {rule.get('id')}",
+                f"kind={(rule.get('match') or {}).get('kind')}  "
+                f"action={(rule.get('action') or {}).get('kind')}\n"
+                f"grace_s={rule.get('grace_s')}  cooldown_s={rule.get('cooldown_s')}",
+                [("grace", "Set grace_s (debounce: fire only after N s sustained)"),
+                 ("cooldown", "Set cooldown_s (rate-limit re-fires)"),
+                 ("back", "Back")])
+            if not sel or sel == "back":
+                return changed
+            field = "grace_s" if sel == "grace" else "cooldown_s"
+            cur = rule.get(field)
+            val = self.ctx.dialog.inputbox(
+                f"Set {field}",
+                f"Seconds (integer >= 0; blank to clear).\nCurrent: {cur}",
+                init="" if cur is None else str(cur))
+            if val is None:
+                continue
+            val = val.strip()
+            if val == "":
+                if field in rule:
+                    del rule[field]
+                    changed = True
+                continue
+            if not val.isdigit():
+                self.ctx.dialog.msgbox(
+                    "Invalid", f"{field} must be a non-negative integer.")
+                continue
+            rule[field] = int(val)
+            changed = True
+
+    def _write_rules_candidate(self, cand_p, rules) -> bool:
+        from mini_dudeai import write_candidate
+        ok, errors = write_candidate(str(cand_p), rules)
+        if not ok:
+            self.ctx.dialog.msgbox(
+                "Candidate rejected",
+                "Not written — the daemon would reject it:\n\n"
+                + "\n".join(f"  - {e}" for e in errors[:6]))
+            return False
+        self._chown_to_operator(cand_p)
+        self.ctx.dialog.msgbox(
+            "Candidate written",
+            f"Wrote:\n  {cand_p}\n\n"
+            "The mini-dudeai daemon validates and promotes it within ~30s "
+            "(you propose, it ratifies). Re-open the watcher to confirm.")
+        return True
+
+    def _chown_to_operator(self, path) -> None:
+        """If running as root, hand the candidate to the operator so the
+        user-mode daemon can replace its operator-owned rules file cleanly
+        (avoids the sudo ownership-drift trap)."""
+        if os.geteuid() != 0:
+            return
+        try:
+            import pwd
+            from utils.paths import get_real_username
+            pw = pwd.getpwnam(get_real_username())
+            os.chown(str(path), pw.pw_uid, pw.pw_gid)
+        except (KeyError, OSError, ImportError) as e:
+            logger.debug("chown candidate to operator failed: %s", e)
