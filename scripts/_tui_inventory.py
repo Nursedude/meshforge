@@ -2,8 +2,14 @@
 
 Read-only. Instantiates each handler with no context and calls menu_items().
 """
+import os
 import sys
-sys.path[:0] = ['src', 'src/launcher_tui']
+
+# __file__-relative so it runs from anywhere (e.g. over SSH from $HOME), not
+# just the repo root.
+_here = os.path.dirname(os.path.abspath(__file__))
+sys.path[:0] = [os.path.join(_here, "..", "src"),
+                os.path.join(_here, "..", "src", "launcher_tui")]
 
 from handlers import get_all_handlers  # noqa: E402
 

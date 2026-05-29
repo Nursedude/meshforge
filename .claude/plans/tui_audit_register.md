@@ -233,8 +233,14 @@ symptom (no task spine), not the disease.
    an escalation alongside start/restart, for rnsd only. Escalation: Start →
    Restart → Repair(guided). +5 tests. (RNS is the fleet's #1 fragility — see
    the RNS Dependency Risk note below.)
-3. **mini-dudeai dedup** — fold its `_restart_action`/`_fixes_for` onto the shared
-   `service_remediation` primitive.
+3. ✅ **DONE (commit `3d0cb7d`)** — **mini-dudeai dedup.** Promoted
+   `service_remediation._restart_action` → public `restart_action` (the one
+   builder for "restart service X"); mini-dudeai's `_fixes_for` now imports it
+   instead of carrying a copy. The rule_id→service MAP stays (mini-dudeai's
+   domain knowledge); only the builder is shared. Behavior-preserving, 86 tests,
+   on-box verified on moc (`_fixes_for` returns correct actions). Also fixed
+   `_tui_inventory.py` to use `__file__`-relative paths (was cwd-relative, broke
+   over SSH).
 4. **NOC Home reframe** — once fix-routing is everywhere, restructure the top
    menu around the monitor→fix spine (presentation-layer; handlers intact).
 
