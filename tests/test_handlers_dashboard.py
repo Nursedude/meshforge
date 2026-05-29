@@ -258,17 +258,39 @@ class TestDashboardAlerts:
 class TestDashboardServiceStatus:
 
     @patch('subprocess.run')
-    def test_service_status_display(self, mock_run):
+    def test_service_status_display_all_healthy_waits(self, mock_run):
+        # All services running + reachable => no degraded => plain wait-for-enter.
+        from handlers.dashboard import ServiceRunState
         mock_run.return_value = MagicMock(returncode=0, stdout="active")
         mock_env = MagicMock()
         mock_env.services = {
-            "meshtasticd": MagicMock(value="running"),
-            "rnsd": MagicMock(value="stopped"),
-            "mosquitto": MagicMock(value="running"),
+            "meshtasticd": MagicMock(state=ServiceRunState.RUNNING),
+            "rnsd": MagicMock(state=ServiceRunState.RUNNING),
+            "mosquitto": MagicMock(state=ServiceRunState.RUNNING),
         }
-
         h = _make_dashboard()
         h.ctx.env_state = mock_env
+        h._meshtasticd_api_reachable = MagicMock(return_value=True)
         h.ctx.wait_for_enter = MagicMock()
         h._service_status_display()
         h.ctx.wait_for_enter.assert_called_once()
+
+    @patch('subprocess.run')
+    def test_service_status_display_offers_fix_when_degraded(self, mock_run):
+        # A FAILED known service => the in-app fix chooser is offered, not a bare
+        # "press enter" (In-Domain: the fix comes to the operator, in this view).
+        from handlers.dashboard import ServiceRunState
+        mock_run.return_value = MagicMock(returncode=0, stdout="active")
+        mock_env = MagicMock()
+        mock_env.services = {
+            "meshtasticd": MagicMock(state=ServiceRunState.RUNNING),
+            "rnsd": MagicMock(state=ServiceRunState.FAILED),
+        }
+        h = _make_dashboard()
+        h.ctx.env_state = mock_env
+        h._meshtasticd_api_reachable = MagicMock(return_value=True)
+        h.ctx.dialog._menu_returns = ["__done__"]  # dismiss the fix chooser
+        h.ctx.wait_for_enter = MagicMock()
+        h._service_status_display()
+        menu_titles = [c[1][0] for c in h.ctx.dialog.calls if c[0] == 'menu']
+        assert any("Fix a Degraded Service" in t for t in menu_titles)

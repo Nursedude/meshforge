@@ -117,17 +117,25 @@ class DashboardHandler(BaseHandler):
         clear_screen()
         print("=== Service Status ===\n")
 
+        # Degraded services collected here → offered as in-app fixes below, so
+        # the operator fixes what they see without leaving this view.
+        # Each entry: (service_name, running_bool). running=True ⇒ up-but-unhealthy.
+        degraded = []
+
         if self.ctx.env_state and _HAS_STARTUP_CHECKS:
             for name, info in self.ctx.env_state.services.items():
                 if info.state == ServiceRunState.RUNNING:
                     if name == 'meshtasticd' and not self._meshtasticd_api_reachable():
                         print(f"  \033[0;33m◐\033[0m {name:<18} active but unreachable (no radio? see Diagnostics)")
+                        degraded.append((name, True))
                     else:
                         print(f"  \033[0;32m●\033[0m {name:<18} running")
                 elif info.state == ServiceRunState.FAILED:
                     print(f"  \033[0;31m●\033[0m {name:<18} FAILED")
+                    degraded.append((name, False))
                 else:
                     print(f"  \033[2m○\033[0m {name:<18} stopped")
+                    degraded.append((name, False))
         else:
             for svc in ['meshtasticd', 'rnsd', 'mosquitto']:
                 try:
@@ -139,10 +147,12 @@ class DashboardHandler(BaseHandler):
                     if status == 'active':
                         if svc == 'meshtasticd' and not self._meshtasticd_api_reachable():
                             print(f"  \033[0;33m◐\033[0m {svc:<18} active but unreachable (no radio? see Diagnostics)")
+                            degraded.append((svc, True))
                         else:
                             print(f"  \033[0;32m●\033[0m {svc:<18} running")
                     else:
                         print(f"  \033[2m○\033[0m {svc:<18} {status}")
+                        degraded.append((svc, False))
                 except Exception:
                     print(f"  ? {svc:<18} unknown")
 
@@ -236,7 +246,39 @@ class DashboardHandler(BaseHandler):
                 pass  # Load balancer info is advisory
 
         print()
-        self.ctx.wait_for_enter()
+        # In-Domain: the fix comes to the operator, here, where they saw the
+        # problem — no hunting through Mesh Networks / System / Configuration.
+        if degraded:
+            self._offer_service_fixes(degraded)
+        else:
+            self.ctx.wait_for_enter()
+
+    def _offer_service_fixes(self, degraded):
+        """Offer in-app fixes for degraded services via the shared surface.
+
+        ``degraded`` is a list of (service_name, running_bool). Only services
+        with a known safe local fix are offered; the rest are left informational.
+        Routes each choice to the remediation surface so the operator never has
+        to navigate to the fix (In-Domain Principle).
+        """
+        from service_remediation import service_fix_actions, offer_service_fix
+        fixable = [(n, r) for (n, r) in degraded if service_fix_actions(n, r)]
+        if not fixable:
+            self.ctx.wait_for_enter()
+            return
+        running_by_name = dict(fixable)
+        while True:
+            choices = [(n, f"Fix {n}") for (n, _) in fixable]
+            choices.append(("__done__", "Done (leave as-is)"))
+            sel = self.ctx.dialog.menu(
+                "Fix a Degraded Service",
+                "These services aren't healthy. Fix one now — no need to find "
+                "the right menu:",
+                choices,
+            )
+            if not sel or sel == "__done__":
+                return
+            offer_service_fix(self.ctx, sel, running_by_name.get(sel, False))
 
     def _dashboard_space_weather(self):
         """Quick-look space weather for the Dashboard.
