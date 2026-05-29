@@ -352,7 +352,7 @@ def run_rns_diagnostics(handler):
             "Repair now?"
         ):
             clear_screen()
-            handler._repair_rns_shared_instance()
+            handler._rns_repair_menu()
             handler.ctx.wait_for_enter()
             return
 

@@ -273,7 +273,7 @@ class RNSInterfacesHandler(BaseHandler):
                     "(Clears stale auth, checks config, restarts rnsd)",
                 ):
                     clear_screen()
-                    diag._repair_rns_shared_instance()
+                    diag._rns_repair_menu()
 
         # NomadNet connectivity check (only when rnsd is healthy)
         if si_available:

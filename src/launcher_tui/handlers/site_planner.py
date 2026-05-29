@@ -96,7 +96,9 @@ class SitePlannerHandler(BaseHandler):
             tx = float(tx_power)
             ag = float(ant_gain)
             rs = float(rx_sens)
-            fspl = free_space_path_loss(f, d)
+            # free_space_path_loss expects (distance_m, freq_mhz); inputs are
+            # km and MHz, so convert km -> m. (was: (f, d) — args swapped, ~60 dB wrong)
+            fspl = free_space_path_loss(d * 1000.0, f)
             margin = tx + ag - fspl - rs
             text = f"""Link Budget Calculator:
 
@@ -117,7 +119,7 @@ Link Margin: {margin:.1f} dB
 
     def _calc_fresnel(self):
         """Fresnel zone calculator."""
-        from utils.rf import fresnel_zone_radius
+        from utils.rf import fresnel_radius
         freq = self.ctx.dialog.inputbox("Fresnel Zone", "Frequency (MHz):", "915")
         if not freq:
             return
@@ -127,7 +129,8 @@ Link Margin: {margin:.1f} dB
         try:
             f = float(freq)
             d = float(dist)
-            radius = fresnel_zone_radius(f, d)
+            # fresnel_radius expects (distance_km, freq_ghz); inputs are km and MHz.
+            radius = fresnel_radius(d, f / 1000.0)
             text = f"""Fresnel Zone Calculator:
 
 Frequency: {f} MHz
