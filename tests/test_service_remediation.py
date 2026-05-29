@@ -111,3 +111,42 @@ class TestChooserGate:
         from service_remediation import offer_service_fix
         ctx = MagicMock()
         assert offer_service_fix(ctx, "meshforge-map", running=False) is None
+
+
+class TestRnsdGuidedRepair:
+    """rnsd's failure modes (wedged @rns, stale auth, config drift) need more
+    than a restart — it gets the guided repair wizard as an extra action."""
+
+    def test_rnsd_gets_guided_repair_action(self):
+        from service_remediation import _actions_for
+        labels = [a.label for a in _actions_for(MagicMock(), "rnsd", running=True)]
+        assert "Restart rnsd" in labels
+        assert "Repair rnsd (guided wizard)" in labels
+
+    def test_rnsd_down_offers_start_restart_and_repair(self):
+        from service_remediation import _actions_for
+        labels = [a.label for a in _actions_for(MagicMock(), "rnsd", running=False)]
+        assert labels == ["Start rnsd", "Restart rnsd", "Repair rnsd (guided wizard)"]
+
+    def test_other_services_get_no_repair_action(self):
+        from service_remediation import _actions_for
+        labels = [a.label for a in _actions_for(MagicMock(), "meshtasticd", running=True)]
+        assert not any("Repair" in lbl for lbl in labels)
+
+    def test_repair_action_routes_to_diagnostics_handler(self):
+        from service_remediation import _rns_repair_action
+        diag = MagicMock()
+        ctx = MagicMock()
+        ctx.registry.get_handler.return_value = diag
+        ok, _msg = _rns_repair_action(ctx).apply()
+        ctx.registry.get_handler.assert_called_once_with("rns_diagnostics")
+        diag._rns_repair_menu.assert_called_once()
+        assert ok is True
+
+    def test_repair_action_handles_missing_handler(self):
+        from service_remediation import _rns_repair_action
+        ctx = MagicMock()
+        ctx.registry.get_handler.return_value = None
+        ok, msg = _rns_repair_action(ctx).apply()
+        assert ok is False
+        assert "not available" in msg

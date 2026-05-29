@@ -123,6 +123,46 @@ def collect_degraded_services(service_names) -> List[Tuple[str, bool]]:
     return out
 
 
+def _rns_repair_action(ctx):
+    """Guided RNS repair wizard as a remediation action.
+
+    rnsd's common failures — a wedged @rns shared instance, stale auth tokens,
+    config drift (Issues #30/#37/#68/#69) — often need MORE than a restart. This
+    routes to the RNS diagnostics handler's repair wizard (validate config, check
+    deps, clear stale auth, restart, verify port). Returns None if the handler
+    isn't available (so rnsd still gets start/restart).
+    """
+    from remediation import RemediationAction
+
+    def _apply():
+        registry = getattr(ctx, "registry", None)
+        diag = registry.get_handler("rns_diagnostics") if registry else None
+        if diag is None:
+            return (False, "RNS diagnostics handler not available")
+        # The wizard is interactive (own confirm + steps + wait); we just route
+        # to it and report that it finished — its own dialogs carry the detail.
+        diag._rns_repair_menu()
+        return (True, "RNS repair wizard finished")
+
+    return RemediationAction(
+        label="Repair rnsd (guided wizard)",
+        description="validate config, check deps, clear stale auth, restart, verify port",
+        apply=_apply,
+        requires_admin=True,
+    )
+
+
+def _actions_for(ctx, service_name: str, running: bool) -> List:
+    """Full action list for a service: the pure start/restart map, plus the
+    guided RNS repair wizard for rnsd (which needs ctx to reach the handler)."""
+    actions = list(service_fix_actions(service_name, running))
+    if service_name == "rnsd" and actions:
+        repair = _rns_repair_action(ctx)
+        if repair is not None:
+            actions.append(repair)  # escalation: quick restart -> thorough repair
+    return actions
+
+
 def offer_service_fix(ctx, service_name: str, running: bool):
     """If a known + enabled-here service is degraded, offer its fix in-app.
 
@@ -132,7 +172,7 @@ def offer_service_fix(ctx, service_name: str, running: bool):
     from remediation import propose_remediation
     if not service_enabled_here(service_name):
         return None
-    actions = service_fix_actions(service_name, running)
+    actions = _actions_for(ctx, service_name, running)
     if not actions:
         return None
     state_word = "is not healthy" if running else "is not running"
