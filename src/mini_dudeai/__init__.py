@@ -40,7 +40,7 @@ from .actions import (
     Outcome,
     ProposeEscalationAction,
 )
-from .brief import build_brief, write_brief
+from .brief import build_brief, recent_escalations, write_brief
 from .dreams import (
     build_dreams,
     count_pending_deltas,
@@ -87,6 +87,7 @@ __all__ = [
     "build_engine_from_config",
     "count_pending_deltas",
     "load_config",
+    "recent_escalations",
     "resolve_delta",
     "write_dreams",
     "register_action",

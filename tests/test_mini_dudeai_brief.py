@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from mini_dudeai import build_brief, write_brief
+from mini_dudeai import build_brief, recent_escalations, write_brief
 
 NOW = 1_780_000_000.0
 
@@ -55,6 +55,72 @@ def test_escalations_surface_look_here_first():
     assert "Look here first" in out
     assert "unexpected peer down" in out
     assert "chase this" in out
+
+
+def _esc_row(ts, rule, subject, detail, note="", legacy=False):
+    esc = {"rule": rule, "subject": subject, "detail": detail, "note": note}
+    outcome = {"action": "propose_escalation", "ok": True}
+    if legacy:
+        outcome["escalation"] = esc            # older top-level schema
+    else:
+        outcome["extras"] = {"escalation": esc}  # current schema
+    # escalation rows are typically edge_down in practice; that keeps them out
+    # of the "Recent fires" (edge_up only) section so we assert on "Look here
+    # first" in isolation.
+    return {"ts": ts, "transition": "edge_down", "rule_id": rule,
+            "subject": subject, "detail": detail, "outcome": outcome}
+
+
+def test_stale_escalation_filtered_by_window():
+    # An escalation older than the 24h window must NOT surface (the bug: stale
+    # "FORCED stuck-active" test entries replayed from the history tail).
+    stale = _esc_row(NOW - 90_000, "federation_peer_unhealthy_unexpected",
+                     "moc3", "FORCED stuck-active for daemon self-correction test")
+    out = build_brief(_state(), [stale], NOW)
+    assert "Look here first" not in out
+    assert "FORCED stuck-active" not in out
+
+
+def test_fresh_escalation_within_window_surfaces():
+    fresh = _esc_row(NOW - 3600, "boom", "moc1", "unexpected peer down", note="chase")
+    out = build_brief(_state(), [fresh], NOW)
+    assert "Look here first" in out
+    assert "unexpected peer down" in out
+
+
+def test_escalations_deduped_keeping_latest():
+    # Same (rule, subject, detail) fired three times — show once, with the
+    # latest fire (so the brief isn't 3x the same moc3 line).
+    rows = [_esc_row(NOW - 5000, "r", "moc3", "same detail"),
+            _esc_row(NOW - 4000, "r", "moc3", "same detail"),
+            _esc_row(NOW - 3000, "r", "moc3", "same detail")]
+    out = build_brief(_state(), rows, NOW)
+    assert out.count("r · moc3 · same detail") == 1
+
+
+def test_legacy_top_level_escalation_schema_read():
+    # outcome.escalation (no .extras) must not be silently dropped.
+    legacy = _esc_row(NOW - 1000, "boom", "moc1", "legacy schema esc", legacy=True)
+    out = build_brief(_state(), [legacy], NOW)
+    assert "Look here first" in out
+    assert "legacy schema esc" in out
+
+
+def test_recent_escalations_shared_helper():
+    # The helper both the brief and the digest call — windowed, deduped,
+    # oldest→newest, schema-tolerant. Pins the single source of truth.
+    rows = [
+        _esc_row(NOW - 90_000, "r", "moc3", "stale"),          # outside window
+        _esc_row(NOW - 5000, "r", "moc3", "dup"),              # \ dedup to one,
+        _esc_row(NOW - 3000, "r", "moc3", "dup"),              # / keep latest
+        _esc_row(NOW - 1000, "boom", "moc1", "legacy", legacy=True),
+    ]
+    out = recent_escalations(rows, NOW)
+    details = [e.get("detail") for e in out]
+    assert "stale" not in details            # window dropped it
+    assert details.count("dup") == 1         # deduped
+    assert "legacy" in details               # legacy schema read
+    assert details[-1] == "legacy"           # newest last
 
 
 def test_recent_fires_counted():

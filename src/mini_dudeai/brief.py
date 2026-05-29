@@ -20,6 +20,46 @@ import os
 from ._util import atomic_write_json, read_json
 
 DEFAULT_STALE_S = 300.0  # 30s tick → >5m means the daemon likely stopped
+ESCALATION_WINDOW_S = 86400.0  # only surface escalations fired in the last 24h
+
+
+def _escalation_of(h: dict) -> dict | None:
+    """Extract the escalation payload from a history row, schema-tolerant.
+
+    The current engine writes it under ``outcome.extras.escalation``; an older
+    schema wrote it at ``outcome.escalation``. Read both so neither shape is
+    silently dropped from the warm-start brief.
+    """
+    out = h.get("outcome") or {}
+    return (out.get("extras") or {}).get("escalation") or out.get("escalation")
+
+
+def recent_escalations(history: list[dict], now_ts: float,
+                       window_s: float = ESCALATION_WINDOW_S) -> list[dict]:
+    """Escalation payloads fired within `window_s`, deduped, oldest→newest.
+
+    Single source of truth for "what should the warm session chase" — used by
+    both the brief and the situation digest so the two never disagree. Drops
+    escalations older than the window (resolved noise replayed from the history
+    tail), dedups by (rule, subject, detail) keeping the most recent fire, and
+    reads both the current (outcome.extras.escalation) and legacy
+    (outcome.escalation) schemas.
+    """
+    cutoff = now_ts - window_s
+    fresh: dict = {}
+    for h in history:
+        esc = _escalation_of(h)
+        if not esc:
+            continue
+        ts = h.get("ts")
+        if ts is not None and float(ts) < cutoff:
+            continue
+        key = (esc.get("rule"), esc.get("subject"), str(esc.get("detail", "")))
+        prev = fresh.get(key)
+        if prev is None or float(ts or 0) >= float(prev[0] or 0):
+            fresh[key] = (ts, esc)
+    return [esc for _ts, esc in
+            sorted(fresh.values(), key=lambda x: float(x[0] or 0))]
 
 
 def _age(now_ts: float, ts: float | None) -> str:
@@ -34,7 +74,8 @@ def _age(now_ts: float, ts: float | None) -> str:
 
 
 def build_brief(state: dict, history: list[dict], now_ts: float,
-                stale_s: float = DEFAULT_STALE_S, pending_deltas: int = 0) -> str:
+                stale_s: float = DEFAULT_STALE_S, pending_deltas: int = 0,
+                escalation_window_s: float = ESCALATION_WINDOW_S) -> str:
     """Render the warm-start brief markdown from mini's state + recent history.
 
     `pending_deltas` is the count of unratified B3 memory-deltas; when >0 the
@@ -80,13 +121,14 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
         lines.append("- See `mini_dudeai_dreams.md` for the synthesis + evidence; "
                      "ratify/reject via `dreams.resolve_delta()`.")
 
-    # Look here first — escalations proposed in recent history
-    escalations = [h for h in history
-                   if (h.get("outcome") or {}).get("extras", {}).get("escalation")]
+    # Look here first — escalations fired within the window, deduped (see
+    # recent_escalations; shared with the situation digest so they never
+    # disagree). Stale entries replayed from the history tail would mislead a
+    # warm-start session into chasing resolved noise.
+    escalations = recent_escalations(history, now_ts, escalation_window_s)
     if escalations:
         lines.append("\n## 🔎 Look here first (escalations)")
-        for h in escalations[-8:]:
-            esc = h["outcome"]["extras"]["escalation"]
+        for esc in escalations[-8:]:
             lines.append(f"- {esc.get('rule')} · {esc.get('subject')} · "
                          f"{str(esc.get('detail', ''))[:120]}"
                          + (f" — _{esc['note']}_" if esc.get("note") else ""))
