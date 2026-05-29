@@ -158,13 +158,17 @@ new pin = `rns==1.2.5`/`lxmf==0.9.4`. Expected `rns_version_check.py` state:
 **VolcanoAI = OK** (already 1.2.5+0.9.4, no-op); **moc3 DRIFT** (RNS 1.1.4->1.2.5
 forward bump, LXMF already 0.9.4); **moc/moc1/moc2 DRIFT** (RNS 1.1.9->1.2.5 UP
 **and LXMF 0.9.6->0.9.4 DOWN** — the LXMF leg is a downgrade, soak before/after).
-- moc3: `pip install 'rns==1.2.5' 'lxmf==0.9.4'` (mind venv vs `--break-system-packages`,
-  see `updates.py:_pip_install_meshtastic` for the install-path logic) -> verify with
-  `scripts/_noc_fix_probe.py` + `scripts/rns_version_check.py`.
+- moc3: ✅ DONE 2026-05-29 (`sudo pip3 install --break-system-packages -r
+  requirements/rns.txt`; crypto/pyopenssl already in-bounds so it was a clean
+  RNS 1.1.4->1.2.5 bump). Controlled restart (stop gateway -> restart rnsd ->
+  verify `@rns` owner + `rnstatus` -> start gateway) avoided the `@rns` host-race.
+  Verified: drift-check OK, rnsd interfaces up (AutoIface 3 peers, TCP :4242,
+  RNode LoRa), gateway log `Meshtastic: connected`/`RNS: connected`,
+  `rpc[rnsd.path_table] ok`. The low-risk converge is the proof-of-recipe.
 - moc/moc1/moc2: same pip, but watch the LXMF downgrade (propagation-node /
-  message-format compat) — converge ONE gateway, soak, then the rest.
+  message-format compat) — converge ONE gateway, soak, then the rest. STILL PENDING.
 - VolcanoAI: no action (already on the pin).
-- Goal: `rns_version_check.py` all-OK fleet-wide.
+- Goal: `rns_version_check.py` all-OK fleet-wide. (federator + moc3 OK; 3 gateways left.)
 
 **Open decisions:** (1) ~~pin reconciliation~~ RESOLVED above (rebaselined to
 1.2.5+0.9.4); (2) B scope (all 25 vs hot-paths first); (3) vendor depth = sub-arc
@@ -179,6 +183,7 @@ apply. This is meaty -> a fresh session with this file as warm-start is ideal.
 Sub-arc **A DONE** (`e8c5d9c`): pinned + drift-check deployed fleet-wide.
 **DECISION 1 RESOLVED (2026-05-29)**: pin REBASELINED `rns==1.1.9`/`lxmf==0.9.6`
 -> `rns==1.2.5`/`lxmf==0.9.4` (converge gateways UP to the federator-proven, last-
-GitHub-published combo; VolcanoAI now a no-op). Live convergence of moc/moc1/moc2
-+ moc3 is a WATCHED step (see above) — not yet run. **B+C scoped & handed off
+GitHub-published combo; VolcanoAI now a no-op). **moc3 CONVERGED + verified
+2026-05-29** (proof-of-recipe); moc/moc1/moc2 still pending (watch the LXMF
+downgrade — converge one, soak, then the rest). **B+C scoped & handed off
 above** — awaiting a fresh session. D deferred. This file survives `/clear`.
