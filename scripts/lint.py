@@ -19,6 +19,7 @@ Checks:
 - MF014: Operator-specific values (hostnames, personal email, /home/<user>/) — break repo portability
 - MF016: @patch('src.utils.paths.…') in tests — production imports via bare 'utils.paths', divergent class objects
 - MF017: hardened systemd unit (ProtectHome=read-only) ReadWritePaths drift vs the three meshforge buckets (Issue #58)
+- MF018: TUI shell-escapes (editor spawns, "run/install manually", "run with sudo") — the In-Domain Principle ratchet (foundations/in_domain_principle.md)
 
 Usage:
     python3 scripts/lint.py [files...]
@@ -695,6 +696,112 @@ def check_systemd_sandbox_paths(repo_root: str = '.') -> List[LintIssue]:
     return issues
 
 
+# MF018: the In-Domain Principle ratchet. The TUI must let the user do
+# everything in the domain — including REPAIR — without quitting to a shell.
+# A user-facing "run X manually" / editor-spawn / "run with sudo" string is a
+# shell-escape defect (foundations/in_domain_principle.md). We can't fix the
+# whole backlog at once, so this is a per-file ratchet: each handler file has a
+# frozen baseline count of known escapes; the check ERRORs only when a file
+# EXCEEDS its baseline (i.e. new code adds an escape). The baseline can only
+# shrink — when an arc closes a gap, drop/decrement its entry here. Same
+# regression-prevention shape as MF007's ALLOWLISTED set (Issue #29).
+#
+# Scope is src/launcher_tui/ — the operator-facing surface the principle
+# governs. A legitimate cross-app/protocol case (e.g. an rnid hash to paste
+# into Sideband) is exempted with an inline '# in-domain-ok: <reason>' marker.
+# The CORRECT way to clear an MF018 failure is an in-app remediation action,
+# not the marker.
+MF018_SCAN_DIR = os.path.join('src', 'launcher_tui')
+MF018_MARKER = '# in-domain-ok:'
+MF018_PATTERNS = [
+    re.compile(r"(?i)\b(try|run|install|create|copy|start)\b[^\n]{0,40}\bmanually\b"),
+    re.compile(r"(?i)\bmanually\b[^\n]{0,30}\b(install|edit|create|copy|restart|run|set)\b"),
+    re.compile(r"(?i)run\s+(with sudo|meshforge with sudo|the following|these commands)"),
+    re.compile(r"(?i)install[^\n]{0,12}:\s?(sudo )?(apt|pip3?|pipx)\b"),
+    re.compile(r"(?i)install (manually )?with[: ]"),
+    re.compile(r"subprocess\.(run|call|Popen)\([^\n]*\b(nano|vim?|emacs)\b"),
+    re.compile(r"\[\s*editor\b"),
+    re.compile(r"(?i)\bpipx reinstall\b"),
+    re.compile(r"(?i)(try|find it|run)[: ]\s*(sudo )?(lsof|pkill)\b"),
+]
+
+# Frozen 2026-05-29 (the foundation arc). Per-file count of pre-existing
+# shell-escapes. Files absent here have an implicit baseline of 0 — any escape
+# in a new or clean file fails. DECREMENT as arcs close gaps; never increment.
+MF018_BASELINE = {
+    'src/launcher_tui/handlers/_ai_tools_mfmaps.py': 1,
+    'src/launcher_tui/handlers/_nomadnet_iface_checks.py': 1,
+    'src/launcher_tui/handlers/_nomadnet_install_utils.py': 8,
+    'src/launcher_tui/handlers/_nomadnet_io_ops.py': 2,
+    'src/launcher_tui/handlers/_nomadnet_rns_checks.py': 1,
+    'src/launcher_tui/handlers/_nomadnet_service_ops.py': 2,
+    'src/launcher_tui/handlers/_rns_diagnostics_engine.py': 2,
+    'src/launcher_tui/handlers/_rns_repair.py': 4,
+    'src/launcher_tui/handlers/broker.py': 8,
+    'src/launcher_tui/handlers/emergency_mode.py': 1,
+    'src/launcher_tui/handlers/extensions.py': 1,
+    'src/launcher_tui/handlers/favorites.py': 1,
+    'src/launcher_tui/handlers/meshtasticd_config.py': 6,
+    'src/launcher_tui/handlers/meshtasticd_nodedb.py': 1,
+    'src/launcher_tui/handlers/meshtasticd_radio.py': 2,
+    'src/launcher_tui/handlers/metrics.py': 2,
+    'src/launcher_tui/handlers/mqtt.py': 2,
+    'src/launcher_tui/handlers/nomadnet.py': 4,
+    'src/launcher_tui/handlers/quick_actions.py': 2,
+    'src/launcher_tui/handlers/radio_menu.py': 4,
+    'src/launcher_tui/handlers/rns_config.py': 5,
+    'src/launcher_tui/handlers/rns_diagnostics.py': 4,
+    'src/launcher_tui/handlers/rns_tools.py': 1,
+    'src/launcher_tui/handlers/service_menu.py': 4,
+    'src/launcher_tui/handlers/system_tools.py': 7,
+    'src/launcher_tui/handlers/tactical_ops.py': 2,
+    'src/launcher_tui/handlers/web_client.py': 1,
+}
+
+
+def _count_in_domain_escapes(filepath: str) -> tuple:
+    """Return (count, [linenos]) of shell-escape patterns, skipping marked lines."""
+    n = 0
+    hits: List[int] = []
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            for lineno, line in enumerate(f, 1):
+                if MF018_MARKER in line:
+                    continue
+                for pat in MF018_PATTERNS:
+                    if pat.search(line):
+                        n += 1
+                        hits.append(lineno)
+                        break
+    except (IOError, OSError):
+        pass
+    return n, hits
+
+
+def check_in_domain_escapes(files: List[str], repo_root: str = '.') -> List[LintIssue]:
+    """MF018: fail when a TUI file exceeds its frozen shell-escape baseline."""
+    issues: List[LintIssue] = []
+    for f in files:
+        rel = os.path.relpath(f, repo_root) if os.path.isabs(f) else f
+        rel = rel.replace(os.sep, '/')
+        if not rel.startswith('src/launcher_tui/') or not rel.endswith('.py'):
+            continue
+        if not os.path.isfile(f):
+            continue
+        count, hits = _count_in_domain_escapes(f)
+        baseline = MF018_BASELINE.get(rel, 0)
+        if count > baseline:
+            issues.append(LintIssue(
+                rel, hits[-1] if hits else 0, Severity.ERROR, "MF018",
+                f"{count} shell-escape pattern(s) — baseline {baseline}. New TUI "
+                f"code must offer an in-app action, not a shell instruction "
+                f"(foundations/in_domain_principle.md). Resolve with an in-app "
+                f"remediation; for a legitimate cross-app/protocol case add an "
+                f"inline '# in-domain-ok: <reason>' marker. The baseline only shrinks.",
+            ))
+    return issues
+
+
 def main():
     parser = argparse.ArgumentParser(description='MeshForge Linter')
     parser.add_argument('files', nargs='*', help='Files to lint')
@@ -734,6 +841,12 @@ def main():
         issues.extend(check_operator_values_in_files(get_staged_files_all_types()))
     else:
         issues.extend(check_operator_values_full_tree())
+
+    # MF018: In-Domain Principle ratchet — TUI shell-escapes vs frozen baseline.
+    if args.staged:
+        issues.extend(check_in_domain_escapes(get_staged_files()))
+    else:
+        issues.extend(check_in_domain_escapes(get_all_python_files(MF018_SCAN_DIR)))
 
     # MF017: systemd sandbox writable-path drift (Issue #58 class). Walks
     # the whole contrib/systemd/ tree — drift in a unit not touched by this

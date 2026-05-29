@@ -204,6 +204,7 @@ If any line says "no", fix before pushing — every fleet box pulls within secon
 | `foundations/meshforge_ecosystem.md` | All 5 repos, boundaries, APIs (canonical) |
 | `foundations/domain_architecture.md` | Core vs Plugin model |
 | `foundations/ai_principles.md` | Human-centered design philosophy |
+| `foundations/in_domain_principle.md` | **Never quit the app to fix it** — in-app remediation (MF018) |
 | `foundations/persistent_issues.md` | **Known issues & fixes** |
 | `plans/branch_convergence_guide.md` | main ↔ alpha merge strategy |
 | `plans/qa_field_testing_plan.md` | Gateway, maps, MeshCore field-test protocol |
