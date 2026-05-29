@@ -39,6 +39,36 @@ python3 -m mini_dudeai --preset meshforge_fleet
 once the package is pip-installed — packaging is a planned follow-on. Until then
 use `python3 -m mini_dudeai`.)
 
+## Fleet deployment (federator vs gateway)
+
+The `meshforge_fleet` preset runs live on all five MeshForge boxes. It wires
+three sources — the local `watchdog.json`, the federation peer status from
+`/api/status`, and digest staleness — but **federation and digest are
+federator-specific**. A gateway box with no local `:5000` map server or digest
+would otherwise emit a `source_error` every tick (and could page). So the preset
+gates them, defaulting both ON to preserve the federator's behavior:
+
+| Box role | `MINI_DUDEAI_ENABLE_FEDERATION` | `MINI_DUDEAI_ENABLE_DIGEST` | watches |
+|----------|---|---|---|
+| Federator (primary) | `1` (default) | `1` (default) | watchdog + federation + digest |
+| Gateway / publisher | `0` | `0` | **watchdog only** (its own local health) |
+
+Per-box config lives in `~/.config/meshforge/mini_dudeai.env` (operator home, out
+of the repo). Gateway boxes use the watchdog-only rules seed
+`configs/mini_dudeai_rules.fleet_gateway.json`. Systemd units (daemon + nightly
+`--dream` timer) ship in `templates/systemd/`.
+
+```ini
+# ~/.config/meshforge/mini_dudeai.env  (gateway box)
+MINI_DUDEAI_NTFY_TOPIC=your-fleet-topic
+MINI_DUDEAI_ENABLE_FEDERATION=0
+MINI_DUDEAI_ENABLE_DIGEST=0
+```
+
+The `mini_dudeai` block in each box's `/api/status` surfaces its live state
+(`last_tick`, `rule_count`, `error_count`, active rules), so fleet federation
+streams every box's agent health.
+
 ## Config schema
 
 See `configs/mini_dudeai_config.example.json` for a runnable example and

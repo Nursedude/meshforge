@@ -613,6 +613,31 @@ print(response.answer)
 print(response.suggested_actions)
 ```
 
+### mini-dudeai — Always-On Local Agent
+
+A small, stdlib-only **rule-loop agent** (`src/mini_dudeai/`) that runs 24/7 on
+each box, watching local health signals and firing actions (ntfy, escalation,
+digest annotation) on the *transition*, not every tick. Borrowed from
+[wireclaw.io](https://wireclaw.io): **the LLM is the compiler, this is the
+runtime** — a cloud Claude session edits the rules file when invoked; the agent
+runs them with no model in the hot path (cheap, offline-tolerant, Pi-friendly).
+
+- **Two modes:** a `meshforge_fleet` preset (live on the fleet) and a config- or
+  SDK-driven **standalone** mode for your own gear.
+- **Warm-start:** maintains a brief + a nightly *synthesis* ("dream") that
+  distills its own history into candidate memory-deltas a cloud session
+  ratifies — so the next session doesn't start cold.
+- **Observation-only:** no `subprocess`/`systemctl`; the worst a bad rule can do
+  is send a notification.
+
+```bash
+python3 -m mini_dudeai --preset meshforge_fleet     # fleet daemon
+python3 -m mini_dudeai --config my_config.json       # standalone
+python3 -m mini_dudeai --preset meshforge_fleet --dream   # nightly synthesis
+```
+
+> Full SDK docs: [`src/mini_dudeai/README.md`](src/mini_dudeai/README.md)
+
 ---
 
 ## Hardware
