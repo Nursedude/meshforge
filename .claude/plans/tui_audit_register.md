@@ -266,10 +266,24 @@ messaging (NomadNet/LXMF).
 - T3 HEDGE: lean on the transport-agnostic layer so RNS is replaceable, not
   load-bearing. MeshCore is the existing alternative leg.
 
-**The factual unknown ("will RNS dev continue?")** = a researchable question
-about Reticulum project health (single-maintainer bus-factor, release cadence,
-funding, community). NOT answerable from training data (cutoff Jan 2026) —
-needs live research. Offered to the operator.
+**The factual question ("will RNS dev continue?") — RESEARCHED 2026-05-29**
+(deep-research, 19 primary sources, adversarially verified; full memory:
+[[project-rns-upstream-withdrawal-2026-05-29]]):
+- Qvist's **"Carrier Switch" (2025-12-28)** = PERMANENT withdrawal from all
+  public support; issues/PRs disabled; GitHub repo now a mirror, dev off-platform.
+- BUT code is STILL moving — 1.3.4 shipped 2026-05-29, 95/100 recent commits his.
+  Accurate read: **"actively coded by one withdrawn person, no support"** — NOT
+  abandoned. Different risk than death.
+- **Verdict: protocol-churn risk LOW** (frozen 1.x wire format), **support risk
+  HIGH and ALREADY REALIZED** (no bug/security-fix channel, no successor).
+- Alt-language reimpls are WIP — Python stack is the only production-complete
+  one, so NOT a near-term drop-in hedge.
+→ **Decision: invest in T2-isolate + T3-hedge.** Pin RNS versions; wrap rnsd
+behind the connection layer; budget in-house RNS patching (upstream won't
+respond); track community forks (RetiNet/AGPL, Reticulum-rs). This also shapes
+the NOC Home reframe (step 5): surface RNS health + repair prominently, make
+transport-agnostic degradation visible. Open: any RNS security-disclosure
+channel? (none confirmed — highest-impact unknown).
 
 ---
 
