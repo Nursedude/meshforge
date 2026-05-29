@@ -10,15 +10,22 @@ they saw the problem. That is the In-Domain Principle extended one step: not jus
 "never quit the app to fix it," but "never even leave the status view to fix it."
 See `.claude/foundations/in_domain_principle.md` and `remediation.py`.
 
+The profile gate (`service_enabled_here`): a fix is offered ONLY for a service
+this box is configured to run — the systemd unit exists AND is enabled-at-boot.
+A disabled or absent unit means the service is intentionally off here (e.g. a
+gateway-only box's map daemon, even when its deployment profile marks "maps"
+available — the 'full' profile sets maps=True yet the unit is disabled). The
+systemd enabled-state is the accurate per-box signal; the profile feature flag is
+not. So gateway-only boxes are never nagged to "fix" intentionally-off services.
+
 Conservative by design: only services this box OWNS, where a start/restart is a
-genuine, safe local recovery. An unknown service yields no actions — the caller
-then shows it as informational rather than pretending to fix it.
+genuine, safe local recovery. An unknown service yields no actions.
 """
 from __future__ import annotations
 
-from typing import List
+from typing import List, Tuple
 
-# Services this box owns where start/restart is a real, safe local fix.
+# Services this box may own where start/restart is a real, safe local fix.
 # (rnsd can ALSO route to the guided RNS repair wizard — a richer follow-up;
 #  for now we offer the safe start/restart, which recovers the common cases.)
 _KNOWN_SERVICES = {
@@ -62,6 +69,8 @@ def service_fix_actions(service_name: str, running: bool) -> List:
             offer start first, then restart.
 
     Returns an empty list for services we don't own / can't safely auto-fix.
+    Note: this is the "what COULD fix it" map; the profile gate
+    (`service_enabled_here`) decides whether to actually OFFER it on this box.
     """
     desc = _KNOWN_SERVICES.get(service_name)
     if not desc:
@@ -75,13 +84,54 @@ def service_fix_actions(service_name: str, running: bool) -> List:
     ]
 
 
-def offer_service_fix(ctx, service_name: str, running: bool):
-    """If a known service is degraded, offer its fix via the shared surface.
+def service_enabled_here(service_name: str) -> bool:
+    """True iff this box is CONFIGURED to run the service.
 
-    Returns the (ok, message) of the applied action, or None if no action exists
-    or the operator declined. Never raises (the surface guards apply()).
+    The gate for offering a fix: the systemd unit must exist AND be enabled-at-
+    boot. A disabled or absent unit ⇒ the service is intentionally off on this
+    box ⇒ we never nag to "fix" it. This is the accurate per-box signal — more
+    accurate than the deployment-profile feature flag, which a gateway-only box
+    on the 'full' profile reports as maps=True even though its map unit is
+    disabled (the moc3 case).
+    """
+    from utils.service_check import is_service_unit_installed, check_systemd_service
+    if not is_service_unit_installed(service_name):
+        return False
+    try:
+        _running, enabled = check_systemd_service(service_name)
+    except Exception:  # systemctl missing / odd environment — don't offer
+        return False
+    return bool(enabled)
+
+
+def collect_degraded_services(service_names) -> List[Tuple[str, bool]]:
+    """Check each service; return (name, running=False) for installed-but-down ones.
+
+    Pure detection — the profile gate (`service_enabled_here`) is applied later by
+    the chooser, so callers can pass a broad candidate list. Skips NOT_INSTALLED
+    services (nothing to fix) and anything that errors.
+    """
+    from utils.service_check import check_service, ServiceState
+    out: List[Tuple[str, bool]] = []
+    for svc in service_names:
+        try:
+            st = check_service(svc)
+        except Exception:
+            continue
+        if not st.available and st.state != ServiceState.NOT_INSTALLED:
+            out.append((svc, False))
+    return out
+
+
+def offer_service_fix(ctx, service_name: str, running: bool):
+    """If a known + enabled-here service is degraded, offer its fix in-app.
+
+    Returns the (ok, message) of the applied action, or None if no action exists,
+    the service is intentionally off here, or the operator declined. Never raises.
     """
     from remediation import propose_remediation
+    if not service_enabled_here(service_name):
+        return None
     actions = service_fix_actions(service_name, running)
     if not actions:
         return None
@@ -93,3 +143,35 @@ def offer_service_fix(ctx, service_name: str, running: bool):
         f"for the right menu.",
         actions,
     )
+
+
+def offer_service_fix_chooser(ctx, degraded) -> bool:
+    """Offer an in-app fix chooser for degraded services this box is configured to run.
+
+    Args:
+        degraded: list of (service_name, running_bool).
+
+    Gated by `service_enabled_here`, so intentionally-off services (disabled or
+    absent units) are never offered — gateway-only boxes aren't nagged. Routes
+    each pick to the remediation surface (the fix comes to the operator).
+
+    Returns True if a chooser was shown (caller can skip its own wait-for-enter),
+    False if nothing was fixable (caller should wait/return as usual).
+    """
+    fixable = [(n, r) for (n, r) in degraded
+               if service_fix_actions(n, r) and service_enabled_here(n)]
+    if not fixable:
+        return False
+    running_by_name = dict(fixable)
+    while True:
+        choices = [(n, f"Fix {n}") for (n, _) in fixable]
+        choices.append(("__done__", "Done (leave as-is)"))
+        sel = ctx.dialog.menu(
+            "Fix a Degraded Service",
+            "These services aren't healthy. Fix one now — no need to find the "
+            "right menu:",
+            choices,
+        )
+        if not sel or sel == "__done__":
+            return True
+        offer_service_fix(ctx, sel, running_by_name.get(sel, False))

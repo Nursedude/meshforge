@@ -15,13 +15,13 @@ sys.path[:0] = [os.path.join(_here, "..", "src"),
                 os.path.join(_here, "..", "src", "launcher_tui")]
 
 from utils.service_check import check_service  # noqa: E402
-from service_remediation import service_fix_actions  # noqa: E402
+from service_remediation import service_fix_actions, service_enabled_here  # noqa: E402
 
 NOC = ["meshtasticd", "rnsd", "mosquitto", "meshforge-gateway",
        "meshforge", "meshforge-map", "meshforge-maps"]
 
 print(f"NOC fix-routing probe @ {os.uname().nodename}")
-print("=" * 64)
+print("=" * 72)
 for svc in NOC:
     try:
         st = check_service(svc)
@@ -30,13 +30,19 @@ for svc in NOC:
         continue
     state = getattr(st.state, "value", str(st.state))
     if st.available:
-        # Healthy: dashboard shows "running", offers no fix.
         print(f"  {svc:<20} {state:<14} healthy — no fix offered")
+        continue
+    # The chooser is gated by enabled-at-boot: a disabled/absent unit is
+    # intentionally off here and must NOT be offered (the moc3 map case).
+    enabled = service_enabled_here(svc)
+    has_route = bool(service_fix_actions(svc, running=False))
+    if not has_route:
+        print(f"  {svc:<20} {state:<14} DEGRADED — no route (unknown service)")
+    elif not enabled:
+        print(f"  {svc:<20} {state:<14} down but DISABLED/absent — GATED (no nag)")
     else:
         offered = [a.label for a in service_fix_actions(svc, running=False)]
-        verdict = f"WOULD OFFER: {offered}" if offered else "no route (not a known-fixable service)"
-        print(f"  {svc:<20} {state:<14} DEGRADED — {verdict}")
-print("=" * 64)
-print("Note: the Dashboard only lists services this box's startup-checks expect")
-print("(env_state.services); a service intentionally-off on this box's profile")
-print("should NOT appear there. This probe checks ALL NOC services directly.")
+        print(f"  {svc:<20} {state:<14} DEGRADED + enabled — WOULD OFFER: {offered}")
+print("=" * 72)
+print("GATED = unit is disabled or absent on this box (intentionally off) → the")
+print("fix chooser correctly skips it. WOULD OFFER = enabled-but-down → real fix.")

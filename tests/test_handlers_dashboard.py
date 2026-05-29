@@ -275,10 +275,13 @@ class TestDashboardServiceStatus:
         h._service_status_display()
         h.ctx.wait_for_enter.assert_called_once()
 
+    @patch('service_remediation.service_enabled_here', return_value=True)
     @patch('subprocess.run')
-    def test_service_status_display_offers_fix_when_degraded(self, mock_run):
+    def test_service_status_display_offers_fix_when_degraded(self, mock_run, _mock_enabled):
         # A FAILED known service => the in-app fix chooser is offered, not a bare
         # "press enter" (In-Domain: the fix comes to the operator, in this view).
+        # service_enabled_here patched True so the test doesn't depend on the dev
+        # box's actual rnsd enabled-state.
         from handlers.dashboard import ServiceRunState
         mock_run.return_value = MagicMock(returncode=0, stdout="active")
         mock_env = MagicMock()

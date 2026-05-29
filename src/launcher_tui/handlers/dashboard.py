@@ -256,29 +256,14 @@ class DashboardHandler(BaseHandler):
     def _offer_service_fixes(self, degraded):
         """Offer in-app fixes for degraded services via the shared surface.
 
-        ``degraded`` is a list of (service_name, running_bool). Only services
-        with a known safe local fix are offered; the rest are left informational.
-        Routes each choice to the remediation surface so the operator never has
-        to navigate to the fix (In-Domain Principle).
+        ``degraded`` is a list of (service_name, running_bool). Delegates to the
+        shared, profile-gated chooser so the operator never has to navigate to
+        the fix (In-Domain Principle). Falls back to a plain wait when nothing on
+        this box is fixable.
         """
-        from service_remediation import service_fix_actions, offer_service_fix
-        fixable = [(n, r) for (n, r) in degraded if service_fix_actions(n, r)]
-        if not fixable:
+        from service_remediation import offer_service_fix_chooser
+        if not offer_service_fix_chooser(self.ctx, degraded):
             self.ctx.wait_for_enter()
-            return
-        running_by_name = dict(fixable)
-        while True:
-            choices = [(n, f"Fix {n}") for (n, _) in fixable]
-            choices.append(("__done__", "Done (leave as-is)"))
-            sel = self.ctx.dialog.menu(
-                "Fix a Degraded Service",
-                "These services aren't healthy. Fix one now — no need to find "
-                "the right menu:",
-                choices,
-            )
-            if not sel or sel == "__done__":
-                return
-            offer_service_fix(self.ctx, sel, running_by_name.get(sel, False))
 
     def _dashboard_space_weather(self):
         """Quick-look space weather for the Dashboard.

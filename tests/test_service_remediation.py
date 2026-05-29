@@ -4,6 +4,8 @@ This is the shared map any monitoring view uses to turn a degraded service into
 an in-app fix (TUI workflow arc, 2026-05-29). Pure logic — no TUI needed.
 """
 
+from unittest.mock import MagicMock, patch
+
 from service_remediation import service_fix_actions
 
 
@@ -39,3 +41,73 @@ class TestServiceFixActions:
         # invoke it here (it would touch systemd), just confirm the shape.
         action = service_fix_actions("rnsd", running=True)[0]
         assert callable(action.apply)
+
+
+class TestServiceEnabledGate:
+    """The profile gate: only offer a fix for a service this box is configured
+    to run (unit installed AND enabled-at-boot). The deployment profile is NOT
+    the gate — a 'full'-profile gateway box reports maps=True yet disables the
+    map unit (the moc3 case)."""
+
+    @patch('utils.service_check.is_service_unit_installed', return_value=True)
+    @patch('utils.service_check.check_systemd_service', return_value=(False, True))
+    def test_installed_and_enabled_is_expected(self, _m_chk, _m_inst):
+        from service_remediation import service_enabled_here
+        assert service_enabled_here("meshforge-map") is True
+
+    @patch('utils.service_check.is_service_unit_installed', return_value=True)
+    @patch('utils.service_check.check_systemd_service', return_value=(False, False))
+    def test_installed_but_disabled_is_gated_out(self, _m_chk, _m_inst):
+        # moc3: unit exists but disabled -> intentionally off -> no nag.
+        from service_remediation import service_enabled_here
+        assert service_enabled_here("meshforge-map") is False
+
+    @patch('utils.service_check.is_service_unit_installed', return_value=False)
+    def test_absent_unit_is_gated_out(self, _m_inst):
+        from service_remediation import service_enabled_here
+        assert service_enabled_here("meshforge-maps") is False
+
+
+class TestCollectDegraded:
+    @patch('utils.service_check.check_service')
+    def test_collects_down_skips_available_and_not_installed(self, m_check):
+        from service_remediation import collect_degraded_services
+        from utils.service_check import ServiceState
+
+        def fake(svc):
+            r = MagicMock()
+            if svc == "rnsd":
+                r.available, r.state = False, ServiceState.NOT_RUNNING
+            elif svc == "meshtasticd":
+                r.available, r.state = True, ServiceState.AVAILABLE
+            else:  # meshforge-maps: no unit on this box
+                r.available, r.state = False, ServiceState.NOT_INSTALLED
+            return r
+
+        m_check.side_effect = fake
+        out = collect_degraded_services(["rnsd", "meshtasticd", "meshforge-maps"])
+        assert out == [("rnsd", False)]
+
+
+class TestChooserGate:
+    @patch('service_remediation.service_enabled_here', return_value=False)
+    def test_chooser_skips_intentionally_off_service(self, _m_enabled):
+        # rnsd is known + down but disabled here -> chooser not shown, no nag.
+        from service_remediation import offer_service_fix_chooser
+        ctx = MagicMock()
+        assert offer_service_fix_chooser(ctx, [("rnsd", False)]) is False
+        ctx.dialog.menu.assert_not_called()
+
+    @patch('service_remediation.service_enabled_here', return_value=True)
+    def test_chooser_shown_for_enabled_degraded(self, _m_enabled):
+        from service_remediation import offer_service_fix_chooser
+        ctx = MagicMock()
+        ctx.dialog.menu.return_value = "__done__"  # dismiss immediately
+        assert offer_service_fix_chooser(ctx, [("rnsd", False)]) is True
+        ctx.dialog.menu.assert_called_once()
+
+    @patch('service_remediation.service_enabled_here', return_value=False)
+    def test_offer_service_fix_gated_returns_none(self, _m_enabled):
+        from service_remediation import offer_service_fix
+        ctx = MagicMock()
+        assert offer_service_fix(ctx, "meshforge-map", running=False) is None

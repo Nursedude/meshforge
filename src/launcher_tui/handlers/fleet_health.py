@@ -110,6 +110,21 @@ class FleetHealthHandler(BaseHandler):
         print("=" * 72)
         print("Status legend: [ OK ] healthy  [WARN] worth a look  "
               "[FAIL] action recommended  [ -- ] not applicable")
+
+        # In-Domain: offer fixes for degraded LOCAL services this box is
+        # configured to run, right here — no hunting through Mesh Networks /
+        # System / Configuration. The chooser is profile-gated (enabled-at-boot),
+        # so a gateway-only box is NOT nagged about intentionally-disabled
+        # services (e.g. moc3's map daemon under the 'full' profile).
+        from service_remediation import (
+            collect_degraded_services, offer_service_fix_chooser,
+        )
+        degraded = collect_degraded_services(
+            ["rnsd", "meshtasticd", "meshforge-gateway", "meshforge-map"]
+        )
+        if offer_service_fix_chooser(self.ctx, degraded):
+            return  # operator engaged the fix chooser; no extra wait needed
+
         try:
             self.ctx.wait_for_enter("\nPress Enter to return to menu...")
         except KeyboardInterrupt:

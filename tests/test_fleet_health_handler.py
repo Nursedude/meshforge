@@ -24,6 +24,36 @@ def _handler() -> FleetHealthHandler:
     return FleetHealthHandler()
 
 
+_PROBE_NAMES = [
+    "_probe_rnsd", "_probe_rns_path_table", "_probe_rns_hub_peers",
+    "_probe_nomadnet", "_probe_lxmf_queue", "_probe_gateway_bridge",
+    "_probe_peer_gateways", "_probe_map_service", "_probe_map_db",
+    "_probe_meshtasticd_radio",
+]
+
+
+def test_render_overview_offers_fix_for_degraded(monkeypatch):
+    # Stack Health offers the profile-gated fix chooser for degraded local
+    # services after rendering (TUI workflow arc). Stub probes so the render
+    # touches nothing real; assert the degraded set is routed to the chooser and
+    # the bare wait-for-enter is skipped when a chooser is shown.
+    h = _handler()
+    h.ctx = MagicMock()
+    for name in _PROBE_NAMES:
+        monkeypatch.setattr(
+            FleetHealthHandler, name,
+            lambda self, _n=name: ProbeResult(label=_n, status="ok", headline="ok"),
+        )
+    seen = {}
+    monkeypatch.setattr("service_remediation.collect_degraded_services",
+                        lambda names: [("rnsd", False)])
+    monkeypatch.setattr("service_remediation.offer_service_fix_chooser",
+                        lambda ctx, deg: seen.update(deg=deg) or True)
+    h._render_overview()
+    assert seen.get("deg") == [("rnsd", False)]
+    h.ctx.wait_for_enter.assert_not_called()  # chooser shown -> early return
+
+
 # ----------------------------------------------------------------- helpers
 
 
