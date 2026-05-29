@@ -241,17 +241,23 @@ symptom (no task spine), not the disease.
    on-box verified on moc (`_fixes_for` returns correct actions). Also fixed
    `_tui_inventory.py` to use `__file__`-relative paths (was cwd-relative, broke
    over SSH).
-4. **NOC Home reframe** — IN PROGRESS (operator-approved sketch 2026-05-29).
-   New `NocHomeHandler` (section "main"), wired as the prominent top main-menu
-   entry. Renders, in order: **TRANSPORTS** row (Meshtastic / MeshCore / RNS) —
-   **RNS on its own line** with `→ Repair` (the guided wizard) and a
-   "still routing on the other transports" degrade-not-down note when only RNS
-   is down (surfaces the T3 hedge per the RNS verdict); **HEALTH** block (core
-   services) that offers the gated fix chooser (reuses `service_remediation`);
-   then a compact nav to Service Status / Stack Health / Diagnostics / Messages
-   / All Sections. Presentation-layer only; zero handler rewrites. Domains stay
-   reachable. RNS gets first-class visibility BECAUSE the research verdict =
-   support-risk HIGH.
+4. ✅ **DONE (commit `ed7ab8c`)** — **NOC Home reframe.** New `NocHomeHandler`
+   (section "main", tag "n"), the new first main-menu entry. Renders: **TRANSPORTS**
+   row (Meshtastic / MeshCore / **RNS on its own line** with one-touch
+   `Repair RNS` = start/restart/guided-wizard, + "still routing on the other
+   transport(s)" degrade-not-down note when only RNS is down — surfaces the T3
+   hedge per the RNS verdict); **HEALTH** block offering the gated fix chooser;
+   compact nav routing to existing views (Service Status / Stack Health /
+   Diagnostics / Messages / All Sections). Presentation-layer only; every action
+   routes to an existing handler. Probes respect the enabled-at-boot gate. 11
+   tests. **On-box verified** (moc3/moc1): healthy transports `up`,
+   intentionally-off services read `off (disabled)` not red — no false alarms.
+   Interactive whiptail UX = operator hands-on test pending.
+
+**NOC Workflow Arc COMPLETE** (steps 1–5 + RNS research). The fix-routing
+primitive now backs 4 surfaces (Dashboard, Stack Health, mini-dudeai, NOC Home);
+the monitor→fix loop is closed in-app and gated; RNS has first-class visibility +
+one-touch repair, motivated by the dependency-risk research.
 
 ### ⚠️ RNS Dependency Risk (operator concern, 2026-05-29) — strategic, OPEN
 RNS/rnsd is the fleet's single largest incident source (66 RNS-class lines in
