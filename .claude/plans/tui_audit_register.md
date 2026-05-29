@@ -241,8 +241,17 @@ symptom (no task spine), not the disease.
    on-box verified on moc (`_fixes_for` returns correct actions). Also fixed
    `_tui_inventory.py` to use `__file__`-relative paths (was cwd-relative, broke
    over SSH).
-4. **NOC Home reframe** — once fix-routing is everywhere, restructure the top
-   menu around the monitor→fix spine (presentation-layer; handlers intact).
+4. **NOC Home reframe** — IN PROGRESS (operator-approved sketch 2026-05-29).
+   New `NocHomeHandler` (section "main"), wired as the prominent top main-menu
+   entry. Renders, in order: **TRANSPORTS** row (Meshtastic / MeshCore / RNS) —
+   **RNS on its own line** with `→ Repair` (the guided wizard) and a
+   "still routing on the other transports" degrade-not-down note when only RNS
+   is down (surfaces the T3 hedge per the RNS verdict); **HEALTH** block (core
+   services) that offers the gated fix chooser (reuses `service_remediation`);
+   then a compact nav to Service Status / Stack Health / Diagnostics / Messages
+   / All Sections. Presentation-layer only; zero handler rewrites. Domains stay
+   reachable. RNS gets first-class visibility BECAUSE the research verdict =
+   support-risk HIGH.
 
 ### ⚠️ RNS Dependency Risk (operator concern, 2026-05-29) — strategic, OPEN
 RNS/rnsd is the fleet's single largest incident source (66 RNS-class lines in

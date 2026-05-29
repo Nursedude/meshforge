@@ -241,4 +241,8 @@ def get_all_handlers() -> List[Type]:
     from handlers.mini_dudeai import MiniDudeaiHandler
     handlers.append(MiniDudeaiHandler)
 
+    # Batch 23 — NOC Home landing (transports + health + one-touch fixes)
+    from handlers.noc_home import NocHomeHandler
+    handlers.append(NocHomeHandler)
+
     return handlers

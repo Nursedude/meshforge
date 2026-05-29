@@ -536,6 +536,8 @@ class MeshForgeLauncher:
             status_hint = self._get_menu_status_hint()
 
             choices = [
+                # NOC Home — operator landing: transports + health + one-touch fixes
+                ("n", "NOC Home            Transports, health, one-touch fixes"),
                 # Primary Operations (numbered for quick access)
                 ("1", "Dashboard           Status, health, alerts"),
                 ("2", "Mesh Networks       Meshtastic, RNS, AREDN"),
