@@ -86,7 +86,7 @@ headless can only static-trace).
 | 12 | configuration | `meshtasticd` | MeshtasticdConfigHandler | unified meshtasticd submenu | READ | mixed | medium | none | fix | config edit spawns `nano` (meshtasticd_config.py:543) — MF018 escape; see meshtasticd section | DONE |
 | 13 | configuration | `rnode` | RNodeHandler | RNode detect/firmware/RNS recommend | READ | yes | low | none | keep | rnode.py | DONE |
 | 14 | configuration | `meshforge` | SettingsHandler | app prefs (conn/propagation/loglevel) | READ | yes | low | none | keep | settings.py | DONE |
-| 15 | configuration | `updates` | UpdatesHandler | one-click git pull + pip update | READ | mixed | medium | dubious | fix | rnsd dual-pip-install swallows errors silently (updates.py:395) → reports success when lib missing | DONE |
+| 15 | configuration | `updates` | UpdatesHandler | one-click git pull + pip update | READ | yes | low | none | fix | **FIXED**: rnsd dual-pip-install discarded its result (subprocess.run doesn't raise on nonzero) → reported full success when the rnsd-critical copy failed. Now checks returncode + surfaces "rnsd Install Incomplete" msgbox w/ impact + in-app re-run. Pinned by tests/test_updates.py (4). | DONE |
 | 16 | configuration | `webhooks` | WebhooksHandler | manage/test webhook endpoints | READ | yes | low | dup | keep | minor list/toggle loop dup | DONE |
 | 17 | dashboard | `analytics` | AnalyticsHandler | link/health/coverage trends | READ | yes | low | none | keep | safe_import guarded | DONE |
 | 18 | dashboard | `alerts` | DashboardHandler | current system/mesh/wx alerts | READ | yes | low | none | keep | graceful fallbacks | DONE |
@@ -115,7 +115,7 @@ headless can only static-trace).
 | 41 | maps_viz | `mfmaps` | AIToolsHandler | install/control meshforge-maps ext | READ | yes | medium | none | keep | root checks; git/systemctl/pip | DONE |
 | 42 | maps_viz | `tiles` | AIToolsHandler | offline tile cache mgmt | READ | yes | low | none | keep | TileCache safe_import, confirm on destructive | DONE |
 | 43 | maps_viz | `quality` | LinkQualityHandler | link quality analysis | READ | yes | low | none | keep | read-only topology queries | DONE |
-| 44 | maps_viz | `export` | TopologyHandler | export GeoJSON/CSV/GraphML | READ | yes | low | dup | fix | `_export_topology` (topology.py:862) dead-dup of `_export_data_menu` (only latter dispatched) | DONE |
+| 44 | maps_viz | `export` | TopologyHandler | export GeoJSON/CSV/GraphML | READ | yes | low | dup | defer | **OVER-FLAG corrected**: `_export_topology` (topology.py:862) is NOT dead — reachable via Network Topology submenu (topology.py:99); top-level `export` tag → `_export_data_menu`. Genuine dup (two backends), but behavior-preserving consolidation w/ regression risk; defer. | DONE |
 | 45 | maps_viz | `topology` | TopologyHandler | D3.js topology graph | READ | yes | low | none | keep | lynx fallback for headless | DONE |
 | 46 | maps_viz | `traffic` | TrafficInspectorHandler | packet capture & analysis | READ | yes | medium | none | keep | diag handling for missing meshtasticd/pubsub | DONE |
 | 47 | mesh_networks | `aredn` | AREDNHandler | AREDN node status/neighbors/scan | READ | yes | low | none | keep | safe socket probing | DONE |
@@ -166,7 +166,7 @@ headless can only static-trace).
 | 92 | system | `details` | ConfigDoctorHandler | drill into last Config Doctor run | READ | yes | low | none | keep | lazy init | DONE |
 | 93 | system | `run` | ConfigDoctorHandler | audit per-box config drift | READ | yes | low | none | keep | read-only checks | DONE |
 | 94 | system | `db_health` | DBAuditHandler | audit all SQLite DBs | READ | yes | low | none | keep | dynamic import db_audit.py, null-checked | DONE |
-| 95 | system | `daemon` | DaemonHandler | start/stop/status headless NOC | READ | mixed | medium | none | fix | unguarded `from daemon_config import ...` (daemon.py:172) → NameError if missing; logs via journalctl/file, no in-app follow | DONE |
+| 95 | system | `daemon` | DaemonHandler | start/stop/status headless NOC | READ | yes | low | none | keep | **OVER-FLAG corrected**: `from daemon_config import ...` (daemon.py:171) IS inside try/except (lines 170-217) AND `src/daemon_config.py` exists on the path — no NameError, graceful in-app error worst-case. Logs via journalctl/file is by-design. No action. | DONE |
 | 96 | system | `diagnose` | DiagnosticsHandler | one-shot health via cli/diagnose.py | READ | yes | low | none | keep | subproc timeout=30; vague on nonzero rc (stderr hidden) — minor | DONE |
 | 97 | system | `status` | DiagnosticsHandler | one-shot status via cli/status.py | READ | yes | low | none | keep | same vague-on-error as diagnose | DONE |
 | 98 | system | `hardware` | HardwareHandler | detect SPI/I2C/USB; SPI enable | READ | yes | low | none | keep | writes /boot config.txt by design (SPI enable) | DONE |
@@ -213,8 +213,34 @@ headless can only static-trace).
   lines) — orphaned; `execute()` only dispatches `shell`. Verify-the-work-holder
   then cut.
 
-**fix backlog (dup/consolidation/hardening — lower priority, batch later):**
-#8 channels view-dup · #15 updates silent rnsd-pip failure · #36 meshing install
-progress · #44 topology dead `_export_topology` · #48 ham ARES submenu dup ·
-#52 dual_failover status-dup · #63 nomadnet submenu-layer dup · #66 services
-split · #70 cleanup restart-dup · #95 daemon unguarded import.
+### Fix-backlog arc — disposition after direct re-verification (2026-05-29)
+
+The Phase-1 subagents flagged 10 backlog items. Re-verifying each by direct
+read (the discipline that confirmed the crashers) found the backlog was mostly
+behavior-preserving refactors + two over-flags — only ONE real reliability bug.
+
+**FIXED (real bug):**
+- **#15 updates** — rnsd dual-pip-install silent false-success. Fixed + 4 tests.
+  (commit pending push)
+
+**OVER-FLAGS (no defect — corrected in rows above, no code change):**
+- **#95 daemon** — import IS guarded + module exists. Not unguarded.
+- **#44 topology** — `_export_topology` is NOT dead; reachable via submenu.
+
+**CONSOLIDATION refactors (dup, behavior-preserving — DEFERRED by judgment):**
+these add regression risk for maintainability gain (dev-principle #3, lowest
+priority) and none is a crash/wrong-result. Do one-per-commit with operator
+steering, not a blind batch:
+- #8 channels view-dup · #44 topology two-backend export dup · #48 ham ARES
+  submenu dup · #52 dual_failover status-dup · #63 nomadnet submenu-layer dup ·
+  #66 services handler split (168 lines) · #70 cleanup restart-dup.
+
+**UX hardening (DEFERRED):**
+- #36 meshing-around install shows spinner once then goes silent during long
+  git/venv/pip steps — wants per-step infobox progress. Cosmetic, not a bug.
+
+**Cut candidate (operator-ratify):** #103 `_system_tools_menu` ~1300 dead lines.
+
+**Lesson:** subagent "dup/dead" verdicts ran ~30% over-flag (2 of 6 dead/crash
+claims I spot-checked were wrong); crash-class verdicts I personally verified
+were 100% real. Trust the fan-out for breadth; re-verify before acting.

@@ -405,15 +405,45 @@ class UpdatesHandler(BaseHandler):
                     sudo_cmd.append('--upgrade')
                 sudo_cmd.append('meshtastic')
 
+                rnsd_ok = False
+                rnsd_detail = ""
                 try:
-                    subprocess.run(
+                    rnsd_result = subprocess.run(
                         sudo_cmd,
                         capture_output=True,
                         text=True,
                         timeout=120
                     )
+                    rnsd_ok = rnsd_result.returncode == 0
+                    if not rnsd_ok:
+                        # subprocess.run does NOT raise on nonzero exit when
+                        # capturing output — a failed rnsd install would
+                        # otherwise pass silently and the caller would report
+                        # full success (Issue #24 defeated).
+                        rnsd_detail = (
+                            rnsd_result.stderr or rnsd_result.stdout
+                            or f"Exit code: {rnsd_result.returncode}"
+                        ).strip()
                 except Exception as e:
+                    rnsd_detail = str(e)
                     logger.warning("System-wide meshtastic install error: %s", e)
+
+                if not rnsd_ok:
+                    logger.warning(
+                        "rnsd system-wide meshtastic install failed: %s", rnsd_detail
+                    )
+                    # User-level install succeeded (return True), but surface
+                    # the rnsd-copy failure honestly — don't claim full success.
+                    self.ctx.dialog.msgbox(
+                        "rnsd Install Incomplete",
+                        "The Meshtastic library updated for MeshForge, but the\n"
+                        "system-wide copy that rnsd needs did NOT install.\n\n"
+                        "Impact: the RNS gateway bridge may not pick up the new\n"
+                        "protobuf definitions until this lands (Issue #24).\n\n"
+                        "Fix: re-run this update from the Updates menu. If it\n"
+                        "keeps failing, the error below shows why:\n\n"
+                        f"{rnsd_detail[:400]}"
+                    )
 
             return True, result.stdout
 
