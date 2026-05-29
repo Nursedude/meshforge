@@ -1,0 +1,12 @@
+[Unit]
+Description=Nightly trigger for mini-dudeai synthesis ("dreams")
+
+[Timer]
+# Low-frequency: once nightly. The synthesis distills the last 24h of the
+# daemon's own telemetry — it is NOT part of the hot 30s tick loop.
+OnCalendar=*-*-* 03:17:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

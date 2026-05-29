@@ -41,6 +41,12 @@ from .actions import (
     ProposeEscalationAction,
 )
 from .brief import build_brief, write_brief
+from .dreams import (
+    build_dreams,
+    count_pending_deltas,
+    resolve_delta,
+    write_dreams,
+)
 from .config import (
     build_engine_from_config,
     load_config,
@@ -77,8 +83,12 @@ __all__ = [
     "Source",
     "StateStore",
     "build_brief",
+    "build_dreams",
     "build_engine_from_config",
+    "count_pending_deltas",
     "load_config",
+    "resolve_delta",
+    "write_dreams",
     "register_action",
     "register_source",
     "registered_action_kinds",

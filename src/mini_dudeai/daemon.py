@@ -46,6 +46,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="Write a warm-start brief from current state+history and exit "
                         "(no tick). Optional path; defaults next to the state file as "
                         "mini_dudeai_brief.md.")
+    p.add_argument("--dream", action="store_true",
+                   help="Run the low-frequency synthesis pass (B3): distill "
+                        "state+history into a dream log + candidate memory-deltas, "
+                        "then exit (no tick). Meant for a nightly cron/timer.")
     p.add_argument("--interval", type=float, default=None,
                    help="Override tick interval (seconds). Default: preset's default "
                         "or config.interval_s or 30.")
@@ -67,6 +71,24 @@ def main(argv: list[str] | None = None) -> int:
             os.path.dirname(state_path) or ".", "mini_dudeai_brief.md")
         write_brief(state_path, engine.history.path, out)
         print(f"mini-dudeai brief: wrote {out}")
+        return 0
+
+    if args.dream:
+        from .dreams import write_dreams
+        state_path = engine.state_store.path
+        base = os.path.dirname(state_path) or "."
+        summary = write_dreams(
+            state_path=state_path,
+            history_path=engine.history.path,
+            deltas_path=os.path.join(base, "mini_dudeai_memory_deltas.jsonl"),
+            narrative_path=os.path.join(base, "mini_dudeai_dreams.md"),
+        )
+        print(f"mini-dudeai dream: detected={summary['detected']} "
+              f"appended={summary['appended']} deduped={summary['deduped']} "
+              f"-> {summary['narrative_path']}")
+        if summary["append_error"] or summary["narrative_error"]:
+            print(f"  WARN: append_error={summary['append_error']} "
+                  f"narrative_error={summary['narrative_error']}")
         return 0
 
     if args.once:

@@ -147,3 +147,31 @@ to the same bar if you want the same guarantee.)
 
 Both are plain JSON/JSONL — read them with `jq`, tail them, or load them in
 Python via `StateStore` / by line.
+
+## Warm-start brief + "dreams" synthesis
+
+Two off-loop passes turn the raw state/history into something a cloud/LLM
+session reads *first* on a warm invocation — so it doesn't start cold:
+
+```bash
+python3 -m mini_dudeai --preset meshforge_fleet --brief    # write mini_dudeai_brief.md
+python3 -m mini_dudeai --preset meshforge_fleet --dream     # nightly synthesis
+```
+
+- **`--brief`** distills current state + recent history into a short
+  "what's active, what's escalated, what fired" note (`mini_dudeai_brief.md`).
+- **`--dream`** is a low-frequency (nightly) pass that runs *deterministic*
+  detectors over the last 24h — chronic flapping, first-time subjects, sustained
+  conditions, escalation roll-ups — and emits two artifacts: a first-person but
+  diagnostic narrative (`mini_dudeai_dreams.md`) and append-only **candidate
+  memory-deltas** (`mini_dudeai_memory_deltas.jsonl`). There is **no LLM** in the
+  dream — it is pattern extraction, not generation.
+
+Memory-deltas follow the same trust model as rules: the agent **proposes**, a
+session **ratifies**. The daemon never writes canonical memory. A session
+accepts/declines a proposal with `resolve_delta(path, key, "ratified"|"rejected")`;
+the nightly pass dedups against still-`proposed` deltas so it never re-spams the
+same finding. The brief surfaces a count of unratified deltas pointing at the
+dream log. Wire `--dream` to a nightly timer
+(`templates/systemd/meshforge-mini-dudeai-dream.timer`); it is fully decoupled
+from the 30s tick loop, so it can never affect fire behavior.

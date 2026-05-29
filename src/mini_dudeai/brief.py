@@ -34,8 +34,12 @@ def _age(now_ts: float, ts: float | None) -> str:
 
 
 def build_brief(state: dict, history: list[dict], now_ts: float,
-                stale_s: float = DEFAULT_STALE_S) -> str:
-    """Render the warm-start brief markdown from mini's state + recent history."""
+                stale_s: float = DEFAULT_STALE_S, pending_deltas: int = 0) -> str:
+    """Render the warm-start brief markdown from mini's state + recent history.
+
+    `pending_deltas` is the count of unratified B3 memory-deltas; when >0 the
+    brief points the warm session at them (the dream log is where to review).
+    """
     state = state if isinstance(state, dict) else {}
     rules = state.get("rules") or {}
     last_tick = state.get("last_tick_ts")
@@ -69,6 +73,13 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
             lines.append(f"- **{rs.get('rule_id')}** · {rs.get('subject')} · "
                          f"{str(rs.get('last_detail', ''))[:120]}")
 
+    # B3 — memory-deltas the nightly dream pass proposed and that no session has
+    # ratified yet. The dream log (mini_dudeai_dreams.md) holds the reasoning.
+    if pending_deltas:
+        lines.append(f"\n## 💭 {pending_deltas} memory-delta(s) await ratification")
+        lines.append("- See `mini_dudeai_dreams.md` for the synthesis + evidence; "
+                     "ratify/reject via `dreams.resolve_delta()`.")
+
     # Look here first — escalations proposed in recent history
     escalations = [h for h in history
                    if (h.get("outcome") or {}).get("extras", {}).get("escalation")]
@@ -91,7 +102,8 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
             lines.append(f"  - [{str(h.get('iso',''))[:19]}] {h.get('rule_id')} · "
                          f"{h.get('subject')} · {str(h.get('detail',''))[:90]}")
 
-    if not active and not escalations and not ups and last_tick and not stale:
+    if (not active and not escalations and not ups and not pending_deltas
+            and last_tick and not stale):
         lines.append("\n_Quiet: no active conditions, no escalations, no fires in window. "
                      "Nothing demands attention._")
 
@@ -99,13 +111,25 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
 
 
 def write_brief(state_path: str, history_path: str, out_path: str,
-                history_tail: int = 60, now_ts: float | None = None) -> str:
-    """Read mini's state + history-tail, build the brief, atomic-write it. Returns text."""
+                history_tail: int = 60, now_ts: float | None = None,
+                deltas_path: str | None = None) -> str:
+    """Read mini's state + history-tail, build the brief, atomic-write it. Returns text.
+
+    If `deltas_path` is given (or the standard sibling file exists), surfaces the
+    count of unratified B3 memory-deltas in the brief.
+    """
     import time
     now_ts = time.time() if now_ts is None else now_ts
     state, _ = read_json(state_path)
     history = _read_history_tail(history_path, history_tail)
-    text = build_brief(state or {}, history, now_ts)
+    if deltas_path is None:
+        deltas_path = os.path.join(
+            os.path.dirname(state_path) or ".", "mini_dudeai_memory_deltas.jsonl")
+    pending = 0
+    if os.path.exists(deltas_path):
+        from .dreams import count_pending_deltas
+        pending = count_pending_deltas(deltas_path)
+    text = build_brief(state or {}, history, now_ts, pending_deltas=pending)
     tmp = out_path + ".tmp"
     with open(tmp, "w") as f:
         f.write(text)
