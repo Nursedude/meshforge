@@ -542,41 +542,23 @@ class RNSConfigHandler(BaseHandler):
             return
 
         level_name = dict(levels).get(choice, choice)
-        # Offer to restart rnsd
-        if self.ctx.dialog.yesno(
-            "Loglevel Updated",
-            f"Set loglevel to {choice} ({level_name}).\n\n"
-            f"Restart rnsd to apply?\n\n"
-            f"View logs with:\n"
-            f"  sudo journalctl -u rnsd -f"
-        ):
-            try:
-                result = subprocess.run(
-                    ['sudo', 'systemctl', 'restart', 'rnsd'],
-                    capture_output=True, text=True, timeout=15,
-                )
-                if result.returncode == 0:
-                    self.ctx.dialog.msgbox(
-                        "rnsd Restarted",
-                        f"rnsd restarted with loglevel {choice}.\n\n"
-                        f"View logs:\n  sudo journalctl -u rnsd -f"
-                    )
-                else:
-                    self.ctx.dialog.msgbox(
-                        "Restart Failed",
-                        f"rnsd restart failed:\n{result.stderr or result.stdout}\n\n"
-                        f"Try manually: sudo systemctl restart rnsd"
-                    )
-            except (subprocess.SubprocessError, OSError) as e:
-                self.ctx.dialog.msgbox("Error", f"Restart failed:\n{e}")
-        else:
-            self.ctx.dialog.msgbox(
-                "Loglevel Updated",
-                f"Set loglevel to {choice} ({level_name}).\n\n"
-                f"Restart rnsd to apply:\n"
-                f"  sudo systemctl restart rnsd\n\n"
-                f"View logs:\n  sudo journalctl -u rnsd -f"
-            )
+        # Offer to apply the change in-app via the remediation surface — no
+        # shell-escape, and the restart goes through service_check (the SSOT)
+        # instead of a raw `sudo systemctl` call. (In-Domain Principle.)
+        from remediation import RemediationAction, propose_remediation
+        from utils.service_check import restart_service
+        propose_remediation(
+            self.ctx,
+            "Apply RNS Loglevel",
+            f"Loglevel set to {choice} ({level_name}). "
+            f"rnsd must restart to load the new loglevel.",
+            [RemediationAction(
+                label="Restart rnsd now",
+                description=f"apply loglevel {choice} (systemctl restart rnsd)",
+                apply=lambda: restart_service("rnsd"),
+                requires_admin=True,
+            )],
+        )
 
     # ------------------------------------------------------------------
     # Meshtastic plugin methods (from rns_menu_mixin.py)

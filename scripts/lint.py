@@ -749,7 +749,7 @@ MF018_BASELINE = {
     'src/launcher_tui/handlers/nomadnet.py': 4,
     'src/launcher_tui/handlers/quick_actions.py': 2,
     'src/launcher_tui/handlers/radio_menu.py': 4,
-    'src/launcher_tui/handlers/rns_config.py': 5,
+    'src/launcher_tui/handlers/rns_config.py': 4,  # Arc 2: loglevel→restart now via remediation surface
     'src/launcher_tui/handlers/rns_diagnostics.py': 4,
     'src/launcher_tui/handlers/rns_tools.py': 1,
     'src/launcher_tui/handlers/service_menu.py': 4,
