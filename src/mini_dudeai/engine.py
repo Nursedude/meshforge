@@ -181,6 +181,7 @@ class RuleEngine:
         # Edge-UP: rule matches a live condition now.
         for rule in rules:
             cooldown = float(rule.get("cooldown_s", 0))
+            grace = float(rule.get("grace_s", 0))
             for cond in conds:
                 if not _match_rule(rule, cond):
                     continue
@@ -193,8 +194,20 @@ class RuleEngine:
                 since_fire = now_ts - rs.get("last_fired_ts", 0.0)
                 if cooldown and since_fire < cooldown:
                     continue
+                # Grace/debounce: the condition must persist continuously for
+                # >= grace_s before this rule fires. The match streak starts the
+                # first tick the condition appears; a self-clearing transient
+                # (e.g. a ~30s federator blip during our own restarts) never
+                # reaches grace, so it is suppressed. The streak is reset below
+                # when the condition is absent for a tick.
+                if grace:
+                    if not rs.get("pending_since_ts"):
+                        rs["pending_since_ts"] = now_ts
+                    if now_ts - rs["pending_since_ts"] < grace:
+                        continue  # not persisted long enough — hold, no fire
                 outcome = self._execute(rule, cond, "edge_up")
                 rs["currently_active"] = True
+                rs["pending_since_ts"] = 0.0  # streak consumed by the fire
                 rs["last_fired_ts"] = now_ts
                 rs["fire_count"] = rs.get("fire_count", 0) + 1
                 rs["fires_window"].append(now_ts)
@@ -206,6 +219,12 @@ class RuleEngine:
 
         # Edge-DOWN: was active, no longer matched this tick.
         for key, rs in list(state["rules"].items()):
+            # Reset a grace streak that broke before it could fire: the
+            # condition was building toward grace_s but is absent this tick, so
+            # the next appearance starts a fresh streak (this is what makes a
+            # transient never accumulate enough persistence to fire).
+            if key not in matched_keys and rs.get("pending_since_ts"):
+                rs["pending_since_ts"] = 0.0
             if not rs.get("currently_active"):
                 continue
             if key in matched_keys:

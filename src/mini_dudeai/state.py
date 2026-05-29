@@ -25,6 +25,10 @@ def _empty_rule_state(rule_id: str, subject: str) -> dict:
         "fire_count_24h": 0,
         "fires_window": [],
         "last_detail": "",
+        # grace/debounce: ts the current pre-fire match streak began (0.0 = none).
+        # A rule with grace_s only fires once the condition has matched
+        # continuously for >= grace_s, suppressing self-clearing transients.
+        "pending_since_ts": 0.0,
     }
 
 

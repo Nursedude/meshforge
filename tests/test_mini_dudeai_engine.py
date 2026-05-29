@@ -378,3 +378,93 @@ def test_state_file_has_meta_fields(tmp_path):
     for k in ("last_tick_ts", "last_tick_iso", "rule_count", "condition_count",
               "error_count", "fire_count", "host"):
         assert k in state, f"missing meta field: {k}"
+
+
+# === grace / debounce (grace_s) ==================================
+
+def test_grace_holds_until_condition_persists(tmp_path, monkeypatch):
+    """A rule with grace_s does NOT fire until the condition has matched
+    continuously for >= grace_s — the federator-flap suppressor."""
+    import mini_dudeai.engine as eng
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(eng.time, "time", lambda: clock["t"])
+
+    rec = RecordingAction()
+    src = StaticSource([Condition(kind="src_err", subject="federator", detail="blind")])
+    engine = _engine(
+        tmp_path, [src],
+        [{"id": "fed", "match": {"kind": "src_err"}, "action": {"kind": "recorder"},
+          "grace_s": 90}],
+        actions={"recorder": rec},
+    )
+    engine.tick()                  # t=1000 streak starts, no fire
+    assert rec.calls == []
+    clock["t"] = 1030.0
+    engine.tick()                  # t=1030, 30s < 90s, still holding
+    assert rec.calls == []
+    clock["t"] = 1100.0
+    engine.tick()                  # t=1100, 100s >= 90s -> fire
+    assert rec.calls == [("fed", "federator", "edge_up")]
+
+
+def test_grace_resets_on_transient_clear(tmp_path, monkeypatch):
+    """A self-clearing transient never accumulates enough persistence to fire:
+    the streak resets each time the condition is absent for a tick."""
+    import mini_dudeai.engine as eng
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(eng.time, "time", lambda: clock["t"])
+
+    rec = RecordingAction()
+    cond = Condition(kind="src_err", subject="federator", detail="blind")
+    src = StaticSource([cond])
+    engine = _engine(
+        tmp_path, [src],
+        [{"id": "fed", "match": {"kind": "src_err"}, "action": {"kind": "recorder"},
+          "grace_s": 90}],
+        actions={"recorder": rec},
+    )
+    engine.tick()                  # t=1000 streak starts
+    clock["t"] = 1030.0
+    src.conditions = []            # transient cleared (restart finished)
+    engine.tick()                  # t=1030 streak resets, no fire
+    clock["t"] = 1060.0
+    src.conditions = [cond]        # blip again (next restart)
+    engine.tick()                  # t=1060 fresh streak, 0s elapsed
+    clock["t"] = 1075.0
+    engine.tick()                  # t=1075, only 15s into new streak
+    assert rec.calls == []         # never fired despite two appearances
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert state["rules"]["fed::federator"]["pending_since_ts"] == 1060.0
+
+
+def test_grace_real_outage_eventually_fires(tmp_path, monkeypatch):
+    """A genuine sustained outage outlasts grace and pages, as intended."""
+    import mini_dudeai.engine as eng
+    clock = {"t": 5000.0}
+    monkeypatch.setattr(eng.time, "time", lambda: clock["t"])
+
+    rec = RecordingAction()
+    src = StaticSource([Condition(kind="src_err", subject="federator", detail="down")])
+    engine = _engine(
+        tmp_path, [src],
+        [{"id": "fed", "match": {"kind": "src_err"}, "action": {"kind": "recorder"},
+          "grace_s": 90}],
+        actions={"recorder": rec},
+    )
+    engine.tick()                  # streak starts
+    clock["t"] = 5200.0            # 200s of continuous blindness
+    engine.tick()
+    assert rec.calls == [("fed", "federator", "edge_up")]
+
+
+def test_no_grace_fires_immediately(tmp_path):
+    """Rules without grace_s are unaffected (backward compatible)."""
+    rec = RecordingAction()
+    src = StaticSource([Condition(kind="x", subject="foo", detail="d")])
+    engine = _engine(
+        tmp_path, [src],
+        [{"id": "r1", "match": {"kind": "x"}, "action": {"kind": "recorder"}}],
+        actions={"recorder": rec},
+    )
+    engine.tick()
+    assert rec.calls == [("r1", "foo", "edge_up")]
