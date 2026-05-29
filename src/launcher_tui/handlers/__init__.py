@@ -237,4 +237,8 @@ def get_all_handlers() -> List[Type]:
     from handlers.fleet_health import FleetHealthHandler
     handlers.append(FleetHealthHandler)
 
+    # Batch 22 — mini-dudeai findings → in-app fixes (In-Domain loop-closer)
+    from handlers.mini_dudeai import MiniDudeaiHandler
+    handlers.append(MiniDudeaiHandler)
+
     return handlers
