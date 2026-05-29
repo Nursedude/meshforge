@@ -290,3 +290,44 @@ class TestPathTableIndexConstants:
         assert mod._PT_NEXT_HOP == 1
         assert mod._PT_HOPS == 2
         assert mod._PT_RVCD_IF == 5
+
+
+class TestInitRnsSingletonHostGuard:
+    """Belt-and-suspenders: map_data_service must ATTACH to rnsd's shared
+    instance, never CREATE one (becoming the @rns host with no interfaces ->
+    2026-05-28 fleet routing outage). See project_rns_map_host_race."""
+
+    def test_skips_and_does_not_create_when_no_shared_instance(self):
+        with patch.object(mod, "_HAS_RNS", True), \
+             patch.object(mod, "_rns_is_initialized", return_value=False), \
+             patch.object(mod, "_RNS", MagicMock()) as rns, \
+             patch("utils.paths.ReticulumPaths.get_configured_instance_name",
+                   return_value="test rns"), \
+             patch("utils._port_detection.check_rns_shared_instance",
+                   return_value=False) as chk:
+            result = mod.init_rns_singleton()
+        assert result is False                       # skipped
+        chk.assert_called_once_with("test rns")
+        rns.Reticulum.assert_not_called()            # NEVER creates an instance
+
+    def test_attaches_when_shared_instance_present(self):
+        with patch.object(mod, "_HAS_RNS", True), \
+             patch.object(mod, "_rns_is_initialized", return_value=False), \
+             patch.object(mod, "_RNS", MagicMock()) as rns, \
+             patch("utils.paths.ReticulumPaths.get_configured_instance_name",
+                   return_value="test rns"), \
+             patch("utils.paths.ReticulumPaths.get_shared_rpc_key",
+                   return_value=None), \
+             patch("utils._port_detection.check_rns_shared_instance",
+                   return_value=True):
+            result = mod.init_rns_singleton()
+        assert result is True                        # attached
+        rns.Reticulum.assert_called_once()           # connects as client
+
+    def test_returns_true_early_when_already_initialized(self):
+        # already attached in-process -> no probe, no re-create
+        with patch.object(mod, "_HAS_RNS", True), \
+             patch.object(mod, "_rns_is_initialized", return_value=True), \
+             patch("utils._port_detection.check_rns_shared_instance") as chk:
+            assert mod.init_rns_singleton() is True
+        chk.assert_not_called()

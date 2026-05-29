@@ -285,6 +285,25 @@ def init_rns_singleton() -> bool:
     import tempfile
     from utils.paths import ReticulumPaths
     instance_name = ReticulumPaths.get_configured_instance_name()
+
+    # Belt-and-suspenders (own the upstream gap): we are an RNS *consumer*, never
+    # the shared-instance host. RNS.Reticulum(share_instance=Yes) CREATES a shared
+    # instance when none exists — which would make THIS process (map_data_service)
+    # the @rns host. Our client config carries no interfaces, so if map wins the
+    # host role the box loses ALL fleet RNS routing (the 2026-05-28 ~21h outage;
+    # see project_rns_map_host_race). The systemd drop-in orders map after rnsd,
+    # but we own the failure mode in code too: only attach when rnsd already hosts
+    # the shared instance; never create one. If it's absent, skip RNS this cycle —
+    # a later collect retries once rnsd is up (map's other data sources are
+    # unaffected; rns_direct just stays 0 meanwhile).
+    from utils._port_detection import check_rns_shared_instance
+    if not check_rns_shared_instance(instance_name):
+        logger.warning(
+            "RNS shared instance @rns/%s not present — skipping RNS init so "
+            "map_data_service never becomes the @rns host (rnsd must host it). "
+            "Retrying on a later collect cycle.", instance_name)
+        return False
+
     client_config_dir = Path(tempfile.gettempdir()) / "meshforge_rns_client"
     client_config_dir.mkdir(exist_ok=True)
     client_config_file = client_config_dir / "config"
