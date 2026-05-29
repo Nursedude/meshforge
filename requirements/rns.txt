@@ -7,11 +7,23 @@
 # reviewed decision, never an automatic `pip install` grabbing latest. The old
 # floating `rns>=0.7.0` had already skewed the fleet (1.1.4 / 1.1.9 / 1.2.5).
 #
-# Pinned to the combo proven on the majority of gateway boxes (moc/moc1/moc2).
+# REBASELINED 2026-05-29 (sub-arc A, DECISION 1): rns 1.1.9 -> 1.2.5.
+#   - 1.2.5 is the LAST GitHub-published RNS release (upstream is at 1.3.x but
+#     migrating off GitHub) — so it is the natural vendoring anchor (sub-arc D):
+#     the newest version we can still obtain and self-maintain.
+#   - It is the combo already SOAKING on the federator box, so this is a
+#     converge-UP to a field-proven version, not a leap to untested latest, and
+#     it avoids the config-format DOWNGRADE risk a 1.2.5->1.1.9 move carried.
+#   - lxmf holds at the version proven WITH 1.2.5 on the federator = 0.9.4 (NOT
+#     the old 0.9.6, which only ever rode 1.1.9; 1.2.5+0.9.6 runs on no box).
+#     Upstream gone => we pin the pair we have WATCHED run, never a plausible one.
+#   - Convergence is a separate watched step (NOT an auto-pip across the
+#     cornerstone): the gateway boxes take RNS 1.1.9->1.2.5 (up) AND LXMF
+#     0.9.6->0.9.4 (down); the federator is already compliant (no-op).
 # Verify drift with: python3 scripts/rns_version_check.py
 # See .claude/plans/rns_t2_isolate_arc.md and the project_rns_upstream_withdrawal memory.
-rns==1.1.9
-lxmf==0.9.6
+rns==1.2.5
+lxmf==0.9.4
 
 # Cryptography / PyOpenSSL version alignment:
 # RNS pulls in cryptography 46.x (its constraint is >=3.4.7, so pip grabs latest).

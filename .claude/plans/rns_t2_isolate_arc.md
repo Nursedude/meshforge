@@ -147,20 +147,28 @@ true.
 4. **Verify C** with the #68 recipe (persistent_issues #68): wedge rnsd, confirm
    the caller fails-open within the timeout and `:5000` still binds.
 
+**DECISION 1 RESOLVED (2026-05-29): rebaselined the pin to `rns==1.2.5` /
+`lxmf==0.9.4`** — converge the gateways UP to the federator-proven, last-GitHub-
+published version rather than downgrade VolcanoAI. Reasoning recorded inline in
+`requirements/rns.txt`. The federator is now the pin source-of-truth (no-op to
+converge), and 1.2.5 doubles as the vendoring anchor for sub-arc D.
+
 **Convergence of the live fleet (watched — do with/after B+C, NOT auto):**
-current `rns_version_check.py` state -> moc/moc1/moc2 = OK; **moc3 DRIFT** (1.1.4,
-forward bump to 1.1.9 — low risk); **VolcanoAI DRIFT** (1.2.5 -> 1.1.9 is a
-**DOWNGRADE**, config-format risk).
-- moc3: `pip install 'rns==1.1.9' 'lxmf==0.9.6'` (mind venv vs `--break-system-packages`,
+new pin = `rns==1.2.5`/`lxmf==0.9.4`. Expected `rns_version_check.py` state:
+**VolcanoAI = OK** (already 1.2.5+0.9.4, no-op); **moc3 DRIFT** (RNS 1.1.4->1.2.5
+forward bump, LXMF already 0.9.4); **moc/moc1/moc2 DRIFT** (RNS 1.1.9->1.2.5 UP
+**and LXMF 0.9.6->0.9.4 DOWN** — the LXMF leg is a downgrade, soak before/after).
+- moc3: `pip install 'rns==1.2.5' 'lxmf==0.9.4'` (mind venv vs `--break-system-packages`,
   see `updates.py:_pip_install_meshtastic` for the install-path logic) -> verify with
   `scripts/_noc_fix_probe.py` + `scripts/rns_version_check.py`.
-- VolcanoAI: **DECISION 1** — downgrade-and-verify, OR rebaseline the pin to 1.2.5
-  and converge the gateways UP instead. Do NOT auto-downgrade the federator.
+- moc/moc1/moc2: same pip, but watch the LXMF downgrade (propagation-node /
+  message-format compat) — converge ONE gateway, soak, then the rest.
+- VolcanoAI: no action (already on the pin).
 - Goal: `rns_version_check.py` all-OK fleet-wide.
 
-**Open decisions:** (1) pin reconciliation (downgrade VolcanoAI vs rebaseline to
-1.2.5); (2) B scope (all 25 vs hot-paths first); (3) vendor depth = sub-arc D,
-defer until a patch is needed.
+**Open decisions:** (1) ~~pin reconciliation~~ RESOLVED above (rebaselined to
+1.2.5+0.9.4); (2) B scope (all 25 vs hot-paths first); (3) vendor depth = sub-arc
+D, defer until a patch is needed.
 
 **Done-when:** one guarded constructor, 25 sites routed (or hot-paths + plan for
 rest), lint+guard banning raw construction, #68 fail-open verified, fleet
@@ -168,6 +176,9 @@ converged + `rns_version_check.py` green. Pre-push checklist + `fleet_sync.sh`
 apply. This is meaty -> a fresh session with this file as warm-start is ideal.
 
 ## Status
-Sub-arc **A DONE** (`e8c5d9c`): pinned `rns==1.1.9`/`lxmf==0.9.6`, drift-check
-deployed fleet-wide (moc/moc1/moc2 OK, moc3+VolcanoAI flagged). **B+C scoped &
-handed off above** — awaiting a fresh session. D deferred. This file survives `/clear`.
+Sub-arc **A DONE** (`e8c5d9c`): pinned + drift-check deployed fleet-wide.
+**DECISION 1 RESOLVED (2026-05-29)**: pin REBASELINED `rns==1.1.9`/`lxmf==0.9.6`
+-> `rns==1.2.5`/`lxmf==0.9.4` (converge gateways UP to the federator-proven, last-
+GitHub-published combo; VolcanoAI now a no-op). Live convergence of moc/moc1/moc2
++ moc3 is a WATCHED step (see above) — not yet run. **B+C scoped & handed off
+above** — awaiting a fresh session. D deferred. This file survives `/clear`.
