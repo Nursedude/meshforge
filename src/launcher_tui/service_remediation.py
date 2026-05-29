@@ -39,8 +39,14 @@ _KNOWN_SERVICES = {
 }
 
 
-def _restart_action(service: str, label: str, description: str):
-    """A remediation action that restarts a LOCAL service via the SSOT."""
+def restart_action(service: str, label: str, description: str):
+    """Shared builder: a remediation action that restarts a LOCAL service via
+    the SSOT (``utils.service_check.restart_service``).
+
+    Public — the one place "restart service X" actions are built. Used by
+    ``service_fix_actions`` here and by mini-dudeai's rule→fix map, so the two
+    don't carry duplicate copies.
+    """
     from remediation import RemediationAction
     from utils.service_check import restart_service
     return RemediationAction(
@@ -76,11 +82,11 @@ def service_fix_actions(service_name: str, running: bool) -> List:
     if not desc:
         return []
     if running:
-        return [_restart_action(service_name, f"Restart {service_name}",
-                                f"restart {desc}")]
+        return [restart_action(service_name, f"Restart {service_name}",
+                               f"restart {desc}")]
     return [
         _start_action(service_name, f"Start {service_name}", f"start {desc}"),
-        _restart_action(service_name, f"Restart {service_name}", f"restart {desc}"),
+        restart_action(service_name, f"Restart {service_name}", f"restart {desc}"),
     ]
 
 

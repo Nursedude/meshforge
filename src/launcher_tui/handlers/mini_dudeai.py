@@ -62,18 +62,6 @@ def _read_history(path, last: int = 80) -> list:
     return out
 
 
-def _restart_action(service: str, label: str, description: str):
-    """Build a remediation action that restarts a LOCAL service via the SSOT."""
-    from remediation import RemediationAction
-    from utils.service_check import restart_service
-    return RemediationAction(
-        label=label,
-        description=description,
-        apply=lambda: restart_service(service),
-        requires_admin=True,
-    )
-
-
 def _fixes_for(rule_id: str) -> list:
     """Operator-ratified map: rule_id → safe LOCAL remediation actions.
 
@@ -81,15 +69,22 @@ def _fixes_for(rule_id: str) -> list:
     A rule absent here (e.g. a remote-peer escalation) yields no action — the
     caller then presents it as informational rather than pretending to fix it.
     Extend conservatively as fixes prove out.
+
+    The rule_id → service mapping is mini-dudeai's own domain knowledge; the
+    restart-action BUILDER is the shared one in ``service_remediation`` (deduped
+    2026-05-29 — there is no second copy of "restart service X"). No
+    enabled-at-boot gate here on purpose: a rule like ``source_error_federator``
+    only fires on a box that runs the federator, so the service is expected.
     """
+    from service_remediation import restart_action
     if rule_id == "source_error_federator":
         # The local /api/status (map/federation server) is unreachable; the
         # dream loop traced these to meshforge-map restarts. Restart is the fix.
-        return [_restart_action("meshforge-map", "Restart meshforge-map",
-                                "restart the local map / federation server")]
+        return [restart_action("meshforge-map", "Restart meshforge-map",
+                               "restart the local map / federation server")]
     if rule_id == "source_error_watchdog":
-        return [_restart_action("meshforge-watchdog", "Restart meshforge-watchdog",
-                                "restart the local reliability watchdog")]
+        return [restart_action("meshforge-watchdog", "Restart meshforge-watchdog",
+                               "restart the local reliability watchdog")]
     return []
 
 
