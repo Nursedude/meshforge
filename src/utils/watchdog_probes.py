@@ -58,6 +58,7 @@ SIGNAL_CLASSES = (
     "service_inactive",               # general; "should be running but isn't"
     "tracer_peer_unreachable",        # today's symptom; per-peer recurring no-route
     "rns_shared_instance_unresponsive",  # 2026-05-21: rnsd shared-instance hung
+    "rns_interface_down_peer_reachable",  # 2026-05-30: stuck TCPInterface Down, peer reachable
 )
 
 SEVERITIES = ("info", "degraded", "wedge")
@@ -456,6 +457,126 @@ def probe_rns_shared_instance_responsive(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Probe: RNS interface Down while peer reachable (2026-05-30)
+# ─────────────────────────────────────────────────────────────────────
+
+# A routable TCPInterface display_name embeds the peer host:port, e.g.
+#   "Regional RNS/192.168.86.38:4242"
+# RNodeInterface / AutoInterface / the Shared Instance line carry no
+# host:port and are correctly ignored — only a TCP peer can be probed
+# for reachability. The host group is an IPv4 dotted-quad; rnsd renders
+# the configured target_host:target_port verbatim.
+_TCP_PEER_RE = re.compile(r"(?P<host>[0-9.]+):(?P<port>\d+)\s*$")
+
+
+def _tcp_reachable(host: str, port: int, timeout: float = 3.0) -> bool:
+    """Bounded TCP-connect reachability test to ``(host, port)``.
+
+    Returns True when a TCP connection can be established within
+    ``timeout`` seconds, False on any ``OSError`` (refused, timed out,
+    no route, bad address). Factored out as a module-level function so
+    tests can monkeypatch it and do zero real network I/O.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def probe_rns_interface_down_peer_reachable(
+    *,
+    rnstatus_text: Optional[str] = None,
+    reachable_timeout_s: float = 3.0,
+) -> Optional[Signal]:
+    """Detect a configured TCPInterface stuck ``Status: Down`` while its
+    peer host:port is still TCP-reachable — the 2026-05-30 incident shape.
+
+    The production incident: rnsd itself was healthy (Up, owned ``@rns``,
+    answered ``rnstatus``) and the peer host:port + L3 were reachable,
+    but the box's SOLE RNS uplink ``TCPInterface`` sat ``Status: Down``.
+    The fleet was islanded until rnsd was restarted. The existing
+    watchdog only caught this indirectly via ``tracer_peer_unreachable``;
+    this probe catches it DIRECTLY at the interface layer.
+
+    Logic:
+
+    * Parse ``rnstatus`` (live, or ``rnstatus_text`` for tests) into
+      typed interfaces via ``utils.rns_status_parser``.
+    * For each TCPInterface whose status is Down AND whose display_name
+      embeds a ``host:port``, run a bounded TCP-connect reachability test.
+    * If the connect SUCCEEDS → peer is reachable but the interface is
+      stuck Down → emit a wedge signal (cure: restart rnsd).
+    * If the connect FAILS → genuine peer/network outage, already owned
+      by ``tracer_peer_unreachable``; do NOT emit here.
+
+    Returns the FIRST qualifying interface's signal (consistent with the
+    other single-return probes), with ``extra.down_reachable_count`` when
+    more than one interface qualifies. Returns None when no interface
+    qualifies, rnstatus is unreadable/errored, or rnsd is down (a
+    different probe owns those).
+    """
+    if rnstatus_text is None:
+        from utils.rns_status_parser import run_rnstatus
+        status = run_rnstatus()
+    else:
+        from utils.rns_status_parser import parse_rnstatus
+        status = parse_rnstatus(rnstatus_text)
+
+    # rnstatus errored (rnsd unreachable, binary missing, timeout) →
+    # don't speculate; service_inactive / shared-instance probes own that.
+    if status.parse_error:
+        return None
+
+    from utils.rns_status_parser import InterfaceStatus
+
+    qualifying: List[Tuple[str, str, int]] = []  # (interface_label, host, port)
+    for iface in status.interfaces:
+        # Only TCP interfaces carry a routable peer host:port.
+        if "tcp" not in iface.type_name.lower():
+            continue
+        if iface.status != InterfaceStatus.DOWN:
+            continue
+        m = _TCP_PEER_RE.search(iface.display_name)
+        if not m:
+            continue
+        host = m.group("host")
+        try:
+            port = int(m.group("port"))
+        except (TypeError, ValueError):
+            continue
+        if _tcp_reachable(host, port, timeout=reachable_timeout_s):
+            qualifying.append((iface.full_name, host, port))
+
+    if not qualifying:
+        return None
+
+    label, host, port = qualifying[0]
+    extra = {
+        "interface": label,
+        "host": host,
+        "port": port,
+        "peer_reachable": True,
+    }
+    if len(qualifying) > 1:
+        extra["down_reachable_count"] = len(qualifying)
+
+    return Signal(
+        cls="rns_interface_down_peer_reachable",
+        subject=label,
+        severity="wedge",
+        detail=(
+            f"rnstatus shows {label} Status: Down but its peer "
+            f"{host}:{port} is TCP-reachable — stuck interface, not a "
+            f"peer outage. rnsd is up but this uplink is wedged; the box "
+            f"may be islanded. Recovery: sudo systemctl restart "
+            f"rnsd.service. See 2026-05-30 incident."
+        ),
+        extra=extra,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Probe: HTTP local unresponsive (catches socketserver-deadlock class)
 # ─────────────────────────────────────────────────────────────────────
 
@@ -850,6 +971,8 @@ __all__ = [
     "probe_main_thread_wedge",
     "probe_lxmf_process_wedge",
     "probe_rns_shared_instance_responsive",
+    "probe_rns_interface_down_peer_reachable",
+    "_tcp_reachable",
     "probe_http_local",
     "probe_delivery_write_canary",
     "probe_service_inactive",

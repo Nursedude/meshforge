@@ -50,6 +50,7 @@ from utils.watchdog_probes import (
     probe_http_local,
     probe_lxmf_process_wedge,
     probe_main_thread_wedge,
+    probe_rns_interface_down_peer_reachable,
     probe_rns_namespace_collision,
     probe_rns_shared_instance_responsive,
     probe_service_inactive,
@@ -212,6 +213,17 @@ def run_all_probes(
         sig = probe_rns_shared_instance_responsive(rns_instance_name)
         if sig is not None:
             signals.append(sig)
+
+    # RNS interface Down while peer reachable (2026-05-30 incident). Runs
+    # rnstatus + a bounded TCP-connect to any Down TCPInterface's peer.
+    # Catches the stuck-uplink class directly at the interface layer
+    # (previously only caught indirectly via tracer_peer_unreachable).
+    # Not gated on rns_instance_name: rnstatus enumerates interfaces
+    # regardless of instance_name resolution, and the probe self-guards
+    # on parse_error when rnsd is unreachable.
+    sig = probe_rns_interface_down_peer_reachable()
+    if sig is not None:
+        signals.append(sig)
 
     # Main-thread wedge — /proc read, root only. Now scans ALL task
     # threads (not just main) so worker-thread wedges (today's class)

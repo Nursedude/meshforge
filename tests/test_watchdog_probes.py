@@ -37,6 +37,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_http_local,
     probe_lxmf_process_wedge,
     probe_main_thread_wedge,
+    probe_rns_interface_down_peer_reachable,
     probe_rns_namespace_collision,
     probe_rns_shared_instance_responsive,
     probe_service_inactive,
@@ -70,6 +71,7 @@ def test_signal_classes_closed_enum_is_documented():
         "service_inactive",
         "tracer_peer_unreachable",
         "rns_shared_instance_unresponsive",
+        "rns_interface_down_peer_reachable",
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -553,6 +555,142 @@ def test_rns_shared_instance_responsive_fires_wedge_on_full_backlog():
 def test_rns_shared_instance_responsive_returns_none_on_empty_name():
     sig = probe_rns_shared_instance_responsive("")
     assert sig is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-05-30 incident — rns_interface_down_peer_reachable
+# ─────────────────────────────────────────────────────────────────────
+
+
+# Exact rnstatus interface block from the 2026-05-30 incident: the sole
+# RNS uplink TCPInterface stuck Status: Down while rnsd itself was fine.
+_RNSTATUS_DOWN_BLOCK = (
+    " TCPInterface[Regional RNS/192.168.86.38:4242]\n"
+    "    Status    : Down\n"
+    "    Mode      : Full\n"
+    "    Rate      : 10.00 Mbps\n"
+    "    Traffic   : ↑1.59 MB    0 bps\n"
+    "                ↓1.58 MB    0 bps\n"
+)
+
+# Same interface, but Up — healthy steady state.
+_RNSTATUS_UP_BLOCK = (
+    " TCPInterface[Regional RNS/192.168.86.38:4242]\n"
+    "    Status    : Up\n"
+    "    Mode      : Full\n"
+    "    Rate      : 10.00 Mbps\n"
+)
+
+# One Up TCP interface + one Down (reachable) TCP interface.
+_RNSTATUS_MIXED = (
+    " Shared Instance[37428]\n"
+    "    Status    : Up\n"
+    " TCPInterface[UpPeer RNS/10.0.0.5:4242]\n"
+    "    Status    : Up\n"
+    "    Mode      : Full\n"
+    " TCPInterface[Regional RNS/192.168.86.38:4242]\n"
+    "    Status    : Down\n"
+    "    Mode      : Full\n"
+    " RNodeInterface[LoRa]\n"
+    "    Status    : Up\n"
+)
+
+# Only non-TCP interfaces — no routable host:port, must be ignored even
+# when one is Down.
+_RNSTATUS_NONTCP = (
+    " Shared Instance[37428]\n"
+    "    Status    : Up\n"
+    " RNodeInterface[LoRa Radio]\n"
+    "    Status    : Down\n"
+    " AutoInterface[Default Interface]\n"
+    "    Status    : Up\n"
+)
+
+
+class TestRnsInterfaceDownPeerReachable:
+    """2026-05-30 production incident: rnsd healthy (Up, owns @rns,
+    answers rnstatus) and the peer host:port + L3 reachable, but the
+    box's sole RNS uplink TCPInterface stuck Status: Down — fleet
+    islanded until rnsd restart. The watchdog must catch this DIRECTLY,
+    not just indirectly via tracer_peer_unreachable."""
+
+    def test_signal_class_registered(self):
+        assert "rns_interface_down_peer_reachable" in SIGNAL_CLASSES
+
+    def test_down_interface_peer_reachable_fires_wedge(self):
+        with patch("utils.watchdog_probes._tcp_reachable", return_value=True):
+            sig = probe_rns_interface_down_peer_reachable(
+                rnstatus_text=_RNSTATUS_DOWN_BLOCK,
+            )
+        assert sig is not None
+        assert sig.cls == "rns_interface_down_peer_reachable"
+        # "wedge" is this codebase's highest severity (no "critical").
+        assert sig.severity == "wedge"
+        assert sig.extra["host"] == "192.168.86.38"
+        assert sig.extra["port"] == 4242
+        assert sig.extra["peer_reachable"] is True
+        # Detail names the cure: restart rnsd.
+        assert "rnsd.service" in sig.detail
+
+    def test_down_interface_peer_unreachable_no_signal(self):
+        """Genuine peer/network outage — owned by tracer_peer_unreachable,
+        not this probe."""
+        with patch("utils.watchdog_probes._tcp_reachable", return_value=False):
+            sig = probe_rns_interface_down_peer_reachable(
+                rnstatus_text=_RNSTATUS_DOWN_BLOCK,
+            )
+        assert sig is None
+
+    def test_up_interface_no_signal_even_if_reachable(self):
+        with patch("utils.watchdog_probes._tcp_reachable", return_value=True):
+            sig = probe_rns_interface_down_peer_reachable(
+                rnstatus_text=_RNSTATUS_UP_BLOCK,
+            )
+        assert sig is None
+
+    def test_mixed_flags_only_the_down_reachable_interface(self):
+        with patch("utils.watchdog_probes._tcp_reachable", return_value=True):
+            sig = probe_rns_interface_down_peer_reachable(
+                rnstatus_text=_RNSTATUS_MIXED,
+            )
+        assert sig is not None
+        assert sig.extra["host"] == "192.168.86.38"
+        assert sig.extra["port"] == 4242
+
+    def test_parser_pins_exact_incident_block(self):
+        """The 192.168.86.38:4242 Regional RNS block must parse to
+        host 192.168.86.38, port 4242."""
+        with patch("utils.watchdog_probes._tcp_reachable", return_value=True):
+            sig = probe_rns_interface_down_peer_reachable(
+                rnstatus_text=_RNSTATUS_DOWN_BLOCK,
+            )
+        assert sig is not None
+        assert sig.extra["host"] == "192.168.86.38"
+        assert sig.extra["port"] == 4242
+
+    def test_non_tcp_interfaces_ignored(self):
+        """RNodeInterface / Shared Instance / AutoInterface carry no
+        host:port — never probed, never flagged."""
+        with patch("utils.watchdog_probes._tcp_reachable", return_value=True):
+            sig = probe_rns_interface_down_peer_reachable(
+                rnstatus_text=_RNSTATUS_NONTCP,
+            )
+        assert sig is None
+
+    def test_quiet_when_rnstatus_errored(self):
+        """rnsd unreachable → rnstatus parse_error → no signal (a
+        different probe owns 'rnsd is down')."""
+        with patch("utils.watchdog_probes._tcp_reachable", return_value=True):
+            sig = probe_rns_interface_down_peer_reachable(
+                rnstatus_text="Could not connect to local shared instance.",
+            )
+        assert sig is None
+
+    def test_tcp_reachable_false_on_closed_port(self):
+        """The real reachability helper (not patched) must return False
+        on a closed local port and never raise."""
+        from utils.watchdog_probes import _tcp_reachable
+        assert _tcp_reachable("127.0.0.1", 1, timeout=0.5) is False
 
 
 # ─────────────────────────────────────────────────────────────────────
