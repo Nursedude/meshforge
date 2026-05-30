@@ -274,10 +274,17 @@ Shipped:
   runs as a different user → `ss` can't attribute the pid (SPLIT-ENV), so the
   #69 check returns None silently and the presence+probe path attaches anyway).
   Federation: all peers cf=0.
-- **STILL OPEN (operator's call):** on-box **#68 wedge verify** — wedge ONE
-  box's rnsd, confirm the caller fails-open within ~5s and :5000 still binds.
-  The HEALTHY path is now proven live fleet-wide; the WEDGE path is unit-tested
-  but not yet proven in prod (needs deliberately wedging an rnsd — disruptive,
-  not the federator). D (in-house patch / vendor) deferred until a patch need
-  arises.
-This file survives `/clear`. **ARC STATUS: A done · B+C done + activated · D deferred.**
+- **#68 WEDGE VERIFY DONE 2026-05-29 (moc2, controlled window).** Two tests:
+  (A) isolated present-but-not-accepting abstract socket → `_probe_shared_instance_connect`
+  returns False bounded (`settimeout` caps the genuine-hang case at 5s; AF_UNIX
+  full-backlog gives fast EAGAIN — both fail-open), and `open_reticulum(require_listener=True)`
+  fails-open → None in 0.03s with NO construct. Bonus: the #69 fail-loud RuntimeError
+  fired live when the socket owner's cmdline wasn't rnsd/reticulum (exact operator-
+  actionable message). (B) service-level: `systemctl mask`+stop moc2's rnsd (mask
+  blocks the watchdog respawn — rnsd otherwise auto-restarts in ~4s, a resilience
+  feature) → restart meshforge-map → **:5000 bound in 4.1s with rnsd fully absent**
+  (vs the old #68 INFINITE main-thread hang, 56 min observed) → unmask+start rnsd →
+  map re-attached (preflight OK, `/api/network/rns/paths available=true`). moc2 fully
+  restored. The #68 cascade class is now closed in code AND proven live.
+- D (in-house patch / vendor) deferred until a patch need arises.
+This file survives `/clear`. **ARC STATUS: A done · B+C done, activated & #68-verified · D deferred (arc complete bar D).**
