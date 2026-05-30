@@ -225,6 +225,19 @@ def bridge():
         from gateway.rns_bridge import RNSMeshtasticBridge
         b = RNSMeshtasticBridge(config=mock_config)
         yield b
+        # Teardown: stop the bridge so any loops a start()-ing test spawned are
+        # halted BEFORE this fixture's `with` exits. start() launches daemon
+        # loops (_rns_loop/_bridge_loop) that call check_service -> subprocess.run
+        # on their interval. If left running, those threads outlive the patched
+        # HAS_SERVICE_CHECK=False context here and, once it's restored, hit the
+        # REAL subprocess.run — landing inside whatever LATER test happens to be
+        # patching the global subprocess.run (the scattered cross-file flaky:
+        # apply_config_and_restart, dialog backtitle, socket cleanup, ...).
+        # stop() is a no-op when the bridge was never started.
+        try:
+            b.stop()
+        except Exception:
+            pass
 
 
 @pytest.fixture
@@ -252,6 +265,10 @@ def bridge_no_cb():
         from gateway.rns_bridge import RNSMeshtasticBridge
         b = RNSMeshtasticBridge(config=mock_config)
         yield b
+        try:
+            b.stop()  # see `bridge` fixture: stop leaked subprocess-calling loops
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
