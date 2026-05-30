@@ -1093,7 +1093,19 @@ def _init_rns_client():
         lines.append(f"rpc_key = {rpc_key}")
     client_config_file.write_text("\n".join(lines) + "\n")
 
-    return RNS.Reticulum(configdir=str(client_config_dir))
+    # Guarded chokepoint. require_listener=True: this CLI is a pure consumer
+    # querying rnsd and must never create the @rns host (the host-race). The
+    # chokepoint returns None when the shared instance is absent or wedged
+    # (the #68 connect probe / #69 listener-owner preflight) — surface that as
+    # a clean CLI error rather than a half-initialized RNS.
+    from utils.rns_init import open_reticulum
+    reticulum = open_reticulum(str(client_config_dir), require_listener=True)
+    if reticulum is None:
+        raise RuntimeError(
+            "rnsd shared instance not reachable (absent or wedged). "
+            "Start it with `sudo systemctl start rnsd`, then retry."
+        )
+    return reticulum
 
 
 # ============================================================================

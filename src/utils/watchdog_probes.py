@@ -91,7 +91,7 @@ def probe_rns_namespace_collision(
 ) -> Optional[Signal]:
     """Verify ``@rns/<instance>`` LISTEN is owned by an rnsd-shaped process.
 
-    Mirrors ``lab/_lab_common.py::check_rns_listener_owner``, but
+    Mirrors ``utils/rns_init.py::check_rns_listener_owner``, but
     callable from outside an RNS-using service so the watchdog can
     detect a foreign daemon hijack even if no MeshForge RNS client
     has tried (and failed) to start yet.

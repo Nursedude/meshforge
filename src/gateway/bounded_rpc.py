@@ -9,7 +9,7 @@ log past the slow-warning threshold, and no recovery short of
 operator-driven `systemctl restart`.
 
 This module composes `call_boundary`'s metrics ring buffer with the
-field-validated `_lab_common.bounded_block` watchdog pattern. Every
+field-validated `utils.rns_init.bounded_block` watchdog pattern. Every
 wrapped call now has:
 
 - Same p50/p95/p99 sample stream (no metrics regression).
@@ -21,7 +21,7 @@ wrapped call now has:
      gateway unit) restarts the process. The kernel `connect()` in
      `unix_wait_for_peer` is uninterruptible from userland, so process
      abort is the only escape — same conclusion as the lab tracer
-     reached in `_lab_common.bounded_block`.
+     reached in `utils.rns_init.bounded_block`.
 
 Test-mode escape hatch: pass `exit_on_wedge=False` so the watchdog
 publishes the event without killing the test runner. Tests that

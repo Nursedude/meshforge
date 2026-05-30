@@ -12,21 +12,37 @@ ACK  : ``ACK seq=<int> orig=<short_name> recv_at=<iso8601_utc>``
 The ``orig`` field on the ACK echoes the original sender's ``from`` so
 the tracer can match an ACK to its PING under out-of-order delivery
 across multiple peers without keeping per-peer seq spaces.
+
+NOTE (RNS T2-isolate arc, sub-arc B — 2026-05-29): the guarded RNS-init
+primitives (``init_reticulum_with_watchdog``, ``check_rns_listener_owner``,
+``bounded_block``, ...) MOVED to ``utils.rns_init`` — the project-wide
+chokepoint home — so ``utils/`` no longer imports up into ``lab/``. They are
+re-exported from here unchanged for the lab echo/tracer daemons and existing
+callers. New code should prefer ``utils.rns_init.open_reticulum``.
 """
 
 from __future__ import annotations
 
-import contextlib
 import logging
-import os
 import re
 import socket
-import subprocess
-import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Optional
+
+# Re-export the guarded RNS-init primitives from their new home so existing
+# imports (`from lab._lab_common import init_reticulum_with_watchdog`, etc.)
+# and tests keep working after the move to utils.rns_init.
+from utils.rns_init import (  # noqa: F401  (re-export for back-compat)
+    RNS_INIT_TIMEOUT_S,
+    _RNS_LISTENER_ALLOWED_PATTERNS,
+    _parse_ss_listener_line,
+    _read_instance_name_from_config,
+    bounded_block,
+    check_rns_listener_owner,
+    init_reticulum_with_watchdog,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,240 +129,6 @@ def _identity_path_for(name: str) -> Path:
     from utils.paths import get_real_user_home
 
     return get_real_user_home() / ".config" / "meshforge" / f"{name}_identity"
-
-
-RNS_INIT_TIMEOUT_S = float(os.environ.get("MESHFORGE_LAB_RNS_INIT_TIMEOUT", "60"))
-
-# Cmdline substrings that are legitimate owners of an `@rns/<instance>`
-# shared-instance LISTEN socket. Deliberately narrow: rnsd (canonical)
-# and `reticulum` (some distros' wrapper). Other daemons that host an
-# RNS instance via `share_instance = Yes` (MeshAnchor's daemon.py is the
-# concrete instance — see Issue #69 / 2026-05-20) are NOT allowed,
-# because their RPC subprocess speaks a different dialect than rnsd
-# and breaks every RNS client that joins as a shared-instance peer.
-# The right deployment for a box hosting both projects is to run only
-# one RNS host (rnsd) and have the other daemon join as a client.
-_RNS_LISTENER_ALLOWED_PATTERNS = ("rnsd", "reticulum")
-
-
-def _parse_ss_listener_line(line: str, instance_name: str) -> Optional[tuple]:
-    """Extract ``(pid:int, cmd:str)`` from one ``ss -xnpl`` line for the
-    `@rns/<instance>` socket. Returns None if the line doesn't match.
-
-    Tolerant of the kernel's varying field count (the address column
-    sometimes wraps). Anchors on the `@rns/<instance>` token and on the
-    ``users:(("<cmd>",pid=<n>,...))`` tail that ``ss -p`` appends.
-    """
-    needle = f"@rns/{instance_name}"
-    if needle not in line:
-        return None
-    m = re.search(r'users:\(\("([^"]+)",pid=(\d+),', line)
-    if not m:
-        return None
-    return int(m.group(2)), m.group(1)
-
-
-def _read_instance_name_from_config(configdir: str) -> Optional[str]:
-    """Parse ``instance_name = <name>`` out of ``<configdir>/config``.
-
-    Returns None if the file is absent or the directive isn't present —
-    a missing config is normal during first-ever RNS init.
-    """
-    try:
-        path = Path(configdir) / "config"
-        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            line = raw.strip()
-            if line.startswith("instance_name"):
-                _, _, rhs = line.partition("=")
-                name = rhs.strip()
-                if name:
-                    return name
-    except OSError:
-        pass
-    return None
-
-
-def check_rns_listener_owner(instance_name: str) -> Optional[str]:
-    """Verify ``@rns/<instance_name>`` LISTEN owner looks like a real RNS
-    process. Returns None on pass (or no listener found — let
-    ``RNS.Reticulum()`` create one). Raises ``RuntimeError`` with a
-    diagnostic message when the listener is owned by a process whose
-    cmdline doesn't match any pattern in ``_RNS_LISTENER_ALLOWED_PATTERNS``.
-
-    Why: a non-RNS process can claim ``@rns/<name>`` ahead of rnsd (e.g.
-    a manually-launched MeshAnchor daemon that orphans to PID 1 and
-    holds the abstract socket for hours). Every subsequent RNS client
-    connects to that process, receives non-RNS-protocol bytes, and dies
-    with EOFError from ``rpc_connection.recv()`` deep inside RNS — a
-    trace that takes 30+ minutes to root-cause. This preflight surfaces
-    the collision in one line at process start.
-
-    Variant of the rnsd-RPC fragility class — siblings: Issue #58 (HAT
-    overlay port hijack), #61 (single-thread socketserver deadlock),
-    #63 (delivery_counters write canary), #68 (unix_stream_connect
-    wedge).
-    """
-    try:
-        proc = subprocess.run(
-            ["ss", "-xnpl"],
-            capture_output=True, text=True, timeout=5,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-        # ss missing or hung — don't fail-loud here; let RNS proceed and
-        # surface its own error if there's a real problem.
-        logger.debug("lab: rns-listener preflight skipped (ss unavailable: %s)", exc)
-        return None
-
-    pids = set()
-    for line in proc.stdout.splitlines():
-        parsed = _parse_ss_listener_line(line, instance_name)
-        if parsed:
-            pids.add(parsed[0])
-
-    if not pids:
-        # No existing listener — RNS will create one. Nothing to check.
-        return None
-
-    # `ss -p` only reports the binary basename (e.g. "python3"), which
-    # is identical for rnsd and any rogue python daemon. Read the full
-    # cmdline from /proc to make the allowed-vs-suspicious determination.
-    suspicious = []
-    full_cmdlines: dict = {}
-    for pid in pids:
-        try:
-            with open(f"/proc/{pid}/cmdline", "rb") as fh:
-                cmdline = fh.read().replace(b"\x00", b" ").decode(
-                    "utf-8", errors="replace").strip()
-        except OSError:
-            # Process died between ss and /proc read — treat as gone,
-            # no diagnostic possible.
-            cmdline = ""
-        full_cmdlines[pid] = cmdline
-        if not any(pat in cmdline.lower() for pat in _RNS_LISTENER_ALLOWED_PATTERNS):
-            suspicious.append(pid)
-
-    if suspicious:
-        pid = suspicious[0]
-        cmdline = full_cmdlines[pid] or "<unknown — process exited>"
-        raise RuntimeError(
-            f"RNS shared-instance listener @rns/{instance_name} is owned by "
-            f"pid={pid} cmd={cmdline!r} — not an RNS process. Every RNS "
-            f"client connecting to this socket will fail with EOFError on the "
-            f"first RPC call. Fix: identify and stop this process "
-            f"(`sudo kill {pid}`), then `sudo systemctl restart rnsd.service`."
-        )
-
-    owner_pid = next(iter(pids))
-    logger.info(
-        "lab: rns-listener preflight OK — @rns/%s owned by pid=%d (%s)",
-        instance_name, owner_pid, full_cmdlines[owner_pid],
-    )
-    return None
-
-
-def init_reticulum_with_watchdog(
-    configdir: str,
-    *,
-    loglevel: int = 2,
-    timeout_s: float = RNS_INIT_TIMEOUT_S,
-):
-    """Call ``RNS.Reticulum(configdir=..., loglevel=...)`` under a hard
-    timeout watchdog.
-
-    rnsd's ``@rns/default/rpc`` abstract Unix socket listener can wedge
-    (observed 2026-05-15 on moc1, 18h silent freeze). When that happens
-    a fresh ``RNS.Reticulum()`` blocks in kernel ``unix_wait_for_peer``
-    on ``connect()`` with no userland timeout, and systemd reports the
-    unit ``active (running)`` while it produces zero output. See
-    ``project_rnsd_rpc_listener_wedge.md``.
-
-    We run the constructor on the main thread (it installs signal
-    handlers which Python only permits from the main thread) and arm
-    a daemon watchdog thread that calls ``os._exit(2)`` if the
-    constructor doesn't complete within ``timeout_s``. The kernel
-    ``connect()`` is uninterruptible from userland, so a hard process
-    abort is the only escape; systemd's timer will restart the unit
-    on the next interval.
-
-    Returns the ``Reticulum`` instance on success. Re-raises whatever
-    the constructor raised on failure (preserves existing try/except
-    semantics in callers).
-
-    Before the constructor runs, verify the shared-instance LISTEN socket
-    isn't owned by a foreign process (see ``check_rns_listener_owner``).
-    The owner is parsed from the configdir's ``config`` file when present;
-    if absent or unparseable, the check is skipped silently.
-    """
-    import RNS
-
-    instance_name = _read_instance_name_from_config(configdir)
-    if instance_name:
-        check_rns_listener_owner(instance_name)
-
-    done = threading.Event()
-
-    def _watchdog() -> None:
-        if not done.wait(timeout=timeout_s):
-            logger.error(
-                "lab: RNS.Reticulum() did not return after %.1fs — "
-                "likely rnsd RPC listener wedge. Aborting process so "
-                "systemd can restart us. See "
-                "project_rnsd_rpc_listener_wedge.md.",
-                timeout_s,
-            )
-            os._exit(2)
-
-    watchdog = threading.Thread(
-        target=_watchdog, daemon=True, name="rns-init-watchdog",
-    )
-    watchdog.start()
-    try:
-        return RNS.Reticulum(configdir=configdir, loglevel=loglevel)
-    finally:
-        done.set()
-
-
-@contextlib.contextmanager
-def bounded_block(timeout_s: float, *, label: str) -> Iterator[None]:
-    """Run the wrapped block under a hard timeout watchdog.
-
-    Sibling to ``init_reticulum_with_watchdog`` but generic: any region
-    that might wedge on rnsd's RPC socket (LXMRouter init, announce,
-    path-resolve, handle_outbound) can be wrapped here. A daemon watchdog
-    thread calls ``os._exit(2)`` if the block doesn't exit within
-    ``timeout_s``. Normal completion AND exceptions both disarm the
-    watchdog.
-
-    Why ``os._exit``: the kernel ``connect()`` in
-    ``unix_wait_for_peer`` is uninterruptible from userland — SIGTERM
-    queues behind the syscall. Only ``os._exit`` (or systemd-driven
-    SIGKILL via ``TimeoutStartSec=``) gets the process out cleanly.
-
-    See ``project_rnsd_rpc_listener_wedge.md`` for the wedge fingerprint
-    and recovery recipe. The constructor watchdog
-    (``init_reticulum_with_watchdog``) only covers ``RNS.Reticulum()``;
-    this covers everything else.
-    """
-    done = threading.Event()
-
-    def _watchdog() -> None:
-        if not done.wait(timeout=timeout_s):
-            logger.error(
-                "lab: %s did not complete after %.1fs — likely rnsd "
-                "RPC listener wedge. Aborting process so systemd can "
-                "restart us. See project_rnsd_rpc_listener_wedge.md.",
-                label, timeout_s,
-            )
-            os._exit(2)
-
-    watchdog = threading.Thread(
-        target=_watchdog, daemon=True, name=f"bounded-{label}",
-    )
-    watchdog.start()
-    try:
-        yield
-    finally:
-        done.set()
 
 
 def load_or_create_identity(name: str):

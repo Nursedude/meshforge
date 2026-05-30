@@ -1,0 +1,229 @@
+"""Tests for src/utils/rns_init.py — the guarded RNS-init chokepoint.
+
+Covers the RNS T2-isolate arc sub-arc C: the #68 bounded AF_UNIX connect
+probe (fail-OPEN on a wedged rnsd), the host-race guard (require_listener),
+idempotent singleton reuse, and the #69 fail-LOUD foreign-owner path as it
+flows through ``open_reticulum``. The #69 preflight internals
+(``check_rns_listener_owner``) and the construct watchdog
+(``init_reticulum_with_watchdog`` / ``bounded_block``) are exercised in
+``test_lab_common.py`` (same functions, re-exported).
+"""
+
+import os
+import socket
+import sys
+
+import pytest
+from unittest.mock import patch, MagicMock
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+import utils.rns_init as ri  # noqa: E402
+
+
+# --------------------------------------------- _shared_instance_listener_present
+
+
+class TestListenerPresent:
+    """Passive /proc/net/unix presence scan."""
+
+    def test_absent_when_no_matching_socket(self):
+        assert ri._shared_instance_listener_present(
+            "definitely-not-a-real-instance-9b2f"
+        ) is False
+
+    def test_present_for_real_abstract_socket(self):
+        name = "rns-init-test-present-7c1a"
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            # Abstract namespace: kernel renders the leading NUL as '@', so
+            # /proc/net/unix shows "@rns/<name>" — exactly what the function
+            # searches for.
+            sock.bind("\0rns/" + name)
+            sock.listen(1)
+            assert ri._shared_instance_listener_present(name) is True
+        finally:
+            sock.close()
+
+
+# --------------------------------------------- _probe_shared_instance_connect
+
+
+class TestConnectProbe:
+    """The #68 fail-open gate: active, bounded connect."""
+
+    def test_true_against_a_real_accepting_socket(self):
+        name = "rns-init-test-probe-ok-3d5e"
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            server.bind("\0rns/" + name)
+            server.listen(1)
+            # A listening socket completes the connect handshake into its
+            # accept queue even without an explicit accept() call, so the
+            # probe returns True quickly.
+            assert ri._probe_shared_instance_connect(name, 2.0) is True
+        finally:
+            server.close()
+
+    def test_false_on_timeout(self):
+        """A connect that blocks past the budget -> wedged -> False (#68)."""
+        fake = MagicMock()
+        fake.connect.side_effect = TimeoutError()
+        with patch.object(ri.socket, "socket", return_value=fake):
+            assert ri._probe_shared_instance_connect("inst", 0.5) is False
+        fake.close.assert_called_once()
+
+    def test_false_on_connection_refused(self):
+        """Listener gone / not accepting -> False (distinct from wedge)."""
+        fake = MagicMock()
+        fake.connect.side_effect = ConnectionRefusedError()
+        with patch.object(ri.socket, "socket", return_value=fake):
+            assert ri._probe_shared_instance_connect("inst", 0.5) is False
+        fake.close.assert_called_once()
+
+    def test_false_when_socket_absent(self):
+        """Probing a non-existent abstract socket refuses fast (real call)."""
+        assert ri._probe_shared_instance_connect(
+            "no-such-instance-ff01", 1.0
+        ) is False
+
+
+# --------------------------------------------- open_reticulum decision logic
+
+
+class TestOpenReticulum:
+
+    def test_returns_none_when_rns_unavailable(self):
+        with patch.object(ri, "_HAS_RNS", False):
+            assert ri.open_reticulum("/tmp/x") is None
+
+    def test_returns_existing_singleton_idempotent(self):
+        sentinel = object()
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance", return_value=sentinel), \
+             patch.object(ri, "_construct_reticulum_with_watchdog") as construct:
+            assert ri.open_reticulum("/tmp/x") is sentinel
+            construct.assert_not_called()
+
+    def test_foreign_listener_raises_fail_loud(self):
+        """#69: a foreign @rns owner propagates RuntimeError, never constructs."""
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance", return_value=None), \
+             patch.object(ri, "_read_instance_name_from_config", return_value="inst"), \
+             patch.object(ri, "check_rns_listener_owner",
+                          side_effect=RuntimeError("owned by pid=999 cmd='rogue'")), \
+             patch.object(ri, "_construct_reticulum_with_watchdog") as construct:
+            with pytest.raises(RuntimeError, match="rogue"):
+                ri.open_reticulum("/tmp/x")
+            construct.assert_not_called()
+
+    def test_require_listener_absent_degrades_no_construct(self):
+        """Host-race guard: a pure consumer never constructs when @rns absent."""
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance", return_value=None), \
+             patch.object(ri, "_read_instance_name_from_config", return_value="inst"), \
+             patch.object(ri, "check_rns_listener_owner", return_value=None), \
+             patch.object(ri, "_shared_instance_listener_present", return_value=False), \
+             patch.object(ri, "_construct_reticulum_with_watchdog") as construct:
+            assert ri.open_reticulum("/tmp/x", require_listener=True) is None
+            construct.assert_not_called()
+
+    def test_standalone_constructs_when_listener_absent(self):
+        """require_listener=False: standalone init is legitimate (e.g. gateway)."""
+        sentinel = object()
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance", return_value=None), \
+             patch.object(ri, "_read_instance_name_from_config", return_value="inst"), \
+             patch.object(ri, "check_rns_listener_owner", return_value=None), \
+             patch.object(ri, "_shared_instance_listener_present", return_value=False), \
+             patch.object(ri, "_construct_reticulum_with_watchdog",
+                          return_value=sentinel) as construct:
+            assert ri.open_reticulum("/tmp/x", require_listener=False) is sentinel
+            construct.assert_called_once()
+
+    def test_wedged_listener_degrades_no_construct(self):
+        """#68: listener present but connect probe times out -> None, no construct."""
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance", return_value=None), \
+             patch.object(ri, "_read_instance_name_from_config", return_value="inst"), \
+             patch.object(ri, "check_rns_listener_owner", return_value=None), \
+             patch.object(ri, "_shared_instance_listener_present", return_value=True), \
+             patch.object(ri, "_probe_shared_instance_connect", return_value=False), \
+             patch.object(ri, "_construct_reticulum_with_watchdog") as construct:
+            assert ri.open_reticulum("/tmp/x", require_listener=True) is None
+            construct.assert_not_called()
+
+    def test_healthy_listener_constructs(self):
+        sentinel = object()
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance", return_value=None), \
+             patch.object(ri, "_read_instance_name_from_config", return_value="inst"), \
+             patch.object(ri, "check_rns_listener_owner", return_value=None), \
+             patch.object(ri, "_shared_instance_listener_present", return_value=True), \
+             patch.object(ri, "_probe_shared_instance_connect", return_value=True), \
+             patch.object(ri, "_construct_reticulum_with_watchdog",
+                          return_value=sentinel) as construct:
+            assert ri.open_reticulum("/tmp/x", require_listener=True) is sentinel
+            construct.assert_called_once()
+
+    def test_probe_false_bypasses_gate(self):
+        """probe=False skips the #68 connect probe entirely (test seam)."""
+        sentinel = object()
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance", return_value=None), \
+             patch.object(ri, "_read_instance_name_from_config", return_value="inst"), \
+             patch.object(ri, "check_rns_listener_owner", return_value=None), \
+             patch.object(ri, "_probe_shared_instance_connect") as probe, \
+             patch.object(ri, "_construct_reticulum_with_watchdog",
+                          return_value=sentinel):
+            assert ri.open_reticulum("/tmp/x", probe=False) is sentinel
+            probe.assert_not_called()
+
+    def test_no_instance_name_falls_back_to_configured(self):
+        """configdir without instance_name -> fall back to box's configured one
+        so the preflight/probe still have a target."""
+        sentinel = object()
+        fake_paths = MagicMock()
+        fake_paths.get_configured_instance_name.return_value = "boxinst"
+        seen = {}
+
+        def _record_check(instance_name):
+            seen["checked"] = instance_name
+            return None
+
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance", return_value=None), \
+             patch.object(ri, "_read_instance_name_from_config", return_value=None), \
+             patch.dict(sys.modules, {"utils.paths": MagicMock(ReticulumPaths=fake_paths)}), \
+             patch.object(ri, "check_rns_listener_owner", side_effect=_record_check), \
+             patch.object(ri, "_shared_instance_listener_present", return_value=True), \
+             patch.object(ri, "_probe_shared_instance_connect", return_value=True), \
+             patch.object(ri, "_construct_reticulum_with_watchdog",
+                          return_value=sentinel):
+            assert ri.open_reticulum("/tmp/x") is sentinel
+            assert seen.get("checked") == "boxinst"
+
+
+# --------------------------------------------- _existing_instance
+
+
+class TestExistingInstance:
+
+    def test_none_when_rns_unavailable(self):
+        with patch.object(ri, "_HAS_RNS", False):
+            assert ri._existing_instance() is None
+
+    def test_none_when_get_instance_raises(self):
+        fake_rns = MagicMock()
+        fake_rns.Reticulum.get_instance.side_effect = RuntimeError("boom")
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_RNS", fake_rns):
+            assert ri._existing_instance() is None
+
+    def test_returns_instance_when_present(self):
+        sentinel = object()
+        fake_rns = MagicMock()
+        fake_rns.Reticulum.get_instance.return_value = sentinel
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_RNS", fake_rns):
+            assert ri._existing_instance() is sentinel

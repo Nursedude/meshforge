@@ -210,11 +210,25 @@ class UnifiedNodeTracker:
                 except ImportError:
                     pass  # service_check not available, proceed anyway
 
-                # Connect using client-only config. Cold-start RNS attach is
-                # genuinely slow (identity load + shared-instance socket open
-                # + state sync), so the threshold is higher than the default.
+                # Connect using client-only config via the guarded chokepoint.
+                # require_listener=True keeps node_tracker a pure RNS *consumer*
+                # (never becomes the @rns host); the #68 connect probe degrades
+                # instead of hanging this MAIN thread on a wedged rnsd. Cold-
+                # start RNS attach is genuinely slow (identity load + shared-
+                # instance socket open + state sync), so timed_boundary still
+                # measures the now-bounded attach time at a higher threshold.
+                from utils.rns_init import open_reticulum
                 with timed_boundary("rnsd.attach", threshold_s=10.0):
-                    self._reticulum = RNS.Reticulum(configdir=str(client_config_dir))
+                    self._reticulum = open_reticulum(
+                        str(client_config_dir), require_listener=True,
+                    )
+                if self._reticulum is None:
+                    logger.warning(
+                        "RNS attach degraded: shared instance @rns/%s absent or "
+                        "wedged (#68 fail-open) — node discovery disabled this "
+                        "run; will retry on next start.", instance_name)
+                    self._rns_connected = False
+                    return
                 self._rns_connected = True
                 logger.info("Connected to existing rnsd instance")
 

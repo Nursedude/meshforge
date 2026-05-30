@@ -20,6 +20,7 @@ Checks:
 - MF016: @patch('src.utils.paths.…') in tests — production imports via bare 'utils.paths', divergent class objects
 - MF017: hardened systemd unit (ProtectHome=read-only) ReadWritePaths drift vs the three meshforge buckets (Issue #58)
 - MF018: TUI shell-escapes (editor spawns, "run/install manually", "run with sudo") — the In-Domain Principle ratchet (foundations/in_domain_principle.md)
+- MF019: RNS.Reticulum() constructed outside the guarded chokepoint (must use open_reticulum() from utils.rns_init; #68/#69, RNS T2-isolate arc)
 
 Usage:
     python3 scripts/lint.py [files...]
@@ -308,6 +309,45 @@ class MeshForgeLinter:
                             "RNS.Reticulum() without configdir= — will cause EADDRINUSE "
                             "when rnsd is running (Issue #12)"
                         ))
+
+        # MF019: RNS.Reticulum() constructed outside the guarded chokepoint.
+        # The RNS T2-isolate arc (sub-arc B+C, 2026-05-29) routes ALL in-process
+        # RNS init through utils/rns_init.py::open_reticulum so a wedged rnsd
+        # degrades (#68 fail-open) instead of hanging the calling thread, and a
+        # foreign @rns owner fails loud (#69). Raw construction elsewhere
+        # reintroduces the silent-hang class. Mirror of MF007/TestTCPConnection.
+        if 'Reticulum(' in line:
+            basename = os.path.basename(filepath)
+            is_test = '/tests/' in filepath or 'test_' in basename
+            is_comment = stripped.startswith('#')
+            is_string = stripped.startswith('"') or stripped.startswith("'")
+            is_actual_call = bool(
+                re.search(r'=\s*\w*\.?Reticulum\s*\(', line)
+                or re.search(r'\breturn\s+\w*\.?Reticulum\s*\(', line)
+            )
+            # Allowlisted homes for an actual RNS.Reticulum() construction:
+            #   - utils/rns_init.py — THE chokepoint (open_reticulum + the
+            #     watchdog-guarded constructor).
+            #   - launcher_tui/handlers/rns_interfaces.py — a `python3 -c`
+            #     connectivity probe that runs in an ISOLATED subprocess with
+            #     its own subprocess timeout, and deliberately tests NomadNet's
+            #     OWN venv RNS (not MeshForge's), so it cannot route through the
+            #     in-process chokepoint and cannot hang the TUI.
+            chokepoint_files = (
+                'utils/rns_init.py',
+                'launcher_tui/handlers/rns_interfaces.py',
+            )
+            is_allowed = any(f in filepath for f in chokepoint_files)
+            if (is_actual_call and not is_test and not is_comment
+                    and not is_string and not is_allowed):
+                issues.append(LintIssue(
+                    filepath, lineno, Severity.ERROR, "MF019",
+                    "RNS.Reticulum() constructed outside the guarded chokepoint "
+                    "— use open_reticulum() from utils.rns_init (degrades on a "
+                    "wedged rnsd instead of hanging the thread; #68/#69). If the "
+                    "call is genuinely isolated, add it to the chokepoint "
+                    "allowlist in lint.py + TestRNSReticulumChokepoint."
+                ))
 
         # MF011: _nomadnet_rns_checks.py must not contain repair/service logic
         if '_nomadnet_rns_checks.py' in filepath:

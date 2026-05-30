@@ -298,31 +298,36 @@ class TestInitRnsSingletonHostGuard:
     2026-05-28 fleet routing outage). See project_rns_map_host_race."""
 
     def test_skips_and_does_not_create_when_no_shared_instance(self):
+        # init_rns_singleton routes through the guarded chokepoint
+        # (utils.rns_init.open_reticulum) as a pure consumer. When the shared
+        # instance is absent, open_reticulum degrades (returns None) and never
+        # constructs — so the map can never become the @rns host.
         with patch.object(mod, "_HAS_RNS", True), \
              patch.object(mod, "_rns_is_initialized", return_value=False), \
-             patch.object(mod, "_RNS", MagicMock()) as rns, \
-             patch("utils.paths.ReticulumPaths.get_configured_instance_name",
-                   return_value="test rns"), \
-             patch("utils._port_detection.check_rns_shared_instance",
-                   return_value=False) as chk:
-            result = mod.init_rns_singleton()
-        assert result is False                       # skipped
-        chk.assert_called_once_with("test rns")
-        rns.Reticulum.assert_not_called()            # NEVER creates an instance
-
-    def test_attaches_when_shared_instance_present(self):
-        with patch.object(mod, "_HAS_RNS", True), \
-             patch.object(mod, "_rns_is_initialized", return_value=False), \
-             patch.object(mod, "_RNS", MagicMock()) as rns, \
              patch("utils.paths.ReticulumPaths.get_configured_instance_name",
                    return_value="test rns"), \
              patch("utils.paths.ReticulumPaths.get_shared_rpc_key",
                    return_value=None), \
-             patch("utils._port_detection.check_rns_shared_instance",
-                   return_value=True):
+             patch("utils.rns_init.open_reticulum", return_value=None) as opn:
+            result = mod.init_rns_singleton()
+        assert result is False                       # degraded / skipped
+        opn.assert_called_once()
+        # Must be invoked as a pure consumer (host-race guard).
+        assert opn.call_args.kwargs.get("require_listener") is True
+
+    def test_attaches_when_shared_instance_present(self):
+        sentinel = MagicMock()
+        with patch.object(mod, "_HAS_RNS", True), \
+             patch.object(mod, "_rns_is_initialized", return_value=False), \
+             patch("utils.paths.ReticulumPaths.get_configured_instance_name",
+                   return_value="test rns"), \
+             patch("utils.paths.ReticulumPaths.get_shared_rpc_key",
+                   return_value=None), \
+             patch("utils.rns_init.open_reticulum", return_value=sentinel) as opn:
             result = mod.init_rns_singleton()
         assert result is True                        # attached
-        rns.Reticulum.assert_called_once()           # connects as client
+        opn.assert_called_once()                     # via the chokepoint
+        assert opn.call_args.kwargs.get("require_listener") is True
 
     def test_returns_true_early_when_already_initialized(self):
         # already attached in-process -> no probe, no re-create

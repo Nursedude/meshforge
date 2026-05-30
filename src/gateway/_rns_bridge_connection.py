@@ -13,6 +13,7 @@ import time
 from contextlib import contextmanager
 
 from utils.paths import get_real_user_home, ReticulumPaths
+from utils.rns_init import open_reticulum
 from utils.safe_import import safe_import
 from utils.service_check import check_service
 from utils.config_drift import detect_rnsd_config_drift, get_rnsd_effective_config_dir
@@ -132,9 +133,20 @@ class RNSConnectionMixin:
                            "connecting as shared instance client")
                 self._rns_via_rnsd = True
 
-            self._reticulum = RNS.Reticulum(configdir=config_dir)
-            self._rns_pre_initialized = True
-            logger.info("RNS pre-initialized from main thread")
+            # Guarded chokepoint: the #68 connect probe degrades (returns
+            # None) instead of hanging this MAIN thread on a wedged rnsd, so
+            # the gateway's Meshtastic leg keeps serving. require_listener
+            # stays False — the gateway may legitimately init RNS standalone
+            # when no rnsd is present.
+            self._reticulum = open_reticulum(config_dir)
+            if self._reticulum is not None:
+                self._rns_pre_initialized = True
+                logger.info("RNS pre-initialized from main thread")
+            else:
+                logger.warning(
+                    "RNS pre-init degraded: rnsd unavailable or wedged "
+                    "(#68 fail-open). Bridge will retry in the background; "
+                    "the Meshtastic leg and other transports are unaffected.")
         except Exception as e:
             err_msg = str(e).lower()
             if "reinitialise" in err_msg or "already running" in err_msg:
@@ -206,7 +218,18 @@ class RNSConnectionMixin:
                             pass  # Use RNS default resolution
 
                     try:
-                        self._reticulum = RNS.Reticulum(configdir=config_dir)
+                        # Guarded chokepoint. We're inside
+                        # _suppress_signal_in_thread(), so the off-main-thread
+                        # signal registration RNS does is already neutered; the
+                        # #68 probe degrades instead of hanging this thread.
+                        self._reticulum = open_reticulum(config_dir)
+                        if self._reticulum is None:
+                            logger.warning(
+                                "RNS init degraded: rnsd unavailable or wedged "
+                                "(#68 fail-open) — will retry; the Meshtastic "
+                                "leg is unaffected.")
+                            self._connected_rns = False
+                            return
                     except Exception as e:
                         err_msg = str(e).lower()
                         if "reinitialise" in err_msg or "already running" in err_msg:

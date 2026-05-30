@@ -134,6 +134,7 @@ def test_rns(self): ...
 | MF009 | `RNS.Reticulum()` without `configdir=` |
 | MF010 | `time.sleep()` in daemon loops |
 | MF014 | Operator-specific values (hostnames, personal email, `/home/<user>/`) — break repo portability |
+| MF019 | `RNS.Reticulum()` constructed outside the chokepoint (use `open_reticulum()` from `utils.rns_init`; #68/#69) |
 
 ### Layer 2: Regression Guard Tests (`tests/test_regression_guards.py`)
 - `TestTCPConnectionContract` — No new direct TCPInterface
@@ -143,6 +144,7 @@ def test_rns(self): ...
 - `TestNoShellTrue` — No `shell=True` in subprocess
 - `TestKnownServicesConsistency` — KNOWN_SERVICES stays correct
 - `TestOperatorValueContract` — No operator-specific values in source/templates/scripts/docs (MF014)
+- `TestRNSReticulumChokepoint` — `RNS.Reticulum()` constructed only in `utils/rns_init.py` (MF019; #68 fail-open / #69 fail-loud)
 
 ### Layer 3: Pre-Commit Hook (`.githooks/pre-commit`)
 Setup: `git config core.hooksPath .githooks`
@@ -338,9 +340,20 @@ sudo systemctl start meshforge-map.service    # binds :5000 in ~1.4s
 #63). Novel shape: *main thread* stuck in a kernel syscall while
 background threads keep logging — all userspace signals say healthy.
 
-**Prevention (deferred)**: pre-flight `socket.AF_UNIX` probe with 5s
-timeout before `_RNS.Reticulum()`; on timeout fall through to the
-non-fatal `except Exception` in `_init_rns_main_thread`.
+**Prevention (IMPLEMENTED 2026-05-29, RNS T2-isolate arc sub-arc C)**: the
+deferred pre-flight is now real and central. `utils/rns_init.py::open_reticulum`
+— the project-wide guarded RNS-init chokepoint — runs a bounded `socket.AF_UNIX`
+connect probe (`_probe_shared_instance_connect`, default 5s) against
+`@rns/<instance>` BEFORE constructing. `settimeout()` makes the connect
+interruptible (unlike RNS's internal uninterruptible connect that hangs the
+thread); on timeout it returns `None` (degrade) so the caller keeps serving its
+other legs instead of hanging. A passive `/proc/net/unix` presence scan can't
+tell "accepting" from "wedged" — only the active connect can. All in-process
+callers (map `init_rns_singleton`, gateway `_rns_bridge_connection`,
+`node_tracker`, `commands/rns`) route through it; raw construction is banned by
+**lint MF019 + `TestRNSReticulumChokepoint`**. The construct still carries the
+`os._exit` watchdog backstop for the rare "probe passed, then wedged" race.
+See `.claude/plans/rns_t2_isolate_arc.md`.
 
 
 ---

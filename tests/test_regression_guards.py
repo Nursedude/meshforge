@@ -110,6 +110,65 @@ class TestTCPConnectionContract:
         )
 
 
+class TestRNSReticulumChokepoint:
+    """Enforce (MF019): RNS.Reticulum() is constructed ONLY in the guarded
+    chokepoint utils/rns_init.py (open_reticulum + the watchdog constructor).
+
+    RNS upstream withdrew public support (the Carrier Switch, Dec 2025), so
+    MeshForge OWNS the dependency. A single guarded entry point makes a wedged
+    rnsd DEGRADE (#68 fail-open — the bounded AF_UNIX connect probe returns
+    None instead of the constructor hanging the calling thread in an
+    uninterruptible kernel connect()) and a FOREIGN @rns owner FAIL LOUD (#69).
+    Raw construction anywhere else reintroduces the silent-hang class — the
+    same regression-prevention shape as MF007/TestTCPConnectionContract.
+
+    Allowlist:
+      - rns_init.py        — THE chokepoint.
+      - rns_interfaces.py  — an isolated `python3 -c` connectivity probe with
+        its own subprocess timeout that deliberately tests NomadNet's OWN venv
+        RNS (not MeshForge's), so it cannot route through the in-process
+        chokepoint and cannot hang the TUI.
+    """
+
+    ALLOWLISTED = {
+        'rns_init.py',
+        'rns_interfaces.py',
+    }
+
+    def test_reticulum_constructed_only_in_chokepoint(self):
+        """No file outside the allowlist may construct RNS.Reticulum()."""
+        matches = _scan_python_files(
+            r'(=\s*\w*\.?Reticulum\s*\(|\breturn\s+\w*\.?Reticulum\s*\()',
+            exclude_files=list(self.ALLOWLISTED),
+        )
+
+        violating = set()
+        for filepath, lineno, line in matches:
+            basename = os.path.basename(filepath)
+            if 'test_' in basename or '/tests/' in filepath:
+                continue
+            violating.add(f"{filepath}:{lineno}: {line.strip()}")
+
+        assert len(violating) == 0, (
+            f"Found {len(violating)} RNS.Reticulum() construction(s) outside the "
+            f"guarded chokepoint (utils/rns_init.py).\n"
+            f"Use open_reticulum() from utils.rns_init — it degrades on a wedged "
+            f"rnsd (#68) instead of hanging the thread, and fails loud on a "
+            f"foreign @rns owner (#69). See .claude/plans/rns_t2_isolate_arc.md.\n\n"
+            f"Violations:\n" + "\n".join(sorted(violating))
+        )
+
+    def test_chokepoint_exports_open_reticulum(self):
+        """The chokepoint must exist and expose a callable open_reticulum()."""
+        sys.path.insert(0, SRC_DIR)
+        try:
+            from utils.rns_init import open_reticulum
+            assert callable(open_reticulum)
+        finally:
+            if SRC_DIR in sys.path:
+                sys.path.remove(SRC_DIR)
+
+
 class TestFromradioContract:
     """Enforce: TX paths never read /api/v1/fromradio.
 

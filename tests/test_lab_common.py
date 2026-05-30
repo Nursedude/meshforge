@@ -280,7 +280,7 @@ def test_init_reticulum_with_watchdog_invokes_preflight(monkeypatch, tmp_path):
         def Reticulum(configdir, loglevel):
             return _FakeReticulum(configdir, loglevel)
 
-    monkeypatch.setattr("lab._lab_common.check_rns_listener_owner", _fake_check)
+    monkeypatch.setattr("utils.rns_init.check_rns_listener_owner", _fake_check)
     monkeypatch.setitem(sys.modules, "RNS", _FakeRNSModule)
 
     init_reticulum_with_watchdog(str(tmp_path), timeout_s=2.0)
@@ -307,7 +307,7 @@ def test_init_reticulum_with_watchdog_propagates_preflight_failure(monkeypatch, 
             reticulum_called.append(True)
             return _FakeReticulum(configdir, loglevel)
 
-    monkeypatch.setattr("lab._lab_common.check_rns_listener_owner", _failing_check)
+    monkeypatch.setattr("utils.rns_init.check_rns_listener_owner", _failing_check)
     monkeypatch.setitem(sys.modules, "RNS", _FakeRNSModule)
 
     with pytest.raises(RuntimeError, match="rogue"):
@@ -384,7 +384,7 @@ def test_watchdog_aborts_process_on_timeout(monkeypatch):
         release.set()
 
     monkeypatch.setitem(sys.modules, "RNS", _FakeRNSModule)
-    monkeypatch.setattr("lab._lab_common.os._exit", _fake_exit)
+    monkeypatch.setattr("utils.rns_init.os._exit", _fake_exit)
 
     init_reticulum_with_watchdog("/tmp/x", timeout_s=0.2)
 
@@ -398,15 +398,18 @@ def test_watchdog_aborts_process_on_timeout(monkeypatch):
 def test_watchdog_default_timeout_from_env(monkeypatch):
     """RNS_INIT_TIMEOUT_S resolves from MESHFORGE_LAB_RNS_INIT_TIMEOUT."""
     monkeypatch.setenv("MESHFORGE_LAB_RNS_INIT_TIMEOUT", "12.5")
-    # Re-import to pick up the new env value.
+    # Re-import to pick up the new env value. RNS_INIT_TIMEOUT_S now lives in
+    # utils.rns_init (re-exported by lab._lab_common); reload its real home.
     import importlib
 
-    import lab._lab_common as lc
-    importlib.reload(lc)
-    assert lc.RNS_INIT_TIMEOUT_S == 12.5
-    # Restore default for other tests.
-    monkeypatch.delenv("MESHFORGE_LAB_RNS_INIT_TIMEOUT", raising=False)
-    importlib.reload(lc)
+    import utils.rns_init as ri
+    importlib.reload(ri)
+    try:
+        assert ri.RNS_INIT_TIMEOUT_S == 12.5
+    finally:
+        # Restore default for other tests.
+        monkeypatch.delenv("MESHFORGE_LAB_RNS_INIT_TIMEOUT", raising=False)
+        importlib.reload(ri)
 
 
 # ----------------------------------------------------- bounded_block
@@ -416,7 +419,7 @@ def test_bounded_block_normal_exit_disarms_watchdog(monkeypatch):
     """Wrapped block returns; watchdog must NOT fire os._exit."""
     abort_calls = []
     monkeypatch.setattr(
-        "lab._lab_common.os._exit", lambda code: abort_calls.append(code),
+        "utils.rns_init.os._exit", lambda code: abort_calls.append(code),
     )
 
     with bounded_block(timeout_s=1.0, label="test"):
@@ -436,7 +439,7 @@ def test_bounded_block_exception_propagates_and_disarms(monkeypatch):
     """Exception inside the block propagates AND disarms the watchdog."""
     abort_calls = []
     monkeypatch.setattr(
-        "lab._lab_common.os._exit", lambda code: abort_calls.append(code),
+        "utils.rns_init.os._exit", lambda code: abort_calls.append(code),
     )
 
     class _Boom(RuntimeError):
@@ -469,7 +472,7 @@ def test_bounded_block_fires_os_exit_on_timeout(monkeypatch):
         # Unblock the test's "wedged" block so it can complete.
         release.set()
 
-    monkeypatch.setattr("lab._lab_common.os._exit", _fake_exit)
+    monkeypatch.setattr("utils.rns_init.os._exit", _fake_exit)
 
     with bounded_block(timeout_s=0.2, label="wedge-test"):
         # Simulate a kernel hang; bounded by 5s so a test bug can't
@@ -491,7 +494,7 @@ def test_bounded_block_label_appears_in_log(monkeypatch, caplog):
     def _fake_exit(code):
         release.set()
 
-    monkeypatch.setattr("lab._lab_common.os._exit", _fake_exit)
+    monkeypatch.setattr("utils.rns_init.os._exit", _fake_exit)
 
     with caplog.at_level("ERROR", logger="lab._lab_common"):
         with bounded_block(timeout_s=0.1, label="my-special-region"):

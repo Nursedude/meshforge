@@ -14,7 +14,7 @@
 **Service Interaction Rules** (Issue #29 — regression prevention):
 - **NEVER** create `TCPInterface()` directly — use `MeshtasticConnection` from `connection_manager.py` or acquire `MESHTASTIC_CONNECTION_LOCK` first
 - **NEVER** read `/api/v1/fromradio` in TX paths — use `send_text_direct()` from `meshtastic_protobuf_client.py`
-- **NEVER** call `RNS.Reticulum()` without `configdir=` — causes EADDRINUSE when rnsd is running
+- **NEVER** construct `RNS.Reticulum()` directly — use `open_reticulum()` from `utils.rns_init` (the guarded chokepoint: degrades on a wedged rnsd instead of hanging the thread (#68), fails loud on a foreign `@rns` owner (#69), reuses the singleton). Raw construction is banned by lint MF019 + `TestRNSReticulumChokepoint`. Always pass `configdir=` (causes EADDRINUSE otherwise when rnsd is running, MF009)
 - **NEVER** use raw `systemctl is-active` — use `check_service()` from `service_check.py`
 - **NEVER** use `Path.home()` directly — use `utils.paths.get_real_user_home()` (MF001)
 - **NEVER** use `safe_import` for first-party modules — external deps only
