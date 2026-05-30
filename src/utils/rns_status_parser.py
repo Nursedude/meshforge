@@ -102,6 +102,12 @@ class RNSStatus:
     transport: TransportStatus = field(default_factory=TransportStatus)
     raw_output: str = ""
     parse_error: Optional[str] = None
+    # True ONLY when the rnstatus subprocess exceeded its timeout — the
+    # "rnsd accepted the connect but the RPC round-trip hung" wedge shape.
+    # Distinct from a fast error (binary missing, no shared instance,
+    # connection refused), which leaves this False. The watchdog's
+    # rns_rpc_unresponsive probe keys on this flag (see watchdog_probes).
+    timed_out: bool = False
 
     @property
     def all_up(self) -> bool:
@@ -312,12 +318,20 @@ def _find_rnstatus_binary() -> Optional[str]:
     return None
 
 
-def run_rnstatus() -> RNSStatus:
+def run_rnstatus(timeout_s: float = 15.0) -> RNSStatus:
     """Run ``rnstatus`` and return parsed output.
 
+    Args:
+        timeout_s: subprocess timeout. Default 15s preserves existing
+            callers (e.g. rns_monitor_mixin). The watchdog passes a
+            shorter value so a wedged rnsd can't stall its 30s tick.
+
     Returns:
-        RNSStatus with ``parse_error`` set if rnsd is unreachable
-        or the binary is missing.
+        RNSStatus with ``parse_error`` set if rnsd is unreachable or the
+        binary is missing. ``timed_out=True`` ONLY when the subprocess
+        exceeded ``timeout_s`` — the wedged-rnsd-RPC shape — distinct from
+        a fast error (binary missing, no shared instance), which leaves
+        ``timed_out`` False.
     """
     rnstatus_path = _find_rnstatus_binary()
     if not rnstatus_path:
@@ -331,13 +345,16 @@ def run_rnstatus() -> RNSStatus:
             [rnstatus_path],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=timeout_s,
         )
         combined = (proc.stdout or "") + (proc.stderr or "")
         return parse_rnstatus(combined)
     except subprocess.TimeoutExpired:
         logger.warning("rnstatus timed out — rnsd may be unresponsive")
-        return RNSStatus(parse_error="rnstatus timed out (rnsd unresponsive)")
+        return RNSStatus(
+            parse_error="rnstatus timed out (rnsd unresponsive)",
+            timed_out=True,
+        )
     except FileNotFoundError:
         logger.warning("rnstatus not found at %s", rnstatus_path)
         return RNSStatus(parse_error=f"rnstatus not found at {rnstatus_path}")

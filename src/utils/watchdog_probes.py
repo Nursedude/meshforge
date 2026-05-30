@@ -39,9 +39,12 @@ import subprocess
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Iterable, List, Optional, Tuple
 from urllib.request import urlopen
 from urllib.error import URLError
+
+if TYPE_CHECKING:
+    from utils.rns_status_parser import RNSStatus
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -59,6 +62,7 @@ SIGNAL_CLASSES = (
     "tracer_peer_unreachable",        # today's symptom; per-peer recurring no-route
     "rns_shared_instance_unresponsive",  # 2026-05-21: rnsd shared-instance hung
     "rns_interface_down_peer_reachable",  # 2026-05-30: stuck TCPInterface Down, peer reachable
+    "rns_rpc_unresponsive",  # 2026-05-30: rnsd RPC wedged — rnstatus hangs though socket accepts (#68/#69)
 )
 
 SEVERITIES = ("info", "degraded", "wedge")
@@ -457,6 +461,71 @@ def probe_rns_shared_instance_responsive(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Probe: RNS RPC unresponsive — rnstatus hangs though the socket accepts
+# ─────────────────────────────────────────────────────────────────────
+
+
+def probe_rns_rpc_responsive(
+    *,
+    rnstatus_status: "Optional[RNSStatus]" = None,
+    timeout_s: float = 8.0,
+) -> Optional[Signal]:
+    """Detect a wedged rnsd RPC: ``rnstatus`` itself hangs even though the
+    shared-instance socket accepts the connection.
+
+    This is the layer ``probe_rns_shared_instance_responsive`` cannot see.
+    That probe is a bare ``connect()`` timer — it catches a connect that
+    never completes (the SYN-SENT pile-up shape of #68), but returns
+    healthy the moment the socket *accepts*. The 2026-05-20 #69 family
+    (and the wedged-rnsd-RPC class the watchdog was missing) is the
+    opposite: connect succeeds, then the RPC round-trip
+    (``rpc_connection.recv()`` deep in ``RNS.Reticulum``) hangs or EOFs.
+    ``rnstatus`` is the canonical RPC client, so running it bounded and
+    observing a TIMEOUT is the direct test for "RPC wedged".
+
+    Distinguishing wedge from clean-down: a genuinely down rnsd has no
+    listener, so ``rnstatus`` fails FAST (binary-missing / "no shared
+    instance" / connection-refused) — ``RNSStatus.timed_out`` stays False
+    and we return None (``service_inactive`` owns rnsd-down). Only a
+    subprocess TIMEOUT sets ``timed_out=True`` → wedge. Binary missing
+    likewise returns None (no false alarm on RNS-less boxes).
+
+    Args:
+        rnstatus_status: a pre-fetched ``RNSStatus`` (the runner shares
+            one ``run_rnstatus`` call across the rnstatus-consuming
+            probes). When None, this probe runs ``rnstatus`` itself with
+            ``timeout_s``.
+        timeout_s: bounded rnstatus timeout when this probe runs it
+            directly. Kept well under the 30s watchdog tick.
+    """
+    if rnstatus_status is None:
+        from utils.rns_status_parser import run_rnstatus
+        status = run_rnstatus(timeout_s=timeout_s)
+    else:
+        status = rnstatus_status
+
+    if not status.timed_out:
+        return None
+
+    return Signal(
+        cls="rns_rpc_unresponsive",
+        subject="rnsd",
+        severity="wedge",
+        detail=(
+            "rnstatus did not return within its timeout — rnsd accepts "
+            "shared-instance connects but the RPC round-trip is wedged "
+            "(rpc_connection.recv hang/EOF). New RNS clients that get past "
+            "connect still stall in init and destination lookups silently "
+            "fail. Recovery: sudo systemctl restart rnsd.service, then "
+            "restart RNS-using services (meshforge-map, meshforge-echo, "
+            "tracer). See Issue #68/#69."
+        ),
+        issue_ref=68,
+        extra={"timed_out": True},
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Probe: RNS interface Down while peer reachable (2026-05-30)
 # ─────────────────────────────────────────────────────────────────────
 
@@ -486,6 +555,7 @@ def _tcp_reachable(host: str, port: int, timeout: float = 3.0) -> bool:
 
 def probe_rns_interface_down_peer_reachable(
     *,
+    rnstatus_status: "Optional[RNSStatus]" = None,
     rnstatus_text: Optional[str] = None,
     reachable_timeout_s: float = 3.0,
 ) -> Optional[Signal]:
@@ -501,8 +571,10 @@ def probe_rns_interface_down_peer_reachable(
 
     Logic:
 
-    * Parse ``rnstatus`` (live, or ``rnstatus_text`` for tests) into
-      typed interfaces via ``utils.rns_status_parser``.
+    * Resolve interfaces from ``rnstatus_status`` (a pre-parsed
+      ``RNSStatus`` — the runner shares one ``run_rnstatus`` call across
+      the rnstatus-consuming probes), else parse ``rnstatus_text``
+      (tests), else run ``rnstatus`` live — via ``utils.rns_status_parser``.
     * For each TCPInterface whose status is Down AND whose display_name
       embeds a ``host:port``, run a bounded TCP-connect reachability test.
     * If the connect SUCCEEDS → peer is reachable but the interface is
@@ -516,15 +588,19 @@ def probe_rns_interface_down_peer_reachable(
     qualifies, rnstatus is unreadable/errored, or rnsd is down (a
     different probe owns those).
     """
-    if rnstatus_text is None:
-        from utils.rns_status_parser import run_rnstatus
-        status = run_rnstatus()
-    else:
+    if rnstatus_status is not None:
+        status = rnstatus_status
+    elif rnstatus_text is not None:
         from utils.rns_status_parser import parse_rnstatus
         status = parse_rnstatus(rnstatus_text)
+    else:
+        from utils.rns_status_parser import run_rnstatus
+        status = run_rnstatus()
 
     # rnstatus errored (rnsd unreachable, binary missing, timeout) →
-    # don't speculate; service_inactive / shared-instance probes own that.
+    # don't speculate. service_inactive owns rnsd-down; the
+    # rns_rpc_unresponsive probe owns the rnstatus-timeout (wedged-RPC)
+    # case (it keys on RNSStatus.timed_out, not on this parse_error).
     if status.parse_error:
         return None
 
@@ -972,6 +1048,7 @@ __all__ = [
     "probe_lxmf_process_wedge",
     "probe_rns_shared_instance_responsive",
     "probe_rns_interface_down_peer_reachable",
+    "probe_rns_rpc_responsive",
     "_tcp_reachable",
     "probe_http_local",
     "probe_delivery_write_canary",

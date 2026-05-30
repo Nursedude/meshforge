@@ -39,6 +39,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_main_thread_wedge,
     probe_rns_interface_down_peer_reachable,
     probe_rns_namespace_collision,
+    probe_rns_rpc_responsive,
     probe_rns_shared_instance_responsive,
     probe_service_inactive,
     probe_tracer_peer_unreachable,
@@ -72,6 +73,7 @@ def test_signal_classes_closed_enum_is_documented():
         "tracer_peer_unreachable",
         "rns_shared_instance_unresponsive",
         "rns_interface_down_peer_reachable",
+        "rns_rpc_unresponsive",
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -691,6 +693,120 @@ class TestRnsInterfaceDownPeerReachable:
         on a closed local port and never raise."""
         from utils.watchdog_probes import _tcp_reachable
         assert _tcp_reachable("127.0.0.1", 1, timeout=0.5) is False
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-05-30 — rns_rpc_unresponsive (wedged rnsd RPC; rnstatus hangs)
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestProbeRnsRpcResponsive:
+    """Wedged rnsd RPC: the shared-instance socket accepts connects (so
+    probe_rns_shared_instance_responsive reports healthy) but rnstatus's
+    RPC round-trip hangs. probe_rns_rpc_responsive keys on
+    RNSStatus.timed_out — set ONLY by a run_rnstatus subprocess TIMEOUT,
+    never by a fast error — so clean-down rnsd and RNS-less boxes don't
+    false-alarm. Companion to the connect-layer shared-instance probe
+    (#68 SYN-SENT) and the #69 RPC-EOF family."""
+
+    @staticmethod
+    def _status(**kw):
+        from utils.rns_status_parser import RNSStatus
+        return RNSStatus(**kw)
+
+    def test_signal_class_registered(self):
+        assert "rns_rpc_unresponsive" in SIGNAL_CLASSES
+
+    def test_fires_wedge_when_rnstatus_timed_out(self):
+        status = self._status(
+            timed_out=True,
+            parse_error="rnstatus timed out (rnsd unresponsive)",
+        )
+        sig = probe_rns_rpc_responsive(rnstatus_status=status)
+        assert sig is not None
+        assert sig.cls == "rns_rpc_unresponsive"
+        assert sig.severity == "wedge"
+        assert sig.subject == "rnsd"
+        assert sig.issue_ref == 68
+        # Detail names the cure: restart rnsd.
+        assert "rnsd.service" in sig.detail
+
+    def test_quiet_when_healthy_interfaces_present(self):
+        """Connect accepted + RPC answered (timed_out False) → no signal,
+        even with interfaces present."""
+        from utils.rns_status_parser import RNSInterface, InterfaceStatus
+        status = self._status(
+            interfaces=[RNSInterface(
+                type_name="TCPInterface",
+                display_name="Regional RNS/192.168.86.38:4242",
+                status=InterfaceStatus.UP,
+            )],
+        )
+        assert probe_rns_rpc_responsive(rnstatus_status=status) is None
+
+    def test_quiet_when_binary_missing(self):
+        """Binary missing → parse_error set but timed_out False → None
+        (no false alarm on RNS-less boxes)."""
+        status = self._status(
+            parse_error="rnstatus binary not found. Install RNS: pip install rns",
+        )
+        assert probe_rns_rpc_responsive(rnstatus_status=status) is None
+
+    def test_quiet_when_clean_down_error_not_timeout(self):
+        """rnsd cleanly down → fast 'no shared instance' error, NOT a
+        timeout → timed_out False → None (service_inactive owns down)."""
+        status = self._status(
+            parse_error="Could not connect to local shared instance.",
+        )
+        assert probe_rns_rpc_responsive(rnstatus_status=status) is None
+
+    def test_runs_rnstatus_with_bounded_timeout_when_no_status_injected(self):
+        """No injected status → probe calls run_rnstatus(timeout_s=...) and
+        keys on the returned timed_out flag. Pins that the runner-shared
+        call isn't required for the probe to function standalone."""
+        from utils.rns_status_parser import RNSStatus
+        timed = RNSStatus(
+            timed_out=True,
+            parse_error="rnstatus timed out (rnsd unresponsive)",
+        )
+        with patch("utils.rns_status_parser.run_rnstatus",
+                   return_value=timed) as m:
+            sig = probe_rns_rpc_responsive(timeout_s=4.0)
+        m.assert_called_once_with(timeout_s=4.0)
+        assert sig is not None
+        assert sig.cls == "rns_rpc_unresponsive"
+
+    # -- parser-level: run_rnstatus timed_out flag + timeout_s plumbing --
+
+    def test_run_rnstatus_sets_timed_out_on_subprocess_timeout(self):
+        import subprocess as sp
+        from utils.rns_status_parser import run_rnstatus
+        with patch("utils.rns_status_parser._find_rnstatus_binary",
+                   return_value="/usr/bin/rnstatus"), \
+             patch("utils.rns_status_parser.subprocess.run",
+                   side_effect=sp.TimeoutExpired(cmd="rnstatus", timeout=8)):
+            status = run_rnstatus(timeout_s=8.0)
+        assert status.timed_out is True
+        assert "timed out" in (status.parse_error or "")
+
+    def test_run_rnstatus_forwards_timeout_to_subprocess(self):
+        from unittest.mock import MagicMock
+        from utils.rns_status_parser import run_rnstatus
+        fake = MagicMock(stdout="", stderr="")
+        with patch("utils.rns_status_parser._find_rnstatus_binary",
+                   return_value="/usr/bin/rnstatus"), \
+             patch("utils.rns_status_parser.subprocess.run",
+                   return_value=fake) as m:
+            run_rnstatus(timeout_s=3.5)
+        assert m.call_args.kwargs["timeout"] == 3.5
+
+    def test_run_rnstatus_binary_missing_is_not_timed_out(self):
+        from utils.rns_status_parser import run_rnstatus
+        with patch("utils.rns_status_parser._find_rnstatus_binary",
+                   return_value=None):
+            status = run_rnstatus()
+        assert status.timed_out is False
+        assert "binary not found" in (status.parse_error or "")
 
 
 # ─────────────────────────────────────────────────────────────────────

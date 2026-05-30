@@ -44,6 +44,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from utils.rns_status_parser import run_rnstatus
 from utils.watchdog_probes import (
     Signal,
     probe_delivery_write_canary,
@@ -52,6 +53,7 @@ from utils.watchdog_probes import (
     probe_main_thread_wedge,
     probe_rns_interface_down_peer_reachable,
     probe_rns_namespace_collision,
+    probe_rns_rpc_responsive,
     probe_rns_shared_instance_responsive,
     probe_service_inactive,
     probe_tracer_peer_unreachable,
@@ -214,14 +216,28 @@ def run_all_probes(
         if sig is not None:
             signals.append(sig)
 
-    # RNS interface Down while peer reachable (2026-05-30 incident). Runs
-    # rnstatus + a bounded TCP-connect to any Down TCPInterface's peer.
-    # Catches the stuck-uplink class directly at the interface layer
-    # (previously only caught indirectly via tracer_peer_unreachable).
-    # Not gated on rns_instance_name: rnstatus enumerates interfaces
-    # regardless of instance_name resolution, and the probe self-guards
-    # on parse_error when rnsd is unreachable.
-    sig = probe_rns_interface_down_peer_reachable()
+    # RNS rnstatus-consuming probes share ONE bounded rnstatus call so a
+    # wedged rnsd can't stall the 30s tick with two long-timeout
+    # subprocesses. 8s is plenty for a healthy rnstatus (~1-2s) and well
+    # under the tick. Not gated on rns_instance_name: rnstatus enumerates
+    # interfaces regardless, and both probes self-guard when rnsd is
+    # unreachable (binary lookup fails fast on RNS-less boxes — no
+    # subprocess spawned).
+    rns_status = run_rnstatus(timeout_s=8.0)
+
+    # RNS RPC unresponsive (2026-05-30): rnstatus itself hung though the
+    # shared-instance socket accepts — the wedged-rnsd-RPC class the
+    # connect-only shared-instance probe can't see (#68/#69 family).
+    sig = probe_rns_rpc_responsive(rnstatus_status=rns_status)
+    if sig is not None:
+        signals.append(sig)
+
+    # RNS interface Down while peer reachable (2026-05-30 incident).
+    # Bounded TCP-connect to any Down TCPInterface's peer. Reuses the
+    # shared rnstatus result; self-guards on parse_error when rnsd is
+    # unreachable. Catches the stuck-uplink class directly at the
+    # interface layer (previously only via tracer_peer_unreachable).
+    sig = probe_rns_interface_down_peer_reachable(rnstatus_status=rns_status)
     if sig is not None:
         signals.append(sig)
 
