@@ -86,6 +86,27 @@ Own it for real, since upstream won't merge fixes.
   upstreams; re-evaluate when one reaches production-completeness.
 - Do this when a patch is actually needed, not speculatively.
 
+**TRIGGER — confirmed deferred 2026-05-29; build D only when ANY of these fires
+(evidence-based, same discipline as a version bump — [[project-upstream-dependency-governance-2026-05-29]]):**
+  1. **Unfixable-via-config RNS/LXMF bug we actually hit** on the pinned
+     1.2.5/0.9.4 that needs a code change — upstream withdrew support, so there
+     is no merge path; we patch in-house. (A bug we can work around in MeshForge
+     code does NOT trigger D — fix it our side first.)
+  2. **Security issue** in pinned RNS/LXMF with no upstream fix → local patch.
+  3. **Supply-chain availability**: PyPI/GitHub for `rns==1.2.5`/`lxmf==0.9.4`
+     becomes unreliable → vendor the wheels/source (the 1.2.5 anchor is chosen
+     for exactly this — last GitHub-published).
+  4. **A candidate fork reaches production-completeness** (RetiNet, Reticulum-rs)
+     → that's the T3 replacement evaluation, a sibling track, not D itself.
+
+**Readiness (so D is a contained ~1-session step when triggered, not a cold
+start):** the transport seam is already clean — `gateway/rns_transport.py` +
+transport-agnostic `gateway/message_routing.py` — and all RNS construction now
+flows through the ONE guarded chokepoint `utils/rns_init.py::open_reticulum`
+(MF019-enforced). So a local patch or vendored fork lands behind a single
+boundary. The pin (`requirements/rns.txt`) + drift-check (`scripts/rns_version_check.py`)
+are the version source-of-truth a vendored build would pin against.
+
 ---
 
 ## Sequencing
