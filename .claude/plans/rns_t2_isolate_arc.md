@@ -255,9 +255,17 @@ Shipped:
   thread pollution). None touch utils.rns_init. My changes add zero new failures.
   (Aside worth a future cleanup task: test_fleet_snapshot.py has a 3-test intra-
   file ordering leak — likely a TTL-cache/singleton from the #55 systemctl probes.)
-- **STILL TO DO:** (1) ~~full-suite confirm~~ DONE; (2) on-box #68 wedge verify
-  (persistent_issues #68 recipe: wedge rnsd → caller fails-open within ~5s → :5000
-  still binds) — operator-run in a controlled window, NOT against live federator;
-  (3) commit + careful fleet deploy (pull + controlled rnsd/service restart per box,
-  the same recipe used for the moc1/moc2 converge). D deferred.
+- **LANDED 2026-05-29 (code in place, INERT):** committed `7e47975` (feat) +
+  `8ed1e25` (docs), pushed to main, pulled to all 4 fleet boxes (HEAD `8ed1e25`);
+  the chokepoint + `_lab_common` re-export chain import-validated on every box's
+  real env. **NO service restarts** — running processes keep old code, so the
+  #68 fail-open is NOT yet active (operator chose "land now, activate later").
+- **STILL TO DO (deferred per operator):** (1) **ACTIVATE** by restarting
+  services per box — map-only boxes first (moc1/moc2/moc3), gateway box `moc`
+  LAST, then VolcanoAI; use the controlled rnsd/service restart recipe (stop
+  map → restart rnsd → verify @rns owner=rnsd → start map) to avoid the @rns
+  host-race; (2) on-box **#68 wedge verify** (persistent_issues #68 recipe:
+  wedge ONE box's rnsd → confirm the caller fails-open within ~5s and :5000
+  still binds) — NOT against the live federator. D (in-house patch / vendor)
+  deferred until a real patch need arises.
 This file survives `/clear`.
