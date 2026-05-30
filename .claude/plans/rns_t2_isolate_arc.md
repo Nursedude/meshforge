@@ -249,12 +249,19 @@ Shipped:
 - **Tests:** test_rns_init.py (18 new) + test_lab_common.py (37, repointed patches
   to utils.rns_init) + test_regression_guards.py (22, incl. the 2 new). Map host-
   guard tests repointed to the chokepoint seam. lint --all + MF012 green.
-- **Full suite: 5243 passed, 1 skipped, 6 failed — all 6 proven PRE-EXISTING**
-  (stash-tested on clean 096f72e: test_fleet_snapshot.py fails the same 3 intra-
-  file; service_check/socket_cleanup/zombie pass in isolation = cross-file daemon-
-  thread pollution). None touch utils.rns_init. My changes add zero new failures.
-  (Aside worth a future cleanup task: test_fleet_snapshot.py has a 3-test intra-
-  file ordering leak — likely a TTL-cache/singleton from the #55 systemctl probes.)
+- **Full suite: CLEAN — 5250 passed, 1 skipped, 0 failed across 3 consecutive
+  runs (2026-05-29).** The B+C changes added zero failures; the 6 failures seen
+  during this arc were all PRE-EXISTING flakies (proven via stash on clean
+  096f72e) and have since been FIXED as follow-up cleanup:
+    - test_fleet_snapshot.py — was host-state coupling, NOT intra-file leakage:
+      overall_status read the federator's live watchdog.json (ok:false). Autouse
+      fixture pins _watchdog_block neutral + a watchdog→degraded test. `8384803`.
+    - test_service_check / socket_cleanup / status_bar / cascade scatter — a
+      leaked RNSMeshtasticBridge daemon loop (start()-without-stop() in the
+      bridge fixtures) called the REAL subprocess.run after its HAS_SERVICE_CHECK
+      patch exited, poisoning every later test patching global subprocess.run.
+      Fix = stop the bridge in fixture teardown; leaked threads 352→47. `529558d`.
+      See [[feedback-leaked-daemon-thread-subprocess-poison]].
 - **LANDED 2026-05-29 (code in place, INERT):** committed `7e47975` (feat) +
   `8ed1e25` (docs), pushed to main, pulled to all 4 fleet boxes (HEAD `8ed1e25`);
   the chokepoint + `_lab_common` re-export chain import-validated on every box's
@@ -287,4 +294,4 @@ Shipped:
   map re-attached (preflight OK, `/api/network/rns/paths available=true`). moc2 fully
   restored. The #68 cascade class is now closed in code AND proven live.
 - D (in-house patch / vendor) deferred until a patch need arises.
-This file survives `/clear`. **ARC STATUS: A done · B+C done, activated & #68-verified · D deferred (arc complete bar D).**
+This file survives `/clear`. **ARC STATUS: A done · B+C done, activated & #68-verified · full suite CLEAN (5250 pass / 0 fail, 3 consecutive runs; both pre-existing flakies fixed `8384803`+`529558d`) · D deferred (arc complete bar D).**
