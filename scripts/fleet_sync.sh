@@ -49,6 +49,36 @@ set -uo pipefail
 
 SELF="$(basename "$0")"
 
+# ---------------------------------------------------------------------------
+# Flags. --no-restart suppresses THIS box's local daemon self-refresh (the
+# meshforge-gateway / meshforge-map / meshforge-maps self-restart near the end
+# of the run) while STILL syncing memory, fast-forwarding code everywhere, and
+# deploying + restarting the remote fleet (that is the whole point of the host
+# loop — suppressing it would leave remotes on stale code, the Issue #53 bug
+# the self-refresh exists to prevent). Use it from the canonical box
+# which also serves the :5000 federator map, to push to the fleet
+# without risking an unwanted local map cold-start that could wedge on a flaky
+# rnsd (Issue #68). Default (no flag): local self-restart-on-code-change.
+# ---------------------------------------------------------------------------
+NO_RESTART=0
+for arg in "$@"; do
+    case "$arg" in
+        --no-restart) NO_RESTART=1 ;;
+        -h|--help)
+            echo "Usage: $SELF [--no-restart]"
+            echo "  --no-restart  Sync memory + deploy/restart the remote fleet as"
+            echo "                usual, but do NOT self-restart this box's local"
+            echo "                daemons (gateway/map/maps)."
+            exit 0
+            ;;
+        *)
+            echo "$SELF: unknown argument: $arg" >&2
+            echo "Usage: $SELF [--no-restart]" >&2
+            exit 2
+            ;;
+    esac
+done
+
 # Locate host list
 FLEET_FILE="${MESHFORGE_FLEET_HOSTS:-}"
 if [[ -z "$FLEET_FILE" ]]; then
@@ -610,6 +640,13 @@ sync_local_unit() {
         printf '[%-30s] PASS %s current (no restart needed)\n' \
             "$self_tag" "$unit"
         action_pass=$((action_pass + 1))
+        return 0
+    fi
+
+    if [ "$NO_RESTART" = "1" ]; then
+        printf '[%-30s] SKIP %s self-restart suppressed (--no-restart; code changed)\n' \
+            "$self_tag" "$unit"
+        action_skip=$((action_skip + 1))
         return 0
     fi
 
