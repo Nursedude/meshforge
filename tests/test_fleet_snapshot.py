@@ -47,6 +47,32 @@ def _clear_systemctl_cache():
     fleet_snapshot._systemctl_state_cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def _neutral_watchdog_block(monkeypatch):
+    """Decouple ``build_slo_snapshot()``'s ``overall_status`` from the HOST's
+    real ``/var/lib/meshforge/watchdog.json``.
+
+    ``overall_status`` folds in three host-coupled inputs — required-service
+    probes, the cascade-detector singleton, and the watchdog file. The service
+    tests patch ``_systemctl_state`` and the cascade tests patch
+    ``get_singleton``/``_services_rollup``, but nothing pinned the watchdog
+    block, so on a live fleet box (the federator's watchdog.json is routinely
+    ``ok:false`` with wedge signals) ``_watchdog_block()`` silently demoted
+    ``overall_status`` to ``degraded`` — making the ``…_ready…`` /
+    ``…_stays_ready…`` tests pass only on a clean CI container and fail on a
+    real host. That host coupling — NOT cross-test leakage — was the
+    "flakiness". Pin it to the neutral not-installed shape (exactly what a box
+    with no watchdog yields, which is the state CI tested against);
+    ``test_overall_status_degraded_on_watchdog_wedge`` overrides it to cover
+    the demotion branch explicitly.
+    """
+    monkeypatch.setattr(
+        fleet_snapshot, "_watchdog_block",
+        lambda: {"installed": False, "reason": "no_state_file"},
+    )
+    yield
+
+
 # ─── Shape contract ────────────────────────────────────────────────────
 
 
@@ -1079,6 +1105,31 @@ def test_overall_status_demotes_to_degraded_on_cascade_wedged(monkeypatch):
     )
     snap = build_slo_snapshot()
     assert snap["overall_status"] == "degraded"
+
+
+def test_overall_status_degraded_on_watchdog_wedge(monkeypatch):
+    """A watchdog wedge signal must demote overall_status to degraded so MA's
+    rollup carries the cross-box wedge signal without new HTTP plumbing
+    (Issue stack #58-#69). Services + cascade are pinned healthy (the autouse
+    fixture already neutralizes the watchdog; here we override it not-ok) so
+    the watchdog is the only demotion source — covers the branch the autouse
+    fixture otherwise masks."""
+    monkeypatch.setattr(fleet_snapshot, "_systemctl_state",
+                        lambda *a, **k: "available")
+    monkeypatch.setattr(
+        fleet_snapshot, "_watchdog_block",
+        lambda: {
+            "installed": True, "ok": False,
+            "signals": [{"severity": "wedge",
+                         "class": "rns_shared_instance_unresponsive",
+                         "subject": "rnsd"}],
+        },
+    )
+    snap = build_slo_snapshot()
+    assert snap["overall_status"] == "degraded"
+    assert any("watchdog" in e for e in snap["errors"]), (
+        "errors must mention the watchdog wedge so operators see the reason"
+    )
 
 
 def test_overall_status_stays_ready_when_only_suspected_cascade(monkeypatch):
