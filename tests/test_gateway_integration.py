@@ -931,6 +931,13 @@ class TestRNSConnectionStability:
 
         This was the root cause of the worst regressions (Session 7).
         The apply_config_and_restart function must never be called.
+
+        RNS construction is delegated to the guarded chokepoint
+        (``utils.rns_init.open_reticulum``, imported into the gateway module).
+        We patch that delegation so the test is deterministic regardless of
+        whether RNS is installed in the environment (CI runs minimal deps and
+        has no RNS) — patching the old ``_RNS_mod`` seam no longer intercepts
+        the construct, which now lives behind the chokepoint.
         """
         config = GatewayConfig()
         config.enabled = True
@@ -939,11 +946,9 @@ class TestRNSConnectionStability:
 
         bridge = RNSMeshtasticBridge(config=config)
 
-        mock_rns = MagicMock()
-        mock_rns.Reticulum.return_value = MagicMock()
-
         with patch('gateway._rns_bridge_connection._HAS_RNS', True), \
-             patch('gateway._rns_bridge_connection._RNS_mod', mock_rns), \
+             patch('gateway._rns_bridge_connection.open_reticulum',
+                   return_value=MagicMock()) as mock_open, \
              patch('gateway._rns_bridge_connection.ReticulumPaths') as mock_paths, \
              patch('gateway._rns_bridge_connection.detect_rnsd_config_drift') as mock_drift, \
              patch('os.geteuid', return_value=0):
@@ -957,6 +962,9 @@ class TestRNSConnectionStability:
                 bridge._init_rns_main_thread()
 
         assert bridge._rns_pre_initialized is True
+        # Init is delegated to the guarded chokepoint (which itself never
+        # restarts services — POLICY: diagnose, don't fix).
+        mock_open.assert_called_once()
 
     def test_rns_loop_respects_permanent_failure(self):
         """When RNS init fails permanently, the loop should not retry."""
