@@ -260,12 +260,24 @@ Shipped:
   the chokepoint + `_lab_common` re-export chain import-validated on every box's
   real env. **NO service restarts** — running processes keep old code, so the
   #68 fail-open is NOT yet active (operator chose "land now, activate later").
-- **STILL TO DO (deferred per operator):** (1) **ACTIVATE** by restarting
-  services per box — map-only boxes first (moc1/moc2/moc3), gateway box `moc`
-  LAST, then VolcanoAI; use the controlled rnsd/service restart recipe (stop
-  map → restart rnsd → verify @rns owner=rnsd → start map) to avoid the @rns
-  host-race; (2) on-box **#68 wedge verify** (persistent_issues #68 recipe:
-  wedge ONE box's rnsd → confirm the caller fails-open within ~5s and :5000
-  still binds) — NOT against the live federator. D (in-house patch / vendor)
-  deferred until a real patch need arises.
-This file survives `/clear`.
+- **ACTIVATED 2026-05-29 (fleet-wide).** Restarted the MeshForge daemons that
+  call `open_reticulum` (gateway + map/maps) on all 5 boxes; **rnsd left UP**
+  (the chokepoint is MeshForge code, not rnsd — so no @rns host-race window;
+  the earlier "restart rnsd" recipe was only for the version converge). Staged
+  map-only → gateway → federator. Verified each: chokepoint engaged against the
+  LIVE healthy rnsd, construct succeeded, **NO degrade/fail-open** (the #68
+  probe succeeds on a healthy rnsd — proven live, the thing that couldn't be
+  ad-hoc tested). moc1/moc2/moc map logged `rns_init: listener preflight OK …
+  rnsd`; moc3/moc gateway logged `RNS pre-initialized` + `Connected to RNS
+  (LXMF ready)` + both legs connected; VolcanoAI map `/api/network/rns/paths
+  available=true` (RNS attached; no preflight-OK log there only because rnsd
+  runs as a different user → `ss` can't attribute the pid (SPLIT-ENV), so the
+  #69 check returns None silently and the presence+probe path attaches anyway).
+  Federation: all peers cf=0.
+- **STILL OPEN (operator's call):** on-box **#68 wedge verify** — wedge ONE
+  box's rnsd, confirm the caller fails-open within ~5s and :5000 still binds.
+  The HEALTHY path is now proven live fleet-wide; the WEDGE path is unit-tested
+  but not yet proven in prod (needs deliberately wedging an rnsd — disruptive,
+  not the federator). D (in-house patch / vendor) deferred until a patch need
+  arises.
+This file survives `/clear`. **ARC STATUS: A done · B+C done + activated · D deferred.**
