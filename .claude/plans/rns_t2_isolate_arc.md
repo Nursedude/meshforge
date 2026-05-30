@@ -177,10 +177,20 @@ forward bump, LXMF already 0.9.4); **moc/moc1/moc2 DRIFT** (RNS 1.1.9->1.2.5 UP
   MainPID unchanged (no silent wedge/restart); `journalctl -u meshforge-gateway`
   no new error/traceback + "Messages bridged" M->R/R->M incrementing once mesh
   traffic flows (the real LXMF-0.9.4 proof); federator `/api/status` keeps moc cf=0.
-- moc1, moc2: map-only (no gateway bridge), moc1 also = cloud-push. STILL PENDING
-  — converge after moc soak is clean. Re-run the SPLIT-ENV check on each first.
+- moc1, moc2: ✅ CONVERGED + verified 2026-05-29. Both were git-stale (HEAD e8c5d9c,
+  the first-pin commit, 5 behind — never pulled the rebaseline; the
+  [[feedback-fleet-pull-after-push]] divergence mode; their drift-check still read the
+  OLD pin 1.1.9/0.9.6). Recipe: `git -C /opt/meshforge pull` → drift-check as wh6gxz
+  now reads new pin (DRIFT) → `sudo -u wh6gxz -H pip3 install --break-system-packages
+  rns==1.2.5 lxmf==0.9.4` (clean RNS-only bump; crypto 46.0.5 / pyopenssl 26.0.0
+  already in-bounds) → stop map+maps → restart rnsd → verify @rns/default owner=rnsd
+  + rnstatus Up → start map+maps. Verified each: drift OK, @rns owned by fresh rnsd,
+  AutoIface + HawaiiNet TCP Up, :5000 healthz/api_status=200 (after warm), :8808
+  api/status=200, federator sees both cf=0/backoff=1 (clean recovery after the rnsd
+  blip). No gateway on either → LXMF-downgrade path unexercised (as expected).
 - VolcanoAI: no action (already on the pin).
-- Goal: `rns_version_check.py` all-OK fleet-wide. (federator + moc3 OK, moc soaking; moc1/moc2 left.)
+- Goal: `rns_version_check.py` all-OK fleet-wide. ✅ ACHIEVED 2026-05-29 — all 5 boxes
+  (moc / moc1 / moc2 / moc3 / VolcanoAI) compliant with rns==1.2.5 / lxmf==0.9.4.
 
 **⚠️ SPLIT-ENV FINDING (2026-05-29) — drift-check has a per-user blind spot.**
 moc runs ALL RNS services (rnsd, gateway, map, maps) as `User=wh6gxz`, importing
@@ -210,8 +220,44 @@ Sub-arc **A DONE** (`e8c5d9c`): pinned + drift-check deployed fleet-wide.
 **DECISION 1 RESOLVED (2026-05-29)**: pin REBASELINED `rns==1.1.9`/`lxmf==0.9.6`
 -> `rns==1.2.5`/`lxmf==0.9.4` (converge gateways UP to the federator-proven, last-
 GitHub-published combo; VolcanoAI now a no-op). **moc3 CONVERGED + verified;
-moc CONVERGED + SOAKING (the LXMF-downgrade canary) — 2026-05-29.** moc1/moc2
-still pending (map-only; converge after moc soak is clean; re-check SPLIT-ENV per
-box). ⚠️ SPLIT-ENV finding logged (drift-check is per-user; install into the
-service's env). **B+C scoped & handed off
-above** — awaiting a fresh session. D deferred. This file survives `/clear`.
+moc CONVERGED + SOAKING (the LXMF-downgrade canary) — 2026-05-29. moc1/moc2
+CONVERGED + verified 2026-05-29 (were git-stale; pull → install → controlled
+restart).** ⚠️ SPLIT-ENV finding logged (drift-check is per-user; install into the
+service's env). **FLEET NOW ALL-GREEN on rns==1.2.5 / lxmf==0.9.4** (drift-check OK
+on all 5 boxes). **B+C IMPLEMENTED** (this session, 2026-05-29 — pending on-box #68 wedge verify
++ fleet deploy). The "25 sites" was a grep artifact: only **7 real construction
+calls** (rest were docstrings/comments), 2 of which were the existing primitives.
+Shipped:
+- **New chokepoint `src/utils/rns_init.py`** with `open_reticulum(configdir, *,
+  require_listener, probe, connect_probe_timeout_s, init_timeout_s)`. Does, every
+  time: RNS-missing→None · singleton reuse (`_existing_instance`) · #69 listener-
+  owner preflight (fail-LOUD) · **#68 bounded AF_UNIX connect probe (fail-OPEN —
+  returns None on timeout/absent-when-require_listener)** · construct under the
+  `os._exit` watchdog backstop. The #69 primitives + watchdog (`check_rns_listener_owner`,
+  `init_reticulum_with_watchdog`, `bounded_block`, ...) MOVED here from
+  `lab/_lab_common.py` (fixes the utils→lab inversion); `_lab_common` re-exports
+  them so lab daemons + tests are unchanged.
+- **5 in-process callers migrated** to `open_reticulum`: map `init_rns_singleton`
+  (require_listener=True), gateway `_rns_bridge_connection` ×2, `node_tracker`
+  (require_listener=True), `commands/rns._init_rns_client` (require_listener=True,
+  raises clean error on degrade). The 6th real site — `rns_interfaces.py` — is an
+  ISOLATED `python3 -c` subprocess probe of NomadNet's OWN venv RNS with its own
+  subprocess timeout → allowlisted, not migrated.
+- **MF019 lint rule** + **`TestRNSReticulumChokepoint`** regression guard: raw
+  `RNS.Reticulum()` banned outside the allowlist (`rns_init.py` + `rns_interfaces.py`).
+  CLAUDE.md NEVER list + persistent_issues #68 (deferred→IMPLEMENTED) + MF table updated.
+- **Tests:** test_rns_init.py (18 new) + test_lab_common.py (37, repointed patches
+  to utils.rns_init) + test_regression_guards.py (22, incl. the 2 new). Map host-
+  guard tests repointed to the chokepoint seam. lint --all + MF012 green.
+- **Full suite: 5243 passed, 1 skipped, 6 failed — all 6 proven PRE-EXISTING**
+  (stash-tested on clean 096f72e: test_fleet_snapshot.py fails the same 3 intra-
+  file; service_check/socket_cleanup/zombie pass in isolation = cross-file daemon-
+  thread pollution). None touch utils.rns_init. My changes add zero new failures.
+  (Aside worth a future cleanup task: test_fleet_snapshot.py has a 3-test intra-
+  file ordering leak — likely a TTL-cache/singleton from the #55 systemctl probes.)
+- **STILL TO DO:** (1) ~~full-suite confirm~~ DONE; (2) on-box #68 wedge verify
+  (persistent_issues #68 recipe: wedge rnsd → caller fails-open within ~5s → :5000
+  still binds) — operator-run in a controlled window, NOT against live federator;
+  (3) commit + careful fleet deploy (pull + controlled rnsd/service restart per box,
+  the same recipe used for the moc1/moc2 converge). D deferred.
+This file survives `/clear`.
