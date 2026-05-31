@@ -46,6 +46,7 @@ MeshForge is a **Network Operations Center (NOC)** bridging Meshtastic and Retic
 - `main` includes XTOC/ATAK/CoT, MQTT bridge, security hardening. Gateway bridge, coverage maps, NOC map have unit tests but need field validation.
 - MeshCore is available as an optional gateway handler on main.
 - `CanonicalMessage` in `src/gateway/canonical_message.py` is the shared bridge contract — keep compatible with MeshAnchor's version.
+- **RNS-reliability parity**: MeshForge is the **lead repo** for the RNS-reliability arc (chokepoint, fork pin, lint MF019, rnstatus `timed_out` probes). The fleet runs one rnsd per box (shared instance) and both apps connect to it, so they must run the identical RNS substrate. **Land RNS-reliability changes here first, then port to MeshAnchor.** `python3 scripts/parity_check.py` reports drift: byte-identical (`src/utils/rns_init.py`, `src/gateway/canonical_message.py`, the `requirements/rns.txt` `MF-FORK-PIN` block) + shape (`rns_status_parser.py` `timed_out`, lint MF009+MF019, `scripts/rns_version_check.py`, the two RNS-wedge probes — here in `watchdog_probes.py`, in MeshAnchor's `active_health_probe.py`).
 - Solo dev workflow: commit direct to `main`, push via `git push origin main`. PR/feature-branch flow was retired 2026-04-19 (caused more divergence than it prevented). A permission hook may still deny pushes; use `origin` remote rather than literal SSH URL.
 - Alpha branch archived as tag `alpha-archived`.
 
