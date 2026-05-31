@@ -24,9 +24,21 @@ fixed *at the source*. Phase-2 source fixes shipped: `+mf.1` #68 connect-hang,
 rnsd-SIGTERM graceful-shutdown hang** — `Transport.detach_interfaces()` is bounded
 to `DETACH_TIMEOUT` (default 5s, env `RNS_DETACH_TIMEOUT`) so a busy node's SIGTERM
 teardown reaches `RNS.exit()`/`os._exit()` gracefully instead of systemd waiting
-the full `TimeoutStopSec`. The `rnsd.service.d/10-stop-timeout.conf` 15s cap is
-RETAINED as a defense-in-depth backstop (NOT the cure) until mf.3 is soak-proven
-fleet-wide (operator decision 2026-05-30); retire it then.
+the full `TimeoutStopSec`. **mf.3 bounds ONLY the `detach_interfaces()` hang — it
+is NOT a complete fix.** An active proof on 2026-05-30 (deliberate rnsd restart
+cycles) caught moc1 hanging the **full 15s → SIGKILL** (`result=timeout`,
+`status=9/KILL`) WITH mf.3 loaded; the `DETACH_TIMEOUT` warning never fired, so the
+hang is in a SECOND shutdown-path location mf.3's detach bound does not cover
+(likely an uninterruptible main-thread wedge before/around the SIGTERM handler, or
+downstream in `exit_handler` — only SIGKILL ends it). **Therefore the
+`rnsd.service.d/10-stop-timeout.conf` 15s cap is REQUIRED — it is the genuine cure
+for that residual hang. DO NOT RETIRE IT** (this reverses the earlier
+retire-after-soak plan; commit `0cb935d` framing is superseded). Bounding the
+second hang path at the source is a candidate **mf.4** (needs controlled
+reproduction + a live main-thread stack capture). ⚠️ Also: do NOT rapid-cycle rnsd
+restarts fleet-wide — each 15s-hang+SIGKILL plus the slow rebind opens an `@rns`
+race window for periodic RNS clients (the lab tracer), stranding rnsd as a client
+(#69-adjacent); space restarts and verify host-binding before the next.
 
 - **Wire-compat invariant (non-negotiable)**: never change crypto primitives
   (Ed25519/X25519/AES-256-CBC/Fernet) or the packet/announce/path-table wire
@@ -390,17 +402,14 @@ callers (map `init_rns_singleton`, gateway `_rns_bridge_connection`,
 `os._exit` watchdog backstop for the rare "probe passed, then wedged" race.
 See `.claude/plans/rns_t2_isolate_arc.md`.
 
-**FIXED AT SOURCE (2026-05-30, fork `rns 1.2.5+mf.1`, commit `6fb9a9ec`)**: the
-root cause now has an in-library cure, not just a MeshForge-side guard. Since
-RNS is a MeshForge-owned fork ([[project_rns_fork_shipped_2026_05_30]]),
-`LocalClientInterface.connect()` brackets the shared-instance connect with
-`settimeout(CONNECT_TIMEOUT=5s, env RNS_LOCAL_CONNECT_TIMEOUT)` and restores
-blocking after — so a wedged rnsd raises `socket.timeout` (the reconnect loop
-retries; `Reticulum.__init__` falls back to standalone) instead of hanging the
-calling thread in an uninterruptible kernel `unix_stream_connect`. Fork test
-`tests/meshforge_local_connect.py` (4). The `rns_init.py` probe + `os._exit`
-backstop above STAY as defense-in-depth until this is soak-proven — remove a
-backstop only after its in-library fix has held over a long soak.
+**FIXED AT SOURCE (2026-05-30, fork `rns 1.2.5+mf.1`, `6fb9a9ec`)**: now an
+in-library cure, not just a MeshForge guard. `LocalClientInterface.connect()`
+brackets the shared-instance connect with `settimeout(5s, env
+RNS_LOCAL_CONNECT_TIMEOUT)` → a wedged rnsd raises `socket.timeout` (reconnect
+retries / falls back to standalone) instead of hanging in `unix_stream_connect`.
+Fork test `tests/meshforge_local_connect.py` (4). The `rns_init.py` probe +
+`os._exit` backstop STAY as defense-in-depth until soak-proven. See
+[[project_rns_fork_shipped_2026_05_30]].
 
 
 ---
@@ -552,17 +561,13 @@ makes **one** bounded `run_rnstatus(timeout_s=8.0)` per tick and shares
 the parsed result with both rnstatus-consuming probes (a wedged rnsd
 can't stall the 30s tick with two long-timeout subprocesses).
 
-**FIXED AT SOURCE (2026-05-30, fork `rns 1.2.5+mf.2`, commit `11227832`)**:
-the watchdog above *detects* the wedge; the fork now *prevents* it. Since RNS
-is a MeshForge-owned fork ([[project_rns_fork_shipped_2026_05_30]]), all 20
-client-side RPC recvs route through a new `_rpc_recv()` helper that does
-`poll(RPC_TIMEOUT=8s, env RNS_RPC_TIMEOUT)` before `recv()` — a
-wedged-but-accepting rnsd raises `TimeoutError` and an EOF (the #69 mechanism)
-fast-fails, instead of blocking forever in `rpc_connection.recv()`. The server
-`rpc_loop` recv is untouched (it must block). `rnstatus` exercises this path,
-so the canary green on VolcanoAI is direct proof. Fork test
-`tests/meshforge_rpc_timeout.py` (3). The watchdog probe STAYS as
-defense-in-depth (surfaces any residual wedge the timeout can't cure).
+**FIXED AT SOURCE (2026-05-30, fork `rns 1.2.5+mf.2`, `11227832`)**: the
+watchdog above *detects* the wedge; the fork now *prevents* it. All 20
+client-side RPC recvs route through `_rpc_recv()` → `poll(8s, env RNS_RPC_TIMEOUT)`
+before `recv()`, so a wedged-but-accepting rnsd raises `TimeoutError` (EOF
+fast-fails too) instead of blocking forever. Server `rpc_loop` recv untouched.
+Fork test `tests/meshforge_rpc_timeout.py` (3); watchdog probe STAYS as
+defense-in-depth. See [[project_rns_fork_shipped_2026_05_30]].
 
 **Recovery**: `sudo systemctl restart rnsd.service`, then restart
 RNS-using services (meshforge-map, meshforge-echo, tracer).
