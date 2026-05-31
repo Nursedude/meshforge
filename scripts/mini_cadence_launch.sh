@@ -28,6 +28,21 @@ PRESET="${MINI_PRESET:-meshforge_fleet}"
 # fragility class — everything mini-adjacent carries a timeout).
 TIMEOUT_S="${MINI_CADENCE_TIMEOUT_S:-900}"
 
+# Hold guard — pause ALL cadence activity (no --dream, no session) until a
+# given epoch. Generic: use it to keep cadence out of any controlled mini
+# experiment (e.g. a soak) without touching the crontab. Source is an epoch in
+# $MINI_CADENCE_HOLD_UNTIL, else the first integer in the hold file. Once the
+# epoch passes the launcher proceeds normally — no manual re-enable needed.
+HOLD_FILE="${MINI_CADENCE_HOLD_FILE:-$HOME/.config/meshforge/mini_cadence_hold_until}"
+HOLD_UNTIL="${MINI_CADENCE_HOLD_UNTIL:-}"
+if [ -z "$HOLD_UNTIL" ] && [ -f "$HOLD_FILE" ]; then
+  HOLD_UNTIL="$(tr -cd '0-9' < "$HOLD_FILE")"
+fi
+if [ -n "$HOLD_UNTIL" ] && [ "$(date +%s)" -lt "$HOLD_UNTIL" ]; then
+  echo "mini-cadence: held until @$HOLD_UNTIL ($(date -d "@$HOLD_UNTIL" 2>/dev/null)) — skipping."
+  exit 0
+fi
+
 # Refresh proposals FIRST. mini's --dream pass is deterministic (no LLM, cheap)
 # and is the ONLY thing that proposes memory-deltas — without it the gate below
 # can never open. Set MINI_SKIP_DREAM=1 to gate on existing deltas only (e.g. if
