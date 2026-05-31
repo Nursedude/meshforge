@@ -11,6 +11,34 @@
 
 ---
 
+## RNS / LXMF are MeshForge-owned forks (SSOT, 2026-05-30)
+
+RNS and LXMF are now **hard forks owned by MeshForge** (`Nursedude/reticulum`,
+`Nursedude/lxmf`), pinned in `requirements/rns.txt` by tag **and** SHA with a
+`# MF-FORK-PIN` SSOT line; `scripts/rns_version_check.py` gates the fleet on the
+`+mf.N` marker. Fleet baseline: **rns `1.2.5+mf.2` / lxmf `0.9.4+mf.0`**. This is
+the meta-resolution for the entire **rnsd-RPC fragility class** (#58/#61/#63/#68/
+#69/#72): fragility that we used to work *around* in `utils/rns_init.py` can now be
+fixed *at the source* (see #68 and #72 "FIXED AT SOURCE" notes below).
+
+- **Wire-compat invariant (non-negotiable)**: never change crypto primitives
+  (Ed25519/X25519/AES-256-CBC/Fernet) or the packet/announce/path-table wire
+  format — that forks the *network*, not the code. Fork = maintenance + isolation.
+- **Upstream tracking**: stock RNS ships off-GitHub now (Carrier Switch). To adopt
+  a future release: `git merge <upstream-tag>` into `meshforge`, re-run Phase-1
+  parity (version marker, rnsd ownership, gateway/map/tracer, **public-net interop
+  proof**), canary one box, then fleet-roll. Full procedure in each fork's
+  `FORK.md`; governance triggers (CVE-no-upstream / wire break / activity ceases)
+  in [[project_upstream_dependency_governance_2026_05_29]].
+- **MeshForge-side guards STAY** (`rns_init.py` probe, MF009/MF019 lint, watchdog
+  `os._exit` backstop) as defense-in-depth — remove a backstop only after its
+  in-library fix has held over a long soak.
+
+See [[project_rns_fork_shipped_2026_05_30]] and
+`.claude/plans/do-some-deep-research-delightful-dongarra.md`.
+
+---
+
 ## Archived / Fully Resolved Issues
 
 The following are **RESOLVED** with automated prevention (linter + regression tests).
@@ -355,6 +383,18 @@ callers (map `init_rns_singleton`, gateway `_rns_bridge_connection`,
 `os._exit` watchdog backstop for the rare "probe passed, then wedged" race.
 See `.claude/plans/rns_t2_isolate_arc.md`.
 
+**FIXED AT SOURCE (2026-05-30, fork `rns 1.2.5+mf.1`, commit `6fb9a9ec`)**: the
+root cause now has an in-library cure, not just a MeshForge-side guard. Since
+RNS is a MeshForge-owned fork ([[project_rns_fork_shipped_2026_05_30]]),
+`LocalClientInterface.connect()` brackets the shared-instance connect with
+`settimeout(CONNECT_TIMEOUT=5s, env RNS_LOCAL_CONNECT_TIMEOUT)` and restores
+blocking after — so a wedged rnsd raises `socket.timeout` (the reconnect loop
+retries; `Reticulum.__init__` falls back to standalone) instead of hanging the
+calling thread in an uninterruptible kernel `unix_stream_connect`. Fork test
+`tests/meshforge_local_connect.py` (4). The `rns_init.py` probe + `os._exit`
+backstop above STAY as defense-in-depth until this is soak-proven — remove a
+backstop only after its in-library fix has held over a long soak.
+
 
 ---
 
@@ -504,6 +544,18 @@ rnsd-down and RNS-less boxes never false-alarm. `run_all_probes` now
 makes **one** bounded `run_rnstatus(timeout_s=8.0)` per tick and shares
 the parsed result with both rnstatus-consuming probes (a wedged rnsd
 can't stall the 30s tick with two long-timeout subprocesses).
+
+**FIXED AT SOURCE (2026-05-30, fork `rns 1.2.5+mf.2`, commit `11227832`)**:
+the watchdog above *detects* the wedge; the fork now *prevents* it. Since RNS
+is a MeshForge-owned fork ([[project_rns_fork_shipped_2026_05_30]]), all 20
+client-side RPC recvs route through a new `_rpc_recv()` helper that does
+`poll(RPC_TIMEOUT=8s, env RNS_RPC_TIMEOUT)` before `recv()` — a
+wedged-but-accepting rnsd raises `TimeoutError` and an EOF (the #69 mechanism)
+fast-fails, instead of blocking forever in `rpc_connection.recv()`. The server
+`rpc_loop` recv is untouched (it must block). `rnstatus` exercises this path,
+so the canary green on VolcanoAI is direct proof. Fork test
+`tests/meshforge_rpc_timeout.py` (3). The watchdog probe STAYS as
+defense-in-depth (surfaces any residual wedge the timeout can't cure).
 
 **Recovery**: `sudo systemctl restart rnsd.service`, then restart
 RNS-using services (meshforge-map, meshforge-echo, tracer).
