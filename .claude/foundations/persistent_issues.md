@@ -16,10 +16,17 @@
 RNS and LXMF are now **hard forks owned by MeshForge** (`Nursedude/reticulum`,
 `Nursedude/lxmf`), pinned in `requirements/rns.txt` by tag **and** SHA with a
 `# MF-FORK-PIN` SSOT line; `scripts/rns_version_check.py` gates the fleet on the
-`+mf.N` marker. Fleet baseline: **rns `1.2.5+mf.2` / lxmf `0.9.4+mf.0`**. This is
+`+mf.N` marker. Fleet baseline: **rns `1.2.5+mf.3` / lxmf `0.9.4+mf.0`**. This is
 the meta-resolution for the entire **rnsd-RPC fragility class** (#58/#61/#63/#68/
 #69/#72): fragility that we used to work *around* in `utils/rns_init.py` can now be
-fixed *at the source* (see #68 and #72 "FIXED AT SOURCE" notes below).
+fixed *at the source*. Phase-2 source fixes shipped: `+mf.1` #68 connect-hang,
+`+mf.2` #72 RPC-hang (see "FIXED AT SOURCE" notes below), and **`+mf.3` the
+rnsd-SIGTERM graceful-shutdown hang** — `Transport.detach_interfaces()` is bounded
+to `DETACH_TIMEOUT` (default 5s, env `RNS_DETACH_TIMEOUT`) so a busy node's SIGTERM
+teardown reaches `RNS.exit()`/`os._exit()` gracefully instead of systemd waiting
+the full `TimeoutStopSec`. The `rnsd.service.d/10-stop-timeout.conf` 15s cap is
+RETAINED as a defense-in-depth backstop (NOT the cure) until mf.3 is soak-proven
+fleet-wide (operator decision 2026-05-30); retire it then.
 
 - **Wire-compat invariant (non-negotiable)**: never change crypto primitives
   (Ed25519/X25519/AES-256-CBC/Fernet) or the packet/announce/path-table wire
