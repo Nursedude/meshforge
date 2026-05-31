@@ -595,6 +595,118 @@ def _supersede_index_line(memory_dir: Path, filename: str) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# CLI entrypoint (thin — lets a cron / cadence session invoke without inlining
+# Python). Logic above is unchanged; this only wires argparse to it.
+# ---------------------------------------------------------------------------
+
+
+def candidate_from_dict(data: dict) -> MemoryCandidate:
+    """Build a MemoryCandidate from a plain dict (e.g. parsed JSON).
+
+    Raises ``KeyError`` / ``TypeError`` on a malformed shape; the CLI catches
+    those and reports ``invalid`` rather than crashing. The validation that
+    matters (provenance gate, kebab name, Why/How markers) stays in
+    ``validate_candidate`` — this only adapts the wire shape.
+    """
+    prov_raw = data.get("provenance") or {}
+    provenance = Provenance(
+        origin=prov_raw.get("origin", ""),
+        host=prov_raw.get("host", ""),
+        session_id=prov_raw.get("session_id"),
+        confidence=prov_raw.get("confidence"),
+        verified=bool(prov_raw.get("verified", False)),
+    )
+    return MemoryCandidate(
+        name=data["name"],
+        description=data["description"],
+        mem_type=data["mem_type"],
+        body=data["body"],
+        index_title=data["index_title"],
+        index_hook=data["index_hook"],
+        provenance=provenance,
+        links=list(data.get("links") or []),
+    )
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """CLI: apply a candidate JSON, or supersede an existing memory.
+
+    Apply:    python3 -m mini_dudeai.memory_apply --candidate c.json --dir DIR
+                                                  [--dry-run] [--allow-overwrite]
+    Supersede: python3 -m mini_dudeai.memory_apply --supersede NAME --dir DIR
+                                                   --note "..." [--superseded-by NAME]
+                                                   [--date YYYY-MM-DD]
+
+    Exit code: 0 on written/dry_run/skipped_exists, 1 on invalid.
+    """
+    import argparse
+    import json
+
+    p = argparse.ArgumentParser(
+        prog="mini-dudeai-memory-apply",
+        description="Materialize a memory candidate into the canonical store, "
+                    "or supersede an existing one. Deterministic; provenance "
+                    "gate barred mini-origin verified=True writes.",
+    )
+    p.add_argument("--dir", required=True,
+                   help="Canonical memory_dir (e.g. "
+                        "~/.claude/projects/-opt-meshforge/memory).")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--candidate", metavar="JSON_PATH",
+                   help="Path to a candidate JSON file to apply.")
+    g.add_argument("--supersede", metavar="NAME",
+                   help="kebab-case name of an existing memory to supersede.")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Render but write nothing (apply only).")
+    p.add_argument("--allow-overwrite", action="store_true",
+                   help="Overwrite an existing file (apply only).")
+    p.add_argument("--note", help="Supersede reason (required with --supersede).")
+    p.add_argument("--superseded-by",
+                   help="Name of the memory that replaces this one (supersede).")
+    p.add_argument("--date", help="Date stamp for the supersede banner.")
+    args = p.parse_args(argv)
+
+    memory_dir = Path(os.path.expanduser(args.dir))
+
+    if args.supersede:
+        if not args.note:
+            print("ERROR: --note is required with --supersede", file=_stderr())
+            return 1
+        result = supersede_memory(
+            args.supersede, memory_dir,
+            superseded_by=args.superseded_by, note=args.note, date=args.date,
+        )
+    else:
+        try:
+            with open(os.path.expanduser(args.candidate), encoding="utf-8") as fh:
+                data = json.load(fh)
+            candidate = candidate_from_dict(data)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(f"invalid: could not load candidate {args.candidate!r}: "
+                  f"{type(exc).__name__}: {exc}", file=_stderr())
+            return 1
+        result = apply_memory_candidate(
+            candidate, memory_dir,
+            dry_run=args.dry_run, allow_overwrite=args.allow_overwrite,
+        )
+
+    stream = _stderr() if result.status == "invalid" else None
+    print(f"{result.status}: {result.reason}"
+          + (f" -> {result.path}" if result.path else "")
+          + (" [index updated]" if result.index_updated else ""),
+          file=stream)
+    if result.status == "dry_run" and result.content:
+        print("--- would write ---")
+        print(result.content, end="")
+    return 1 if result.status == "invalid" else 0
+
+
+def _stderr():
+    import sys
+    return sys.stderr
+
+
 __all__ = [
     "ALLOWED_MEM_TYPES",
     "ALLOWED_ORIGINS",
@@ -606,4 +718,13 @@ __all__ = [
     "render_index_line",
     "apply_memory_candidate",
     "supersede_memory",
+    "candidate_from_dict",
+    "main",
 ]
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main())
+

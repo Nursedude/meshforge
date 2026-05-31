@@ -59,6 +59,14 @@ from .config import (
 )
 from .engine import RuleEngine
 from .history import HistoryWriter
+from .memory_apply import (
+    ApplyResult,
+    MemoryCandidate,
+    Provenance,
+    apply_memory_candidate,
+    supersede_memory,
+    validate_candidate,
+)
 from .sources import (
     Condition,
     FileMtimeSource,
@@ -67,34 +75,42 @@ from .sources import (
     Source,
 )
 from .state import StateStore
+from .warmstart import render_warmstart
 
 __all__ = [
     "Action",
+    "ApplyResult",
     "Condition",
     "FileAnnotateAction",
     "FileMtimeSource",
     "HistoryWriter",
     "HttpJsonSource",
     "JsonFileSource",
+    "MemoryCandidate",
     "NoopAction",
     "NtfyAction",
     "Outcome",
     "ProposeEscalationAction",
+    "Provenance",
     "RuleEngine",
     "Source",
     "StateStore",
+    "apply_memory_candidate",
     "build_brief",
     "build_dreams",
     "build_engine_from_config",
     "count_pending_deltas",
     "load_config",
     "recent_escalations",
+    "render_warmstart",
     "resolve_delta",
+    "supersede_memory",
     "write_dreams",
     "register_action",
     "register_source",
     "registered_action_kinds",
     "registered_source_kinds",
+    "validate_candidate",
     "validate_config",
     "validate_rules_document",
     "write_brief",

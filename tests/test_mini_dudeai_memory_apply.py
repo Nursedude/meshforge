@@ -523,3 +523,165 @@ def test_frontmatter_well_formed_yaml_block():
         if not line.strip():
             continue
         assert re.match(r"^\s*[A-Za-z_][A-Za-z0-9_]*:", line), line
+
+
+# ---------------------------------------------------------------------------
+# CLI entrypoint (memory_apply.main) — thin wrapper over the pure logic above.
+# ---------------------------------------------------------------------------
+
+import json as _json
+
+from mini_dudeai.memory_apply import candidate_from_dict, main
+
+
+def _candidate_dict(**overrides):
+    """A valid reference-type candidate as the CLI's JSON wire shape."""
+    prov = dict(
+        origin="claude", host="moc1", session_id=None,
+        confidence="high", verified=True,
+    )
+    prov.update(overrides.pop("provenance", {}))
+    base = dict(
+        name="cli-fact",
+        description="A one line description.",
+        mem_type="reference",
+        body="Body of the CLI fact with detail.\n",
+        index_title="CLI Fact",
+        index_hook="the hook text",
+        links=[],
+        provenance=prov,
+    )
+    base.update(overrides)
+    return base
+
+
+def _write_candidate_json(tmp_path, **overrides):
+    p = tmp_path / "cand.json"
+    p.write_text(_json.dumps(_candidate_dict(**overrides)), encoding="utf-8")
+    return p
+
+
+def test_candidate_from_dict_roundtrips_provenance(tmp_path):
+    cand = candidate_from_dict(_candidate_dict(name="rt-fact"))
+    assert cand.name == "rt-fact"
+    assert cand.provenance.origin == "claude"
+    assert cand.provenance.verified is True
+
+
+def test_cli_dry_run_writes_nothing(tmp_path, capsys):
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    cand = _write_candidate_json(tmp_path, name="dry-fact")
+
+    rc = main(["--candidate", str(cand), "--dir", str(mem), "--dry-run"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "dry_run" in out
+    assert "would write" in out
+    # Nothing materialized.
+    assert not (mem / "dry-fact.md").exists()
+    assert not (mem / "MEMORY.md").exists()
+
+
+def test_cli_real_run_writes_file_and_index(tmp_path, capsys):
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    cand = _write_candidate_json(tmp_path, name="written-fact")
+
+    rc = main(["--candidate", str(cand), "--dir", str(mem)])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "written" in out
+    target = mem / "written-fact.md"
+    assert target.exists()
+    body = target.read_text(encoding="utf-8")
+    assert "origin: \"claude\"" in body
+    assert "verified: true" in body
+    index = (mem / "MEMORY.md").read_text(encoding="utf-8")
+    assert "](written-fact.md)" in index
+
+
+def test_cli_provenance_gate_rejects_mini_verified(tmp_path, capsys):
+    """The load-bearing trust boundary: mini-origin verified=True is barred,
+    and the CLI surfaces it as a non-zero exit with nothing written."""
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    cand = _write_candidate_json(
+        tmp_path, name="rot-fact",
+        provenance={"origin": "mini", "verified": True},
+    )
+
+    rc = main(["--candidate", str(cand), "--dir", str(mem)])
+    err = capsys.readouterr().err
+
+    assert rc == 1
+    assert "provenance gate" in err
+    assert not (mem / "rot-fact.md").exists()
+
+
+def test_cli_mini_origin_unverified_is_allowed(tmp_path, capsys):
+    """mini may PROPOSE (verified=False); only verified=True is barred."""
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    cand = _write_candidate_json(
+        tmp_path, name="mini-proposal",
+        provenance={"origin": "mini", "verified": False},
+    )
+
+    rc = main(["--candidate", str(cand), "--dir", str(mem)])
+    assert rc == 0
+    assert (mem / "mini-proposal.md").exists()
+
+
+def test_cli_malformed_candidate_json_is_invalid(tmp_path, capsys):
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    bad = tmp_path / "bad.json"
+    bad.write_text("{ not valid json", encoding="utf-8")
+
+    rc = main(["--candidate", str(bad), "--dir", str(mem)])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "invalid" in err.lower()
+
+
+def test_cli_missing_required_field_is_invalid(tmp_path, capsys):
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    d = _candidate_dict()
+    del d["body"]
+    p = tmp_path / "nobody.json"
+    p.write_text(_json.dumps(d), encoding="utf-8")
+
+    rc = main(["--candidate", str(p), "--dir", str(mem)])
+    assert rc == 1
+
+
+def test_cli_supersede_marks_existing(tmp_path, capsys):
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    # First write a real memory via the CLI, then supersede it.
+    cand = _write_candidate_json(tmp_path, name="old-fact")
+    assert main(["--candidate", str(cand), "--dir", str(mem)]) == 0
+    capsys.readouterr()  # drain
+
+    rc = main([
+        "--supersede", "old-fact", "--dir", str(mem),
+        "--note", "replaced by newer finding", "--date", "2026-05-30",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    body = (mem / "old-fact.md").read_text(encoding="utf-8")
+    assert "SUPERSEDED" in body
+    assert "replaced by newer finding" in body
+
+
+def test_cli_supersede_requires_note(tmp_path, capsys):
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    rc = main(["--supersede", "whatever", "--dir", str(mem)])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "note" in err.lower()
