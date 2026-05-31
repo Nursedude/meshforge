@@ -351,3 +351,96 @@ def test_write_brief_reads_pending_deltas(tmp_path):
     text = write_brief(str(sp), str(hp), str(tmp_path / "brief.md"), now_ts=NOW,
                        deltas_path=str(dp))
     assert "1 memory-delta(s) await ratification" in text
+
+
+# ---------------------------------------------------------------------------
+# CLI (mini_dudeai.dreams.main) — the cloud-session resolve path as a clean
+# command, so a headless cadence session never needs `python3 -c`.
+# ---------------------------------------------------------------------------
+
+from mini_dudeai.dreams import main as dreams_main
+
+
+def _deltas_file(tmp_path, *rows):
+    dp = tmp_path / "deltas.jsonl"
+    dp.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return dp
+
+
+def test_cli_list_proposed(tmp_path, capsys):
+    dp = _deltas_file(
+        tmp_path,
+        {"key": "k.alpha", "status": "proposed"},
+        {"key": "k.beta", "status": "proposed"},
+        {"key": "k.done", "status": "ratified"},
+    )
+    rc = dreams_main(["--list-proposed", "--path", str(dp)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.splitlines() == ["k.alpha", "k.beta"]  # sorted, resolved excluded
+
+
+def test_cli_list_proposed_empty(tmp_path, capsys):
+    dp = _deltas_file(tmp_path, {"key": "k.done", "status": "rejected"})
+    rc = dreams_main(["--list-proposed", "--path", str(dp)])
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_cli_resolve_ratify(tmp_path, capsys):
+    dp = _deltas_file(tmp_path, {"key": "k.alpha", "status": "proposed"})
+    rc = dreams_main(["--resolve", "k.alpha", "--status", "ratified",
+                      "--path", str(dp), "--note", "verified live"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "resolved: k.alpha -> ratified" in out
+    # File reflects the resolution.
+    rows = [json.loads(l) for l in dp.read_text().splitlines() if l.strip()]
+    assert rows[0]["status"] == "ratified"
+    assert rows[0]["resolved_note"] == "verified live"
+    assert count_pending_deltas(str(dp)) == 0
+
+
+def test_cli_resolve_reject(tmp_path, capsys):
+    dp = _deltas_file(tmp_path, {"key": "k.alpha", "status": "proposed"})
+    rc = dreams_main(["--resolve", "k.alpha", "--status", "rejected", "--path", str(dp)])
+    assert rc == 0
+    rows = [json.loads(l) for l in dp.read_text().splitlines() if l.strip()]
+    assert rows[0]["status"] == "rejected"
+
+
+def test_cli_resolve_unknown_key_is_not_found(tmp_path, capsys):
+    dp = _deltas_file(tmp_path, {"key": "k.alpha", "status": "proposed"})
+    rc = dreams_main(["--resolve", "k.nope", "--status", "ratified", "--path", str(dp)])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "not found" in err
+    # The real proposed delta is untouched.
+    assert count_pending_deltas(str(dp)) == 1
+
+
+def test_cli_resolve_requires_status(tmp_path, capsys):
+    dp = _deltas_file(tmp_path, {"key": "k.alpha", "status": "proposed"})
+    rc = dreams_main(["--resolve", "k.alpha", "--path", str(dp)])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "--status is required" in err
+
+
+def test_cli_resolve_bad_status_rejected_by_argparse(tmp_path):
+    dp = _deltas_file(tmp_path, {"key": "k.alpha", "status": "proposed"})
+    # argparse choices= enforces valid status → SystemExit(2)
+    try:
+        dreams_main(["--resolve", "k.alpha", "--status", "maybe", "--path", str(dp)])
+        assert False, "expected SystemExit"
+    except SystemExit as e:
+        assert e.code == 2
+
+
+def test_cli_requires_an_action(tmp_path):
+    # Neither --resolve nor --list-proposed → mutually-exclusive group required.
+    try:
+        dreams_main(["--path", str(tmp_path / "d.jsonl")])
+        assert False, "expected SystemExit"
+    except SystemExit as e:
+        assert e.code == 2

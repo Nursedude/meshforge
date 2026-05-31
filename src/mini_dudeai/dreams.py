@@ -499,3 +499,77 @@ def _read_history_tail(path: str, last: int) -> list[dict]:
         except ValueError:
             continue
     return out
+
+
+# ---------------------------------------------------------------------------
+# CLI — the cloud-session side of the trust model as clean commands, so a
+# headless cadence session never needs `python3 -c` (banned by the repo deny
+# list). Mirrors the mini_dudeai.memory_apply CLI shape: author a memory there,
+# close the proposal here.
+# ---------------------------------------------------------------------------
+
+
+def _default_deltas_path() -> str:
+    """Standard deltas file in the invoking user's home (package convention)."""
+    return os.path.join(os.path.expanduser("~"), "mini_dudeai_memory_deltas.jsonl")
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI: list proposed delta keys, or resolve one (ratify/reject).
+
+    List:    python3 -m mini_dudeai.dreams --list-proposed [--path P]
+    Resolve: python3 -m mini_dudeai.dreams --resolve KEY --status ratified|rejected
+                                           [--path P] [--note "..."]
+
+    Exit: 0 on success (listed, or one delta resolved), 1 if the key matched no
+    proposed delta, 2 on a usage error.
+    """
+    import argparse
+    import sys
+
+    p = argparse.ArgumentParser(
+        prog="mini-dudeai-dreams",
+        description="Resolve mini's proposed memory-deltas (the cloud-session "
+                    "side of the propose/ratify trust model). Authoring the "
+                    "memory itself is mini_dudeai.memory_apply; this just closes "
+                    "the proposal.",
+    )
+    p.add_argument("--path", default=_default_deltas_path(),
+                   help="deltas JSONL path (default: ~/mini_dudeai_memory_deltas.jsonl)")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--resolve", metavar="KEY",
+                   help="key of the proposed delta to resolve.")
+    g.add_argument("--list-proposed", action="store_true",
+                   help="print proposed (unresolved) delta keys, one per line.")
+    p.add_argument("--status", choices=("ratified", "rejected"),
+                   help="resolution (required with --resolve).")
+    p.add_argument("--note", default="", help="optional resolution note.")
+    args = p.parse_args(argv)
+
+    path = os.path.expanduser(args.path)
+
+    if args.list_proposed:
+        for key in sorted(_unresolved_keys(_load_deltas(path))):
+            print(key)
+        return 0
+
+    if not args.status:
+        print("ERROR: --status is required with --resolve", file=sys.stderr)
+        return 2
+    try:
+        ok = resolve_delta(path, args.resolve, args.status, note=args.note)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if ok:
+        print(f"resolved: {args.resolve} -> {args.status}")
+        return 0
+    print(f"not found: no proposed delta with key {args.resolve!r} in {path}",
+          file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main())

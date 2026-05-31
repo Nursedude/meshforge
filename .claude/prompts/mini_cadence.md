@@ -24,13 +24,15 @@ everyone kept calling "good." Do not regress that. Concretely:
 
 ## Steps
 
-1. **Refresh the proposals.** Regenerate the dream pass so deltas reflect the latest state:
+1. **Read the proposals.** The launcher already ran mini's deterministic `--dream`
+   pass before invoking you, so proposals are fresh — do NOT re-run it. Enumerate the
+   open queue cleanly (no `python3 -c` needed — that's blocked by the deny list):
    ```bash
-   PYTHONPATH=/opt/meshforge/src python3 -m mini_dudeai --preset meshforge_fleet --dream
+   PYTHONPATH=/opt/meshforge/src python3 -m mini_dudeai.dreams --list-proposed
    ```
-   Then read the synthesis + evidence:
+   Then read the synthesis + evidence for each key:
    - `~/mini_dudeai_dreams.md` — narrative + evidence table
-   - `~/mini_dudeai_memory_deltas.jsonl` — rows with `status: "proposed"` are your queue
+   - `~/mini_dudeai_memory_deltas.jsonl` — the `status: "proposed"` rows are your queue
    - `~/situation_digest.md` and `~/mini_dudeai_history.jsonl` — surrounding context
 
 2. **For each proposed delta**, investigate live truth with your tools before deciding:
@@ -60,21 +62,25 @@ everyone kept calling "good." Do not regress that. Concretely:
        "links": ["related-memory-name"],
        "provenance": {
          "origin": "claude",
-         "host": "<hostname>",
+         "host": "<this box's hostname — run `hostname`>",
          "session_id": null,
          "confidence": "high|medium|low",
          "verified": true
        }
      }
      ```
-     Then mark the delta resolved:
+     (`origin` is always `claude` here — never `mini`; `session_id` is `null` in
+     headless mode; `verified` is `true` ONLY if you actually checked.)
+     Then close the proposal — clean CLI, no `python3 -c`:
      ```bash
-     PYTHONPATH=/opt/meshforge/src python3 - <<'PY'   # only if a one-liner is permitted; else use the SDK in-session
-     from mini_dudeai import resolve_delta
-     resolve_delta("/home/<user>/mini_dudeai_memory_deltas.jsonl", "<delta-key>", "ratified")
-     PY
+     PYTHONPATH=/opt/meshforge/src python3 -m mini_dudeai.dreams \
+       --resolve "<delta-key>" --status ratified --note "why you ratified"
      ```
-   - **Reject** → `resolve_delta(path, key, "rejected")`. No memory written.
+   - **Reject** → same CLI, `--status rejected`. No memory written:
+     ```bash
+     PYTHONPATH=/opt/meshforge/src python3 -m mini_dudeai.dreams \
+       --resolve "<delta-key>" --status rejected --note "why you rejected"
+     ```
 
 ## Provenance gate (enforced — do not fight it)
 
