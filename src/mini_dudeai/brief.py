@@ -35,7 +35,8 @@ def _escalation_of(h: dict) -> dict | None:
 
 
 def recent_escalations(history: list[dict], now_ts: float,
-                       window_s: float = ESCALATION_WINDOW_S) -> list[dict]:
+                       window_s: float = ESCALATION_WINDOW_S,
+                       with_ts: bool = False) -> list:
     """Escalation payloads fired within `window_s`, deduped, oldest→newest.
 
     Single source of truth for "what should the warm session chase" — used by
@@ -44,6 +45,10 @@ def recent_escalations(history: list[dict], now_ts: float,
     tail), dedups by (rule, subject, detail) keeping the most recent fire, and
     reads both the current (outcome.extras.escalation) and legacy
     (outcome.escalation) schemas.
+
+    with_ts=True returns ``[(ts, esc), ...]`` instead of ``[esc, ...]`` so callers
+    (the fleet deep-merge) can sort escalations across boxes by fire time. Default
+    False keeps the existing brief/digest callers unchanged.
     """
     cutoff = now_ts - window_s
     fresh: dict = {}
@@ -58,8 +63,10 @@ def recent_escalations(history: list[dict], now_ts: float,
         prev = fresh.get(key)
         if prev is None or float(ts or 0) >= float(prev[0] or 0):
             fresh[key] = (ts, esc)
-    return [esc for _ts, esc in
-            sorted(fresh.values(), key=lambda x: float(x[0] or 0))]
+    ordered = sorted(fresh.values(), key=lambda x: float(x[0] or 0))
+    if with_ts:
+        return ordered
+    return [esc for _ts, esc in ordered]
 
 
 def _age(now_ts: float, ts: float | None) -> str:

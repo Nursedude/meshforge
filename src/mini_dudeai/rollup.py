@@ -21,6 +21,7 @@ A host that answers ssh but runs no mini (e.g. a MeshAnchor-only box) is reporte
 """
 from __future__ import annotations
 
+import argparse
 import datetime
 import json
 import os
@@ -28,12 +29,24 @@ import subprocess
 import sys
 import time
 
-from .brief import DEFAULT_STALE_S, _age
+from .brief import (
+    DEFAULT_STALE_S,
+    ESCALATION_WINDOW_S,
+    _age,
+    recent_escalations,
+)
 
 #: ssh-cat the state file. BatchMode so a missing key fails fast instead of
 #: hanging on a password prompt; ConnectTimeout bounds an unreachable host.
 DEFAULT_SSH_TIMEOUT_S = 10.0
 _STATE_BASENAME = "mini_dudeai_state.json"
+_HISTORY_BASENAME = "mini_dudeai_history.jsonl"
+#: separates state from history in the single deep-pull ssh round trip. MUST be
+#: free of shell metacharacters — it is echoed by the REMOTE shell, so '<<<'/'>>>'
+#: would be parsed as here-string/redirection and the command would emit nothing.
+_DEEP_SENTINEL = "__MINI_DUDEAI_DEEP_SENTINEL__"
+#: cap on fires shown in the merged deep feed (escalations are never capped).
+_DEEP_FIRES_CAP = 20
 
 
 def resolve_fleet_hosts(env: dict | None = None) -> list[str]:
@@ -223,13 +236,209 @@ def collect_fleet(now_ts: float | None = None,
     return postures
 
 
+# === deep merge: escalations + fires across the fleet ============
+# The breadth pane (above) is posture-only. --deep additionally pulls each box's
+# history.jsonl (tiny — mini prunes to a 24h rolling window) and merges every
+# box's escalations + edge_up fires into one box-tagged, time-sorted feed.
+
+def _parse_history_lines(text: str) -> list[dict]:
+    """Parse JSONL history text into dicts; skip malformed lines, never raise."""
+    out = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+def _default_ssh_runner_deep(host: str, timeout_s: float) -> tuple[int, str, str]:
+    """ssh <host> 'cat state; echo SENTINEL; cat history' — one round trip. The
+    remote `cat`s swallow their own errors so rc reflects only ssh transport
+    (255 = unreachable); empty content means the box runs no mini."""
+    remote = (f"cat {_STATE_BASENAME} 2>/dev/null; "
+              f"echo '{_DEEP_SENTINEL}'; "
+              f"cat {_HISTORY_BASENAME} 2>/dev/null")
+    cmd = ["ssh", "-o", "BatchMode=yes",
+           "-o", f"ConnectTimeout={int(timeout_s)}", host, remote]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s + 5)
+        return p.returncode, p.stdout, p.stderr
+    except subprocess.TimeoutExpired:
+        return 255, "", "ssh timed out"
+    except OSError as e:
+        return 255, "", f"ssh exec failed: {e}"
+
+
+def _split_deep_payload(stdout: str) -> tuple[dict, list[dict]]:
+    """Split the deep ssh payload (state + SENTINEL + history) into (state, history)."""
+    state_part, _, hist_part = (stdout or "").partition(_DEEP_SENTINEL)
+    state: dict = {}
+    sp = state_part.strip()
+    if sp:
+        try:
+            loaded = json.loads(sp)
+            state = loaded if isinstance(loaded, dict) else {}
+        except ValueError:
+            state = {}
+    return state, _parse_history_lines(hist_part)
+
+
+def build_box_deep(host: str, state: dict, history: list[dict], now_ts: float,
+                   stale_s: float = DEFAULT_STALE_S,
+                   window_s: float = ESCALATION_WINDOW_S,
+                   self_box: bool = False) -> dict:
+    """Pure: posture + this box's escalations (with ts) + edge_up fires, box-tagged.
+    Reuses brief.recent_escalations (with_ts) so the deep feed and the per-box
+    brief never disagree on what's an escalation."""
+    posture = parse_state_posture(host, state, now_ts, stale_s, self_box)
+    stale = posture["status"] == "stale"
+    posture["escalations"] = [
+        {"ts": ts, "box": host, "stale": stale, "esc": esc}
+        for ts, esc in recent_escalations(history, now_ts, window_s, with_ts=True)
+    ]
+    posture["fires"] = [
+        {"ts": h.get("ts"), "box": host, "stale": stale,
+         "iso": str(h.get("iso", ""))[:19], "rule_id": h.get("rule_id"),
+         "subject": h.get("subject"), "detail": str(h.get("detail", ""))[:90]}
+        for h in history if h.get("transition") == "edge_up"
+    ]
+    return posture
+
+
+def collect_remote_deep(host: str, now_ts: float,
+                        timeout_s: float = DEFAULT_SSH_TIMEOUT_S,
+                        stale_s: float = DEFAULT_STALE_S,
+                        window_s: float = ESCALATION_WINDOW_S, runner=None) -> dict:
+    """ssh-pull a remote box's state+history and distil its deep record.
+    runner(host, timeout_s) -> (rc, stdout, stderr) injectable for tests."""
+    runner = runner or _default_ssh_runner_deep
+    rc, out, err = runner(host, timeout_s)
+    if rc == 255:
+        return {"host": host, "self_box": False, "status": "unreachable",
+                "error": (err or "").strip()[:160] or "ssh failed",
+                "escalations": [], "fires": []}
+    state, history = _split_deep_payload(out)
+    if not state and not history:
+        return {"host": host, "self_box": False, "status": "no_mini",
+                "error": "no mini state/history", "escalations": [], "fires": []}
+    return build_box_deep(host, state, history, now_ts, stale_s, window_s)
+
+
+def collect_local_deep(now_ts: float, state_path: str | None = None,
+                       history_path: str | None = None,
+                       stale_s: float = DEFAULT_STALE_S,
+                       window_s: float = ESCALATION_WINDOW_S) -> dict | None:
+    """Read the manager box's own state + history directly. None if no state."""
+    home = os.path.expanduser("~")
+    state_path = state_path or os.path.join(home, _STATE_BASENAME)
+    history_path = history_path or os.path.join(home, _HISTORY_BASENAME)
+    try:
+        with open(state_path) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        return None
+    try:
+        with open(history_path) as f:
+            history = _parse_history_lines(f.read())
+    except OSError:
+        history = []
+    label = (state.get("host") if isinstance(state, dict) else None) or "self"
+    return build_box_deep(label, state, history, now_ts, stale_s, window_s, self_box=True)
+
+
+def collect_fleet_deep(now_ts: float | None = None,
+                       timeout_s: float = DEFAULT_SSH_TIMEOUT_S,
+                       stale_s: float = DEFAULT_STALE_S,
+                       window_s: float = ESCALATION_WINDOW_S,
+                       runner=None, env: dict | None = None,
+                       local_state_path: str | None = None,
+                       local_history_path: str | None = None) -> list[dict]:
+    """Local box (direct) + every remote in fleet_hosts (ssh), each with escalations+fires."""
+    now_ts = time.time() if now_ts is None else now_ts
+    results: list[dict] = []
+    local = collect_local_deep(now_ts, local_state_path, local_history_path, stale_s, window_s)
+    if local is not None:
+        results.append(local)
+    for host in resolve_fleet_hosts(env):
+        results.append(collect_remote_deep(host, now_ts, timeout_s, stale_s, window_s, runner))
+    return results
+
+
+def build_deep_feed(results: list[dict], now_ts: float) -> str:
+    """Pure: render the merged deep feed. Escalations first (uncapped, newest
+    first, box-tagged), then recent fires (capped), then skipped boxes."""
+    stamp = datetime.datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M:%S")
+    all_esc = [e for r in results for e in r.get("escalations", [])]
+    all_fires = [f for r in results for f in r.get("fires", [])]
+    all_esc.sort(key=lambda e: float(e.get("ts") or 0), reverse=True)
+    all_fires.sort(key=lambda f: float(f.get("ts") or 0), reverse=True)
+    contributing = [r for r in results if r["status"] in ("fresh", "stale")]
+    skipped = [r for r in results if r["status"] not in ("fresh", "stale")]
+
+    lines = [
+        f"# mini-dudeai fleet deep feed — {len(contributing)} boxes reporting",
+        f"_merged {stamp} · {len(all_esc)} escalations · {len(all_fires)} fires "
+        f"(24h window, newest first)_",
+        "",
+        "## 🔎 Fleet escalations (look here first)",
+    ]
+    if all_esc:
+        for e in all_esc:
+            esc = e["esc"]
+            tag = " ⚠️stale" if e.get("stale") else ""
+            note = f" — _{esc['note']}_" if esc.get("note") else ""
+            lines.append(f"- `[{e['box']}]`{tag} {esc.get('rule')} · "
+                         f"{esc.get('subject')} · {str(esc.get('detail', ''))[:120]}{note}")
+    else:
+        lines.append("_None in the window — no box is proposing an escalation._")
+
+    lines.append("\n## Recent fleet fires")
+    if all_fires:
+        for f in all_fires[:_DEEP_FIRES_CAP]:
+            tag = " ⚠️stale" if f.get("stale") else ""
+            lines.append(f"- [{f['iso']}] `[{f['box']}]`{tag} {f['rule_id']} · "
+                         f"{f['subject']} · {f['detail']}")
+        if len(all_fires) > _DEEP_FIRES_CAP:
+            lines.append(f"_… {len(all_fires) - _DEEP_FIRES_CAP} older fires not shown._")
+    else:
+        lines.append("_No edge_up fires in the window._")
+
+    if skipped:
+        lines.append("\n## Skipped (no deep data)")
+        for r in skipped:
+            lines.append(f"- **{r['host']}** — {r['status']}"
+                         + (f": {r['error']}" if r.get("error") else ""))
+    return "\n".join(lines) + "\n"
+
+
 def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(
+        prog="mini-dudeai-rollup",
+        description="Fleet mini-dudeai posture (default, breadth) or merged "
+                    "escalations+fires feed (--deep).",
+    )
+    p.add_argument("--deep", action="store_true",
+                   help="Merge every box's escalations + fires into one feed "
+                        "(pulls each box's history; on-demand, heavier than the "
+                        "default posture pane).")
+    args = p.parse_args(argv)
     now_ts = time.time()
+    _no_data = ("No local mini state and no fleet_hosts list found "
+                "(set $MESHFORGE_FLEET_HOSTS or create ~/.config/meshforge/fleet_hosts).")
+    if args.deep:
+        results = collect_fleet_deep(now_ts)
+        if not results:
+            print(f"# mini-dudeai fleet deep feed\n\n{_no_data}")
+            return 0
+        sys.stdout.write(build_deep_feed(results, now_ts))
+        return 0
     postures = collect_fleet(now_ts)
     if not postures:
-        print("# mini-dudeai fleet posture\n\n"
-              "No local mini state and no fleet_hosts list found "
-              "(set $MESHFORGE_FLEET_HOSTS or create ~/.config/meshforge/fleet_hosts).")
+        print(f"# mini-dudeai fleet posture\n\n{_no_data}")
         return 0
     sys.stdout.write(build_rollup(postures, now_ts))
     return 0

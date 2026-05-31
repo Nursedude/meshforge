@@ -67,6 +67,18 @@ the brief, applied fleet-wide. Per-box banners:
 
 Problems sort to the top, so a clean pane means a clean fleet.
 
+**Drill in (on-demand):** when a box in the pane warrants it, merge every box's
+escalations + recent fires into one box-tagged feed:
+
+```bash
+PYTHONPATH=/opt/meshforge/src python3 -m mini_dudeai.rollup --deep
+```
+
+Escalations first (uncapped, "look here first"), then recent fleet fires (capped).
+This is the global *deep* view — each box's local detections (tracer, watchdog),
+not just its posture. Heavier than the default pane (pulls each box's history), so
+it's a separate command, not part of the default `/warmstart` flow.
+
 ## Why manual *and* automatic
 
 The automatic path is a `SessionStart` hook (settings.json) that injects this at

@@ -183,3 +183,161 @@ def test_collect_fleet_local_plus_remotes(tmp_path):
     assert [p["host"] for p in postures] == ["managerbox", "moc", "moc1"]
     assert postures[0]["self_box"] is True
     assert all(p["status"] == "fresh" for p in postures)
+
+
+# === deep merge: escalations + fires across the fleet ============
+
+from mini_dudeai.rollup import (  # noqa: E402
+    _DEEP_SENTINEL,
+    build_box_deep,
+    build_deep_feed,
+    collect_fleet_deep,
+    collect_remote_deep,
+)
+from mini_dudeai.brief import recent_escalations  # noqa: E402
+
+
+def _hist_escalation(ts, rule, subject, detail, note=None):
+    esc = {"rule": rule, "subject": subject, "detail": detail}
+    if note:
+        esc["note"] = note
+    return {"ts": ts, "iso": "2026-05-31T00:00:00", "transition": "edge_up",
+            "rule_id": rule, "subject": subject, "detail": detail,
+            "outcome": {"extras": {"escalation": esc}}}
+
+
+def _hist_fire(ts, rule, subject, detail):
+    return {"ts": ts, "iso": "2026-05-31T00:00:00", "transition": "edge_up",
+            "rule_id": rule, "subject": subject, "detail": detail,
+            "outcome": {"extras": {}}}
+
+
+# --- recent_escalations with_ts (brief.py addition) ---
+
+def test_recent_escalations_with_ts_returns_tuples():
+    h = [_hist_escalation(NOW - 100, "r1", "s1", "d1")]
+    out = recent_escalations(h, NOW, with_ts=True)
+    assert isinstance(out[0], tuple) and out[0][0] == NOW - 100
+    # default unchanged
+    assert recent_escalations(h, NOW)[0]["rule"] == "r1"
+
+
+# --- build_box_deep ---
+
+def test_build_box_deep_tags_escalations_and_fires():
+    history = [
+        _hist_escalation(NOW - 10, "esc_rule", "moc3", "peer unhealthy"),
+        _hist_fire(NOW - 20, "fire_rule", "moc", "blip"),
+    ]
+    state = {"last_tick_ts": NOW, "rule_count": 8}
+    rec = build_box_deep("moc", state, history, NOW)
+    assert rec["status"] == "fresh"
+    assert len(rec["escalations"]) == 1 and rec["escalations"][0]["box"] == "moc"
+    # the escalation row is ALSO an edge_up, so it appears in fires too
+    assert {f["rule_id"] for f in rec["fires"]} == {"esc_rule", "fire_rule"}
+    assert all(f["box"] == "moc" for f in rec["fires"])
+
+
+def test_build_box_deep_marks_stale_box():
+    rec = build_box_deep("moc", {"last_tick_ts": NOW - 9999}, [
+        _hist_escalation(NOW - 50, "r", "s", "d")], NOW)
+    assert rec["status"] == "stale"
+    assert rec["escalations"][0]["stale"] is True
+
+
+# --- collect_remote_deep (injected runner) ---
+
+def _deep_runner(rc, state, history_lines, err=""):
+    payload = (json.dumps(state) if state else "") + f"\n{_DEEP_SENTINEL}\n" + \
+        "\n".join(json.dumps(h) for h in history_lines)
+    return lambda host, timeout_s: (rc, payload, err)
+
+
+def test_collect_remote_deep_parses_state_and_history():
+    st = {"last_tick_ts": NOW, "rule_count": 8}
+    h = [_hist_escalation(NOW - 5, "r1", "x", "d")]
+    rec = collect_remote_deep("host1", NOW, runner=_deep_runner(0, st, h))
+    assert rec["status"] == "fresh" and len(rec["escalations"]) == 1
+
+
+def test_collect_remote_deep_unreachable():
+    rec = collect_remote_deep("host1", NOW, runner=lambda h, t: (255, "", "refused"))
+    assert rec["status"] == "unreachable" and rec["escalations"] == []
+
+
+def test_collect_remote_deep_no_mini_empty():
+    rec = collect_remote_deep("host1", NOW, runner=lambda h, t: (0, f"\n{_DEEP_SENTINEL}\n", ""))
+    assert rec["status"] == "no_mini"
+
+
+def test_deep_sentinel_is_shell_safe():
+    # the sentinel is echoed by the REMOTE shell — it must contain no shell
+    # metacharacters, else the command mangles and the box reads false no_mini.
+    assert not (set(_DEEP_SENTINEL) & set("<>|&;$`()\"' \t*?[]{}#~!"))
+
+
+# --- build_deep_feed ---
+
+def test_build_deep_feed_escalations_first_newest_first_tagged():
+    results = [
+        {"host": "managerbox", "status": "fresh", "self_box": True,
+         "escalations": [{"ts": NOW - 100, "box": "managerbox", "stale": False,
+                          "esc": {"rule": "fed_down", "subject": "peer", "detail": "503"}}],
+         "fires": []},
+        {"host": "moc3", "status": "fresh",
+         "escalations": [{"ts": NOW - 5, "box": "moc3", "stale": False,
+                          "esc": {"rule": "wd", "subject": "moc3", "detail": "rnsd"}}],
+         "fires": [{"ts": NOW - 5, "box": "moc3", "stale": False, "iso": "2026-05-31T00:00:00",
+                    "rule_id": "wd", "subject": "moc3", "detail": "rnsd"}]},
+    ]
+    out = build_deep_feed(results, NOW)
+    assert "2 boxes reporting" in out and "2 escalations" in out
+    # newest escalation (moc3, NOW-5) before older (managerbox, NOW-100)
+    assert out.index("[moc3]") < out.index("[managerbox]")
+    # section ordering: escalations header before fires header
+    assert out.index("Fleet escalations") < out.index("Recent fleet fires")
+
+
+def test_build_deep_feed_caps_fires_and_notes_overflow():
+    fires = [{"ts": NOW - i, "box": "moc", "stale": False, "iso": "2026-05-31T00:00:00",
+              "rule_id": f"r{i}", "subject": "s", "detail": "d"} for i in range(30)]
+    results = [{"host": "moc", "status": "fresh", "escalations": [], "fires": fires}]
+    out = build_deep_feed(results, NOW)
+    assert "older fires not shown" in out  # 30 > cap of 20
+
+
+def test_build_deep_feed_lists_skipped_boxes():
+    results = [
+        {"host": "moc", "status": "fresh", "escalations": [], "fires": []},
+        {"host": "meshanchor-server", "status": "no_mini", "error": "no state",
+         "escalations": [], "fires": []},
+    ]
+    out = build_deep_feed(results, NOW)
+    assert "Skipped" in out and "meshanchor-server" in out
+
+
+def test_build_deep_feed_empty_is_honest():
+    results = [{"host": "moc", "status": "fresh", "escalations": [], "fires": []}]
+    out = build_deep_feed(results, NOW)
+    assert "no box is proposing an escalation" in out
+    assert "No edge_up fires" in out
+
+
+# --- collect_fleet_deep (local + remotes) ---
+
+def test_collect_fleet_deep_local_plus_remotes(tmp_path):
+    sp = tmp_path / "mini_dudeai_state.json"
+    sp.write_text(json.dumps({"last_tick_ts": NOW, "rule_count": 12, "host": "managerbox"}))
+    hp = tmp_path / "mini_dudeai_history.jsonl"
+    hp.write_text(json.dumps(_hist_fire(NOW - 3, "r", "s", "d")) + "\n")
+    hf = tmp_path / "fleet_hosts"
+    hf.write_text("moc\n")
+    st = {"last_tick_ts": NOW, "rule_count": 8}
+    results = collect_fleet_deep(
+        NOW, runner=_deep_runner(0, st, [_hist_escalation(NOW - 1, "r2", "x", "d")]),
+        env={"MESHFORGE_FLEET_HOSTS": str(hf)},
+        local_state_path=str(sp), local_history_path=str(hp),
+    )
+    assert [r["host"] for r in results] == ["managerbox", "moc"]
+    assert results[0]["self_box"] is True and len(results[0]["fires"]) == 1
+    assert len(results[1]["escalations"]) == 1
