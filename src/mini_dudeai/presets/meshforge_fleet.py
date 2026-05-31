@@ -99,6 +99,7 @@ def build_engine(
     rules_path: str | None = None,
     state_path: str | None = None,
     history_path: str | None = None,
+    brief_path: str | None = None,
     digest_path: str | None = None,
     annotate_path: str | None = None,
     watchdog_path: str | None = None,
@@ -128,6 +129,10 @@ def build_engine(
     rules_path = rules_path or os.path.join(home, "mini_dudeai_rules.json")
     state_path = state_path or os.path.join(home, "mini_dudeai_state.json")
     history_path = history_path or os.path.join(home, "mini_dudeai_history.jsonl")
+    # Every fleet box writes its own brief each tick (continuity: SSH to any box
+    # and mini's current posture is there, fresh). Stays in $HOME — NOT the
+    # fleet_sync-mirrored memory dir — so it's per-box, not clobbered by --delete.
+    brief_path = brief_path or os.path.join(home, "mini_dudeai_brief.md")
     digest_path = digest_path or os.path.join(home, "situation_digest.md")
     annotate_path = annotate_path or os.path.join(home, "mini_dudeai_digest_annotations.md")
     watchdog_path = watchdog_path or DEFAULT_WATCHDOG_PATH
@@ -176,4 +181,5 @@ def build_engine(
         state_path=state_path,
         history_path=history_path,
         candidate_path=rules_path + ".candidate",
+        brief_path=brief_path,
     )

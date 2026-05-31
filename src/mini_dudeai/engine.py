@@ -86,6 +86,7 @@ class RuleEngine:
         state_path: str,
         history_path: str,
         candidate_path: str | None = None,
+        brief_path: str | None = None,
     ) -> None:
         self.sources = sources
         self.actions = actions
@@ -93,6 +94,13 @@ class RuleEngine:
         self.candidate_path = candidate_path
         self.state_store = StateStore(state_path)
         self.history = HistoryWriter(history_path)
+        # Opt-in: when set, run() atomic-writes a warm-start brief here after
+        # every tick so any box (not just session hosts) carries a fresh,
+        # readable view of mini's posture. None = no brief file (standalone
+        # default, unchanged). Cheap: write_brief is a pure render of state +
+        # a history tail + one small atomic write — the tick already did the
+        # expensive collect/eval.
+        self.brief_path = brief_path
         self._stop = threading.Event()
 
     # --- rules loading + candidate promotion --------------------------
@@ -292,8 +300,22 @@ class RuleEngine:
                 # Observation tool must never die on a bad cycle.
                 print(f"tick error (continuing): {type(e).__name__}: {e}",
                       flush=True)
+            self._write_brief_safe()
             self._stop.wait(interval_s)
         print("mini-dudeai engine stopped", flush=True)
+
+    def _write_brief_safe(self) -> None:
+        """Atomic-write the warm-start brief if brief_path is set. Never raises —
+        a brief-write failure must not take down the observation loop (same
+        contract as the tick error handler)."""
+        if not self.brief_path:
+            return
+        try:
+            from .brief import write_brief
+            write_brief(self.state_store.path, self.history.path, self.brief_path)
+        except Exception as e:
+            print(f"brief write failed (continuing): {type(e).__name__}: {e}",
+                  flush=True)
 
     def request_stop(self) -> None:
         self._stop.set()

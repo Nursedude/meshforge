@@ -468,3 +468,61 @@ def test_no_grace_fires_immediately(tmp_path):
     )
     engine.tick()
     assert rec.calls == [("r1", "foo", "edge_up")]
+
+
+# === per-tick brief writing (opt-in via brief_path) ==============
+
+def test_no_brief_when_brief_path_unset(tmp_path):
+    """Default (brief_path=None): _write_brief_safe is a no-op, no file created."""
+    src = StaticSource([Condition(kind="x", subject="foo", detail="d")])
+    engine = _engine(
+        tmp_path, [src],
+        [{"id": "r1", "match": {"kind": "x"}, "action": {"kind": "recorder"}}],
+    )
+    assert engine.brief_path is None
+    engine.tick()
+    engine._write_brief_safe()
+    assert not (tmp_path / "mini_dudeai_brief.md").exists()
+
+
+def test_brief_written_after_tick_when_brief_path_set(tmp_path):
+    """When brief_path is set, _write_brief_safe atomic-writes a readable brief
+    reflecting current state."""
+    src = StaticSource([Condition(kind="x", subject="foo", detail="d")])
+    brief = tmp_path / "mini_dudeai_brief.md"
+    engine = _engine(
+        tmp_path, [src],
+        [{"id": "r1", "match": {"kind": "x"}, "action": {"kind": "recorder"}}],
+    )
+    engine.brief_path = str(brief)
+    engine.tick()
+    engine._write_brief_safe()
+    assert brief.exists()
+    text = brief.read_text()
+    assert "mini-dudeai warm brief" in text
+
+
+def test_brief_write_failure_never_raises(tmp_path):
+    """A brief-write failure must not propagate — the observation loop survives
+    a bad brief cycle exactly like a bad tick."""
+    src = StaticSource([Condition(kind="x", subject="foo", detail="d")])
+    engine = _engine(
+        tmp_path, [src],
+        [{"id": "r1", "match": {"kind": "x"}, "action": {"kind": "recorder"}}],
+    )
+    # Point at an unwritable path (a directory) so write_brief raises internally.
+    engine.brief_path = str(tmp_path)  # a directory, not a file
+    engine.tick()
+    engine._write_brief_safe()  # must not raise
+
+
+def test_fleet_preset_sets_brief_path(tmp_path, monkeypatch):
+    """The fleet preset wires brief_path to ~/mini_dudeai_brief.md by default."""
+    from mini_dudeai.presets.meshforge_fleet import build_engine
+    monkeypatch.setenv("MINI_DUDEAI_NTFY_TOPIC", "test-topic")
+    eng = build_engine(
+        home=str(tmp_path),
+        enable_federation=False,
+        enable_digest=False,
+    )
+    assert eng.brief_path == os.path.join(str(tmp_path), "mini_dudeai_brief.md")
