@@ -1,0 +1,233 @@
+{
+  "_comment": "mini-dudeai FEDERATOR seed — the primary/manager box (the one that runs the :5000 federator + situation digest). Runs watchdog + federation + digest sources (MINI_DUDEAI_ENABLE_FEDERATION/_ENABLE_DIGEST default on); gateway boxes use mini_dudeai_rules.fleet_gateway.json instead (watchdog-only). Per-box file at ~/mini_dudeai_rules.json; the daemon promotes ~/mini_dudeai_rules.json.candidate over it on the next tick. Repo canonical for backup + re-deploy parity with the gateway seed (closes the federator repo-parity gap, 2026-05-31).",
+  "rules": [
+    {
+      "id": "rns_namespace_collision_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "rns_namespace_collision",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] RNS namespace collision",
+        "message": "{subject}: {detail}",
+        "priority": "urgent",
+        "tags": [
+          "rotating_light",
+          "rns"
+        ]
+      },
+      "cooldown_s": 1800,
+      "annotation": "Issue #69 — foreign daemon hijacked @rns/<instance>. Recovery: stop the foreign daemon, restart rnsd, restart RNS-using services."
+    },
+    {
+      "id": "main_thread_wedge_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "main_thread_wedge",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] Main-thread wedge",
+        "message": "{subject}: {detail}",
+        "priority": "urgent",
+        "tags": [
+          "rotating_light",
+          "wedge"
+        ]
+      },
+      "cooldown_s": 1800,
+      "annotation": "Issue #68 — main thread silent-stuck in syscall while background threads keep logging. Check /proc/PID/task/PID/stack."
+    },
+    {
+      "id": "http_local_unresponsive_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "http_local_unresponsive",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] HTTP local unresponsive",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning"
+        ]
+      },
+      "cooldown_s": 1800,
+      "annotation": "Issue #61 / #70 / #71 class — GIL-bound serialization or socketserver deadlock. Check cache hit-rates at /api/status.{directory,geojson,topology}.cache."
+    },
+    {
+      "id": "delivery_write_canary_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "delivery_write_canary",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] Delivery write canary",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning"
+        ]
+      },
+      "cooldown_s": 1800,
+      "annotation": "Issue #63 — write-path silent failure (sandbox path drift). Audit ReadWritePaths= against actual write sites."
+    },
+    {
+      "id": "service_inactive_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "service_inactive",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] Service inactive",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning"
+        ]
+      },
+      "cooldown_s": 900
+    },
+    {
+      "id": "tracer_peer_unreachable_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "tracer_peer_unreachable",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] Tracer peer unreachable",
+        "message": "{subject}: {detail}",
+        "priority": "default",
+        "tags": [
+          "satellite"
+        ]
+      },
+      "cooldown_s": 1800
+    },
+    {
+      "id": "rns_shared_instance_unresponsive_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "rns_shared_instance_unresponsive",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] RNS shared-instance unresponsive",
+        "message": "{subject}: {detail}",
+        "priority": "urgent",
+        "tags": [
+          "rotating_light",
+          "rns"
+        ]
+      },
+      "cooldown_s": 1800,
+      "annotation": "Listener UP + no SYN-SENT pile-up but new connects hang. Recovery: systemctl restart rnsd.service then restart RNS-using services."
+    },
+    {
+      "id": "moc3_federation_backoff_known_normal",
+      "match": {
+        "kind": "federation_peer_unhealthy",
+        "peer_glob": "*moc3*"
+      },
+      "action": {
+        "kind": "annotate_digest"
+      },
+      "cooldown_s": 86400,
+      "annotation": "moc3 is gateway-only; permanent federation backoff is EXPECTED. Annotates digest only — no ntfy. Catch-all unexpected-peer rule deferred to post-soak (needs subject_exclude_globs support to not re-fire moc3)."
+    },
+    {
+      "id": "federation_peer_unhealthy_unexpected",
+      "match": {
+        "kind": "federation_peer_unhealthy",
+        "subject_glob": "*",
+        "subject_exclude_globs": [
+          "*moc3*"
+        ]
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 1800,
+      "annotation": "B2 (2026-05-28): unexpected unhealthy federation peer; subject_exclude_globs skips moc3 (handled by moc3_federation_backoff_known_normal). Side-effect-free escalation -> history for the cloud session to chase; NO ntfy page."
+    },
+    {
+      "id": "digest_stale_30m",
+      "match": {
+        "kind": "digest_stale"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] Situation digest stale",
+        "message": "{subject}: {detail}",
+        "priority": "default",
+        "tags": [
+          "clock3"
+        ]
+      },
+      "cooldown_s": 1800,
+      "annotation": "meshforge-digest.service may be down or wedged. systemctl --user status meshforge-digest"
+    },
+    {
+      "id": "source_error_watchdog",
+      "match": {
+        "kind": "source_error",
+        "source_glob": "watchdog"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] mini-dudeai blind on watchdog",
+        "message": "{detail}",
+        "priority": "default",
+        "tags": [
+          "see_no_evil"
+        ]
+      },
+      "cooldown_s": 3600,
+      "annotation": "watchdog.json unreadable — meshforge-watchdog.service may be down."
+    },
+    {
+      "id": "source_error_federator",
+      "match": {
+        "kind": "source_error",
+        "source_glob": "federator"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] mini-dudeai blind on federator",
+        "message": "{detail}",
+        "priority": "default",
+        "tags": [
+          "see_no_evil"
+        ]
+      },
+      "cooldown_s": 3600,
+      "annotation": "/api/status unreachable — meshforge-map.service may be down (see Issue #68 detection recipe). grace_s=90 debounces our own meshforge-map restart blips (~30s, self-clearing); a real >90s federator outage still pages.",
+      "grace_s": 90
+    },
+    {
+      "id": "rns_namespace_collision_escalate",
+      "match": {
+        "kind": "signal_class",
+        "class": "rns_namespace_collision",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 1800,
+      "annotation": "Issue #69 — foreign daemon owns @rns/<instance> (often lab.lxmf_tracer winning the @rns race during an rnsd cycle); the box's RNS is broken until reclaimed. Recovery: stop the foreign daemon, `sudo systemctl restart rnsd.service`, restart RNS-using services. Verify owner is rnsd: `sudo ss -xnpl | grep @rns/`. Companion to the ntfy page rns_namespace_collision_any — surfaces it in the deep-feed/brief 'look here first'."
+    }
+  ]
+}
