@@ -112,7 +112,7 @@ def main() -> int:
         import LXMF
     except ImportError as e:
         print(f"ERROR: RNS/LXMF not importable: {e}", file=sys.stderr)
-        print("Install: sudo pip3 install --break-system-packages rns lxmf",
+        print("Install: sudo pip3 install --break-system-packages -r requirements/rns.txt",
               file=sys.stderr)
         return 3
 

@@ -75,7 +75,7 @@ elif [[ -x "$PIPX_PY" ]] && sudo -u "$TARGET_USER" "$PIPX_PY" -c "import LXMF, R
     HASH_PY="$PIPX_PY"
     warn "System python3 lacks LXMF/RNS — deriving hash via pipx venv only. Install deps below will fix system python3."
 else
-    die "Neither system python3 nor pipx nomadnet venv has LXMF+RNS. Install python3-rns or pipx install nomadnet first."
+    die "Neither system python3 nor pipx nomadnet venv has LXMF+RNS. Install with: pip3 install -r requirements/rns.txt (MeshForge fork), or pipx install nomadnet first."
 fi
 
 # rpc_key must be pinned in rnsd's config or Issue #37/#41 re-surface.

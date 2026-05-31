@@ -1310,7 +1310,10 @@ if $INSTALL_RNS; then
         apt-get install -y -qq pipx &>/dev/null
     fi
 
-    pip3 install $PIP_ARGS --ignore-installed -q rns 'cryptography>=45.0.7,<47' 'pyopenssl>=25.3.0'
+    # Install the MeshForge-owned RNS/LXMF forks (+ crypto pins) from the pinned
+    # requirements file — the single source of truth for the fork git URLs and
+    # versions (upstream Carrier Switch, Dec 2025; see requirements/rns.txt).
+    pip3 install $PIP_ARGS --ignore-installed -q -r "$INSTALL_DIR/requirements/rns.txt"
 
     # Create /etc/reticulum directory structure
     # RNS stores data in a 'storage' subdirectory of its config directory.

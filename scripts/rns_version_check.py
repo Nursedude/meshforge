@@ -24,14 +24,26 @@ REQ = os.path.join(_HERE, "..", "requirements", "rns.txt")
 
 
 def pinned_versions():
-    """Parse exact pins (`rns==X`, `lxmf==Y`) out of requirements/rns.txt."""
+    """Parse the expected rns/lxmf versions out of requirements/rns.txt.
+
+    Two formats are recognised, newest first:
+      * fork pin   ``# MF-FORK-PIN rns 1.2.5+mf.0`` — the version SSOT when the
+        package is installed from a git URL (pip pins by commit SHA, so the
+        version itself isn't in the requirement line).
+      * legacy pin ``rns==1.2.5`` — the old PyPI exact pin.
+    The ``+`` (PEP 440 local segment) is allowed in the version pattern.
+    """
     pins = {}
     try:
         with open(REQ) as f:
             for line in f:
-                m = re.match(r"^\s*(rns|lxmf)==([0-9][0-9A-Za-z.\-]*)", line)
+                m = re.match(r"^\s*#\s*MF-FORK-PIN\s+(rns|lxmf)\s+([0-9][0-9A-Za-z.+\-]*)", line)
                 if m:
                     pins[m.group(1)] = m.group(2)
+                    continue
+                m = re.match(r"^\s*(rns|lxmf)==([0-9][0-9A-Za-z.+\-]*)", line)
+                if m:
+                    pins.setdefault(m.group(1), m.group(2))
     except OSError as e:
         print(f"cannot read {REQ}: {e}")
     return pins
@@ -63,9 +75,8 @@ def main():
         print(f"  [{'OK   ' if ok else 'DRIFT'}] {pkg:<5} installed={str(have):<10} pinned={want}")
 
     if drift:
-        conv = " ".join(f"{p}=={v}" for p, v in pins.items())
-        print(f"  -> CONVERGE (watched): pip install {conv}")
-        print("     (verify rnsd + shared instance after; downgrades carry config-format risk)")
+        print("  -> CONVERGE (watched): pip install --force-reinstall -r requirements/rns.txt")
+        print("     (installs the MeshForge fork; verify rnsd + shared instance after)")
         return 1
     print("  -> compliant with the pin")
     return 0

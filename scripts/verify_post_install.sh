@@ -302,7 +302,7 @@ if systemctl is-active --quiet rnsd 2>/dev/null; then
 elif command -v rnsd &>/dev/null; then
     check_warn "rnsd service" "Installed but not running" "Start: sudo systemctl start rnsd"
 else
-    check_warn "rnsd service" "RNS not installed" "Install: pip3 install rns"
+    check_warn "rnsd service" "RNS not installed" "Install: pip3 install -r requirements/rns.txt (MeshForge RNS fork)"
 fi
 
 log ""
