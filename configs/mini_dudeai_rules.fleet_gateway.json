@@ -22,6 +22,19 @@
       "annotation": "Issue #69 \u2014 foreign daemon hijacked @rns/<instance>. Recovery: stop the foreign daemon, restart rnsd, restart RNS-using services."
     },
     {
+      "id": "rns_namespace_collision_escalate",
+      "match": {
+        "kind": "signal_class",
+        "class": "rns_namespace_collision",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 1800,
+      "annotation": "Issue #69 \u2014 foreign daemon owns @rns/<instance> (often lab.lxmf_tracer winning the @rns race during an rnsd cycle); the box's RNS is broken until reclaimed. Recovery: stop the foreign daemon, `sudo systemctl restart rnsd.service`, restart RNS-using services. Verify owner is rnsd: `sudo ss -xnpl | grep @rns/`. Companion to the ntfy page rns_namespace_collision_any \u2014 this surfaces the collision in the deep-feed/brief 'look here first' so a session catches a past episode the posture pane no longer shows."
+    },
+    {
       "id": "main_thread_wedge_any",
       "match": {
         "kind": "signal_class",
