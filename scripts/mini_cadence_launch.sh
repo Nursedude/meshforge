@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# mini-dudeai cadence launcher — event-gated.
+# mini-dudeai cadence launcher — self-contained, event-gated.
 #
-# Each cadence run is a real (token-costing) Claude Code session, so this fires
-# `claude -p` ONLY when mini has proposed memory-deltas awaiting ratification.
-# No proposals → exit cheap. Intended as a cron on the box that runs mini +
-# the digest daemon (the federator box).
+# Each run: (1) refresh proposals via mini's deterministic --dream pass, then
+# (2) fire a real (token-costing) `claude -p` cadence session ONLY if proposed
+# memory-deltas now exist. No proposals → exit cheap. Intended as a cron on the
+# box that runs mini + the digest daemon (the federator box).
 #
 # Install (operator opt-in — this spends tokens):
-#   crontab -e  →  17 * * * * /opt/meshforge/scripts/mini_cadence_launch.sh >> ~/mini_cadence.log 2>&1
+#   crontab -e  →  37 * * * * /opt/meshforge/scripts/mini_cadence_launch.sh >> ~/mini_cadence.log 2>&1
+#
+# DO NOT run during a controlled mini experiment (e.g. the honest-mini soak):
+# --dream would synthesize patterns from synthetic stress signals and the
+# cadence session could author memory about fake events. Activate after the
+# experiment concludes.
 #
 # The cadence session's instructions live in .claude/prompts/mini_cadence.md
 # (versioned), which encodes the anti-theater standard: verify before authoring,
@@ -17,9 +22,23 @@ set -euo pipefail
 DELTAS="${MINI_DELTAS_PATH:-$HOME/mini_dudeai_memory_deltas.jsonl}"
 REPO="${MESHFORGE_REPO:-/opt/meshforge}"
 RUNBOOK="$REPO/.claude/prompts/mini_cadence.md"
+ENV_FILE="${MINI_ENV_FILE:-$HOME/.config/meshforge/mini_dudeai.env}"
+PRESET="${MINI_PRESET:-meshforge_fleet}"
 # Bound the session so a wedged run can't pin a fleet box (cf. the rnsd-RPC
 # fragility class — everything mini-adjacent carries a timeout).
 TIMEOUT_S="${MINI_CADENCE_TIMEOUT_S:-900}"
+
+# Refresh proposals FIRST. mini's --dream pass is deterministic (no LLM, cheap)
+# and is the ONLY thing that proposes memory-deltas — without it the gate below
+# can never open. Set MINI_SKIP_DREAM=1 to gate on existing deltas only (e.g. if
+# a separate --dream cron owns synthesis). The preset's build_engine() needs the
+# ntfy topic even for --dream, so load the env file the systemd unit uses.
+if [ "${MINI_SKIP_DREAM:-0}" != "1" ]; then
+  if [ -f "$ENV_FILE" ]; then set -a; . "$ENV_FILE"; set +a; fi
+  if ! PYTHONPATH="$REPO/src" python3 -m mini_dudeai --preset "$PRESET" --dream >/dev/null 2>&1; then
+    echo "mini-cadence: --dream refresh failed; gating on existing deltas only." >&2
+  fi
+fi
 
 if [ ! -f "$DELTAS" ]; then
   echo "mini-cadence: no deltas file ($DELTAS) — nothing to do."
