@@ -160,7 +160,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 1800,
-      "annotation": "B2 (2026-05-28): unexpected unhealthy federation peer; subject_exclude_globs skips moc3 (handled by moc3_federation_backoff_known_normal). Side-effect-free escalation -> history for the cloud session to chase; NO ntfy page."
+      "annotation": "B2 (2026-05-28): unexpected unhealthy federation peer; subject_exclude_globs skips moc3 (handled by moc3_federation_backoff_known_normal). Side-effect-free escalation -> history for the cloud session to chase; NO ntfy page. Per-box pattern (2026-05-31): operator boxes may add a local *_federation_known_normal rule (annotate_digest) plus a matching subject_exclude_globs entry for a KNOWN cross-project peer that surfaces as a bare IP (peer_name=null) — e.g. the MeshAnchor host meshanchor-server. Such rules live in that box's own ~/mini_dudeai_rules.json because the addresses are operator-specific (MF014); they are deliberately NOT in this repo seed."
     },
     {
       "id": "digest_stale_30m",
