@@ -728,10 +728,13 @@ fi
 
 
 def _build_logfile_perms_script(user: str) -> str:
-    """Bash that makes the canonical configdir + logfile writable by a non-root
-    rnsd user, matching the proven federator layout: configdir root:<user> mode
-    1775 (group-writable + sticky so the user can create/rotate), logfile
-    <user>:<user>. The config FILE stays root:root (operator-managed). Idempotent.
+    """Bash that makes the canonical RNS tree writable by a non-root rnsd user,
+    matching the proven federator layout: configdir root:<user> mode 1775
+    (group-writable + sticky so the user can create/rotate), logfile <user>:<user>,
+    and the storage/ subtree <user>-owned (rnsd persists path/identity/hashlist
+    there — root-owned storage silently broke persistence on the root boxes, which
+    only worked because storage happened to be 0777). The config FILE stays
+    root:root (operator-managed). Idempotent.
 
     `user` is validated against _USERNAME_RE upstream, so it cannot carry shell
     metacharacters, but it is only ever placed in already-safe positions.
@@ -743,6 +746,7 @@ CD={cd}
 chown root:{user} "$CD"
 chmod 1775 "$CD"
 if [ -e "$CD/logfile" ]; then chown {user}:{user} "$CD/logfile"; fi
+if [ -d "$CD/storage" ]; then chown -R {user}:{user} "$CD/storage"; fi
 """
 
 

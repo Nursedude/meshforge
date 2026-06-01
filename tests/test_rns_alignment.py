@@ -613,3 +613,4 @@ class TestApplyLogfilePerms:
         assert "chown root:wh6gxz" in script
         assert "chmod 1775" in script
         assert "chown wh6gxz:wh6gxz" in script and "logfile" in script
+        assert "storage" in script  # rnsd persists here; must be operator-owned

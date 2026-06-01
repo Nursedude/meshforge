@@ -1315,6 +1315,13 @@ if $INSTALL_RNS; then
     # versions (upstream Carrier Switch, Dec 2025; see requirements/rns.txt).
     pip3 install $PIP_ARGS --ignore-installed -q -r "$INSTALL_DIR/requirements/rns.txt"
 
+    # Born-correct permission foundation (arch-meeting 2026-06-01): rnsd and its
+    # RNS tree are owned by the non-root operator user (fleet parity), not root.
+    # Ensure that user can reach serial/USB radio hardware (gateways) — systemd
+    # reads group membership at service start, so no re-login is needed for rnsd.
+    RNSD_USER="$(resolve_operator_user)"
+    usermod -aG dialout,plugdev "$RNSD_USER" 2>/dev/null || true
+
     # Create /etc/reticulum directory structure
     # RNS stores data in a 'storage' subdirectory of its config directory.
     # When using system-wide config (/etc/reticulum/config), rnsd needs
@@ -1388,8 +1395,9 @@ if $INSTALL_RNS; then
         RNSD_BIN=$(command -v rnsd 2>/dev/null || echo "/usr/local/bin/rnsd")
     fi
 
-    # System-wide service (root) - based on templates/systemd/rnsd-user.service
-    # but adapted for system-level (User=root, absolute paths)
+    # System-wide service running as the non-root operator user (fleet parity,
+    # arch-meeting 2026-06-01), pinned to the canonical /etc/reticulum configdir
+    # so it uses the born-correct, operator-owned RNS tree.
     cat > /etc/systemd/system/rnsd.service << RNSD_SERVICE
 [Unit]
 Description=Reticulum Network Stack Daemon
@@ -1404,8 +1412,9 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=root
-ExecStart=${RNSD_BIN} --service
+User=${RNSD_USER}
+Group=${RNSD_USER}
+ExecStart=${RNSD_BIN} --config /etc/reticulum --service
 Restart=on-failure
 RestartSec=5
 
@@ -1431,10 +1440,17 @@ RNSD_SERVICE
         echo -e "  ${GREEN}✓ User service templates deployed to ${USER_SYSTEMD_DIR}${NC}"
     fi
 
+    # Born-correct permission foundation: the canonical RNS tree
+    # (configdir root:${RNSD_USER} 1775, logfile + storage operator-owned) and the
+    # app data-roots, applied via the SSOT — the SAME path the converge/repair flow
+    # uses. The installer no longer leans on the TUI _fix_rnsd_user step for this.
+    python3 "$INSTALL_DIR/scripts/fleet_foundation.py" apply --user "$RNSD_USER" 2>/dev/null \
+        || echo -e "  ${YELLOW}⚠ foundation apply skipped — run: sudo python3 scripts/fleet_foundation.py apply${NC}"
+
     systemctl daemon-reload
     systemctl enable rnsd 2>/dev/null
     systemctl start rnsd 2>/dev/null
-    echo -e "  ${GREEN}✓ rnsd enabled and started${NC}"
+    echo -e "  ${GREEN}✓ rnsd (User=${RNSD_USER}) enabled and started${NC}"
 
     echo -e "  ${GREEN}✓ Reticulum installed${NC}"
 else
