@@ -8,7 +8,7 @@
 #   disabled = unit installed but deliberately enabled=false/inactive (not a fault)
 #   absent   = unit not installed for this role
 version: 0
-updated: "2026-05-27"
+updated: "2026-06-01"
 
 # Role ownership: the MeshForge provisioner converges only roles WITHOUT a
 # `provisioned_by` key. A role with `provisioned_by: <repo>` is documented here
@@ -25,6 +25,46 @@ invariants:
   one_cloud_publisher: "The VPS snapshot push runs on exactly one node (singleton: cloud-publisher)."
   software_fits_the_box: "Memory-saving defaults stay ON on small boards; they are why constrained Pis bear the load."
   fail_loud_restart_clean: "Watchdog on every node; services systemd-supervised with Restart=."
+  born_correct_permissions: "Every box runs services as the NON-ROOT operator user and owns its RNS config tree + app data-roots (see the `foundation` block). Established born (install_noc.sh) + enforced on every converge. The mf.4/#73 perms class."
+
+# The born-correct permission FOUNDATION every box must have (ratified 2026-06-01,
+# .claude/plans/fleet_permission_foundation_plan.md). The executable SSOT is
+# src/utils/fleet_foundation.py (+ the shared src/utils/rns_tree_perms.py for the RNS
+# tree, carried byte-identical in MeshAnchor + parity-tracked). This block is its
+# DECLARED model. Established at INSTALL (install_noc.sh, born-correct) and enforced at
+# CONVERGE (`scripts/provision_role.py --apply` runs it on every role; standalone
+# front-end: `scripts/fleet_foundation.py audit|apply`). Parity achieved when
+# `fleet_foundation.py audit` is clean fleet-wide. Continuously catches the mf.4/#73
+# recurrence: a re-provision that recreates /etc/reticulum root:root while rnsd is
+# non-root, which silently breaks every RNS.log() write.
+foundation:
+  topology: fleet                    # fleet (operator user + parity) | standalone (single box,
+                                     # degenerate case: one user owns everything, same rules)
+  service_user: operator             # services run as the NON-ROOT operator user, gateways
+                                     # included (D1). Per-box RESOLVED — install resolves the
+                                     # real login user; converge uses get_real_username(). NEVER
+                                     # a literal username here (MF014). Hardware access is free:
+                                     # the operator user is already in dialout/plugdev/gpio (D2),
+                                     # and no service binds a privileged port.
+  rns_tree:                          # /etc/reticulum perms for a non-root rnsd (shared SSOT;
+                                     # <service_user> = the resolved operator user above)
+    configdir: "root:<service_user>"   # mode 1775 (group-writable + sticky) so the user can
+                                     # create/rotate the logfile; the config FILE stays root:root
+    configdir_mode: "1775"
+    logfile: "<service_user>:<service_user>"
+    storage: "<service_user>:<service_user>"   # rnsd persists path/identity/hashlist here
+  data_roots:                        # app data dirs the non-root services must own (per app,
+                                     # NOT byte-parity-tracked — each app declares its own)
+    meshforge:                       # utils.fleet_foundation.meshforge_data_roots()
+      - "~/.config/meshforge"
+      - "~/.local/share/meshforge"
+      - "~/.cache/meshforge"
+      - "~/.nomadnetwork"
+    meshanchor:                      # utils.fleet_foundation.meshanchor_data_roots() (sister repo)
+      - "~/.config/meshanchor"
+      - "~/.local/share/meshanchor"
+      - "~/.cache/meshanchor"
+      - "/opt/meshanchor"
 
 # Cross-cutting settings every MAP-running role must apply.
 defaults:
