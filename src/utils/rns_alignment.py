@@ -29,9 +29,22 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Optional
 
-logger = logging.getLogger(__name__)
+# RNS-tree perms (configdir/logfile/storage ownership for a non-root rnsd) are the
+# shared, app-agnostic SSOT carried byte-identical in MeshAnchor + parity-tracked
+# (scripts/parity_check.py). rns_alignment delegates that layer here and keeps only
+# its MeshForge-fleet-specific rpc_key/client-config alignment. The aliases below
+# preserve rns_alignment's historical import surface (callers + tests unchanged).
+from utils.rns_tree_perms import (  # noqa: F401
+    CANONICAL_CONFIGDIR,
+    RnsTreePerms,
+    _group_writable,
+    _USERNAME_RE,
+    apply_logfile_perms,
+    build_logfile_perms_script as _build_logfile_perms_script,
+    logfile_perms_drift as _tree_logfile_perms_drift,
+)
 
-CANONICAL_CONFIGDIR = Path('/etc/reticulum')
+logger = logging.getLogger(__name__)
 
 
 # ----- dataclasses ----------------------------------------------------------
@@ -456,57 +469,21 @@ def check_gateway_rpc_key_alignment(
 # ----- analyze ---------------------------------------------------------------
 
 
-_USERNAME_RE = re.compile(r'^[a-z_][a-z0-9_-]*$')
-
-
-def _group_writable(mode: Optional[str]) -> bool:
-    """True if an octal mode string (e.g. '1775', '755') grants group-write."""
-    if not mode:
-        return False
-    try:
-        # The group permission digit is always second from the right.
-        return bool(int(mode[-2], 8) & 0o2)
-    except (ValueError, IndexError):
-        return False
-
-
 def _logfile_perms_drift(state: RNSAlignmentState) -> Optional[str]:
-    """mf.4 / Issue #73 guard. A non-root rnsd must be able to create, rotate,
-    and append to its logfile under the canonical configdir, or RNS.log() fails
-    on every write — which self-deadlocked the daemon pre-fork-mf.4 and loses
-    all logs after. A re-provision that recreates /etc/reticulum as root:root is
-    the recurrence path (moc1/moc2, 2026-06-01). Returns a drift reason or None.
+    """mf.4 / Issue #73 guard — adapter onto the shared RNS-tree-perms SSOT.
 
-    Canonical layout (proven on the federator): configdir root:<rnsd_user> mode
-    1775 (group-writable + sticky so the user can create/rotate), logfile
-    <rnsd_user>:<rnsd_user>. A root-run rnsd needs no fix (root writes anything).
-    Returns None when the perms facts weren't probed (configdir_owner is None) —
-    never guess from absent data.
+    The detection logic (and the canonical layout it enforces) lives in
+    ``utils.rns_tree_perms.logfile_perms_drift`` so MeshForge and MeshAnchor share
+    one definition. Here we just project the perms-relevant fields out of the
+    fuller ``RNSAlignmentState`` and delegate.
     """
-    user = state.rnsd_user
-    if not user or user == 'root' or not _USERNAME_RE.match(user):
-        return None
-    if state.configdir_owner is None:
-        return None  # not probed / inaccessible — don't flag on absent data
-    cd_group = state.configdir_owner.split(':')[-1]
-    if cd_group != user or not _group_writable(state.configdir_mode):
-        return (
-            f"{CANONICAL_CONFIGDIR} is {state.configdir_owner} mode "
-            f"{state.configdir_mode or '?'} but rnsd runs as {user} — it cannot "
-            f"create/rotate its logfile, so RNS.log() fails on every write "
-            f"(mf.4 self-deadlock trigger / lost logs). "
-            f"Fix: chown root:{user} + chmod 1775 {CANONICAL_CONFIGDIR}"
-        )
-    if state.logfile_exists:
-        owner_user = (state.logfile_owner or '').split(':')[0]
-        if owner_user != user:
-            return (
-                f"{CANONICAL_CONFIGDIR}/logfile is owned by "
-                f"{state.logfile_owner or '?'} but rnsd runs as {user} — appends "
-                f"fail (mf.4 self-deadlock trigger / lost logs). "
-                f"Fix: chown {user}:{user} {CANONICAL_CONFIGDIR}/logfile"
-            )
-    return None
+    return _tree_logfile_perms_drift(RnsTreePerms(
+        rnsd_user=state.rnsd_user,
+        configdir_owner=state.configdir_owner,
+        configdir_mode=state.configdir_mode,
+        logfile_exists=state.logfile_exists,
+        logfile_owner=state.logfile_owner,
+    ))
 
 
 def analyze_drift(state: RNSAlignmentState) -> List[str]:
@@ -727,44 +704,9 @@ fi
 """
 
 
-def _build_logfile_perms_script(user: str) -> str:
-    """Bash that makes the canonical RNS tree writable by a non-root rnsd user,
-    matching the proven federator layout: configdir root:<user> mode 1775
-    (group-writable + sticky so the user can create/rotate), logfile <user>:<user>,
-    and the storage/ subtree <user>-owned (rnsd persists path/identity/hashlist
-    there — root-owned storage silently broke persistence on the root boxes, which
-    only worked because storage happened to be 0777). The config FILE stays
-    root:root (operator-managed). Idempotent.
-
-    `user` is validated against _USERNAME_RE upstream, so it cannot carry shell
-    metacharacters, but it is only ever placed in already-safe positions.
-    """
-    cd = str(CANONICAL_CONFIGDIR)
-    return f"""
-set -e
-CD={cd}
-chown root:{user} "$CD"
-chmod 1775 "$CD"
-if [ -e "$CD/logfile" ]; then chown {user}:{user} "$CD/logfile"; fi
-if [ -d "$CD/storage" ]; then chown -R {user}:{user} "$CD/storage"; fi
-"""
-
-
-def apply_logfile_perms(operator_user: str) -> None:
-    """Apply the canonical RNS-tree perms for a non-root rnsd (the foundation's
-    RNS layer): configdir ``root:<user> 1775``, logfile ``<user>:<user>``, config
-    stays root-owned. Idempotent; requires sudo. This is the single apply-path for
-    the RNS half of the permission foundation — ``fleet_foundation`` and the TUI
-    ``_fix_rnsd_user`` both call it instead of carrying their own copies (mf.4/#73).
-
-    ``operator_user`` is validated as a safe username (no shell metacharacters).
-    """
-    if not _USERNAME_RE.match(operator_user):
-        raise ValueError(f"unsafe operator_user {operator_user!r}")
-    subprocess.run(
-        ['sudo', 'bash', '-c', _build_logfile_perms_script(operator_user)],
-        check=True, timeout=30,
-    )
+# _build_logfile_perms_script and apply_logfile_perms now live in the shared
+# utils.rns_tree_perms SSOT (imported at module top as aliases) so MeshForge and
+# MeshAnchor carry one byte-identical definition of the RNS-tree perms layout.
 
 
 def _build_rnsd_dropin_script() -> str:

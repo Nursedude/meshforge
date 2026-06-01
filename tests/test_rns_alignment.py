@@ -603,8 +603,11 @@ class TestApplyLogfilePerms:
 
     def test_runs_canonical_chown_chmod(self):
         from unittest.mock import patch
-        from utils import rns_alignment
-        with patch.object(rns_alignment.subprocess, "run") as run:
+        from utils import rns_alignment, rns_tree_perms
+        # apply_logfile_perms now lives in the shared rns_tree_perms SSOT (rns_alignment
+        # re-exports it), so the subprocess.run call happens in that module's namespace.
+        assert rns_alignment.apply_logfile_perms is rns_tree_perms.apply_logfile_perms
+        with patch.object(rns_tree_perms.subprocess, "run") as run:
             rns_alignment.apply_logfile_perms("wh6gxz")
         run.assert_called_once()
         argv = run.call_args[0][0]

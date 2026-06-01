@@ -47,6 +47,11 @@ DEFAULT_MESHANCHOR = "/opt/meshanchor"
 BYTE_IDENTICAL = (
     "src/utils/rns_init.py",
     "src/gateway/canonical_message.py",
+    # The RNS-tree permission foundation SSOT (configdir/logfile/storage layout
+    # for a non-root rnsd — the mf.4/#73 perms class). App-agnostic, stdlib-only,
+    # delegated to by both rns_alignment (MeshForge) and fleet_foundation (both
+    # repos), so it MUST stay byte-identical.
+    "src/utils/rns_tree_perms.py",
 )
 
 # The fork-pin block is compared as a normalized sub-block: the lines that
@@ -72,6 +77,16 @@ SHAPE_SYMBOLS = {
         "MF-FORK-PIN",
         "def pinned_versions(",
         "def installed_version(",
+    ),
+    # fleet_foundation: the audit/plan ENGINE is parity-shared (pure functions
+    # over an injected owner-lookup), but each app declares its own data-roots
+    # (meshforge_data_roots vs meshanchor_data_roots), so it's shape- not
+    # byte-parity. Assert the shared engine + RNS-tree delegation are present.
+    "src/utils/fleet_foundation.py": (
+        "def audit_data_roots(",
+        "def plan_data_root_fixes(",
+        "def apply_foundation(",
+        "from utils.rns_tree_perms import",
     ),
 }
 

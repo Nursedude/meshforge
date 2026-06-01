@@ -10,10 +10,13 @@ definition is the whole point: the mf.4 / Issue #73 logfile hang was born from
 only by luck.
 
 ## Two layers (the parity contract)
-- **RNS foundation** — the `/etc/reticulum` tree + the rnsd service-user. This is
-  the SHARED, byte-identical core, owned by ``utils.rns_alignment`` and kept
-  parity-identical between MeshForge and MeshAnchor (``scripts/parity_check.py``).
-  This module *delegates* to it, never re-implements it.
+- **RNS foundation** — the `/etc/reticulum` tree perms + the rnsd service-user.
+  This is the SHARED, byte-identical core, owned by ``utils.rns_tree_perms`` and
+  kept parity-identical between MeshForge and MeshAnchor
+  (``scripts/parity_check.py``). This module *delegates* to it, never
+  re-implements it. (MeshForge's ``utils.rns_alignment`` also delegates its
+  logfile-perms guard there, and keeps its own MeshForge-fleet-specific rpc_key /
+  client-config alignment, which is NOT shared.)
 - **App data-roots** — this app's own data dirs (``~/.config/meshforge`` etc.).
   These differ per app *by design* (MeshAnchor ships its own declaration), so
   they are NOT parity-tracked. The audit/plan **engine** below is parity-shareable
@@ -50,12 +53,12 @@ class FoundationSpec:
     operator_user: str            # non-root user the services run as
     topology: str                 # 'fleet' | 'standalone'
     data_roots: Tuple[Path, ...]  # app dirs that must be operator_user-owned
-    rns_configdir: Path = CANONICAL_RNS_CONFIGDIR  # delegated to rns_alignment
+    rns_configdir: Path = CANONICAL_RNS_CONFIGDIR  # delegated to rns_tree_perms
 
 
 @dataclass(frozen=True)
 class FoundationAction:
-    """One state-changing step (mirrors rns_alignment.NormalizeAction)."""
+    """One state-changing step (a description + the sudo command to run)."""
     description: str
     cmd: List[str]
 
@@ -178,28 +181,29 @@ def _owner_of(path: Path) -> Optional[str]:
 
 
 def audit_foundation(spec: Optional[FoundationSpec] = None) -> List[str]:
-    """Full foundation audit = app data-roots (here) + RNS tree (rns_alignment).
+    """Full foundation audit = app data-roots (here) + RNS tree (rns_tree_perms).
 
-    The RNS tree is the shared/parity core, so we delegate to rns_alignment's
+    The RNS tree is the shared/parity core, so we delegate to rns_tree_perms's
     logfile-perms guard rather than re-checking it here.
     """
     spec = spec or canonical_foundation()
     reasons = audit_data_roots(spec, _owner_of)
     try:
-        from utils.rns_alignment import _logfile_perms_drift, probe_local
-        rns_reason = _logfile_perms_drift(probe_local())
+        from utils.rns_tree_perms import logfile_perms_drift, probe_rns_tree_perms
+        rns_reason = logfile_perms_drift(probe_rns_tree_perms())
         if rns_reason:
             reasons.append(rns_reason)
     except Exception as e:  # delegation is best-effort; never block the data audit
-        logger.debug("rns_alignment delegation skipped: %s", e)
+        logger.debug("rns_tree_perms delegation skipped: %s", e)
     return reasons
 
 
 def plan_foundation(spec: Optional[FoundationSpec] = None) -> List[FoundationAction]:
     """State-changing plan for the app data-roots (the part this module owns).
 
-    The RNS tree is converged by ``rns_alignment.plan_normalize`` /
-    ``scripts/rns_alignment.py normalize`` — run both for the complete foundation.
+    The RNS-tree perms are applied separately by ``apply_foundation`` (via the
+    shared ``rns_tree_perms`` apply-path); on MeshForge the broader RNS-config
+    alignment (rpc_key etc.) is converged by ``scripts/rns_alignment.py normalize``.
     """
     spec = spec or canonical_foundation()
     return plan_data_root_fixes(spec, _owner_of)
@@ -207,8 +211,9 @@ def plan_foundation(spec: Optional[FoundationSpec] = None) -> List[FoundationAct
 
 def apply_foundation(spec: Optional[FoundationSpec] = None, dry_run: bool = False) -> List[str]:
     """Apply the COMPLETE foundation: app data-roots (here) + the RNS tree
-    (delegated to ``rns_alignment.apply_logfile_perms`` — the single apply-path).
-    Returns executed (or dry-run) descriptions. Requires sudo for real changes.
+    (delegated to ``rns_tree_perms.apply_logfile_perms`` — the shared single
+    apply-path). Returns executed (or dry-run) descriptions. Requires sudo for
+    real changes.
     """
     spec = spec or canonical_foundation()
     executed: List[str] = []
@@ -222,13 +227,13 @@ def apply_foundation(spec: Optional[FoundationSpec] = None, dry_run: bool = Fals
         subprocess.run(action.cmd, check=True, timeout=60)
         executed.append(action.description)
 
-    # RNS tree (the shared core — single apply-path in rns_alignment).
+    # RNS tree (the shared core — single apply-path in rns_tree_perms).
     rns_desc = f"apply RNS-tree perms for {spec.operator_user} ({spec.rns_configdir})"
     if dry_run:
         executed.append(f"[DRY-RUN] {rns_desc}")
     else:
         try:
-            from utils.rns_alignment import apply_logfile_perms
+            from utils.rns_tree_perms import apply_logfile_perms
             apply_logfile_perms(spec.operator_user)
             executed.append(rns_desc)
         except Exception as e:  # never let the RNS leg sink the data-root work
