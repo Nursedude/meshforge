@@ -36,6 +36,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_delivery_write_canary,
     probe_fd_exhaustion,
     probe_foundation_drift,
+    probe_parity_drift,
     probe_http_local,
     probe_lxmf_process_wedge,
     probe_main_thread_wedge,
@@ -78,6 +79,7 @@ def test_signal_classes_closed_enum_is_documented():
         "rns_rpc_unresponsive",
         "fd_exhaustion",
         "foundation_perms_drift",
+        "parity_drift",
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -995,6 +997,58 @@ def test_foundation_drift_logfile_owner_mismatch_fires():
     sig = probe_foundation_drift(perms=_perms(logfile_owner="root:root"))
     assert sig is not None and sig.severity == "degraded"
     assert "logfile is owned by" in sig.detail
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-06-01 — parity_drift (MeshForge<->MeshAnchor lead-repo port debt)
+# ─────────────────────────────────────────────────────────────────────
+
+from types import SimpleNamespace  # noqa: E402
+
+
+def _pf(status, label):
+    return SimpleNamespace(status=status, label=label)
+
+
+def test_parity_drift_none_when_meshanchor_absent(tmp_path):
+    """MeshForge-only box (no /opt/meshanchor) → not applicable, no alarm."""
+    assert probe_parity_drift(meshanchor_root=str(tmp_path / "nope")) is None
+
+
+def test_parity_drift_fires_on_drift(tmp_path):
+    findings = [_pf("ok", "src/utils/rns_init.py"),
+                _pf("drift", "src/utils/rns_tree_perms.py")]
+    sig = probe_parity_drift(
+        meshanchor_root=str(tmp_path),
+        check_fn=lambda mf, ma: (findings, "drift"))
+    assert sig is not None
+    assert sig.cls == "parity_drift"
+    assert sig.severity == "degraded"
+    assert sig.subject == "meshforge<->meshanchor"
+    assert "rns_tree_perms.py" in sig.detail
+    assert sig.extra["drift_items"] == ["src/utils/rns_tree_perms.py"]
+
+
+def test_parity_drift_none_when_in_sync(tmp_path):
+    sig = probe_parity_drift(
+        meshanchor_root=str(tmp_path),
+        check_fn=lambda mf, ma: ([_pf("ok", "x")], "in_sync"))
+    assert sig is None
+
+
+def test_parity_drift_none_when_missing_is_indeterminate(tmp_path):
+    """A tracked file merely absent (overall 'missing') → indeterminate (possible
+    mid-deploy window), not a drift alarm."""
+    sig = probe_parity_drift(
+        meshanchor_root=str(tmp_path),
+        check_fn=lambda mf, ma: ([_pf("missing", "x")], "missing"))
+    assert sig is None
+
+
+def test_parity_drift_none_when_check_raises(tmp_path):
+    def boom(mf, ma):
+        raise RuntimeError("parity tool blew up")
+    assert probe_parity_drift(meshanchor_root=str(tmp_path), check_fn=boom) is None
 
 
 # ─────────────────────────────────────────────────────────────────────

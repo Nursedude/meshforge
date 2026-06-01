@@ -587,15 +587,11 @@ sudo ls /proc/$P/fd | wc -l   # vs soft limit in /proc/$P/limits
 Decision tell: `[Errno 24]`/climbing fds = fd leak (restart map, find leak);
 `rnstatus` wedged = RNS class (restart rnsd).
 
-**Companion probe `probe_foundation_drift`** (signal class `foundation_perms_drift`,
-issue_ref 73, 2026-06-01): makes the born-correct permission-foundation audit a
-continuously-monitored watchdog signal. Calls the shared
-`rns_tree_perms.{probe_rns_tree_perms,logfile_perms_drift}` (the RNS-tree leg only —
-derives the rnsd user from its unit, so it's correct in the root watchdog context
-where `get_real_username` would mislead; the data-roots leg stays owned by the
-operator-run `scripts/fleet_foundation.py audit`). Fires `degraded` (latent, not
-wedged-now; fix is perms-only no-restart) when `/etc/reticulum` drifts to root:root
-while rnsd is non-root — the moc1/moc2/moc recurrence the fleet caught by hand on the
-first foundation audit. Gated on `rnsd.service` expected-active in `watchdog_runner`.
-Tells operators + the mini deep-rollup before the next logfile rotation wedges
-`RNS.log()`. Fix: `sudo python3 scripts/fleet_foundation.py apply`.
+Two watchdog probes added 2026-06-01 (audit-organ→Signal→mini pattern,
+[[project_mini_scales_via_watchdog_probes_2026_06_01]]): **`probe_foundation_drift`**
+(class `foundation_perms_drift`) — fires `degraded` when `/etc/reticulum` drifts to
+root:root under a non-root rnsd (the moc recurrence); RNS-tree leg only (user from
+rnsd unit, correct in root ctx). Fix: `sudo scripts/fleet_foundation.py apply`.
+**`probe_parity_drift`** (class `parity_drift`) — fires `degraded` on MeshForge↔
+MeshAnchor content drift via a pure `check_parity()` factored out of
+`parity_check.py`; self-guards when `/opt/meshanchor` absent. Fix: port the change.

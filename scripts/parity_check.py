@@ -35,6 +35,7 @@ import hashlib
 import os
 import re
 import sys
+from dataclasses import dataclass
 
 DEFAULT_MESHFORGE = "/opt/meshforge"
 DEFAULT_MESHANCHOR = "/opt/meshanchor"
@@ -139,6 +140,99 @@ def _fork_pin_block(text):
     return tuple(sorted(lines))
 
 
+@dataclass
+class ParityFinding:
+    """One parity comparison result. ``section`` groups the render; ``status`` is
+    one of 'ok'|'drift'|'missing'; ``detail`` is the formatted line suffix."""
+    section: str   # 'byte' | 'forkpin' | 'shape' | 'probe'
+    label: str
+    status: str
+    detail: str = ""
+
+
+def check_parity(mf=DEFAULT_MESHFORGE, ma=DEFAULT_MESHANCHOR):
+    """Pure parity comparison — no printing. Returns ``(findings, overall)`` where
+    ``overall`` is one of:
+      'repo_missing' — a repo root isn't a directory (can't compare at all)
+      'missing'      — both roots present but a tracked file/symbol is absent
+      'drift'        — a must-match file/symbol content-diverged (the real signal)
+      'in_sync'      — everything matches
+    'missing' takes precedence over 'drift' (same as the CLI's exit-2-over-1).
+    ``main()`` renders this; the watchdog ``probe_parity_drift`` consumes it.
+    """
+    for root in (mf, ma):
+        if not os.path.isdir(root):
+            return [ParityFinding("repo", root, "missing", "repo root not found")], "repo_missing"
+
+    findings = []
+
+    # ── Byte-identical tier ──
+    for rel in BYTE_IDENTICAL:
+        a, b = _sha256(os.path.join(mf, rel)), _sha256(os.path.join(ma, rel))
+        if a is None or b is None:
+            findings.append(ParityFinding("byte", rel, "missing",
+                f"(mf={'ok' if a else 'absent'} ma={'ok' if b else 'absent'})"))
+        elif a == b:
+            findings.append(ParityFinding("byte", rel, "ok"))
+        else:
+            findings.append(ParityFinding("byte", rel, "drift", f"({a[:12]} != {b[:12]})"))
+
+    # fork-pin sub-block
+    fa = _fork_pin_block(_read(os.path.join(mf, FORK_PIN_FILE)))
+    fb = _fork_pin_block(_read(os.path.join(ma, FORK_PIN_FILE)))
+    label = f"{FORK_PIN_FILE} (fork-pin block)"
+    if fa is None or fb is None:
+        findings.append(ParityFinding("forkpin", label, "missing"))
+    elif fa == fb and fa:
+        findings.append(ParityFinding("forkpin", label, "ok"))
+    else:
+        findings.append(ParityFinding("forkpin", label, "drift", f"\n            mf={fa}\n            ma={fb}"))
+
+    # ── Shape tier ──
+    for rel, symbols in SHAPE_SYMBOLS.items():
+        ta, tb = _read(os.path.join(mf, rel)), _read(os.path.join(ma, rel))
+        if ta is None or tb is None:
+            findings.append(ParityFinding("shape", rel, "missing"))
+            continue
+        for sym in symbols:
+            in_a, in_b = sym in ta, sym in tb
+            if in_a and in_b:
+                findings.append(ParityFinding("shape", f"{rel} :: {sym}", "ok"))
+            else:
+                # A symbol present in one repo but not the other is real drift, not
+                # an absent file. Tag it 'drift' (the CLI counted it that way too).
+                findings.append(ParityFinding("shape", f"{rel} :: {sym}", "drift",
+                    f"(mf={'y' if in_a else 'n'} ma={'y' if in_b else 'n'})"))
+
+    # probes (different module per repo)
+    for root, (rel, syms) in PROBE_SYMBOLS.items():
+        actual = mf if root == DEFAULT_MESHFORGE else ma
+        rlabel = "meshforge" if root == DEFAULT_MESHFORGE else "meshanchor"
+        txt = _read(os.path.join(actual, rel))
+        if txt is None:
+            findings.append(ParityFinding("probe", f"{rlabel}:{rel}", "missing"))
+            continue
+        for sym in syms:
+            status = "ok" if sym in txt else "drift"
+            findings.append(ParityFinding("probe", f"{rlabel}:{rel} :: {sym}", status))
+
+    if any(f.status == "missing" for f in findings):
+        overall = "missing"
+    elif any(f.status == "drift" for f in findings):
+        overall = "drift"
+    else:
+        overall = "in_sync"
+    return findings, overall
+
+
+_TAG = {"ok": "OK     ", "drift": "DRIFT  ", "missing": "MISSING"}
+_SECTION_HEADER = {
+    "byte": "Byte-identical tier:",
+    "shape": "\nShape tier (symbol presence in both repos):",
+    "probe": "\nRNS-wedge probes (each repo, own idiom):",
+}
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(
         prog="parity_check",
@@ -149,85 +243,29 @@ def main(argv=None):
     args = p.parse_args(argv)
 
     mf, ma = args.meshforge, args.meshanchor
+    findings, overall = check_parity(mf, ma)
 
-    for root in (mf, ma):
-        if not os.path.isdir(root):
-            print(f"[MISSING] repo root not found: {root}")
-            return 2
-
-    drift = False
-    missing = False
+    if overall == "repo_missing":
+        for f in findings:
+            print(f"[MISSING] {f.detail}: {f.label}")
+        return 2
 
     print(f"RNS parity: {mf}  <->  {ma}\n")
-
-    # ── Byte-identical tier ──
-    print("Byte-identical tier:")
-    for rel in BYTE_IDENTICAL:
-        a, b = _sha256(os.path.join(mf, rel)), _sha256(os.path.join(ma, rel))
-        if a is None or b is None:
-            print(f"  [MISSING] {rel}  (mf={'ok' if a else 'absent'} "
-                  f"ma={'ok' if b else 'absent'})")
-            missing = True
-            continue
-        if a == b:
-            print(f"  [OK     ] {rel}")
-        else:
-            print(f"  [DRIFT  ] {rel}  ({a[:12]} != {b[:12]})")
-            drift = True
-
-    # fork-pin sub-block
-    fa = _fork_pin_block(_read(os.path.join(mf, FORK_PIN_FILE)))
-    fb = _fork_pin_block(_read(os.path.join(ma, FORK_PIN_FILE)))
-    if fa is None or fb is None:
-        print(f"  [MISSING] {FORK_PIN_FILE} (fork-pin block)")
-        missing = True
-    elif fa == fb and fa:
-        print(f"  [OK     ] {FORK_PIN_FILE} (fork-pin block)")
-    else:
-        print(f"  [DRIFT  ] {FORK_PIN_FILE} (fork-pin block)\n"
-              f"            mf={fa}\n            ma={fb}")
-        drift = True
-
-    # ── Shape tier ──
-    print("\nShape tier (symbol presence in both repos):")
-    for rel, symbols in SHAPE_SYMBOLS.items():
-        ta, tb = _read(os.path.join(mf, rel)), _read(os.path.join(ma, rel))
-        if ta is None or tb is None:
-            print(f"  [MISSING] {rel}")
-            missing = True
-            continue
-        for sym in symbols:
-            in_a, in_b = sym in ta, sym in tb
-            if in_a and in_b:
-                print(f"  [OK     ] {rel} :: {sym}")
-            else:
-                print(f"  [MISSING] {rel} :: {sym}  "
-                      f"(mf={'y' if in_a else 'n'} ma={'y' if in_b else 'n'})")
-                drift = True
-
-    # probes (different module per repo)
-    print("\nRNS-wedge probes (each repo, own idiom):")
-    for root, (rel, syms) in PROBE_SYMBOLS.items():
-        # Map the configured default root to the actual passed-in root.
-        actual = mf if root == DEFAULT_MESHFORGE else ma
-        label = "meshforge" if root == DEFAULT_MESHFORGE else "meshanchor"
-        txt = _read(os.path.join(actual, rel))
-        if txt is None:
-            print(f"  [MISSING] {label}:{rel}")
-            missing = True
-            continue
-        for sym in syms:
-            if sym in txt:
-                print(f"  [OK     ] {label}:{rel} :: {sym}")
-            else:
-                print(f"  [MISSING] {label}:{rel} :: {sym}")
-                drift = True
+    seen_sections = set()
+    for f in findings:
+        # byte + forkpin render under the byte header; print headers once.
+        header_key = "byte" if f.section == "forkpin" else f.section
+        if header_key not in seen_sections:
+            print(_SECTION_HEADER[header_key])
+            seen_sections.add(header_key)
+        suffix = f"  {f.detail}" if f.detail else ""
+        print(f"  [{_TAG[f.status]}] {f.label}{suffix}")
 
     print()
-    if missing:
+    if overall == "missing":
         print("RESULT: MISSING files/symbols — cannot fully compare.")
         return 2
-    if drift:
+    if overall == "drift":
         print("RESULT: DRIFT — port the flagged changes (MeshForge is the lead repo).")
         return 1
     print("RESULT: in sync.")

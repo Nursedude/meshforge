@@ -50,6 +50,7 @@ from utils.watchdog_probes import (
     probe_delivery_write_canary,
     probe_fd_exhaustion,
     probe_foundation_drift,
+    probe_parity_drift,
     probe_http_local,
     probe_lxmf_process_wedge,
     probe_main_thread_wedge,
@@ -285,6 +286,13 @@ def run_all_probes(
         sig = probe_foundation_drift()
         if sig is not None:
             signals.append(sig)
+
+    # MeshForge<->MeshAnchor parity drift — self-guards on /opt/meshanchor being
+    # present (only the box holding both repos checks; MeshForge-only boxes no-op).
+    # Maintenance-hygiene signal so a forgotten port surfaces in the mini rollup.
+    sig = probe_parity_drift()
+    if sig is not None:
+        signals.append(sig)
 
     # Delivery write canary — reads gateway's self-reported health.
     sig = probe_delivery_write_canary(port=http_port)

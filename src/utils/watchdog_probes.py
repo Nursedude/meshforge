@@ -65,6 +65,7 @@ SIGNAL_CLASSES = (
     "rns_rpc_unresponsive",  # 2026-05-30: rnsd RPC wedged — rnstatus hangs though socket accepts (#68/#69)
     "fd_exhaustion",  # Issue #73 (2026-05-31): open fds approaching soft RLIMIT_NOFILE — fires BEFORE the wedge
     "foundation_perms_drift",  # 2026-06-01: born-correct permission foundation drifted (mf.4/#73) — non-root rnsd can't write its RNS tree
+    "parity_drift",  # 2026-06-01: MeshForge<->MeshAnchor RNS-reliability parity diverged (lead-repo port debt)
 )
 
 SEVERITIES = ("info", "degraded", "wedge")
@@ -900,6 +901,71 @@ def probe_foundation_drift(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Probe: MeshForge <-> MeshAnchor parity drift (lead-repo port debt)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def probe_parity_drift(
+    *,
+    meshforge_root: str = "/opt/meshforge",
+    meshanchor_root: str = "/opt/meshanchor",
+    check_fn=None,
+) -> Optional[Signal]:
+    """Surface MeshForge<->MeshAnchor RNS-reliability parity drift.
+
+    The two sister NOCs share the fleet's RNS substrate; reliability-critical files
+    (the RNS-init chokepoint, the bridge contract, the rns_tree_perms SSOT, the
+    fork-pin, lint MF009/MF019, the wedge probes) must stay in lockstep —
+    ``scripts/parity_check.py`` is the lead-repo gate. This makes that audit a
+    continuously-monitored signal so a divergence (someone edits one repo and
+    forgets to port) self-surfaces in /fleet + the mini deep-rollup instead of
+    rotting until the next manual run.
+
+    Only meaningful where BOTH repos are present (e.g. the box holding the
+    MeshAnchor clone). Returns None when ``meshanchor_root`` isn't a directory (a
+    MeshForge-only fleet box — not applicable), when the parity tool can't be
+    loaded, when everything's in sync, or when the result is merely ``missing`` (a
+    tracked file absent — indeterminate / possible mid-deploy window, don't
+    false-alarm). Fires ``degraded`` only on definite content ``drift`` — nothing is
+    failing at runtime; the fix is to port the flagged change (MeshForge leads).
+    """
+    if not os.path.isdir(meshanchor_root):
+        return None  # both repos required; MeshForge-only box → not applicable
+    if check_fn is None:
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "parity_check",
+                os.path.join(meshforge_root, "scripts", "parity_check.py"),
+            )
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            check_fn = mod.check_parity
+        except Exception:
+            return None  # parity tool unavailable → indeterminate, don't alarm
+    try:
+        findings, overall = check_fn(meshforge_root, meshanchor_root)
+    except Exception:
+        return None
+    if overall != "drift":
+        return None
+    drifted = [f for f in findings if getattr(f, "status", None) == "drift"]
+    items = ", ".join(f.label for f in drifted) or "?"
+    detail = (
+        f"MeshForge<->MeshAnchor parity drift ({len(drifted)} item(s)): {items} | "
+        f"RNS-reliability files must match (MeshForge is the lead repo). Port the "
+        f"change, then verify: python3 scripts/parity_check.py"
+    )
+    return Signal(
+        cls="parity_drift",
+        subject="meshforge<->meshanchor",
+        severity="degraded",
+        detail=detail,
+        extra={"drift_items": [f.label for f in drifted]},
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Probe: delivery counters write canary (Issue #63)
 # ─────────────────────────────────────────────────────────────────────
 
@@ -1238,6 +1304,7 @@ __all__ = [
     "probe_http_local",
     "probe_fd_exhaustion",
     "probe_foundation_drift",
+    "probe_parity_drift",
     "probe_delivery_write_canary",
     "probe_service_inactive",
     "probe_tracer_peer_unreachable",
