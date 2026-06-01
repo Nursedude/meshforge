@@ -1,5 +1,5 @@
 {
-  "_comment": "mini-dudeai FEDERATOR seed — the primary/manager box (the one that runs the :5000 federator + situation digest). Runs watchdog + federation + digest sources (MINI_DUDEAI_ENABLE_FEDERATION/_ENABLE_DIGEST default on); gateway boxes use mini_dudeai_rules.fleet_gateway.json instead (watchdog-only). Per-box file at ~/mini_dudeai_rules.json; the daemon promotes ~/mini_dudeai_rules.json.candidate over it on the next tick. Repo canonical for backup + re-deploy parity with the gateway seed (closes the federator repo-parity gap, 2026-05-31).",
+  "_comment": "mini-dudeai FEDERATOR seed \u2014 the primary/manager box (the one that runs the :5000 federator + situation digest). Runs watchdog + federation + digest sources (MINI_DUDEAI_ENABLE_FEDERATION/_ENABLE_DIGEST default on); gateway boxes use mini_dudeai_rules.fleet_gateway.json instead (watchdog-only). Per-box file at ~/mini_dudeai_rules.json; the daemon promotes ~/mini_dudeai_rules.json.candidate over it on the next tick. Repo canonical for backup + re-deploy parity with the gateway seed (closes the federator repo-parity gap, 2026-05-31).",
   "rules": [
     {
       "id": "rns_namespace_collision_any",
@@ -19,7 +19,7 @@
         ]
       },
       "cooldown_s": 1800,
-      "annotation": "Issue #69 — foreign daemon hijacked @rns/<instance>. Recovery: stop the foreign daemon, restart rnsd, restart RNS-using services."
+      "annotation": "Issue #69 \u2014 foreign daemon hijacked @rns/<instance>. Recovery: stop the foreign daemon, restart rnsd, restart RNS-using services."
     },
     {
       "id": "main_thread_wedge_any",
@@ -39,7 +39,7 @@
         ]
       },
       "cooldown_s": 1800,
-      "annotation": "Issue #68 — main thread silent-stuck in syscall while background threads keep logging. Check /proc/PID/task/PID/stack."
+      "annotation": "Issue #68 \u2014 main thread silent-stuck in syscall while background threads keep logging. Check /proc/PID/task/PID/stack."
     },
     {
       "id": "http_local_unresponsive_any",
@@ -58,7 +58,7 @@
         ]
       },
       "cooldown_s": 1800,
-      "annotation": "Issue #61 / #70 / #71 class — GIL-bound serialization or socketserver deadlock. Check cache hit-rates at /api/status.{directory,geojson,topology}.cache."
+      "annotation": "Issue #61 / #70 / #71 class \u2014 GIL-bound serialization or socketserver deadlock. Check cache hit-rates at /api/status.{directory,geojson,topology}.cache."
     },
     {
       "id": "delivery_write_canary_any",
@@ -77,7 +77,7 @@
         ]
       },
       "cooldown_s": 1800,
-      "annotation": "Issue #63 — write-path silent failure (sandbox path drift). Audit ReadWritePaths= against actual write sites."
+      "annotation": "Issue #63 \u2014 write-path silent failure (sandbox path drift). Audit ReadWritePaths= against actual write sites."
     },
     {
       "id": "service_inactive_any",
@@ -145,7 +145,7 @@
         "kind": "annotate_digest"
       },
       "cooldown_s": 86400,
-      "annotation": "moc3 is gateway-only; permanent federation backoff is EXPECTED. Annotates digest only — no ntfy. Catch-all unexpected-peer rule deferred to post-soak (needs subject_exclude_globs support to not re-fire moc3)."
+      "annotation": "moc3 is gateway-only; permanent federation backoff is EXPECTED. Annotates digest only \u2014 no ntfy. Catch-all unexpected-peer rule deferred to post-soak (needs subject_exclude_globs support to not re-fire moc3)."
     },
     {
       "id": "federation_peer_unhealthy_unexpected",
@@ -160,7 +160,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 1800,
-      "annotation": "B2 (2026-05-28): unexpected unhealthy federation peer; subject_exclude_globs skips moc3 (handled by moc3_federation_backoff_known_normal). Side-effect-free escalation -> history for the cloud session to chase; NO ntfy page. Per-box pattern (2026-05-31): operator boxes may add a local *_federation_known_normal rule (annotate_digest) plus a matching subject_exclude_globs entry for a KNOWN cross-project peer that surfaces as a bare IP (peer_name=null) — e.g. the MeshAnchor host meshanchor-server. Such rules live in that box's own ~/mini_dudeai_rules.json because the addresses are operator-specific (MF014); they are deliberately NOT in this repo seed."
+      "annotation": "B2 (2026-05-28): unexpected unhealthy federation peer; subject_exclude_globs skips moc3 (handled by moc3_federation_backoff_known_normal). Side-effect-free escalation -> history for the cloud session to chase; NO ntfy page. Per-box pattern (2026-05-31): operator boxes may add a local *_federation_known_normal rule (annotate_digest) plus a matching subject_exclude_globs entry for a KNOWN cross-project peer that surfaces as a bare IP (peer_name=null) \u2014 e.g. the MeshAnchor host meshanchor-server. Such rules live in that box's own ~/mini_dudeai_rules.json because the addresses are operator-specific (MF014); they are deliberately NOT in this repo seed."
     },
     {
       "id": "digest_stale_30m",
@@ -195,7 +195,7 @@
         ]
       },
       "cooldown_s": 3600,
-      "annotation": "watchdog.json unreadable — meshforge-watchdog.service may be down."
+      "annotation": "watchdog.json unreadable \u2014 meshforge-watchdog.service may be down."
     },
     {
       "id": "source_error_federator",
@@ -213,7 +213,7 @@
         ]
       },
       "cooldown_s": 3600,
-      "annotation": "/api/status unreachable — meshforge-map.service may be down (see Issue #68 detection recipe). grace_s=90 debounces our own meshforge-map restart blips (~30s, self-clearing); a real >90s federator outage still pages.",
+      "annotation": "/api/status unreachable \u2014 meshforge-map.service may be down (see Issue #68 detection recipe). grace_s=90 debounces our own meshforge-map restart blips (~30s, self-clearing); a real >90s federator outage still pages.",
       "grace_s": 90
     },
     {
@@ -227,7 +227,46 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 1800,
-      "annotation": "Issue #69 — foreign daemon owns @rns/<instance> (often lab.lxmf_tracer winning the @rns race during an rnsd cycle); the box's RNS is broken until reclaimed. Recovery: stop the foreign daemon, `sudo systemctl restart rnsd.service`, restart RNS-using services. Verify owner is rnsd: `sudo ss -xnpl | grep @rns/`. Companion to the ntfy page rns_namespace_collision_any — surfaces it in the deep-feed/brief 'look here first'."
+      "annotation": "Issue #69 \u2014 foreign daemon owns @rns/<instance> (often lab.lxmf_tracer winning the @rns race during an rnsd cycle); the box's RNS is broken until reclaimed. Recovery: stop the foreign daemon, `sudo systemctl restart rnsd.service`, restart RNS-using services. Verify owner is rnsd: `sudo ss -xnpl | grep @rns/`. Companion to the ntfy page rns_namespace_collision_any \u2014 surfaces it in the deep-feed/brief 'look here first'."
+    },
+    {
+      "id": "foundation_perms_drift_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "foundation_perms_drift",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 1800,
+      "annotation": "2026-06-01: born-correct permission foundation drifted (mf.4/#73) \u2014 /etc/reticulum perms wrong for the non-root rnsd; latent (works until the next logfile rotation, then RNS.log() fails every write). Fix: sudo scripts/fleet_foundation.py apply (no restart). Side-effect-free escalation -> brief/deep-rollup; NO ntfy page (degraded, not an active outage)."
+    },
+    {
+      "id": "parity_drift_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "parity_drift",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 1800,
+      "annotation": "2026-06-01: MeshForge<->MeshAnchor RNS-reliability parity drift (lead-repo port debt). Only fires where /opt/meshanchor is present (the box holding both repos). Fix: port the flagged change, verify python3 scripts/parity_check.py. Side-effect-free escalation; NO ntfy page."
+    },
+    {
+      "id": "rns_version_drift_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "rns_version_drift",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 1800,
+      "annotation": "2026-06-01: installed rns/lxmf off the +mf.N fork pin (box missed a fork roll). Fix: reviewed pip install --force-reinstall -r requirements/rns.txt, then verify rnsd. Side-effect-free escalation; NO ntfy page."
     }
   ]
 }

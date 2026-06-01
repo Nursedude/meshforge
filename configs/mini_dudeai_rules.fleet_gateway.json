@@ -165,6 +165,45 @@
       },
       "cooldown_s": 3600,
       "annotation": "watchdog.json unreadable \u2014 meshforge-watchdog.service may be down."
+    },
+    {
+      "id": "foundation_perms_drift_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "foundation_perms_drift",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 1800,
+      "annotation": "2026-06-01: born-correct permission foundation drifted (mf.4/#73) \u2014 /etc/reticulum perms wrong for the non-root rnsd; latent (works until the next logfile rotation, then RNS.log() fails every write). Fix: sudo scripts/fleet_foundation.py apply (no restart). Side-effect-free escalation -> brief/deep-rollup; NO ntfy page (degraded, not an active outage)."
+    },
+    {
+      "id": "parity_drift_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "parity_drift",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 1800,
+      "annotation": "2026-06-01: MeshForge<->MeshAnchor RNS-reliability parity drift (lead-repo port debt). Only fires where /opt/meshanchor is present (the box holding both repos). Fix: port the flagged change, verify python3 scripts/parity_check.py. Side-effect-free escalation; NO ntfy page."
+    },
+    {
+      "id": "rns_version_drift_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "rns_version_drift",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 1800,
+      "annotation": "2026-06-01: installed rns/lxmf off the +mf.N fork pin (box missed a fork roll). Fix: reviewed pip install --force-reinstall -r requirements/rns.txt, then verify rnsd. Side-effect-free escalation; NO ntfy page."
     }
   ]
 }
