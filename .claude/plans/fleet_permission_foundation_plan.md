@@ -11,6 +11,42 @@
 
 ---
 
+## ✅ DECISIONS RATIFIED — meeting 2026-06-01 (WH6GXZ + Dude AI)
+
+| # | Decision | Outcome |
+|---|----------|---------|
+| **D2** | Gateway hardware access | **Non-issue (evidence).** Serial devices are `root:dialout` (even 666); operator user `wh6gxz` is already in `dialout`/`plugdev`/`gpio`/`i2c`/`spi`; **no service binds a privileged port**. Non-root opens the hardware with zero extra grants. |
+| **D1** | Canonical service-user model | **Non-root operator user (`wh6gxz`) everywhere**, gateways included. moc3 + meshanchor-server are convergence targets. |
+| **D3** | Who establishes the foundation | **One SSOT** (service user + configdir/logfile/storage ownership+mode), applied **at birth** (`install_noc.sh`) **and at converge** (provisioner + `rns_alignment`). **Retire `_fix_rnsd_user`'s bespoke logic** → call the SSOT. The `rns_alignment` canonical layout is the SSOT seed. |
+| **D4** | Standalone variant | **A topology *profile* of the one SSOT** (`fleet` vs `standalone`), not a fork. SSOT takes a topology parameter from the start. |
+| **D5** | Convergence sequence | **Prove on meshanchor-server canary, then codify.** ✅ Canary DONE (below). Then codify SSOT → converge moc3 → bake into installer. |
+
+### Canary result — meshanchor-server converged to non-root (2026-06-01) ✅
+Full converge executed live: stopped (clients→host), chowned data + RNS tree to
+`wh6gxz` (`/etc/reticulum` root:wh6gxz 1775; `~/.local/share`, `~/.config`,
+**`~/.cache`** /meshanchor; `/opt/meshanchor`), `User=wh6gxz` drop-ins on rnsd +
+daemon + map, ordered restart. **Result:** all 3 services active as `wh6gxz`; rnsd
+owns `@rns` (no #69); daemon opens `/dev/ttyACM0` as non-root → **MeshCore bridge +
+LXMF discovery healthy**; map :5000=200; 0 permission errors; 0 root-owned data left.
+**The non-root model is proven end-to-end on a real hardware gateway.**
+> Lesson for the SSOT: the converge had to chown **four** data roots
+> (`/opt/meshanchor`, `~/.local/share`, `~/.config`, **`~/.cache`/meshanchor`) +
+> the RNS tree. The `.cache` dir was missed on the first pass and the acceptance
+> test (a live `Permission denied` on `traffic.log`) caught it — the SSOT's
+> data-root list must be **complete**, and converge must verify-by-running.
+
+### Post-meeting implementation (next session)
+1. **Extract the SSOT** — one definition of the foundation (user + the full data-root
+   list above + RNS tree layout), topology-parameterized (`fleet`/`standalone`).
+2. **Bake into `install_noc.sh`** (born-correct) + add to the **provisioner** converge
+   set; **retire `_fix_rnsd_user`** as a correctness path.
+3. **Converge moc3** to `wh6gxz` using the SSOT (it's a gateway w/ RNode on
+   `/dev/ttyUSB0`; same acceptance test — RNode + bridge after).
+4. Record the canonical model in `docs/fleet_roles.yaml` as SSOT; `rns_alignment
+   audit --fleet` clean = parity achieved.
+
+---
+
 ## Why now
 
 The mf.4 hang's *trigger* was a permissions defect: moc1/moc2 ran rnsd as
