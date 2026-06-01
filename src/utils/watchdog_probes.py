@@ -905,12 +905,45 @@ def probe_foundation_drift(
 # Probe: MeshForge <-> MeshAnchor parity drift (lead-repo port debt)
 # ─────────────────────────────────────────────────────────────────────
 
+DEFAULT_PARITY_DEBOUNCE_PATH = "/var/lib/meshforge/parity_debounce.json"
+
+
+def _load_parity_streak(state_path: str) -> int:
+    """Read the consecutive-drift streak counter. Best-effort: any error → 0.
+
+    A missing/unreadable/garbage state means 'no confirmed streak yet', which
+    suppresses a first-seen drift — exactly the conservative direction the
+    debounce wants (favour silence on uncertainty, not a false page).
+    """
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            streak = int(json.load(fh).get("streak", 0))
+        return streak if streak >= 0 else 0
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
+def _save_parity_streak(state_path: str, streak: int) -> None:
+    """Persist the streak counter (atomic-rename, never raises)."""
+    try:
+        parent = os.path.dirname(state_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = state_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
+        os.replace(tmp, state_path)
+    except OSError:
+        pass
+
 
 def probe_parity_drift(
     *,
     meshforge_root: str = "/opt/meshforge",
     meshanchor_root: str = "/opt/meshanchor",
     check_fn=None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
 ) -> Optional[Signal]:
     """Surface MeshForge<->MeshAnchor RNS-reliability parity drift.
 
@@ -929,9 +962,21 @@ def probe_parity_drift(
     tracked file absent — indeterminate / possible mid-deploy window, don't
     false-alarm). Fires ``degraded`` only on definite content ``drift`` — nothing is
     failing at runtime; the fix is to port the flagged change (MeshForge leads).
+
+    **Debounce**: a drift must persist for ``debounce_ticks`` *consecutive* ticks
+    before firing (default 2). The two repos sync seconds apart during a fleet
+    roll, so a single tick can catch one repo mid-update and see a transient
+    divergence that self-heals before the next tick — the 2026-06-01
+    ``rns_tree_perms.py`` SSOT-port race did exactly this. A consecutive-drift
+    streak (persisted to ``state_path``, default
+    ``/var/lib/meshforge/parity_debounce.json``) rides out those in-flight blips
+    while still surfacing a genuine forgotten port within one extra tick. Any
+    non-drift result (in_sync / missing / tool error) resets the streak.
     """
     if not os.path.isdir(meshanchor_root):
         return None  # both repos required; MeshForge-only box → not applicable
+    if state_path is None:
+        state_path = DEFAULT_PARITY_DEBOUNCE_PATH
     if check_fn is None:
         try:
             import importlib.util
@@ -947,22 +992,32 @@ def probe_parity_drift(
     try:
         findings, overall = check_fn(meshforge_root, meshanchor_root)
     except Exception:
+        # Indeterminate — don't let a tool error count toward the streak.
+        _save_parity_streak(state_path, 0)
         return None
     if overall != "drift":
+        _save_parity_streak(state_path, 0)  # in_sync / missing → streak broken
         return None
+
+    streak = _load_parity_streak(state_path) + 1
+    _save_parity_streak(state_path, streak)
+    if streak < debounce_ticks:
+        return None  # drift seen, but not yet confirmed across consecutive ticks
+
     drifted = [f for f in findings if getattr(f, "status", None) == "drift"]
     items = ", ".join(f.label for f in drifted) or "?"
     detail = (
         f"MeshForge<->MeshAnchor parity drift ({len(drifted)} item(s)): {items} | "
-        f"RNS-reliability files must match (MeshForge is the lead repo). Port the "
-        f"change, then verify: python3 scripts/parity_check.py"
+        f"confirmed over {streak} consecutive ticks | RNS-reliability files must "
+        f"match (MeshForge is the lead repo). Port the change, then verify: "
+        f"python3 scripts/parity_check.py"
     )
     return Signal(
         cls="parity_drift",
         subject="meshforge<->meshanchor",
         severity="degraded",
         detail=detail,
-        extra={"drift_items": [f.label for f in drifted]},
+        extra={"drift_items": [f.label for f in drifted], "debounce_streak": streak},
     )
 
 

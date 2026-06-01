@@ -1018,39 +1018,88 @@ def test_parity_drift_none_when_meshanchor_absent(tmp_path):
 
 
 def test_parity_drift_fires_on_drift(tmp_path):
+    """Drift confirmed over two consecutive ticks fires the Signal."""
     findings = [_pf("ok", "src/utils/rns_init.py"),
                 _pf("drift", "src/utils/rns_tree_perms.py")]
+    state = str(tmp_path / "debounce.json")
+    drift = lambda mf, ma: (findings, "drift")  # noqa: E731
+    # Tick 1: drift seen but debounced (streak 1 < 2) → no Signal yet.
+    assert probe_parity_drift(
+        meshanchor_root=str(tmp_path), check_fn=drift, state_path=state) is None
+    # Tick 2: drift persists → confirmed, fires.
     sig = probe_parity_drift(
-        meshanchor_root=str(tmp_path),
-        check_fn=lambda mf, ma: (findings, "drift"))
+        meshanchor_root=str(tmp_path), check_fn=drift, state_path=state)
     assert sig is not None
     assert sig.cls == "parity_drift"
     assert sig.severity == "degraded"
     assert sig.subject == "meshforge<->meshanchor"
     assert "rns_tree_perms.py" in sig.detail
     assert sig.extra["drift_items"] == ["src/utils/rns_tree_perms.py"]
+    assert sig.extra["debounce_streak"] == 2
+
+
+def test_parity_drift_debounced_on_single_tick(tmp_path):
+    """A lone drift tick (the fleet-roll deploy-window race) does NOT fire —
+    this is the 2026-06-01 rns_tree_perms.py SSOT-port self-heal case."""
+    findings = [_pf("drift", "src/utils/rns_tree_perms.py")]
+    sig = probe_parity_drift(
+        meshanchor_root=str(tmp_path),
+        check_fn=lambda mf, ma: (findings, "drift"),
+        state_path=str(tmp_path / "debounce.json"))
+    assert sig is None
+
+
+def test_parity_drift_streak_resets_on_self_heal(tmp_path):
+    """drift → in_sync → drift must restart the streak: a single drift tick after a
+    heal is again debounced, NOT immediately fired off the prior streak."""
+    findings = [_pf("drift", "src/utils/rns_tree_perms.py")]
+    state = str(tmp_path / "debounce.json")
+    drift = lambda mf, ma: (findings, "drift")  # noqa: E731
+    healed = lambda mf, ma: ([_pf("ok", "x")], "in_sync")  # noqa: E731
+    assert probe_parity_drift(meshanchor_root=str(tmp_path), check_fn=drift,
+                              state_path=state) is None  # streak 1
+    assert probe_parity_drift(meshanchor_root=str(tmp_path), check_fn=healed,
+                              state_path=state) is None  # reset to 0
+    # Lone drift after heal → debounced again (proves the heal reset the counter).
+    assert probe_parity_drift(meshanchor_root=str(tmp_path), check_fn=drift,
+                              state_path=state) is None
+
+
+def test_parity_drift_debounce_ticks_one_fires_immediately(tmp_path):
+    """debounce_ticks=1 restores fire-on-first-drift (escape hatch / backward shape)."""
+    findings = [_pf("drift", "src/utils/rns_tree_perms.py")]
+    sig = probe_parity_drift(
+        meshanchor_root=str(tmp_path),
+        check_fn=lambda mf, ma: (findings, "drift"),
+        state_path=str(tmp_path / "debounce.json"),
+        debounce_ticks=1)
+    assert sig is not None
+    assert sig.extra["debounce_streak"] == 1
 
 
 def test_parity_drift_none_when_in_sync(tmp_path):
     sig = probe_parity_drift(
         meshanchor_root=str(tmp_path),
-        check_fn=lambda mf, ma: ([_pf("ok", "x")], "in_sync"))
+        check_fn=lambda mf, ma: ([_pf("ok", "x")], "in_sync"),
+        state_path=str(tmp_path / "debounce.json"))
     assert sig is None
 
 
 def test_parity_drift_none_when_missing_is_indeterminate(tmp_path):
     """A tracked file merely absent (overall 'missing') → indeterminate (possible
-    mid-deploy window), not a drift alarm."""
+    mid-deploy window), not a drift alarm; also breaks the debounce streak."""
     sig = probe_parity_drift(
         meshanchor_root=str(tmp_path),
-        check_fn=lambda mf, ma: ([_pf("missing", "x")], "missing"))
+        check_fn=lambda mf, ma: ([_pf("missing", "x")], "missing"),
+        state_path=str(tmp_path / "debounce.json"))
     assert sig is None
 
 
 def test_parity_drift_none_when_check_raises(tmp_path):
     def boom(mf, ma):
         raise RuntimeError("parity tool blew up")
-    assert probe_parity_drift(meshanchor_root=str(tmp_path), check_fn=boom) is None
+    assert probe_parity_drift(meshanchor_root=str(tmp_path), check_fn=boom,
+                              state_path=str(tmp_path / "debounce.json")) is None
 
 
 # ─────────────────────────────────────────────────────────────────────
