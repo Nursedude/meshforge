@@ -35,15 +35,25 @@ LXMF discovery healthy**; map :5000=200; 0 permission errors; 0 root-owned data 
 > test (a live `Permission denied` on `traffic.log`) caught it — the SSOT's
 > data-root list must be **complete**, and converge must verify-by-running.
 
-### Post-meeting implementation (next session)
-1. **Extract the SSOT** — one definition of the foundation (user + the full data-root
-   list above + RNS tree layout), topology-parameterized (`fleet`/`standalone`).
-2. **Bake into `install_noc.sh`** (born-correct) + add to the **provisioner** converge
-   set; **retire `_fix_rnsd_user`** as a correctness path.
-3. **Converge moc3** to `wh6gxz` using the SSOT (it's a gateway w/ RNode on
-   `/dev/ttyUSB0`; same acceptance test — RNode + bridge after).
-4. Record the canonical model in `docs/fleet_roles.yaml` as SSOT; `rns_alignment
-   audit --fleet` clean = parity achieved.
+### Post-meeting implementation — ✅ COMPLETE (2026-06-01)
+1. ✅ **Extracted the SSOT** — `src/utils/fleet_foundation.py` (data-roots engine,
+   topology-parameterized) + `src/utils/rns_tree_perms.py` (the app-agnostic RNS-tree
+   perms layout, **byte-identical across MeshForge+MeshAnchor + parity-tracked**). The
+   RNS-tree subset was extracted *out of* `rns_alignment` (which is MeshForge-specific:
+   it carries `/tmp/meshforge_rns_client` rpc_key logic) so MeshAnchor shares the
+   perms definition without dragging MeshForge-only logic — one definition, not two.
+2. ✅ **Baked into `install_noc.sh`** (`e5cd883`, born-correct) + **provisioner**
+   enforces it on every converge (`947dcde`, `foundation_actions()`); `_fix_rnsd_user`
+   bespoke perms retired (`b2c64a5`).
+3. ✅ **moc3 converged** to `wh6gxz` (first session); all 5 MeshForge boxes +
+   meshanchor-server now run non-root and audit clean.
+4. ✅ **Canonical model recorded** in `docs/fleet_roles.yaml` (`57c70aa`, `foundation:`
+   block + `born_correct_permissions` invariant). Parity gate: `fleet_foundation.py
+   audit` clean fleet-wide (achieved). MeshAnchor port: `33abc729`.
+
+> First-run win: the fleet audit caught a latent mf.4 trigger on **moc**
+> (`/etc/reticulum root:root 755`, not group-writable by its non-root rnsd) that the
+> mf.4 session had missed; fixed live via `fleet_foundation.py apply` (no restart).
 
 ---
 
