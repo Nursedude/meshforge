@@ -35,6 +35,7 @@ from utils.watchdog_probes import (  # noqa: E402
     Signal,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
+    probe_foundation_drift,
     probe_http_local,
     probe_lxmf_process_wedge,
     probe_main_thread_wedge,
@@ -76,6 +77,7 @@ def test_signal_classes_closed_enum_is_documented():
         "rns_interface_down_peer_reachable",
         "rns_rpc_unresponsive",
         "fd_exhaustion",
+        "foundation_perms_drift",
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -935,6 +937,64 @@ def test_fd_exhaustion_none_when_soft_limit_unlimited(tmp_path):
         "meshforge-map.service", proc_root=root, main_pid=4242
     )
     assert sig is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-06-01 — foundation_perms_drift (mf.4/#73 perms class)
+# ─────────────────────────────────────────────────────────────────────
+
+from utils.rns_tree_perms import RnsTreePerms  # noqa: E402
+
+
+def _perms(configdir_owner="root:wh6gxz", configdir_mode="1775",
+           logfile_owner="wh6gxz:wh6gxz", logfile_exists=True,
+           rnsd_user="wh6gxz"):
+    return RnsTreePerms(
+        rnsd_user=rnsd_user, configdir_owner=configdir_owner,
+        configdir_mode=configdir_mode, logfile_exists=logfile_exists,
+        logfile_owner=logfile_owner,
+    )
+
+
+def test_foundation_drift_quiet_when_clean():
+    """Canonical non-root layout → no signal."""
+    assert probe_foundation_drift(perms=_perms()) is None
+
+
+def test_foundation_drift_fires_on_root_owned_configdir():
+    """The moc recurrence: re-provision left /etc/reticulum root:root 755 while
+    rnsd runs non-root → degraded signal naming the perms fix."""
+    sig = probe_foundation_drift(perms=_perms(
+        configdir_owner="root:root", configdir_mode="755", logfile_owner="root:root"))
+    assert sig is not None
+    assert sig.cls == "foundation_perms_drift"
+    assert sig.severity == "degraded"      # latent, not wedged now — proactive
+    assert sig.subject == "rnsd"
+    assert sig.issue_ref == 73
+    assert "fleet_foundation.py apply" in sig.detail
+    assert sig.extra["configdir_owner"] == "root:root"
+    assert sig.extra["rnsd_user"] == "wh6gxz"
+
+
+def test_foundation_drift_none_when_rnsd_is_root():
+    """A root rnsd writes anything — root:root tree is fine for it → None."""
+    assert probe_foundation_drift(perms=_perms(
+        configdir_owner="root:root", configdir_mode="755",
+        logfile_owner="root:root", rnsd_user="root")) is None
+
+
+def test_foundation_drift_none_when_perms_unprobed():
+    """configdir_owner None (inaccessible/not probed) → never guess → None."""
+    assert probe_foundation_drift(perms=_perms(
+        configdir_owner=None, configdir_mode=None,
+        logfile_owner=None, logfile_exists=False)) is None
+
+
+def test_foundation_drift_logfile_owner_mismatch_fires():
+    """Good dir but logfile owned by root while rnsd is non-root → degraded."""
+    sig = probe_foundation_drift(perms=_perms(logfile_owner="root:root"))
+    assert sig is not None and sig.severity == "degraded"
+    assert "logfile is owned by" in sig.detail
 
 
 # ─────────────────────────────────────────────────────────────────────

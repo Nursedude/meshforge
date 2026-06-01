@@ -49,6 +49,7 @@ from utils.watchdog_probes import (
     Signal,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
+    probe_foundation_drift,
     probe_http_local,
     probe_lxmf_process_wedge,
     probe_main_thread_wedge,
@@ -272,6 +273,16 @@ def run_all_probes(
         # climbing toward the soft RLIMIT_NOFILE *before* it starves
         # accept() and wedges :5000. Read-only /proc walk, root only.
         sig = probe_fd_exhaustion("meshforge-map.service")
+        if sig is not None:
+            signals.append(sig)
+
+    # Permission-foundation drift (mf.4/#73 perms class) — only meaningful on a
+    # box that runs rnsd. Derives the rnsd user from its unit, so it's correct in
+    # this root context; surfaces a re-provision that recreated /etc/reticulum
+    # root:root while rnsd is non-root (the moc1/moc2/moc recurrence) before the
+    # next logfile rotation wedges RNS.log(). Cheap: one sudo stat of the tree.
+    if "rnsd.service" in services_expected_active:
+        sig = probe_foundation_drift()
         if sig is not None:
             signals.append(sig)
 

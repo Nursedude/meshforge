@@ -64,6 +64,7 @@ SIGNAL_CLASSES = (
     "rns_interface_down_peer_reachable",  # 2026-05-30: stuck TCPInterface Down, peer reachable
     "rns_rpc_unresponsive",  # 2026-05-30: rnsd RPC wedged — rnstatus hangs though socket accepts (#68/#69)
     "fd_exhaustion",  # Issue #73 (2026-05-31): open fds approaching soft RLIMIT_NOFILE — fires BEFORE the wedge
+    "foundation_perms_drift",  # 2026-06-01: born-correct permission foundation drifted (mf.4/#73) — non-root rnsd can't write its RNS tree
 )
 
 SEVERITIES = ("info", "degraded", "wedge")
@@ -832,6 +833,73 @@ def probe_fd_exhaustion(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Probe: permission-foundation drift (mf.4 / Issue #73 perms class)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def probe_foundation_drift(
+    *,
+    perms=None,
+) -> Optional[Signal]:
+    """Surface a born-correct permission-foundation drift in the RNS config tree.
+
+    The foundation SSOT (utils.fleet_foundation + the shared utils.rns_tree_perms)
+    declares that a non-root rnsd must own/be-able-to-write its ``/etc/reticulum``
+    tree (configdir ``root:<rnsd_user> 1775``, logfile/storage ``<rnsd_user>``). A
+    re-provision that recreates the tree ``root:root`` while rnsd runs non-root is
+    the recurrence path (moc1/moc2/moc, 2026-06-01) — every ``RNS.log()`` write then
+    fails, which self-deadlocked the daemon pre-fork-mf.4 and loses all logs after.
+    The fleet caught moc this way *manually* on the first audit; this probe makes it
+    a continuously-monitored signal that flows to /fleet + the mini deep-rollup, so a
+    drifted box self-surfaces instead of waiting for a hand-run audit.
+
+    Scope: this checks the **RNS-tree perms** leg only — it derives the rnsd user
+    from rnsd's own systemd unit (``probe_rns_tree_perms``), so it is correct no
+    matter which user the watchdog runs as (it runs as root, where
+    ``get_real_username`` would mislead). The **data-roots** leg of the foundation
+    (operator-user-owned ``~/.config`` etc.) depends on the operator identity and is
+    owned by the explicit, operator-run ``scripts/fleet_foundation.py audit`` /
+    provisioner, not this root-context probe.
+
+    Severity is ``degraded`` (not ``wedge``): a drifted box typically still serves —
+    it is one logfile rotation from the wedge — and the fix is perms-only with no
+    restart. Returns None when the foundation is clean, when rnsd runs as root
+    (root writes anything), when the perms weren't probed (indeterminate — never
+    guess), or when the foundation modules can't be imported.
+    """
+    try:
+        from utils.rns_tree_perms import logfile_perms_drift, probe_rns_tree_perms
+    except Exception:
+        return None  # foundation tooling absent — indeterminate, don't false-alarm
+    if perms is None:
+        try:
+            perms = probe_rns_tree_perms()
+        except Exception:
+            return None
+    reason = logfile_perms_drift(perms)
+    if not reason:
+        return None
+    detail = (
+        f"{reason} | born-correct permission foundation drifted (mf.4/#73 perms "
+        f"class). Fix (perms-only, no restart): "
+        f"sudo python3 scripts/fleet_foundation.py apply"
+    )
+    return Signal(
+        cls="foundation_perms_drift",
+        subject="rnsd",
+        severity="degraded",
+        detail=detail,
+        issue_ref=73,
+        extra={
+            "rnsd_user": perms.rnsd_user,
+            "configdir_owner": perms.configdir_owner,
+            "configdir_mode": perms.configdir_mode,
+            "logfile_owner": perms.logfile_owner,
+        },
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Probe: delivery counters write canary (Issue #63)
 # ─────────────────────────────────────────────────────────────────────
 
@@ -1169,6 +1237,7 @@ __all__ = [
     "_tcp_reachable",
     "probe_http_local",
     "probe_fd_exhaustion",
+    "probe_foundation_drift",
     "probe_delivery_write_canary",
     "probe_service_inactive",
     "probe_tracer_peer_unreachable",
