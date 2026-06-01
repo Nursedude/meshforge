@@ -932,6 +932,35 @@ class TestProcessMeshToRNS:
         # One source message → one stats increment, regardless of fan-out count
         assert bridge.stats['messages_mesh_to_rns'] == 1
 
+    def test_meshcore_broadcast_fans_out_to_rns(self, bridge):
+        """MeshCore→RNS broadcast fans out to each default_lxmf_destination too.
+
+        Regression: the MeshCore path (meshcore_bridge_mixin) called send_to_rns
+        with no destination, so MC broadcasts always dropped even with the list
+        configured — a path distinct from the Meshtastic Mesh→RNS one."""
+        from gateway.rns_bridge import BridgedMessage
+        bridge.config.rns.get_lxmf_destinations.return_value = [
+            "522c4ac1d2f9964e03e3782ef5b0224c",
+            "d1df31d352ede66eac819a577da22b75",
+        ]
+        msg = BridgedMessage(
+            source_network="meshcore", source_id="!mc01",
+            destination_id=None, content="mc broadcast", is_broadcast=True,
+        )
+        sent_to = []
+
+        def capture(content, dest_hash=None, title=None, fields=None):
+            sent_to.append(dest_hash)
+            return True
+
+        with patch.object(bridge, 'send_to_rns', side_effect=capture), \
+             patch.object(bridge, 'send_to_meshtastic', return_value=True):
+            bridge._process_meshcore_to_bridge(msg)
+
+        assert len(sent_to) == 2
+        assert bytes.fromhex("522c4ac1d2f9964e03e3782ef5b0224c") in sent_to
+        assert bytes.fromhex("d1df31d352ede66eac819a577da22b75") in sent_to
+
     def test_broadcast_partial_failure_still_counts_as_sent(self, bridge):
         """If at least one recipient succeeds, the bridge counts as delivered."""
         from gateway.rns_bridge import BridgedMessage

@@ -91,18 +91,30 @@ class MeshCoreBridgeMixin:
                         self.stats['errors'] += 1
                     self.health.record_message_failed("meshcore_to_mesh", requeued=False)
 
-            # Route to RNS (only if not via internet — MeshCore is pure radio)
+            # Route to RNS — fan the MeshCore broadcast out to EACH configured
+            # default_lxmf_destination. LXMF is point-to-point (no native broadcast),
+            # so a bare send_to_rns(content) with no destination always dropped; mirror
+            # the Meshtastic Mesh→RNS fan-out (get_lxmf_destinations(), str|list).
             rns_state = self.health.get_subsystem_state("rns")
             if rns_state not in (SubsystemState.DISCONNECTED, SubsystemState.DISABLED):
-                # RNS broadcast requires propagation node, send if available
-                if self.send_to_rns(bridged_content):
-                    logger.info(f"Bridge MC→RNS: {bridged_content[:50]}...")
+                dests = []
+                for hex_str in self.config.rns.get_lxmf_destinations():
+                    try:
+                        dests.append(bytes.fromhex(hex_str))
+                    except ValueError:
+                        logger.warning(f"Invalid default_lxmf_destination hex: {hex_str!r}")
+                sent_count = sum(1 for dh in dests if self.send_to_rns(bridged_content, dh))
+                if sent_count:
+                    if len(dests) > 1:
+                        logger.info(f"Bridge MC→RNS: {sent_count}/{len(dests)} dest(s) — {bridged_content[:50]}...")
+                    else:
+                        logger.info(f"Bridge MC→RNS: {bridged_content[:50]}...")
                     with self._stats_lock:
                         self.stats.setdefault('messages_meshcore_to_rns', 0)
                         self.stats['messages_meshcore_to_rns'] += 1
                     self.health.record_message_sent("meshcore_to_rns")
                 else:
-                    logger.debug("MC→RNS: not sent (no RNS propagation)")
+                    logger.debug("MC→RNS: not delivered (no default_lxmf_destination or unreachable)")
 
         except Exception as e:
             logger.error(f"Error bridging MeshCore→Bridge: {e}")
