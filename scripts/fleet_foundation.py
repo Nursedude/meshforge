@@ -6,10 +6,10 @@ The CLI front-end for ``utils.fleet_foundation`` (the SSOT ratified at the
 install (born-correct), by the provisioner (converge), and by an operator
 in-app — never step outside the app to chase a perms drift.
 
-    fleet_foundation.py audit              # drift table for THIS box; exit 1 if drift
-    fleet_foundation.py apply --dry-run    # show what apply would do, no changes
-    fleet_foundation.py apply              # converge THIS box (sudo)
-    [--user U] [--topology fleet|standalone]
+    fleet_foundation.py audit                      # drift table; exit 1 if drift
+    fleet_foundation.py apply --dry-run            # show actions, no changes
+    fleet_foundation.py apply                      # converge THIS box (sudo)
+    # options go ON the subcommand: `apply --user U --topology fleet|standalone`
 
 Read-only by default. ``apply`` requires explicit invocation (and sudo).
 """
@@ -64,17 +64,30 @@ def cmd_apply(args) -> int:
     return 0
 
 
-def main() -> int:
-    p = argparse.ArgumentParser(description="Audit/apply the permission foundation (SSOT)")
-    p.add_argument('--user', default=None,
-                   help="operator user (default: resolved real user)")
-    p.add_argument('--topology', default='fleet', choices=['fleet', 'standalone'])
-    sub = p.add_subparsers(dest='cmd', required=True)
-    sub.add_parser('audit', help="report foundation drift (exit 1 if any)")
-    ap = sub.add_parser('apply', help="converge this box to the foundation (sudo)")
-    ap.add_argument('--dry-run', action='store_true', help="show actions, change nothing")
+def build_parser() -> argparse.ArgumentParser:
+    # --user/--topology live on a parent parser added to EACH SUBCOMMAND (not the
+    # top level): the canonical form is `audit --user U` / `apply --user U`. Adding
+    # them at both levels makes the subparser default (None) clobber a top-level
+    # value, so options go on the subcommand only. (The original bug was the
+    # reverse — options top-level only — so `apply --user U` errored; caught
+    # dogfooding the moc3 converge.)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument('--user', default=None,
+                        help="operator user (default: resolved real user)")
+    common.add_argument('--topology', default='fleet', choices=['fleet', 'standalone'])
 
-    args = p.parse_args()
+    p = argparse.ArgumentParser(description="Audit/apply the permission foundation (SSOT)")
+    sub = p.add_subparsers(dest='cmd', required=True)
+    sub.add_parser('audit', parents=[common],
+                   help="report foundation drift (exit 1 if any)")
+    ap = sub.add_parser('apply', parents=[common],
+                        help="converge this box to the foundation (sudo)")
+    ap.add_argument('--dry-run', action='store_true', help="show actions, change nothing")
+    return p
+
+
+def main() -> int:
+    args = build_parser().parse_args()
     return {'audit': cmd_audit, 'apply': cmd_apply}[args.cmd](args)
 
 

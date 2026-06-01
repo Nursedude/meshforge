@@ -121,3 +121,37 @@ class TestPlanDataRootFixes:
         # Simulate: first run drifted, second run (post-chown) clean -> empty.
         owner_of_clean = lambda p: "op:op"
         assert plan_data_root_fixes(_spec(), owner_of_clean) == []
+
+
+# ---------- CLI arg parsing (regression: --user must work in either position) --
+
+
+def _load_cli():
+    import importlib.util
+    p = Path(__file__).resolve().parent.parent / "scripts" / "fleet_foundation.py"
+    spec = importlib.util.spec_from_file_location("ff_cli", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestCLIArgOrder:
+    def test_user_after_subcommand(self):
+        # The canonical form, and the one that ERRORED before the fix (options
+        # were top-level only). Must work now.
+        ns = _load_cli().build_parser().parse_args(["apply", "--user", "op"])
+        assert ns.cmd == "apply" and ns.user == "op"
+
+    def test_user_before_subcommand_rejected(self):
+        # Options go on the subcommand; the before-form errors loudly rather than
+        # silently no-op'ing (which was the masking failure mode dogfooding moc3).
+        with pytest.raises(SystemExit):
+            _load_cli().build_parser().parse_args(["--user", "op", "apply"])
+
+    def test_apply_dry_run(self):
+        ns = _load_cli().build_parser().parse_args(["apply", "--user", "op", "--dry-run"])
+        assert ns.dry_run is True
+
+    def test_audit_topology_after(self):
+        ns = _load_cli().build_parser().parse_args(["audit", "--topology", "standalone"])
+        assert ns.cmd == "audit" and ns.topology == "standalone"
