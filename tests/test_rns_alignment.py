@@ -19,6 +19,9 @@ from utils.rns_alignment import (
     CANONICAL_CONFIGDIR,
     ConfigFileFacts,
     RNSAlignmentState,
+    _build_logfile_perms_script,
+    _group_writable,
+    _logfile_perms_drift,
     _parse_nomadnet_unit,
     _read_systemd_unit,
     _resolve_rnsd_configdir,
@@ -473,3 +476,117 @@ class TestReadRpcKeyValueRejectsMalformed:
     def test_returns_none_on_missing_file(self, tmp_path):
         from utils.rns_alignment import _read_rpc_key_value
         assert _read_rpc_key_value(tmp_path / "missing", sudo=False) is None
+
+
+# ---------- logfile-perms guard (mf.4 / Issue #73) ----------
+
+
+def _nonroot_state(configdir_owner='root:wh6gxz', configdir_mode='1775',
+                   logfile_owner='wh6gxz:wh6gxz', logfile_exists=True,
+                   rnsd_user='wh6gxz') -> RNSAlignmentState:
+    """Aligned non-root rnsd state with canonical logfile perms by default."""
+    return RNSAlignmentState(
+        hostname='test',
+        rnsd_active=True,
+        rnsd_user=rnsd_user,
+        rnsd_exec_start='/usr/local/bin/rnsd --config /etc/reticulum --service',
+        rnsd_configdir=CANONICAL_CONFIGDIR,
+        etc_config=ConfigFileFacts(
+            path=Path('/etc/reticulum/config'),
+            exists=True, owner='root:root', has_rpc_key=True,
+        ),
+        configdir_owner=configdir_owner,
+        configdir_mode=configdir_mode,
+        logfile_owner=logfile_owner,
+        logfile_exists=logfile_exists,
+    )
+
+
+class TestGroupWritable:
+    def test_sticky_group_writable(self):
+        assert _group_writable('1775') is True
+
+    def test_not_group_writable(self):
+        assert _group_writable('755') is False
+
+    def test_plain_group_writable(self):
+        assert _group_writable('775') is True
+
+    def test_none_and_garbage(self):
+        assert _group_writable(None) is False
+        assert _group_writable('xyz') is False
+
+
+class TestLogfilePermsGuard:
+    def test_canonical_nonroot_perms_no_drift(self):
+        assert _logfile_perms_drift(_nonroot_state()) is None
+        assert analyze_drift(_nonroot_state()) == []
+
+    def test_configdir_root_owned_flagged(self):
+        # The moc1/moc2 recurrence shape: re-provision left it root:root 755.
+        s = _nonroot_state(configdir_owner='root:root', configdir_mode='755',
+                           logfile_owner='root:root')
+        reason = _logfile_perms_drift(s)
+        assert reason is not None
+        assert 'cannot' in reason and 'wh6gxz' in reason
+        assert any('cannot' in r for r in analyze_drift(s))
+
+    def test_configdir_group_ok_but_not_group_writable_flagged(self):
+        s = _nonroot_state(configdir_mode='755')  # group=wh6gxz but no g+w
+        assert _logfile_perms_drift(s) is not None
+
+    def test_logfile_root_owned_with_good_dir_flagged(self):
+        s = _nonroot_state(logfile_owner='root:root')
+        reason = _logfile_perms_drift(s)
+        assert reason is not None and 'logfile is owned by' in reason
+
+    def test_logfile_absent_with_good_dir_no_drift(self):
+        # No logfile yet, dir writable -> rnsd will create it fine.
+        s = _nonroot_state(logfile_owner=None, logfile_exists=False)
+        assert _logfile_perms_drift(s) is None
+
+    def test_root_rnsd_never_flagged(self):
+        # root rnsd writes anything; root:root configdir is fine for it.
+        s = _nonroot_state(configdir_owner='root:root', configdir_mode='755',
+                           logfile_owner='root:root', rnsd_user='root')
+        assert _logfile_perms_drift(s) is None
+
+    def test_unprobed_perms_never_flagged(self):
+        # configdir_owner None (not probed/inaccessible) -> never guess.
+        s = _nonroot_state(configdir_owner=None, configdir_mode=None,
+                           logfile_owner=None, logfile_exists=False)
+        assert _logfile_perms_drift(s) is None
+
+    def test_weird_username_not_flagged(self):
+        s = _nonroot_state(configdir_owner='root:root', configdir_mode='755',
+                           rnsd_user='bad user;rm')
+        assert _logfile_perms_drift(s) is None
+
+
+class TestLogfilePermsNormalize:
+    def test_plan_includes_perms_fix_when_drifted(self):
+        s = _nonroot_state(configdir_owner='root:root', configdir_mode='755',
+                           logfile_owner='root:root')
+        plan = plan_normalize(s)
+        perms = [a for a in plan if 'writable by wh6gxz' in a.description]
+        assert len(perms) == 1
+        assert perms[0].cmd[:3] == ['sudo', 'bash', '-c']
+
+    def test_perms_fix_does_not_trigger_rnsd_restart(self):
+        # Perms take effect on next write; a perms-ONLY converge must not bounce
+        # rnsd (the description deliberately omits 'rnsd'/'/etc/reticulum'). Check
+        # the command args, not the description (which itself says "no restart").
+        s = _nonroot_state(configdir_owner='root:root', configdir_mode='755',
+                           logfile_owner='root:root')
+        plan = plan_normalize(s)
+        assert not any('restart' in a.cmd for a in plan)
+        assert not any('daemon-reload' in a.cmd for a in plan)
+
+    def test_canonical_perms_yield_empty_plan(self):
+        assert plan_normalize(_nonroot_state()) == []
+
+    def test_script_sets_canonical_layout(self):
+        script = _build_logfile_perms_script('wh6gxz')
+        assert 'chown root:wh6gxz' in script
+        assert 'chmod 1775' in script
+        assert 'chown wh6gxz:wh6gxz' in script and 'logfile' in script

@@ -647,6 +647,36 @@ class RNSDiagnosticsHandler(BaseHandler):
         except (subprocess.SubprocessError, OSError):
             return None
 
+    def _ensure_rnsd_logfile_writable(self, target_user: str) -> None:
+        """Make /etc/reticulum + its logfile writable by a non-root rnsd user.
+
+        Canonical layout (proven on the federator, matches the rns_alignment
+        normalize guard): configdir ``root:<user>`` mode ``1775`` (group-writable
+        + sticky so the user can create/rotate) and logfile ``<user>:<user>``.
+        The config FILE stays root-owned (operator-managed). ``target_user`` is
+        already validated against the username regex by the caller, so it is
+        safe to interpolate. Best-effort: a perms hiccup must never block the
+        User= fix itself.
+        """
+        configdir = Path('/etc/reticulum')
+        if not configdir.is_dir():
+            return
+        try:
+            subprocess.run(['chown', f'root:{target_user}', str(configdir)],
+                           capture_output=True, timeout=10)
+            subprocess.run(['chmod', '1775', str(configdir)],
+                           capture_output=True, timeout=10)
+            logfile = configdir / 'logfile'
+            if logfile.exists():
+                subprocess.run(
+                    ['chown', f'{target_user}:{target_user}', str(logfile)],
+                    capture_output=True, timeout=10,
+                )
+            logger.info("rnsd logfile perms set writable by %s (mf.4/#73 guard)",
+                        target_user)
+        except (subprocess.SubprocessError, OSError) as e:
+            logger.warning("rnsd logfile perms fix failed (non-fatal): %s", e)
+
     def _fix_rnsd_user(self, target_user: str) -> bool:
         """Configure rnsd systemd service to run as the specified user.
 
@@ -681,6 +711,14 @@ class RNSDiagnosticsHandler(BaseHandler):
                 f"Group={target_user}\n"
             )
             override_file.write_text(override_content)
+
+            # mf.4 / Issue #73 guard: flipping rnsd to a non-root user leaves
+            # /etc/reticulum root-owned, so the daemon cannot create/rotate or
+            # append to its logfile -> RNS.log() fails on every write (self-
+            # deadlock pre-fork-mf.4, lost logs after). Repair perms to the
+            # canonical layout BEFORE the restart so rnsd logs cleanly from the
+            # first line. Companion to the rns_alignment normalize converge guard.
+            self._ensure_rnsd_logfile_writable(target_user)
 
             # Reload systemd and restart rnsd
             stop_service('rnsd')

@@ -62,6 +62,15 @@ class RNSAlignmentState:
     user_home_config: Optional[ConfigFileFacts] = None  # /home/<user>/.reticulum/config
     root_home_config: Optional[ConfigFileFacts] = None  # /root/.reticulum/config
     mfclient_config: Optional[ConfigFileFacts] = None   # /tmp/meshforge_rns_client/config
+    # Logfile writability (mf.4 / Issue #73 guard). A non-root rnsd that cannot
+    # write <configdir>/logfile made RNS.log() self-deadlock on the failed-write
+    # fallback (pre-fork-mf.4) and silently loses logs (post-mf.4). Captured for
+    # the canonical /etc/reticulum so normalize can repair perms a re-provision
+    # left root-owned. None = not probed / inaccessible (never flagged).
+    configdir_owner: Optional[str] = None  # "user:group" of /etc/reticulum
+    configdir_mode: Optional[str] = None   # octal mode string, e.g. "1775"
+    logfile_owner: Optional[str] = None    # "user:group" of /etc/reticulum/logfile
+    logfile_exists: bool = False
     # NomadNet user-unit
     nomadnet_unit_installed: bool = False
     nomadnet_unit_rnsconfig: Optional[Path] = None  # what --rnsconfig points at
@@ -152,6 +161,22 @@ def _stat_owner(path: Path, sudo: bool = False) -> Optional[str]:
             return f"{pwd.getpwuid(st.st_uid).pw_name}:{grp.getgrgid(st.st_gid).gr_name}"
         except KeyError:
             return f"{st.st_uid}:{st.st_gid}"
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _stat_mode(path: Path, sudo: bool = False) -> Optional[str]:
+    """Return the octal mode string (e.g. '1775') for path, or None."""
+    try:
+        if sudo:
+            res = subprocess.run(
+                ['sudo', '-n', 'stat', '-c', '%a', str(path)],
+                capture_output=True, text=True, timeout=5,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+            return None
+        return oct(path.stat().st_mode & 0o7777)[2:]
     except (OSError, subprocess.SubprocessError):
         return None
 
@@ -294,6 +319,21 @@ def probe_local() -> RNSAlignmentState:
         Path('/tmp/meshforge_rns_client/config'),
     )
 
+    # Logfile writability facts for the canonical configdir (mf.4 / #73 guard).
+    cd = CANONICAL_CONFIGDIR
+    state.configdir_owner = _stat_owner(cd, sudo=True)
+    state.configdir_mode = _stat_mode(cd, sudo=True)
+    logfile = cd / 'logfile'
+    try:
+        if subprocess.run(
+            ['sudo', '-n', 'test', '-e', str(logfile)],
+            capture_output=True, timeout=5,
+        ).returncode == 0:
+            state.logfile_exists = True
+            state.logfile_owner = _stat_owner(logfile, sudo=True)
+    except subprocess.SubprocessError:
+        pass
+
     # NomadNet user-unit
     if user_home and user_home != 'root':
         unit_path = Path(f'/home/{user_home}/.config/systemd/user/nomadnet.service')
@@ -416,6 +456,59 @@ def check_gateway_rpc_key_alignment(
 # ----- analyze ---------------------------------------------------------------
 
 
+_USERNAME_RE = re.compile(r'^[a-z_][a-z0-9_-]*$')
+
+
+def _group_writable(mode: Optional[str]) -> bool:
+    """True if an octal mode string (e.g. '1775', '755') grants group-write."""
+    if not mode:
+        return False
+    try:
+        # The group permission digit is always second from the right.
+        return bool(int(mode[-2], 8) & 0o2)
+    except (ValueError, IndexError):
+        return False
+
+
+def _logfile_perms_drift(state: RNSAlignmentState) -> Optional[str]:
+    """mf.4 / Issue #73 guard. A non-root rnsd must be able to create, rotate,
+    and append to its logfile under the canonical configdir, or RNS.log() fails
+    on every write — which self-deadlocked the daemon pre-fork-mf.4 and loses
+    all logs after. A re-provision that recreates /etc/reticulum as root:root is
+    the recurrence path (moc1/moc2, 2026-06-01). Returns a drift reason or None.
+
+    Canonical layout (proven on the federator): configdir root:<rnsd_user> mode
+    1775 (group-writable + sticky so the user can create/rotate), logfile
+    <rnsd_user>:<rnsd_user>. A root-run rnsd needs no fix (root writes anything).
+    Returns None when the perms facts weren't probed (configdir_owner is None) —
+    never guess from absent data.
+    """
+    user = state.rnsd_user
+    if not user or user == 'root' or not _USERNAME_RE.match(user):
+        return None
+    if state.configdir_owner is None:
+        return None  # not probed / inaccessible — don't flag on absent data
+    cd_group = state.configdir_owner.split(':')[-1]
+    if cd_group != user or not _group_writable(state.configdir_mode):
+        return (
+            f"{CANONICAL_CONFIGDIR} is {state.configdir_owner} mode "
+            f"{state.configdir_mode or '?'} but rnsd runs as {user} — it cannot "
+            f"create/rotate its logfile, so RNS.log() fails on every write "
+            f"(mf.4 self-deadlock trigger / lost logs). "
+            f"Fix: chown root:{user} + chmod 1775 {CANONICAL_CONFIGDIR}"
+        )
+    if state.logfile_exists:
+        owner_user = (state.logfile_owner or '').split(':')[0]
+        if owner_user != user:
+            return (
+                f"{CANONICAL_CONFIGDIR}/logfile is owned by "
+                f"{state.logfile_owner or '?'} but rnsd runs as {user} — appends "
+                f"fail (mf.4 self-deadlock trigger / lost logs). "
+                f"Fix: chown {user}:{user} {CANONICAL_CONFIGDIR}/logfile"
+            )
+    return None
+
+
 def analyze_drift(state: RNSAlignmentState) -> List[str]:
     """Return list of human-readable drift reasons. Empty list = aligned."""
     reasons: List[str] = []
@@ -469,6 +562,11 @@ def analyze_drift(state: RNSAlignmentState) -> List[str]:
                 f"{state.user_home_config.path} is owned by {owner} — "
                 f"should be user-owned (chown {home_user}:{home_user})"
             )
+
+    # Logfile writability for a non-root rnsd (mf.4 / Issue #73 guard)
+    logfile_reason = _logfile_perms_drift(state)
+    if logfile_reason:
+        reasons.append(logfile_reason)
 
     return reasons
 
@@ -570,6 +668,23 @@ def plan_normalize(state: RNSAlignmentState) -> List[NormalizeAction]:
             cmd=['sudo', 'rm', '-rf', '/tmp/meshforge_rns_client'],
         ))
 
+    # Step 5b: logfile writability for a non-root rnsd (mf.4 / Issue #73 guard).
+    # A re-provision can recreate the canonical configdir root:root, so a
+    # non-root rnsd can't create/rotate/append its logfile -> RNS.log() fails on
+    # every write (self-deadlock pre-fork-mf.4 / lost logs). Repair to the proven
+    # federator layout. The description deliberately omits "rnsd"/"/etc/reticulum"
+    # so Step 6 does NOT trigger a restart: perms take effect on rnsd's next
+    # logfile open — no bounce needed for a perms-only converge.
+    if _logfile_perms_drift(state):
+        user = state.rnsd_user  # validated as a safe username by the drift check
+        actions.append(NormalizeAction(
+            description=(
+                f"Make the RNS configdir + logfile writable by {user} "
+                f"(chown/chmod; effective on next write, no restart)"
+            ),
+            cmd=['sudo', 'bash', '-c', _build_logfile_perms_script(user)],
+        ))
+
     # Step 6: daemon-reload + restart rnsd if any rnsd-touching change happened
     if any('rnsd' in a.description.lower() or '/etc/reticulum' in a.description
            for a in actions):
@@ -609,6 +724,25 @@ if grep -qE '^\\[reticulum\\]' "$CFG"; then
 else
   printf '\\n[reticulum]\\nrpc_key = %s\\n' '{key}' >> "$CFG"
 fi
+"""
+
+
+def _build_logfile_perms_script(user: str) -> str:
+    """Bash that makes the canonical configdir + logfile writable by a non-root
+    rnsd user, matching the proven federator layout: configdir root:<user> mode
+    1775 (group-writable + sticky so the user can create/rotate), logfile
+    <user>:<user>. The config FILE stays root:root (operator-managed). Idempotent.
+
+    `user` is validated against _USERNAME_RE upstream, so it cannot carry shell
+    metacharacters, but it is only ever placed in already-safe positions.
+    """
+    cd = str(CANONICAL_CONFIGDIR)
+    return f"""
+set -e
+CD={cd}
+chown root:{user} "$CD"
+chmod 1775 "$CD"
+if [ -e "$CD/logfile" ]; then chown {user}:{user} "$CD/logfile"; fi
 """
 
 
