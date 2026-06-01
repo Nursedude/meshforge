@@ -48,6 +48,7 @@ from utils.rns_status_parser import run_rnstatus
 from utils.watchdog_probes import (
     Signal,
     probe_delivery_write_canary,
+    probe_fd_exhaustion,
     probe_http_local,
     probe_lxmf_process_wedge,
     probe_main_thread_wedge,
@@ -263,6 +264,14 @@ def run_all_probes(
             port=http_port,
             path="/healthz",
         )
+        if sig is not None:
+            signals.append(sig)
+
+        # FD-exhaustion probe (Issue #73) — proactive companion to the
+        # http_local wedge probe above. Catches a leaking fd count
+        # climbing toward the soft RLIMIT_NOFILE *before* it starves
+        # accept() and wedges :5000. Read-only /proc walk, root only.
+        sig = probe_fd_exhaustion("meshforge-map.service")
         if sig is not None:
             signals.append(sig)
 

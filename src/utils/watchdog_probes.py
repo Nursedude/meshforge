@@ -63,6 +63,7 @@ SIGNAL_CLASSES = (
     "rns_shared_instance_unresponsive",  # 2026-05-21: rnsd shared-instance hung
     "rns_interface_down_peer_reachable",  # 2026-05-30: stuck TCPInterface Down, peer reachable
     "rns_rpc_unresponsive",  # 2026-05-30: rnsd RPC wedged — rnstatus hangs though socket accepts (#68/#69)
+    "fd_exhaustion",  # Issue #73 (2026-05-31): open fds approaching soft RLIMIT_NOFILE — fires BEFORE the wedge
 )
 
 SEVERITIES = ("info", "degraded", "wedge")
@@ -715,6 +716,122 @@ def probe_http_local(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Probe: file-descriptor exhaustion (Issue #73)
+# ─────────────────────────────────────────────────────────────────────
+
+# Soft RLIMIT_NOFILE line in /proc/<pid>/limits, e.g.:
+#   Max open files            1024                 524288               files
+_LIMITS_NOFILE_RE = re.compile(
+    r"^Max open files\s+(\d+|unlimited)\s+(\d+|unlimited)", re.MULTILINE
+)
+
+
+def _read_fd_usage(
+    pid: int, *, proc_root: str = "/proc",
+) -> Optional[Tuple[int, int]]:
+    """Return ``(open_fd_count, soft_limit)`` for ``pid`` or None.
+
+    Counts entries in ``/proc/<pid>/fd`` and parses the *soft*
+    ``Max open files`` column from ``/proc/<pid>/limits`` — the soft
+    limit is the one a process actually hits ([Errno 24]); the hard
+    limit only caps how high the soft limit can be raised. Returns None
+    on any read failure (process vanished, permission, unlimited soft
+    limit) so an unreadable target never alarms.
+    """
+    fd_dir = Path(proc_root) / str(pid) / "fd"
+    limits_path = Path(proc_root) / str(pid) / "limits"
+    try:
+        open_count = sum(1 for _ in os.scandir(fd_dir))
+    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+        return None
+    try:
+        limits_text = limits_path.read_text()
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+    m = _LIMITS_NOFILE_RE.search(limits_text)
+    if not m:
+        return None
+    soft_raw = m.group(1)
+    if soft_raw == "unlimited":
+        # No meaningful ceiling to measure against — never alarm.
+        return None
+    try:
+        soft = int(soft_raw)
+    except (ValueError, TypeError):
+        return None
+    if soft <= 0:
+        return None
+    return open_count, soft
+
+
+def probe_fd_exhaustion(
+    service_name: str,
+    *,
+    proc_root: str = "/proc",
+    systemctl_path: str = "systemctl",
+    degraded_ratio: float = 0.80,
+    wedge_ratio: float = 0.95,
+    main_pid: Optional[int] = None,
+) -> Optional[Signal]:
+    """Warn when a service's open fds approach its soft RLIMIT_NOFILE.
+
+    This is the *proactive* companion to ``probe_http_local`` (which only
+    fires once the port has already gone dark). Issue #73 (2026-05-31):
+    meshanchor-map leaked one paho MQTT client socket per reconnect until
+    it hit the 1024 soft fd cap; new ``accept()`` then failed with
+    ``[Errno 24]`` and ``:5000`` wedged. By the time ``http_local``
+    fired, the box had been unservable for an hour. Counting fds vs the
+    soft limit surfaces the climb *before* the wedge — and names the
+    real cause (fd leak) instead of pointing at thread stacks.
+
+    ``degraded`` past ``degraded_ratio`` (default 80%), escalating to
+    ``wedge`` past ``wedge_ratio`` (default 95% — exhaustion is
+    imminent/underway). Returns None when the service is inactive
+    (``MainPID`` unresolved), /proc is unreadable, or usage is healthy —
+    a different probe owns "not running", and a healthy process must be
+    silent.
+    """
+    pid = main_pid if main_pid is not None else _resolve_main_pid(
+        service_name, systemctl_path=systemctl_path
+    )
+    if pid is None:
+        return None
+
+    usage = _read_fd_usage(pid, proc_root=proc_root)
+    if usage is None:
+        return None
+    open_count, soft = usage
+
+    ratio = open_count / soft
+    if ratio < degraded_ratio:
+        return None
+
+    severity = "wedge" if ratio >= wedge_ratio else "degraded"
+    pct = ratio * 100.0
+    detail = (
+        f"{service_name} (pid {pid}) holds {open_count}/{soft} open file "
+        f"descriptors ({pct:.0f}% of soft RLIMIT_NOFILE). Approaching "
+        f"[Errno 24] — new sockets/files will fail and the HTTP server "
+        f"will stop accepting (Issue #73 fd-leak class). Inspect: "
+        f"sudo ls /proc/{pid}/fd | wc -l ; "
+        f"sudo ss -tanp | grep pid={pid} | awk '{{print $NF}}' | sort | uniq -c | sort -rn"
+    )
+    return Signal(
+        cls="fd_exhaustion",
+        subject=service_name,
+        severity=severity,
+        detail=detail,
+        issue_ref=73,
+        extra={
+            "pid": pid,
+            "open_fds": open_count,
+            "soft_limit": soft,
+            "ratio": round(ratio, 4),
+        },
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Probe: delivery counters write canary (Issue #63)
 # ─────────────────────────────────────────────────────────────────────
 
@@ -1051,6 +1168,7 @@ __all__ = [
     "probe_rns_rpc_responsive",
     "_tcp_reachable",
     "probe_http_local",
+    "probe_fd_exhaustion",
     "probe_delivery_write_canary",
     "probe_service_inactive",
     "probe_tracer_peer_unreachable",

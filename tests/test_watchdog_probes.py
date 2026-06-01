@@ -34,6 +34,7 @@ from utils.watchdog_probes import (  # noqa: E402
     SIGNAL_CLASSES,
     Signal,
     probe_delivery_write_canary,
+    probe_fd_exhaustion,
     probe_http_local,
     probe_lxmf_process_wedge,
     probe_main_thread_wedge,
@@ -74,6 +75,7 @@ def test_signal_classes_closed_enum_is_documented():
         "rns_shared_instance_unresponsive",
         "rns_interface_down_peer_reachable",
         "rns_rpc_unresponsive",
+        "fd_exhaustion",
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -851,6 +853,87 @@ def test_http_local_skips_connection_refused():
         raise URLError("[Errno 111] Connection refused")
     with patch("utils.watchdog_probes.urlopen", side_effect=_raise):
         sig = probe_http_local("meshforge-map.service")
+    assert sig is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Issue #73 — fd_exhaustion (proactive companion to http_local)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _fake_proc(tmp_path, pid, *, open_fds, soft="1024", hard="524288"):
+    """Build a fake /proc/<pid> with `open_fds` fd entries and a limits file."""
+    pdir = tmp_path / str(pid)
+    fd_dir = pdir / "fd"
+    fd_dir.mkdir(parents=True)
+    for i in range(open_fds):
+        # symlink target doesn't matter; os.scandir just counts entries
+        (fd_dir / str(i)).write_text("")
+    limits = (
+        "Limit                     Soft Limit           Hard Limit           Units\n"
+        "Max open files            {soft}                 {hard}               files\n"
+    ).format(soft=soft, hard=hard)
+    (pdir / "limits").write_text(limits)
+    return str(tmp_path)
+
+
+def test_fd_exhaustion_quiet_when_healthy(tmp_path):
+    """Well under the soft limit → no signal."""
+    root = _fake_proc(tmp_path, 4242, open_fds=50, soft="1024")
+    sig = probe_fd_exhaustion(
+        "meshforge-map.service", proc_root=root, main_pid=4242
+    )
+    assert sig is None
+
+
+def test_fd_exhaustion_degraded_past_80pct(tmp_path):
+    """820/1024 = 80% → degraded, not yet wedge."""
+    root = _fake_proc(tmp_path, 4242, open_fds=820, soft="1024")
+    sig = probe_fd_exhaustion(
+        "meshforge-map.service", proc_root=root, main_pid=4242
+    )
+    assert sig is not None
+    assert sig.cls == "fd_exhaustion"
+    assert sig.severity == "degraded"
+    assert sig.issue_ref == 73
+    assert sig.extra["open_fds"] == 820
+    assert sig.extra["soft_limit"] == 1024
+
+
+def test_fd_exhaustion_wedge_past_95pct(tmp_path):
+    """1000/1024 ≈ 98% → wedge (exhaustion imminent — the #73 incident)."""
+    root = _fake_proc(tmp_path, 4242, open_fds=1000, soft="1024")
+    sig = probe_fd_exhaustion(
+        "meshforge-map.service", proc_root=root, main_pid=4242
+    )
+    assert sig is not None
+    assert sig.severity == "wedge"
+    assert "[Errno 24]" in sig.detail
+
+
+def test_fd_exhaustion_none_when_pid_unresolved(tmp_path):
+    """Inactive service (MainPID unresolved) → None; service_inactive owns it."""
+    sig = probe_fd_exhaustion(
+        "meshforge-map.service", proc_root=str(tmp_path), main_pid=None,
+        systemctl_path="/nonexistent/systemctl",
+    )
+    assert sig is None
+
+
+def test_fd_exhaustion_none_when_proc_vanished(tmp_path):
+    """PID resolved but /proc/<pid> gone (race) → None, never a false alarm."""
+    sig = probe_fd_exhaustion(
+        "meshforge-map.service", proc_root=str(tmp_path), main_pid=99999,
+    )
+    assert sig is None
+
+
+def test_fd_exhaustion_none_when_soft_limit_unlimited(tmp_path):
+    """An 'unlimited' soft limit has no ceiling to measure against → None."""
+    root = _fake_proc(tmp_path, 4242, open_fds=9000, soft="unlimited")
+    sig = probe_fd_exhaustion(
+        "meshforge-map.service", proc_root=root, main_pid=4242
+    )
     assert sig is None
 
 

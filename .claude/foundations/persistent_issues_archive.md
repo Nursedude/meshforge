@@ -2315,3 +2315,55 @@ unfalsifiable on a quiet fleet. If that case bites in practice, add a
 thread that bumps `meta.heartbeat_ts` every 60s; the test harness
 already handles instance state vs persisted state.
 
+
+
+---
+
+## Issue #64: `/api/nodes/directory` gzip negotiation + size-budget alarm (2026-05-18)
+
+**Symptom**: `/api/nodes/directory` at 35 MB on moc; Issue #56 bumped
+federation timeout 5→30s to fit; trajectory unbounded (~30× since the
+1 MB original). Reliability backlog #5.
+
+**Root cause**: `_serve_json()` already supported gzip when clients
+sent `Accept-Encoding`, but `fetch_peer_directory` (`map_federation.py`)
+never asked. urllib doesn't auto-decode like `requests` — needed
+manual handling, so server-side gzip was wasted on the federation
+hot path.
+
+**Fix**:
+- `map_federation.fetch_peer_directory` now sends
+  `Accept-Encoding: gzip`, decodes via `gzip.decompress()`, with a
+  `max_decompressed_bytes` cap (10× wire cap) for zip-bomb defense.
+  Uncompressed responses still work for pre-fix peers.
+- `node_history.record_directory_serialized_size()` called by
+  `_serve_directory()` via a new `size_observer` callback on
+  `_serve_json()`. `get_directory_stats()` returns
+  `size_bytes_raw`/`_compressed`, `size_compression_ratio`,
+  `size_alarm_threshold_bytes`, `size_alarm`. Threshold
+  `DEFAULT_DIRECTORY_SIZE_ALARM_BYTES = 40 MB` (~80% of the federation
+  client's 50 MB hard cap). Cache invalidates on record so operators
+  see fresh bytes, not stale 5-min snapshots.
+
+**Live measurement on moc** (2026-05-18): 35.7 MB raw → 4.7 MB on the
+wire = **7.6× compression**. Federation poll wall-time well under the
+60s cycle again.
+
+**Tests** (15 new): `TestGzipNegotiationIssue64` (5) in
+`tests/test_map_federation.py`; `TestDirectorySizeBudgetAlarmIssue64`
+(6) in `tests/test_node_history.py`;
+`TestServeJsonSizeObserverIssue64` (4) in
+`tests/test_map_http_handler.py`.
+
+**Operator recipes**:
+```bash
+# Wire savings:
+curl -sv -H "Accept-Encoding: gzip" http://<box>:5000/api/nodes/directory \
+  -o /dev/null 2>&1 | grep -E "Content-(Length|Encoding)"
+# Size-budget gauge:
+curl -s http://<box>:5000/api/status | jq '.directory | {size_bytes_raw,
+  size_bytes_compressed, size_alarm, size_alarm_threshold_bytes}'
+```
+
+**Deferred**: cursor pagination + since-timestamp incremental sync
+remain available if/when gzip's multi-year runway runs out.

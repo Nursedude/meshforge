@@ -301,52 +301,13 @@ persistent-issues from a recurring class into a closed loop.
 
 ## Issue #64: `/api/nodes/directory` gzip negotiation + size-budget alarm (2026-05-18)
 
-**Symptom**: `/api/nodes/directory` at 35 MB on moc; Issue #56 bumped
-federation timeout 5→30s to fit; trajectory unbounded (~30× since the
-1 MB original). Reliability backlog #5.
-
-**Root cause**: `_serve_json()` already supported gzip when clients
-sent `Accept-Encoding`, but `fetch_peer_directory` (`map_federation.py`)
-never asked. urllib doesn't auto-decode like `requests` — needed
-manual handling, so server-side gzip was wasted on the federation
-hot path.
-
-**Fix**:
-- `map_federation.fetch_peer_directory` now sends
-  `Accept-Encoding: gzip`, decodes via `gzip.decompress()`, with a
-  `max_decompressed_bytes` cap (10× wire cap) for zip-bomb defense.
-  Uncompressed responses still work for pre-fix peers.
-- `node_history.record_directory_serialized_size()` called by
-  `_serve_directory()` via a new `size_observer` callback on
-  `_serve_json()`. `get_directory_stats()` returns
-  `size_bytes_raw`/`_compressed`, `size_compression_ratio`,
-  `size_alarm_threshold_bytes`, `size_alarm`. Threshold
-  `DEFAULT_DIRECTORY_SIZE_ALARM_BYTES = 40 MB` (~80% of the federation
-  client's 50 MB hard cap). Cache invalidates on record so operators
-  see fresh bytes, not stale 5-min snapshots.
-
-**Live measurement on moc** (2026-05-18): 35.7 MB raw → 4.7 MB on the
-wire = **7.6× compression**. Federation poll wall-time well under the
-60s cycle again.
-
-**Tests** (15 new): `TestGzipNegotiationIssue64` (5) in
-`tests/test_map_federation.py`; `TestDirectorySizeBudgetAlarmIssue64`
-(6) in `tests/test_node_history.py`;
-`TestServeJsonSizeObserverIssue64` (4) in
-`tests/test_map_http_handler.py`.
-
-**Operator recipes**:
-```bash
-# Wire savings:
-curl -sv -H "Accept-Encoding: gzip" http://<box>:5000/api/nodes/directory \
-  -o /dev/null 2>&1 | grep -E "Content-(Length|Encoding)"
-# Size-budget gauge:
-curl -s http://<box>:5000/api/status | jq '.directory | {size_bytes_raw,
-  size_bytes_compressed, size_alarm, size_alarm_threshold_bytes}'
-```
-
-**Deferred**: cursor pagination + since-timestamp incremental sync
-remain available if/when gzip's multi-year runway runs out.
+**Resolved — body moved to `persistent_issues_archive.md` (2026-05-31, MF012
+trim).** One-line essence: `fetch_peer_directory` now sends
+`Accept-Encoding: gzip` + decodes (urllib doesn't auto-decode like requests),
+turning the 35 MB directory into 4.7 MB on the wire (7.6×); plus a 40 MB
+`size_alarm` budget gauge in `get_directory_stats()`. Tests:
+`TestGzipNegotiationIssue64`, `TestDirectorySizeBudgetAlarmIssue64`,
+`TestServeJsonSizeObserverIssue64`.
 
 
 ---
@@ -587,3 +548,41 @@ curl -s http://127.0.0.1:5000/api/status | jq \
 run_rnstatus path; plus parser-level timed_out flag + timeout_s plumbing.
 The closed-enum gate `test_signal_classes_closed_enum_is_documented` was
 bumped with the new class.
+
+
+---
+
+## Issue #73: meshforge-map fd-leak → [Errno 24] → :5000 wedge; + proactive fd probe (2026-05-31)
+
+**Symptom**: meshanchor-server `:5000` browser-spin; map `active`, rnsd healthy
+(rnstatus OK, `@rns` owned by rnsd) — NOT the #68/#72 RNS class. Journal:
+`[Errno 24] Too many open files`. The map process held **1024 fds (298 ESTAB to
+`[::1]:1883`)** against the 1024 soft `RLIMIT_NOFILE` — `accept()` on `:5000`
+couldn't get an fd, so even `/healthz` hung.
+
+**Root cause**: shared `monitoring/mqtt_subscriber.py::_connect()` created a new
+paho `Client` every call without tearing down the prior one; the reconnect loop
+orphaned a client per cycle and `loop_start()` kept its socket alive. Fixed in
+BOTH repos (MeshForge `5712b56`, MeshAnchor `6e1d2306`): `_connect()` calls
+`_disconnect()` before re-creating; atexit registered once. Deployed fleet-wide
++ verified (mqtt socks back to 1, fds low). Tests `TestReconnectFdLeak` (2) in
+each repo's `tests/test_mqtt_robustness.py`.
+
+**Detection gap closed**: `http_local_unresponsive` (#61) caught the *symptom*
+only AFTER `:5000` went dark, and pointed at thread stacks (wrong cause). New
+**`probe_fd_exhaustion`** (signal class `fd_exhaustion`, issue_ref 73) is the
+proactive companion: counts `/proc/<MainPID>/fd` vs the soft `Max open files`
+from `/proc/<pid>/limits`, fires `degraded` ≥80% / `wedge` ≥95%, names the
+fd-leak cause. Read-only, bounded, None on inactive/unreadable/unlimited. Wired
+in `watchdog_runner` next to `probe_http_local` (gated on map expected-active).
+Tests: 6 in `tests/test_watchdog_probes.py` (`test_fd_exhaustion_*`) + closed-
+enum gate bumped.
+
+**Operator recipe**:
+```bash
+curl -s http://127.0.0.1:5000/api/status | jq '.watchdog.signals[]? | select(.class=="fd_exhaustion")'
+P=$(systemctl show meshforge-map.service -p MainPID --value)
+sudo ls /proc/$P/fd | wc -l   # vs soft limit in /proc/$P/limits
+```
+Decision tell: `[Errno 24]`/climbing fds = fd leak (restart map, find leak);
+`rnstatus` wedged = RNS class (restart rnsd).
