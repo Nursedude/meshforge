@@ -590,3 +590,26 @@ class TestLogfilePermsNormalize:
         assert 'chown root:wh6gxz' in script
         assert 'chmod 1775' in script
         assert 'chown wh6gxz:wh6gxz' in script and 'logfile' in script
+
+
+# ---------- apply_logfile_perms (the single RNS-tree apply-path, mf.4/#73) ----
+
+
+class TestApplyLogfilePerms:
+    def test_rejects_unsafe_username(self):
+        from utils.rns_alignment import apply_logfile_perms
+        with pytest.raises(ValueError):
+            apply_logfile_perms("bad user; rm -rf /")
+
+    def test_runs_canonical_chown_chmod(self):
+        from unittest.mock import patch
+        from utils import rns_alignment
+        with patch.object(rns_alignment.subprocess, "run") as run:
+            rns_alignment.apply_logfile_perms("wh6gxz")
+        run.assert_called_once()
+        argv = run.call_args[0][0]
+        assert argv[:3] == ["sudo", "bash", "-c"]
+        script = argv[3]
+        assert "chown root:wh6gxz" in script
+        assert "chmod 1775" in script
+        assert "chown wh6gxz:wh6gxz" in script and "logfile" in script

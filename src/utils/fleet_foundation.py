@@ -206,9 +206,14 @@ def plan_foundation(spec: Optional[FoundationSpec] = None) -> List[FoundationAct
 
 
 def apply_foundation(spec: Optional[FoundationSpec] = None, dry_run: bool = False) -> List[str]:
-    """Apply the data-root plan. Returns executed (or dry-run) descriptions."""
+    """Apply the COMPLETE foundation: app data-roots (here) + the RNS tree
+    (delegated to ``rns_alignment.apply_logfile_perms`` — the single apply-path).
+    Returns executed (or dry-run) descriptions. Requires sudo for real changes.
+    """
     spec = spec or canonical_foundation()
     executed: List[str] = []
+
+    # App data-roots (the part this module owns).
     for action in plan_foundation(spec):
         if dry_run:
             executed.append(f"[DRY-RUN] {action.description}")
@@ -216,4 +221,16 @@ def apply_foundation(spec: Optional[FoundationSpec] = None, dry_run: bool = Fals
         logger.info("fleet_foundation: %s", action.description)
         subprocess.run(action.cmd, check=True, timeout=60)
         executed.append(action.description)
+
+    # RNS tree (the shared core — single apply-path in rns_alignment).
+    rns_desc = f"apply RNS-tree perms for {spec.operator_user} ({spec.rns_configdir})"
+    if dry_run:
+        executed.append(f"[DRY-RUN] {rns_desc}")
+    else:
+        try:
+            from utils.rns_alignment import apply_logfile_perms
+            apply_logfile_perms(spec.operator_user)
+            executed.append(rns_desc)
+        except Exception as e:  # never let the RNS leg sink the data-root work
+            logger.warning("RNS-tree perms apply skipped (non-fatal): %s", e)
     return executed

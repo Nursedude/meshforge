@@ -746,6 +746,23 @@ if [ -e "$CD/logfile" ]; then chown {user}:{user} "$CD/logfile"; fi
 """
 
 
+def apply_logfile_perms(operator_user: str) -> None:
+    """Apply the canonical RNS-tree perms for a non-root rnsd (the foundation's
+    RNS layer): configdir ``root:<user> 1775``, logfile ``<user>:<user>``, config
+    stays root-owned. Idempotent; requires sudo. This is the single apply-path for
+    the RNS half of the permission foundation — ``fleet_foundation`` and the TUI
+    ``_fix_rnsd_user`` both call it instead of carrying their own copies (mf.4/#73).
+
+    ``operator_user`` is validated as a safe username (no shell metacharacters).
+    """
+    if not _USERNAME_RE.match(operator_user):
+        raise ValueError(f"unsafe operator_user {operator_user!r}")
+    subprocess.run(
+        ['sudo', 'bash', '-c', _build_logfile_perms_script(operator_user)],
+        check=True, timeout=30,
+    )
+
+
 def _build_rnsd_dropin_script() -> str:
     """Bash that installs/refreshes the rnsd configdir drop-in."""
     return """
