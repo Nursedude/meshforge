@@ -271,6 +271,60 @@ class TestApplyAction:
 
 
 # --------------------------------------------------------------------------
+# foundation_actions() — cross-cutting permission foundation (D1/D3, mf.4/#73)
+# --------------------------------------------------------------------------
+
+class TestFoundationActions:
+    def test_clean_yields_single_noop(self):
+        with patch("utils.fleet_foundation.audit_foundation", return_value=[]):
+            actions = pr.foundation_actions()
+        assert len(actions) == 1
+        assert actions[0].verb == "noop"
+        assert actions[0].item == "foundation:perms"
+
+    def test_drift_yields_required_foundation_action(self):
+        with patch("utils.fleet_foundation.audit_foundation",
+                   return_value=["/etc/reticulum root:root ...", "~/.cache/meshforge ..."]):
+            actions = pr.foundation_actions()
+        assert len(actions) == 1
+        a = actions[0]
+        assert a.verb == "foundation" and a.required is True
+        assert "2 drift item(s)" in a.current
+        assert "/etc/reticulum" in a.detail
+
+    def test_detail_is_truncated(self):
+        with patch("utils.fleet_foundation.audit_foundation",
+                   return_value=["x" * 500]):
+            a = pr.foundation_actions()[0]
+        assert len(a.detail) <= 300 and a.detail.endswith("...")
+
+    def test_audit_failure_is_nonblocking_warn(self):
+        with patch("utils.fleet_foundation.audit_foundation",
+                   side_effect=RuntimeError("boom")):
+            a = pr.foundation_actions()[0]
+        assert a.verb == "warn" and a.required is False
+        assert "skipped" in a.detail
+
+
+class TestApplyFoundationAction:
+    def test_foundation_verb_calls_apply_foundation(self):
+        a = pr.Action("foundation:perms", "1 drift item(s)", "operator-owned",
+                      "foundation", required=True)
+        with patch("utils.fleet_foundation.apply_foundation",
+                   return_value=["chown ...", "apply RNS-tree perms ..."]) as m:
+            assert pr.apply_action(a) is True
+        m.assert_called_once()
+        assert "applied 2 foundation step(s)" in a.result
+
+    def test_foundation_apply_failure_propagates(self):
+        a = pr.Action("foundation:perms", "1 drift", "operator-owned", "foundation")
+        with patch("utils.fleet_foundation.apply_foundation",
+                   side_effect=RuntimeError("nope")):
+            assert pr.apply_action(a) is False
+        assert "failed" in a.result
+
+
+# --------------------------------------------------------------------------
 # main() — external skip + role read/write
 # --------------------------------------------------------------------------
 

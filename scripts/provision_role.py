@@ -210,6 +210,33 @@ def plan(role_def: dict, overrides: Optional[Dict[str, dict]] = None) -> List[Ac
     return actions
 
 
+def foundation_actions() -> List[Action]:
+    """Cross-cutting permission-foundation converge step (D1/D3, mf.4/#73).
+
+    Role-independent: EVERY MeshForge box runs its services as the non-root
+    operator user and must own the data it writes plus its RNS config tree, so
+    this is appended to every converge regardless of role. Drift → one
+    `foundation` action that, on --apply, runs the shared
+    `fleet_foundation.apply_foundation` (data-root chowns + the rns_tree_perms
+    RNS-tree apply-path — the single apply-path). Clean → noop. The recurrence
+    this continuously catches: a re-provision that recreates /etc/reticulum
+    root:root while rnsd runs non-root (the moc1/moc2 mf.4 trigger, 2026-06-01).
+    """
+    try:
+        from utils.fleet_foundation import audit_foundation
+        drift = audit_foundation()
+    except Exception as e:  # never let the foundation probe sink the converge
+        return [Action("foundation:perms", "?", "operator-owned", "warn",
+                       required=False, detail=f"foundation audit skipped: {e}")]
+    if not drift:
+        return [Action("foundation:perms", "operator-owned", "operator-owned", "noop")]
+    detail = "; ".join(drift)
+    if len(detail) > 300:
+        detail = detail[:297] + "..."
+    return [Action("foundation:perms", f"{len(drift)} drift item(s)",
+                   "operator-owned", "foundation", required=True, detail=detail)]
+
+
 # --------------------------------------------------------------------------
 # Apply
 # --------------------------------------------------------------------------
@@ -227,6 +254,13 @@ def apply_action(a: Action) -> bool:
         ok, msg = (ok1 and ok2), f"{m1}; {m2}"
     elif a.verb == "mask":
         ok, msg = mask_service(a.item.split("mask:", 1)[1])
+    elif a.verb == "foundation":
+        try:
+            from utils.fleet_foundation import apply_foundation
+            executed = apply_foundation()
+            ok, msg = True, f"applied {len(executed)} foundation step(s)"
+        except Exception as e:
+            ok, msg = False, f"foundation apply failed: {e}"
     else:
         ok, msg = False, f"unknown verb {a.verb}"
     a.result = msg
@@ -344,7 +378,8 @@ def gather_fleet_roles(
 # Render + main
 # --------------------------------------------------------------------------
 
-_SYM = {"noop": "PASS", "enable": "CHANGE", "disable": "CHANGE", "mask": "CHANGE", "warn": "WARN"}
+_SYM = {"noop": "PASS", "enable": "CHANGE", "disable": "CHANGE", "mask": "CHANGE",
+        "foundation": "CHANGE", "warn": "WARN"}
 
 
 def render(actions: List[Action], apply: bool) -> None:
@@ -426,9 +461,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     if overrides:
         print(f"# service_overrides active: {', '.join(sorted(overrides))}")
     actions = plan(role_def, overrides)
+    # Cross-cutting permission foundation (D1/D3) — appended to every converge,
+    # role-independent. Continuously enforces the born-correct perms (mf.4/#73).
+    actions += foundation_actions()
     render(actions, args.apply)
 
-    changes = [a for a in actions if a.verb in ("enable", "disable", "mask")]
+    changes = [a for a in actions if a.verb in ("enable", "disable", "mask", "foundation")]
     fail_warns = [a for a in actions if a.verb == "warn" and a.required]
 
     if args.apply:
