@@ -971,64 +971,109 @@ def probe_parity_drift(
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _read_pkg_versions_for_user(user, pkgs):
+    """Read installed versions of ``pkgs`` from the service user's site-packages —
+    read-only, no privilege change. Returns ``{pkg: version}`` for those found, or
+    None if the user's site dir can't be located/read.
+
+    Why not just ``importlib.metadata.version()``? That reads the *current*
+    interpreter's env — the watchdog runs as root, whose env may carry a different
+    rns (verified live: root had 1.1.1 while the wh6gxz service env had 1.2.5+mf.4).
+    And we can't switch user: the watchdog unit sets NoNewPrivileges + RestrictSUIDSGID,
+    which block sudo AND runuser (both need setuid). But ProtectHome=no, so root can
+    READ ``/home/<user>/.local/...`` directly and point importlib.metadata at it.
+    """
+    if not user or user == "root":
+        return None
+    try:
+        import importlib.metadata as _im
+        home = Path(f"/home/{user}")
+        site_dirs = [str(p) for p in sorted(home.glob(".local/lib/python3*/site-packages"))
+                     if p.is_dir()]
+        if not site_dirs:
+            return None
+        found = {}
+        for dist in _im.distributions(path=site_dirs):
+            try:
+                name = (dist.metadata["Name"] or "").lower()
+            except Exception:
+                continue
+            if name in pkgs:
+                found[name] = dist.version
+        return found
+    except Exception:
+        return None
+
+
 def probe_rns_version_drift(
     *,
     rnsd_user=None,
-    run_fn=None,
+    pins=None,
+    installed=None,
 ) -> Optional[Signal]:
     """Surface a box running rns/lxmf off the pinned MeshForge-fork version.
 
-    ``scripts/rns_version_check.py`` gates the fleet on the ``+mf.N`` pin — upstream
-    withdrew public support, so a version bump is a *reviewed* decision, never an
-    automatic pip-latest. This makes that check a continuously-monitored signal so a
-    box that missed a fork roll (e.g. moc3 was stock 1.2.5 before the mf.4 roll)
-    self-surfaces in /fleet + the mini deep-rollup.
+    The fleet pins rns/lxmf on the ``+mf.N`` marker (``requirements/rns.txt``,
+    gated by ``scripts/rns_version_check.py``) — upstream withdrew public support, so
+    a bump is a *reviewed* decision, never an automatic pip-latest. This makes the
+    check a continuously-monitored signal so a box that missed a fork roll (e.g. moc3
+    was stock 1.2.5 before the mf.4 roll) self-surfaces in /fleet + the mini rollup.
 
-    Critical: the version must be read in the **rnsd service user's** environment,
-    NOT the watchdog's. The watchdog runs as root, whose interpreter may carry a
-    different/older rns (verified: root saw 1.1.1 while the wh6gxz service env had
-    1.2.5+mf.4) — checking there would scream a false drift while the service runs
-    the correct fork. So we derive the rnsd user from its systemd unit and run the
-    existing check tool as that user (``sudo -u``); same env an operator's SSH run
-    would hit. Fires ``degraded`` on the tool's drift exit (1). Returns None on
-    compliant (0), no-pin/indeterminate (2), any other rc, or a subprocess error.
+    The pin (``pins``) is env-independent (just reads requirements/rns.txt). The
+    INSTALLED versions are read from the rnsd **service user's** site-packages
+    (see ``_read_pkg_versions_for_user`` for why root's own env / sudo / runuser all
+    fail here). Fires ``degraded`` only on a concrete mismatch (installed != pinned
+    for a package we can actually see). Returns None when compliant, when the pin or
+    the user env can't be read (indeterminate — never false-alarm), or when a package
+    isn't visible in the user site (possible venv install elsewhere — don't guess).
     """
-    if run_fn is None:
-        if rnsd_user is None:
-            try:
-                from utils.rns_tree_perms import _read_rnsd_user
-                rnsd_user = _read_rnsd_user()
-            except Exception:
-                rnsd_user = None
-        script = str(Path(__file__).resolve().parents[2] / "scripts" / "rns_version_check.py")
-        cmd = ["python3", script]
-        if rnsd_user and rnsd_user != "root":
-            cmd = ["sudo", "-n", "-u", rnsd_user] + cmd
+    if rnsd_user is None and installed is None:
+        try:
+            from utils.rns_tree_perms import _read_rnsd_user
+            rnsd_user = _read_rnsd_user()
+        except Exception:
+            rnsd_user = None
 
-        def run_fn():
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-            return r.returncode, r.stdout
+    if pins is None:
+        try:
+            import importlib.util
+            script = str(Path(__file__).resolve().parents[2] / "scripts" / "rns_version_check.py")
+            spec = importlib.util.spec_from_file_location("rns_version_check", script)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            pins = mod.pinned_versions()
+        except Exception:
+            return None
+    if not pins:
+        return None  # no pin parseable (sub-arc A not applied) → indeterminate
 
-    try:
-        rc, out = run_fn()
-    except Exception:
-        return None  # tool unrunnable / sudo denied / timeout → indeterminate
-    if rc != 1:
-        return None  # 0 compliant, 2 no-pin (sub-arc A not applied), other → no alarm
+    if installed is None:
+        installed = _read_pkg_versions_for_user(rnsd_user, set(pins))
+    if not installed:
+        return None  # couldn't read the service env → indeterminate, no false alarm
 
-    drift_lines = [ln.strip() for ln in (out or "").splitlines() if "DRIFT" in ln]
-    body = "; ".join(drift_lines) if drift_lines else "rns/lxmf version off the pin"
+    drift = []
+    for pkg, want in pins.items():
+        have = installed.get(pkg)
+        if have is None:
+            continue  # not visible in the user site (venv elsewhere?) — don't guess
+        if have != want:
+            drift.append(f"{pkg} installed={have} pinned={want}")
+    if not drift:
+        return None
+
     detail = (
-        f"rns/lxmf off the pinned MeshForge-fork version ({body}). Upstream withdrew "
-        f"support so the pin is deliberate — converge with a REVIEWED bump: "
-        f"pip install --force-reinstall -r requirements/rns.txt, then verify rnsd."
+        f"rns/lxmf off the pinned MeshForge-fork version ({'; '.join(drift)}). "
+        f"Upstream withdrew support so the pin is deliberate — converge with a "
+        f"REVIEWED bump: pip install --force-reinstall -r requirements/rns.txt, "
+        f"then verify rnsd."
     )
     return Signal(
         cls="rns_version_drift",
         subject="rns/lxmf",
         severity="degraded",
         detail=detail,
-        extra={"rnsd_user": rnsd_user, "drift_lines": drift_lines},
+        extra={"rnsd_user": rnsd_user, "drift": drift},
     )
 
 

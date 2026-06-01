@@ -588,13 +588,11 @@ Decision tell: `[Errno 24]`/climbing fds = fd leak (restart map, find leak);
 `rnstatus` wedged = RNS class (restart rnsd).
 
 Three watchdog probes added 2026-06-01 (audit-organ→Signal→mini pattern,
-[[project_mini_scales_via_watchdog_probes_2026_06_01]]; all `degraded`, all derive
-context from the SERVICE not the root watchdog env): **`probe_foundation_drift`**
-(`foundation_perms_drift`) — `/etc/reticulum` drifted to root:root under a non-root
-rnsd (RNS-tree leg, user from rnsd unit). Fix: `sudo scripts/fleet_foundation.py
-apply`. **`probe_parity_drift`** (`parity_drift`) — MeshForge↔MeshAnchor content
-drift via a pure `check_parity()` factored out of `parity_check.py`; self-guards when
-`/opt/meshanchor` absent. Fix: port the change. **`probe_rns_version_drift`**
-(`rns_version_drift`) — installed rns/lxmf off the `+mf.N` pin, checked in the rnsd
-user's env via `sudo -u` (root's env carries a different rns → false drift). Fix:
-reviewed `pip install -r requirements/rns.txt`.
+[[project_mini_scales_via_watchdog_probes_2026_06_01]]; all `degraded`; **recurring
+trap: derive context from the SERVICE, not the root watchdog env**): `probe_foundation_drift`
+(`/etc/reticulum` root:root under a non-root rnsd; fix `fleet_foundation.py apply`),
+`probe_parity_drift` (MeshForge↔MeshAnchor `check_parity()` drift; self-guards if
+`/opt/meshanchor` absent), `probe_rns_version_drift` (rns/lxmf off the `+mf.N` pin —
+reads the rnsd user's `~/.local` site-packages directly, since the watchdog sandbox
+NoNewPrivileges+RestrictSUIDSGID blocks sudo/runuser; fix reviewed `pip install -r
+requirements/rns.txt`).

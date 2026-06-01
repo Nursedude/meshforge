@@ -1057,43 +1057,52 @@ def test_parity_drift_none_when_check_raises(tmp_path):
 # 2026-06-01 — rns_version_drift (off the +mf.N fork pin, in the rnsd env)
 # ─────────────────────────────────────────────────────────────────────
 
-_DRIFT_OUT = (
-    "RNS version check @ box\n"
-    "  [DRIFT] rns   installed=1.1.1      pinned=1.2.5+mf.4\n"
-    "  [OK   ] lxmf  installed=0.9.4+mf.0 pinned=0.9.4+mf.0\n"
-)
+_PINS = {"rns": "1.2.5+mf.4", "lxmf": "0.9.4+mf.0"}
 
 
-def test_rns_version_drift_fires_on_rc1():
-    sig = probe_rns_version_drift(run_fn=lambda: (1, _DRIFT_OUT))
+def test_rns_version_drift_fires_on_mismatch():
+    sig = probe_rns_version_drift(
+        rnsd_user="wh6gxz", pins=_PINS,
+        installed={"rns": "1.1.1", "lxmf": "0.9.4+mf.0"})
     assert sig is not None
     assert sig.cls == "rns_version_drift"
     assert sig.severity == "degraded"
     assert sig.subject == "rns/lxmf"
-    assert "1.2.5+mf.4" in sig.detail            # the pinned target appears
-    assert any("rns" in ln for ln in sig.extra["drift_lines"])
+    assert "1.2.5+mf.4" in sig.detail and "1.1.1" in sig.detail
+    assert sig.extra["drift"] == ["rns installed=1.1.1 pinned=1.2.5+mf.4"]
 
 
 def test_rns_version_drift_none_when_compliant():
-    assert probe_rns_version_drift(run_fn=lambda: (0, "  -> compliant with the pin")) is None
+    sig = probe_rns_version_drift(
+        rnsd_user="wh6gxz", pins=_PINS,
+        installed={"rns": "1.2.5+mf.4", "lxmf": "0.9.4+mf.0"})
+    assert sig is None
 
 
 def test_rns_version_drift_none_when_no_pin():
-    # rc=2 = no pin parseable (sub-arc A not applied) → indeterminate, no alarm.
-    assert probe_rns_version_drift(run_fn=lambda: (2, "NO exact pin")) is None
+    # No parseable pin (sub-arc A not applied) → indeterminate, no alarm.
+    assert probe_rns_version_drift(rnsd_user="wh6gxz", pins={}, installed={"rns": "1.1.1"}) is None
 
 
-def test_rns_version_drift_none_on_subprocess_error():
-    def boom():
-        raise OSError("sudo denied")
-    assert probe_rns_version_drift(run_fn=boom) is None
+def test_rns_version_drift_none_when_env_unreadable():
+    # Couldn't read the service user's site-packages → indeterminate, no false alarm
+    # (this is the NoNewPrivileges/RestrictSUIDSGID reality — no user switch possible).
+    assert probe_rns_version_drift(rnsd_user="wh6gxz", pins=_PINS, installed={}) is None
 
 
-def test_rns_version_drift_rc1_without_parsable_lines_still_signals():
-    # Defensive: drift exit but stdout shape changed → still surface a signal.
-    sig = probe_rns_version_drift(run_fn=lambda: (1, "drift happened, no tidy line"))
-    assert sig is not None and sig.severity == "degraded"
-    assert "off the pin" in sig.detail
+def test_rns_version_drift_none_when_pkg_not_visible():
+    # rns not found in the user site (venv elsewhere?) — don't guess drift on absence.
+    sig = probe_rns_version_drift(
+        rnsd_user="wh6gxz", pins=_PINS, installed={"lxmf": "0.9.4+mf.0"})
+    assert sig is None
+
+
+def test_rns_version_drift_fires_only_for_visible_mismatch():
+    # lxmf drifted + visible; rns absent → only lxmf is flagged, rns not guessed.
+    sig = probe_rns_version_drift(
+        rnsd_user="wh6gxz", pins=_PINS, installed={"lxmf": "0.9.0"})
+    assert sig is not None
+    assert sig.extra["drift"] == ["lxmf installed=0.9.0 pinned=0.9.4+mf.0"]
 
 
 # ─────────────────────────────────────────────────────────────────────
