@@ -37,6 +37,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_fd_exhaustion,
     probe_foundation_drift,
     probe_parity_drift,
+    probe_rns_version_drift,
     probe_http_local,
     probe_lxmf_process_wedge,
     probe_main_thread_wedge,
@@ -80,6 +81,7 @@ def test_signal_classes_closed_enum_is_documented():
         "fd_exhaustion",
         "foundation_perms_drift",
         "parity_drift",
+        "rns_version_drift",
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -1049,6 +1051,49 @@ def test_parity_drift_none_when_check_raises(tmp_path):
     def boom(mf, ma):
         raise RuntimeError("parity tool blew up")
     assert probe_parity_drift(meshanchor_root=str(tmp_path), check_fn=boom) is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-06-01 — rns_version_drift (off the +mf.N fork pin, in the rnsd env)
+# ─────────────────────────────────────────────────────────────────────
+
+_DRIFT_OUT = (
+    "RNS version check @ box\n"
+    "  [DRIFT] rns   installed=1.1.1      pinned=1.2.5+mf.4\n"
+    "  [OK   ] lxmf  installed=0.9.4+mf.0 pinned=0.9.4+mf.0\n"
+)
+
+
+def test_rns_version_drift_fires_on_rc1():
+    sig = probe_rns_version_drift(run_fn=lambda: (1, _DRIFT_OUT))
+    assert sig is not None
+    assert sig.cls == "rns_version_drift"
+    assert sig.severity == "degraded"
+    assert sig.subject == "rns/lxmf"
+    assert "1.2.5+mf.4" in sig.detail            # the pinned target appears
+    assert any("rns" in ln for ln in sig.extra["drift_lines"])
+
+
+def test_rns_version_drift_none_when_compliant():
+    assert probe_rns_version_drift(run_fn=lambda: (0, "  -> compliant with the pin")) is None
+
+
+def test_rns_version_drift_none_when_no_pin():
+    # rc=2 = no pin parseable (sub-arc A not applied) → indeterminate, no alarm.
+    assert probe_rns_version_drift(run_fn=lambda: (2, "NO exact pin")) is None
+
+
+def test_rns_version_drift_none_on_subprocess_error():
+    def boom():
+        raise OSError("sudo denied")
+    assert probe_rns_version_drift(run_fn=boom) is None
+
+
+def test_rns_version_drift_rc1_without_parsable_lines_still_signals():
+    # Defensive: drift exit but stdout shape changed → still surface a signal.
+    sig = probe_rns_version_drift(run_fn=lambda: (1, "drift happened, no tidy line"))
+    assert sig is not None and sig.severity == "degraded"
+    assert "off the pin" in sig.detail
 
 
 # ─────────────────────────────────────────────────────────────────────

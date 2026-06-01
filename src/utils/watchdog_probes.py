@@ -66,6 +66,7 @@ SIGNAL_CLASSES = (
     "fd_exhaustion",  # Issue #73 (2026-05-31): open fds approaching soft RLIMIT_NOFILE — fires BEFORE the wedge
     "foundation_perms_drift",  # 2026-06-01: born-correct permission foundation drifted (mf.4/#73) — non-root rnsd can't write its RNS tree
     "parity_drift",  # 2026-06-01: MeshForge<->MeshAnchor RNS-reliability parity diverged (lead-repo port debt)
+    "rns_version_drift",  # 2026-06-01: rns/lxmf installed off the pinned +mf.N fork version (T2-isolate arc)
 )
 
 SEVERITIES = ("info", "degraded", "wedge")
@@ -966,6 +967,72 @@ def probe_parity_drift(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Probe: RNS/LXMF fork-pin version drift (RNS T2-isolate arc)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def probe_rns_version_drift(
+    *,
+    rnsd_user=None,
+    run_fn=None,
+) -> Optional[Signal]:
+    """Surface a box running rns/lxmf off the pinned MeshForge-fork version.
+
+    ``scripts/rns_version_check.py`` gates the fleet on the ``+mf.N`` pin — upstream
+    withdrew public support, so a version bump is a *reviewed* decision, never an
+    automatic pip-latest. This makes that check a continuously-monitored signal so a
+    box that missed a fork roll (e.g. moc3 was stock 1.2.5 before the mf.4 roll)
+    self-surfaces in /fleet + the mini deep-rollup.
+
+    Critical: the version must be read in the **rnsd service user's** environment,
+    NOT the watchdog's. The watchdog runs as root, whose interpreter may carry a
+    different/older rns (verified: root saw 1.1.1 while the wh6gxz service env had
+    1.2.5+mf.4) — checking there would scream a false drift while the service runs
+    the correct fork. So we derive the rnsd user from its systemd unit and run the
+    existing check tool as that user (``sudo -u``); same env an operator's SSH run
+    would hit. Fires ``degraded`` on the tool's drift exit (1). Returns None on
+    compliant (0), no-pin/indeterminate (2), any other rc, or a subprocess error.
+    """
+    if run_fn is None:
+        if rnsd_user is None:
+            try:
+                from utils.rns_tree_perms import _read_rnsd_user
+                rnsd_user = _read_rnsd_user()
+            except Exception:
+                rnsd_user = None
+        script = str(Path(__file__).resolve().parents[2] / "scripts" / "rns_version_check.py")
+        cmd = ["python3", script]
+        if rnsd_user and rnsd_user != "root":
+            cmd = ["sudo", "-n", "-u", rnsd_user] + cmd
+
+        def run_fn():
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            return r.returncode, r.stdout
+
+    try:
+        rc, out = run_fn()
+    except Exception:
+        return None  # tool unrunnable / sudo denied / timeout → indeterminate
+    if rc != 1:
+        return None  # 0 compliant, 2 no-pin (sub-arc A not applied), other → no alarm
+
+    drift_lines = [ln.strip() for ln in (out or "").splitlines() if "DRIFT" in ln]
+    body = "; ".join(drift_lines) if drift_lines else "rns/lxmf version off the pin"
+    detail = (
+        f"rns/lxmf off the pinned MeshForge-fork version ({body}). Upstream withdrew "
+        f"support so the pin is deliberate — converge with a REVIEWED bump: "
+        f"pip install --force-reinstall -r requirements/rns.txt, then verify rnsd."
+    )
+    return Signal(
+        cls="rns_version_drift",
+        subject="rns/lxmf",
+        severity="degraded",
+        detail=detail,
+        extra={"rnsd_user": rnsd_user, "drift_lines": drift_lines},
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Probe: delivery counters write canary (Issue #63)
 # ─────────────────────────────────────────────────────────────────────
 
@@ -1305,6 +1372,7 @@ __all__ = [
     "probe_fd_exhaustion",
     "probe_foundation_drift",
     "probe_parity_drift",
+    "probe_rns_version_drift",
     "probe_delivery_write_canary",
     "probe_service_inactive",
     "probe_tracer_peer_unreachable",

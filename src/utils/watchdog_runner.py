@@ -51,6 +51,7 @@ from utils.watchdog_probes import (
     probe_fd_exhaustion,
     probe_foundation_drift,
     probe_parity_drift,
+    probe_rns_version_drift,
     probe_http_local,
     probe_lxmf_process_wedge,
     probe_main_thread_wedge,
@@ -284,6 +285,13 @@ def run_all_probes(
     # next logfile rotation wedges RNS.log(). Cheap: one sudo stat of the tree.
     if "rnsd.service" in services_expected_active:
         sig = probe_foundation_drift()
+        if sig is not None:
+            signals.append(sig)
+
+        # RNS/LXMF fork-pin version drift — runs the version-check tool in the
+        # rnsd user's env (root's may carry a different rns → false drift). Only
+        # where rnsd is expected; a slow-changing pin, but cheap to confirm.
+        sig = probe_rns_version_drift()
         if sig is not None:
             signals.append(sig)
 
