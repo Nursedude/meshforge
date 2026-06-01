@@ -204,6 +204,65 @@
       },
       "cooldown_s": 1800,
       "annotation": "2026-06-01: installed rns/lxmf off the +mf.N fork pin (box missed a fork roll). Fix: reviewed pip install --force-reinstall -r requirements/rns.txt, then verify rnsd. Side-effect-free escalation; NO ntfy page."
+    },
+    {
+      "id": "rns_rpc_unresponsive_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "rns_rpc_unresponsive",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] rnsd RPC unresponsive",
+        "message": "{subject}: {detail}",
+        "priority": "urgent",
+        "tags": [
+          "rotating_light",
+          "rns"
+        ]
+      },
+      "cooldown_s": 1800,
+      "annotation": "Issue #72 \u2014 rnsd accepts the shared-instance socket but the RPC round-trip hangs (rnstatus times out though the listener accepts). Recovery: sudo systemctl restart rnsd, then restart RNS-using services (meshforge-map, tracer)."
+    },
+    {
+      "id": "rns_interface_down_peer_reachable_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "rns_interface_down_peer_reachable",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] RNS interface stuck Down",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning",
+          "rns"
+        ]
+      },
+      "cooldown_s": 1800,
+      "annotation": "#68 family \u2014 a TCPInterface is Down while its peer is TCP-reachable (stuck uplink that won't self-heal). Check rnstatus interface state; bounce rnsd or the uplink interface."
+    },
+    {
+      "id": "fd_exhaustion_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "fd_exhaustion",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] fd exhaustion approaching",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning"
+        ]
+      },
+      "cooldown_s": 1800,
+      "annotation": "Issue #73 \u2014 open fds approaching the soft RLIMIT_NOFILE (proactive companion to http_local; fires BEFORE :5000 wedges with [Errno 24]). Restart the service to clear, then find the fd leak (sudo ls /proc/PID/fd | wc -l)."
     }
   ]
 }
