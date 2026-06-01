@@ -19,6 +19,13 @@
 # never write verified=True without a live check.
 set -euo pipefail
 
+# cron runs with a minimal PATH (/usr/bin:/bin) that omits ~/.local/bin, where the
+# `claude` CLI installs (symlink -> ~/.local/share/claude/versions/*). Without this
+# the launcher fired post-hold but bailed at the `command -v claude` gate five times
+# (2026-05-31) — the second-brain cadence never actually ran. Augment PATH so claude
+# (and any user-local python3/git) resolve the same as an interactive shell.
+export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:$PATH"
+
 DELTAS="${MINI_DELTAS_PATH:-$HOME/mini_dudeai_memory_deltas.jsonl}"
 REPO="${MESHFORGE_REPO:-/opt/meshforge}"
 RUNBOOK="$REPO/.claude/prompts/mini_cadence.md"
