@@ -117,6 +117,7 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
         self._connected = False
         self._stop_event = threading.Event()
         self._reconnect_thread = None
+        self._atexit_registered = False  # register the exit handler only once
 
         # Data storage
         self._nodes: Dict[str, MQTTNode] = {}
@@ -222,6 +223,15 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
 
         mqtt = _mqtt
 
+        # Tear down any prior client before creating a new one. Without this,
+        # every reconnect cycle orphaned the previous paho Client — loop_start()
+        # keeps its network thread + broker socket alive, so file descriptors to
+        # the broker climbed until the process hit its open-files limit
+        # ([Errno 24]), wedging the HTTP server (it could no longer accept()).
+        # Observed in the wild: 298 leaked ESTAB sockets to localhost:1883.
+        if self._client is not None:
+            self._disconnect()
+
         try:
             # Create client - compatible with paho-mqtt v1.x and v2.x
             client_id = f"meshforge_nodeless_{int(time.time())}"
@@ -275,9 +285,12 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
             self._client.connect_async(broker, port, keepalive=60)
             self._client.loop_start()
 
-            # Register atexit handler for clean shutdown
-            import atexit
-            atexit.register(self._atexit_cleanup)
+            # Register atexit handler for clean shutdown — once per instance,
+            # not on every reconnect (each _connect() used to stack a duplicate).
+            if not self._atexit_registered:
+                import atexit
+                atexit.register(self._atexit_cleanup)
+                self._atexit_registered = True
 
             # Wait for connection with timeout
             start_time = time.time()

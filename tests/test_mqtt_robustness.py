@@ -671,3 +671,69 @@ class TestStatsAPI:
         assert stats["node_count"] == 5
         assert stats["with_position"] == 5
         assert stats["nodes_discovered"] == 5
+
+
+# =============================================================================
+# Reconnect FD-leak regression (meshanchor-server 2026-05-31)
+# =============================================================================
+
+class TestReconnectFdLeak:
+    """Each _connect() must tear down the prior paho client before creating a
+    new one. Without that, repeated reconnects orphaned clients whose
+    loop_start() network thread + broker socket stayed alive, leaking file
+    descriptors until the process hit [Errno 24] Too many open files and the
+    HTTP server could no longer accept(). Observed: 298 leaked ESTAB sockets
+    to localhost:1883 on meshanchor-server.
+    """
+
+    def _make_mqtt_module(self):
+        """Build a fake paho module whose Client() returns a fresh mock each call."""
+        fake_mqtt = MagicMock()
+        # No CallbackAPIVersion attr -> exercises the v1.x construction path
+        del fake_mqtt.CallbackAPIVersion
+        created = []
+
+        def _new_client(*args, **kwargs):
+            c = MagicMock(name=f"client{len(created)}")
+            created.append(c)
+            return c
+
+        fake_mqtt.Client.side_effect = _new_client
+        return fake_mqtt, created
+
+    def test_second_connect_tears_down_first_client(self, subscriber):
+        """A reconnect closes the previous client instead of orphaning it."""
+        subscriber._config["connect_timeout"] = 0  # don't block waiting to connect
+        fake_mqtt, created = self._make_mqtt_module()
+
+        with patch("monitoring.mqtt_subscriber._HAS_PAHO_MQTT", True), \
+             patch("monitoring.mqtt_subscriber._mqtt", fake_mqtt):
+            subscriber._connect()
+            first = subscriber._client
+            assert first is created[0]
+
+            subscriber._connect()
+            second = subscriber._client
+
+        # Exactly two clients constructed; the first was torn down, the second
+        # is now current.
+        assert len(created) == 2
+        assert second is created[1]
+        assert second is not first
+        # The orphaned first client was disconnected + its loop stopped.
+        first.disconnect.assert_called()
+        first.loop_stop.assert_called()
+
+    def test_atexit_registered_once_across_reconnects(self, subscriber):
+        """atexit handler is registered once per instance, not per reconnect."""
+        subscriber._config["connect_timeout"] = 0
+        fake_mqtt, _ = self._make_mqtt_module()
+
+        with patch("monitoring.mqtt_subscriber._HAS_PAHO_MQTT", True), \
+             patch("monitoring.mqtt_subscriber._mqtt", fake_mqtt), \
+             patch("atexit.register") as mock_register:
+            subscriber._connect()
+            subscriber._connect()
+            subscriber._connect()
+
+        assert mock_register.call_count == 1
