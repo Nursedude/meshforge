@@ -559,19 +559,38 @@ class MQTTBridgeHandler(BaseMessageHandler):
         except Exception as e:
             logger.debug(f"Event bus emit failed: {e}")
 
+    @staticmethod
+    def _originator_id(data: dict) -> str:
+        """Node ID of the packet's ORIGINATOR, not its MQTT uplinker.
+
+        `sender` is the gateway radio that published the packet to MQTT —
+        on a localhost broker that is ALWAYS this box's own radio, so
+        keying node-tracker updates on it wrote every heard node's
+        nodeinfo/position onto the gateway's own node id (names churned
+        to whichever node was heard last; positions teleported between
+        sites). Same sender-vs-from class as the 9554f06 text-attribution
+        fix. `from` is the originating node; fall back to `sender` only
+        when `from` is absent.
+        """
+        from_num = data.get('from', 0)
+        if from_num:
+            return f"!{from_num:08x}"
+        return data.get('sender', '')
+
     def _update_node_from_mqtt(self, data: dict) -> None:
         """Update node tracker from MQTT message data."""
         try:
             from .node_tracker import UnifiedNode
 
-            from_num = data.get('from', 0)
-            sender = data.get('sender', f"!{from_num:08x}")
+            node_id = self._originator_id(data)
+            if not node_id:
+                return
 
             node = UnifiedNode(
-                id=sender,
-                name=sender,
+                id=node_id,
+                name=node_id,
                 network="meshtastic",
-                meshtastic_id=sender,
+                meshtastic_id=node_id,
             )
             self.node_tracker.add_node(node)
         except Exception as e:
@@ -580,22 +599,22 @@ class MQTTBridgeHandler(BaseMessageHandler):
     def _update_telemetry(self, data: dict) -> None:
         """Update node with telemetry data from MQTT."""
         try:
-            sender = data.get('sender', '')
+            node_id = self._originator_id(data)
             payload = data.get('payload', {})
-            if not isinstance(payload, dict) or not sender:
+            if not isinstance(payload, dict) or not node_id:
                 return
 
             # Device metrics
             device = payload.get('device_metrics', {})
             if device:
-                logger.debug(f"Telemetry from {sender}: "
+                logger.debug(f"Telemetry from {node_id}: "
                             f"battery={device.get('battery_level')}%, "
                             f"chUtil={device.get('channel_utilization')}%")
 
             # Environment metrics
             env = payload.get('environment_metrics', {})
             if env:
-                logger.debug(f"Environment from {sender}: "
+                logger.debug(f"Environment from {node_id}: "
                             f"temp={env.get('temperature')}C, "
                             f"humidity={env.get('relative_humidity')}%")
         except Exception as e:
@@ -604,9 +623,9 @@ class MQTTBridgeHandler(BaseMessageHandler):
     def _update_position(self, data: dict) -> None:
         """Update node position from MQTT for maps."""
         try:
-            sender = data.get('sender', '')
+            node_id = self._originator_id(data)
             payload = data.get('payload', {})
-            if not isinstance(payload, dict) or not sender:
+            if not isinstance(payload, dict) or not node_id:
                 return
 
             lat = payload.get('latitude_i', 0) / 1e7 if payload.get('latitude_i') else None
@@ -614,7 +633,7 @@ class MQTTBridgeHandler(BaseMessageHandler):
             alt = payload.get('altitude')
 
             if lat and lon:
-                logger.debug(f"Position from {sender}: {lat:.6f}, {lon:.6f}")
+                logger.debug(f"Position from {node_id}: {lat:.6f}, {lon:.6f}")
                 # Node tracker update with position would go here
         except Exception as e:
             logger.debug(f"Error processing position: {e}")
@@ -624,9 +643,9 @@ class MQTTBridgeHandler(BaseMessageHandler):
         try:
             from .node_tracker import UnifiedNode
 
-            sender = data.get('sender', '')
+            node_id = self._originator_id(data)
             payload = data.get('payload', {})
-            if not isinstance(payload, dict) or not sender:
+            if not isinstance(payload, dict) or not node_id:
                 return
 
             long_name = payload.get('longname', '')
@@ -634,13 +653,13 @@ class MQTTBridgeHandler(BaseMessageHandler):
             hw_model = payload.get('hardware', '')
 
             node = UnifiedNode(
-                id=sender,
-                name=long_name or short_name or sender,
+                id=node_id,
+                name=long_name or short_name or node_id,
                 network="meshtastic",
-                meshtastic_id=sender,
+                meshtastic_id=node_id,
             )
             self.node_tracker.add_node(node)
-            logger.debug(f"NodeInfo from {sender}: {long_name} ({short_name})")
+            logger.debug(f"NodeInfo from {node_id}: {long_name} ({short_name})")
         except Exception as e:
             logger.debug(f"Error processing nodeinfo: {e}")
 
