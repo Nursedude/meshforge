@@ -273,7 +273,15 @@ back to the mesh node that messaged them. Gated by `rns.reply_routing_enabled`
 carrying bridge-origin markers (`meshforge_source_network`/`meshforge_relayed_by`),
 `[RNS:`/synthetic-ACK content, and peer-gateway sources — peer fan-outs stay
 broadcasts. Memory = in-memory TTL'd LRU (`reply_context.py`), restart loses context
-by design this step. Next in arc: identity SSOT (step 2), sessions (step 3).
+by design this step. **Step (2) shipped same day** (`2f8af9b`): cross-protocol identity
+SSOT — the dormant `ContactMappingTable` wired via new `identity_binding.py`
+(`IdentityBinder`: lazy DB, throttled population from live traffic, conservative
+name-based auto-bind — unambiguous exact-match only, unverified; operator links via
+`scripts/gateway_contacts.py` are verified). Reply chain is now **@addr > field >
+memory > contact > broadcast**; M→R DMs fall back to contact mapping on node_tracker
+miss. Gate `rns.cross_protocol_identity_enabled` (default off; **moc only**). Peer
+gateways/bridge copies never become contacts (reuses the step-1 exclusion guard).
+Next in arc: sessions (step 3).
 
 ---
 
