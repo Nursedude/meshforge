@@ -8,7 +8,7 @@
 #   disabled = unit installed but deliberately enabled=false/inactive (not a fault)
 #   absent   = unit not installed for this role
 version: 0
-updated: "2026-06-01"
+updated: "2026-06-03"
 
 # Role ownership: the MeshForge provisioner converges only roles WITHOUT a
 # `provisioned_by` key. A role with `provisioned_by: <repo>` is documented here
@@ -127,6 +127,18 @@ roles:
       meshforge-cloud-push.timer: enabled
     flags:
       cloud_push_publisher: true
+
+  collector:
+    inherits: full-gateway
+    board_tier: pi4_min_4gb
+    services:
+      meshforge-gateway: disabled     # OVERRIDE full-gateway: collects telemetry + serves
+                                      # map/tiles, does NOT bridge RF. The role for an
+                                      # RF-sparse site where bridging adds nothing — name
+                                      # the box what it IS instead of full-gateway + a
+                                      # per-box override (ratified 2026-06-03; moc2 case).
+                                      # Promote to full-gateway only if relocated to a
+                                      # coverage gap.
 
   gateway-only:
     board_tier: pi3b_1gb_ok           # constrained board

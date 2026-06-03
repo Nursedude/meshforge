@@ -54,6 +54,7 @@ fleet degrades in a way that's expensive to debug.
 | `primary` | Pi 4 / Pi 5 (≥4 GB) | ✓ | ✓ | ✓ | — | ✓ | — | — | ✓ | Canonical memory/repo writer. Drives the cloud-push *source* API. Does not host the bridge. |
 | `full-gateway` | Pi 4 (≥4 GB) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Full NOC node: radio + bridge + map + tiles. |
 | `cloud-publisher` | Pi 4 / Pi 5 (≥4 GB) | ✓ | ✓ | ✓ | **disabled** | ✓ | ✓ | ✓ | ✓ | `full-gateway` **+** the cloud-push timer, **−** the bridge (publishes snapshots, does not bridge RF). Exactly one in the fleet. |
+| `collector` | Pi 4 (≥4 GB) | ✓ | ✓ | ✓ | **disabled** | ✓ | ✓ | — | ✓ | `full-gateway` **−** the bridge: collects telemetry + serves map/tiles at an RF-sparse site where bridging adds nothing. Promote to `full-gateway` only if relocated to a coverage gap. |
 | `gateway-only` | Pi 3B+ (~1 GB ok) | ✓ | ✓ | ✓ | ✓ | **disabled** | — | — | ✓ | Constrained board: bridge + radio, **map server off** (too heavy for ~1 GB). |
 | `meshanchor-noc` | Pi 4 (≥4 GB) | — | ✓ | ✓ | — | (meshanchor map) | — | — | (meshanchor wd) | Sister app ([MeshAnchor](https://github.com/Nursedude/meshanchor)), MeshCore-primary. No MeshForge stack. Radio-less egress to a peer meshtasticd. Provisioned by the MeshAnchor repo, not the MeshForge provisioner. |
 | `bot` *(optional, non-fleet)* | Zero-class (Zero 2 W rec.) | — | — | — | — | — | — | — | — | A dedicated [meshing-around](https://github.com/SpudGunMan/meshing-around) bot. Not a MeshForge node; reaches the mesh via a companion radio. |
@@ -62,7 +63,7 @@ fleet degrades in a way that's expensive to debug.
 > catalog + deltas in structured form, intended to drive a role-aware provisioner.
 
 Roles install via the existing profiles (`scripts/install_noc.sh`, `--profile`)
-— `full` covers `primary`/`full-gateway`/`cloud-publisher`/`gateway-only` with the
+— `full` covers `primary`/`full-gateway`/`cloud-publisher`/`collector`/`gateway-only` with the
 deltas below; `meshanchor-noc` installs from the MeshAnchor repo.
 
 ---

@@ -85,7 +85,7 @@ separate read-only telemetry plane layered on top.
 | **VolcanoAI** | x86 | **primary / federation manager** | map, watchdog, mini-dudeai | meshtasticd (local :9443), rnsd (@rns owner), mosquitto | ❌ delegates | federator :5000 | 2,675 local nodes / 22.2M obs; canonical memory writer |
 | **moc** | Pi4 | **full-gateway** | gateway, map, maps, watchdog | meshtasticd (30d), rnsd (@rns), mosquitto | ✅ bridge_cli | :5000 collector | 3,940 nodes |
 | **moc1** | Pi4/5 | **cloud-publisher** | map, maps, watchdog, cloud-push.timer | meshtasticd (10d), rnsd (@rns), mosquitto | ❌ overridden off | :8808 cloud map | 2,747 nodes |
-| **moc2** | Pi | **full-gateway (declared)** — running as collector | map, maps, watchdog | meshtasticd (**301d — oldest**), rnsd (@rns), mosquitto | ⚠️ **inactive+disabled** (declared role wants it) | :5000 collector | 1,175 nodes |
+| **moc2** | Pi | **collector** (ratified 2026-06-03; was full-gateway + per-box override) | map, maps, watchdog | meshtasticd (**301d — oldest**), rnsd (@rns), mosquitto | ❌ deliberately off — RF-sparse site (~4 nodes heard vs moc's 126) | :5000 collector | 1,175 nodes |
 | **moc3** | Pi3B | **gateway-only** | gateway, watchdog | meshtasticd (/dev/ttyUSB0), rnsd (@rns, **CPU 10.8%**) | ✅ bridge_cli | none (by design) | no node_history.db |
 | **meshanchor-server** | x86 | **meshanchor-noc** | (no /opt/meshforge) | rnsd only, mosquitto | RNS↔MQTT | n/a | federation peer (≈49k nodes, NULL name, ~3.6s latency) |
 | **bot (.32)** | Pi0 W | **meshing_around bot** | mesh_bot.service, mesh-client.service | TCP → AREDN node; no meshtasticd/rnsd | autoresponder | n/a | legacy, not in fleet_hosts |
@@ -179,12 +179,17 @@ diagnosis; these are sequenced proposals.
   drift covered by parity/foundation/version probes feeding mini.
 - **Gap**: capability→service mapping is partly implicit, and **gateway/bridge config
   drift is unprobed** — moc (full-gateway) and moc3 (gateway-only) should share canonical
-  routing config, but nothing asserts it. **Live proof on this date**: moc2 is *declared*
-  `full-gateway` in `deployment.json` yet its `meshforge-gateway` is **inactive AND
-  disabled** — the provisioner runs dry-run by default, so the drift was never converged
-  and nothing alerted on it. This is the exact failure class this theme closes. The
-  unrealized "rns-meshtastic-gateway" env-management tool (single owner of the
-  RNS+meshtastic substrate setup) belongs here.
+  routing config, but nothing asserts it. **Live case study (this date)**: moc2 carried
+  role `full-gateway` with a per-box `service_overrides` deliberately disabling the bridge
+  (RF-sparse site, documented reason) — the declared model was *correct*, but the fleet
+  role check surfaces only the base role name, so the topology read "full-gateway" while
+  the box intentionally doesn't bridge. Two diagnoses misread it before anyone opened
+  `deployment.json`. Resolution: ratified a **`collector` role** (inherits full-gateway,
+  bridge disabled) so the role *name* says what the box *is*; overrides stay for true
+  one-off exceptions. The future drift probe must compare **effective state vs effective
+  declaration (base role + overrides)** and surface override reasons — not just role
+  names. The unrealized "rns-meshtastic-gateway" env-management tool (single owner of
+  the RNS+meshtastic substrate setup) also belongs here.
 - **Steps**: (1) a **gateway-config drift probe** following the proven
   audit-organ → Signal → mini pattern (same shape as `probe_parity_drift`); (2)
   provisioner `--apply` soak (currently dry-run default); (3) a **declarative capability
@@ -223,10 +228,12 @@ diagnosis; these are sequenced proposals.
 3. **Federation peer = meshanchor-server (NULL name, ~49k nodes)** — known cross-NOC pull;
    decide ingest policy and fix peer_name (§7-C). A bare-IP NULL-name peer also periodically
    re-escalates in mini as "unexpected" — it is a known member.
-4. **moc2 declared-role drift** — `deployment.json` role is `full-gateway` but
-   `meshforge-gateway` is inactive+disabled (running as a collector). Decide the intent
-   (is moc2 meant to gateway or not?) then either converge via provisioner `--apply` or
-   correct the declared role. Concrete motivation for the §7-B drift probe.
+4. **moc2 role-name visibility (RESOLVED 2026-06-03)** — initially read as drift; in fact
+   `deployment.json` carried a documented `service_overrides` disabling the bridge
+   (RF-sparse site). Operator ratified intent ("not meant to bridge at this time") →
+   new `collector` role added to `fleet_roles.yaml` + moc2 re-declared. Residual lesson
+   for §7-B: role names must be legible at fleet-check level; drift probes must reason
+   over base-role + overrides, and surface override *reasons*.
 
 ---
 
