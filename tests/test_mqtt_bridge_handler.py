@@ -288,3 +288,101 @@ class TestSourceAttribution:
         handler._message_queue.put.assert_called_once()
         msg = handler._message_queue.put.call_args.args[0]
         assert msg.source_id == "!aabb0042"
+
+
+class TestDmToGatewayChannelWildcard:
+    """Theme-A step 3 radio-smoke finding (2026-06-03): DMs ride the PRIMARY
+    channel, whose name the config doesn't know — channel-scoped json
+    subscriptions could never deliver a DM-to-gateway to the bridge. When
+    the leg is armed, the json subscription widens to a wildcard and the
+    channel scope is enforced per-message instead: configured channel
+    passes as before; foreign channels pass ONLY when addressed to the
+    gateway's own node."""
+
+    OWN = "!ebfa1b11"
+    OWN_NUM = 0xEBFA1B11
+
+    def _armed_handler(self):
+        h = _make_bridge_handler(own_id=self.OWN)
+        h.config.rns.sessions_enabled = True
+        h.config.mqtt_bridge.channel = "meshforge"
+        return h
+
+    def test_node_num_when_armed(self):
+        h = self._armed_handler()
+        assert h._dm_to_gateway_node_num() == self.OWN_NUM
+
+    def test_node_num_dormant_when_flag_not_strict_true(self):
+        h = _make_bridge_handler(own_id=self.OWN)  # MagicMock flag
+        assert h._dm_to_gateway_node_num() is None
+
+    def test_node_num_dormant_when_id_invalid(self):
+        h = _make_bridge_handler(own_id="nothex")
+        h.config.rns.sessions_enabled = True
+        assert h._dm_to_gateway_node_num() is None
+
+    def test_topic_channel_name_both_shapes(self):
+        f = MQTTBridgeHandler._topic_channel_name
+        assert f("msh/US/2/json/meshforge/!ebfa1b11") == "meshforge"
+        assert f("msh/2/json/PrimaryChan/!ebfa1b11") == "PrimaryChan"
+        assert f("msh/2/e/meshforge/!ebfa1b11") is None
+
+    def test_on_connect_armed_subscribes_wildcard(self):
+        h = self._armed_handler()
+        h.config.mqtt_bridge.root_topic = "msh"
+        h.config.mqtt_bridge.json_enabled = True
+        h.config.mqtt_bridge.broker = "localhost"
+        h.config.mqtt_bridge.port = 1883
+        client = MagicMock()
+
+        h._on_connect(client, None, None, 0)
+
+        topics = [c.args[0] for c in client.subscribe.call_args_list]
+        assert "msh/+/2/json/+/#" in topics
+        assert "msh/2/json/+/#" in topics
+
+    def test_on_connect_dormant_subscribes_scoped(self):
+        h = _make_bridge_handler(own_id=self.OWN)  # flag MagicMock → dormant
+        h.config.mqtt_bridge.root_topic = "msh"
+        h.config.mqtt_bridge.channel = "meshforge"
+        h.config.mqtt_bridge.json_enabled = True
+        h.config.mqtt_bridge.broker = "localhost"
+        h.config.mqtt_bridge.port = 1883
+        client = MagicMock()
+
+        h._on_connect(client, None, None, 0)
+
+        topics = [c.args[0] for c in client.subscribe.call_args_list]
+        assert "msh/+/2/json/meshforge/#" in topics
+        assert "msh/+/2/json/+/#" not in topics
+
+    def test_foreign_channel_broadcast_dropped(self):
+        h = self._armed_handler()
+        h._bridge_text_message(
+            {"sender": "!ebfa1b11", "from": 0xAABB0042, "to": 0xFFFFFFFF,
+             "payload": {"text": "primary-channel chatter"}, "channel": 0},
+            topic="msh/2/json/PrimaryChan/!ebfa1b11",
+        )
+        h._message_queue.put.assert_not_called()
+
+    def test_foreign_channel_dm_to_gateway_passes(self):
+        h = self._armed_handler()
+        h._bridge_text_message(
+            {"sender": "!ebfa1b11", "from": 0xAABB0042, "to": self.OWN_NUM,
+             "payload": {"text": "smoke B private"}, "channel": 0},
+            topic="msh/2/json/PrimaryChan/!ebfa1b11",
+        )
+        h._message_queue.put.assert_called_once()
+        msg = h._message_queue.put.call_args.args[0]
+        assert msg.destination_id == self.OWN
+        assert msg.is_broadcast is False
+        assert msg.source_id == "!aabb0042"
+
+    def test_configured_channel_still_passes_when_armed(self):
+        h = self._armed_handler()
+        h._bridge_text_message(
+            {"sender": "!ebfa1b11", "from": 0xAABB0042, "to": 0xFFFFFFFF,
+             "payload": {"text": "normal channel msg"}, "channel": 2},
+            topic="msh/US/2/json/meshforge/!ebfa1b11",
+        )
+        h._message_queue.put.assert_called_once()

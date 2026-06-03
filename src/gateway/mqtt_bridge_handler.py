@@ -30,6 +30,7 @@ Usage:
 
 import json
 import logging
+import re
 import subprocess
 import threading
 import time
@@ -249,6 +250,36 @@ class MQTTBridgeHandler(BaseMessageHandler):
             self._connected = False
             return False
 
+    def _dm_to_gateway_node_num(self):
+        """Gateway's own node number when the DM-to-gateway leg is armed.
+
+        Theme-A step 3. Returns the int node number iff
+        rns.sessions_enabled is strictly True AND
+        meshtastic.gateway_node_id parses as !hex8; else None (leg
+        dormant — MQTT subscriptions and filtering stay exactly legacy).
+        """
+        rns_cfg = getattr(self.config, 'rns', None)
+        if getattr(rns_cfg, 'sessions_enabled', False) is not True:
+            return None
+        mesh_cfg = getattr(self.config, 'meshtastic', None)
+        raw = getattr(mesh_cfg, 'gateway_node_id', '') or ''
+        if not isinstance(raw, str):
+            return None
+        norm = raw.strip().lower()
+        if not re.match(r'^![0-9a-f]{8}$', norm):
+            return None
+        return int(norm[1:], 16)
+
+    @staticmethod
+    def _topic_channel_name(topic: str):
+        """Channel name segment from msh/.../2/json/{CHANNEL}/{NODE}."""
+        parts = topic.split('/')
+        try:
+            idx = parts.index('json')
+        except ValueError:
+            return None
+        return parts[idx + 1] if len(parts) > idx + 1 else None
+
     def _on_connect(self, client, userdata, flags, rc):
         """MQTT connect callback - subscribe to meshtasticd topics."""
         if rc == 0:
@@ -263,7 +294,18 @@ class MQTTBridgeHandler(BaseMessageHandler):
             chan = mqtt_cfg.channel
 
             if mqtt_cfg.json_enabled:
-                for t in (f"{root}/+/2/json/{chan}/#", f"{root}/2/json/{chan}/#"):
+                # Theme-A step 3 (radio-smoke finding 2026-06-03): DMs ride
+                # the PRIMARY channel, whose NAME this config doesn't know —
+                # a DM-to-gateway published under .../json/<primary>/... can
+                # never match a channel-scoped subscription. When the
+                # DM-to-gateway leg is armed, subscribe the json wildcard and
+                # filter per-message in _bridge_text_message (configured
+                # channel passes as before; foreign channels pass ONLY when
+                # addressed to the gateway's own node). Leg dormant = exactly
+                # the legacy scoped subscriptions.
+                json_chan = "+" if self._dm_to_gateway_node_num() is not None else chan
+                for t in (f"{root}/+/2/json/{json_chan}/#",
+                          f"{root}/2/json/{json_chan}/#"):
                     client.subscribe(t)
                     logger.debug(f"Subscribed to JSON topic: {t}")
 
@@ -397,6 +439,23 @@ class MQTTBridgeHandler(BaseMessageHandler):
 
         if not text:
             return
+
+        # Theme-A step 3: with the DM-to-gateway leg armed, the json
+        # subscription is a channel wildcard — enforce the channel scope
+        # here instead. Configured-channel traffic passes exactly as
+        # before; a foreign channel (e.g. the primary, which carries DMs)
+        # passes ONLY when the packet is addressed to the gateway's own
+        # node. Everything else on foreign channels is dropped.
+        own_num = self._dm_to_gateway_node_num()
+        if own_num is not None:
+            topic_chan = self._topic_channel_name(topic)
+            cfg_chan = getattr(self.config.mqtt_bridge, 'channel', None)
+            if (topic_chan is not None and cfg_chan
+                    and topic_chan != cfg_chan and to_num != own_num):
+                logger.debug(
+                    f"Foreign-channel packet ignored ({topic_chan}, "
+                    f"to=!{to_num:08x})")
+                return
 
         # Loop guard: a leading [RNS:xxxx] tag marks content a gateway
         # already injected FROM the RNS network — it is by definition already
