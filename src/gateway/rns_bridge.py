@@ -286,7 +286,10 @@ class RNSMeshtasticBridge(
 
         # Theme-A step 2: cross-protocol identity SSOT. Lazy — opens no DB
         # until first gated use (rns.cross_protocol_identity_enabled).
-        self._identity = IdentityBinder(
+        # NOTE: named _identity_binder, NOT _identity — that slot is the
+        # RNS Identity object, overwritten by the connection mixin on RNS
+        # connect (the smoke test caught the collision live, 2026-06-03).
+        self._identity_binder = IdentityBinder(
             throttle_sec=getattr(_rns_cfg, 'identity_population_throttle_sec', None),
             max_contacts=getattr(_rns_cfg, 'identity_max_contacts', None),
         )
@@ -488,7 +491,7 @@ class RNSMeshtasticBridge(
                 message_callback=self._notify_message,
                 status_callback=lambda status: self._notify_status(status),
                 should_bridge=self._router.should_bridge,
-                identity_binder=self._identity,
+                identity_binder=self._identity_binder,
             )
             # Register MeshCore sender with persistent queue
             if self._persistent_queue:

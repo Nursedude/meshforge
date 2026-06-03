@@ -3540,9 +3540,9 @@ class TestIdentityReplyContactRung:
         bridge.config.rns.reply_routing_enabled = True
         bridge.config.rns.cross_protocol_identity_enabled = True
         bridge.config.rns.get_peer_gateway_destinations.return_value = []
-        bridge._identity = IdentityBinder(
+        bridge._identity_binder = IdentityBinder(
             db_path=str(tmp_path / "contacts.db"), throttle_sec=0.0001)
-        return bridge._identity
+        return bridge._identity_binder
 
     def _msg(self, content="my reply", fields=None):
         from gateway.rns_bridge import BridgedMessage
@@ -3634,9 +3634,9 @@ class TestIdentityM2RFallback:
     def _enable(self, bridge, tmp_path):
         from gateway.identity_binding import IdentityBinder
         bridge.config.rns.cross_protocol_identity_enabled = True
-        bridge._identity = IdentityBinder(
+        bridge._identity_binder = IdentityBinder(
             db_path=str(tmp_path / "contacts.db"), throttle_sec=0.0001)
-        return bridge._identity
+        return bridge._identity_binder
 
     def test_tracker_miss_binder_hit(self, bridge, tmp_path):
         binder = self._enable(bridge, tmp_path)
@@ -3672,7 +3672,25 @@ class TestIdentityM2RFallback:
         bridge.node_tracker.get_node_by_mesh_id.return_value = None
 
         assert bridge._get_rns_destination("!aabb0042") is None
-        assert bridge._identity._table is None
+        assert bridge._identity_binder._table is None
+
+    def test_binder_survives_rns_identity_assignment(self, bridge, tmp_path):
+        """Regression — caught LIVE by the 2026-06-03 radio smoke: the RNS
+        connection mixin overwrites self._identity with the RNS Identity
+        object on connect ('Identity' object has no attribute 'populate').
+        The binder must live on its own attribute (_identity_binder) so a
+        real RNS connect can never stomp it. Tests alone missed this
+        because the fixture never connects RNS."""
+        binder = self._enable(bridge, tmp_path)
+        binder.link("Alice", "meshtastic", "!aabb0042")
+        binder.link("Alice", "rns", self.RNS_HASH)
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
+        # What the connection mixin does on RNS connect:
+        bridge._identity = MagicMock(spec=[])  # no populate/resolve attrs
+
+        dest = bridge._get_rns_destination("!aabb0042")
+
+        assert dest == bytes.fromhex(self.RNS_HASH)
 
 
 class TestIdentityPopulation:
@@ -3685,9 +3703,9 @@ class TestIdentityPopulation:
         from gateway.identity_binding import IdentityBinder
         bridge.config.rns.cross_protocol_identity_enabled = True
         bridge.config.rns.get_peer_gateway_destinations.return_value = []
-        bridge._identity = IdentityBinder(
+        bridge._identity_binder = IdentityBinder(
             db_path=str(tmp_path / "contacts.db"), throttle_sec=0.0001)
-        return bridge._identity
+        return bridge._identity_binder
 
     def test_m2r_populates_mesh_sender(self, bridge, tmp_path):
         from gateway.rns_bridge import BridgedMessage
@@ -3793,7 +3811,7 @@ class TestIdentityFlagOffInertness:
         with patch.object(bridge, 'send_to_meshtastic', return_value=True):
             bridge._process_rns_to_mesh(r2m)
 
-        assert bridge._identity._table is None
+        assert bridge._identity_binder._table is None
         assert bridge.stats['reply_routed_from_contact'] == 0
         assert bridge.stats['identity_resolved_m2r'] == 0
 

@@ -16,6 +16,7 @@ Host class must provide:
 - self.send_to_meshtastic(content, destination, channel)
 - self._get_rns_destination(meshtastic_id) (defined here; override-able)
 - self._reply_context (ReplyContextStore — Theme-A reply routing)
+- self._identity_binder (IdentityBinder — Theme-A identity SSOT)
 """
 
 import logging
@@ -205,7 +206,7 @@ class MessageTransformMixin:
             # synthetic content never does.
             if (self._identity_on() and msg.source_id
                     and not self._reply_excluded(content, {})):
-                self._identity.populate(
+                self._identity_binder.populate(
                     'meshtastic', msg.source_id.lower(), long_name)
 
             fields = {
@@ -355,7 +356,7 @@ class MessageTransformMixin:
             if node and hasattr(node, 'rns_hash') and node.rns_hash:
                 return node.rns_hash
         if self._identity_on() and meshtastic_id:
-            rns_hex = self._identity.resolve(
+            rns_hex = self._identity_binder.resolve(
                 'meshtastic', meshtastic_id.lower(), 'rns')
             if rns_hex:
                 try:
@@ -527,7 +528,7 @@ class MessageTransformMixin:
                         rns_name = node.name or ""
                 except (ValueError, TypeError, AttributeError):
                     pass
-                self._identity.populate(
+                self._identity_binder.populate(
                     'rns', msg.source_id.lower(), rns_name)
 
             destination = None
@@ -567,7 +568,7 @@ class MessageTransformMixin:
                         destination = resolved
                         reply_route = "memory"
                 if destination is None and self._identity_on():
-                    mesh_addr = self._identity.resolve(
+                    mesh_addr = self._identity_binder.resolve(
                         'rns', (msg.source_id or '').lower(), 'meshtastic')
                     if mesh_addr:
                         # Re-validate through the same path the token rungs
