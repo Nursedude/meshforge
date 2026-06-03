@@ -379,6 +379,15 @@ class RNSConfig:
     # M→R fan-out list (operator NomadNet inboxes). Same single-or-list
     # shape as default_lxmf_destination.
     peer_gateway_destinations: Any = ""
+    # Theme-A step 1 — reply routing. When True, the bridge records which
+    # mesh node last messaged each RNS peer (reply-context memory) and
+    # honors reply addressing on R→M: explicit @addr > echoed
+    # meshforge_reply_to field > reply-context memory > broadcast.
+    # Default False (observe-first rollout); the meshforge_reply_to LXMF
+    # field is emitted M→R regardless (pure metadata).
+    reply_routing_enabled: bool = False
+    reply_context_ttl_sec: int = 86400      # forget a peer's thread after ~24h
+    reply_context_max_entries: int = 1024   # LRU cap on remembered peers
 
     def get_lxmf_destinations(self) -> List[str]:
         """Return default_lxmf_destination normalized to a list of non-empty hex strings."""

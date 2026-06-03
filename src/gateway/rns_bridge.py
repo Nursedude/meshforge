@@ -65,6 +65,7 @@ PersistentMessageQueue, MessagePriority, HAS_PERSISTENT_QUEUE = safe_import(
 )
 
 from .message_routing import MessageRouter
+from .reply_context import ReplyContextStore
 from .meshcore_bridge_mixin import MeshCoreBridgeMixin
 from ._rns_bridge_connection import RNSConnectionMixin
 from ._rns_bridge_xform import MessageTransformMixin
@@ -258,7 +259,21 @@ class RNSMeshtasticBridge(
             'errors': 0,
             'bounced': 0,
             'start_time': None,
+            # Theme-A step 1: R→M downlinks auto-directed by reply routing
+            # (echoed meshforge_reply_to field vs reply-context memory).
+            'reply_routed_from_field': 0,
+            'reply_routed_from_memory': 0,
         }
+
+        # Theme-A step 1: reply-context memory (peer LXMF hash → canonical
+        # reply token of the mesh node that last messaged them). Recording
+        # and honoring are gated by rns.reply_routing_enabled; the store
+        # itself is always constructed (cheap, passive).
+        _rns_cfg = getattr(self.config, 'rns', None)
+        self._reply_context = ReplyContextStore(
+            ttl_sec=getattr(_rns_cfg, 'reply_context_ttl_sec', None),
+            max_entries=getattr(_rns_cfg, 'reply_context_max_entries', None),
+        )
 
         # Persistent message queue for reliable delivery
         # Note: Meshtastic sender registered after handler init below

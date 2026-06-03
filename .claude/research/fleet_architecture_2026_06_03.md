@@ -262,7 +262,18 @@ dry-run `plan()` as a continuously-monitored signal, overrides honored, 2-tick
 debounce, `role_drift_any` mini rule promoted on all 5 boxes, verified clean live
 (streak=0 fleet-wide). Remaining in the effective-config family: cross-box
 gateway.json comparison through `GatewayConfig` (fleet-level organ, future);
-(4) the §7-A arc — **the next session's work**.
+(4) the §7-A arc — **step (1) shipped 2026-06-03**: canonical reply-to round-trip +
+gateway reply-context memory. `meshforge_reply_to` (protocol-qualified token,
+`format_reply_token`/`parse_reply_token` in `canonical_message.py`, byte-parity-ported
+to MeshAnchor) emitted on every M→R send; R→M honors **explicit `@addr` > echoed
+field > reply-context memory > broadcast**, so a stock NomadNet reply auto-directs
+back to the mesh node that messaged them. Gated by `rns.reply_routing_enabled`
+(default off; **enabled on moc only** for observation — watch `(reply:field)`/
+`(reply:ctx)` journal tags + `reply_routed_from_*` stats). Honor excludes anything
+carrying bridge-origin markers (`meshforge_source_network`/`meshforge_relayed_by`),
+`[RNS:`/synthetic-ACK content, and peer-gateway sources — peer fan-outs stay
+broadcasts. Memory = in-memory TTL'd LRU (`reply_context.py`), restart loses context
+by design this step. Next in arc: identity SSOT (step 2), sessions (step 3).
 
 ---
 

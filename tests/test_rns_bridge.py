@@ -3197,3 +3197,333 @@ class TestAckSynthesisIssue66:
         )
         # msg_id still returned — the message was enqueued successfully.
         assert msg_id == "msg-id-4"
+
+
+class TestReplyRoutingMeshToRNS:
+    """Theme-A step 1 — M→R emit (always) + reply-context record (gated)."""
+
+    DEST = "6b1a0120941444587d7d1dc1bf6d64d7"
+    DEST2 = "7c2b1231a52555698e8e2ed2c07e75e8"
+
+    def _msg(self, content="hello", source_id="!aabb0042"):
+        from gateway.rns_bridge import BridgedMessage
+        return BridgedMessage(
+            source_network="meshtastic", source_id=source_id,
+            destination_id=None, content=content,
+        )
+
+    def test_reply_to_field_emitted_even_when_flag_off(self, bridge):
+        """meshforge_reply_to is pure metadata — emitted regardless of gate."""
+        bridge.config.rns.reply_routing_enabled = False
+        bridge.config.rns.get_lxmf_destinations.return_value = [self.DEST]
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
+        captured = {}
+
+        def capture_send(content, dest_hash=None, title=None, fields=None):
+            captured["fields"] = fields
+            return True
+
+        with patch.object(bridge, 'send_to_rns', side_effect=capture_send):
+            bridge._process_mesh_to_rns(self._msg())
+
+        assert captured["fields"]["meshforge_reply_to"] == "meshtastic:!aabb0042"
+
+    def test_records_context_when_enabled(self, bridge):
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_lxmf_destinations.return_value = [self.DEST]
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+
+        with patch.object(bridge, 'send_to_rns', return_value=True):
+            bridge._process_mesh_to_rns(self._msg())
+
+        assert bridge._reply_context.get(self.DEST) == "meshtastic:!aabb0042"
+
+    def test_no_record_when_flag_off(self, bridge):
+        bridge.config.rns.reply_routing_enabled = False
+        bridge.config.rns.get_lxmf_destinations.return_value = [self.DEST]
+
+        with patch.object(bridge, 'send_to_rns', return_value=True):
+            bridge._process_mesh_to_rns(self._msg())
+
+        assert len(bridge._reply_context) == 0
+
+    def test_magicmock_flag_reads_as_off(self, bridge):
+        """Guard #3: a truthy-but-not-True flag (MagicMock / bad JSON) is OFF.
+
+        The fixture's config.rns is a MagicMock, so reply_routing_enabled
+        is a truthy auto-attribute — the strict `is True` read must treat
+        it as disabled so the whole legacy suite keeps flag-off behavior.
+        """
+        bridge.config.rns.get_lxmf_destinations.return_value = [self.DEST]
+
+        with patch.object(bridge, 'send_to_rns', return_value=True):
+            bridge._process_mesh_to_rns(self._msg())
+
+        assert len(bridge._reply_context) == 0
+
+    def test_broadcast_fanout_records_each_peer(self, bridge):
+        """The NomadNet case: fan-out to N inboxes remembers each thread."""
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_lxmf_destinations.return_value = [
+            self.DEST, self.DEST2,
+        ]
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+
+        with patch.object(bridge, 'send_to_rns', return_value=True):
+            bridge._process_mesh_to_rns(self._msg())
+
+        assert bridge._reply_context.get(self.DEST) == "meshtastic:!aabb0042"
+        assert bridge._reply_context.get(self.DEST2) == "meshtastic:!aabb0042"
+
+    def test_peer_gateway_destination_not_recorded(self, bridge):
+        """Infrastructure threads never reply — don't remember them."""
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_lxmf_destinations.return_value = [
+            self.DEST, self.DEST2,
+        ]
+        bridge.config.rns.get_peer_gateway_destinations.return_value = [self.DEST2]
+
+        with patch.object(bridge, 'send_to_rns', return_value=True):
+            bridge._process_mesh_to_rns(self._msg())
+
+        assert bridge._reply_context.get(self.DEST) == "meshtastic:!aabb0042"
+        assert bridge._reply_context.get(self.DEST2) is None
+
+    def test_already_bridged_content_not_recorded(self, bridge):
+        """[RNS:-tagged content is a re-bridge, not a fresh mesh thread."""
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_lxmf_destinations.return_value = [self.DEST]
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+
+        with patch.object(bridge, 'send_to_rns', return_value=True):
+            bridge._process_mesh_to_rns(self._msg(content="[RNS:abcd] echo"))
+
+        assert len(bridge._reply_context) == 0
+
+    def test_ack_synthetic_not_recorded(self, bridge):
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_lxmf_destinations.return_value = [self.DEST]
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+
+        with patch.object(bridge, 'send_to_rns', return_value=True):
+            bridge._process_mesh_to_rns(
+                self._msg(content="[delivered: abcd1234]"))
+
+        assert len(bridge._reply_context) == 0
+
+    def test_failed_send_not_recorded(self, bridge):
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_lxmf_destinations.return_value = [self.DEST]
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+
+        with patch.object(bridge, 'send_to_rns', return_value=False), \
+             patch.object(bridge, '_requeue_failed_message', return_value=False):
+            bridge._process_mesh_to_rns(self._msg())
+
+        assert len(bridge._reply_context) == 0
+
+
+class TestReplyRoutingRNSToMesh:
+    """Theme-A step 1 — R→M honor precedence:
+    explicit @addr > echoed meshforge_reply_to field > memory > broadcast.
+    """
+
+    PEER = "abcd0123abcd0123abcd0123abcd0123"
+
+    def _msg(self, content="my reply", fields=None, source_id=None):
+        from gateway.rns_bridge import BridgedMessage
+        return BridgedMessage(
+            source_network="rns", source_id=source_id or self.PEER,
+            destination_id=None, content=content,
+            metadata={"lxmf_fields": fields} if fields else {},
+        )
+
+    def _capture(self, bridge, msg):
+        captured = {}
+
+        def capture_send(content, destination=None, channel=0):
+            captured["content"] = content
+            captured["destination"] = destination
+            return True
+
+        with patch.object(bridge, 'send_to_meshtastic', side_effect=capture_send):
+            bridge._process_rns_to_mesh(msg)
+        return captured
+
+    def test_explicit_addr_wins_over_field_and_memory(self, bridge):
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+        bridge._reply_context.record(self.PEER, "meshtastic:!55556666")
+        msg = self._msg(
+            content="@!11112222 hello",
+            fields={"meshforge_reply_to": "meshtastic:!33334444"},
+        )
+
+        captured = self._capture(bridge, msg)
+
+        assert captured["destination"] == "!11112222"
+        assert "@!11112222" not in captured["content"]
+
+    def test_field_honored_when_no_explicit_addr(self, bridge):
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+        msg = self._msg(fields={"meshforge_reply_to": "meshtastic:!33334444"})
+
+        captured = self._capture(bridge, msg)
+
+        assert captured["destination"] == "!33334444"
+        assert bridge.stats['reply_routed_from_field'] == 1
+        assert bridge.stats['reply_routed_from_memory'] == 0
+
+    def test_memory_honored_when_no_field(self, bridge):
+        """The stock-NomadNet case: no @addr, no echoed fields — the
+        reply-context memory threads the reply back."""
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+        bridge._reply_context.record(self.PEER, "meshtastic:!55556666")
+
+        captured = self._capture(bridge, self._msg())
+
+        assert captured["destination"] == "!55556666"
+        assert bridge.stats['reply_routed_from_memory'] == 1
+
+    def test_field_wins_over_memory(self, bridge):
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+        bridge._reply_context.record(self.PEER, "meshtastic:!55556666")
+        msg = self._msg(fields={"meshforge_reply_to": "meshtastic:!33334444"})
+
+        captured = self._capture(bridge, msg)
+
+        assert captured["destination"] == "!33334444"
+
+    def test_broadcast_fallback_when_nothing_resolves(self, bridge):
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+
+        captured = self._capture(bridge, self._msg())
+
+        assert captured["destination"] is None
+
+    def test_flag_off_ignores_field_and_memory(self, bridge):
+        """Flag-off keeps legacy broadcast behavior byte-for-byte."""
+        bridge.config.rns.reply_routing_enabled = False
+        bridge._reply_context.record(self.PEER, "meshtastic:!55556666")
+        msg = self._msg(fields={"meshforge_reply_to": "meshtastic:!33334444"})
+
+        captured = self._capture(bridge, msg)
+
+        assert captured["destination"] is None
+        assert captured["content"].startswith("[RNS:abcd] ")
+        assert bridge.stats['reply_routed_from_field'] == 0
+        assert bridge.stats['reply_routed_from_memory'] == 0
+
+    def test_bridge_origin_fanout_not_honored(self, bridge):
+        """Guard #1: a PEER gateway's M→R fan-out carries meshforge_*
+        markers AND a reply_to token — it is a broadcast to re-broadcast,
+        never a reply to auto-direct."""
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+        msg = self._msg(fields={
+            "meshforge_source_network": "meshtastic",
+            "meshforge_from_id": "!a2e95ba4",
+            "meshforge_from_short": "BORG",
+            "meshforge_reply_to": "meshtastic:!a2e95ba4",
+        })
+
+        captured = self._capture(bridge, msg)
+
+        assert captured["destination"] is None
+
+    def test_relayed_copy_not_honored(self, bridge):
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+        bridge._reply_context.record(self.PEER, "meshtastic:!55556666")
+        msg = self._msg(fields={
+            "meshforge_relayed_by": "beef0000beef0000beef0000beef0000",
+        })
+
+        captured = self._capture(bridge, msg)
+
+        assert captured["destination"] is None
+
+    def test_peer_gateway_source_not_honored(self, bridge):
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_peer_gateway_destinations.return_value = [self.PEER]
+        bridge._reply_context.record(self.PEER, "meshtastic:!55556666")
+
+        captured = self._capture(bridge, self._msg())
+
+        assert captured["destination"] is None
+
+    def test_synthetic_ack_not_honored(self, bridge):
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+        bridge._reply_context.record(self.PEER, "meshtastic:!55556666")
+
+        captured = self._capture(
+            bridge, self._msg(content="[delivered: abcd1234]"))
+
+        assert captured["destination"] is None
+
+    def test_unresolvable_field_falls_back_to_memory(self, bridge):
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+        bridge._reply_context.record(self.PEER, "meshtastic:!55556666")
+        # rns-protocol token isn't honorable on the mesh leg this step.
+        msg = self._msg(fields={"meshforge_reply_to": "rns:" + "ee" * 16})
+
+        captured = self._capture(bridge, msg)
+
+        assert captured["destination"] == "!55556666"
+        assert bridge.stats['reply_routed_from_memory'] == 1
+
+    def test_unresolvable_everything_broadcasts(self, bridge):
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+        bridge.node_tracker.get_node_by_short_name.return_value = None
+        msg = self._msg(fields={"meshforge_reply_to": "meshtastic:not-a-node"})
+
+        captured = self._capture(bridge, msg)
+
+        assert captured["destination"] is None
+
+
+class TestReplyRoutingEndToEnd:
+    """Theme-A step 1 happy path on one bridge instance: M→R records the
+    thread, then a bare reply (no @addr, no fields — stock NomadNet) from
+    that peer auto-directs back to the original mesh sender."""
+
+    PEER = "6b1a0120941444587d7d1dc1bf6d64d7"
+
+    def test_round_trip_reply_threads_back(self, bridge):
+        from gateway.rns_bridge import BridgedMessage
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_lxmf_destinations.return_value = [self.PEER]
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
+
+        outbound = BridgedMessage(
+            source_network="meshtastic", source_id="!aabb0042",
+            destination_id=None, content="anyone copy?",
+        )
+        with patch.object(bridge, 'send_to_rns', return_value=True):
+            bridge._process_mesh_to_rns(outbound)
+
+        reply = BridgedMessage(
+            source_network="rns", source_id=self.PEER,
+            destination_id=None, content="copy loud and clear",
+        )
+        captured = {}
+
+        def capture_send(content, destination=None, channel=0):
+            captured["content"] = content
+            captured["destination"] = destination
+            return True
+
+        with patch.object(bridge, 'send_to_meshtastic', side_effect=capture_send):
+            bridge._process_rns_to_mesh(reply)
+
+        assert captured["destination"] == "!aabb0042"
+        assert "copy loud and clear" in captured["content"]
+        assert bridge.stats['reply_routed_from_memory'] == 1

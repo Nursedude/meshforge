@@ -15,20 +15,97 @@ Host class must provide:
 - self.send_to_rns(content, destination_hash, *, title, fields)
 - self.send_to_meshtastic(content, destination, channel)
 - self._get_rns_destination(meshtastic_id) (defined here; override-able)
+- self._reply_context (ReplyContextStore — Theme-A reply routing)
 """
 
 import logging
 import re
 from typing import Optional
 
-from .base_handler import chunk_for_mesh
+from .base_handler import chunk_for_mesh, is_already_bridged
+from .canonical_message import format_reply_token, parse_reply_token
 from .message_queue import MessagePriority
 
 logger = logging.getLogger(__name__)
 
+# Synthetic / bridge-tag content prefixes excluded from reply routing.
+# [delivered:/[failed:/[timeout: are Issue #66 ACK synthetics; [Mesh:/[MC:/
+# [ch are sibling-bridge injection tags (MeshAnchor re-emit shapes). None of
+# these is a human reply, so they must neither seed the reply-context memory
+# nor be auto-directed as a downlink ([RNS: is covered separately by
+# is_already_bridged).
+_REPLY_EXCLUDED_PREFIXES = (
+    "[delivered:", "[failed:", "[timeout:", "[Mesh:", "[MC:", "[ch",
+)
+
 
 class MessageTransformMixin:
     """Mixin: bidirectional Mesh↔RNS message processing + queue requeue."""
+
+    # --- Theme-A step 1: reply routing helpers ---
+
+    def _reply_routing_on(self) -> bool:
+        """Strict read of rns.reply_routing_enabled (default False).
+
+        ``is True`` deliberately: MagicMock test configs and malformed
+        gateway.json values are truthy-but-not-True and must read as OFF,
+        preserving legacy broadcast behavior everywhere the flag wasn't
+        explicitly enabled.
+        """
+        rns_cfg = getattr(self.config, 'rns', None)
+        return getattr(rns_cfg, 'reply_routing_enabled', False) is True
+
+    def _peer_gateway_hash_set(self) -> set:
+        """Normalized lowercase set of peer gateway LXMF hashes."""
+        try:
+            peer_hexes = self.config.rns.get_peer_gateway_destinations()
+        except (AttributeError, TypeError):
+            return set()
+        if not isinstance(peer_hexes, (list, tuple)):
+            return set()
+        return {
+            h.lower() for h in peer_hexes
+            if isinstance(h, str) and len(h) == 32
+        }
+
+    def _reply_excluded(self, body: str, lxmf_fields: dict,
+                        source_id: str = '') -> bool:
+        """True when a message must not participate in reply routing.
+
+        Excludes anything that is not a human-authored original: content
+        already carrying a bridge tag ([RNS: via is_already_bridged, plus
+        the sibling-bridge / ACK-synthetic prefixes), gateway-bridged
+        copies (any meshforge_source_network / meshforge_relayed_by marker
+        — the M→R fan-out a PEER gateway receives is a broadcast to
+        re-broadcast, never a reply to auto-direct), and traffic from a
+        configured peer gateway hash (infrastructure, not a user).
+        Genuine NomadNet/Sideband replies carry none of these.
+        """
+        stripped = (body or '').lstrip()
+        if is_already_bridged(stripped):
+            return True
+        if stripped.startswith(_REPLY_EXCLUDED_PREFIXES):
+            return True
+        fields = lxmf_fields or {}
+        if fields.get('meshforge_source_network'):
+            return True
+        if fields.get('meshforge_relayed_by'):
+            return True
+        if source_id and source_id.lower() in self._peer_gateway_hash_set():
+            return True
+        return False
+
+    def _resolve_reply_token(self, token) -> Optional[str]:
+        """Canonical reply token → validated Meshtastic node id, or None.
+
+        Only the meshtastic protocol is honored this step; the address is
+        re-validated through _resolve_mesh_destination (the token is
+        untrusted wire data).
+        """
+        proto, addr = parse_reply_token(token)
+        if proto != 'meshtastic' or not addr:
+            return None
+        return self._resolve_mesh_destination(addr)
 
     def _process_mesh_to_rns(self, msg):
         """Process message from Meshtastic to RNS.
@@ -62,12 +139,18 @@ class MessageTransformMixin:
             else:
                 title = f"{source_id} via Meshtastic"
 
+            # Theme-A step 1: canonical reply token — always emitted (pure
+            # metadata; lets compliant RNS clients/gateways address a reply
+            # without the manual @id syntax).
+            reply_token = format_reply_token("meshtastic", source_id)
+
             fields = {
                 "meshforge_from_id": source_id,
                 "meshforge_from_long": long_name,
                 "meshforge_from_short": short_name,
                 "meshforge_channel": (msg.metadata or {}).get("channel", ""),
                 "meshforge_source_network": "meshtastic",
+                "meshforge_reply_to": reply_token,
             }
 
             # Build destination list. Direct DM short-circuits to a single recipient;
@@ -85,10 +168,26 @@ class MessageTransformMixin:
                     except ValueError:
                         logger.warning(f"Invalid default_lxmf_destination hex: {hex_str!r}")
 
+            # Theme-A step 1: remember which mesh node messaged each RNS
+            # peer so a stock-client reply (no @addr, no echoed fields) can
+            # be auto-directed back. Gated; never seeded by re-bridged /
+            # synthetic content, and never for peer-gateway hashes
+            # (infrastructure threads don't reply).
+            record_ok = (
+                self._reply_routing_on()
+                and msg.source_id
+                and not self._reply_excluded(content, {})
+            )
+            peer_gateways = self._peer_gateway_hash_set() if record_ok else set()
+
             sent_count = 0
             for dest_hash in destinations:
                 if self.send_to_rns(content, dest_hash, title=title, fields=fields):
                     sent_count += 1
+                    if record_ok:
+                        dest_hex = dest_hash.hex().lower()
+                        if dest_hex not in peer_gateways:
+                            self._reply_context.record(dest_hex, reply_token)
 
             if sent_count:
                 if len(destinations) > 1:
@@ -275,6 +374,7 @@ class MessageTransformMixin:
                 effective_source = msg.source_id
 
             destination = None
+            reply_route = ""  # "field" | "memory" when reply routing resolved it
             if body.startswith('@'):
                 parts = body.split(None, 1)
                 if len(parts) == 2:
@@ -288,6 +388,30 @@ class MessageTransformMixin:
                             f"RNS→Mesh: @address {addr_token!r} unresolved, "
                             f"falling through to broadcast"
                         )
+
+            # Theme-A step 1 — reply routing (gated, default off). Only for
+            # human-authored originals (no bridge markers / synthetics);
+            # precedence: explicit @addr (above, always wins) > echoed
+            # meshforge_reply_to field > reply-context memory > broadcast.
+            if (destination is None
+                    and self._reply_routing_on()
+                    and not self._reply_excluded(
+                        original_body, lxmf_fields, msg.source_id or '')):
+                resolved = self._resolve_reply_token(
+                    lxmf_fields.get('meshforge_reply_to'))
+                if resolved:
+                    destination = resolved
+                    reply_route = "field"
+                else:
+                    resolved = self._resolve_reply_token(
+                        self._reply_context.get((msg.source_id or '').lower()))
+                    if resolved:
+                        destination = resolved
+                        reply_route = "memory"
+                if reply_route:
+                    with self._stats_lock:
+                        key = f'reply_routed_from_{reply_route}'
+                        self.stats[key] = self.stats.get(key, 0) + 1
 
             # Attribution label for the [RNS:xxxx] tag. When the LXMF
             # originated as a Meshtastic broadcast at a PEER gateway
@@ -321,7 +445,12 @@ class MessageTransformMixin:
             # bot strips leading brackets anyway). A short message yields a
             # single chunk == content, so the common path is unchanged.
             chunks = chunk_for_mesh(content)
-            tag = f" -> {destination}" if destination else ""
+            if destination and reply_route:
+                tag = f" -> {destination} (reply:{reply_route})"
+            elif destination:
+                tag = f" -> {destination}"
+            else:
+                tag = ""
             multi = f" [{len(chunks)} chunks]" if len(chunks) > 1 else ""
 
             # In mqtt_bridge mode, use persistent queue for reliable delivery.

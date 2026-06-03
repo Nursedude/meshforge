@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .bridge_health import MessageOrigin
 
@@ -441,6 +441,33 @@ class CanonicalMessage:
 
 
 # --- Helper Functions ---
+
+def format_reply_token(protocol: str, address: str) -> str:
+    """Format a protocol-qualified reply address token.
+
+    The canonical reply_to wire shape: ``"{protocol}:{address}"``, e.g.
+    ``meshtastic:!abcd1234``, ``rns:<32-hex>``, ``meshcore:<12-hex>``.
+    Pure string concatenation — per-protocol address validity is the
+    consuming bridge's job (it must re-resolve before delivery anyway).
+    """
+    return f"{protocol}:{address}"
+
+
+def parse_reply_token(token: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Split a reply token into ``(protocol, address)``.
+
+    Returns ``(None, None)`` for anything malformed: non-str input, missing
+    separator, or an empty protocol/address part. The address may itself
+    contain colons (``split(':', 1)`` keeps them intact). Callers must
+    treat the parts as untrusted and re-validate per protocol.
+    """
+    if not isinstance(token, str) or ':' not in token:
+        return (None, None)
+    protocol, _, address = token.partition(':')
+    if not protocol or not address:
+        return (None, None)
+    return (protocol, address)
+
 
 def _detect_tactical_x1(text: str) -> bool:
     """Check if message text is an X1 tactical message."""

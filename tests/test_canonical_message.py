@@ -29,6 +29,8 @@ from gateway.canonical_message import (
     TRUNCATION_INDICATOR,
     _truncate_utf8,
     _portnum_to_message_type,
+    format_reply_token,
+    parse_reply_token,
 )
 from gateway.bridge_health import MessageOrigin
 
@@ -723,3 +725,39 @@ class TestAckFieldsIssue66:
         assert request.ack_required is True
         assert response.message_type == MessageType.ACK
         assert response.ack_of == request.id
+
+
+# =============================================================================
+# Theme-A step 1: canonical reply token format/parse
+# =============================================================================
+
+class TestReplyTokenFormat:
+    """
+    format_reply_token / parse_reply_token define the protocol-qualified
+    reply_to wire shape ("proto:addr"). Pure string helpers — per-protocol
+    address validity is the consuming bridge's job.
+    """
+
+    def test_format_basic_all_protocols(self):
+        assert format_reply_token("meshtastic", "!aabb0042") == "meshtastic:!aabb0042"
+        assert format_reply_token("rns", "aa" * 16) == f"rns:{'aa' * 16}"
+        assert format_reply_token("meshcore", "abcdef012345") == "meshcore:abcdef012345"
+
+    def test_parse_round_trip(self):
+        token = format_reply_token("meshtastic", "!aabb0042")
+        assert parse_reply_token(token) == ("meshtastic", "!aabb0042")
+
+    def test_parse_malformed_returns_none_pair(self):
+        assert parse_reply_token("no-separator") == (None, None)
+        assert parse_reply_token("") == (None, None)
+        assert parse_reply_token(None) == (None, None)
+        assert parse_reply_token(1234) == (None, None)
+
+    def test_parse_empty_parts_rejected(self):
+        assert parse_reply_token(":addr-only") == (None, None)
+        assert parse_reply_token("proto-only:") == (None, None)
+        assert parse_reply_token(":") == (None, None)
+
+    def test_parse_address_with_colon_preserved(self):
+        # split-once semantics: only the first colon separates.
+        assert parse_reply_token("rns:ab:cd") == ("rns", "ab:cd")
