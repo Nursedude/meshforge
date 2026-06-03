@@ -232,69 +232,13 @@ keep MF012 ≤40k chars headroom open for future entries.
 
 ## Issue #65: Two-tier federation backoff cap — long-outage cadence (2026-05-18)
 
-**Class**: Issue #59 gave the federation collector exponential backoff
-with a single `max_multiplier` (default 10× = 10 min between polls).
-Operational survey on 2026-05-18 showed moc3 — a permanently gateway-
-only box with no `/api/nodes/directory` listener — sitting at `cf=9
-mult=10` within ~9 cycles and polling every 10 min forever (144
-doomed polls/day). The same single value picks the *transient outage*
-case (reboot/blip — needs ≤10 min recovery detection) and the
-*permanent outage* case (gateway-only box, never coming back) — two
-cases with different "right answers."
-
-**Fix** (`src/utils/map_federation.py`): second-tier cap. New defaults
-`DEFAULT_BACKOFF_EXTENDED_THRESHOLD=40` (failures past which tier-2
-kicks in, ≈6 h continuous failure at tier-1 cap + default 60 s poll
-interval) and `DEFAULT_BACKOFF_EXTENDED_MAX_MULTIPLIER=60` (≈1 h
-between polls). `_compute_backoff` picks tier-2 cap when
-`consecutive_failures ≥ extended_threshold`; tier-1 below. Exponential
-ramp continues smoothly toward whichever cap is active. New
-`backoff_extended_threshold` / `backoff_extended_max_multiplier`
-constructor knobs; both clamp so tier-2 is always strictly past tier-1
-(`threshold+1`, `≥ tier-1 cap`). Tier-2 entry logs at INFO exactly
-once on the transition where prior multiplier ≤ tier-1 cap and new
-multiplier > tier-1 cap — same one-shot pattern as the tier-1 engage
-log. `backoff_multiplier=60` in `/api/status.federation.peer_status[]`
-is the operator-visible signal "this peer has been gone for a long
-time" — different shape from tier-1 `=10`.
-
-**Why these numbers**: with default `poll_interval=60s` and tier-1 cap
-of 10, a peer reaches the cap at cf≈7 (~30 min of continuous failure)
-and then accumulates failures every 10 min. cf=40 corresponds to
-about 6 hours of continuous failure — well past any reboot/network
-blip, and the threshold above which "this is a real, long outage" is
-a safe inference. Tier-2 cap of 60 (= 1 hr between polls) keeps the
-peer in the rotation so genuine recovery is still detected, while
-cutting wasted traffic 6× compared to tier-1 cap.
-
-**Tests** (8 new in
-`tests/test_map_federation.py::TestBackoffExtendedCapIssue65`):
-below-extended-threshold uses tier-1 cap; at extended threshold steps
-to tier-2 cap; far above stays at tier-2 cap; clamping (extended
-threshold ≤ primary threshold ⇒ clamp; extended cap < tier-1 cap ⇒
-clamp); recovery clears tier-2 state; tier-2 entry logs exactly once;
-defaults lock test pinning the documented values. Existing
-`test_far_above_threshold_caps_at_max` updated to set
-`backoff_extended_threshold=10**6` so it still pins tier-1 behavior
-in isolation.
-
-**Operator detection recipe**:
-```bash
-curl -s http://<box>:5000/api/status | jq \
-  '.federation.peer_status[] |
-   select(.backoff_multiplier == 60) |
-   {peer_name, hostname, consecutive_failures, last_error,
-    next_eligible_poll_ts}'
-# Empty = no peers in long-outage cadence.
-# Rows = peers down ≥ ~6h continuous; check last_error/peer_name to
-# decide if it's a known-gateway-only box vs an unexpected long outage.
-```
-
-**Closes the federation triad's last open knob** (reliability backlog
-#1): Issues #54 (peer_name correlation), #55 (`/fleet/slo` budget),
-#56 (timeout for big bodies), #59 (single-tier backoff), #64 (gzip +
-size alarm), and now #65 (two-tier cap) collectively turn federation-
-persistent-issues from a recurring class into a closed loop.
+**Resolved — body moved to `persistent_issues_archive.md` (2026-06-03, MF012
+trim).** One-line essence: second-tier backoff cap in `map_federation.py`
+(`extended_threshold=40` ≈6 h continuous failure → multiplier cap 60 ≈1 h between
+polls) separates transient outages (tier-1, 10×) from permanent ones (e.g.
+gateway-only moc3); `backoff_multiplier=60` in `/api/status.federation` is the
+operator tell. Tests: `TestBackoffExtendedCapIssue65` (8). Closed the federation
+triad (#54/#55/#56/#59/#64/#65).
 
 
 ---
@@ -595,4 +539,8 @@ trap: derive context from the SERVICE, not the root watchdog env**): `probe_foun
 `/opt/meshanchor` absent), `probe_rns_version_drift` (rns/lxmf off the `+mf.N` pin —
 reads the rnsd user's `~/.local` site-packages directly, since the watchdog sandbox
 NoNewPrivileges+RestrictSUIDSGID blocks sudo/runuser; fix reviewed `pip install -r
-requirements/rns.txt`).
+requirements/rns.txt`). 4th probe 2026-06-03: `probe_role_drift` (`role_drift`) — live
+unit state vs the box's effective declared role via `provision_role.py`'s own dry-run
+`plan()` (base role + deployment.json overrides; documented overrides honored — the moc2
+legibility case, see `.claude/research/fleet_architecture_2026_06_03.md` §7-B); 2-tick
+debounce; fix `provision_role.py --apply` or correct the declared role.

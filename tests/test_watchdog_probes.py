@@ -38,6 +38,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_foundation_drift,
     probe_parity_drift,
     probe_rns_version_drift,
+    probe_role_drift,
     probe_http_local,
     probe_lxmf_process_wedge,
     probe_main_thread_wedge,
@@ -82,6 +83,7 @@ def test_signal_classes_closed_enum_is_documented():
         "foundation_perms_drift",
         "parity_drift",
         "rns_version_drift",
+        "role_drift",
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -1100,6 +1102,139 @@ def test_parity_drift_none_when_check_raises(tmp_path):
         raise RuntimeError("parity tool blew up")
     assert probe_parity_drift(meshanchor_root=str(tmp_path), check_fn=boom,
                               state_path=str(tmp_path / "debounce.json")) is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-06-03 — role_drift (live unit state vs declared role + overrides)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _ract(item, current, desired, verb, required=True):
+    """Shape-compatible stand-in for provision_role.py's Action."""
+    return SimpleNamespace(item=item, current=current, desired=desired,
+                           verb=verb, required=required)
+
+
+def test_role_drift_none_when_no_role_declared(tmp_path):
+    """Box without a declared role (no deployment.json / no role key) → not
+    applicable, never an alarm."""
+    sig = probe_role_drift(deployment=(None, {}),
+                           state_path=str(tmp_path / "rd.json"))
+    assert sig is None
+
+
+def test_role_drift_none_when_converged(tmp_path):
+    """All-noop plan (plus the usual non-blocking advisories) → clean, no signal."""
+    actions = [
+        _ract("meshtasticd", "active/enabled", "enabled", "noop"),
+        _ract("delta:node-directory", "?", "bbox+cap+caches", "warn", required=False),
+    ]
+    sig = probe_role_drift(deployment=("full-gateway", {}),
+                           plan_fn=lambda r, ov: actions,
+                           state_path=str(tmp_path / "rd.json"))
+    assert sig is None
+
+
+def test_role_drift_fires_after_debounce(tmp_path):
+    """A would-change action persisting two consecutive ticks fires degraded."""
+    actions = [_ract("meshforge-gateway", "inactive/disabled", "enabled", "enable")]
+    state = str(tmp_path / "rd.json")
+    plan = lambda r, ov: actions  # noqa: E731
+    # Tick 1: divergence seen but debounced (streak 1 < 2).
+    assert probe_role_drift(deployment=("full-gateway", {}), plan_fn=plan,
+                            state_path=state) is None
+    # Tick 2: persists → fires.
+    sig = probe_role_drift(deployment=("full-gateway", {}), plan_fn=plan,
+                           state_path=state)
+    assert sig is not None
+    assert sig.cls == "role_drift"
+    assert sig.severity == "degraded"
+    assert sig.subject == "full-gateway"
+    assert "meshforge-gateway" in sig.detail
+    assert sig.extra["debounce_streak"] == 2
+
+
+def test_role_drift_streak_resets_on_converged_tick(tmp_path):
+    """drift → clean → drift restarts the streak (a lone post-heal tick is
+    debounced again, not fired off the stale streak)."""
+    drifted = [_ract("meshforge-map", "inactive/disabled", "enabled", "enable")]
+    clean = [_ract("meshforge-map", "active/enabled", "enabled", "noop")]
+    state = str(tmp_path / "rd.json")
+    assert probe_role_drift(deployment=("collector", {}),
+                            plan_fn=lambda r, ov: drifted,
+                            state_path=state) is None  # streak 1
+    assert probe_role_drift(deployment=("collector", {}),
+                            plan_fn=lambda r, ov: clean,
+                            state_path=state) is None  # reset
+    assert probe_role_drift(deployment=("collector", {}),
+                            plan_fn=lambda r, ov: drifted,
+                            state_path=state) is None  # debounced again
+
+
+def test_role_drift_honors_documented_override(tmp_path):
+    """The moc2 lesson: a reasoned service_override surfaces from plan() as a
+    NON-blocking advisory (warn, required=False) — that is intent, NOT drift."""
+    actions = [
+        _ract("meshforge-gateway", "inactive/disabled", "waived:disabled",
+              "warn", required=False),
+        _ract("meshtasticd", "active/enabled", "enabled", "noop"),
+    ]
+    state = str(tmp_path / "rd.json")
+    plan = lambda r, ov: actions  # noqa: E731
+    for _ in range(3):  # never fires no matter how many ticks
+        assert probe_role_drift(deployment=("full-gateway", {}),
+                                plan_fn=plan, state_path=state) is None
+
+
+def test_role_drift_blocking_warning_counts_as_drift(tmp_path):
+    """A BLOCKING warning (e.g. waiver missing its required reason, or a
+    required unit not installed) is hidden drift and fires after debounce."""
+    actions = [_ract("meshforge-gateway", "inactive/disabled", "waived:disabled",
+                     "warn", required=True)]
+    state = str(tmp_path / "rd.json")
+    plan = lambda r, ov: actions  # noqa: E731
+    assert probe_role_drift(deployment=("full-gateway", {}), plan_fn=plan,
+                            state_path=state) is None
+    sig = probe_role_drift(deployment=("full-gateway", {}), plan_fn=plan,
+                           state_path=state)
+    assert sig is not None
+    assert "meshforge-gateway" in sig.detail
+
+
+def test_role_drift_unknown_role_counts_as_drift(tmp_path):
+    """deployment.json naming a role absent from the catalog is a real
+    declaration mismatch (debounced like any drift)."""
+    def plan(r, ov):
+        raise KeyError(r)
+    state = str(tmp_path / "rd.json")
+    assert probe_role_drift(deployment=("mystery-role", {}), plan_fn=plan,
+                            state_path=state) is None
+    sig = probe_role_drift(deployment=("mystery-role", {}), plan_fn=plan,
+                           state_path=state)
+    assert sig is not None
+    assert "mystery-role" in sig.detail
+    assert "not in the fleet_roles.yaml catalog" in sig.extra["items"][0]
+
+
+def test_role_drift_none_when_tool_indeterminate(tmp_path):
+    """plan_fn returning None (catalog unreadable) or raising a non-KeyError →
+    indeterminate: no alarm, streak broken."""
+    state = str(tmp_path / "rd.json")
+    drifted = [_ract("rnsd", "inactive/disabled", "enabled", "enable")]
+    assert probe_role_drift(deployment=("primary", {}),
+                            plan_fn=lambda r, ov: drifted,
+                            state_path=state) is None  # streak 1
+    assert probe_role_drift(deployment=("primary", {}),
+                            plan_fn=lambda r, ov: None,
+                            state_path=state) is None  # indeterminate → reset
+    def boom(r, ov):
+        raise RuntimeError("yaml exploded")
+    assert probe_role_drift(deployment=("primary", {}), plan_fn=boom,
+                            state_path=state) is None
+    # Streak was reset both times: a fresh drift tick is debounced again.
+    assert probe_role_drift(deployment=("primary", {}),
+                            plan_fn=lambda r, ov: drifted,
+                            state_path=state) is None
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -67,6 +67,7 @@ SIGNAL_CLASSES = (
     "foundation_perms_drift",  # 2026-06-01: born-correct permission foundation drifted (mf.4/#73) — non-root rnsd can't write its RNS tree
     "parity_drift",  # 2026-06-01: MeshForge<->MeshAnchor RNS-reliability parity diverged (lead-repo port debt)
     "rns_version_drift",  # 2026-06-01: rns/lxmf installed off the pinned +mf.N fork version (T2-isolate arc)
+    "role_drift",  # 2026-06-03: live systemd unit state diverges from the box's effective declared role (fleet_roles.yaml + deployment.json overrides)
 )
 
 SEVERITIES = ("info", "degraded", "wedge")
@@ -1133,6 +1134,168 @@ def probe_rns_version_drift(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Probe: declared-role drift (fleet_roles.yaml + overrides vs live units)
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_ROLE_DRIFT_DEBOUNCE_PATH = "/var/lib/meshforge/role_drift_debounce.json"
+
+# plan() verbs that mean "the box would change under converge" = real drift.
+_ROLE_DRIFT_VERBS = ("enable", "disable", "mask")
+
+
+def _read_deployment_declaration(service_user) -> Tuple[Optional[str], dict]:
+    """Read ``(role, service_overrides)`` from the service user's deployment.json.
+
+    The watchdog runs as sandboxed root: ``get_real_user_home()`` (which
+    ``provision_role.py`` uses at import time) would resolve to ``/root`` here,
+    so the home is derived from the service user and READ directly — never
+    escalate/switch user (the rns_version_drift lesson). Any unreadability →
+    ``(None, {})`` = indeterminate, never false-alarm.
+    """
+    if not service_user:
+        return None, {}
+    try:
+        import pwd
+        home = pwd.getpwnam(service_user).pw_dir
+        path = os.path.join(home, ".config", "meshforge", "deployment.json")
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        role = data.get("role")
+        ov = data.get("service_overrides") or {}
+        return (role if isinstance(role, str) and role else None,
+                ov if isinstance(ov, dict) else {})
+    except (KeyError, OSError, ValueError, TypeError):
+        return None, {}
+
+
+def _plan_role_actions(role: str, overrides: dict, meshforge_root: str):
+    """Default plan_fn: importlib-load ``scripts/provision_role.py`` (the
+    converge SSOT) and return its ``plan()`` actions for this box's effective
+    declaration — base role flattened through ``inherits`` plus the box's
+    documented ``service_overrides``.
+
+    Returns ``None`` when the tooling/catalog can't be loaded (indeterminate);
+    raises ``KeyError`` for a role missing from the catalog (a REAL mismatch
+    the caller counts as drift — e.g. deployment.json names a role the box's
+    fleet_roles.yaml doesn't carry yet).
+    """
+    try:
+        import importlib.util
+        script = os.path.join(meshforge_root, "scripts", "provision_role.py")
+        spec = importlib.util.spec_from_file_location("provision_role", script)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        catalog = mod.load_roles(mod.DEFAULT_ROLES_FILE)
+    except Exception:
+        return None  # tool/catalog unavailable → indeterminate, don't alarm
+    role_def = mod.resolve_role(catalog, role)  # KeyError → unknown role
+    return mod.plan(role_def, overrides)
+
+
+def probe_role_drift(
+    *,
+    meshforge_root: str = "/opt/meshforge",
+    deployment: Optional[Tuple[Optional[str], dict]] = None,
+    plan_fn=None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """Surface a box whose live systemd unit state diverges from its declared role.
+
+    The fleet's role model (``docs/fleet_roles.yaml`` + per-box
+    ``deployment.json`` ``role``/``service_overrides``) is converged only when an
+    operator runs ``provision_role.py --apply`` — between runs, nothing alerted on
+    divergence. The 2026-06-03 architecture audit hit exactly this legibility gap
+    (moc2 read as "full-gateway" while deliberately not bridging) — see
+    ``.claude/research/fleet_architecture_2026_06_03.md`` §7-B. This probe makes
+    the converge SSOT's own dry-run plan a continuously-monitored signal.
+
+    Drift = any plan action whose verb is enable/disable/mask (the box would
+    change under converge) or a BLOCKING warning (required unit not installed; a
+    waiver missing its required ``reason``). **Documented overrides are honored**
+    — ``plan()`` reports them as non-blocking advisories, which do NOT fire (the
+    moc2 lesson: a declared, reasoned exception is not drift). A role missing
+    from the catalog counts as drift (mismatched declaration).
+
+    Returns ``None`` when the box declares no role (not applicable), when the
+    tool/catalog can't be loaded (indeterminate — never false-alarm), or while a
+    divergence hasn't yet persisted ``debounce_ticks`` consecutive ticks — role
+    catalog (git) and unit state (converge/restarts) deploy independently, so a
+    single tick can catch a fleet-roll window (same rationale as
+    ``probe_parity_drift``). Severity ``degraded``: latent legibility debt, not
+    an active failure.
+    """
+    if state_path is None:
+        state_path = DEFAULT_ROLE_DRIFT_DEBOUNCE_PATH
+    if deployment is None:
+        try:
+            from utils.rns_tree_perms import _read_rnsd_user
+            service_user = _read_rnsd_user()
+        except Exception:
+            service_user = None
+        deployment = _read_deployment_declaration(service_user)
+    role, overrides = deployment
+    if not role:
+        _save_parity_streak(state_path, 0)
+        return None  # box not role-declared (or unreadable) → not applicable
+
+    if plan_fn is None:
+        def plan_fn(r, ov):
+            return _plan_role_actions(r, ov, meshforge_root)
+
+    unknown_role = False
+    try:
+        actions = plan_fn(role, overrides)
+    except KeyError:
+        unknown_role = True
+        actions = []
+    except Exception:
+        _save_parity_streak(state_path, 0)
+        return None  # tool error → indeterminate, don't count toward streak
+    if actions is None and not unknown_role:
+        _save_parity_streak(state_path, 0)
+        return None
+
+    if unknown_role:
+        items = [f"role '{role}' not in the fleet_roles.yaml catalog"]
+    else:
+        items = []
+        for a in actions:
+            verb = getattr(a, "verb", "")
+            if verb in _ROLE_DRIFT_VERBS or (
+                verb == "warn" and getattr(a, "required", False)
+            ):
+                items.append(
+                    f"{getattr(a, 'item', '?')}: "
+                    f"{getattr(a, 'current', '?')} -> {getattr(a, 'desired', '?')}"
+                )
+    if not items:
+        _save_parity_streak(state_path, 0)
+        return None
+
+    streak = _load_parity_streak(state_path) + 1
+    _save_parity_streak(state_path, streak)
+    if streak < debounce_ticks:
+        return None  # divergence seen, not yet confirmed across consecutive ticks
+
+    shown = "; ".join(items[:4]) + (f" (+{len(items) - 4} more)" if len(items) > 4 else "")
+    detail = (
+        f"live unit state diverges from declared role '{role}' "
+        f"({len(items)} item(s)): {shown} | confirmed over {streak} consecutive "
+        f"ticks | documented service_overrides are honored (not drift). Review: "
+        f"python3 scripts/provision_role.py (dry-run); converge with sudo "
+        f"python3 scripts/provision_role.py --apply, or correct the declared role."
+    )
+    return Signal(
+        cls="role_drift",
+        subject=role,
+        severity="degraded",
+        detail=detail,
+        extra={"items": items, "debounce_streak": streak},
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Probe: delivery counters write canary (Issue #63)
 # ─────────────────────────────────────────────────────────────────────
 
@@ -1473,6 +1636,7 @@ __all__ = [
     "probe_foundation_drift",
     "probe_parity_drift",
     "probe_rns_version_drift",
+    "probe_role_drift",
     "probe_delivery_write_canary",
     "probe_service_inactive",
     "probe_tracer_peer_unreachable",

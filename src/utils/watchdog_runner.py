@@ -52,6 +52,7 @@ from utils.watchdog_probes import (
     probe_foundation_drift,
     probe_parity_drift,
     probe_rns_version_drift,
+    probe_role_drift,
     probe_http_local,
     probe_lxmf_process_wedge,
     probe_main_thread_wedge,
@@ -299,6 +300,16 @@ def run_all_probes(
     # present (only the box holding both repos checks; MeshForge-only boxes no-op).
     # Maintenance-hygiene signal so a forgotten port surfaces in the mini rollup.
     sig = probe_parity_drift()
+    if sig is not None:
+        signals.append(sig)
+
+    # Declared-role drift — this box's live unit state vs its effective
+    # declaration (fleet_roles.yaml base role + deployment.json overrides),
+    # via provision_role.py's own dry-run plan (the converge SSOT). Self-guards:
+    # no declared role → None. Documented service_overrides are honored (the
+    # moc2 lesson, 2026-06-03) — only undeclared divergence fires, debounced
+    # 2 ticks to ride out fleet-roll windows.
+    sig = probe_role_drift()
     if sig is not None:
         signals.append(sig)
 
