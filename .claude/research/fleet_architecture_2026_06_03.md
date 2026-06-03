@@ -281,7 +281,16 @@ name-based auto-bind — unambiguous exact-match only, unverified; operator link
 memory > contact > broadcast**; M→R DMs fall back to contact mapping on node_tracker
 miss. Gate `rns.cross_protocol_identity_enabled` (default off; **moc only**). Peer
 gateways/bridge copies never become contacts (reuses the step-1 exclusion guard).
-Next in arc: sessions (step 3).
+**Step (3) shipped same day (`0c21ff7`) — ARC COMPLETE (code-side)**: durable session
+layer. `session_store.py` (`gateway_sessions.db`, DBSpec-registered, lazy, idle-TTL 24h,
+~30s sweep) records active (mesh ↔ RNS peer) conversations on directed traffic; a
+Meshtastic **DM to the gateway's own node** (`meshtastic.gateway_node_id`) now routes
+privately to the sender's session peer — previously that DM was silently broadcast-fanned
+to every RNS inbox. No-session fallback = the old broadcast (zero regression). Gate
+`rns.sessions_enabled` (default off; **moc only** — all three Theme-A flags now on
+there). CLI `scripts/gateway_sessions.py`. Bidirectional "it just works" is now
+software-complete; field validation (radio legs both directions) is the remaining
+operator handoff before widening beyond moc.
 
 ---
 
