@@ -256,9 +256,13 @@ with this configuration?* Assessed live against the three goal tiers:
 placement gaps. Sequenced next steps: (1) ~~normalize moc3 `rns_bridge_enabled`~~
 **done 2026-06-03** (explicit true; was absent-key/default-true, not null);
 (2) ~~decide GatewayHeartbeat~~ **done 2026-06-03** — independence declared
-(`independent_bridges` invariant in `fleet_roles.yaml`); (3) build the §7-B drift probe comparing
-**effective** config/role state (parse through `GatewayConfig` + base-role+overrides);
-(4) the §7-A arc.
+(`independent_bridges` invariant in `fleet_roles.yaml`); (3) ~~build the §7-B drift
+probe~~ **done 2026-06-03** — `probe_role_drift` (`f4cf904`): provision_role's own
+dry-run `plan()` as a continuously-monitored signal, overrides honored, 2-tick
+debounce, `role_drift_any` mini rule promoted on all 5 boxes, verified clean live
+(streak=0 fleet-wide). Remaining in the effective-config family: cross-box
+gateway.json comparison through `GatewayConfig` (fleet-level organ, future);
+(4) the §7-A arc — **the next session's work**.
 
 ---
 
