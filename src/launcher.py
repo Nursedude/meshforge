@@ -91,9 +91,34 @@ def save_preferences(prefs):
 
 
 def check_first_run() -> bool:
-    """Check if this is a first run (no setup marker exists)"""
+    """Check if this is a first run (no setup marker exists).
+
+    Non-interactive contexts (systemd unit, cron, piped stdin) never get
+    the first-run wizard: there is nobody to answer the prompt, and under
+    a hardened unit (ProtectHome=read-only) the skip-marker write to
+    root's home is impossible — attempting it crash-looped meshforge.service
+    on moc for 26k restarts (2026-06-03 diagnosis; Issue #60 sibling).
+    """
+    if not sys.stdin.isatty():
+        return False
     marker = get_real_user_home() / ".meshforge" / ".setup_complete"
     return not marker.exists()
+
+
+def _write_setup_marker(text: str) -> None:
+    """Write the setup-complete marker; NEVER fatal.
+
+    The marker is cosmetic (suppresses the first-run wizard). A read-only
+    or unwritable home (hardened systemd sandbox, Issue #60 class) must
+    degrade to a warning — not kill the NOC before it starts.
+    """
+    try:
+        marker = get_real_user_home() / ".meshforge" / ".setup_complete"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(text)
+    except OSError as e:
+        print(f"{Colors.YELLOW}Could not persist setup marker "
+              f"({e}) — continuing without it.{Colors.NC}")
 
 
 def run_setup_wizard():
@@ -131,14 +156,10 @@ def run_setup_wizard():
             except Exception as e:
                 print(f"{Colors.YELLOW}Setup wizard not available: {e}{Colors.NC}")
                 print("Continuing to main launcher...\n")
-                marker = get_real_user_home() / ".meshforge" / ".setup_complete"
-                marker.parent.mkdir(parents=True, exist_ok=True)
-                marker.write_text("skipped")
+                _write_setup_marker("skipped")
     else:
         print(f"\n{Colors.DIM}Skipping setup. Run 'meshforge --setup' anytime.{Colors.NC}\n")
-        marker = get_real_user_home() / ".meshforge" / ".setup_complete"
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text("skipped")
+        _write_setup_marker("skipped")
 
 
 def print_banner():
