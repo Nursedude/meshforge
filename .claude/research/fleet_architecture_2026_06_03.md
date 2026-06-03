@@ -232,22 +232,33 @@ with this configuration?* Assessed live against the three goal tiers:
   meshtasticd phone API, not bridge drops). Flows are complementary: moc is R→M-heavy,
   moc3 balanced. Bridge placement matches RF reality (bridges at RF-rich sites;
   collector/cloud-publisher where bridging adds nothing).
-- **Tier 2 — resilience/redundancy**: ⚠️ **PARTIAL.** Two *independent* bridges
-  overlap, but `GatewayHeartbeat` (cross-gateway MQTT failover) is **wired in code,
-  absent from both configs** — no coordinated takeover if one bridge dies. Redundancy
-  today is accidental, not declared. Also one config-shape drift found:
-  `rns_bridge_enabled` = `true` (moc) vs `null` (moc3) — benign now (default-true)
-  but flips moc3 silently if the code default ever changes.
+- **Tier 2 — resilience/redundancy**: ✅ **RESOLVED BY DECLARATION (2026-06-03).**
+  Investigation flipped the framing: moc+moc3 are **complementary-coverage** bridges
+  (different RF neighborhoods, different flow profiles), not a redundant pair — and
+  `GatewayHeartbeat` gates no TX in `rns_bridge.py` (instantiated `:379`, state never
+  consulted), so wiring it buys only peer-liveness telemetry the watchdog/mini already
+  provide, at the cost of a cross-box broker dependency. Operator ratified
+  **active-active independent bridges as the design** — `independent_bridges` invariant
+  added to `fleet_roles.yaml`. Per-bridge resilience = systemd `Restart=` + watchdog +
+  mini. (Original finding kept for the record: heartbeat machinery exists in code,
+  deliberately unwired.) Also one config-shape difference found —
+  initially misread as `true` vs `null` (a `d.get()` probe artifact): moc sets
+  `rns_bridge_enabled: true` **explicitly**, moc3 left the key **absent** (documented
+  default-true applies, `GatewayConfig` config.py:541). Benign — normalized to explicit
+  `true` on moc3 2026-06-03 for cross-box comparability. Lesson for the §7-B drift
+  probe: **compare effective config (parsed through `GatewayConfig`), not raw JSON** —
+  raw-key diffs can't distinguish absent / null / default.
 - **Tier 3 — "it just works" bidirectional addressability** (12-month arc): ❌ **NOT
   YET, by design** — this is code work (§7-A reply-to / identity SSOT / sessions); no
   box configuration can meet it.
 
 **Verdict**: the configuration is right-shaped for today's goals; the gaps are not
-placement gaps. Sequenced next steps: (1) normalize moc3 `rns_bridge_enabled
-null→true` (one-line, removes the latent flip); (2) **decide** GatewayHeartbeat —
-wire it between moc+moc3 *or* declare "two independent bridges" as the design;
-(3) build the §7-B gateway-config drift probe (canonical gateway.json subset compared
-across gateway boxes — this assessment's diff is its first test case); (4) the §7-A arc.
+placement gaps. Sequenced next steps: (1) ~~normalize moc3 `rns_bridge_enabled`~~
+**done 2026-06-03** (explicit true; was absent-key/default-true, not null);
+(2) ~~decide GatewayHeartbeat~~ **done 2026-06-03** — independence declared
+(`independent_bridges` invariant in `fleet_roles.yaml`); (3) build the §7-B drift probe comparing
+**effective** config/role state (parse through `GatewayConfig` + base-role+overrides);
+(4) the §7-A arc.
 
 ---
 

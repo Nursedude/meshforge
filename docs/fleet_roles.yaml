@@ -21,6 +21,7 @@ updated: "2026-06-03"
 # Hard rules that hold on every node (see fleet_manifest.md "Design invariants").
 invariants:
   one_rnsd_per_box: "Only rnsd hosts RNS; every other RNS user joins via share_instance=Yes. Mask (not disable) any rival RNS host on the box."
+  independent_bridges: "Gateway boxes bridge complementary RF coverage independently — active-active by design (ratified 2026-06-03). No cross-gateway failover pairing: GatewayHeartbeat is same-coverage-pair machinery (and gates no TX in rns_bridge); pairing complementary-coverage bridges would remove coverage, not add resilience. Per-bridge resilience = systemd Restart= + watchdog + mini."
   one_canonical_writer: "Exactly one node (singleton: primary) authors Claude memory + pushes; others are read-only replicas via fleet_sync.sh."
   one_cloud_publisher: "The VPS snapshot push runs on exactly one node (singleton: cloud-publisher)."
   software_fits_the_box: "Memory-saving defaults stay ON on small boards; they are why constrained Pis bear the load."
