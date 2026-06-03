@@ -64,6 +64,7 @@ PersistentMessageQueue, MessagePriority, HAS_PERSISTENT_QUEUE = safe_import(
     '.message_queue', 'PersistentMessageQueue', 'MessagePriority', package=__package__
 )
 
+from .identity_binding import IdentityBinder
 from .message_routing import MessageRouter
 from .reply_context import ReplyContextStore
 from .meshcore_bridge_mixin import MeshCoreBridgeMixin
@@ -263,6 +264,10 @@ class RNSMeshtasticBridge(
             # (echoed meshforge_reply_to field vs reply-context memory).
             'reply_routed_from_field': 0,
             'reply_routed_from_memory': 0,
+            # Theme-A step 2: identity-SSOT hits (contact rung in the R→M
+            # reply chain; contact fallback in M→R directed DMs).
+            'reply_routed_from_contact': 0,
+            'identity_resolved_m2r': 0,
         }
 
         # Theme-A step 1: reply-context memory (peer LXMF hash → canonical
@@ -273,6 +278,13 @@ class RNSMeshtasticBridge(
         self._reply_context = ReplyContextStore(
             ttl_sec=getattr(_rns_cfg, 'reply_context_ttl_sec', None),
             max_entries=getattr(_rns_cfg, 'reply_context_max_entries', None),
+        )
+
+        # Theme-A step 2: cross-protocol identity SSOT. Lazy — opens no DB
+        # until first gated use (rns.cross_protocol_identity_enabled).
+        self._identity = IdentityBinder(
+            throttle_sec=getattr(_rns_cfg, 'identity_population_throttle_sec', None),
+            max_contacts=getattr(_rns_cfg, 'identity_max_contacts', None),
         )
 
         # Persistent message queue for reliable delivery
@@ -465,6 +477,7 @@ class RNSMeshtasticBridge(
                 message_callback=self._notify_message,
                 status_callback=lambda status: self._notify_status(status),
                 should_bridge=self._router.should_bridge,
+                identity_binder=self._identity,
             )
             # Register MeshCore sender with persistent queue
             if self._persistent_queue:

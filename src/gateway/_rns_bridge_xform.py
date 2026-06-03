@@ -55,6 +55,17 @@ class MessageTransformMixin:
         rns_cfg = getattr(self.config, 'rns', None)
         return getattr(rns_cfg, 'reply_routing_enabled', False) is True
 
+    def _identity_on(self) -> bool:
+        """Strict read of rns.cross_protocol_identity_enabled (default False).
+
+        Theme-A step 2. Same ``is True`` discipline as _reply_routing_on —
+        MagicMock configs and malformed values read as OFF, keeping the
+        identity SSOT (population + resolution) inert unless explicitly
+        enabled.
+        """
+        rns_cfg = getattr(self.config, 'rns', None)
+        return getattr(rns_cfg, 'cross_protocol_identity_enabled', False) is True
+
     def _peer_gateway_hash_set(self) -> set:
         """Normalized lowercase set of peer gateway LXMF hashes."""
         try:
@@ -144,6 +155,14 @@ class MessageTransformMixin:
             # without the manual @id syntax).
             reply_token = format_reply_token("meshtastic", source_id)
 
+            # Theme-A step 2: identity SSOT population (gated, throttled in
+            # the binder). Active mesh talkers become contacts; re-bridged /
+            # synthetic content never does.
+            if (self._identity_on() and msg.source_id
+                    and not self._reply_excluded(content, {})):
+                self._identity.populate(
+                    'meshtastic', msg.source_id.lower(), long_name)
+
             fields = {
                 "meshforge_from_id": source_id,
                 "meshforge_from_long": long_name,
@@ -223,11 +242,31 @@ class MessageTransformMixin:
             self.health.record_message_failed("mesh_to_rns", requeued=True)
 
     def _get_rns_destination(self, meshtastic_id: str) -> Optional[bytes]:
-        """Look up RNS destination hash for a Meshtastic node ID."""
+        """Look up RNS destination hash for a Meshtastic node ID.
+
+        node_tracker first (live discovery); Theme-A step 2 falls back to
+        the identity SSOT (contact mapping) when gated on — an operator
+        link or conservative auto-bind can route a directed M→R DM that
+        discovery alone couldn't.
+        """
         if hasattr(self, 'node_tracker') and self.node_tracker:
             node = self.node_tracker.get_node_by_mesh_id(meshtastic_id)
             if node and hasattr(node, 'rns_hash') and node.rns_hash:
                 return node.rns_hash
+        if self._identity_on() and meshtastic_id:
+            rns_hex = self._identity.resolve(
+                'meshtastic', meshtastic_id.lower(), 'rns')
+            if rns_hex:
+                try:
+                    dest = bytes.fromhex(rns_hex)
+                except (ValueError, TypeError):
+                    logger.warning(
+                        f"identity rns address unconvertible: {rns_hex!r}")
+                    return None
+                with self._stats_lock:
+                    self.stats['identity_resolved_m2r'] = (
+                        self.stats.get('identity_resolved_m2r', 0) + 1)
+                return dest
         return None
 
     def _requeue_failed_message(self, msg, destination: str) -> bool:
@@ -373,8 +412,25 @@ class MessageTransformMixin:
             else:
                 effective_source = msg.source_id
 
+            # Theme-A step 2: identity SSOT population (gated, throttled).
+            # Only human-authored RNS originals — peer gateways and
+            # bridge-origin copies must never become contacts.
+            if (self._identity_on() and msg.source_id
+                    and not self._reply_excluded(
+                        original_body, lxmf_fields, msg.source_id or '')):
+                rns_name = ""
+                try:
+                    node = self.node_tracker.get_node_by_rns_hash(
+                        bytes.fromhex(msg.source_id))
+                    if node:
+                        rns_name = node.name or ""
+                except (ValueError, TypeError, AttributeError):
+                    pass
+                self._identity.populate(
+                    'rns', msg.source_id.lower(), rns_name)
+
             destination = None
-            reply_route = ""  # "field" | "memory" when reply routing resolved it
+            reply_route = ""  # "field"|"memory"|"contact" when reply routing resolved it
             if body.startswith('@'):
                 parts = body.split(None, 1)
                 if len(parts) == 2:
@@ -389,10 +445,11 @@ class MessageTransformMixin:
                             f"falling through to broadcast"
                         )
 
-            # Theme-A step 1 — reply routing (gated, default off). Only for
-            # human-authored originals (no bridge markers / synthetics);
+            # Theme-A step 1+2 — reply routing (gated, default off). Only
+            # for human-authored originals (no bridge markers / synthetics);
             # precedence: explicit @addr (above, always wins) > echoed
-            # meshforge_reply_to field > reply-context memory > broadcast.
+            # meshforge_reply_to field > reply-context memory > identity
+            # SSOT contact rung (step 2, needs its own flag too) > broadcast.
             if (destination is None
                     and self._reply_routing_on()
                     and not self._reply_excluded(
@@ -408,6 +465,17 @@ class MessageTransformMixin:
                     if resolved:
                         destination = resolved
                         reply_route = "memory"
+                if destination is None and self._identity_on():
+                    mesh_addr = self._identity.resolve(
+                        'rns', (msg.source_id or '').lower(), 'meshtastic')
+                    if mesh_addr:
+                        # Re-validate through the same path the token rungs
+                        # use — the DB row is operator/heuristic data, not
+                        # gospel.
+                        resolved = self._resolve_mesh_destination(mesh_addr)
+                        if resolved:
+                            destination = resolved
+                            reply_route = "contact"
                 if reply_route:
                     with self._stats_lock:
                         key = f'reply_routed_from_{reply_route}'

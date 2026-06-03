@@ -388,6 +388,17 @@ class RNSConfig:
     reply_routing_enabled: bool = False
     reply_context_ttl_sec: int = 86400      # forget a peer's thread after ~24h
     reply_context_max_entries: int = 1024   # LRU cap on remembered peers
+    # Theme-A step 2 — cross-protocol identity SSOT (IdentityBinder over the
+    # contact_mapping.db). When True, the bridge auto-populates contacts from
+    # observed traffic (conservative name-based auto-bind, unverified), the
+    # R→M reply chain gains a contact rung (after reply-context memory), and
+    # M→R directed DMs fall back to contact mapping when node_tracker has no
+    # rns_hash. Default False (observe-first rollout, moc first). The
+    # operator CLI (scripts/gateway_contacts.py) works regardless of this
+    # flag — explicit links are always allowed (verified=1).
+    cross_protocol_identity_enabled: bool = False
+    identity_population_throttle_sec: int = 900   # per-address SQLite write throttle
+    identity_max_contacts: int = 5000             # auto-discover growth guard
 
     def get_lxmf_destinations(self) -> List[str]:
         """Return default_lxmf_destination normalized to a list of non-empty hex strings."""

@@ -166,6 +166,7 @@ class MeshCoreHandler(BaseMessageHandler):
         message_callback: Optional[Callable] = None,
         status_callback: Optional[Callable] = None,
         should_bridge: Optional[Callable] = None,
+        identity_binder=None,  # Theme-A step 2: optional IdentityBinder
     ):
         super().__init__(
             config=config,
@@ -179,6 +180,11 @@ class MeshCoreHandler(BaseMessageHandler):
             status_callback=status_callback,
             should_bridge=should_bridge,
         )
+
+        # Theme-A step 2: cross-protocol identity SSOT (population only —
+        # MeshCore routing legs are a later step). None keeps standalone /
+        # test construction fully inert.
+        self._identity_binder = identity_binder
 
         # Connection state (handler-specific)
         self._meshcore = None  # meshcore_py MeshCore instance or simulator
@@ -533,6 +539,19 @@ class MeshCoreHandler(BaseMessageHandler):
 
             self.node_tracker.add_node(node)
             logger.debug(f"MeshCore node discovered: {adv_name} ({pubkey[:8]})")
+
+            # Theme-A step 2: populate the identity SSOT from the
+            # advertisement (gated + throttled; population only, no
+            # MeshCore routing this step).
+            rns_cfg = getattr(self.config, 'rns', None)
+            if (self._identity_binder is not None
+                    and getattr(rns_cfg, 'cross_protocol_identity_enabled',
+                                False) is True):
+                try:
+                    self._identity_binder.populate(
+                        'meshcore', pubkey.lower(), adv_name)
+                except Exception as e:
+                    logger.debug(f"identity populate (meshcore) failed: {e}")
 
         except Exception as e:
             logger.error(f"Error processing MeshCore advertisement: {e}")

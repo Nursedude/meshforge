@@ -3527,3 +3527,272 @@ class TestReplyRoutingEndToEnd:
         assert captured["destination"] == "!aabb0042"
         assert "copy loud and clear" in captured["content"]
         assert bridge.stats['reply_routed_from_memory'] == 1
+
+
+class TestIdentityReplyContactRung:
+    """Theme-A step 2 — contact rung in the R→M reply chain.
+    Precedence: @addr > field > memory > contact > broadcast."""
+
+    PEER = "abcd0123abcd0123abcd0123abcd0123"
+
+    def _enable(self, bridge, tmp_path):
+        from gateway.identity_binding import IdentityBinder
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.cross_protocol_identity_enabled = True
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+        bridge._identity = IdentityBinder(
+            db_path=str(tmp_path / "contacts.db"), throttle_sec=0.0001)
+        return bridge._identity
+
+    def _msg(self, content="my reply", fields=None):
+        from gateway.rns_bridge import BridgedMessage
+        return BridgedMessage(
+            source_network="rns", source_id=self.PEER,
+            destination_id=None, content=content,
+            metadata={"lxmf_fields": fields} if fields else {},
+        )
+
+    def _capture(self, bridge, msg):
+        captured = {}
+
+        def capture_send(content, destination=None, channel=0):
+            captured["content"] = content
+            captured["destination"] = destination
+            return True
+
+        with patch.object(bridge, 'send_to_meshtastic', side_effect=capture_send):
+            bridge._process_rns_to_mesh(msg)
+        return captured
+
+    def test_contact_rung_resolves_reply(self, bridge, tmp_path):
+        binder = self._enable(bridge, tmp_path)
+        binder.link("Alice", "rns", self.PEER)
+        binder.link("Alice", "meshtastic", "!aabb0042")
+
+        captured = self._capture(bridge, self._msg())
+
+        assert captured["destination"] == "!aabb0042"
+        assert bridge.stats['reply_routed_from_contact'] == 1
+        assert "(reply:contact)" not in captured["content"]  # tag is log-only
+
+    def test_memory_beats_contact(self, bridge, tmp_path):
+        binder = self._enable(bridge, tmp_path)
+        binder.link("Alice", "rns", self.PEER)
+        binder.link("Alice", "meshtastic", "!aabb0042")
+        bridge._reply_context.record(self.PEER, "meshtastic:!55556666")
+
+        captured = self._capture(bridge, self._msg())
+
+        assert captured["destination"] == "!55556666"
+        assert bridge.stats['reply_routed_from_memory'] == 1
+        assert bridge.stats['reply_routed_from_contact'] == 0
+
+    def test_explicit_addr_beats_contact(self, bridge, tmp_path):
+        binder = self._enable(bridge, tmp_path)
+        binder.link("Alice", "rns", self.PEER)
+        binder.link("Alice", "meshtastic", "!aabb0042")
+
+        captured = self._capture(bridge, self._msg(content="@!11112222 hi"))
+
+        assert captured["destination"] == "!11112222"
+        assert bridge.stats['reply_routed_from_contact'] == 0
+
+    def test_contact_rung_needs_identity_flag(self, bridge, tmp_path):
+        binder = self._enable(bridge, tmp_path)
+        binder.link("Alice", "rns", self.PEER)
+        binder.link("Alice", "meshtastic", "!aabb0042")
+        bridge.config.rns.cross_protocol_identity_enabled = False
+
+        captured = self._capture(bridge, self._msg())
+
+        assert captured["destination"] is None  # broadcast
+        assert bridge.stats['reply_routed_from_contact'] == 0
+
+    def test_contact_rung_needs_reply_routing_flag(self, bridge, tmp_path):
+        binder = self._enable(bridge, tmp_path)
+        binder.link("Alice", "rns", self.PEER)
+        binder.link("Alice", "meshtastic", "!aabb0042")
+        bridge.config.rns.reply_routing_enabled = False
+
+        captured = self._capture(bridge, self._msg())
+
+        assert captured["destination"] is None
+
+    def test_no_contact_falls_back_to_broadcast(self, bridge, tmp_path):
+        self._enable(bridge, tmp_path)
+
+        captured = self._capture(bridge, self._msg())
+
+        assert captured["destination"] is None
+
+
+class TestIdentityM2RFallback:
+    """Theme-A step 2 — _get_rns_destination contact fallback."""
+
+    RNS_HASH = "ee" * 16
+
+    def _enable(self, bridge, tmp_path):
+        from gateway.identity_binding import IdentityBinder
+        bridge.config.rns.cross_protocol_identity_enabled = True
+        bridge._identity = IdentityBinder(
+            db_path=str(tmp_path / "contacts.db"), throttle_sec=0.0001)
+        return bridge._identity
+
+    def test_tracker_miss_binder_hit(self, bridge, tmp_path):
+        binder = self._enable(bridge, tmp_path)
+        binder.link("Alice", "meshtastic", "!aabb0042")
+        binder.link("Alice", "rns", self.RNS_HASH)
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
+
+        dest = bridge._get_rns_destination("!aabb0042")
+
+        assert dest == bytes.fromhex(self.RNS_HASH)
+        assert bridge.stats['identity_resolved_m2r'] == 1
+
+    def test_tracker_hit_wins_no_binder_touch(self, bridge, tmp_path):
+        binder = self._enable(bridge, tmp_path)
+        node = MagicMock()
+        node.rns_hash = bytes.fromhex("dd" * 16)
+        bridge.node_tracker.get_node_by_mesh_id.return_value = node
+
+        dest = bridge._get_rns_destination("!aabb0042")
+
+        assert dest == bytes.fromhex("dd" * 16)
+        assert binder._table is None  # binder never opened
+        assert bridge.stats['identity_resolved_m2r'] == 0
+
+    def test_no_mapping_returns_none(self, bridge, tmp_path):
+        self._enable(bridge, tmp_path)
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
+
+        assert bridge._get_rns_destination("!aabb0042") is None
+        assert bridge.stats['identity_resolved_m2r'] == 0
+
+    def test_flag_off_no_binder_touch(self, bridge):
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
+
+        assert bridge._get_rns_destination("!aabb0042") is None
+        assert bridge._identity._table is None
+
+
+class TestIdentityPopulation:
+    """Theme-A step 2 — population gating + exclusion guards."""
+
+    PEER = "abcd0123abcd0123abcd0123abcd0123"
+    DEST = "6b1a0120941444587d7d1dc1bf6d64d7"
+
+    def _enable(self, bridge, tmp_path):
+        from gateway.identity_binding import IdentityBinder
+        bridge.config.rns.cross_protocol_identity_enabled = True
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+        bridge._identity = IdentityBinder(
+            db_path=str(tmp_path / "contacts.db"), throttle_sec=0.0001)
+        return bridge._identity
+
+    def test_m2r_populates_mesh_sender(self, bridge, tmp_path):
+        from gateway.rns_bridge import BridgedMessage
+        binder = self._enable(bridge, tmp_path)
+        bridge.config.rns.get_lxmf_destinations.return_value = [self.DEST]
+        mock_node = MagicMock()
+        mock_node.name = "Alice"
+        mock_node.short_name = "ALCE"
+        bridge.node_tracker.get_node_by_mesh_id.return_value = mock_node
+        msg = BridgedMessage(
+            source_network="meshtastic", source_id="!aabb0042",
+            destination_id=None, content="hello",
+        )
+
+        with patch.object(bridge, 'send_to_rns', return_value=True):
+            bridge._process_mesh_to_rns(msg)
+
+        contact = binder.show("meshtastic", "!aabb0042")
+        assert contact is not None
+        assert contact.display_name == "Alice"
+
+    def test_r2m_populates_rns_sender(self, bridge, tmp_path):
+        from gateway.rns_bridge import BridgedMessage
+        binder = self._enable(bridge, tmp_path)
+        bridge.node_tracker.get_node_by_rns_hash.return_value = None
+        msg = BridgedMessage(
+            source_network="rns", source_id=self.PEER,
+            destination_id=None, content="hello from nomadnet",
+        )
+
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True):
+            bridge._process_rns_to_mesh(msg)
+
+        assert binder.show("rns", self.PEER) is not None
+
+    def test_r2m_peer_gateway_not_populated(self, bridge, tmp_path):
+        """D4 guard: infrastructure never becomes a contact."""
+        from gateway.rns_bridge import BridgedMessage
+        binder = self._enable(bridge, tmp_path)
+        bridge.config.rns.get_peer_gateway_destinations.return_value = [self.PEER]
+        msg = BridgedMessage(
+            source_network="rns", source_id=self.PEER,
+            destination_id=None, content="relayed traffic",
+        )
+
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True):
+            bridge._process_rns_to_mesh(msg)
+
+        assert binder._table is None  # populate never ran
+
+    def test_r2m_bridge_origin_copy_not_populated(self, bridge, tmp_path):
+        from gateway.rns_bridge import BridgedMessage
+        binder = self._enable(bridge, tmp_path)
+        msg = BridgedMessage(
+            source_network="rns", source_id=self.PEER,
+            destination_id=None, content="fan-out copy",
+            metadata={"lxmf_fields": {
+                "meshforge_source_network": "meshtastic",
+                "meshforge_from_id": "!a2e95ba4",
+            }},
+        )
+
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True):
+            bridge._process_rns_to_mesh(msg)
+
+        assert binder._table is None
+
+    def test_m2r_already_bridged_content_not_populated(self, bridge, tmp_path):
+        from gateway.rns_bridge import BridgedMessage
+        binder = self._enable(bridge, tmp_path)
+        bridge.config.rns.get_lxmf_destinations.return_value = [self.DEST]
+        msg = BridgedMessage(
+            source_network="meshtastic", source_id="!aabb0042",
+            destination_id=None, content="[RNS:abcd] echo",
+        )
+
+        with patch.object(bridge, 'send_to_rns', return_value=True):
+            bridge._process_mesh_to_rns(msg)
+
+        assert binder._table is None
+
+
+class TestIdentityFlagOffInertness:
+    """With the fixture's MagicMock config (flag truthy-but-not-True), every
+    identity leg is inert and NO DB is ever opened — the no-DB proof."""
+
+    def test_both_paths_leave_binder_unopened(self, bridge):
+        from gateway.rns_bridge import BridgedMessage
+        bridge.config.rns.get_lxmf_destinations.return_value = [
+            "6b1a0120941444587d7d1dc1bf6d64d7",
+        ]
+        m2r = BridgedMessage(
+            source_network="meshtastic", source_id="!aabb0042",
+            destination_id=None, content="hello",
+        )
+        r2m = BridgedMessage(
+            source_network="rns", source_id="ab" * 16,
+            destination_id=None, content="reply",
+        )
+
+        with patch.object(bridge, 'send_to_rns', return_value=True):
+            bridge._process_mesh_to_rns(m2r)
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True):
+            bridge._process_rns_to_mesh(r2m)
+
+        assert bridge._identity._table is None
+        assert bridge.stats['reply_routed_from_contact'] == 0
+        assert bridge.stats['identity_resolved_m2r'] == 0
