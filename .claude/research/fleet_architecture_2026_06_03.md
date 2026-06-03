@@ -220,6 +220,37 @@ diagnosis; these are sequenced proposals.
 
 ---
 
+## 7.5 Gateway goals vs current configuration (assessment 2026-06-03)
+
+Operator question after ratifying moc2=collector: *are the gateway/bridge goals met
+with this configuration?* Assessed live against the three goal tiers:
+
+- **Tier 1 — predictable best-effort bridging** (shipped substrate, #66): ✅ **MET.**
+  Two bridges, both green over the live window: moc 46 msgs (M→R 10/10, R→M 36/36,
+  0 dropped, 3,782 nodes), moc3 47 msgs (M→R 25/25, R→M 22/22, 0 dropped, **4,430
+  nodes** — the Pi3B pulls real weight; its ToPhone queue-full warnings are the
+  meshtasticd phone API, not bridge drops). Flows are complementary: moc is R→M-heavy,
+  moc3 balanced. Bridge placement matches RF reality (bridges at RF-rich sites;
+  collector/cloud-publisher where bridging adds nothing).
+- **Tier 2 — resilience/redundancy**: ⚠️ **PARTIAL.** Two *independent* bridges
+  overlap, but `GatewayHeartbeat` (cross-gateway MQTT failover) is **wired in code,
+  absent from both configs** — no coordinated takeover if one bridge dies. Redundancy
+  today is accidental, not declared. Also one config-shape drift found:
+  `rns_bridge_enabled` = `true` (moc) vs `null` (moc3) — benign now (default-true)
+  but flips moc3 silently if the code default ever changes.
+- **Tier 3 — "it just works" bidirectional addressability** (12-month arc): ❌ **NOT
+  YET, by design** — this is code work (§7-A reply-to / identity SSOT / sessions); no
+  box configuration can meet it.
+
+**Verdict**: the configuration is right-shaped for today's goals; the gaps are not
+placement gaps. Sequenced next steps: (1) normalize moc3 `rns_bridge_enabled
+null→true` (one-line, removes the latent flip); (2) **decide** GatewayHeartbeat —
+wire it between moc+moc3 *or* declare "two independent bridges" as the design;
+(3) build the §7-B gateway-config drift probe (canonical gateway.json subset compared
+across gateway boxes — this assessment's diff is its first test case); (4) the §7-A arc.
+
+---
+
 ## 8. Watch-items (carry forward)
 
 1. **moc2 meshtasticd age 301d** — oldest daemon on the fleet; restart-timer candidate (§7-D).
