@@ -399,6 +399,14 @@ class RNSConfig:
     cross_protocol_identity_enabled: bool = False
     identity_population_throttle_sec: int = 900   # per-address SQLite write throttle
     identity_max_contacts: int = 5000             # auto-discover growth guard
+    # Theme-A step 3 — durable session layer. When True, a Meshtastic DM
+    # addressed to the gateway's OWN node (meshtastic.gateway_node_id) is
+    # routed as a private LXMF send to the peer of the sender's most-recent
+    # active session (idle-TTL'd, survives restart in gateway_sessions.db).
+    # Default False. No-session fallback = today's broadcast fan-out.
+    sessions_enabled: bool = False
+    session_idle_timeout_sec: int = 86400   # forget an idle session after ~24h
+    session_max_entries: int = 1024         # row cap, oldest-evicted
 
     def get_lxmf_destinations(self) -> List[str]:
         """Return default_lxmf_destination normalized to a list of non-empty hex strings."""

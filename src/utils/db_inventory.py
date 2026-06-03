@@ -213,6 +213,20 @@ INVENTORY: List[DBSpec] = [
             "/api/gateway/delivery from the same file."
         ),
     ),
+    DBSpec(
+        name="gateway_sessions",
+        path_factory=lambda: _meshforge_config_dir() / "gateway_sessions.db",
+        creator_module="gateway.session_store",
+        has_auto_prune=True,
+        retention_days=None,  # idle-TTL based (session_idle_timeout_sec)
+        notes=(
+            "Theme-A step 3 durable session layer. One row per active "
+            "(mesh_id, rns_peer_hash) conversation; idle-TTL'd via "
+            "expire_idle() (bridge ~30s sweep + lazy WHERE in lookup) and "
+            "oldest-evicted at session_max_entries. Small, bounded. "
+            "Created lazily — file absent until rns.sessions_enabled."
+        ),
+    ),
 ]
 
 

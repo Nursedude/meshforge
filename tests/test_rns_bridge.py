@@ -3796,3 +3796,269 @@ class TestIdentityFlagOffInertness:
         assert bridge._identity._table is None
         assert bridge.stats['reply_routed_from_contact'] == 0
         assert bridge.stats['identity_resolved_m2r'] == 0
+
+
+class TestSessionDmToGateway:
+    """Theme-A step 3 — a Meshtastic DM to the gateway's own node routes
+    privately via the sender's active session; no-session falls back to
+    today's broadcast fan-out."""
+
+    GATEWAY_ID = "!ebfa0001"
+    PEER = "ab" * 16
+    DEST = "6b1a0120941444587d7d1dc1bf6d64d7"
+
+    def _enable(self, bridge, tmp_path):
+        from gateway.session_store import SessionStore
+        bridge.config.rns.sessions_enabled = True
+        bridge.config.meshtastic.gateway_node_id = self.GATEWAY_ID
+        bridge.config.rns.get_lxmf_destinations.return_value = [self.DEST]
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
+        bridge._sessions = SessionStore(db_path=str(tmp_path / "s.db"))
+        return bridge._sessions
+
+    def _dm(self, content="my private reply", source="!aabb0042"):
+        from gateway.rns_bridge import BridgedMessage
+        return BridgedMessage(
+            source_network="meshtastic", source_id=source,
+            destination_id=self.GATEWAY_ID, content=content,
+            is_broadcast=False,
+        )
+
+    def test_session_routed_single_send(self, bridge, tmp_path):
+        sessions = self._enable(bridge, tmp_path)
+        sessions.touch("!aabb0042", self.PEER)
+        sends = []
+
+        def capture(content, dest_hash=None, title=None, fields=None):
+            sends.append((content, dest_hash, title, fields))
+            return True
+
+        with patch.object(bridge, 'send_to_rns', side_effect=capture):
+            bridge._process_mesh_to_rns(self._dm())
+
+        assert len(sends) == 1  # single private send — NO fan-out
+        content, dest_hash, title, fields = sends[0]
+        assert dest_hash == bytes.fromhex(self.PEER)
+        assert content == "my private reply"
+        assert fields["meshforge_reply_to"] == "meshtastic:!aabb0042"
+        assert "!aabb0042" in title
+        assert bridge.stats['session_routed_m2r'] == 1
+        assert bridge.stats['mesh_to_rns_delivered'] == 1
+
+    def test_session_send_refreshes_session_and_memory(self, bridge, tmp_path):
+        sessions = self._enable(bridge, tmp_path)
+        bridge.config.rns.reply_routing_enabled = True
+        sessions.touch("!aabb0042", self.PEER)
+
+        with patch.object(bridge, 'send_to_rns', return_value=True):
+            bridge._process_mesh_to_rns(self._dm())
+
+        rows = sessions.list_active()
+        assert rows[0]["message_count"] == 2  # seeded + refreshed
+        # step-1 memory kept warm for the peer's next reply
+        assert bridge._reply_context.get(self.PEER) == "meshtastic:!aabb0042"
+
+    def test_no_session_falls_back_to_broadcast(self, bridge, tmp_path):
+        self._enable(bridge, tmp_path)
+        sends = []
+
+        with patch.object(bridge, 'send_to_rns',
+                          side_effect=lambda *a, **k: sends.append(a) or True):
+            bridge._process_mesh_to_rns(self._dm())
+
+        assert bridge.stats['session_dm_no_session'] == 1
+        assert len(sends) == 1  # the fan-out list (one configured dest)
+
+    def test_send_failure_falls_back_to_fanout(self, bridge, tmp_path):
+        sessions = self._enable(bridge, tmp_path)
+        sessions.touch("!aabb0042", self.PEER)
+        calls = {"n": 0}
+
+        def first_fails(content, dest_hash=None, title=None, fields=None):
+            calls["n"] += 1
+            return calls["n"] > 1  # session send fails, fan-out succeeds
+
+        with patch.object(bridge, 'send_to_rns', side_effect=first_fails):
+            bridge._process_mesh_to_rns(self._dm())
+
+        assert calls["n"] == 2  # session attempt + fan-out
+        assert bridge.stats['session_routed_m2r'] == 0
+        assert bridge.stats['mesh_to_rns_delivered'] == 1
+
+    def test_flag_off_unchanged_and_db_never_opened(self, bridge):
+        # Fixture MagicMock flag (truthy-not-True) → sessions OFF.
+        from gateway.rns_bridge import BridgedMessage
+        bridge.config.rns.get_lxmf_destinations.return_value = [self.DEST]
+        msg = BridgedMessage(
+            source_network="meshtastic", source_id="!aabb0042",
+            destination_id=self.GATEWAY_ID, content="dm", is_broadcast=False,
+        )
+
+        with patch.object(bridge, 'send_to_rns', return_value=True):
+            bridge._process_mesh_to_rns(msg)
+
+        assert bridge._sessions._initialized is False
+        assert bridge.stats['session_routed_m2r'] == 0
+        assert bridge.stats['session_dm_no_session'] == 0
+
+    def test_own_id_unset_unchanged(self, bridge, tmp_path):
+        sessions = self._enable(bridge, tmp_path)
+        bridge.config.meshtastic.gateway_node_id = ""
+        sessions.touch("!aabb0042", self.PEER)
+        sends = []
+
+        with patch.object(bridge, 'send_to_rns',
+                          side_effect=lambda *a, **k: sends.append(a) or True):
+            bridge._process_mesh_to_rns(self._dm())
+
+        assert bridge.stats['session_routed_m2r'] == 0
+        assert len(sends) == 1  # plain fan-out
+
+    def test_synthetic_content_excluded(self, bridge, tmp_path):
+        sessions = self._enable(bridge, tmp_path)
+        sessions.touch("!aabb0042", self.PEER)
+
+        with patch.object(bridge, 'send_to_rns', return_value=True):
+            bridge._process_mesh_to_rns(
+                self._dm(content="[delivered: abcd1234]"))
+
+        assert bridge.stats['session_routed_m2r'] == 0
+
+    def test_dm_to_other_node_not_session_routed(self, bridge, tmp_path):
+        """A DM to a different mesh node is NOT the gateway channel."""
+        from gateway.rns_bridge import BridgedMessage
+        sessions = self._enable(bridge, tmp_path)
+        sessions.touch("!aabb0042", self.PEER)
+        msg = BridgedMessage(
+            source_network="meshtastic", source_id="!aabb0042",
+            destination_id="!00001111", content="dm to a peer node",
+            is_broadcast=False,
+        )
+
+        with patch.object(bridge, 'send_to_rns', return_value=True):
+            bridge._process_mesh_to_rns(msg)
+
+        assert bridge.stats['session_routed_m2r'] == 0
+
+
+class TestSessionTouchPoints:
+    """Theme-A step 3 — where sessions open/refresh."""
+
+    PEER = "ab" * 16
+
+    def _enable(self, bridge, tmp_path):
+        from gateway.session_store import SessionStore
+        bridge.config.rns.sessions_enabled = True
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+        bridge._sessions = SessionStore(db_path=str(tmp_path / "s.db"))
+        return bridge._sessions
+
+    def test_r2m_directed_delivery_touches(self, bridge, tmp_path):
+        from gateway.rns_bridge import BridgedMessage
+        sessions = self._enable(bridge, tmp_path)
+        msg = BridgedMessage(
+            source_network="rns", source_id=self.PEER,
+            destination_id=None, content="@!aabb0042 hello there",
+        )
+
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True):
+            bridge._process_rns_to_mesh(msg)
+
+        assert sessions.lookup("!aabb0042") == self.PEER
+
+    def test_addr_rung_peer_gateway_excluded(self, bridge, tmp_path):
+        """The @addr rung resolves OUTSIDE the step-1 gated block — the
+        session touch carries its own exclusion for peer-gateway sources."""
+        from gateway.rns_bridge import BridgedMessage
+        sessions = self._enable(bridge, tmp_path)
+        bridge.config.rns.get_peer_gateway_destinations.return_value = [self.PEER]
+        msg = BridgedMessage(
+            source_network="rns", source_id=self.PEER,
+            destination_id=None, content="@!aabb0042 relayed",
+        )
+
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True):
+            bridge._process_rns_to_mesh(msg)
+
+        assert sessions._initialized is False  # never touched
+
+    def test_m2r_directed_dm_touches(self, bridge, tmp_path):
+        from gateway.rns_bridge import BridgedMessage
+        sessions = self._enable(bridge, tmp_path)
+        node = MagicMock()
+        node.rns_hash = bytes.fromhex("cd" * 16)
+        bridge.node_tracker.get_node_by_mesh_id.return_value = node
+        msg = BridgedMessage(
+            source_network="meshtastic", source_id="!aabb0042",
+            destination_id="!00001111", content="direct to rns-mapped node",
+            is_broadcast=False,
+        )
+
+        with patch.object(bridge, 'send_to_rns', return_value=True):
+            bridge._process_mesh_to_rns(msg)
+
+        assert sessions.lookup("!aabb0042") == "cd" * 16
+
+    def test_failed_send_no_touch(self, bridge, tmp_path):
+        from gateway.rns_bridge import BridgedMessage
+        sessions = self._enable(bridge, tmp_path)
+        node = MagicMock()
+        node.rns_hash = bytes.fromhex("cd" * 16)
+        bridge.node_tracker.get_node_by_mesh_id.return_value = node
+        msg = BridgedMessage(
+            source_network="meshtastic", source_id="!aabb0042",
+            destination_id="!00001111", content="will fail",
+            is_broadcast=False,
+        )
+
+        with patch.object(bridge, 'send_to_rns', return_value=False), \
+             patch.object(bridge, '_requeue_failed_message', return_value=False):
+            bridge._process_mesh_to_rns(msg)
+
+        assert sessions.lookup("!aabb0042") is None
+
+    def test_broadcast_fanout_never_touches(self, bridge, tmp_path):
+        from gateway.rns_bridge import BridgedMessage
+        sessions = self._enable(bridge, tmp_path)
+        bridge.config.rns.get_lxmf_destinations.return_value = [
+            "6b1a0120941444587d7d1dc1bf6d64d7",
+        ]
+        msg = BridgedMessage(
+            source_network="meshtastic", source_id="!aabb0042",
+            destination_id=None, content="channel broadcast",
+        )
+
+        with patch.object(bridge, 'send_to_rns', return_value=True):
+            bridge._process_mesh_to_rns(msg)
+
+        assert sessions._initialized is False
+
+
+class TestSessionSweep:
+    """Theme-A step 3 — the ~30s maintenance sweep."""
+
+    def test_expired_sessions_pruned(self, bridge, tmp_path, monkeypatch):
+        from gateway.session_store import SessionStore
+        import gateway.session_store as ss
+        clock = [1000.0]
+        monkeypatch.setattr(ss.time, "time", lambda: clock[0])
+        bridge.config.rns.sessions_enabled = True
+        bridge._sessions = SessionStore(
+            db_path=str(tmp_path / "s.db"), idle_timeout_sec=60)
+        bridge._sessions.touch("!aabb0042", "ab" * 16)
+        clock[0] = 2000.0  # way past TTL
+
+        assert bridge._sweep_expired_sessions() == 1
+        assert bridge._sessions.active_count() == 0
+
+    def test_sweep_gated_off_noop(self, bridge):
+        # MagicMock flag → off; sweep must not open the DB.
+        assert bridge._sweep_expired_sessions() == 0
+        assert bridge._sessions._initialized is False
+
+    def test_get_status_gated(self, bridge):
+        # Flag off: active_sessions reported 0 without opening the DB.
+        status = bridge.get_status()
+        assert status['active_sessions'] == 0
+        assert bridge._sessions._initialized is False

@@ -67,6 +67,7 @@ PersistentMessageQueue, MessagePriority, HAS_PERSISTENT_QUEUE = safe_import(
 from .identity_binding import IdentityBinder
 from .message_routing import MessageRouter
 from .reply_context import ReplyContextStore
+from .session_store import SessionStore
 from .meshcore_bridge_mixin import MeshCoreBridgeMixin
 from ._rns_bridge_connection import RNSConnectionMixin
 from ._rns_bridge_xform import MessageTransformMixin
@@ -268,6 +269,9 @@ class RNSMeshtasticBridge(
             # reply chain; contact fallback in M→R directed DMs).
             'reply_routed_from_contact': 0,
             'identity_resolved_m2r': 0,
+            # Theme-A step 3: DM-to-gateway session routing.
+            'session_routed_m2r': 0,
+            'session_dm_no_session': 0,
         }
 
         # Theme-A step 1: reply-context memory (peer LXMF hash → canonical
@@ -285,6 +289,13 @@ class RNSMeshtasticBridge(
         self._identity = IdentityBinder(
             throttle_sec=getattr(_rns_cfg, 'identity_population_throttle_sec', None),
             max_contacts=getattr(_rns_cfg, 'identity_max_contacts', None),
+        )
+
+        # Theme-A step 3: durable session layer. Lazy — opens no DB until
+        # first gated use (rns.sessions_enabled).
+        self._sessions = SessionStore(
+            idle_timeout_sec=getattr(_rns_cfg, 'session_idle_timeout_sec', None),
+            max_sessions=getattr(_rns_cfg, 'session_max_entries', None),
         )
 
         # Persistent message queue for reliable delivery
@@ -800,6 +811,10 @@ class RNSMeshtasticBridge(
             'node_stats': self.node_tracker.get_stats(),
             'subsystems': self.health.get_subsystem_states(),
             'bridge_status': self.bridge_status.value,
+            # Theme-A step 3 — gated so flag-off deploys never lazily
+            # open gateway_sessions.db just to report status.
+            'active_sessions': (self._sessions.active_count()
+                                if self._sessions_on() else 0),
         }
 
     def send_to_meshtastic(self, message: str, destination: str = None, channel: int = 0) -> bool:
@@ -1046,6 +1061,24 @@ class RNSMeshtasticBridge(
                 f"ack sweep: emitted {emitted} TIMEOUT ACK(s)"
             )
         return emitted
+
+    def _sweep_expired_sessions(self) -> int:
+        """Prune idle/over-cap sessions (~every 30s from _bridge_loop).
+
+        Theme-A step 3. Gated: a strict no-op when sessions are off —
+        never opens gateway_sessions.db. Logs only when something was
+        pruned. Never raises.
+        """
+        if not self._sessions_on():
+            return 0
+        try:
+            removed = self._sessions.expire_idle()
+        except Exception as e:
+            logger.warning(f"session sweep failed: {e}")
+            return 0
+        if removed:
+            logger.info(f"session sweep: pruned {removed} expired session(s)")
+        return removed
 
     def send_to_rns(
         self,
@@ -1658,6 +1691,9 @@ class RNSMeshtasticBridge(
                     # Issue #66: surface overdue pending-acks as TIMEOUT
                     # ACKs so the origin sender stops wondering.
                     self._sweep_overdue_acks()
+                    # Theme-A step 3: prune idle sessions (gated no-op
+                    # when sessions are off).
+                    self._sweep_expired_sessions()
 
             except Exception as e:
                 logger.error(f"Bridge loop error: {e}")

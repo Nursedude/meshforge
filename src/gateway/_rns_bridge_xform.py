@@ -66,6 +66,51 @@ class MessageTransformMixin:
         rns_cfg = getattr(self.config, 'rns', None)
         return getattr(rns_cfg, 'cross_protocol_identity_enabled', False) is True
 
+    def _sessions_on(self) -> bool:
+        """Strict read of rns.sessions_enabled (default False).
+
+        Theme-A step 3. Same ``is True`` discipline as the other gates —
+        MagicMock configs and malformed values read as OFF, keeping the
+        session layer (touches + DM-to-gateway routing + sweep) inert
+        unless explicitly enabled.
+        """
+        rns_cfg = getattr(self.config, 'rns', None)
+        return getattr(rns_cfg, 'sessions_enabled', False) is True
+
+    def _own_mesh_node_id(self) -> Optional[str]:
+        """The gateway's own Meshtastic node id, normalized ``!hex8``.
+
+        Config-first: meshtastic.gateway_node_id (operator-supplied).
+        None when unset/malformed — DM-to-gateway detection then no-ops
+        and such traffic falls through to today's broadcast behavior.
+        """
+        mesh_cfg = getattr(self.config, 'meshtastic', None)
+        raw = getattr(mesh_cfg, 'gateway_node_id', '') or ''
+        if not isinstance(raw, str):
+            return None
+        norm = raw.strip().lower()
+        return norm if re.match(r'^![0-9a-f]{8}$', norm) else None
+
+    def _maybe_touch_session_r2m(self, msg, destination,
+                                 original_body, lxmf_fields) -> None:
+        """R→M directed delivery succeeded → open/refresh the session.
+
+        Theme-A step 3. ``destination`` is the resolved ``!hex8`` mesh id;
+        ``msg.source_id`` is the RNS peer hash. Carries its OWN exclusion
+        check — the ``@addr`` rung resolves OUTSIDE the step-1 gated
+        block, so peer-gateway sources / bridge-origin copies that used
+        ``@addr`` must be excluded here too. Never raises.
+        """
+        try:
+            if not (self._sessions_on() and destination and msg.source_id):
+                return
+            if self._reply_excluded(original_body, lxmf_fields,
+                                    msg.source_id or ''):
+                return
+            self._sessions.touch(destination, msg.source_id)
+        except Exception as e:
+            logger.debug(f"session touch (r2m) failed: {e}")
+
     def _peer_gateway_hash_set(self) -> set:
         """Normalized lowercase set of peer gateway LXMF hashes."""
         try:
@@ -172,13 +217,60 @@ class MessageTransformMixin:
                 "meshforge_reply_to": reply_token,
             }
 
+            # Theme-A step 3: a Meshtastic DM addressed to the gateway's
+            # OWN node is the private-reply channel. When sessions are on
+            # and the sender has an active session, route the content as
+            # a single private LXMF send to that peer instead of the
+            # broadcast fan-out today's lookup miss would trigger. Flag
+            # off / own-id unknown / synthetic content → fall through to
+            # today's behavior unchanged. No-session → log + fall through
+            # (broadcast fallback, operator-ratified).
+            own_id = self._own_mesh_node_id() if self._sessions_on() else None
+            if (own_id and not msg.is_broadcast and msg.destination_id
+                    and msg.destination_id.lower() == own_id
+                    and msg.source_id
+                    and not self._reply_excluded(content, {})):
+                peer_hex = self._sessions.lookup(msg.source_id)
+                dest_bytes = None
+                if peer_hex:
+                    try:
+                        dest_bytes = bytes.fromhex(peer_hex)
+                    except (ValueError, TypeError):
+                        dest_bytes = None
+                if dest_bytes and self.send_to_rns(
+                        content, dest_bytes, title=title, fields=fields):
+                    self._sessions.touch(msg.source_id, peer_hex)
+                    if self._reply_routing_on():
+                        # Keep the step-1 R→M memory warm for the peer.
+                        self._reply_context.record(peer_hex, reply_token)
+                    with self._stats_lock:
+                        self.stats['session_routed_m2r'] = (
+                            self.stats.get('session_routed_m2r', 0) + 1)
+                        self.stats['messages_mesh_to_rns'] += 1
+                        self.stats['mesh_to_rns_delivered'] += 1
+                    self.health.record_message_sent("mesh_to_rns")
+                    logger.info(
+                        f"Bridge Mesh→RNS (session): {title} -> "
+                        f"{peer_hex[:8]} — {content[:50]}")
+                    return
+                if not peer_hex:
+                    with self._stats_lock:
+                        self.stats['session_dm_no_session'] = (
+                            self.stats.get('session_dm_no_session', 0) + 1)
+                    logger.info(
+                        f"Mesh→RNS DM-to-gateway from {msg.source_id} with "
+                        f"no active session — broadcast fallback")
+                # peer send failure / bad hex also falls through to fan-out
+
             # Build destination list. Direct DM short-circuits to a single recipient;
             # broadcast fans out to every default_lxmf_destination configured.
             destinations: list = []
+            directed_m2r_dest = None
             if msg.destination_id and not msg.is_broadcast:
                 direct = self._get_rns_destination(msg.destination_id)
                 if direct:
                     destinations.append(direct)
+                    directed_m2r_dest = direct
 
             if not destinations:
                 for hex_str in self.config.rns.get_lxmf_destinations():
@@ -207,6 +299,15 @@ class MessageTransformMixin:
                         dest_hex = dest_hash.hex().lower()
                         if dest_hex not in peer_gateways:
                             self._reply_context.record(dest_hex, reply_token)
+                    # Theme-A step 3: a successful DIRECTED M→R DM opens/
+                    # refreshes the session (broadcast fan-out never does).
+                    if (self._sessions_on()
+                            and directed_m2r_dest is not None
+                            and dest_hash == directed_m2r_dest
+                            and msg.source_id
+                            and not self._reply_excluded(content, {})):
+                        self._sessions.touch(
+                            msg.source_id, dest_hash.hex().lower())
 
             if sent_count:
                 if len(destinations) > 1:
@@ -588,6 +689,10 @@ class MessageTransformMixin:
                     self.stats['messages_rns_to_mesh'] += 1
                     self.stats['rns_to_mesh_delivered'] += 1
                 self.health.record_message_sent("rns_to_mesh")
+                # Theme-A step 3: directed delivery opens/refreshes the
+                # session (gated + excluded inside the helper).
+                self._maybe_touch_session_r2m(
+                    msg, destination, original_body, lxmf_fields)
                 if enqueued:
                     note = f", {suppressed} dup-suppressed" if suppressed else ""
                     logger.info(
@@ -620,6 +725,10 @@ class MessageTransformMixin:
                     self.stats['messages_rns_to_mesh'] += 1
                     self.stats['rns_to_mesh_delivered'] += 1
                 self.health.record_message_sent("rns_to_mesh")
+                # Theme-A step 3: directed delivery opens/refreshes the
+                # session (gated + excluded inside the helper).
+                self._maybe_touch_session_r2m(
+                    msg, destination, original_body, lxmf_fields)
                 if not relayed_by:
                     self._maybe_relay_to_peers(msg, original_body)
             else:
