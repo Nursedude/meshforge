@@ -217,19 +217,43 @@ class TestSelfEchoFilter:
 
 
 class TestIsAlreadyBridged:
-    """The shared loop-guard predicate."""
+    """The shared loop-guard predicate. Covers every bridge tag in
+    BRIDGE_TAG_PREFIXES — mirrored with MeshAnchor's
+    ECHO_LOOP_INVARIANT_PREFIXES (keep in sync)."""
 
     def test_rns_tagged_true(self):
         from gateway.base_handler import is_already_bridged
         assert is_already_bridged("[RNS:f68c] wx reply")
         assert is_already_bridged("   [RNS:abcd] leading space")
 
-    def test_plain_and_other_tags_false(self):
+    def test_meshcore_and_broadcast_tags_true(self):
+        """Live echo amplifier on moc (2026-06-03): bare [MC:p4] content
+        injected through the gateway's own radio was re-bridged M→R to
+        6 LXMF dests + Phase-1 relayed to 2 peer gateways. Any leading
+        bridge tag means the content is already in the LXMF world."""
+        from gateway.base_handler import is_already_bridged
+        assert is_already_bridged("[MC:p4] hey you")
+        assert is_already_bridged("[ch0:p4] hey you")
+        assert is_already_bridged("[ch1:p4] something")
+        assert is_already_bridged("[MeshCore] legacy tag")
+        assert is_already_bridged("[Mesh:xxxx] aggregated")
+
+    def test_plain_content_false(self):
         from gateway.base_handler import is_already_bridged
         assert not is_already_bridged("wx")
         assert not is_already_bridged("")
-        assert not is_already_bridged("[MC:p4] from meshcore")  # not our marker
-        assert not is_already_bridged("[ch0:p4] something")
+        assert not is_already_bridged("ola moc it's me")
+        # Tag-like but not a bridge marker — operator brackets are fine
+        assert not is_already_bridged("[urgent] meet at the pavilion")
+
+    def test_prefix_list_mirrors_meshanchor(self):
+        """Parity pin: the list must stay identical to MeshAnchor's
+        ECHO_LOOP_INVARIANT_PREFIXES (gateway/config.py). If this fails,
+        port the new tag to the other repo, not just here."""
+        from gateway.base_handler import BRIDGE_TAG_PREFIXES
+        assert set(BRIDGE_TAG_PREFIXES) == {
+            "[MeshCore]", "[MC:", "[RNS:", "[ch0:", "[ch1:", "[Mesh:",
+        }
 
 
 class TestSourceAttribution:
@@ -288,6 +312,73 @@ class TestSourceAttribution:
         handler._message_queue.put.assert_called_once()
         msg = handler._message_queue.put.call_args.args[0]
         assert msg.source_id == "!aabb0042"
+
+
+class TestNodeTrackerAttribution:
+    """Node-tracker updates must key on the ORIGINATOR (`from`), not the
+    MQTT uplinker (`sender`). On a localhost broker `sender` is ALWAYS
+    this box's own radio, so the old code wrote every heard node's
+    nodeinfo/position onto the gateway's own node id — its name churned
+    to whichever node was heard last (the live "hawaii_gaz" phantom on
+    moc, 2026-06-03) and its position teleported between sites. Same
+    sender-vs-from class as TestSourceAttribution / 9554f06.
+    """
+
+    def _make_tracker_handler(self):
+        handler = MQTTBridgeHandler.__new__(MQTTBridgeHandler)
+        handler.node_tracker = MagicMock()
+        return handler
+
+    def test_nodeinfo_keyed_on_originator_not_uplinker(self):
+        """Pins the live corruption shape: KH7EH-15's nodeinfo arrived
+        via moc's own radio (!32962f10) as sender — it must be recorded
+        as !435b1180, never onto the gateway's own entry."""
+        handler = self._make_tracker_handler()
+        handler._update_nodeinfo({
+            "from": 0x435b1180,
+            "sender": "!32962f10",
+            "payload": {"longname": "KH7EH-15", "shortname": "EH15"},
+        })
+        node = handler.node_tracker.add_node.call_args.args[0]
+        assert node.id == "!435b1180"
+        assert node.name == "KH7EH-15"
+
+    def test_two_nodeinfos_via_same_uplinker_stay_distinct(self):
+        handler = self._make_tracker_handler()
+        for frm, name in ((0x435b1180, "KH7EH-15"), (0x47115e4f, "PHTO")):
+            handler._update_nodeinfo({
+                "from": frm,
+                "sender": "!32962f10",
+                "payload": {"longname": name, "shortname": name[:4]},
+            })
+        ids = [c.args[0].id
+               for c in handler.node_tracker.add_node.call_args_list]
+        assert ids == ["!435b1180", "!47115e4f"]
+
+    def test_nodeinfo_falls_back_to_sender_when_from_absent(self):
+        handler = self._make_tracker_handler()
+        handler._update_nodeinfo({
+            "sender": "!aabb0042",
+            "payload": {"longname": "Edge", "shortname": "EDGE"},
+        })
+        node = handler.node_tracker.add_node.call_args.args[0]
+        assert node.id == "!aabb0042"
+
+    def test_node_from_mqtt_keyed_on_originator(self):
+        handler = self._make_tracker_handler()
+        handler._update_node_from_mqtt({
+            "from": 0x435b1180,
+            "sender": "!32962f10",
+        })
+        node = handler.node_tracker.add_node.call_args.args[0]
+        assert node.id == "!435b1180"
+
+    def test_originator_id_helper_contract(self):
+        assert MQTTBridgeHandler._originator_id(
+            {"from": 0xa2e95ba4, "sender": "!32962f10"}) == "!a2e95ba4"
+        assert MQTTBridgeHandler._originator_id(
+            {"sender": "!32962f10"}) == "!32962f10"
+        assert MQTTBridgeHandler._originator_id({}) == ""
 
 
 class TestDmToGatewayChannelWildcard:

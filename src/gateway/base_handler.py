@@ -21,23 +21,41 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def is_already_bridged(text: str) -> bool:
-    """True if ``text`` carries a leading ``[RNS:…]`` bridge-routing tag.
+# Any leading bridge tag means the content already took a bridge detour
+# and is present in the LXMF/RNS world — re-bridging it Mesh→RNS loops.
+# Mirrors MeshAnchor's ECHO_LOOP_INVARIANT_PREFIXES (gateway/config.py)
+# — keep the two lists in sync when adding a tag on either side.
+#   "[RNS:"      MeshForge RNS→Mesh injection marker
+#   "[MC:" / "[MeshCore]"  MeshAnchor MeshCore→Meshtastic egress
+#   "[ch0:" / "[ch1:"      MeshAnchor LXMFBroadcast fan-out tags
+#   "[Mesh:"     mesh→LXMF aggregation prefix (Issue #35)
+BRIDGE_TAG_PREFIXES = (
+    "[MeshCore]", "[MC:", "[RNS:", "[ch0:", "[ch1:", "[Mesh:",
+)
 
-    Such content was injected onto the mesh FROM the RNS network by a
-    gateway, so it is already present in RNS. Bridging it back to RNS
+
+def is_already_bridged(text: str) -> bool:
+    """True if ``text`` carries a leading bridge-routing tag.
+
+    Such content was injected onto the mesh FROM the RNS/LXMF world by a
+    bridge, so it is already present there. Bridging it back to RNS
     (Mesh→RNS) is always a loop / duplicate. The original self-echo filter
     only caught a gateway's OWN echo (sender == its node); on a shared-RNS
     fleet where several gateways sit on the same channel, each one hears the
     others' injections and would otherwise re-bridge them — so the guard
     must fire regardless of sender. Genuine operator content (web UI / CLI
-    sends) has no ``[RNS:]`` prefix and is unaffected.
+    sends) has no bridge prefix and is unaffected.
 
-    Scoped to ``[RNS:]`` (MeshForge's own injection marker) — the
-    demonstrated loop. MeshAnchor/MeshCore tags (``[MC:]``, ``[ch0:]``) are
-    deliberately NOT included here to avoid touching cross-project interop.
+    Originally scoped to ``[RNS:]`` only, with MeshCore tags deliberately
+    excluded. That exclusion was disproven live on moc (2026-06-03): bare
+    ``[MC:p4]`` content injected through the gateway's own radio was
+    re-bridged M→R to the full LXMF fan-out AND Phase-1 relayed to peer
+    gateways — an echo amplifier. Now mirrors MeshAnchor's
+    ``nested_drop_prefixes`` invariant list.
     """
-    return bool(text) and text.lstrip().startswith("[RNS:")
+    if not text:
+        return False
+    return text.lstrip().startswith(BRIDGE_TAG_PREFIXES)
 
 
 def chunk_for_mesh(message: str,
