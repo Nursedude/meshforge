@@ -53,6 +53,7 @@
 | `nginx_reliability_patterns.md` | NGINX patterns for MeshForge reliability |
 | `local_mqtt_architecture.md` | Local MQTT bridging design |
 | `uconsole_portable_noc.md` | uConsole portable NOC design |
+| `fleet_architecture_2026_06_03.md` | Full fleet diagnosis: per-box roles, routing/messaging/telemetry/RF/transport map, gateway-cornerstone verdict, federation+cloud flow, 4-theme roadmap |
 
 ### Session Notes
 
@@ -62,4 +63,4 @@
 
 ---
 
-*22 research documents. Updated 2026-02-22.*
+*23 research documents. Updated 2026-06-03.*
