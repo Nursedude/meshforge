@@ -348,6 +348,64 @@ class TestGatewayConfigPersistence:
             assert result is True
 
 
+class TestStaleHttpPortMigration:
+    """Issue #62-pattern migration: saved http_port=443 is the stale
+    default that shipped in rendered fleet configs while meshtasticd's
+    web API lives on 9443. load() must rewrite it; any other saved
+    value is operator intent and must survive.
+
+    Live failure shape (moc, 2026-06-03): every send_text_direct to
+    localhost:443 was connection-refused, the circuit breaker flapped
+    open all day, and all TX rode the legacy session fallback.
+    """
+
+    def _write_and_load(self, tmp_path, data):
+        config_file = tmp_path / "gateway.json"
+        config_file.write_text(json.dumps(data))
+        with patch.object(GatewayConfig, 'get_config_path',
+                          return_value=config_file):
+            return GatewayConfig.load()
+
+    def test_fresh_default_is_9443(self):
+        assert MeshtasticConfig().http_port == 9443
+
+    def test_saved_443_migrates_to_9443(self, tmp_path):
+        loaded = self._write_and_load(
+            tmp_path, {"meshtastic": {"http_port": 443}})
+        assert loaded.meshtastic.http_port == 9443
+
+    def test_saved_custom_port_preserved(self, tmp_path):
+        loaded = self._write_and_load(
+            tmp_path, {"meshtastic": {"http_port": 8443}})
+        assert loaded.meshtastic.http_port == 8443
+
+    def test_saved_9443_untouched(self, tmp_path):
+        loaded = self._write_and_load(
+            tmp_path, {"meshtastic": {"http_port": 9443}})
+        assert loaded.meshtastic.http_port == 9443
+
+    def test_mesh_bridge_radios_migrate(self, tmp_path):
+        """The moc3 shape: 443 baked into mesh_bridge primary AND
+        secondary radio entries, not just the top-level meshtastic."""
+        loaded = self._write_and_load(tmp_path, {
+            "meshtastic": {"http_port": 443},
+            "mesh_bridge": {
+                "enabled": True,
+                "primary": {"port": 4403, "http_port": 443},
+                "secondary": {"port": 4404, "http_port": 443},
+            },
+        })
+        assert loaded.meshtastic.http_port == 9443
+        assert loaded.mesh_bridge.primary.http_port == 9443
+        assert loaded.mesh_bridge.secondary.http_port == 9443
+
+    def test_migration_does_not_mutate_caller_dict(self):
+        data = {"http_port": 443}
+        out = GatewayConfig._migrate_stale_http_port(data)
+        assert out["http_port"] == 9443
+        assert data["http_port"] == 443
+
+
 class TestGatewayConfigPath:
     """Tests for config path handling."""
 

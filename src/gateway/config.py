@@ -217,8 +217,12 @@ class MeshtasticConfig:
     mqtt_port: int = 1883
     mqtt_channel: str = "LongFast"
     mqtt_region: str = "US"
-    # HTTP port for protobuf TX (meshtasticd web server)
-    http_port: int = 443
+    # HTTP port for protobuf TX (meshtasticd web server). meshtasticd
+    # serves its web API on 9443 (see /etc/meshtasticd/config.yaml and
+    # Issue #58 — a :443 webserver override is a forbidden config shape).
+    # 443 was a wrong default that shipped in rendered fleet configs;
+    # load() migrates it (see _migrate_stale_http_port).
+    http_port: int = 9443
     # LoRa preset identifier (for documentation/display)
     # Values: LONG_FAST, LONG_SLOW, MEDIUM_FAST, MEDIUM_SLOW,
     #         SHORT_FAST, SHORT_SLOW, SHORT_TURBO
@@ -650,6 +654,27 @@ class GatewayConfig:
         config_dir.mkdir(parents=True, exist_ok=True)
         return config_dir / "gateway.json"
 
+    @staticmethod
+    def _migrate_stale_http_port(meshtastic_data: dict) -> dict:
+        """Migrate the stale http_port=443 default (Issue #62 pattern).
+
+        http_port defaulted to 443 for a long stretch and got baked into
+        every rendered/saved gateway.json, while meshtasticd's web API
+        lives on 9443 — so the primary stateless TX path was dead
+        (connection refused, circuit breaker permanently flapping) and
+        every send rode the legacy session fallback (#17 contention
+        class). 443 was never a valid value for us (Issue #58 treats a
+        :443 webserver override as forbidden), so it is safe to treat
+        a saved 443 as the stale default rather than operator intent.
+        """
+        if meshtastic_data.get('http_port') == 443:
+            meshtastic_data = dict(meshtastic_data)
+            meshtastic_data['http_port'] = 9443
+            logger.info(
+                "Migrated stale http_port 443 -> 9443 "
+                "(saved default predating the 9443 fix)")
+        return meshtastic_data
+
     @classmethod
     def load(cls) -> 'GatewayConfig':
         """Load configuration from file"""
@@ -683,8 +708,8 @@ class GatewayConfig:
             mesh_bridge_data = data.get('mesh_bridge', {})
             mesh_bridge = MeshtasticBridgeConfig(
                 enabled=mesh_bridge_data.get('enabled', False),
-                primary=MeshtasticConfig(**mesh_bridge_data.get('primary', {})) if mesh_bridge_data.get('primary') else MeshtasticConfig(port=4403, preset="LONG_FAST", name="longfast"),
-                secondary=MeshtasticConfig(**mesh_bridge_data.get('secondary', {})) if mesh_bridge_data.get('secondary') else MeshtasticConfig(port=4404, preset="SHORT_TURBO", name="shortturbo"),
+                primary=MeshtasticConfig(**cls._migrate_stale_http_port(mesh_bridge_data.get('primary', {}))) if mesh_bridge_data.get('primary') else MeshtasticConfig(port=4403, preset="LONG_FAST", name="longfast"),
+                secondary=MeshtasticConfig(**cls._migrate_stale_http_port(mesh_bridge_data.get('secondary', {}))) if mesh_bridge_data.get('secondary') else MeshtasticConfig(port=4404, preset="SHORT_TURBO", name="shortturbo"),
                 direction=mesh_bridge_data.get('direction', 'bidirectional'),
                 message_filter=mesh_bridge_data.get('message_filter', ''),
                 exclude_filter=mesh_bridge_data.get('exclude_filter', ''),
@@ -728,7 +753,8 @@ class GatewayConfig:
                 auto_start=data.get('auto_start', False),
                 bridge_mode=data.get('bridge_mode', 'mqtt_bridge'),
                 rns_bridge_enabled=data.get('rns_bridge_enabled', True),
-                meshtastic=MeshtasticConfig(**data.get('meshtastic', {})),
+                meshtastic=MeshtasticConfig(
+                    **cls._migrate_stale_http_port(data.get('meshtastic', {}))),
                 rns=RNSConfig(**data.get('rns', {})),
                 mqtt_bridge=mqtt_bridge,
                 rns_transport=rns_transport,
