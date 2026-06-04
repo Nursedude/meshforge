@@ -12,7 +12,12 @@ import struct
 
 import pytest
 
-# Decode-side crypto for the round-trip assertion
+# Decode-side crypto for the round-trip assertion. importorskip, not a bare
+# import: downlink deps are OPTIONAL by design (_HAS_DOWNLINK_DEPS guards the
+# runtime), and CI's minimal-deps profile has no cryptography — a top-level
+# import errored the whole collection there, keeping CI red from the downlink
+# port (e98612a, 2026-06-03) until 2026-06-04. Same fix as MeshAnchor 75f172db.
+pytest.importorskip("cryptography")
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from gateway.mqtt_downlink_inject import (
