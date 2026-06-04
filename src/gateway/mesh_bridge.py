@@ -433,6 +433,12 @@ class MeshtasticPresetBridge:
         self._message_callbacks: List[Callable] = []
         self._status_callbacks: List[Callable] = []
 
+        # Strong references to serial pubsub listeners. pypubsub holds
+        # listeners WEAKLY — a nested on_receive closure with no other
+        # reference is garbage-collected right after connect and the
+        # callback never fires (serial RX silently dead).
+        self._serial_rx_keepalive: Dict[str, Callable] = {}
+
         # Statistics
         self._stats_lock = threading.Lock()
         self.stats = {
@@ -734,9 +740,19 @@ class MeshtasticPresetBridge:
             else:
                 interface = _meshtastic_serial.SerialInterface()
 
+            our_interface = interface
+
             def on_receive(packet, interface):
+                # pubsub "meshtastic.receive" is global — filter to packets
+                # from THIS serial interface (another meshtastic interface
+                # in the same process would otherwise leak in).
+                if interface is not our_interface:
+                    return
                 callback(packet)
 
+            # pypubsub holds listeners weakly — retain a strong reference
+            # or the closure is garbage-collected and RX silently dies.
+            self._serial_rx_keepalive[name] = on_receive
             _pub.subscribe(on_receive, "meshtastic.receive")
             logger.info(
                 f"Connected to {name} via serial "

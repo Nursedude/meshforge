@@ -263,3 +263,67 @@ class TestMeshtasticConfigSerialFields:
         c2 = MeshtasticConfig(**d)
         assert c2.connection_type == "serial"
         assert c2.serial_device == "/dev/ttyUSB0"
+
+
+class TestSerialRxListenerLifetime:
+    """pypubsub holds listeners WEAKLY: a nested on_receive closure with no
+    retained reference is garbage-collected right after _connect_serial
+    returns, and serial RX silently dies. Pin gc-survival with the REAL
+    pubsub library (live failure shape: moc 2026-06-03 — ST->LF text never
+    reached _process_receive, no error anywhere)."""
+
+    def _connect(self, bridge, config, received):
+        import gc
+        from pubsub import pub as real_pub
+
+        fake_iface = MagicMock()
+        fake_serial_mod = MagicMock()
+        fake_serial_mod.SerialInterface = MagicMock(return_value=fake_iface)
+
+        with patch("gateway.mesh_bridge._HAS_MESHTASTIC", True), \
+             patch("gateway.mesh_bridge._HAS_MESHTASTIC_SERIAL", True), \
+             patch("gateway.mesh_bridge._HAS_PUBSUB", True), \
+             patch("gateway.mesh_bridge._meshtastic_serial", fake_serial_mod), \
+             patch("gateway.mesh_bridge._pub", real_pub):
+            iface, ok = bridge._connect_serial(
+                config, "shortturbo-heltec", received.append,
+            )
+        assert ok is True
+        gc.collect()  # the weakref killer
+        return iface, real_pub
+
+    def test_listener_survives_gc_and_delivers(self, bridge_with_serial_secondary):
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+
+        bridge = MeshtasticPresetBridge(config=bridge_with_serial_secondary)
+        received = []
+        iface, real_pub = self._connect(
+            bridge, bridge_with_serial_secondary.mesh_bridge.secondary, received)
+        try:
+            real_pub.sendMessage(
+                "meshtastic.receive",
+                packet={'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'payload': 'hi'}},
+                interface=iface,
+            )
+            assert len(received) == 1
+        finally:
+            real_pub.unsubAll("meshtastic.receive")
+
+    def test_listener_filters_foreign_interfaces(self, bridge_with_serial_secondary):
+        """Global pubsub topic: packets from another meshtastic interface in
+        the same process must not leak into this bridge leg."""
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+
+        bridge = MeshtasticPresetBridge(config=bridge_with_serial_secondary)
+        received = []
+        _, real_pub = self._connect(
+            bridge, bridge_with_serial_secondary.mesh_bridge.secondary, received)
+        try:
+            real_pub.sendMessage(
+                "meshtastic.receive",
+                packet={'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'payload': 'hi'}},
+                interface=MagicMock(),  # not our interface
+            )
+            assert received == []
+        finally:
+            real_pub.unsubAll("meshtastic.receive")
