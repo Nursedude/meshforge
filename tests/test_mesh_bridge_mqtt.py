@@ -762,11 +762,37 @@ class TestDownlinkInjectionWiring:
         )
         assert bridge._forward_message(msg, iface, True, "primary") is True
         injector.inject.assert_called_once()
+        # RAW content injected (no [Mesh:...] tag — attribution names the sender)
+        assert injector.inject.call_args[0][0] == "hi"
         # origin passed as the true source node number
         assert injector.inject.call_args[0][1] == 0xDDFB8065
         # toradio path NOT used when downlink succeeds
         assert not iface.sendText.called
         assert bridge.stats['downlink_injected'] == 1
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_downlink_strips_tag_but_fallback_keeps_it(self, mock_home, tmp_path, mock_config):
+        """Downlink injects raw text (clean display); when downlink FAILS the
+        toradio fallback still carries the [Mesh: loop-guard tag."""
+        mock_home.return_value = tmp_path
+        mock_config.mesh_bridge.add_prefix = True
+        mock_config.mesh_bridge.prefix_format = "[Mesh:{source_preset}] "
+        bridge = self._bridge(tmp_path, mock_config)
+        injector = MagicMock()
+        injector.inject.return_value = False  # force fallback
+        bridge._primary_downlink = injector
+        iface = MagicMock()
+
+        from gateway.mesh_bridge import BridgedMeshMessage
+        msg = BridgedMeshMessage(
+            source_preset="SHORT_TURBO", source_id="!ddfb8065",
+            destination_id="!ffffffff", content="hi", channel=2, is_broadcast=True,
+        )
+        bridge._forward_message(msg, iface, True, "primary")
+        # downlink was attempted with RAW text
+        assert injector.inject.call_args[0][0] == "hi"
+        # fallback toradio carried the TAGGED text (loop guard intact)
+        assert iface.sendText.call_args[0][0] == "[Mesh:SHORT_TURBO] hi"
 
     @patch('gateway.mesh_bridge.get_real_user_home')
     def test_downlink_failure_falls_back_to_sendtext(self, mock_home, tmp_path, mock_config):

@@ -1125,17 +1125,29 @@ class MeshtasticPresetBridge:
             # of self-TX. Only for broadcasts (downlink is a channel inject);
             # any failure falls through to the toradio sendText path below so
             # a message is never dropped.
+            #
+            # The downlink path injects the RAW message (no [Mesh:...] prefix):
+            # the true-origin attribution already names the sender, so the tag
+            # is just clutter ("moc2: [Mesh:SHORT_TURBO:8065] hi" → "moc2: hi").
+            # The prefix exists only as the cross-gateway echo-loop guard for
+            # the toradio path (where re-heard json could re-bridge). Downlink
+            # is loop-safe by construction: meshtasticd does NOT re-uplink a
+            # via_mqtt packet to json and the gateway can't decode the raw -e-
+            # protobuf, so the injected packet never re-enters the bridge
+            # (proven step-0 + moc canary 2026-06-03). The toradio FALLBACK
+            # below still sends the tagged `content`, so loop safety is intact
+            # whenever downlink is unavailable.
             if (dest_name == "primary" and self._primary_downlink is not None
                     and msg.is_broadcast):
                 origin = self._node_id_to_num(msg.source_id)
                 if origin is not None and self._primary_downlink.inject(
-                    content, origin, hop_limit=3,
+                    msg.content, origin, hop_limit=3,
                 ):
                     with self._stats_lock:
                         self.stats['downlink_injected'] += 1
                     logger.info(
                         f"Bridged {msg.source_preset} -> {dest_name} "
-                        f"(downlink as !{origin:08x}): {content[:50]}...")
+                        f"(downlink as !{origin:08x}): {msg.content[:50]}...")
                     return True
                 logger.debug(
                     "Downlink inject unavailable for %s — toradio fallback",
