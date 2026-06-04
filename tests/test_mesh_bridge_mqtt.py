@@ -569,3 +569,52 @@ class TestMQTTTopicShapes:
 
         assert not client.subscribe.called
         assert iface._connected is False
+
+
+class TestForwardBroadcastOmitsDestination:
+    """meshtastic's SerialInterface/TCPInterface hard-exit the process
+    (our_exit) when sendText gets destinationId=None — broadcasts must
+    OMIT the kwarg so the interface's own BROADCAST_ADDR default applies."""
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_broadcast_forward_omits_destination_id(self, mock_home, tmp_path, mock_config):
+        mock_home.return_value = tmp_path
+        from gateway.mesh_bridge import MeshtasticPresetBridge, BridgedMeshMessage
+
+        bridge = MeshtasticPresetBridge(config=mock_config)
+        iface = MagicMock()
+
+        msg = BridgedMeshMessage(
+            source_preset="SHORT_TURBO",
+            source_id="!b03bb70c",
+            destination_id="!ffffffff",
+            content="hello LF",
+            channel=2,
+            is_broadcast=True,
+        )
+        assert bridge._forward_message(msg, iface, True, "primary") is True
+
+        _, kwargs = iface.sendText.call_args
+        assert 'destinationId' not in kwargs
+        assert kwargs['channelIndex'] == 2
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_dm_forward_keeps_destination_id(self, mock_home, tmp_path, mock_config):
+        mock_home.return_value = tmp_path
+        from gateway.mesh_bridge import MeshtasticPresetBridge, BridgedMeshMessage
+
+        bridge = MeshtasticPresetBridge(config=mock_config)
+        iface = MagicMock()
+
+        msg = BridgedMeshMessage(
+            source_preset="LONG_FAST",
+            source_id="!32962f10",
+            destination_id="!b03bb70c",
+            content="dm",
+            channel=2,
+            is_broadcast=False,
+        )
+        assert bridge._forward_message(msg, iface, True, "secondary") is True
+
+        _, kwargs = iface.sendText.call_args
+        assert kwargs['destinationId'] == "!b03bb70c"

@@ -1013,12 +1013,19 @@ class MeshtasticPresetBridge:
                 )
                 content = prefix + content
 
-            # Send to interface (works for both TCP and MQTT interfaces)
-            interface.sendText(
-                content,
-                destinationId=msg.destination_id if not msg.is_broadcast else None,
-                channelIndex=msg.channel
-            )
+            # Send to interface (works for TCP, MQTT, and serial interfaces).
+            # Broadcasts OMIT destinationId so each interface uses its own
+            # broadcast default — meshtastic's SerialInterface/TCPInterface
+            # hard-exit the process (our_exit) on destinationId=None, while
+            # their default is BROADCAST_ADDR ('^all').
+            if msg.is_broadcast:
+                interface.sendText(content, channelIndex=msg.channel)
+            else:
+                interface.sendText(
+                    content,
+                    destinationId=msg.destination_id,
+                    channelIndex=msg.channel
+                )
 
             logger.info(f"Bridged {msg.source_preset} -> {dest_name}: {content[:50]}...")
             return True
