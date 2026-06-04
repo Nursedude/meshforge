@@ -153,3 +153,78 @@ def test_write_brief_tolerates_missing_files(tmp_path):
                        str(out_p), now_ts=NOW)
     assert out_p.exists()
     assert "no state yet" in text
+
+
+# --- currently_active gating (2026-06-04) -----------------------------------
+# Incident: the 2026-06-03 parity_drift port window self-healed (edge_down)
+# in 10 minutes, but its escalation sat under "Look here first" for ~22h and
+# read as a live 22-tick escalation. The headline section must be gated on
+# the rule's currently_active state; cleared conditions move to "Recently
+# resolved". Demotion requires POSITIVE evidence (pair present, active=False)
+# — unknown pairs are never hidden.
+
+def _brief_section(out: str, header: str) -> str:
+    """Return the body of one '## header' section ('' if absent)."""
+    parts = out.split("\n## ")
+    for p in parts[1:]:
+        if p.startswith(header):
+            return p
+    return ""
+
+
+def test_resolved_escalation_moves_out_of_look_here_first():
+    # The real incident shape: parity_drift_any escalated, then cleared.
+    rules = {"parity_drift_any::mf<->ma": {
+        "rule_id": "parity_drift_any", "subject": "mf<->ma",
+        "currently_active": False, "last_detail": "drift: canonical_message.py"}}
+    hist = [_esc_row(NOW - 600, "parity_drift_any", "mf<->ma",
+                     "drift confirmed over 22 consecutive ticks")]
+    out = build_brief(_state(rules=rules), hist, NOW)
+    look = _brief_section(out, "🔎 Look here first")
+    resolved = _brief_section(out, "✅ Recently resolved")
+    assert "parity_drift_any" not in look
+    assert "parity_drift_any" in resolved
+    assert "22 consecutive ticks" in resolved
+
+
+def test_active_escalation_stays_in_look_here_first():
+    rules = {"boom::moc1": {"rule_id": "boom", "subject": "moc1",
+                            "currently_active": True, "last_detail": "down"}}
+    hist = [_esc_row(NOW - 600, "boom", "moc1", "peer down")]
+    out = build_brief(_state(rules=rules), hist, NOW)
+    look = _brief_section(out, "🔎 Look here first")
+    assert "peer down" in look
+    assert "Recently resolved" not in out
+
+
+def test_unknown_rule_pair_is_never_demoted():
+    # No matching (rule, subject) in state (renamed rule / pruned state /
+    # schema drift) — conservative default keeps it in the headline section.
+    hist = [_esc_row(NOW - 600, "renamed_rule", "subj", "still chase me")]
+    out = build_brief(_state(rules={}), hist, NOW)
+    assert "still chase me" in _brief_section(out, "🔎 Look here first")
+    assert "Recently resolved" not in out
+
+
+def test_mixed_active_and_resolved_partition():
+    rules = {
+        "live::a": {"rule_id": "live", "subject": "a", "currently_active": True},
+        "done::b": {"rule_id": "done", "subject": "b", "currently_active": False},
+    }
+    hist = [_esc_row(NOW - 700, "live", "a", "live detail"),
+            _esc_row(NOW - 600, "done", "b", "done detail")]
+    out = build_brief(_state(rules=rules), hist, NOW)
+    look = _brief_section(out, "🔎 Look here first")
+    resolved = _brief_section(out, "✅ Recently resolved")
+    assert "live detail" in look and "done detail" not in look
+    assert "done detail" in resolved and "live detail" not in resolved
+
+
+def test_resolved_only_brief_is_not_quiet():
+    # A brief with only resolved escalations still shows them (not "Quiet").
+    rules = {"done::b": {"rule_id": "done", "subject": "b",
+                         "currently_active": False}}
+    hist = [_esc_row(NOW - 600, "done", "b", "cleared earlier")]
+    out = build_brief(_state(rules=rules), hist, NOW)
+    assert "cleared earlier" in _brief_section(out, "✅ Recently resolved")
+    assert "Quiet" not in out

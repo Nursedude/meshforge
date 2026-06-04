@@ -69,6 +69,34 @@ def recent_escalations(history: list[dict], now_ts: float,
     return [esc for _ts, esc in ordered]
 
 
+def _split_escalations_by_activity(escalations: list, rules: dict) -> tuple:
+    """Partition escalations into (active, resolved) using rule state.
+
+    A window of recent escalations can include conditions that have since
+    cleared (edge_down) — e.g. the 2026-06-03 parity_drift port window, which
+    self-healed in 10 minutes but sat under "Look here first" for a day and
+    read as a live 22-tick escalation. The state's per-rule
+    ``currently_active`` flag is the truth; gate the headline section on it.
+
+    Conservative by design: an escalation is demoted to "resolved" ONLY when
+    the state positively shows its (rule, subject) with currently_active
+    false. Unknown pairs (rule renamed/pruned, schema drift, missing state)
+    stay in "active" — we never hide a live escalation on a state mismatch.
+    """
+    status = {}
+    for rs in rules.values():
+        if isinstance(rs, dict):
+            status[(rs.get("rule_id"), rs.get("subject"))] = bool(
+                rs.get("currently_active"))
+    active, resolved = [], []
+    for esc in escalations:
+        if status.get((esc.get("rule"), esc.get("subject")), True):
+            active.append(esc)
+        else:
+            resolved.append(esc)
+    return active, resolved
+
+
 def _age(now_ts: float, ts: float | None) -> str:
     if not ts:
         return "?"
@@ -131,14 +159,23 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
     # Look here first — escalations fired within the window, deduped (see
     # recent_escalations; shared with the situation digest so they never
     # disagree). Stale entries replayed from the history tail would mislead a
-    # warm-start session into chasing resolved noise.
+    # warm-start session into chasing resolved noise — and so would a
+    # condition that escalated then CLEARED (edge_down) inside the window, so
+    # the headline section is gated on the rule's currently_active state;
+    # cleared ones move to "Recently resolved" below.
     escalations = recent_escalations(history, now_ts, escalation_window_s)
-    if escalations:
+    esc_active, esc_resolved = _split_escalations_by_activity(escalations, rules)
+    if esc_active:
         lines.append("\n## 🔎 Look here first (escalations)")
-        for esc in escalations[-8:]:
+        for esc in esc_active[-8:]:
             lines.append(f"- {esc.get('rule')} · {esc.get('subject')} · "
                          f"{str(esc.get('detail', ''))[:120]}"
                          + (f" — _{esc['note']}_" if esc.get("note") else ""))
+    if esc_resolved:
+        lines.append("\n## ✅ Recently resolved (escalated in window, no longer active)")
+        for esc in esc_resolved[-4:]:
+            lines.append(f"- {esc.get('rule')} · {esc.get('subject')} · "
+                         f"{str(esc.get('detail', ''))[:100]}")
 
     # Recent transitions
     today = datetime.datetime.fromtimestamp(now_ts).date().isoformat()
