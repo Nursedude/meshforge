@@ -819,3 +819,43 @@ class TestDownlinkInjectionWiring:
         bridge._forward_message(msg, iface, True, "primary")
         assert not bridge._primary_downlink.inject.called
         assert iface.sendText.called
+
+
+class TestBroadcastDetectionShapes:
+    """meshtastic emits broadcast destination in several shapes; all must be
+    detected as broadcast or forwards go out as DMs and skip the
+    broadcast-only downlink path (moc canary regression, 2026-06-03)."""
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def _bcast(self, to_field, mock_home, tmp_path, mock_config):
+        mock_home.return_value = tmp_path
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+        bridge = MeshtasticPresetBridge(config=mock_config)
+        pkt = {
+            'fromId': '!ddfb8065', 'channel': 0,
+            'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'payload': 'hi'},
+        }
+        pkt.update(to_field)
+        bridge._process_receive(pkt, "secondary", "primary",
+                                bridge._secondary_to_primary)
+        msgs = bridge._secondary_to_primary.get_pending()
+        assert len(msgs) == 1
+        from gateway.mesh_bridge import BridgedMeshMessage
+        return BridgedMeshMessage.from_payload(msgs[0].payload)
+
+    def test_caret_all_is_broadcast(self, tmp_path, mock_config):
+        msg = self._bcast({'toId': '^all'}, tmp_path=tmp_path, mock_config=mock_config)
+        assert msg.is_broadcast is True
+
+    def test_hex_ffffffff_is_broadcast(self, tmp_path, mock_config):
+        msg = self._bcast({'toId': '!ffffffff'}, tmp_path=tmp_path, mock_config=mock_config)
+        assert msg.is_broadcast is True
+
+    def test_numeric_to_is_broadcast(self, tmp_path, mock_config):
+        msg = self._bcast({'to': 0xFFFFFFFF}, tmp_path=tmp_path, mock_config=mock_config)
+        assert msg.is_broadcast is True
+
+    def test_real_dm_is_not_broadcast(self, tmp_path, mock_config):
+        msg = self._bcast({'toId': '!32962f10', 'to': 0x32962f10},
+                          tmp_path=tmp_path, mock_config=mock_config)
+        assert msg.is_broadcast is False

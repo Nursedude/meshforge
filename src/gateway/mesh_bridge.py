@@ -970,6 +970,18 @@ class MeshtasticPresetBridge:
             from_id = packet.get('fromId', '')
             to_id = packet.get('toId', '')
 
+            # Broadcast detection must cover every shape meshtastic emits:
+            #   - serial/TCP lib maps 0xFFFFFFFF -> '^all' (BROADCAST_ADDR)
+            #   - MQTT json path here formats it as '!ffffffff'
+            #   - the raw numeric `to` field (0xFFFFFFFF, or absent = 0)
+            # Getting this wrong sends broadcasts as DMs and skips the
+            # broadcast-only downlink-injection path (moc canary, 2026-06-03).
+            to_num = packet.get('to')
+            is_broadcast = (
+                to_id in ('^all', '!ffffffff')
+                or to_num == 0xFFFFFFFF
+            )
+
             payload = decoded.get('payload', b'')
             if isinstance(payload, bytes):
                 text = payload.decode('utf-8', errors='ignore')
@@ -1019,7 +1031,7 @@ class MeshtasticPresetBridge:
                 destination_id=to_id,
                 content=text,
                 channel=packet.get('channel', 0),
-                is_broadcast=to_id == '!ffffffff',
+                is_broadcast=is_broadcast,
                 metadata={
                     'snr': packet.get('rxSnr'),
                     'rssi': packet.get('rxRssi'),
