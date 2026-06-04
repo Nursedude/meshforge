@@ -21,7 +21,8 @@ from queue import Full
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from .base_handler import (
-    BaseMessageHandler, get_rf_tx_registry, is_already_bridged,
+    BaseMessageHandler, dual_path_dedup_enabled, dual_path_dedup_window_s,
+    get_rf_tx_registry, is_already_bridged,
 )
 from .config import GatewayConfig
 from .node_tracker import UnifiedNode
@@ -330,6 +331,22 @@ class MeshtasticHandler(BaseMessageHandler):
         message = self._truncate_if_needed(payload.get('message', ''))
         destination = payload.get('destination')
         channel = payload.get('channel', 0)
+
+        # Dispatch-time dual-path dedup re-check (gated, broadcast only) —
+        # see MQTTBridgeHandler.queue_send for the race this closes. The
+        # enqueue-side check misses when the RNS relay copy arrives before
+        # mesh_bridge registers its RF TX; by dispatch time the registry is
+        # settled. Suppress-only-on-hit: True marks the queue entry done.
+        if (not destination and dual_path_dedup_enabled(self.config)
+                and get_rf_tx_registry().seen_within(
+                    message, dual_path_dedup_window_s(self.config))):
+            with self._stats_lock:
+                self.stats['dispatch_dedup_suppressed'] = (
+                    self.stats.get('dispatch_dedup_suppressed', 0) + 1)
+            logger.info(
+                f"Queue dispatch suppressed (dual-path dedup — already on "
+                f"RF): {message[:50]}...")
+            return True
 
         if not self._connected:
             return False

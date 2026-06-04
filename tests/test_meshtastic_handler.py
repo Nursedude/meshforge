@@ -1033,3 +1033,65 @@ class TestDualPathDedupRegistration:
         h._interface.sendText.return_value = False
         assert not h.send_text("never sent", destination=None, channel=2)
         assert not reg.seen_within("never sent", 60.0)
+
+
+class TestDispatchTimeDedupRecheck:
+    """queue_send re-checks the registry at DISPATCH time (gated).
+
+    The enqueue-side check in _rns_bridge_xform races mesh_bridge's RF-TX
+    registration: live 2026-06-04, the LAN-fast RNS relay copy of a bot
+    reply was checked ~250ms BEFORE the serial leg registered its downlink,
+    missed, queued, and went out 3s later as a visible duplicate — on
+    EVERY bot event, not the rare race we'd accepted. By dispatch time
+    (≥min_spacing_s) the registry is settled, so this re-check closes the
+    race deterministically. Suppress-only-on-hit; flag-gated; DMs exempt.
+    """
+
+    def _fresh_registry(self, monkeypatch):
+        import gateway.base_handler as bh
+        fresh = bh.RecentRfTxRegistry()
+        monkeypatch.setattr(bh, "_rf_tx_registry", fresh)
+        return fresh
+
+    def _connected(self, handler):
+        handler._connected = True
+        handler._interface = MagicMock()
+        handler._interface.sendText.return_value = True
+        return handler
+
+    def test_suppresses_broadcast_on_registry_hit(self, handler, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        h = self._connected(handler)
+        h.config.rns.dual_path_dedup_enabled = True
+        reg.register("Tonight: Occasional rain shwrs.")  # mesh_bridge downlink
+        # The tagged relay copy of the same content must die at dispatch.
+        assert h.queue_send({"message": "[RNS:Borg serve] Tonight: Occasional rain shwrs.",
+                             "destination": None, "channel": 2}) is True
+        h._interface.sendText.assert_not_called()
+        assert h.stats.get('dispatch_dedup_suppressed') == 1
+
+    def test_no_suppression_when_flag_off(self, handler, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        h = self._connected(handler)
+        h.config.rns.dual_path_dedup_enabled = False
+        reg.register("Tonight: Occasional rain shwrs.")
+        assert h.queue_send({"message": "[RNS:Borg serve] Tonight: Occasional rain shwrs.",
+                             "destination": None, "channel": 2}) is True
+        h._interface.sendText.assert_called_once()
+
+    def test_dm_never_suppressed(self, handler, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        h = self._connected(handler)
+        h.config.rns.dual_path_dedup_enabled = True
+        reg.register("private reply")
+        assert h.queue_send({"message": "private reply",
+                             "destination": "!b03bb70c", "channel": 2}) is True
+        h._interface.sendText.assert_called_once()
+
+    def test_no_hit_sends_normally(self, handler, monkeypatch):
+        self._fresh_registry(monkeypatch)
+        h = self._connected(handler)
+        h.config.rns.dual_path_dedup_enabled = True
+        assert h.queue_send({"message": "fresh content",
+                             "destination": None, "channel": 2}) is True
+        h._interface.sendText.assert_called_once()

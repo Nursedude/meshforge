@@ -38,7 +38,10 @@ from datetime import datetime
 from queue import Full
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
-from .base_handler import BaseMessageHandler, is_already_bridged
+from .base_handler import (
+    BaseMessageHandler, dual_path_dedup_enabled, dual_path_dedup_window_s,
+    get_rf_tx_registry, is_already_bridged,
+)
 from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
@@ -682,11 +685,26 @@ class MQTTBridgeHandler(BaseMessageHandler):
 
         # Try HTTP protobuf first (preferred — no TCP contention, no subprocess)
         if self._send_via_http_protobuf(message, destination, channel):
+            # Dual-path dedup: record broadcast TX so the OTHER path to this
+            # radio (mesh_bridge's cross-preset forward of the same content)
+            # can suppress its duplicate. This toradio route is the LIVE R→M
+            # dispatch path — before 2026-06-04 only meshtastic_handler (the
+            # unused TCP path) registered, so relay TXs were invisible to the
+            # registry and a second relay copy of the same content (e.g.
+            # [MC:p4] wx then [RNS:xxxx] [ch0:p4] wx) always hit RF twice.
+            # Registration is unconditional/cheap; suppression is flag-gated
+            # at the check side. The registry normalizes bridge tags away.
+            if not destination:
+                get_rf_tx_registry().register(message)
             return True
 
         # Fall back to CLI
         logger.debug("HTTP protobuf TX unavailable, falling back to CLI")
-        return self._send_via_cli(message, destination, channel)
+        if self._send_via_cli(message, destination, channel):
+            if not destination:
+                get_rf_tx_registry().register(message)
+            return True
+        return False
 
     def _send_via_http_protobuf(
         self, message: str, destination: str = None, channel: int = 0
@@ -837,6 +855,26 @@ class MQTTBridgeHandler(BaseMessageHandler):
         message = self._truncate_if_needed(payload.get('message', ''))
         destination = payload.get('destination')
         channel = payload.get('channel', 0)
+
+        # Dispatch-time dual-path dedup re-check (gated, broadcast only).
+        # The enqueue-side check (_rns_bridge_xform) races mesh_bridge's
+        # RF-TX registration: a LAN-fast RNS relay copy is checked ~250ms
+        # BEFORE the serial leg registers its downlink, misses, and queues.
+        # By dispatch time — ≥min_spacing_s (3s) later — the registry is
+        # settled, so re-checking here closes the race deterministically
+        # (observed live 2026-06-04: every bot-reply pair on moc leaked).
+        # Suppress-only-on-hit: return True so the queue marks it done.
+        if (not destination and dual_path_dedup_enabled(self.config)
+                and get_rf_tx_registry().seen_within(
+                    message, dual_path_dedup_window_s(self.config))):
+            with self._stats_lock:
+                self.stats['dispatch_dedup_suppressed'] = (
+                    self.stats.get('dispatch_dedup_suppressed', 0) + 1)
+            logger.info(
+                f"Queue dispatch suppressed (dual-path dedup — already on "
+                f"RF): {message[:50]}...")
+            return True
+
         return self.send_text(message, destination, channel)
 
     def test_connection(self) -> bool:

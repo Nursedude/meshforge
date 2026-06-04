@@ -144,6 +144,29 @@ class RecentRfTxRegistry:
             return ts is not None and (now - ts) <= window_s
 
 
+def dual_path_dedup_enabled(config: Any) -> bool:
+    """Strict read of rns.dual_path_dedup_enabled (default False).
+
+    Shared by the dispatch-time re-check in the handlers' queue_send
+    (2026-06-04: the enqueue-side check in _rns_bridge_xform races
+    mesh_bridge's RF-TX registration by ~250ms on LAN-fast RNS relays;
+    by dispatch time — ≥min_spacing_s later — the registry is settled).
+    Same ``is True`` discipline as the bridge-side helpers: MagicMock
+    test configs and malformed values read as OFF.
+    """
+    rns_cfg = getattr(config, 'rns', None)
+    return getattr(rns_cfg, 'dual_path_dedup_enabled', False) is True
+
+
+def dual_path_dedup_window_s(config: Any) -> float:
+    """rns.dual_path_dedup_window_sec with a safe 60s default."""
+    rns_cfg = getattr(config, 'rns', None)
+    try:
+        return float(getattr(rns_cfg, 'dual_path_dedup_window_sec', 60))
+    except (TypeError, ValueError):
+        return 60.0
+
+
 # Process-wide instance — the composable bridges (mesh_bridge + rns_bridge)
 # are built independently by bridge_cli with no shared object, so the
 # registry is a module singleton both sides resolve at use time via

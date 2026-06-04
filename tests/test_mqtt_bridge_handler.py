@@ -477,3 +477,134 @@ class TestDmToGatewayChannelWildcard:
             topic="msh/US/2/json/meshforge/!ebfa1b11",
         )
         h._message_queue.put.assert_called_once()
+
+
+class TestDualPathDedupRegistration:
+    """Broadcast TX through the MQTT bridge handler's toradio path registers
+    in the process-wide RecentRfTxRegistry (dual-path dedup).
+
+    Regression guard for the 2026-06-04 live finding: the "symmetric"
+    registration (f02ad82) covered meshtastic_handler's TCP sendText —
+    but the LIVE R→M dispatch route is THIS handler's send_text →
+    send_text_direct() (HTTP toradio), which never registered. Relay TXs
+    were invisible to the registry, so a second relay copy of the same
+    content ([MC:p4] wx then [RNS:627f] [ch0:p4] wx) always hit RF twice.
+    DMs and failed sends must not register.
+    """
+
+    def _fresh_registry(self, monkeypatch):
+        import gateway.base_handler as bh
+        fresh = bh.RecentRfTxRegistry()
+        monkeypatch.setattr(bh, "_rf_tx_registry", fresh)
+        return fresh
+
+    def _handler(self, http_ok=True, cli_ok=False):
+        h = MQTTBridgeHandler.__new__(MQTTBridgeHandler)
+        h._send_via_http_protobuf = MagicMock(return_value=http_ok)
+        h._send_via_cli = MagicMock(return_value=cli_ok)
+        return h
+
+    def test_send_text_broadcast_registers(self, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        h = self._handler(http_ok=True)
+        assert h.send_text("[RNS:58ce] [MC:p4] wx", destination=None, channel=2)
+        # Tag-normalized: any later copy of the same logical content matches.
+        assert reg.seen_within("wx", 60.0)
+        assert reg.seen_within("[RNS:627f] [ch0:p4] wx", 60.0)
+
+    def test_send_text_dm_does_not_register(self, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        h = self._handler(http_ok=True)
+        assert h.send_text("dm content", destination="!b03bb70c", channel=2)
+        assert not reg.seen_within("dm content", 60.0)
+
+    def test_cli_fallback_broadcast_registers(self, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        h = self._handler(http_ok=False, cli_ok=True)
+        assert h.send_text("cli fallback bc", destination=None, channel=2)
+        assert reg.seen_within("cli fallback bc", 60.0)
+
+    def test_failed_send_does_not_register(self, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        h = self._handler(http_ok=False, cli_ok=False)
+        assert not h.send_text("never sent", destination=None, channel=2)
+        assert not reg.seen_within("never sent", 60.0)
+
+
+class TestDispatchTimeDedupRecheck:
+    """queue_send re-checks the registry at DISPATCH time (gated).
+
+    Live 2026-06-04 (moc, every wx event): the LAN-fast RNS relay copy of
+    the bot's reply was enqueue-checked ~250ms BEFORE mesh_bridge
+    registered its serial-leg downlink, missed, and TX'd 3s later as a
+    visible duplicate on LF. By dispatch time (≥min_spacing_s pacing) the
+    registry is settled — the re-check closes the race deterministically.
+    Suppress-only-on-hit; flag-gated strict-True; DMs exempt.
+    """
+
+    def _fresh_registry(self, monkeypatch):
+        import gateway.base_handler as bh
+        fresh = bh.RecentRfTxRegistry()
+        monkeypatch.setattr(bh, "_rf_tx_registry", fresh)
+        return fresh
+
+    def _handler(self, dedup_on=True):
+        import threading
+        from types import SimpleNamespace
+        h = MQTTBridgeHandler.__new__(MQTTBridgeHandler)
+        h.config = SimpleNamespace(rns=SimpleNamespace(
+            dual_path_dedup_enabled=dedup_on,
+            dual_path_dedup_window_sec=60,
+        ))
+        h.stats = {}
+        h._stats_lock = threading.Lock()
+        h.send_text = MagicMock(return_value=True)
+        return h
+
+    def test_suppresses_broadcast_on_registry_hit(self, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        h = self._handler(dedup_on=True)
+        reg.register("Tonight: Occasional rain shwrs.")   # downlink already on RF
+        assert h.queue_send({"message": "[RNS:Borg serve] Tonight: Occasional rain shwrs.",
+                             "destination": None, "channel": 2}) is True
+        h.send_text.assert_not_called()
+        assert h.stats["dispatch_dedup_suppressed"] == 1
+
+    def test_no_suppression_when_flag_off(self, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        h = self._handler(dedup_on=False)
+        reg.register("Tonight: Occasional rain shwrs.")
+        assert h.queue_send({"message": "[RNS:Borg serve] Tonight: Occasional rain shwrs.",
+                             "destination": None, "channel": 2}) is True
+        h.send_text.assert_called_once()
+
+    def test_dm_never_suppressed(self, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        h = self._handler(dedup_on=True)
+        reg.register("private reply")
+        assert h.queue_send({"message": "private reply",
+                             "destination": "!b03bb70c", "channel": 2}) is True
+        h.send_text.assert_called_once()
+
+    def test_no_hit_sends_normally(self, monkeypatch):
+        self._fresh_registry(monkeypatch)
+        h = self._handler(dedup_on=True)
+        assert h.queue_send({"message": "fresh content",
+                             "destination": None, "channel": 2}) is True
+        h.send_text.assert_called_once()
+
+    def test_second_relay_copy_of_same_command_suppressed(self, monkeypatch):
+        """The full 09:24 live shape: copy #1 ([MC:p4] wx) dispatches and
+        registers via send_text; copy #2 ([RNS:627f] [ch0:p4] wx) of the
+        SAME normalized content must die at its own dispatch 3s later."""
+        reg = self._fresh_registry(monkeypatch)
+        h = self._handler(dedup_on=True)
+        # copy #1 — no hit, sends; simulate the send_text-side registration
+        assert h.queue_send({"message": "[RNS:58ce] [MC:p4] wx",
+                             "destination": None, "channel": 2}) is True
+        h.send_text.assert_called_once()
+        reg.register("[RNS:58ce] [MC:p4] wx")
+        # copy #2 — different tag chain, same content → suppressed
+        assert h.queue_send({"message": "[RNS:627f] [ch0:p4] wx",
+                             "destination": None, "channel": 2}) is True
+        h.send_text.assert_called_once()  # still exactly one real TX
