@@ -75,6 +75,15 @@ from ._rns_bridge_aux import BridgeAuxMixin
 
 logger = logging.getLogger(__name__)
 
+# Minimum seconds between consecutive queue dispatches to meshtasticd.
+# Firmware 2.7.x rate-limits API text broadcasts (Routing.Error
+# RATE_LIMIT_EXCEEDED = 38) while the toradio HTTP hand-off still returns
+# 200 — bursts (e.g. multi-chunk RNS→Mesh sends ~45ms apart) silently lose
+# every packet after the first on RF (observed 2026-06-04). Organic sends
+# 2-4s apart pass; 3s clears the limiter with margin while keeping a
+# 3-chunk message under ~10s end-to-end.
+MESHTASTIC_TX_MIN_SPACING_S = 3.0
+
 # Centralized path utility — used by RNSConnectionMixin in _rns_bridge_connection.py
 # NO FALLBACK: stale fallback copies caused config divergence bugs (Issue #25+)
 
@@ -464,9 +473,15 @@ class RNSMeshtasticBridge(
         # NOTE: Issue #40 (2026-04-21) routed R→M through send_text_direct()
         # via destination="meshtastic"; the historical destination="mqtt"
         # path (publish_to_mqtt) was deleted as Hardening E.
+        # min_spacing_s: meshtasticd 2.7.x NAKs burst API text broadcasts
+        # with RATE_LIMIT_EXCEEDED (err=38) while the toradio HTTP hand-off
+        # still returns 200 — a 3-chunk RNS→Mesh message dispatched ~45ms
+        # apart silently lost chunks 2-3 on RF (2026-06-04). Sends ≥2-4s
+        # apart were observed to pass; 3s clears the limiter with margin.
         if self._persistent_queue:
             self._persistent_queue.register_sender(
-                "meshtastic", self._mesh_handler.queue_send
+                "meshtastic", self._mesh_handler.queue_send,
+                min_spacing_s=MESHTASTIC_TX_MIN_SPACING_S,
             )
             # Hardening B: M→R in-memory overflow spills here under
             # destination="rns_xform"; the worker re-runs the message

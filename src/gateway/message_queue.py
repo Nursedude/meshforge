@@ -465,6 +465,14 @@ class PersistentMessageQueue:
 
         # Callbacks
         self._send_callbacks: Dict[str, Callable] = {}  # destination -> send_fn
+        # Per-destination minimum spacing between consecutive dispatches
+        # (seconds; 0 = unpaced). Radios rate-limit API TX: meshtasticd 2.7.x
+        # NAKs burst text broadcasts with Routing.Error RATE_LIMIT_EXCEEDED
+        # (=38) while reporting HTTP 200 on the toradio hand-off — a 3-chunk
+        # message fired ~45ms apart lost chunks 2-3 silently (2026-06-04).
+        # Pacing the dispatch loop is the cure for the whole burst class.
+        self._send_spacing: Dict[str, float] = {}
+        self._last_dispatch_ts: Dict[str, float] = {}  # destination -> time.monotonic()
         self._success_callbacks: List[Callable] = []
         self._failure_callbacks: List[Callable] = []
 
@@ -1182,15 +1190,24 @@ class PersistentMessageQueue:
             return row['ack_status'] if row else None
 
     def register_sender(self, destination: str,
-                        send_fn: Callable[[Dict], bool]) -> None:
+                        send_fn: Callable[[Dict], bool],
+                        min_spacing_s: float = 0.0) -> None:
         """
         Register a send function for a destination.
 
         Args:
             destination: Target system name
             send_fn: Function that takes payload dict, returns True if sent
+            min_spacing_s: Minimum seconds between consecutive dispatches to
+                this destination (0 = unpaced). Set for destinations whose
+                transport rate-limits bursts (e.g. meshtasticd NAKs API text
+                broadcasts sent back-to-back with RATE_LIMIT_EXCEEDED while
+                the HTTP hand-off still returns 200 — silent data loss).
+                Not-yet-due messages simply stay 'pending' for a later
+                process_once pass; FIFO order within a priority is preserved.
         """
         self._send_callbacks[destination] = send_fn
+        self._send_spacing[destination] = max(0.0, float(min_spacing_s))
 
     def register_success_callback(self, callback: Callable[[QueuedMessage], None]) -> None:
         """Register callback for successful delivery."""
@@ -1211,8 +1228,19 @@ class PersistentMessageQueue:
 
         for destination, send_fn in self._send_callbacks.items():
             messages = self.get_pending(destination=destination, limit=batch_size)
+            spacing = self._send_spacing.get(destination, 0.0)
 
             for message in messages:
+                # TX pacing: if this destination's last dispatch is too
+                # recent, leave the rest of the batch 'pending' — the next
+                # process_once pass (start_processing interval) picks them
+                # up in the same priority/FIFO order. Never sleep here: this
+                # loop shares the worker thread with other destinations.
+                if spacing > 0.0:
+                    last = self._last_dispatch_ts.get(destination)
+                    if last is not None and (time.monotonic() - last) < spacing:
+                        break
+
                 if not self.mark_in_progress(message.id):
                     continue
 
@@ -1224,6 +1252,9 @@ class PersistentMessageQueue:
                     dispatch_payload = {
                         **message.payload, '_queue_msg_id': message.id,
                     }
+                    # Stamp BEFORE the call: the transport's rate limiter
+                    # counts attempts, including ones that error mid-send.
+                    self._last_dispatch_ts[destination] = time.monotonic()
                     success = send_fn(dispatch_payload)
 
                     if success:

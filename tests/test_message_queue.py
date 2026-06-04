@@ -1144,3 +1144,85 @@ class TestPendingAckTrackingIssue66:
                 assert row['ack_status'] is None
         finally:
             q.stop_processing()
+
+
+# ---------------------------------------------------------------------------
+# PersistentMessageQueue — per-destination TX pacing (2026-06-04)
+# ---------------------------------------------------------------------------
+# meshtasticd 2.7.x NAKs burst API text broadcasts with Routing.Error
+# RATE_LIMIT_EXCEEDED (=38) while the toradio HTTP hand-off returns 200 —
+# a 3-chunk RNS→Mesh message dispatched ~45ms apart silently lost chunks
+# 2-3 on RF. register_sender(min_spacing_s=...) paces the dispatch loop:
+# not-yet-due messages stay 'pending' for a later process_once pass.
+
+class TestTxPacing:
+    """register_sender(min_spacing_s) paces consecutive dispatches."""
+
+    def _rewind_last_dispatch(self, queue, destination, seconds):
+        """Simulate `seconds` of wall time passing for the pacing clock."""
+        queue._last_dispatch_ts[destination] -= seconds
+
+    def test_paced_destination_sends_one_per_pass(self, queue):
+        sent = []
+        queue.register_sender("meshtastic", lambda p: sent.append(p["text"]) or True,
+                              min_spacing_s=3.0)
+        for i in range(3):
+            queue.enqueue({"text": f"chunk{i}"}, "meshtastic")
+
+        assert queue.process_once() == 1          # first is immediately due
+        assert queue.process_once() == 0          # second blocked by spacing
+        assert sent == ["chunk0"]
+
+        self._rewind_last_dispatch(queue, "meshtastic", 3.1)
+        assert queue.process_once() == 1
+        self._rewind_last_dispatch(queue, "meshtastic", 3.1)
+        assert queue.process_once() == 1
+        # FIFO order preserved across passes — chunk order is content order.
+        assert sent == ["chunk0", "chunk1", "chunk2"]
+
+    def test_unpaced_destination_drains_batch_in_one_pass(self, queue):
+        """Default (no spacing) keeps the historical drain-the-batch behavior."""
+        sent = []
+        queue.register_sender("meshtastic", lambda p: sent.append(p["text"]) or True)
+        for i in range(3):
+            queue.enqueue({"text": f"msg{i}"}, "meshtastic")
+
+        assert queue.process_once() == 3
+        assert sent == ["msg0", "msg1", "msg2"]
+
+    def test_pacing_does_not_block_other_destinations(self, queue):
+        mesh_sent, rns_sent = [], []
+        queue.register_sender("meshtastic", lambda p: mesh_sent.append(1) or True,
+                              min_spacing_s=60.0)
+        queue.register_sender("rns", lambda p: rns_sent.append(1) or True)
+        queue.enqueue({"text": "m1"}, "meshtastic")
+        queue.enqueue({"text": "m2"}, "meshtastic")
+        queue.enqueue({"text": "r1"}, "rns")
+        queue.enqueue({"text": "r2"}, "rns")
+
+        processed = queue.process_once()
+        # meshtastic: only the first is due; rns: both drain unpaced.
+        assert len(mesh_sent) == 1
+        assert len(rns_sent) == 2
+        assert processed == 3
+
+    def test_failed_attempt_still_stamps_the_pacing_clock(self, queue):
+        """The radio's limiter counts attempts — a failed send must pace too."""
+        attempts = []
+        queue.register_sender("meshtastic", lambda p: attempts.append(1) and False,
+                              min_spacing_s=3.0)
+        queue.enqueue({"text": "a"}, "meshtastic")
+        queue.enqueue({"text": "b"}, "meshtastic")
+
+        assert queue.process_once() == 1          # attempt 1 (fails)
+        assert queue.process_once() == 0          # paced even after failure
+        assert len(attempts) == 1
+
+    def test_blocked_messages_remain_pending_not_lost(self, queue):
+        queue.register_sender("meshtastic", lambda p: True, min_spacing_s=30.0)
+        for i in range(3):
+            queue.enqueue({"text": f"c{i}"}, "meshtastic")
+        queue.process_once()                       # sends c0, paces the rest
+
+        pending = queue.get_pending(destination="meshtastic")
+        assert [m.payload["text"] for m in pending] == ["c1", "c2"]
