@@ -4,6 +4,12 @@ Deployment recipes for a MeshForge gateway box — a Pi that bridges a local
 Meshtastic mesh to Reticulum/LXMF (and, optionally, to an RNode for LoRa-RNS
 egress). Field-validated across the moc/fleet-host-1/fleet-host-2/fleet-host-3 fleet 2026-04-24.
 
+> **Choosing a config shape?** See
+> [`GATEWAY_BRIDGE_CONFIG_GUIDE.md`](GATEWAY_BRIDGE_CONFIG_GUIDE.md) for the
+> deployment variants (standalone / fleet roles / dual-radio / LAB flags) and
+> [`gateway_config_templates/`](gateway_config_templates/README.md) for
+> validated per-variant `gateway.json` templates.
+
 ## What the gateway does
 
 ```
