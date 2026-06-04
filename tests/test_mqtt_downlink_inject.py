@@ -27,7 +27,14 @@ from gateway.mqtt_downlink_inject import (
     _HAS_DOWNLINK_DEPS,
 )
 
-# moc ch2 "meshforge" PSK (test vector — matches the live radio used in step 0)
+# HISTORICAL test vector — this WAS the live ch2 "meshforge" PSK during the
+# step-0 field proof (2026-06-03), which is what makes the pinned wire-format
+# assertions below (channel_hash == 0x7a etc.) meaningful. The fleet channel
+# was ROTATED OFF this key on 2026-06-04 precisely because committing it here
+# published it; the key below decrypts nothing on the air anymore.
+# RULE (learned the hard way): never use a LIVE secret as a test vector —
+# commit a synthetic one, or accept that the secret is burned the moment it
+# lands in a public repo and rotate it.
 PSK_B64 = "SlVxOEZEZWhqencwR0NCOWlWdGJkSTVZdWY5aUIwblY="
 PSK = base64.b64decode(PSK_B64)
 ORIGIN = 0xDDFB8065  # moc2
