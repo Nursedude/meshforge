@@ -1,6 +1,7 @@
 # MeshForge Fleet Architecture — Diagnosis & Roadmap
 
-> **Date**: 2026-06-03 · **Author**: Dude AI + WH6GXZ
+> **Date**: 2026-06-03 · **Last verified**: 2026-06-04 (read-only fleet sweep; added
+> §7.6 dual-radio/downlink data plane, §7.7 config matrix + drift findings) · **Author**: Dude AI + WH6GXZ
 > **Method**: live probe (`/api/status`, `systemctl`, `ss -xnpl`) cross-checked
 > against code/config (`fleet_roles.yaml`, `templates/systemd/`, `src/gateway/`,
 > `src/utils/map_federation.py`). Every claim below is evidence-backed from the
@@ -161,6 +162,14 @@ Four themes, each: *what is* → *the reframe* → *concrete steps*. No code shi
 diagnosis; these are sequenced proposals.
 
 ### Theme A — Gateway deepening (the cornerstone arc)
+
+> **STATUS 2026-06-04: all three steps SHIPPED 2026-06-03** (`2b1be20` reply-to,
+> `2f8af9b` identity SSOT, `0c21ff7` sessions) — full record in §7.5. Flags ON on the
+> full-gateway canary box only; **field validation is the remaining handoff** before
+> widening. The dual-radio mesh_bridge + true-origin downlink injection work (§7.6)
+> extended this theme the same day. The text below is the original diagnosis, kept
+> for the reasoning record.
+
 - **Is**: best-effort delivery + `DeliveryTracker` (#66); **one-way** addressability —
   mesh→RNS carries `long_name`, `@id`/`@short_name` parses for directed downlink (#39).
 - **Reframe**: stop treating the gateway as a *pipe* and build it as an **addressability
@@ -294,9 +303,104 @@ operator handoff before widening beyond moc.
 
 ---
 
+## 7.6 Dual-radio mesh_bridge + true-origin downlink injection (added 2026-06-04)
+
+Shipped 2026-06-03, the same day as the Theme-A arc — a **spatial** extension of
+gateway deepening (bridging two RF presences on one box) plus a **visibility** fix
+(cross-bridge traffic rendered as genuinely incoming on the radio's own web UI).
+
+```
+          moc (full-gateway) — the canary box
+  ┌─────────────────────────────────────────────────────────────┐
+  │  LONG_FAST mesh                       SHORT_TURBO mesh      │
+  │  ┌─────────────┐                      ┌──────────────┐      │
+  │  │ HAT radio   │                      │ USB Heltec   │      │
+  │  │ meshtasticd │                      │ /dev/ttyUSB0 │      │
+  │  │ :4403/:9443 │                      │ (serial, no  │      │
+  │  └──────┬──────┘                      │  2nd daemon) │      │
+  │         │ MQTT RX (json)              └──────┬───────┘      │
+  │         │ TX: ┌─ toradio (default) ──────────┤ serial RX/TX │
+  │         │     └─ DOWNLINK (LAB): true-origin │              │
+  │         ▼        AES-CTR protobuf ServiceEnv ▼              │
+  │  ┌──────────────────── mesh_bridge ────────────────────┐    │
+  │  │ channels allow-list · dedup 60s · [Mesh: tag        │    │
+  │  │ invariant (echo-loop guard, 0a4ce92)                │    │
+  │  └──────────────────────────┬───────────────────────────┘    │
+  │                             │ composes with rns_bridge       │
+  │                             ▼  (CanonicalMessage → LXMF)     │
+  └─────────────────────────────────────────────────────────────┘
+```
+
+- **Dual-radio serial leg**: `mesh_bridge.secondary.connection_type="serial"` talks
+  to a USB radio directly — no second meshtasticd. The `channels` allow-list is the
+  safety rail (serial RX hears every channel; without it a secondary ch0 text would
+  re-TX on the primary's public ch0).
+- **True-origin downlink injection** (`e98612a` + broadcast-detect fix `543c99b` +
+  tag-strip `72f3411` + NodeInfo injection `a3d6960`): with
+  `injection_mode="downlink"` + `downlink_psk`, broadcast forwards onto the primary
+  leg are published as encrypted protobuf MQTT downlinks carrying the REAL origin
+  node id; meshtasticd attributes them correctly (`:9443` shows "moc2: text", not
+  self-TX), and a one-time NODEINFO_APP downlink teaches the HAT each origin's name.
+  Any failure falls back to toradio — never drops. **Canary live on moc, soaking
+  since 2026-06-03 evening** (synth traffic + soak cron; verdict via
+  `~/downlink_soak_summary.sh` on the manager box). Fleet default OFF.
+- **Echo-loop invariant stands**: downlink injects RAW content (loop-free path,
+  verified — meshtasticd does not re-uplink `-e-` downlinks to json); the toradio
+  fallback still carries the `[Mesh:` tag. The `[Mesh:`/`[RNS:` provenance tags
+  remain non-negotiable on every toradio leg.
+- **Open threads**: RNS-origin leg (no native node id — needs synthetic-id mapping);
+  downlink-health watchdog probe (mini is blind to downlink-specific degradation —
+  the soak cron covers it short-term); HAT nodedb 200-cap eviction churns injected
+  NodeInfo on busy meshes (cosmetic for live web sessions).
+- **Operator docs**: `docs/GATEWAY_BRIDGE_CONFIG_GUIDE.md` + validated templates in
+  `docs/gateway_config_templates/` (anti-rot test
+  `tests/test_gateway_config_templates.py` loads each through the real
+  `GatewayConfig` parser — beta schema churn breaks CI, not the operator).
+
+---
+
+## 7.7 Live gateway config matrix + drift findings (read-only sweep 2026-06-04)
+
+Snapshot of effective gateway/bridge config per box (sanitized: PSKs redacted,
+LXMF hashes truncated). Re-verify live before acting — the fleet moves.
+
+| Box | Role | bridge_mode | rns_bridge | mesh_bridge | meshcore | broadcast | Theme-A flags | LXMF fan-out | peer gateways |
+|-----|------|-------------|------------|-------------|----------|-----------|---------------|--------------|---------------|
+| VolcanoAI | primary | (dormant config) | — | — | — | — | — | — | — |
+| moc | full-gateway | mqtt_bridge | ✅ | ✅ **dual-radio, downlink LAB ON** (primary HAT downlink+PSK; secondary serial ST) | ❌ | ✅ ch2 | **all 3 ON** (canary) | 4 dests: `6b1a0120…`, `7cda0fab…`, `f68c2f56…`, `9217147e…` | `f68c2f56…`, `58cecbd0…` |
+| moc1 | cloud-publisher | mqtt_bridge | (key absent → default true; unit shape minimal) | ❌ | ❌ | ❌ | off | 1 dest: `522c4ac1…` | — |
+| moc2 | collector | mqtt_bridge | (key absent) | ❌ | ❌ | ❌ | off | 1 dest: `d1df31d3…` | — |
+| moc3 | gateway-only | mqtt_bridge | ✅ explicit | wired, **off** (hot spare) | wired, off (`/dev/ttyUSB1` ready) | ✅ ch2 | off | 4 dests: `6b1a0120…`, `7cda0fab…`, **`3dfbdb5d…`**, `9217147e…` | **`3dfbdb5d…`**, `58cecbd0…` |
+
+**Drift findings** (fix runbook: `docs/gateway_config_templates/HARMONIZATION_2026_06_04.md`):
+
+1. **moc3 `peer_gateway_destinations` ≠ moc's** (`3dfbdb5d…` vs `f68c2f56…` at
+   position 1) — routing misalignment if the hot spare is ever promoted.
+2. **LXMF destination sets inconsistent** — moc/moc3 4-entry lists differ at
+   position 3; moc1/moc2 carry different singles. Intent vs drift undecided.
+3. **`rns_bridge_enabled` schema shape** — explicit `true` (moc, moc3) vs key-absent
+   (moc1, moc2). Benign (default true) but defeats raw-JSON cross-box comparison —
+   reinforces the §7.5 lesson: compare effective config through `GatewayConfig`.
+4. **Theme-A flags moc-only** — likely intentional (canary), but undeclared; decide
+   widen-vs-hold explicitly.
+5. ⚠️ **`downlink_psk` sits in plaintext in ~12 `gateway.json.bak*` files on moc** —
+   rotate post-soak + backup hygiene (the config file is secret-bearing once the
+   PSK is set).
+6. ⚠️ **VolcanoAI `broker_profiles.json` carries dormant plaintext MQTT creds**
+   (incl. the public meshtastic default pair) — rotate/relocate; dormant, low
+   priority.
+
+**SSOT already harmonized** (good): broker localhost:1883, root_topic `msh`,
+region `""`, json_enabled, meshtasticd localhost:4403, http_port 9443, telemetry
+defaults — identical fleet-wide.
+
+---
+
 ## 8. Watch-items (carry forward)
 
-1. **moc2 meshtasticd age 301d** — oldest daemon on the fleet; restart-timer candidate (§7-D).
+1. **moc2 meshtasticd age ~44d** (started 2026-04-21; the earlier "301d" reading was
+   wrong — corrected against `ActiveEnterTimestamp` 2026-06-04). Still the oldest
+   daemon on the fleet alongside its mosquitto; restart-timer candidate (§7-D).
 2. **moc3 rnsd CPU 10.8% + ToPhone queue-full drops** — gateway-only Pi3B saturation signal;
    characterize before it becomes an incident.
 3. **Federation peer = meshanchor-server (NULL name, ~49k nodes)** — known cross-NOC pull;
@@ -311,5 +415,6 @@ operator handoff before widening beyond moc.
 
 ---
 
-*Snapshot taken 2026-06-03. Re-verify live before acting on any §3/§8 number — the fleet
-moves.*
+*Snapshot taken 2026-06-03; §7.6/§7.7 + watch-item corrections added from the
+2026-06-04 read-only sweep. Re-verify live before acting on any §3/§7.7/§8 number —
+the fleet moves.*
