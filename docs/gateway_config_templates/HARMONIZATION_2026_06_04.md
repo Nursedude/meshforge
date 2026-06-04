@@ -90,7 +90,16 @@ names so it stays repo-portable.
 - **Open decision**: widen-vs-hold — gate on the Theme-A field validation
   handoff, not on this runbook.
 
-## 5. ⏳ `downlink_psk` plaintext in gateway.json backups (canary box)
+## 5. ✅ `downlink_psk` plaintext in gateway.json backups (canary box) — EXECUTED 2026-06-04 ~10:55
+
+All three steps done post-soak-graduation: backups pruned to the checkpoint;
+channel PSK rotated coordinated across all five managed radios (canary HAT,
+both ST-site HATs, the canary's serial leg, and the bot's radio via its host
+Pi) + `downlink_psk` updated in the same pass; gateway.json + remaining
+backup now mode 600. Field-proven end-to-end on the new key (ping → one copy
+on the bot mesh → one true-origin PONG back). Residual: any operator
+handheld that carried the old ch2 key needs a re-key (channel URL/QR) before
+it can use ch2 again — it stays functional on ch0.
 
 - **What**: ~12 `gateway.json.bak*` files on the canary box carry the channel
   PSK in plaintext. Once `downlink_psk` is set, gateway.json **and its
