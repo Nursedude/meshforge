@@ -155,6 +155,32 @@ def validate_channel(channel: int, field_name: str) -> Optional[ConfigValidation
     return None
 
 
+def validate_channel_list(channels, field_name: str) -> List[ConfigValidationError]:
+    """Validate a channel allow-list: a list of Meshtastic channel indexes.
+
+    Returns a list of errors (empty = valid). Rejects non-list values and
+    non-integer entries loudly — a typo'd allow-list silently bridging the
+    wrong channels is exactly the failure shape this feature exists to stop.
+    Note: bool is an int subclass in Python, so True/False are rejected
+    explicitly.
+    """
+    if not isinstance(channels, list):
+        return [ConfigValidationError(
+            field_name,
+            f"Must be a list of channel indexes 0-7, got {type(channels).__name__}")]
+    errors = []
+    for i, ch in enumerate(channels):
+        if isinstance(ch, bool) or not isinstance(ch, int):
+            errors.append(ConfigValidationError(
+                f"{field_name}[{i}]",
+                f"Channel index must be an integer 0-7, got {ch!r}"))
+            continue
+        err = validate_channel(ch, f"{field_name}[{i}]")
+        if err:
+            errors.append(err)
+    return errors
+
+
 def validate_baud_rate(baud: int, field_name: str) -> Optional[ConfigValidationError]:
     """Validate serial baud rate is a standard value."""
     standard_rates = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600]
@@ -276,6 +302,16 @@ class MeshtasticBridgeConfig:
     # "primary_to_secondary" - Only forward from primary to secondary
     # "secondary_to_primary" - Only forward from secondary to primary
     direction: str = "bidirectional"
+
+    # Channel allow-list (Meshtastic channel indexes 0-7). When non-empty,
+    # only text received on these channel indexes is bridged — applies to
+    # BOTH directions and ALL connection types (serial RX hears every
+    # channel of its radio, so without this a secondary's ch0 text would
+    # be re-TXed on the primary's ch0, which may be a public channel).
+    # Empty = bridge all channels (backward compatible).
+    # Forwards preserve channel index, so the allow-listed indexes should
+    # carry the same channel (name + PSK) on both radios.
+    channels: List[int] = field(default_factory=list)
 
     # Message filtering
     # Forward only messages matching these patterns (empty = all)
@@ -711,6 +747,7 @@ class GatewayConfig:
                 primary=MeshtasticConfig(**cls._migrate_stale_http_port(mesh_bridge_data.get('primary', {}))) if mesh_bridge_data.get('primary') else MeshtasticConfig(port=4403, preset="LONG_FAST", name="longfast"),
                 secondary=MeshtasticConfig(**cls._migrate_stale_http_port(mesh_bridge_data.get('secondary', {}))) if mesh_bridge_data.get('secondary') else MeshtasticConfig(port=4404, preset="SHORT_TURBO", name="shortturbo"),
                 direction=mesh_bridge_data.get('direction', 'bidirectional'),
+                channels=mesh_bridge_data.get('channels', []) or [],
                 message_filter=mesh_bridge_data.get('message_filter', ''),
                 exclude_filter=mesh_bridge_data.get('exclude_filter', ''),
                 dedup_window_sec=mesh_bridge_data.get('dedup_window_sec', 60),
@@ -804,6 +841,7 @@ class GatewayConfig:
                 'primary': asdict(self.mesh_bridge.primary),
                 'secondary': asdict(self.mesh_bridge.secondary),
                 'direction': self.mesh_bridge.direction,
+                'channels': self.mesh_bridge.channels,
                 'message_filter': self.mesh_bridge.message_filter,
                 'exclude_filter': self.mesh_bridge.exclude_filter,
                 'dedup_window_sec': self.mesh_bridge.dedup_window_sec,
@@ -945,8 +983,11 @@ class GatewayConfig:
         if err:
             errors.append(err)
 
-        # Validate mesh bridge config
-        if self.bridge_mode == "mesh_bridge":
+        # Validate mesh bridge config. Composable-bridges model: mesh_bridge
+        # can be enabled alongside another bridge_mode (e.g. mqtt_bridge +
+        # rns_bridge + mesh_bridge on a dual-radio gateway), so gate on
+        # enabled OR the legacy mode selector.
+        if self.bridge_mode == "mesh_bridge" or self.mesh_bridge.enabled:
             err = validate_port(self.mesh_bridge.primary.port, "mesh_bridge.primary.port")
             if err:
                 errors.append(err)
@@ -978,6 +1019,10 @@ class GatewayConfig:
             err = validate_regex(self.mesh_bridge.exclude_filter, "mesh_bridge.exclude_filter")
             if err:
                 errors.append(err)
+
+            # Validate channel allow-list
+            errors.extend(validate_channel_list(
+                self.mesh_bridge.channels, "mesh_bridge.channels"))
 
         # Mode-specific: mqtt_bridge
         if self.bridge_mode == "mqtt_bridge":

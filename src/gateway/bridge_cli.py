@@ -169,6 +169,15 @@ def validate_bridge_conflicts(config: GatewayConfig, bridges: list) -> list:
                 "not exist. Attach the USB Meshtastic device or fix the path."
             )
 
+    # Malformed channel allow-list: a typo here would silently bridge the
+    # wrong channels (e.g. a secondary's ch0 onto the primary's public ch0),
+    # so refuse to start rather than guess.
+    if config.mesh_bridge.enabled:
+        from gateway.config import validate_channel_list
+        for err in validate_channel_list(
+                config.mesh_bridge.channels, "mesh_bridge.channels"):
+            errs.append(str(err))
+
     return errs
 
 

@@ -653,3 +653,108 @@ class TestConfigValidation:
         err = validate_hostname_config("-invalid", "test")
         assert err is not None
         assert err.severity == "error"
+
+
+class TestMeshBridgeChannelAllowList:
+    """mesh_bridge.channels — optional channel-index allow-list.
+    Empty/absent = bridge all (backward compatible); malformed entries
+    must be rejected loudly (validate + bridge_cli startup refusal)."""
+
+    def _write_and_load(self, tmp_path, data):
+        config_file = tmp_path / "gateway.json"
+        config_file.write_text(json.dumps(data))
+        with patch.object(GatewayConfig, 'get_config_path',
+                          return_value=config_file):
+            return GatewayConfig.load()
+
+    def test_default_is_empty_list(self):
+        from gateway.config import MeshtasticBridgeConfig
+        assert MeshtasticBridgeConfig().channels == []
+
+    def test_load_parses_channels(self, tmp_path):
+        loaded = self._write_and_load(tmp_path, {
+            "mesh_bridge": {"enabled": True, "channels": [2, 3]},
+        })
+        assert loaded.mesh_bridge.channels == [2, 3]
+
+    def test_load_absent_channels_is_empty(self, tmp_path):
+        loaded = self._write_and_load(tmp_path, {
+            "mesh_bridge": {"enabled": True},
+        })
+        assert loaded.mesh_bridge.channels == []
+
+    def test_save_load_round_trip(self, tmp_path):
+        config_file = tmp_path / "gateway.json"
+        with patch.object(GatewayConfig, 'get_config_path',
+                          return_value=config_file):
+            config = GatewayConfig()
+            config.mesh_bridge.enabled = True
+            config.mesh_bridge.channels = [2]
+            assert config.save() is True
+            loaded = GatewayConfig.load()
+        assert loaded.mesh_bridge.channels == [2]
+
+    def test_validate_accepts_valid_channels(self):
+        config = GatewayConfig()
+        config.mesh_bridge.enabled = True
+        config.mesh_bridge.channels = [0, 2, 7]
+        _, all_errors = config.validate()
+        errors = [e for e in all_errors
+                  if "channels" in e.field and e.severity == "error"]
+        assert errors == []
+
+    def test_validate_rejects_out_of_range(self):
+        config = GatewayConfig()
+        config.mesh_bridge.enabled = True
+        config.mesh_bridge.channels = [8]
+        _, all_errors = config.validate()
+        errors = [e for e in all_errors if "channels" in e.field]
+        assert len(errors) == 1
+        assert "out of range" in errors[0].message
+
+    def test_validate_rejects_non_int_entries(self):
+        config = GatewayConfig()
+        config.mesh_bridge.enabled = True
+        config.mesh_bridge.channels = ["2", True, -1]
+        _, all_errors = config.validate()
+        errors = [e for e in all_errors if "channels" in e.field]
+        # "2" (str), True (bool), -1 (range) — all three rejected
+        assert len(errors) == 3
+
+    def test_validate_applies_when_enabled_without_mode(self):
+        """Composable model: mesh_bridge.enabled=true alongside
+        bridge_mode=mqtt_bridge must still be validated."""
+        config = GatewayConfig(bridge_mode="mqtt_bridge")
+        config.mesh_bridge.enabled = True
+        config.mesh_bridge.channels = [99]
+        _, all_errors = config.validate()
+        errors = [e for e in all_errors if "channels" in e.field]
+        assert len(errors) == 1
+
+    def test_bridge_cli_refuses_malformed_channels(self):
+        """Startup refusal path: the systemd entrypoint must refuse-loud
+        on a malformed allow-list rather than guess."""
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+        from gateway.bridge_cli import resolve_bridges, validate_bridge_conflicts
+
+        config = GatewayConfig(bridge_mode="mqtt_bridge")
+        config.mesh_bridge.enabled = True
+        config.mesh_bridge.channels = ["meshforge"]
+        bridges = resolve_bridges(config)
+        errs = validate_bridge_conflicts(config, bridges)
+        assert any("mesh_bridge.channels" in e for e in errs)
+
+    def test_bridge_cli_accepts_valid_channels(self):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+        from gateway.bridge_cli import resolve_bridges, validate_bridge_conflicts
+
+        config = GatewayConfig(bridge_mode="mqtt_bridge")
+        config.mesh_bridge.enabled = True
+        config.mesh_bridge.channels = [2]
+        bridges = resolve_bridges(config)
+        errs = validate_bridge_conflicts(config, bridges)
+        assert not any("channels" in e for e in errs)

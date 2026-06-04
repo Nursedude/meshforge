@@ -41,7 +41,7 @@ Bridges two Meshtastic networks with different LoRa presets.
 
 **Requirements**:
 - Two Meshtastic radios (one per preset)
-- Two meshtasticd instances on different ports:
+- Either two meshtasticd instances on different ports:
   ```bash
   # Terminal 1 - LONG_FAST radio
   meshtasticd -h localhost -d /dev/ttyUSB0 -p 4403
@@ -49,6 +49,20 @@ Bridges two Meshtastic networks with different LoRa presets.
   # Terminal 2 - SHORT_TURBO radio
   meshtasticd -h localhost -d /dev/ttyUSB1 -p 4404
   ```
+- Or one meshtasticd (HAT radio) + one USB radio driven directly by the
+  gateway — set on the secondary: `"connection_type": "serial"`,
+  `"serial_device": "/dev/ttyUSB0"`. No second meshtasticd needed.
+  For the primary, prefer `"connection_type": "mqtt"` (zero contention
+  with the :9443 web client).
+
+**Channel scoping** (`mesh_bridge.channels`): optional allow-list of
+channel indexes (0-7), enforced in both directions on every connection
+type. Empty = bridge all channels. Serial RX hears every channel of its
+radio, so without an allow-list a secondary's ch0 text is re-TXed on the
+primary's ch0 — which may be a public channel. Forwards preserve channel
+index, so allow-listed indexes should carry the same channel (name + PSK)
+on both radios. Example: `"channels": [2]` bridges only channel 2.
+Malformed entries (non-integers, out of range) refuse loudly at startup.
 
 ## Installation
 

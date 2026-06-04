@@ -61,19 +61,25 @@
     },
 
     "secondary": {
-      "_comment": "SHORT_TURBO radio - local coverage, high speed",
+      "_comment": "SHORT_TURBO radio - local coverage, high speed. For a USB radio with no second meshtasticd, set connection_type=serial + serial_device (e.g. /dev/ttyUSB0)",
       "host": "localhost",
       "port": 4404,
       "channel": 0,
       "use_mqtt": false,
       "mqtt_topic": "",
       "preset": "SHORT_TURBO",
-      "name": "shortturbo"
+      "name": "shortturbo",
+      "connection_type": "",
+      "serial_device": ""
     },
 
     "direction": "bidirectional",
 
+    "_channels_comment": "Channel-index allow-list (0-7), both directions, all connection types. Empty = bridge all. Serial RX hears every channel of its radio - without this, a secondary's ch0 text is re-TXed on the primary's ch0 (often public). Forwards preserve channel index, so listed indexes should carry the same channel (name+PSK) on both radios.",
+    "channels": [],
+
     "message_filter": "",
+    "_exclude_filter_comment": "Anti-ping-pong guard: drop already-tagged content so bridged messages are never re-forwarded, e.g. \"^\\\\[(LONG_FAST|SHORT_TURBO)\\\\]\"",
     "exclude_filter": "",
 
     "dedup_window_sec": 60,

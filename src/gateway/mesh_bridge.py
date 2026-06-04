@@ -199,14 +199,26 @@ class MQTTMeshInterface:
             cfg = self._config
             root = "msh"
 
-            # Subscribe to JSON topics
-            json_topic = f"{root}/{cfg.mqtt_region}/2/json/{cfg.mqtt_channel}/#"
-            client.subscribe(json_topic)
-            logger.info(f"[{self._name}] Subscribed to: {json_topic}")
+            # Subscribe to BOTH topic shapes — with and without the region
+            # segment. meshtasticd 2.7.x publishes region-less topics
+            # (msh/2/json/...); older builds include the region
+            # (msh/US/2/json/...). Same dual-shape fix as Issue #34 in
+            # mqtt_bridge_handler; per-message dedup absorbs any overlap.
+            json_topics = [f"{root}/2/json/{cfg.mqtt_channel}/#"]
+            proto_topics = [f"{root}/2/e/{cfg.mqtt_channel}/#"]
+            if cfg.mqtt_region:
+                json_topics.append(
+                    f"{root}/{cfg.mqtt_region}/2/json/{cfg.mqtt_channel}/#")
+                proto_topics.append(
+                    f"{root}/{cfg.mqtt_region}/2/e/{cfg.mqtt_channel}/#")
 
-            # Also subscribe to encrypted topic for node discovery
-            proto_topic = f"{root}/{cfg.mqtt_region}/2/e/{cfg.mqtt_channel}/#"
-            client.subscribe(proto_topic)
+            for topic in json_topics:
+                client.subscribe(topic)
+                logger.info(f"[{self._name}] Subscribed to: {topic}")
+
+            # Also subscribe to encrypted topics for node discovery
+            for topic in proto_topics:
+                client.subscribe(topic)
         else:
             logger.error(f"[{self._name}] MQTT connect failed (rc={rc})")
             self._connected = False
@@ -427,6 +439,7 @@ class MeshtasticPresetBridge:
             'messages_primary_to_secondary': 0,
             'messages_secondary_to_primary': 0,
             'duplicates_suppressed': 0,
+            'channel_filtered': 0,
             'errors': 0,
             'start_time': None,
         }
@@ -860,6 +873,21 @@ class MeshtasticPresetBridge:
 
             # Only bridge text messages
             if portnum != 'TEXT_MESSAGE_APP':
+                return
+
+            # Channel allow-list: only bridge text on allow-listed channel
+            # indexes (empty list = all). Serial RX hears every channel of
+            # its radio; without this, a secondary's ch0 text would be
+            # re-TXed on the primary's ch0 (often a public channel).
+            allowed = self.bridge_config.channels
+            channel = packet.get('channel', 0)
+            if allowed and channel not in allowed:
+                with self._stats_lock:
+                    self.stats['channel_filtered'] += 1
+                logger.debug(
+                    f"Channel filter: dropped ch{channel} text from {source} "
+                    f"(allow-list: {allowed})"
+                )
                 return
 
             from_id = packet.get('fromId', '')
