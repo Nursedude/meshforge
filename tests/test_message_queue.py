@@ -278,6 +278,34 @@ class TestDeduplication:
         assert id1 is not None
         assert id2 is not None
 
+    def test_identical_content_same_millisecond_gets_distinct_ids(
+            self, queue, monkeypatch):
+        """Regression: the ms-timestamp + content-hash id was NOT unique —
+        identical content enqueued twice in the same millisecond collided
+        on the TEXT PRIMARY KEY and the second INSERT failed (the
+        test_dedup_disabled flake on fast boxes). Clock frozen so the
+        collision shape is deterministic, not timing-dependent."""
+        import gateway.message_queue as mq
+        monkeypatch.setattr(mq.time, "time", lambda: 1759000000.123)
+        id1 = queue.enqueue({"text": "hello"}, "meshtastic", deduplicate=False)
+        id2 = queue.enqueue({"text": "hello"}, "meshtastic", deduplicate=False)
+        assert id1 is not None
+        assert id2 is not None
+        assert id1 != id2
+
+    def test_same_content_two_destinations_same_millisecond(
+            self, queue, monkeypatch):
+        """Same latent collision, the other legitimate shape: same content
+        to two destinations in one millisecond (dedup is per-destination,
+        so both must enqueue — and the PRIMARY KEY must not collide)."""
+        import gateway.message_queue as mq
+        monkeypatch.setattr(mq.time, "time", lambda: 1759000000.456)
+        id1 = queue.enqueue({"text": "hello"}, "meshtastic")
+        id2 = queue.enqueue({"text": "hello"}, "rns")
+        assert id1 is not None
+        assert id2 is not None
+        assert id1 != id2
+
     def test_message_shaped_payloads_hash_distinctly(self, queue):
         """Regression: RNS→Mesh payloads use `message`/`destination`, not
         `text`/`from`/`to`. The old hash keyed only on the latter, so every
