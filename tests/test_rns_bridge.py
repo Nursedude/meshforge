@@ -4080,3 +4080,143 @@ class TestSessionSweep:
         status = bridge.get_status()
         assert status['active_sessions'] == 0
         assert bridge._sessions._initialized is False
+
+
+# ---------------------------------------------------------------------------
+# Dual-path dedup (2026-06-04) — RecentRfTxRegistry + R→M suppression
+# ---------------------------------------------------------------------------
+# Two designed paths put the SAME content on the primary radio: the local
+# mesh_bridge forward (true-origin downlink / tagged toradio) and a peer
+# gateway's RNS relay landing back here as an [RNS:] toradio broadcast.
+# Unconditional suppression of the relay loses messages (live trace: ~40% of
+# relayed events arrived ONLY via RNS) — so the relay copy is suppressed
+# ONLY on a registry hit, gated by rns.dual_path_dedup_enabled (default off).
+
+class TestRecentRfTxRegistry:
+    """Unit tests for the content-normalized recently-transmitted registry."""
+
+    def _registry(self, **kw):
+        from gateway.base_handler import RecentRfTxRegistry
+        return RecentRfTxRegistry(**kw)
+
+    def test_register_then_seen(self):
+        r = self._registry()
+        r.register("hello mesh")
+        assert r.seen_within("hello mesh", 60.0) is True
+
+    def test_unregistered_not_seen(self):
+        r = self._registry()
+        assert r.seen_within("never sent", 60.0) is False
+
+    def test_window_expiry(self):
+        r = self._registry()
+        r.register("old content")
+        key = next(iter(r._entries))
+        r._entries[key] -= 61.0          # simulate 61s passing
+        assert r.seen_within("old content", 60.0) is False
+
+    def test_leading_bridge_tag_normalized(self):
+        # A tagged copy matches the raw content a downlink injected.
+        r = self._registry()
+        r.register("Bot CMD?:ping, bbshelp")
+        assert r.seen_within("[RNS:Borg serve] Bot CMD?:ping, bbshelp", 60.0)
+        assert r.seen_within("[Mesh:SHORT_TURBO] Bot CMD?:ping, bbshelp", 60.0)
+
+    def test_nested_tags_stripped(self):
+        r = self._registry()
+        r.register("[Mesh:LONG_FAST] [RNS:abcd] payload")
+        assert r.seen_within("payload", 60.0)
+
+    def test_whitespace_collapsed(self):
+        r = self._registry()
+        r.register("two  words   here")
+        assert r.seen_within("two words here", 60.0)
+
+    def test_empty_and_tag_only_never_match(self):
+        r = self._registry()
+        r.register("")
+        r.register("[RNS:xxxx] ")
+        assert r.seen_within("", 60.0) is False
+        assert r.seen_within("[Mesh:ST] ", 60.0) is False
+
+    def test_bounded_entries(self):
+        r = self._registry(max_entries=3)
+        for i in range(6):
+            r.register(f"content {i}")
+        assert len(r._entries) <= 3
+        assert r.seen_within("content 5", 60.0)   # newest kept
+
+    def test_module_singleton_accessor(self):
+        import gateway.base_handler as bh
+        assert bh.get_rf_tx_registry() is bh._rf_tx_registry
+
+
+class TestDualPathDedup:
+    """R→M broadcast suppression on registry hit (gated, default off)."""
+
+    def _fresh_registry(self, monkeypatch):
+        import gateway.base_handler as bh
+        fresh = bh.RecentRfTxRegistry()
+        monkeypatch.setattr(bh, "_rf_tx_registry", fresh)
+        return fresh
+
+    def _msg(self, content):
+        from gateway.rns_bridge import BridgedMessage
+        return BridgedMessage(
+            source_network="rns", source_id="abcdef01",
+            destination_id=None, content=content,
+        )
+
+    def test_suppressed_on_registry_hit(self, bridge, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        reg.register("dup content from mesh_bridge")        # path A went out
+        bridge.config.rns.dual_path_dedup_enabled = True
+        bridge.config.rns.dual_path_dedup_window_sec = 60
+
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True) as send:
+            bridge._process_rns_to_mesh(self._msg("dup content from mesh_bridge"))
+
+        send.assert_not_called()
+        assert bridge.stats['rns_to_mesh_dual_path_suppressed'] == 1
+        assert bridge.stats['rns_to_mesh_delivered'] == 0
+        assert bridge.stats['rns_to_mesh_dropped'] == 0     # suppression ≠ drop
+
+    def test_no_hit_delivers_normally(self, bridge, monkeypatch):
+        """The fallback value: RF-missed content (no registration) still goes out."""
+        self._fresh_registry(monkeypatch)                    # empty registry
+        bridge.config.rns.dual_path_dedup_enabled = True
+        bridge.config.rns.dual_path_dedup_window_sec = 60
+
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True) as send:
+            bridge._process_rns_to_mesh(self._msg("rf missed this one"))
+
+        send.assert_called()
+        assert bridge.stats['rns_to_mesh_dual_path_suppressed'] == 0
+        assert bridge.stats['rns_to_mesh_delivered'] == 1
+
+    def test_flag_off_hit_still_delivers(self, bridge, monkeypatch):
+        """Default-off: a registry hit without the flag changes nothing."""
+        reg = self._fresh_registry(monkeypatch)
+        reg.register("dup content")
+        # bridge fixture config.rns is a MagicMock — dual_path_dedup_enabled
+        # reads truthy-but-not-True, which the strict gate treats as OFF.
+
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True) as send:
+            bridge._process_rns_to_mesh(self._msg("dup content"))
+
+        send.assert_called()
+        assert bridge.stats['rns_to_mesh_delivered'] == 1
+
+    def test_directed_dm_never_suppressed(self, bridge, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        reg.register("hello there")
+        bridge.config.rns.dual_path_dedup_enabled = True
+        bridge.config.rns.dual_path_dedup_window_sec = 60
+
+        with patch.object(bridge, '_resolve_mesh_destination',
+                          return_value="!b03bb70c"), \
+             patch.object(bridge, 'send_to_meshtastic', return_value=True) as send:
+            bridge._process_rns_to_mesh(self._msg("@b03bb70c hello there"))
+
+        send.assert_called()
+        assert bridge.stats['rns_to_mesh_dual_path_suppressed'] == 0

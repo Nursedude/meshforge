@@ -267,6 +267,11 @@ class RNSMeshtasticBridge(
             'rns_to_mesh_attempted': 0,
             'rns_to_mesh_delivered': 0,
             'rns_to_mesh_dropped': 0,
+            # Dual-path dedup (gated): broadcast copies suppressed because
+            # the local mesh_bridge already put the same content on RF.
+            # attempted counts them; delivered/dropped do not — this counter
+            # explains the gap.
+            'rns_to_mesh_dual_path_suppressed': 0,
             'errors': 0,
             'bounced': 0,
             'start_time': None,

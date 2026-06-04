@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field, asdict
 from typing import Optional, Dict, Callable, Any, List
 
-from .base_handler import is_already_bridged
+from .base_handler import get_rf_tx_registry, is_already_bridged
 from .config import GatewayConfig, MeshtasticBridgeConfig, MeshtasticConfig
 from .message_queue import PersistentMessageQueue, MessagePriority, RetryPolicy
 from utils.safe_import import safe_import
@@ -1145,6 +1145,14 @@ class MeshtasticPresetBridge:
         if success:
             with self._stats_lock:
                 self.stats['messages_secondary_to_primary'] += 1
+            # Dual-path dedup: record what just went onto the primary radio
+            # so the rns_bridge's R→M path (the peer-relay copy of this same
+            # content, arriving seconds later via RNS) can suppress its
+            # duplicate — gated on rns.dual_path_dedup_enabled at the CHECK
+            # side; registering is unconditional and cheap. Broadcasts only:
+            # DMs never dual-path.
+            if msg.is_broadcast:
+                get_rf_tx_registry().register(msg.content)
         return success
 
     def _forward_message(self, msg: BridgedMeshMessage, interface,

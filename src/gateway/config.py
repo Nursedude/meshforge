@@ -465,6 +465,17 @@ class RNSConfig:
     sessions_enabled: bool = False
     session_idle_timeout_sec: int = 86400   # forget an idle session after ~24h
     session_max_entries: int = 1024         # row cap, oldest-evicted
+    # Dual-path dedup (2026-06-04). On a box whose LOCAL mesh_bridge also
+    # carries the same RF traffic (e.g. an ST serial leg forwarding onto the
+    # primary radio), a peer gateway's Mesh→RNS relay arrives back here and
+    # goes out as a SECOND copy of content the mesh_bridge already
+    # transmitted seconds earlier. When True, the R→M broadcast path checks
+    # the process-wide RecentRfTxRegistry and suppresses its copy ONLY on a
+    # hit — unconditional suppression would lose messages (live trace: ~40%
+    # of relayed events arrived ONLY via RNS because the local radio missed
+    # them on RF). Default off (canary-first). DMs are never suppressed.
+    dual_path_dedup_enabled: bool = False
+    dual_path_dedup_window_sec: int = 60    # registry hit window (seconds)
 
     def get_lxmf_destinations(self) -> List[str]:
         """Return default_lxmf_destination normalized to a list of non-empty hex strings."""

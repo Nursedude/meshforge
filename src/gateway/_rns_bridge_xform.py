@@ -23,7 +23,7 @@ import logging
 import re
 from typing import Optional
 
-from .base_handler import chunk_for_mesh, is_already_bridged
+from .base_handler import chunk_for_mesh, get_rf_tx_registry, is_already_bridged
 from .canonical_message import format_reply_token, parse_reply_token
 from .message_queue import MessagePriority
 
@@ -55,6 +55,23 @@ class MessageTransformMixin:
         """
         rns_cfg = getattr(self.config, 'rns', None)
         return getattr(rns_cfg, 'reply_routing_enabled', False) is True
+
+    def _dual_path_dedup_on(self) -> bool:
+        """Strict read of rns.dual_path_dedup_enabled (default False).
+
+        Same ``is True`` discipline as _reply_routing_on — MagicMock test
+        configs and malformed values read as OFF, preserving the legacy
+        always-deliver behavior everywhere the flag wasn't explicitly set.
+        """
+        rns_cfg = getattr(self.config, 'rns', None)
+        return getattr(rns_cfg, 'dual_path_dedup_enabled', False) is True
+
+    def _dual_path_dedup_window(self) -> float:
+        rns_cfg = getattr(self.config, 'rns', None)
+        try:
+            return float(getattr(rns_cfg, 'dual_path_dedup_window_sec', 60))
+        except (TypeError, ValueError):
+            return 60.0
 
     def _identity_on(self) -> bool:
         """Strict read of rns.cross_protocol_identity_enabled (default False).
@@ -582,6 +599,28 @@ class MessageTransformMixin:
                     with self._stats_lock:
                         key = f'reply_routed_from_{reply_route}'
                         self.stats[key] = self.stats.get(key, 0) + 1
+
+            # Dual-path dedup (gated, default off). On a box whose LOCAL
+            # mesh_bridge also carries this RF traffic, a broadcast the
+            # mesh_bridge already transmitted onto the primary radio
+            # (true-origin downlink or tagged toradio) arrives here a second
+            # time via a peer gateway's RNS relay and would land on the
+            # radio TWICE. Suppress ONLY on a registry hit — when the local
+            # radio missed the message on RF (live trace 2026-06-04: ~40% of
+            # relayed events), there is no hit and this copy still delivers,
+            # preserving the relay's fallback value. Broadcasts only — a
+            # resolved DM destination is never dual-path.
+            if (destination is None
+                    and self._dual_path_dedup_on()
+                    and get_rf_tx_registry().seen_within(
+                        body, self._dual_path_dedup_window())):
+                with self._stats_lock:
+                    self.stats['rns_to_mesh_dual_path_suppressed'] = (
+                        self.stats.get('rns_to_mesh_dual_path_suppressed', 0) + 1)
+                logger.info(
+                    f"Bridge RNS→Mesh suppressed (dual-path dedup — already "
+                    f"on RF via mesh_bridge): {body[:50]}...")
+                return
 
             # Attribution label for the [RNS:xxxx] tag. When the LXMF
             # originated as a Meshtastic broadcast at a PEER gateway

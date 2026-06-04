@@ -945,3 +945,74 @@ class TestNodeInfoInjection:
         # text still flows; nodeinfo skipped and NOT marked sent (retry later)
         assert not injector.inject_nodeinfo.called
         assert 0xDDFB8065 not in bridge._nodeinfo_sent
+
+
+class TestDualPathDedupRegistration:
+    """Successful primary-leg broadcast forwards register their content in
+    the process-wide RecentRfTxRegistry so the rns_bridge R→M path can
+    suppress the peer-relay duplicate of the same content (dual-path dedup,
+    2026-06-04). DMs and failed forwards must not register."""
+
+    def _fresh_registry(self, monkeypatch):
+        import gateway.base_handler as bh
+        fresh = bh.RecentRfTxRegistry()
+        monkeypatch.setattr(bh, "_rf_tx_registry", fresh)
+        return fresh
+
+    def _bridge(self, mock_home, tmp_path, mock_config):
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+        mock_home.return_value = tmp_path
+        return MeshtasticPresetBridge(config=mock_config)
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_primary_broadcast_registers_content(self, mock_home, tmp_path,
+                                                 mock_config, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        from gateway.mesh_bridge import BridgedMeshMessage
+        bridge = self._bridge(mock_home, tmp_path, mock_config)
+        bridge._primary_interface = MagicMock()
+        bridge._primary_connected = True
+
+        msg = BridgedMeshMessage(
+            source_preset="SHORT_TURBO", source_id="!b03bb70c",
+            destination_id="!ffffffff", content="hello LF",
+            channel=2, is_broadcast=True,
+        )
+        assert bridge._send_to_primary(msg.to_payload()) is True
+        # Raw content registered — and the tagged copy matches it too.
+        assert reg.seen_within("hello LF", 60.0)
+        assert reg.seen_within("[RNS:xxxx] hello LF", 60.0)
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_primary_dm_does_not_register(self, mock_home, tmp_path,
+                                          mock_config, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        from gateway.mesh_bridge import BridgedMeshMessage
+        bridge = self._bridge(mock_home, tmp_path, mock_config)
+        bridge._primary_interface = MagicMock()
+        bridge._primary_connected = True
+
+        msg = BridgedMeshMessage(
+            source_preset="SHORT_TURBO", source_id="!b03bb70c",
+            destination_id="!32962f10", content="private dm",
+            channel=2, is_broadcast=False,
+        )
+        assert bridge._send_to_primary(msg.to_payload()) is True
+        assert not reg.seen_within("private dm", 60.0)
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_failed_forward_does_not_register(self, mock_home, tmp_path,
+                                              mock_config, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        from gateway.mesh_bridge import BridgedMeshMessage
+        bridge = self._bridge(mock_home, tmp_path, mock_config)
+        bridge._primary_interface = None          # not connected → forward fails
+        bridge._primary_connected = False
+
+        msg = BridgedMeshMessage(
+            source_preset="SHORT_TURBO", source_id="!b03bb70c",
+            destination_id="!ffffffff", content="never went out",
+            channel=2, is_broadcast=True,
+        )
+        assert bridge._send_to_primary(msg.to_payload()) is False
+        assert not reg.seen_within("never went out", 60.0)

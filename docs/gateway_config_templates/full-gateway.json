@@ -46,7 +46,9 @@
     ],
     "reply_routing_enabled": false,
     "cross_protocol_identity_enabled": false,
-    "sessions_enabled": false
+    "sessions_enabled": false,
+    "dual_path_dedup_enabled": false,
+    "dual_path_dedup_window_sec": 60
   },
   "mesh_bridge": {
     "enabled": false,

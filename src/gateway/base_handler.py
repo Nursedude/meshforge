@@ -7,8 +7,10 @@ concrete methods to eliminate duplication.
 """
 
 from abc import ABC, abstractmethod
+import hashlib
 import logging
 import threading
+import time
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from utils.defaults import MAX_MESHTASTIC_MSG_LENGTH
@@ -56,6 +58,102 @@ def is_already_bridged(text: str) -> bool:
     if not text:
         return False
     return text.lstrip().startswith(BRIDGE_TAG_PREFIXES)
+
+
+def _strip_bridge_tags(text: str) -> str:
+    """Remove LEADING bridge tags ([Mesh:..] / [RNS:..] / ...) iteratively.
+
+    Normalization helper for RecentRfTxRegistry: the same logical content
+    appears raw on one path (true-origin downlink injects ``msg.content``)
+    and tagged on another (``[RNS:xxxx] msg.content`` toradio copy), so tag
+    stripping is what lets the two match. Stops at the first non-tag text or
+    a malformed tag (no closing bracket).
+    """
+    out = text.lstrip()
+    while out.startswith(BRIDGE_TAG_PREFIXES):
+        close = out.find(']')
+        if close < 0:
+            break
+        out = out[close + 1:].lstrip()
+    return out
+
+
+class RecentRfTxRegistry:
+    """Cross-subsystem "recently transmitted on the primary radio" registry.
+
+    Two independent, both-by-design paths can put the SAME logical content
+    on a gateway's primary radio seconds apart (observed live 2026-06-04):
+
+      A. the local mesh_bridge cross-preset forward (true-origin downlink,
+         or tagged toradio fallback), and
+      B. a peer gateway's Mesh→RNS relay arriving back at this box's
+         rns_bridge and going out as a tagged toradio broadcast.
+
+    Suppressing path B unconditionally loses messages — in the live trace
+    ~40% of relayed events arrived ONLY via B (the local radio missed them
+    on RF). This registry implements the safe middle: path A registers what
+    it actually transmitted; path B suppresses its copy only on a hit, so
+    the relay keeps its fallback value while the visible duplicate dies.
+
+    Keys are content-normalized (leading bridge tags stripped, whitespace
+    collapsed, sha256) so ``[RNS:xx] hello`` matches the raw ``hello`` a
+    downlink injected. Thread-safe; entries expire lazily at ``max_age_s``
+    and the table is bounded by ``max_entries`` (oldest evicted).
+    """
+
+    def __init__(self, max_entries: int = 512, max_age_s: float = 300.0):
+        self._max_entries = max_entries
+        self._max_age_s = max_age_s
+        self._entries: Dict[str, float] = {}   # key -> time.monotonic()
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _key(text: str) -> Optional[str]:
+        normalized = " ".join(_strip_bridge_tags(text or "").split())
+        if not normalized:
+            return None
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    def _prune_locked(self, now: float) -> None:
+        cutoff = now - self._max_age_s
+        stale = [k for k, ts in self._entries.items() if ts < cutoff]
+        for k in stale:
+            del self._entries[k]
+        while len(self._entries) > self._max_entries:
+            oldest = min(self._entries, key=self._entries.get)
+            del self._entries[oldest]
+
+    def register(self, text: str) -> None:
+        """Record that ``text`` was just transmitted on the radio."""
+        key = self._key(text)
+        if key is None:
+            return
+        now = time.monotonic()
+        with self._lock:
+            self._entries[key] = now
+            self._prune_locked(now)
+
+    def seen_within(self, text: str, window_s: float) -> bool:
+        """True if equivalent content was registered in the last window_s."""
+        key = self._key(text)
+        if key is None:
+            return False
+        now = time.monotonic()
+        with self._lock:
+            ts = self._entries.get(key)
+            return ts is not None and (now - ts) <= window_s
+
+
+# Process-wide instance — the composable bridges (mesh_bridge + rns_bridge)
+# are built independently by bridge_cli with no shared object, so the
+# registry is a module singleton both sides resolve at use time via
+# get_rf_tx_registry() (tests monkeypatch the module global).
+_rf_tx_registry = RecentRfTxRegistry()
+
+
+def get_rf_tx_registry() -> RecentRfTxRegistry:
+    """The process-wide recently-transmitted-on-radio registry."""
+    return _rf_tx_registry
 
 
 def chunk_for_mesh(message: str,
