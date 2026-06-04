@@ -84,8 +84,9 @@
 
     "dedup_window_sec": 60,
 
+    "_prefix_comment": "Keep the [Mesh: tag — it marks forwards as already-bridged (BRIDGE_TAG_PREFIXES) so no gateway re-bridges them. An untagged prefix re-opens the cross-gateway echo-amplification loop.",
     "add_prefix": true,
-    "prefix_format": "[{source_preset}] "
+    "prefix_format": "[Mesh:{source_preset}] "
   },
 
   "routing_rules": [],

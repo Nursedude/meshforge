@@ -30,6 +30,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field, asdict
 from typing import Optional, Dict, Callable, Any, List
 
+from .base_handler import is_already_bridged
 from .config import GatewayConfig, MeshtasticBridgeConfig, MeshtasticConfig
 from .message_queue import PersistentMessageQueue, MessagePriority, RetryPolicy
 from utils.safe_import import safe_import
@@ -446,6 +447,7 @@ class MeshtasticPresetBridge:
             'messages_secondary_to_primary': 0,
             'duplicates_suppressed': 0,
             'channel_filtered': 0,
+            'already_bridged_dropped': 0,
             'errors': 0,
             'start_time': None,
         }
@@ -914,6 +916,24 @@ class MeshtasticPresetBridge:
                 text = payload.decode('utf-8', errors='ignore')
             else:
                 text = str(payload)
+
+            # ECHO-LOOP INVARIANT (cf. 1a34699): content already carrying a
+            # bridge tag has crossed SOME bridge — it never crosses another.
+            # Live failure shape (moc, 2026-06-03): ST text -> mesh_bridge ->
+            # HAT -> M->R fan-out -> peer gateway (moc3, also on the ST RF
+            # segment) re-injected it tagged [RNS:...] -> our serial RX heard
+            # it -> re-forwarded with a fresh prefix -> dedup never matched
+            # the mutated content -> infinite prefix-growing amplification.
+            # Our own forwards carry a [Mesh: prefix (BRIDGE_TAG_PREFIXES),
+            # so every gateway — including this one — refuses them on re-RX.
+            if is_already_bridged(text):
+                with self._stats_lock:
+                    self.stats['already_bridged_dropped'] += 1
+                logger.debug(
+                    f"Already-bridged content dropped from {source}: "
+                    f"{text[:50]}..."
+                )
+                return
 
             # Skip if message matches exclude filter
             if self.bridge_config.exclude_filter:

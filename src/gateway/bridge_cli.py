@@ -349,8 +349,13 @@ def print_multi_status(instances):
 
 
 def on_message(msg):
-    """Callback for bridged messages."""
-    source = msg.source_network
+    """Callback for bridged messages.
+
+    Handles both message shapes: rns_bridge's BridgedMessage
+    (source_network) and mesh_bridge's BridgedMeshMessage (source_preset).
+    """
+    source = (getattr(msg, "source_network", None)
+              or getattr(msg, "source_preset", None) or "?")
     dest = msg.destination_id or "broadcast"
     content = msg.content or ""
     preview = content[:50] + "..." if len(content) > 50 else content

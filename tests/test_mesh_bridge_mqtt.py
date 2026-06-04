@@ -618,3 +618,94 @@ class TestForwardBroadcastOmitsDestination:
 
         _, kwargs = iface.sendText.call_args
         assert kwargs['destinationId'] == "!b03bb70c"
+
+
+class TestEchoLoopInvariant:
+    """Cross-gateway echo amplification guard (cf. 1a34699; live on moc
+    2026-06-03): bridge-tagged content NEVER crosses mesh_bridge, and our
+    own forwards carry a [Mesh: tag so every gateway refuses them too."""
+
+    @staticmethod
+    def _packet(text, channel=2):
+        return {
+            'fromId': '!b03bb70c',
+            'toId': '!ffffffff',
+            'channel': channel,
+            'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'payload': text},
+        }
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_rns_tagged_dropped_from_secondary(self, mock_home, tmp_path, mock_config):
+        """The exact moc loop shape: a peer gateway's [RNS:...] injection
+        heard on the secondary RF segment must not cross back."""
+        mock_home.return_value = tmp_path
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+
+        bridge = MeshtasticPresetBridge(config=mock_config)
+        bridge._process_receive(
+            self._packet("[RNS:hawaii_gaz] [SHORT_TURBO] st-lf test"),
+            "secondary", "primary", bridge._secondary_to_primary,
+        )
+
+        assert bridge._secondary_to_primary.get_queue_depth() == 0
+        assert bridge.stats['already_bridged_dropped'] == 1
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_mesh_tagged_dropped_from_primary(self, mock_home, tmp_path, mock_config):
+        """Our own ST->LF forward republished via MQTT must not ping-pong
+        back to the secondary."""
+        mock_home.return_value = tmp_path
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+
+        bridge = MeshtasticPresetBridge(config=mock_config)
+        bridge._process_receive(
+            self._packet("[Mesh:SHORT_TURBO] hello"),
+            "primary", "secondary", bridge._primary_to_secondary,
+        )
+
+        assert bridge._primary_to_secondary.get_queue_depth() == 0
+        assert bridge.stats['already_bridged_dropped'] == 1
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_raw_text_still_crosses(self, mock_home, tmp_path, mock_config):
+        mock_home.return_value = tmp_path
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+
+        bridge = MeshtasticPresetBridge(config=mock_config)
+        bridge._process_receive(
+            self._packet("plain user chatter"),
+            "secondary", "primary", bridge._secondary_to_primary,
+        )
+
+        assert bridge._secondary_to_primary.get_queue_depth() == 1
+        assert bridge.stats['already_bridged_dropped'] == 0
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_default_prefix_marks_forward_as_bridged(self, mock_home, tmp_path):
+        """Round-trip closure: with the DEFAULT prefix, a forwarded message
+        is itself is_already_bridged — so this bridge (and every gateway)
+        drops it on any re-RX. This is the structural loop-breaker."""
+        mock_home.return_value = tmp_path
+        from gateway.config import GatewayConfig, MeshtasticBridgeConfig
+        from gateway.mesh_bridge import MeshtasticPresetBridge, BridgedMeshMessage
+        from gateway.base_handler import is_already_bridged
+
+        config = GatewayConfig()
+        config.mesh_bridge = MeshtasticBridgeConfig(enabled=True)
+        assert config.mesh_bridge.prefix_format.startswith("[Mesh:")
+
+        bridge = MeshtasticPresetBridge(config=config)
+        iface = MagicMock()
+        msg = BridgedMeshMessage(
+            source_preset="SHORT_TURBO",
+            source_id="!b03bb70c",
+            destination_id="!ffffffff",
+            content="hello LF",
+            channel=2,
+            is_broadcast=True,
+        )
+        assert bridge._forward_message(msg, iface, True, "primary") is True
+
+        sent_text = iface.sendText.call_args[0][0]
+        assert sent_text.startswith("[Mesh:SHORT_TURBO] ")
+        assert is_already_bridged(sent_text)

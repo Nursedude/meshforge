@@ -323,9 +323,14 @@ class MeshtasticBridgeConfig:
     # Prevent message loops by not re-forwarding recently seen messages
     dedup_window_sec: int = 60
 
-    # Add prefix to forwarded messages (helps identify bridged messages)
+    # Add prefix to forwarded messages. The default uses the "[Mesh:" tag
+    # from BRIDGE_TAG_PREFIXES (base_handler.is_already_bridged) so that NO
+    # gateway — this one or an LXMF peer sharing an RF segment — ever
+    # re-bridges a mesh_bridge forward. An untagged prefix re-opens the
+    # cross-gateway echo-amplification loop (moc, 2026-06-03).
+    # Placeholders: {source_preset}, {source_id} (last 4 chars).
     add_prefix: bool = True
-    prefix_format: str = "[{source_preset}] "
+    prefix_format: str = "[Mesh:{source_preset}] "
 
 
 @dataclass
@@ -752,7 +757,7 @@ class GatewayConfig:
                 exclude_filter=mesh_bridge_data.get('exclude_filter', ''),
                 dedup_window_sec=mesh_bridge_data.get('dedup_window_sec', 60),
                 add_prefix=mesh_bridge_data.get('add_prefix', True),
-                prefix_format=mesh_bridge_data.get('prefix_format', '[{source_preset}] '),
+                prefix_format=mesh_bridge_data.get('prefix_format', '[Mesh:{source_preset}] '),
             )
 
             # Handle MQTTBridgeConfig
@@ -1023,6 +1028,30 @@ class GatewayConfig:
             # Validate channel allow-list
             errors.extend(validate_channel_list(
                 self.mesh_bridge.channels, "mesh_bridge.channels"))
+
+            # Echo-loop tag check: an untagged prefix_format means other
+            # gateways (and our own MQTT->RNS handler) won't recognize the
+            # forward as bridged content and will re-bridge it — the
+            # cross-gateway amplification loop. Warning, not error: a truly
+            # standalone two-radio bridge with no RNS/LXMF anywhere has no
+            # loop path.
+            if self.mesh_bridge.add_prefix:
+                try:
+                    from gateway.base_handler import BRIDGE_TAG_PREFIXES
+                    rendered = self.mesh_bridge.prefix_format.format(
+                        source_preset="X", source_id="0000")
+                    if not rendered.lstrip().startswith(BRIDGE_TAG_PREFIXES):
+                        errors.append(ConfigValidationError(
+                            "mesh_bridge.prefix_format",
+                            f"Prefix {self.mesh_bridge.prefix_format!r} is not a "
+                            "recognized bridge tag — other gateways will re-bridge "
+                            "forwarded messages (echo-amplification risk). Use a "
+                            "'[Mesh:'-prefixed format, e.g. '[Mesh:{source_preset}] '.",
+                            severity="warning"))
+                except (KeyError, IndexError, ValueError) as e:
+                    errors.append(ConfigValidationError(
+                        "mesh_bridge.prefix_format",
+                        f"Invalid prefix template: {e}"))
 
         # Mode-specific: mqtt_bridge
         if self.bridge_mode == "mqtt_bridge":

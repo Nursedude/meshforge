@@ -758,3 +758,41 @@ class TestMeshBridgeChannelAllowList:
         bridges = resolve_bridges(config)
         errs = validate_bridge_conflicts(config, bridges)
         assert not any("channels" in e for e in errs)
+
+
+class TestMeshBridgePrefixTagValidation:
+    """add_prefix forwards must carry a BRIDGE_TAG_PREFIXES tag or other
+    gateways re-bridge them (echo-amplification). Untagged = warning."""
+
+    def test_default_prefix_is_bridge_tagged_no_warning(self):
+        config = GatewayConfig()
+        config.mesh_bridge.enabled = True
+        _, all_errors = config.validate()
+        assert not [e for e in all_errors if "prefix_format" in e.field]
+
+    def test_untagged_prefix_warns(self):
+        config = GatewayConfig()
+        config.mesh_bridge.enabled = True
+        config.mesh_bridge.prefix_format = "[{source_preset}] "  # pre-fix default
+        _, all_errors = config.validate()
+        warnings = [e for e in all_errors if "prefix_format" in e.field]
+        assert len(warnings) == 1
+        assert warnings[0].severity == "warning"
+        assert "echo" in warnings[0].message.lower()
+
+    def test_no_prefix_check_when_add_prefix_off(self):
+        config = GatewayConfig()
+        config.mesh_bridge.enabled = True
+        config.mesh_bridge.add_prefix = False
+        config.mesh_bridge.prefix_format = "untagged "
+        _, all_errors = config.validate()
+        assert not [e for e in all_errors if "prefix_format" in e.field]
+
+    def test_malformed_template_is_error(self):
+        config = GatewayConfig()
+        config.mesh_bridge.enabled = True
+        config.mesh_bridge.prefix_format = "[Mesh:{bogus_placeholder}] "
+        _, all_errors = config.validate()
+        errs = [e for e in all_errors if "prefix_format" in e.field]
+        assert len(errs) == 1
+        assert errs[0].severity == "error"
