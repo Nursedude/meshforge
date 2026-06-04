@@ -34,7 +34,8 @@ Quick navigation for AI assistants. Load only what you need.
 | `research/rns_complete.md` | RNS configuration guide |
 | `research/rns_integration.md` | RNS integration patterns |
 | `research/rns_gateway_windows.md` | Windows RNS gateway setup |
-| `research/gateway_setup_guide.md` | Gateway configuration guide |
+| `research/gateway_setup_guide.md` | Gateway configuration guide (**SUPERSEDED 2026-06-04** — see `docs/GATEWAY_BRIDGE_CONFIG_GUIDE.md`) |
+| `../docs/GATEWAY_BRIDGE_CONFIG_GUIDE.md` | Gateway/bridge config variants (standalone, fleet roles, dual-radio, LAB flags) + validated templates in `docs/gateway_config_templates/` |
 | `research/gateway_scenario_analysis.md` | Gateway deployment scenarios |
 
 ### MeshCore (now an optional gateway handler on `main`; sister NOC: MeshAnchor)

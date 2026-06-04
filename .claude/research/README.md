@@ -43,7 +43,7 @@
 | Document | Description |
 |----------|-------------|
 | `maps_double_tap.md` | Maps vision & task breakdown |
-| `gateway_setup_guide.md` | Gateway configuration guide |
+| `gateway_setup_guide.md` | Gateway configuration guide (**SUPERSEDED 2026-06-04** — pre-mesh_bridge era; see `docs/GATEWAY_BRIDGE_CONFIG_GUIDE.md` + `docs/gateway_config_templates/`) |
 | `firmware_viability.md` | Firmware compatibility analysis |
 
 ### Architecture & Design
@@ -53,7 +53,7 @@
 | `nginx_reliability_patterns.md` | NGINX patterns for MeshForge reliability |
 | `local_mqtt_architecture.md` | Local MQTT bridging design |
 | `uconsole_portable_noc.md` | uConsole portable NOC design |
-| `fleet_architecture_2026_06_03.md` | Full fleet diagnosis: per-box roles, routing/messaging/telemetry/RF/transport map, gateway-cornerstone verdict, federation+cloud flow, 4-theme roadmap |
+| `fleet_architecture_2026_06_03.md` | Full fleet diagnosis: per-box roles, routing/messaging/telemetry/RF/transport map, gateway-cornerstone verdict, federation+cloud flow, 4-theme roadmap. +2026-06-04: Theme-A shipped, dual-radio/downlink data plane (§7.6), live config matrix + drift findings (§7.7) |
 
 ### Session Notes
 

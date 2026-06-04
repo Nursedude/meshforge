@@ -1,5 +1,17 @@
 # RNS-Meshtastic Gateway Setup Guide
 
+> ## ⛔ SUPERSEDED (2026-06-04) — do not follow
+>
+> This guide predates the composable-bridges refactor, mesh_bridge
+> (dual-radio), the MQTT-RX recommended path, Theme-A, and downlink
+> injection. Current docs:
+> - **Variants + config schema**: `docs/GATEWAY_BRIDGE_CONFIG_GUIDE.md`
+> - **Validated templates**: `docs/gateway_config_templates/`
+> - **Per-box install recipe**: `docs/GATEWAY_DEPLOYMENT.md`
+> - **Architecture/why**: `research/fleet_architecture_2026_06_03.md`
+>
+> Kept for the historical record only.
+
 > **Created**: 2026-01-11
 > **Purpose**: Step-by-step gateway configuration for bridging RNS and Meshtastic networks
 
