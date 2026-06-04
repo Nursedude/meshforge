@@ -79,7 +79,7 @@ def _strip_bridge_tags(text: str) -> str:
 
 
 class RecentRfTxRegistry:
-    """Cross-subsystem "recently transmitted on the primary radio" registry.
+    """Cross-subsystem "recently SEEN on a radio('s mesh)" registry.
 
     Two independent, both-by-design paths can put the SAME logical content
     on a gateway's primary radio seconds apart (observed live 2026-06-04):
@@ -94,6 +94,19 @@ class RecentRfTxRegistry:
     on RF). This registry implements the safe middle: path A registers what
     it actually transmitted; path B suppresses its copy only on a hit, so
     the relay keeps its fallback value while the visible duplicate dies.
+
+    Seen-on-RF extension (2026-06-04, the cross-BOX direction): entries are
+    registered on RX as well as TX — content heard on the mesh was put
+    there by ANOTHER box's radio (e.g. moc's serial leg TXing onto the ST
+    segment that is moc3's primary), which this box's own TX bookkeeping
+    can never see. "In the registry" now means "this content is on that
+    mesh right now, whoever transmitted it." The suppress-only-on-hit
+    fallback property is preserved: if the local radio MISSED the RF copy,
+    nothing registered and the relay copy still delivers.
+
+    There is one instance per radio scope: the module singleton (primary)
+    plus a secondary-scope instance for mesh_bridge's serial leg — checks
+    before injecting INTO a mesh must consult that mesh's registry only.
 
     Keys are content-normalized (leading bridge tags stripped, whitespace
     collapsed, sha256) so ``[RNS:xx] hello`` matches the raw ``hello`` a
@@ -175,8 +188,25 @@ _rf_tx_registry = RecentRfTxRegistry()
 
 
 def get_rf_tx_registry() -> RecentRfTxRegistry:
-    """The process-wide recently-transmitted-on-radio registry."""
+    """The process-wide seen-on-RF registry for the PRIMARY radio's mesh."""
     return _rf_tx_registry
+
+
+# Secondary-radio scope (mesh_bridge's serial leg). Kept as a separate
+# module global rather than a dict-of-scopes so existing tests that
+# monkeypatch _rf_tx_registry keep working unchanged.
+_rf_secondary_registry = RecentRfTxRegistry()
+
+
+def get_secondary_rf_registry() -> RecentRfTxRegistry:
+    """The process-wide seen-on-RF registry for the SECONDARY radio's mesh.
+
+    Content-keying is per-mesh: a forward INTO the secondary mesh must
+    check only what is on the SECONDARY mesh — consulting the primary
+    registry there would suppress every primary→secondary forward of
+    content just heard on primary (i.e. break bridging entirely).
+    """
+    return _rf_secondary_registry
 
 
 def chunk_for_mesh(message: str,

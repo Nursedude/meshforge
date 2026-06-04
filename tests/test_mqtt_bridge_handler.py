@@ -608,3 +608,71 @@ class TestDispatchTimeDedupRecheck:
         assert h.queue_send({"message": "[RNS:627f] [ch0:p4] wx",
                              "destination": None, "channel": 2}) is True
         h.send_text.assert_called_once()  # still exactly one real TX
+
+
+class TestSeenOnRfRegistration:
+    """RX-time registration (seen-on-RF, cross-BOX dedup direction).
+
+    A broadcast heard via MQTT is ON this radio's mesh whoever TX'd it —
+    including another box's radio on the same RF segment (live 2026-06-04:
+    moc's serial leg TX'd [Mesh:LONG_FAST:..] Cmd onto moc3's primary ST
+    mesh; moc3's TX bookkeeping couldn't see it, its RNS relay copy of the
+    same content went out too, and the bot answered both). Registration
+    happens BEFORE the loop guard (tagged content is refused for bridging
+    but is still on the mesh) and only for broadcasts.
+    """
+
+    def _fresh_registry(self, monkeypatch):
+        import gateway.base_handler as bh
+        fresh = bh.RecentRfTxRegistry()
+        monkeypatch.setattr(bh, "_rf_tx_registry", fresh)
+        return fresh
+
+    def _rx(self, handler, text, to=0xFFFFFFFF):
+        handler._bridge_text_message(
+            {"sender": "!ebfa1b11", "from": 0xAABB0042, "to": to,
+             "payload": {"text": text}, "channel": 2},
+            topic="msh/US/2/json/meshforge/!ebfa1b11",
+        )
+
+    def test_broadcast_rx_registers(self, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        h = _make_bridge_handler()
+        self._rx(h, "plain user message")
+        assert reg.seen_within("plain user message", 60.0)
+
+    def test_tagged_rx_registers_despite_loop_guard_drop(self, monkeypatch):
+        """The moc3 shape: a peer box's [Mesh:..]-tagged TX heard on RF must
+        register (normalized) even though the loop guard refuses to bridge it."""
+        reg = self._fresh_registry(monkeypatch)
+        h = _make_bridge_handler()
+        self._rx(h, "[Mesh:LONG_FAST:2f10] Cmd")
+        h._message_queue.put.assert_not_called()   # loop guard still drops
+        assert reg.seen_within("Cmd", 60.0)        # but the mesh HAS it
+        assert reg.seen_within("[RNS:nurse dude] Cmd", 60.0)  # relay copy matches
+
+    def test_dm_rx_does_not_register(self, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        h = _make_bridge_handler()
+        self._rx(h, "private note", to=0x32962F10)
+        assert not reg.seen_within("private note", 60.0)
+
+    def test_cross_box_end_to_end_suppression(self, monkeypatch):
+        """Full moc3 sequence: hear the peer's tagged TX on RF, then our own
+        RNS relay copy of the same content dies at queue dispatch."""
+        import threading
+        from types import SimpleNamespace
+        reg = self._fresh_registry(monkeypatch)
+        rx = _make_bridge_handler()
+        self._rx(rx, "[Mesh:LONG_FAST:2f10] Cmd")   # peer's radio put it on our mesh
+
+        tx = MQTTBridgeHandler.__new__(MQTTBridgeHandler)
+        tx.config = SimpleNamespace(rns=SimpleNamespace(
+            dual_path_dedup_enabled=True, dual_path_dedup_window_sec=60))
+        tx.stats = {}
+        tx._stats_lock = threading.Lock()
+        tx.send_text = MagicMock(return_value=True)
+        assert tx.queue_send({"message": "[RNS:nurse dude] Cmd",
+                              "destination": None, "channel": 2}) is True
+        tx.send_text.assert_not_called()
+        assert tx.stats["dispatch_dedup_suppressed"] == 1

@@ -460,6 +460,21 @@ class MQTTBridgeHandler(BaseMessageHandler):
                     f"to=!{to_num:08x})")
                 return
 
+        # Seen-on-RF registration (dual-path dedup, cross-BOX direction):
+        # a broadcast heard here IS on this radio's mesh, whoever TX'd it —
+        # including another box's radio on the same RF segment (live
+        # 2026-06-04: moc's serial leg TX'd [Mesh:LONG_FAST:..] Cmd onto the
+        # ST segment that is moc3's primary; moc3's own TX bookkeeping could
+        # never see it, so moc3's RNS relay copy of the same content went
+        # out too and the bot answered both). Registering at RX lets the
+        # inject-side checks suppress that relay copy. Deliberately BEFORE
+        # the loop guard below — tagged content is dropped for bridging but
+        # is still on the mesh. After the channel-scope guard above, so
+        # foreign-channel traffic doesn't poison the configured channel's
+        # registry. Registration unconditional/cheap; suppression flag-gated.
+        if to_num == 0xFFFFFFFF:
+            get_rf_tx_registry().register(text)
+
         # Loop guard: a leading [RNS:xxxx] tag marks content a gateway
         # already injected FROM the RNS network — it is by definition already
         # in RNS, so bridging it back (Mesh→RNS) loops/duplicates. This drops

@@ -1093,3 +1093,142 @@ class TestSymmetricDualPathSuppression:
             self._payload("private words", broadcast=False)) is True
         bridge._primary_interface.sendText.assert_called_once()
         assert bridge.stats['dual_path_suppressed'] == 0
+
+
+class TestSeenOnRfSecondaryScope:
+    """Seen-on-RF registration + the secondary-scope check (2026-06-04).
+
+    _process_receive registers heard broadcasts into the RECEIVING leg's
+    registry; _send_to_secondary checks (gated) the SECONDARY registry
+    only. Scope isolation is the load-bearing property: a primary-RX entry
+    must never suppress a primary→secondary forward of the same content,
+    or bridging breaks entirely.
+    """
+
+    def _fresh_registries(self, monkeypatch):
+        import gateway.base_handler as bh
+        prim, sec = bh.RecentRfTxRegistry(), bh.RecentRfTxRegistry()
+        monkeypatch.setattr(bh, "_rf_tx_registry", prim)
+        monkeypatch.setattr(bh, "_rf_secondary_registry", sec)
+        return prim, sec
+
+    def _bridge(self, mock_home, tmp_path, mock_config):
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+        mock_home.return_value = tmp_path
+        return MeshtasticPresetBridge(config=mock_config)
+
+    def _packet(self, text, to_id='!ffffffff'):
+        return {
+            'fromId': '!aabb1234', 'toId': to_id, 'channel': 0,
+            'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'payload': text},
+        }
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_primary_rx_registers_primary_scope_only(self, mock_home, tmp_path,
+                                                     mock_config, monkeypatch):
+        prim, sec = self._fresh_registries(monkeypatch)
+        bridge = self._bridge(mock_home, tmp_path, mock_config)
+        bridge._process_receive(self._packet("heard on LF"), "primary",
+                                "secondary", bridge._primary_to_secondary)
+        assert prim.seen_within("heard on LF", 60.0)
+        assert not sec.seen_within("heard on LF", 60.0)
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_secondary_rx_registers_secondary_scope_only(self, mock_home, tmp_path,
+                                                         mock_config, monkeypatch):
+        prim, sec = self._fresh_registries(monkeypatch)
+        bridge = self._bridge(mock_home, tmp_path, mock_config)
+        bridge._process_receive(self._packet("heard on ST"), "secondary",
+                                "primary", bridge._secondary_to_primary)
+        assert sec.seen_within("heard on ST", 60.0)
+        assert not prim.seen_within("heard on ST", 60.0)
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_tagged_rx_registers_despite_bridged_drop(self, mock_home, tmp_path,
+                                                      mock_config, monkeypatch):
+        """A peer gateway's [RNS:..] injection heard on the serial leg is
+        refused for re-bridging but IS on that mesh — it must register so
+        our own forward of the same content gets suppressed."""
+        _, sec = self._fresh_registries(monkeypatch)
+        bridge = self._bridge(mock_home, tmp_path, mock_config)
+        bridge._process_receive(self._packet("[RNS:nurse dude] Cmd"), "secondary",
+                                "primary", bridge._secondary_to_primary)
+        assert bridge._secondary_to_primary.get_queue_depth() == 0  # still dropped
+        assert sec.seen_within("Cmd", 60.0)                          # but recorded
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_dm_rx_does_not_register(self, mock_home, tmp_path,
+                                     mock_config, monkeypatch):
+        prim, sec = self._fresh_registries(monkeypatch)
+        bridge = self._bridge(mock_home, tmp_path, mock_config)
+        bridge._process_receive(self._packet("private", to_id='!32962f10'),
+                                "primary", "secondary",
+                                bridge._primary_to_secondary)
+        assert not prim.seen_within("private", 60.0)
+
+    def _dedup_on(self, bridge):
+        bridge.config.rns.dual_path_dedup_enabled = True
+        bridge.config.rns.dual_path_dedup_window_sec = 60
+        return bridge
+
+    def _bcast_payload(self, content):
+        from gateway.mesh_bridge import BridgedMeshMessage
+        return BridgedMeshMessage(
+            source_preset="LONG_FAST", source_id="!32962f10",
+            destination_id="!ffffffff", content=content,
+            channel=2, is_broadcast=True,
+        ).to_payload()
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_send_to_secondary_suppresses_on_secondary_hit(self, mock_home,
+                                                           tmp_path, mock_config,
+                                                           monkeypatch):
+        """The other order of the moc3 pair: the peer's RNS relay copy
+        already landed on the secondary mesh (serial RX heard it) — our
+        primary→secondary forward of the same content must die."""
+        _, sec = self._fresh_registries(monkeypatch)
+        bridge = self._dedup_on(self._bridge(mock_home, tmp_path, mock_config))
+        bridge._secondary_interface = MagicMock()
+        bridge._secondary_connected = True
+        sec.register("[RNS:nurse dude] Cmd")   # heard on ST via serial RX
+        assert bridge._send_to_secondary(self._bcast_payload("Cmd")) is True
+        bridge._secondary_interface.sendText.assert_not_called()
+        assert bridge.stats.get('dual_path_suppressed_secondary') == 1
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_primary_rx_never_suppresses_secondary_forward(self, mock_home,
+                                                           tmp_path, mock_config,
+                                                           monkeypatch):
+        """Scope-isolation guard: content just heard on PRIMARY being
+        forwarded primary→secondary must NOT be suppressed — that is the
+        bridge's whole job."""
+        prim, _ = self._fresh_registries(monkeypatch)
+        bridge = self._dedup_on(self._bridge(mock_home, tmp_path, mock_config))
+        bridge._secondary_interface = MagicMock()
+        bridge._secondary_connected = True
+        prim.register("Cmd")                    # the primary-RX entry
+        assert bridge._send_to_secondary(self._bcast_payload("Cmd")) is True
+        bridge._secondary_interface.sendText.assert_called_once()
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_send_to_secondary_registers_secondary_on_tx(self, mock_home,
+                                                         tmp_path, mock_config,
+                                                         monkeypatch):
+        _, sec = self._fresh_registries(monkeypatch)
+        bridge = self._bridge(mock_home, tmp_path, mock_config)
+        bridge._secondary_interface = MagicMock()
+        bridge._secondary_connected = True
+        assert bridge._send_to_secondary(self._bcast_payload("fwd to ST")) is True
+        assert sec.seen_within("fwd to ST", 60.0)
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_no_suppression_when_flag_off(self, mock_home, tmp_path,
+                                          mock_config, monkeypatch):
+        _, sec = self._fresh_registries(monkeypatch)
+        bridge = self._bridge(mock_home, tmp_path, mock_config)
+        bridge.config.rns.dual_path_dedup_enabled = False
+        bridge._secondary_interface = MagicMock()
+        bridge._secondary_connected = True
+        sec.register("Cmd")
+        assert bridge._send_to_secondary(self._bcast_payload("Cmd")) is True
+        bridge._secondary_interface.sendText.assert_called_once()
