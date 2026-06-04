@@ -885,3 +885,63 @@ class TestBroadcastDetectionShapes:
         msg = self._bcast({'toId': '!32962f10', 'to': 0x32962f10},
                           tmp_path=tmp_path, mock_config=mock_config)
         assert msg.is_broadcast is False
+
+
+class TestNodeInfoInjection:
+    """Teach the primary radio a bridged origin's NAME (once) so :9443 shows
+    'moc2: ...' not '!ddfb8065: ...'."""
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def _bridge_with_injector_and_nodedb(self, mock_home, tmp_path, mock_config):
+        mock_home.return_value = tmp_path
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+        bridge = MeshtasticPresetBridge(config=mock_config)
+        injector = MagicMock()
+        injector.inject.return_value = True
+        injector.inject_nodeinfo.return_value = True
+        bridge._primary_downlink = injector
+        # secondary (serial) interface carries the origin's NodeInfo
+        iface = MagicMock()
+        iface.nodes = {"!ddfb8065": {"user": {
+            "longName": "meshforge moc2", "shortName": "moc2", "hwModel": "PORTDUINO"}}}
+        bridge._secondary_interface = iface
+        return bridge, injector
+
+    def _bcast_msg(self):
+        from gateway.mesh_bridge import BridgedMeshMessage
+        return BridgedMeshMessage(
+            source_preset="SHORT_TURBO", source_id="!ddfb8065",
+            destination_id="!ffffffff", content="hi", channel=2, is_broadcast=True,
+        )
+
+    def test_nodeinfo_injected_before_text(self, tmp_path, mock_config):
+        bridge, injector = self._bridge_with_injector_and_nodedb(
+            tmp_path=tmp_path, mock_config=mock_config)
+        bridge._forward_message(self._bcast_msg(), MagicMock(), True, "primary")
+        injector.inject_nodeinfo.assert_called_once()
+        args = injector.inject_nodeinfo.call_args
+        assert args[0][0] == 0xDDFB8065
+        assert args[0][1] == "meshforge moc2"
+        assert args[0][2] == "moc2"
+
+    def test_nodeinfo_only_sent_once_per_origin(self, tmp_path, mock_config):
+        bridge, injector = self._bridge_with_injector_and_nodedb(
+            tmp_path=tmp_path, mock_config=mock_config)
+        for _ in range(3):
+            bridge._forward_message(self._bcast_msg(), MagicMock(), True, "primary")
+        assert injector.inject_nodeinfo.call_count == 1
+        assert injector.inject.call_count == 3  # text every time
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_no_nodeinfo_when_name_unknown_retries_later(self, mock_home, tmp_path, mock_config):
+        mock_home.return_value = tmp_path
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+        bridge = MeshtasticPresetBridge(config=mock_config)
+        injector = MagicMock()
+        injector.inject.return_value = True
+        bridge._primary_downlink = injector
+        bridge._secondary_interface = MagicMock(nodes={})  # name not learned yet
+        bridge._forward_message(self._bcast_msg(), MagicMock(), True, "primary")
+        # text still flows; nodeinfo skipped and NOT marked sent (retry later)
+        assert not injector.inject_nodeinfo.called
+        assert 0xDDFB8065 not in bridge._nodeinfo_sent

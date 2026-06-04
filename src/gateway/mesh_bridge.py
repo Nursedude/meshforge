@@ -460,6 +460,10 @@ class MeshtasticPresetBridge:
         # serial radio with no meshtasticd, so downlink doesn't apply there.
         self._primary_downlink = self._build_downlink_injector(
             self.bridge_config.primary)
+        # Origins we've already taught the primary radio about (NodeInfo
+        # downlink) so it renders the friendly name, not bare hex. Injected
+        # once per origin before its first text downlink.
+        self._nodeinfo_sent = set()
 
     def _build_downlink_injector(self, leg: MeshtasticConfig):
         """Construct a DownlinkInjector for a leg, or None if not enabled."""
@@ -493,6 +497,46 @@ class MeshtasticPresetBridge:
                 "mesh_bridge %s downlink injector init failed: %s — "
                 "falling back to toradio", leg.name, e)
             return None
+
+    def _lookup_node_user(self, node_id_str: str):
+        """Return {'long','short','hw'} for a node id from an interface nodedb.
+
+        Bridged origins are heard on the source (serial) interface, whose
+        meshtastic nodedb carries the NodeInfo. The MQTT interface has no
+        nodedb, so this safely returns None there.
+        """
+        if not node_id_str:
+            return None
+        for iface in (self._secondary_interface, self._primary_interface):
+            nodes = getattr(iface, "nodes", None)
+            if not nodes:
+                continue
+            node = nodes.get(node_id_str)
+            user = (node or {}).get("user") if isinstance(node, dict) else None
+            if user and (user.get("longName") or user.get("shortName")):
+                return {
+                    "long": user.get("longName") or user.get("shortName") or node_id_str,
+                    "short": user.get("shortName") or node_id_str[-4:],
+                    "hw": user.get("hwModel"),
+                }
+        return None
+
+    def _ensure_nodeinfo(self, origin: int, source_id: str) -> None:
+        """Teach the primary radio this origin's NAME once (NodeInfo downlink)
+        so :9443 shows 'moc2: ...' not '!ddfb8065: ...'. Best-effort: if the
+        name isn't known yet we skip (and retry on a later message)."""
+        if origin in self._nodeinfo_sent or self._primary_downlink is None:
+            return
+        user = self._lookup_node_user(source_id)
+        if not user:
+            return  # name not learned yet; don't mark sent — retry next time
+        if self._primary_downlink.inject_nodeinfo(
+            origin, user["long"], user["short"], hw_model=user["hw"],
+        ):
+            self._nodeinfo_sent.add(origin)
+            logger.info(
+                "Taught primary radio NodeInfo for !%08x (%s)",
+                origin, user["long"])
 
     @staticmethod
     def _node_id_to_num(node_id) -> Optional[int]:
@@ -1140,6 +1184,10 @@ class MeshtasticPresetBridge:
             if (dest_name == "primary" and self._primary_downlink is not None
                     and msg.is_broadcast):
                 origin = self._node_id_to_num(msg.source_id)
+                if origin is not None:
+                    # Teach the radio the origin's name first, so its text
+                    # renders as "moc2: ..." instead of bare hex.
+                    self._ensure_nodeinfo(origin, msg.source_id)
                 if origin is not None and self._primary_downlink.inject(
                     msg.content, origin, hop_limit=3,
                 ):

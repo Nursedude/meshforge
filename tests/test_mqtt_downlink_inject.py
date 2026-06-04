@@ -114,3 +114,51 @@ class TestDownlinkInjectorGuards:
         inj = DownlinkInjector("127.0.0.1", 1, "meshforge", PSK_B64)
         assert inj.usable
         assert inj.inject("hello", ORIGIN) is False
+
+
+class TestBuildNodeInfoEnvelope:
+    def test_topic_and_attribution(self):
+        from gateway.mqtt_downlink_inject import build_nodeinfo_envelope
+        topic, payload, pid = build_nodeinfo_envelope(
+            "meshforge", PSK, ORIGIN, "meshforge moc2", "moc2", packet_id=0x11)
+        assert topic == "msh/2/e/meshforge/!ddfb8065"
+        assert pid == 0x11
+        assert len(payload) > 0
+
+    def test_decrypts_to_user_with_names(self):
+        from gateway.mqtt_downlink_inject import build_nodeinfo_envelope
+        from meshtastic.protobuf import mesh_pb2, mqtt_pb2, portnums_pb2
+        _, payload, pid = build_nodeinfo_envelope(
+            "meshforge", PSK, ORIGIN, "meshforge moc2", "moc2",
+            hw_model="PORTDUINO", packet_id=0x22)
+        env = mqtt_pb2.ServiceEnvelope()
+        env.ParseFromString(payload)
+        assert getattr(env.packet, "from") == ORIGIN
+        plain = _decrypt(pid, ORIGIN, env.packet.encrypted)
+        data = mesh_pb2.Data()
+        data.ParseFromString(plain)
+        assert data.portnum == portnums_pb2.PortNum.NODEINFO_APP
+        user = mesh_pb2.User()
+        user.ParseFromString(data.payload)
+        assert user.id == "!ddfb8065"
+        assert user.long_name == "meshforge moc2"
+        assert user.short_name == "moc2"
+
+    def test_unknown_hw_model_tolerated(self):
+        from gateway.mqtt_downlink_inject import build_nodeinfo_envelope
+        # must not raise on a hw model the enum doesn't have
+        topic, payload, _ = build_nodeinfo_envelope(
+            "meshforge", PSK, ORIGIN, "n", "n", hw_model="NOT_A_REAL_MODEL")
+        assert payload
+
+
+class TestInjectNodeInfoGuards:
+    def test_unusable_injector_returns_false(self):
+        from gateway.mqtt_downlink_inject import DownlinkInjector
+        inj = DownlinkInjector("localhost", 1883, "meshforge", "")  # no psk
+        assert inj.inject_nodeinfo(ORIGIN, "long", "sh") is False
+
+    def test_broker_unreachable_returns_false(self):
+        from gateway.mqtt_downlink_inject import DownlinkInjector
+        inj = DownlinkInjector("127.0.0.1", 1, "meshforge", PSK_B64)
+        assert inj.inject_nodeinfo(ORIGIN, "long", "sh") is False

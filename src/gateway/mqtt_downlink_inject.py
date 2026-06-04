@@ -93,12 +93,74 @@ def build_downlink_envelope(
     hop_limit: int = 3,
     root_topic: str = "msh",
 ) -> Tuple[str, bytes, int]:
-    """Build the (topic, serialized ServiceEnvelope, packet_id) for a downlink.
+    """Build the (topic, serialized ServiceEnvelope, packet_id) for a TEXT downlink.
 
     Pure function — no I/O — so the wire format is unit-testable against the
     step-0-accepted bytes. ``origin_node`` is the TRUE source node number the
     message should display as (e.g. 0xddfb8065 for moc2).
     """
+    data = _mesh_pb2.Data()
+    data.portnum = _portnums_pb2.PortNum.TEXT_MESSAGE_APP
+    data.payload = text.encode("utf-8")
+    return _build_envelope(
+        channel_name, psk, origin_node, data,
+        packet_id=packet_id, destination=destination,
+        hop_limit=hop_limit, root_topic=root_topic,
+    )
+
+
+def build_nodeinfo_envelope(
+    channel_name: str,
+    psk: bytes,
+    origin_node: int,
+    long_name: str,
+    short_name: str,
+    *,
+    hw_model: Optional[str] = None,
+    packet_id: Optional[int] = None,
+    destination: int = BROADCAST_NUM,
+    hop_limit: int = 3,
+    root_topic: str = "msh",
+) -> Tuple[str, bytes, int]:
+    """Build a NODEINFO_APP downlink so the receiving radio learns a node's NAME.
+
+    Without this the radio shows a bridged origin as bare hex (!ddfb8065)
+    because it has never heard that node's NodeInfo (it's on the other RF
+    segment). Inject this once per origin before its first text downlink so
+    :9443 renders "moc2: ..." instead of "!ddfb8065: ...".
+    """
+    user = _mesh_pb2.User()
+    user.id = f"!{origin_node:08x}"
+    user.long_name = long_name
+    user.short_name = short_name
+    if hw_model:
+        # Tolerate unknown/missing hw model — name display doesn't need it.
+        hw_enum = getattr(_mesh_pb2.HardwareModel, str(hw_model).upper(), None)
+        if hw_enum is not None:
+            user.hw_model = hw_enum
+
+    data = _mesh_pb2.Data()
+    data.portnum = _portnums_pb2.PortNum.NODEINFO_APP
+    data.payload = user.SerializeToString()
+    return _build_envelope(
+        channel_name, psk, origin_node, data,
+        packet_id=packet_id, destination=destination,
+        hop_limit=hop_limit, root_topic=root_topic,
+    )
+
+
+def _build_envelope(
+    channel_name: str,
+    psk: bytes,
+    origin_node: int,
+    data,
+    *,
+    packet_id: Optional[int],
+    destination: int,
+    hop_limit: int,
+    root_topic: str,
+) -> Tuple[str, bytes, int]:
+    """Wrap+encrypt a Data protobuf into a published ServiceEnvelope tuple."""
     if not _HAS_DOWNLINK_DEPS:
         raise RuntimeError("downlink injection deps unavailable (protobuf/crypto/paho)")
     if len(psk) != 32:
@@ -107,10 +169,6 @@ def build_downlink_envelope(
     if packet_id is None:
         # High bit set to avoid colliding with meshtasticd's small ids.
         packet_id = secrets.randbits(31) | 0x40000000
-
-    data = _mesh_pb2.Data()
-    data.portnum = _portnums_pb2.PortNum.TEXT_MESSAGE_APP
-    data.payload = text.encode("utf-8")
 
     pkt = _mesh_pb2.MeshPacket()
     pkt.id = packet_id
@@ -203,6 +261,29 @@ class DownlinkInjector:
             self._client = None
             return False
 
+    def _publish(self, kind: str, origin_node: int, builder) -> bool:
+        """Build (via ``builder``) and publish one envelope. Returns True only
+        on confirmed publish; never raises (callers fall back)."""
+        if not self.usable:
+            return False
+        with self._lock:
+            if not self._ensure_connected():
+                return False
+            try:
+                topic, payload, packet_id = builder()
+                info = self._client.publish(topic, payload, qos=0)
+                info.wait_for_publish(timeout=5)
+                logger.info(
+                    "Downlink %s injected: id=0x%08x from=!%08x topic=%s",
+                    kind, packet_id, origin_node, topic,
+                )
+                return True
+            except Exception as e:
+                logger.warning("Downlink %s inject failed: %s", kind, e)
+                # Drop the connection so the next attempt reconnects cleanly.
+                self._connected = False
+                return False
+
     def inject(
         self,
         text: str,
@@ -211,35 +292,28 @@ class DownlinkInjector:
         destination: int = BROADCAST_NUM,
         hop_limit: int = 3,
     ) -> bool:
-        """Publish one downlink. Returns True only on confirmed publish."""
-        if not self.usable:
-            return False
-        with self._lock:
-            if not self._ensure_connected():
-                return False
-            try:
-                topic, payload, packet_id = build_downlink_envelope(
-                    self._channel_name,
-                    self._psk,
-                    origin_node,
-                    text,
-                    destination=destination,
-                    hop_limit=hop_limit,
-                    root_topic=self._root_topic,
-                )
-                info = self._client.publish(topic, payload, qos=0)
-                info.wait_for_publish(timeout=5)
-                logger.info(
-                    "Downlink injected: id=0x%08x from=!%08x topic=%s",
-                    packet_id, origin_node, topic,
-                )
-                logger.debug("Downlink content: %s", text[:50])
-                return True
-            except Exception as e:
-                logger.warning("Downlink inject failed: %s", e)
-                # Drop the connection so the next attempt reconnects cleanly.
-                self._connected = False
-                return False
+        """Publish one TEXT downlink. Returns True only on confirmed publish."""
+        return self._publish("text", origin_node, lambda: build_downlink_envelope(
+            self._channel_name, self._psk, origin_node, text,
+            destination=destination, hop_limit=hop_limit, root_topic=self._root_topic,
+        ))
+
+    def inject_nodeinfo(
+        self,
+        origin_node: int,
+        long_name: str,
+        short_name: str,
+        *,
+        hw_model: Optional[str] = None,
+        destination: int = BROADCAST_NUM,
+        hop_limit: int = 3,
+    ) -> bool:
+        """Publish a NODEINFO downlink so the radio learns the node's NAME."""
+        return self._publish("nodeinfo", origin_node, lambda: build_nodeinfo_envelope(
+            self._channel_name, self._psk, origin_node, long_name, short_name,
+            hw_model=hw_model, destination=destination, hop_limit=hop_limit,
+            root_topic=self._root_topic,
+        ))
 
     def close(self):
         with self._lock:
