@@ -650,10 +650,14 @@ class MessageTransformMixin:
             # Without this, content >228 bytes (e.g. a multi-line leaderboard
             # reply) was silently truncated to one packet by the handler's
             # _truncate_if_needed, dropping every line past the cap. The
-            # [RNS:xxxx] prefix lands on chunk 0 only (byte-efficient; the
-            # bot strips leading brackets anyway). A short message yields a
-            # single chunk == content, so the common path is unchanged.
-            chunks = chunk_for_mesh(content)
+            # [RNS:xxxx] prefix rides EVERY chunk (prefix= reserves its
+            # bytes): the tag is the echo-loop invariant, and the original
+            # chunk-0-only shape leaked untagged tail chunks through
+            # is_already_bridged on every gateway — live 2026-06-04, a
+            # dual-radio box re-bridged a peer's relayed tails back onto
+            # its primary RF. A short message yields a single chunk ==
+            # prefix+body, so the common path is unchanged.
+            chunks = chunk_for_mesh(body, prefix=prefix)
             if destination and reply_route:
                 tag = f" -> {destination} (reply:{reply_route})"
             elif destination:

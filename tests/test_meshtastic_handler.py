@@ -987,3 +987,49 @@ class TestRunLoop:
             handler.run_loop()
 
         mock_health.record_error.assert_called()
+
+
+class TestDualPathDedupRegistration:
+    """Broadcast TX through the handler registers in the process-wide
+    RecentRfTxRegistry (dual-path dedup, 2026-06-04) — so mesh_bridge can
+    suppress its forward when the rns_bridge relay copy won the race.
+    DMs and failed sends must not register."""
+
+    def _fresh_registry(self, monkeypatch):
+        import gateway.base_handler as bh
+        fresh = bh.RecentRfTxRegistry()
+        monkeypatch.setattr(bh, "_rf_tx_registry", fresh)
+        return fresh
+
+    def _connected(self, handler):
+        handler._connected = True
+        handler._interface = MagicMock()
+        handler._interface.sendText.return_value = True
+        return handler
+
+    def test_send_text_broadcast_registers(self, handler, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        h = self._connected(handler)
+        assert h.send_text("broadcast content", destination=None, channel=2)
+        assert reg.seen_within("broadcast content", 60.0)
+
+    def test_send_text_dm_does_not_register(self, handler, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        h = self._connected(handler)
+        assert h.send_text("dm content", destination="!b03bb70c", channel=2)
+        assert not reg.seen_within("dm content", 60.0)
+
+    def test_queue_send_broadcast_registers(self, handler, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        h = self._connected(handler)
+        assert h.queue_send({"message": "[RNS:abcd] queued bc",
+                             "destination": None, "channel": 2})
+        # Tag-normalized: the raw downlink content matches the tagged send.
+        assert reg.seen_within("queued bc", 60.0)
+
+    def test_failed_send_does_not_register(self, handler, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        h = self._connected(handler)
+        h._interface.sendText.return_value = False
+        assert not h.send_text("never sent", destination=None, channel=2)
+        assert not reg.seen_within("never sent", 60.0)

@@ -20,7 +20,9 @@ from datetime import datetime
 from queue import Full
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
-from .base_handler import BaseMessageHandler, is_already_bridged
+from .base_handler import (
+    BaseMessageHandler, get_rf_tx_registry, is_already_bridged,
+)
 from .config import GatewayConfig
 from .node_tracker import UnifiedNode
 from .reconnect import ReconnectStrategy
@@ -297,6 +299,14 @@ class MeshtasticHandler(BaseMessageHandler):
                                    f"(dest={dest}, ch={channel})")
                     return False
                 logger.debug(f"sendText returned: {result}")
+                # Dual-path dedup: record broadcast TX so the OTHER path to
+                # this radio (mesh_bridge's cross-preset forward of the same
+                # content) can suppress its duplicate. Registration is
+                # unconditional/cheap; suppression is flag-gated at the
+                # check side. The registry normalizes bridge tags away, so a
+                # tagged [RNS:] send matches the raw downlink content.
+                if not destination:
+                    get_rf_tx_registry().register(message)
                 return True
             else:
                 # Fallback to CLI
@@ -332,6 +342,10 @@ class MeshtasticHandler(BaseMessageHandler):
                 if result is None or result is False:
                     logger.warning(f"Queue sendText returned {result} — TX may have failed")
                     return False
+                # Dual-path dedup: see send_text — same registration for the
+                # persistent-queue dispatch path (the live R→M route).
+                if not destination:
+                    get_rf_tx_registry().register(message)
                 return True
             return False
         except Exception as e:

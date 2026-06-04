@@ -449,6 +449,10 @@ class MeshtasticPresetBridge:
             'channel_filtered': 0,
             'already_bridged_dropped': 0,
             'downlink_injected': 0,
+            # Symmetric dual-path dedup (gated): primary forwards suppressed
+            # because the rns_bridge's relay copy already went out on the
+            # primary radio (it won the race this time).
+            'dual_path_suppressed': 0,
             'errors': 0,
             'start_time': None,
         }
@@ -1135,9 +1139,45 @@ class MeshtasticPresetBridge:
                 self.stats['messages_primary_to_secondary'] += 1
         return success
 
+    def _dual_path_dedup_on(self) -> bool:
+        """Strict read of rns.dual_path_dedup_enabled (default False).
+
+        Same ``is True`` discipline as the rns_bridge gates — MagicMock test
+        configs and malformed values read as OFF.
+        """
+        rns_cfg = getattr(self.config, 'rns', None)
+        return getattr(rns_cfg, 'dual_path_dedup_enabled', False) is True
+
+    def _dual_path_dedup_window(self) -> float:
+        rns_cfg = getattr(self.config, 'rns', None)
+        try:
+            return float(getattr(rns_cfg, 'dual_path_dedup_window_sec', 60))
+        except (TypeError, ValueError):
+            return 60.0
+
     def _send_to_primary(self, payload: Dict) -> bool:
         """Send callback for persistent queue — forward to primary."""
         msg = BridgedMeshMessage.from_payload(payload)
+
+        # Symmetric dual-path dedup (gated, default off): when the
+        # rns_bridge's relay copy of this same content WON the race and
+        # already went out on the primary radio (it registered on TX),
+        # suppress our forward instead of double-delivering. The original
+        # one-directional check (rns_bridge consults mesh_bridge's
+        # registrations) only caught the races mesh_bridge won — live
+        # 2026-06-04 the RNS relay beat the serial RX by ~300ms and the
+        # duplicate sailed through. Returning True marks the queue item
+        # delivered (the content IS on the radio — just via the other path).
+        if (msg.is_broadcast and self._dual_path_dedup_on()
+                and get_rf_tx_registry().seen_within(
+                    msg.content, self._dual_path_dedup_window())):
+            with self._stats_lock:
+                self.stats['dual_path_suppressed'] += 1
+            logger.info(
+                f"mesh_bridge forward suppressed (dual-path dedup — already "
+                f"on RF via rns_bridge): {msg.content[:50]}...")
+            return True
+
         success = self._forward_message(
             msg, self._primary_interface,
             self._primary_connected, "primary"

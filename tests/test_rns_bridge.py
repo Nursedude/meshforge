@@ -1139,7 +1139,7 @@ class TestProcessRNSToMesh:
         bridge._persistent_queue = mock_queue  # direct path still uses it to requeue
         msg = BridgedMessage(source_network="rns", source_id="abcdef01",
                              destination_id=None, content=_LEADERBOARD)
-        expected_chunks = chunk_for_mesh("[RNS:abcd] " + _LEADERBOARD)
+        expected_chunks = chunk_for_mesh(_LEADERBOARD, prefix="[RNS:abcd] ")
         assert len(expected_chunks) >= 2
         # First chunk sends; every remaining chunk fails.
         calls = {"n": 0}
@@ -1518,9 +1518,15 @@ class TestRNSToMeshChunking:
         assert bridge.stats['messages_rns_to_mesh'] == 1
         assert bridge.stats['rns_to_mesh_delivered'] == 1
 
-    def test_prefix_only_on_first_chunk(self, bridge):
-        """[RNS:xxxx] attribution rides chunk 0 only — byte-efficient, and the
-        bot strips leading brackets anyway."""
+    def test_prefix_on_every_chunk(self, bridge):
+        """[RNS:xxxx] attribution rides EVERY chunk (2026-06-04 inversion).
+
+        The original chunk-0-only "byte-efficient" shape was disproven live:
+        untagged tail chunks bypassed is_already_bridged on every gateway —
+        a dual-radio box re-bridged a peer's relayed tails back onto its
+        primary RF, and tag-adding legs overflowed the byte cap on max-size
+        tails. The tag is the echo-loop invariant; it rides every packet.
+        """
         from gateway.rns_bridge import BridgedMessage
         msg = BridgedMessage(
             source_network="rns", source_id="abcdef01",
@@ -1531,9 +1537,9 @@ class TestRNSToMeshChunking:
                           side_effect=lambda content, destination=None, channel=0: sent.append(content) or True):
             bridge._process_rns_to_mesh(msg)
 
-        assert sent[0].startswith("[RNS:abcd] ")
-        for chunk in sent[1:]:
-            assert not chunk.startswith("[RNS:")
+        assert len(sent) >= 2
+        for chunk in sent:
+            assert chunk.startswith("[RNS:abcd] ")
 
     def test_direct_partial_failure_counts_dropped(self, bridge):
         """If not every chunk goes out, the message is a drop, not a success."""
@@ -1645,7 +1651,7 @@ class TestRNSToMeshChunking:
         b, mock_queue = self._queue_bridge(side_effect)
         msg = BridgedMessage(source_network="rns", source_id="abcdef01",
                              destination_id=None, content=_LEADERBOARD)
-        expected = len(chunk_for_mesh("[RNS:abcd] " + _LEADERBOARD))
+        expected = len(chunk_for_mesh(_LEADERBOARD, prefix="[RNS:abcd] "))
         assert expected >= 2
         b._process_rns_to_mesh(msg)
         mesh_enqueues = [c for c in mock_queue.enqueue.call_args_list
@@ -4220,3 +4226,48 @@ class TestDualPathDedup:
 
         send.assert_called()
         assert bridge.stats['rns_to_mesh_dual_path_suppressed'] == 0
+
+
+class TestChunkForMeshPrefix:
+    """Tag-every-chunk (2026-06-04): the bridge tag is the echo-loop
+    invariant and must ride EVERY chunk — untagged tail chunks bypassed
+    is_already_bridged on every gateway and got re-bridged onto RF."""
+
+    def test_every_chunk_carries_prefix(self):
+        from gateway.base_handler import chunk_for_mesh
+        chunks = chunk_for_mesh(_LEADERBOARD, prefix="[RNS:abcd] ")
+        assert len(chunks) >= 2
+        assert all(c.startswith("[RNS:abcd] ") for c in chunks)
+
+    def test_budget_includes_prefix(self):
+        from gateway.base_handler import chunk_for_mesh
+        chunks = chunk_for_mesh(_LEADERBOARD, max_bytes=100, prefix="[RNS:abcd] ")
+        assert all(len(c.encode("utf-8")) <= 100 for c in chunks)
+
+    def test_single_fit_returns_prefixed_message(self):
+        from gateway.base_handler import chunk_for_mesh
+        assert chunk_for_mesh("short", prefix="[RNS:abcd] ") == ["[RNS:abcd] short"]
+
+    def test_content_reassembles_without_loss(self):
+        from gateway.base_handler import chunk_for_mesh
+        prefix = "[RNS:abcd] "
+        chunks = chunk_for_mesh(_LEADERBOARD, max_bytes=80, prefix=prefix)
+        stripped = [c[len(prefix):] for c in chunks]
+        # Newline/word boundaries collapse to whitespace — compare tokens.
+        assert " ".join(" ".join(stripped).split()) == " ".join(_LEADERBOARD.split())
+
+    def test_no_prefix_behavior_unchanged(self):
+        from gateway.base_handler import chunk_for_mesh
+        assert chunk_for_mesh(_LEADERBOARD) == chunk_for_mesh(_LEADERBOARD, prefix="")
+
+    def test_absurd_prefix_falls_back_untagged(self):
+        from gateway.base_handler import chunk_for_mesh
+        huge = "[RNS:" + "x" * 300 + "] "
+        chunks = chunk_for_mesh(_LEADERBOARD, prefix=huge)
+        assert chunks == chunk_for_mesh(_LEADERBOARD)
+
+    def test_tagged_tail_chunks_trip_loop_guard(self):
+        """The point of the change: every chunk is now is_already_bridged."""
+        from gateway.base_handler import chunk_for_mesh, is_already_bridged
+        chunks = chunk_for_mesh(_LEADERBOARD, prefix="[RNS:abcd] ")
+        assert all(is_already_bridged(c) for c in chunks)

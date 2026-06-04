@@ -157,7 +157,8 @@ def get_rf_tx_registry() -> RecentRfTxRegistry:
 
 
 def chunk_for_mesh(message: str,
-                   max_bytes: int = MAX_MESHTASTIC_MSG_LENGTH) -> List[str]:
+                   max_bytes: int = MAX_MESHTASTIC_MSG_LENGTH,
+                   prefix: str = "") -> List[str]:
     """Split text into UTF-8-byte-bounded chunks for Meshtastic TX.
 
     Meshtastic's on-air text payload is capped (``DATA_PAYLOAD_LEN`` = 237
@@ -172,17 +173,39 @@ def chunk_for_mesh(message: str,
     how the leaderboard reads), then word, then — only for a single word
     longer than the budget — a hard UTF-8-safe character split.
 
+    When ``prefix`` is given (e.g. ``"[RNS:xxxx] "``), EVERY chunk carries
+    it and the split budget reserves its bytes. Tagging only chunk 0 (the
+    original "byte-efficient" shape) was disproven live 2026-06-04: untagged
+    tail chunks bypassed ``is_already_bridged`` on every gateway — a
+    dual-radio box re-bridged a peer's relayed tail chunks back onto its
+    primary RF, and tag-adding legs overflowed the byte cap on max-size
+    tails ("Data payload too big"). The bridge tag is the echo-loop
+    invariant; it must ride every packet, not just the first.
+
     Returns at least one chunk for non-empty input; never returns empty
-    strings; never exceeds ``max_bytes`` for any chunk. A message that
-    already fits is returned unchanged as a single-element list.
+    strings; never exceeds ``max_bytes`` for any chunk (prefix included).
+    A message that already fits is returned as a single-element list.
     """
     if not message:
         return []
-    if len(message.encode('utf-8')) <= max_bytes:
-        return [message]
 
     def blen(s: str) -> int:
         return len(s.encode('utf-8'))
+
+    budget = max_bytes
+    if prefix:
+        budget = max_bytes - blen(prefix)
+        if budget < 16:
+            # Absurd prefix (never the bridge tags, ~11-17 bytes) — refuse
+            # to produce unusable slivers; fall back to untagged chunking.
+            logger.warning(
+                "chunk_for_mesh: prefix %r leaves <16 bytes of budget — "
+                "chunking untagged", prefix[:32])
+            prefix = ""
+            budget = max_bytes
+
+    if blen(prefix) + blen(message) <= max_bytes:
+        return [prefix + message]
 
     def char_split(token: str) -> List[str]:
         # Separator-less token longer than the budget: cut on character
@@ -190,7 +213,7 @@ def chunk_for_mesh(message: str,
         out: List[str] = []
         cur = ""
         for ch in token:
-            if cur and blen(cur) + blen(ch) > max_bytes:
+            if cur and blen(cur) + blen(ch) > budget:
                 out.append(cur)
                 cur = ch
             else:
@@ -204,11 +227,11 @@ def chunk_for_mesh(message: str,
         cur = ""
         for atom in atoms:
             add = blen(atom) + (blen(sep) if cur else 0)
-            if cur and blen(cur) + add > max_bytes:
+            if cur and blen(cur) + add > budget:
                 out.append(cur)
                 cur = ""
             if not cur:
-                if blen(atom) <= max_bytes:
+                if blen(atom) <= budget:
                     cur = atom
                 else:
                     # Atom itself exceeds the budget — split finer: by
@@ -224,7 +247,10 @@ def chunk_for_mesh(message: str,
             out.append(cur)
         return out
 
-    return pack(message.split('\n'), '\n')
+    chunks = pack(message.split('\n'), '\n')
+    if prefix:
+        return [prefix + c for c in chunks]
+    return chunks
 
 
 class BaseMessageHandler(ABC):

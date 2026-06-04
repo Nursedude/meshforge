@@ -1016,3 +1016,80 @@ class TestDualPathDedupRegistration:
         )
         assert bridge._send_to_primary(msg.to_payload()) is False
         assert not reg.seen_within("never went out", 60.0)
+
+
+class TestSymmetricDualPathSuppression:
+    """mesh_bridge's primary forward suppresses when the rns_bridge relay
+    copy already went out (it registered on TX) — closes the race direction
+    the one-way check missed (live 2026-06-04: RNS beat serial RX by
+    ~300ms and the duplicate sailed through). Gated, default off."""
+
+    def _fresh_registry(self, monkeypatch):
+        import gateway.base_handler as bh
+        fresh = bh.RecentRfTxRegistry()
+        monkeypatch.setattr(bh, "_rf_tx_registry", fresh)
+        return fresh
+
+    def _bridge(self, mock_home, tmp_path, mock_config, dedup=None):
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+        mock_home.return_value = tmp_path
+        if dedup is not None:
+            mock_config.rns.dual_path_dedup_enabled = dedup
+            mock_config.rns.dual_path_dedup_window_sec = 60
+        b = MeshtasticPresetBridge(config=mock_config)
+        b._primary_interface = MagicMock()
+        b._primary_connected = True
+        return b
+
+    def _payload(self, content, broadcast=True):
+        from gateway.mesh_bridge import BridgedMeshMessage
+        return BridgedMeshMessage(
+            source_preset="SHORT_TURBO", source_id="!b03bb70c",
+            destination_id="!ffffffff" if broadcast else "!32962f10",
+            content=content, channel=2, is_broadcast=broadcast,
+        ).to_payload()
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_suppressed_when_rns_copy_already_out(self, mock_home, tmp_path,
+                                                  mock_config, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        reg.register("[RNS:abcd] race content")     # rns_bridge TX'd first
+        bridge = self._bridge(mock_home, tmp_path, mock_config, dedup=True)
+
+        assert bridge._send_to_primary(self._payload("race content")) is True
+        bridge._primary_interface.sendText.assert_not_called()
+        assert bridge.stats['dual_path_suppressed'] == 1
+        assert bridge.stats['messages_secondary_to_primary'] == 0
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_no_hit_forwards_normally(self, mock_home, tmp_path,
+                                      mock_config, monkeypatch):
+        self._fresh_registry(monkeypatch)
+        bridge = self._bridge(mock_home, tmp_path, mock_config, dedup=True)
+
+        assert bridge._send_to_primary(self._payload("fresh content")) is True
+        bridge._primary_interface.sendText.assert_called_once()
+        assert bridge.stats['dual_path_suppressed'] == 0
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_flag_off_hit_still_forwards(self, mock_home, tmp_path,
+                                         mock_config, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        reg.register("dup content")
+        # mock_config.rns is a MagicMock — strict is-True gate reads OFF.
+        bridge = self._bridge(mock_home, tmp_path, mock_config)
+
+        assert bridge._send_to_primary(self._payload("dup content")) is True
+        bridge._primary_interface.sendText.assert_called_once()
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_dm_never_suppressed(self, mock_home, tmp_path,
+                                 mock_config, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        reg.register("private words")
+        bridge = self._bridge(mock_home, tmp_path, mock_config, dedup=True)
+
+        assert bridge._send_to_primary(
+            self._payload("private words", broadcast=False)) is True
+        bridge._primary_interface.sendText.assert_called_once()
+        assert bridge.stats['dual_path_suppressed'] == 0
