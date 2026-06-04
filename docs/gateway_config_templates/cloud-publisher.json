@@ -1,0 +1,39 @@
+{
+  "_name": "cloud-publisher",
+  "_description": "Fleet box whose distinguishing duty is the cloud snapshot push (a systemd timer, not a gateway.json setting). Gateway side is the minimal useful shape: MQTT RX + RNS bridge with a single operator LXMF destination. No mesh_bridge, no peer-gateway relay.",
+  "_usage": "cp cloud-publisher.json ~/.config/meshforge/gateway.json && edit every <PLACEHOLDER>. Pair with the 'cloud-publisher' fleet role (enables meshforge-cloud-push.timer). Then: sudo systemctl restart meshforge-gateway",
+  "_placeholders": "See README.md in this directory for the placeholder legend.",
+  "_validated_by": "tests/test_gateway_config_templates.py",
+  "enabled": true,
+  "auto_start": true,
+  "bridge_mode": "mqtt_bridge",
+  "rns_bridge_enabled": true,
+  "meshtastic": {
+    "host": "localhost",
+    "port": 4403,
+    "channel": 2,
+    "use_mqtt": true,
+    "mqtt_broker": "localhost",
+    "mqtt_port": 1883,
+    "mqtt_channel": "<CHANNEL_NAME>",
+    "mqtt_region": "",
+    "http_port": 9443,
+    "gateway_node_id": "<GATEWAY_NODE_ID>"
+  },
+  "mqtt_bridge": {
+    "broker": "localhost",
+    "port": 1883,
+    "root_topic": "msh",
+    "region": "",
+    "channel": "<CHANNEL_NAME>",
+    "json_enabled": true
+  },
+  "rns": {
+    "identity_name": "meshforge_gateway",
+    "gateway_name": "",
+    "announce_interval": 300,
+    "default_lxmf_destination": "<LXMF_DEST_HASH>"
+  },
+  "log_level": "INFO",
+  "log_messages": true
+}

@@ -1,0 +1,86 @@
+{
+  "_name": "full-gateway",
+  "_description": "The standard fleet gateway: MQTT RX (zero-interference path — meshtasticd keeps :9443 web + :4403 TCP free), RNS/LXMF bridge with multi-recipient fan-out and peer-gateway relay, dual-radio mesh_bridge wired but OFF. Theme-A flags present and OFF (observe-first rollout; enable per-box only when field-validating). injection_mode stays 'toradio' — 'downlink' is a LAB flag, see the guide.",
+  "_usage": "cp full-gateway.json ~/.config/meshforge/gateway.json && edit every <PLACEHOLDER>. Requires: meshtasticd (mqtt.enabled + mqtt.json_enabled), mosquitto, rnsd. Then: sudo systemctl restart meshforge-gateway",
+  "_placeholders": "See README.md in this directory for the placeholder legend.",
+  "_validated_by": "tests/test_gateway_config_templates.py",
+  "enabled": true,
+  "auto_start": true,
+  "bridge_mode": "mqtt_bridge",
+  "rns_bridge_enabled": true,
+  "meshtastic": {
+    "host": "localhost",
+    "port": 4403,
+    "channel": 2,
+    "use_mqtt": true,
+    "mqtt_broker": "localhost",
+    "mqtt_port": 1883,
+    "mqtt_channel": "<CHANNEL_NAME>",
+    "mqtt_region": "",
+    "http_port": 9443,
+    "gateway_node_id": "<GATEWAY_NODE_ID>",
+    "injection_mode": "toradio",
+    "downlink_psk": ""
+  },
+  "mqtt_bridge": {
+    "broker": "localhost",
+    "port": 1883,
+    "use_tls": false,
+    "username": "",
+    "password": "",
+    "root_topic": "msh",
+    "region": "",
+    "channel": "<CHANNEL_NAME>",
+    "json_enabled": true
+  },
+  "rns": {
+    "identity_name": "meshforge_gateway",
+    "gateway_name": "",
+    "announce_interval": 300,
+    "default_lxmf_destination": [
+      "<LXMF_DEST_HASH_1>",
+      "<LXMF_DEST_HASH_2>"
+    ],
+    "peer_gateway_destinations": [
+      "<PEER_GATEWAY_HASH_1>"
+    ],
+    "reply_routing_enabled": false,
+    "cross_protocol_identity_enabled": false,
+    "sessions_enabled": false
+  },
+  "mesh_bridge": {
+    "enabled": false,
+    "primary": {
+      "host": "localhost",
+      "port": 4403,
+      "use_mqtt": true,
+      "mqtt_broker": "localhost",
+      "mqtt_channel": "<CHANNEL_NAME>",
+      "http_port": 9443,
+      "preset": "LONG_FAST",
+      "name": "longfast",
+      "injection_mode": "toradio",
+      "downlink_psk": ""
+    },
+    "secondary": {
+      "connection_type": "serial",
+      "serial_device": "<SERIAL_DEVICE>",
+      "preset": "SHORT_TURBO",
+      "name": "shortturbo"
+    },
+    "direction": "bidirectional",
+    "channels": [2],
+    "dedup_window_sec": 60,
+    "add_prefix": true,
+    "prefix_format": "[Mesh:{source_preset}] "
+  },
+  "telemetry": {
+    "share_position": true,
+    "share_battery": true,
+    "share_environment": true,
+    "position_precision": 5,
+    "update_interval": 60
+  },
+  "log_level": "INFO",
+  "log_messages": true
+}

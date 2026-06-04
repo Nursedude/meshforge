@@ -1,0 +1,26 @@
+{
+  "_name": "standalone-basic",
+  "_description": "Single-box gateway: one Meshtastic radio (meshtasticd) bridged to RNS/LXMF over a direct TCP connection. No MQTT broker, no fleet, no second radio. The simplest working bridge.",
+  "_usage": "cp standalone-basic.json ~/.config/meshforge/gateway.json && edit every <PLACEHOLDER>. Then: sudo systemctl restart meshforge-gateway",
+  "_placeholders": "See README.md in this directory for the placeholder legend.",
+  "_validated_by": "tests/test_gateway_config_templates.py",
+  "enabled": true,
+  "auto_start": true,
+  "bridge_mode": "message_bridge",
+  "rns_bridge_enabled": true,
+  "meshtastic": {
+    "host": "localhost",
+    "port": 4403,
+    "channel": 0,
+    "http_port": 9443,
+    "gateway_node_id": "<GATEWAY_NODE_ID>"
+  },
+  "rns": {
+    "identity_name": "meshforge_gateway",
+    "gateway_name": "",
+    "announce_interval": 300,
+    "default_lxmf_destination": "<LXMF_DEST_HASH>"
+  },
+  "log_level": "INFO",
+  "log_messages": true
+}

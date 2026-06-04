@@ -1,0 +1,51 @@
+{
+  "_name": "mesh-bridge-dualradio",
+  "_description": "Focused dual-radio cross-preset bridge: a LONG_FAST radio (meshtasticd HAT, MQTT RX + HTTP TX) bridged to a SHORT_TURBO radio (USB serial, no second meshtasticd needed). rns_bridge_enabled=false makes this a pure cross-preset testbed that carries no RNS/NomadNet traffic — flip it true to compose with the LXMF bridge. The 'channels' allow-list is IMPORTANT on serial legs: serial RX hears every channel of its radio, so without it a secondary's ch0 text would re-TX on the primary's ch0 (possibly a public channel). The '[Mesh:' prefix is the echo-loop invariant — never remove or rename it (an untagged forward re-opens the cross-gateway echo-amplification loop).",
+  "_usage": "cp mesh-bridge-dualradio.json ~/.config/meshforge/gateway.json && edit every <PLACEHOLDER>. The allow-listed channel indexes must carry the same channel (name + PSK) on BOTH radios. Then: sudo systemctl restart meshforge-gateway",
+  "_lab_note": "injection_mode='downlink' (+ downlink_psk) on the primary leg is a LAB flag under canary soak — true-origin attribution on the primary radio's web UI. Default OFF here. See GATEWAY_BRIDGE_CONFIG_GUIDE.md §LAB before enabling.",
+  "_placeholders": "See README.md in this directory for the placeholder legend.",
+  "_validated_by": "tests/test_gateway_config_templates.py",
+  "enabled": true,
+  "auto_start": true,
+  "bridge_mode": "mesh_bridge",
+  "rns_bridge_enabled": false,
+  "meshtastic": {
+    "host": "localhost",
+    "port": 4403,
+    "channel": 2,
+    "http_port": 9443,
+    "gateway_node_id": "<GATEWAY_NODE_ID>"
+  },
+  "mesh_bridge": {
+    "enabled": true,
+    "primary": {
+      "host": "localhost",
+      "port": 4403,
+      "use_mqtt": true,
+      "mqtt_broker": "localhost",
+      "mqtt_port": 1883,
+      "mqtt_channel": "<CHANNEL_NAME>",
+      "http_port": 9443,
+      "preset": "LONG_FAST",
+      "name": "longfast",
+      "gateway_node_id": "<GATEWAY_NODE_ID>",
+      "injection_mode": "toradio",
+      "downlink_psk": ""
+    },
+    "secondary": {
+      "connection_type": "serial",
+      "serial_device": "<SERIAL_DEVICE>",
+      "preset": "SHORT_TURBO",
+      "name": "shortturbo"
+    },
+    "direction": "bidirectional",
+    "channels": [2],
+    "message_filter": "",
+    "exclude_filter": "",
+    "dedup_window_sec": 60,
+    "add_prefix": true,
+    "prefix_format": "[Mesh:{source_preset}] "
+  },
+  "log_level": "INFO",
+  "log_messages": true
+}

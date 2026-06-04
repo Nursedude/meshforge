@@ -1,0 +1,39 @@
+{
+  "_name": "collector",
+  "_description": "RF-sparse observation site: the gateway unit is DISABLED by the 'collector' fleet role (bridge intentionally off — the box hears too few nodes to be worth bridging). This config is kept on disk so the box can be promoted to a bridging role without re-authoring; 'enabled': false documents the declared intent at the config layer too.",
+  "_usage": "cp collector.json ~/.config/meshforge/gateway.json && edit every <PLACEHOLDER>. Pair with the 'collector' fleet role (provision_role.py disables meshforge-gateway). Map/telemetry services keep running; only the bridge is off.",
+  "_placeholders": "See README.md in this directory for the placeholder legend.",
+  "_validated_by": "tests/test_gateway_config_templates.py",
+  "enabled": false,
+  "auto_start": false,
+  "bridge_mode": "mqtt_bridge",
+  "rns_bridge_enabled": true,
+  "meshtastic": {
+    "host": "localhost",
+    "port": 4403,
+    "channel": 2,
+    "use_mqtt": true,
+    "mqtt_broker": "localhost",
+    "mqtt_port": 1883,
+    "mqtt_channel": "<CHANNEL_NAME>",
+    "mqtt_region": "",
+    "http_port": 9443,
+    "gateway_node_id": "<GATEWAY_NODE_ID>"
+  },
+  "mqtt_bridge": {
+    "broker": "localhost",
+    "port": 1883,
+    "root_topic": "msh",
+    "region": "",
+    "channel": "<CHANNEL_NAME>",
+    "json_enabled": true
+  },
+  "rns": {
+    "identity_name": "meshforge_gateway",
+    "gateway_name": "",
+    "announce_interval": 300,
+    "default_lxmf_destination": "<LXMF_DEST_HASH>"
+  },
+  "log_level": "INFO",
+  "log_messages": true
+}

@@ -1,0 +1,85 @@
+{
+  "_name": "gateway-only-hotspare",
+  "_description": "Lightweight gateway box (~1 GB boards): RNS bridge ACTIVE, dual-radio mesh_bridge wired but OFF, MeshCore companion leg wired but OFF, Meshtastic broadcast fan-out ON. No map services (NOC runs elsewhere). To promote to active dual-radio duty: flip mesh_bridge.enabled, and copy the active primary gateway's peer/destination lists so routing stays aligned (see HARMONIZATION runbook).",
+  "_usage": "cp gateway-only-hotspare.json ~/.config/meshforge/gateway.json && edit every <PLACEHOLDER>. Pair with the 'gateway-only' fleet role (map services disabled). Then: sudo systemctl restart meshforge-gateway",
+  "_placeholders": "See README.md in this directory for the placeholder legend.",
+  "_validated_by": "tests/test_gateway_config_templates.py",
+  "enabled": true,
+  "auto_start": true,
+  "bridge_mode": "mqtt_bridge",
+  "rns_bridge_enabled": true,
+  "meshtastic": {
+    "host": "localhost",
+    "port": 4403,
+    "channel": 2,
+    "use_mqtt": true,
+    "mqtt_broker": "localhost",
+    "mqtt_port": 1883,
+    "mqtt_channel": "<CHANNEL_NAME>",
+    "mqtt_region": "",
+    "http_port": 9443,
+    "gateway_node_id": "<GATEWAY_NODE_ID>"
+  },
+  "mqtt_bridge": {
+    "broker": "localhost",
+    "port": 1883,
+    "root_topic": "msh",
+    "region": "",
+    "channel": "<CHANNEL_NAME>",
+    "json_enabled": true
+  },
+  "rns": {
+    "identity_name": "meshforge_gateway",
+    "gateway_name": "",
+    "announce_interval": 300,
+    "default_lxmf_destination": [
+      "<LXMF_DEST_HASH_1>",
+      "<LXMF_DEST_HASH_2>"
+    ],
+    "peer_gateway_destinations": [
+      "<PEER_GATEWAY_HASH_1>"
+    ]
+  },
+  "mesh_bridge": {
+    "enabled": false,
+    "primary": {
+      "host": "localhost",
+      "port": 4403,
+      "use_mqtt": true,
+      "mqtt_broker": "localhost",
+      "mqtt_channel": "<CHANNEL_NAME>",
+      "http_port": 9443,
+      "preset": "LONG_FAST",
+      "name": "longfast"
+    },
+    "secondary": {
+      "connection_type": "serial",
+      "serial_device": "<SERIAL_DEVICE>",
+      "preset": "SHORT_TURBO",
+      "name": "shortturbo"
+    },
+    "direction": "bidirectional",
+    "channels": [2],
+    "dedup_window_sec": 60,
+    "add_prefix": true,
+    "prefix_format": "[Mesh:{source_preset}] "
+  },
+  "meshcore": {
+    "enabled": false,
+    "device_path": "<MESHCORE_SERIAL_DEVICE>",
+    "baud_rate": 115200,
+    "connection_type": "serial",
+    "auto_fetch_messages": true,
+    "bridge_channels": true,
+    "bridge_dms": true
+  },
+  "meshtastic_broadcast": {
+    "enabled": true,
+    "channels": [2],
+    "display_name": "MeshForge Meshtastic Broadcast",
+    "announce_interval_sec": 600,
+    "autosubscribe": false
+  },
+  "log_level": "INFO",
+  "log_messages": true
+}
