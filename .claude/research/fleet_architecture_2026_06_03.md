@@ -372,17 +372,29 @@ LXMF hashes truncated). Re-verify live before acting — the fleet moves.
 | moc2 | collector | mqtt_bridge | (key absent) | ❌ | ❌ | ❌ | off | 1 dest: `d1df31d3…` | — |
 | moc3 | gateway-only | mqtt_bridge | ✅ explicit | wired, **off** (hot spare) | wired, off (`/dev/ttyUSB1` ready) | ✅ ch2 | off | 4 dests: `6b1a0120…`, `7cda0fab…`, **`3dfbdb5d…`**, `9217147e…` | **`3dfbdb5d…`**, `58cecbd0…` |
 
-**Drift findings** (fix runbook: `docs/gateway_config_templates/HARMONIZATION_2026_06_04.md`):
+**Drift findings** (fix runbook: `docs/gateway_config_templates/HARMONIZATION_2026_06_04.md`;
+**items 1–4 resolved/executed 2026-06-04 AM** — record in the runbook):
 
-1. **moc3 `peer_gateway_destinations` ≠ moc's** (`3dfbdb5d…` vs `f68c2f56…` at
-   position 1) — routing misalignment if the hot spare is ever promoted.
-2. **LXMF destination sets inconsistent** — moc/moc3 4-entry lists differ at
-   position 3; moc1/moc2 carry different singles. Intent vs drift undecided.
-3. **`rns_bridge_enabled` schema shape** — explicit `true` (moc, moc3) vs key-absent
-   (moc1, moc2). Benign (default true) but defeats raw-JSON cross-box comparison —
-   reinforces the §7.5 lesson: compare effective config through `GatewayConfig`.
-4. **Theme-A flags moc-only** — likely intentional (canary), but undeclared; decide
-   widen-vs-hold explicitly.
+1. ~~moc3 `peer_gateway_destinations` ≠ moc's~~ **FALSE ALARM (2026-06-04)** —
+   hash ownership verified live: moc's own `lxmf.delivery` = `3dfbdb5d…`, moc3's
+   = `f68c2f56…` (see `reference_fleet_gateway_hashes` memory). The lists are
+   correct **directional mirrors**: moc lists [moc3, meshanchor-server], moc3
+   lists [moc, meshanchor-server] — the intended 2026-05-18 wiring. Lesson for
+   the future effective-config drift organ: peer/mirror-valued keys must be
+   compared by *referent*, not by raw value.
+2. ~~LXMF destination sets inconsistent~~ **INTENTIONAL (2026-06-04)** —
+   moc/moc3 4-entry lists differ only by the peer-mirror entry (position 3);
+   moc1's single `522c4ac1…` and moc2's `d1df31d3…` are each box's **own
+   NomadNet inbox** (derived from `~/.nomadnetwork/storage/identity`, exact
+   match). **Canonical convention**: bridging boxes carry the shared operator
+   inbox set + peer mirror; non-bridging boxes carry their local NomadNet
+   inbox (inert while the bridge is off; sane default at promotion).
+3. ~~`rns_bridge_enabled` schema shape~~ **DONE 2026-06-04** — explicit `true`
+   added on moc1/moc2 (backups `gateway.json.bak-harmonize-2026-06-04`; units
+   inactive, no restart). Fleet now uniformly explicit.
+4. ~~Theme-A flags moc-only undeclared~~ **DECLARED 2026-06-04** — hold
+   ratified: trio added as explicit `false` on moc3 (clean gateway restart
+   verified); widening gates on Theme-A field validation, not on config work.
 5. ⚠️ **`downlink_psk` sits in plaintext in ~12 `gateway.json.bak*` files on moc** —
    rotate post-soak + backup hygiene (the config file is secret-bearing once the
    PSK is set).

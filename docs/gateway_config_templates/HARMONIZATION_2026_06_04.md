@@ -1,5 +1,28 @@
 # Gateway Config Harmonization Runbook — 2026-06-04
 
+> ## ✅ Items 1–4 EXECUTED 2026-06-04 AM (record below); items 5–6 remain
+>
+> - **Item 1 — FALSE ALARM, no change.** Hash ownership verified live (gateway
+>   startup logs): the two gateways' `peer_gateway_destinations` are correct
+>   **directional mirrors** (each lists the *other* gateway + the MeshAnchor
+>   peer) — exactly the 2026-05-18 wiring. The "misalignment" was a raw-JSON
+>   diff misread; effective-config comparison must account for mirror-valued
+>   keys.
+> - **Item 2 — INTENTIONAL, no change; convention now documented.** The
+>   bridging boxes' 4-entry fan-out lists differ only by the peer-mirror entry;
+>   the non-bridging boxes' singles are each box's **own local NomadNet inbox**
+>   (derived + matched from `~/.nomadnetwork/storage/identity`). Canonical
+>   convention recorded in arch doc §7.7: *bridging boxes = shared operator
+>   inbox set + peer mirror; non-bridging boxes = local NomadNet inbox.*
+> - **Item 3 — DONE.** Explicit `rns_bridge_enabled: true` added on both
+>   non-bridging boxes (backups `gateway.json.bak-harmonize-2026-06-04`).
+>   Units inactive/disabled there — no restart needed.
+> - **Item 4 — DONE (hold ratified).** Theme-A trio added as explicit `false`
+>   on the hot spare (self-documenting); gateway restarted clean (correct LXMF
+>   destination announced, no errors). Widening stays gated on Theme-A field
+>   validation. The soaking primary gateway was not touched (PID verified
+>   unchanged).
+
 Drift items from the 2026-06-04 read-only fleet sweep. **Dated and disposable**
 — delete (or mark done) after execution. Box-name specifics + hash values live
 in the fleet architecture research doc §7.7
