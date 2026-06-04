@@ -57,7 +57,10 @@
       "use_mqtt": false,
       "mqtt_topic": "",
       "preset": "LONG_FAST",
-      "name": "longfast"
+      "name": "longfast",
+      "_injection_comment": "injection_mode: 'toradio' (default) injects forwards as this radio's own node (self-TX, not shown as incoming on :9443). 'downlink' publishes a TRUE-origin MQTT downlink so meshtasticd shows the real source node — requires downlink_psk = the channel PSK (base64). Operator secret: source at runtime, do NOT commit. Broadcast-only; falls back to toradio on any failure.",
+      "injection_mode": "toradio",
+      "downlink_psk": ""
     },
 
     "secondary": {

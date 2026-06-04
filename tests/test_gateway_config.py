@@ -796,3 +796,54 @@ class TestMeshBridgePrefixTagValidation:
         errs = [e for e in all_errors if "prefix_format" in e.field]
         assert len(errs) == 1
         assert errs[0].severity == "error"
+
+
+class TestMeshBridgeInjectionMode:
+    """injection_mode validation (toradio default | downlink needs PSK)."""
+
+    def test_default_is_toradio(self):
+        from gateway.config import MeshtasticConfig
+        assert MeshtasticConfig().injection_mode == "toradio"
+
+    def test_default_no_validation_errors(self):
+        config = GatewayConfig()
+        config.mesh_bridge.enabled = True
+        _, all_errors = config.validate()
+        assert not [e for e in all_errors if "injection_mode" in e.field]
+
+    def test_invalid_mode_is_error(self):
+        config = GatewayConfig()
+        config.mesh_bridge.enabled = True
+        config.mesh_bridge.primary.injection_mode = "carrier-pigeon"
+        _, all_errors = config.validate()
+        errs = [e for e in all_errors if "injection_mode" in e.field]
+        assert len(errs) == 1 and errs[0].severity == "error"
+
+    def test_downlink_without_psk_warns(self):
+        config = GatewayConfig()
+        config.mesh_bridge.enabled = True
+        config.mesh_bridge.primary.injection_mode = "downlink"
+        config.mesh_bridge.primary.downlink_psk = ""
+        _, all_errors = config.validate()
+        warns = [e for e in all_errors if "injection_mode" in e.field]
+        assert len(warns) == 1 and warns[0].severity == "warning"
+
+    def test_downlink_with_psk_ok(self):
+        config = GatewayConfig()
+        config.mesh_bridge.enabled = True
+        config.mesh_bridge.primary.injection_mode = "downlink"
+        config.mesh_bridge.primary.downlink_psk = "SlVxOEZEZWhqencwR0NCOWlWdGJkSTVZdWY5aUIwblY="
+        _, all_errors = config.validate()
+        assert not [e for e in all_errors if "injection_mode" in e.field]
+
+    def test_injection_fields_round_trip(self, tmp_path):
+        config_file = tmp_path / "gateway.json"
+        with patch.object(GatewayConfig, 'get_config_path', return_value=config_file):
+            config = GatewayConfig()
+            config.mesh_bridge.enabled = True
+            config.mesh_bridge.primary.injection_mode = "downlink"
+            config.mesh_bridge.primary.downlink_psk = "QQ=="
+            assert config.save() is True
+            loaded = GatewayConfig.load()
+        assert loaded.mesh_bridge.primary.injection_mode == "downlink"
+        assert loaded.mesh_bridge.primary.downlink_psk == "QQ=="

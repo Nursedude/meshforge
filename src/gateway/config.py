@@ -267,6 +267,19 @@ class MeshtasticConfig:
     # an incoming JSON/protobuf message — which would otherwise re-bridge back
     # to RNS. Empty disables the filter (no echo dropping).
     gateway_node_id: str = ""
+    # Mesh injection mode for cross-bridge traffic forwarded onto THIS radio:
+    #   "toradio"  (default) — HTTP /api/v1/toradio; `from` becomes the local
+    #              radio, so :9443 never shows it as incoming (self-TX).
+    #   "downlink" — publish a true-origin protobuf MQTT downlink so meshtasticd
+    #              attributes it to the real source node and the web client
+    #              renders it (see gateway/mqtt_downlink_inject.py). Requires
+    #              downlink_psk; falls back to toradio on any failure.
+    injection_mode: str = "toradio"
+    # Channel PSK (base64) used to encrypt downlink envelopes. MUST match the
+    # radio's channel PSK. Operator-specific secret — source at runtime / keep
+    # out of committed configs (security rules MF014/MF015). Empty disables
+    # downlink injection (falls back to toradio).
+    downlink_psk: str = ""
 
 
 @dataclass
@@ -1028,6 +1041,21 @@ class GatewayConfig:
             # Validate channel allow-list
             errors.extend(validate_channel_list(
                 self.mesh_bridge.channels, "mesh_bridge.channels"))
+
+            # Validate injection mode on each leg
+            for _leg_name, _leg in (("primary", self.mesh_bridge.primary),
+                                    ("secondary", self.mesh_bridge.secondary)):
+                mode = (_leg.injection_mode or "toradio").lower()
+                if mode not in ("toradio", "downlink"):
+                    errors.append(ConfigValidationError(
+                        f"mesh_bridge.{_leg_name}.injection_mode",
+                        f"Must be 'toradio' or 'downlink', got {_leg.injection_mode!r}"))
+                elif mode == "downlink" and not _leg.downlink_psk:
+                    errors.append(ConfigValidationError(
+                        f"mesh_bridge.{_leg_name}.injection_mode",
+                        "injection_mode='downlink' requires downlink_psk (channel "
+                        "PSK, base64). Set it or use 'toradio'.",
+                        severity="warning"))
 
             # Echo-loop tag check: an untagged prefix_format means other
             # gateways (and our own MQTT->RNS handler) won't recognize the

@@ -448,9 +448,66 @@ class MeshtasticPresetBridge:
             'duplicates_suppressed': 0,
             'channel_filtered': 0,
             'already_bridged_dropped': 0,
+            'downlink_injected': 0,
             'errors': 0,
             'start_time': None,
         }
+
+        # Optional true-origin downlink injector for the primary (meshtasticd)
+        # leg — makes ST→LF traffic show as the real source node on :9443
+        # instead of self-TX. Default off; built only when primary leg is
+        # configured injection_mode="downlink" with a PSK. Secondary is a USB
+        # serial radio with no meshtasticd, so downlink doesn't apply there.
+        self._primary_downlink = self._build_downlink_injector(
+            self.bridge_config.primary)
+
+    def _build_downlink_injector(self, leg: MeshtasticConfig):
+        """Construct a DownlinkInjector for a leg, or None if not enabled."""
+        if (leg.injection_mode or "toradio").lower() != "downlink":
+            return None
+        if not leg.downlink_psk:
+            logger.warning(
+                "mesh_bridge %s injection_mode=downlink but no downlink_psk — "
+                "falling back to toradio", leg.name)
+            return None
+        try:
+            from .mqtt_downlink_inject import DownlinkInjector
+            injector = DownlinkInjector(
+                broker=leg.mqtt_broker,
+                port=leg.mqtt_port,
+                channel_name=leg.mqtt_channel,
+                psk_b64=leg.downlink_psk,
+                root_topic="msh",
+            )
+            if not injector.usable:
+                logger.warning(
+                    "mesh_bridge %s downlink injector unusable: %s — "
+                    "falling back to toradio", leg.name, injector.fatal_reason)
+                return None
+            logger.info(
+                "mesh_bridge %s: true-origin downlink injection ENABLED "
+                "(channel=%s)", leg.name, leg.mqtt_channel)
+            return injector
+        except Exception as e:
+            logger.warning(
+                "mesh_bridge %s downlink injector init failed: %s — "
+                "falling back to toradio", leg.name, e)
+            return None
+
+    @staticmethod
+    def _node_id_to_num(node_id) -> Optional[int]:
+        """'!ddfb8065' / '0xddfb8065' / int → node number, or None."""
+        if node_id is None:
+            return None
+        if isinstance(node_id, int):
+            return node_id
+        s = str(node_id).strip().lstrip("!")
+        if s.lower().startswith("0x"):
+            s = s[2:]
+        try:
+            return int(s, 16)
+        except ValueError:
+            return None
 
     @property
     def is_running(self) -> bool:
@@ -530,6 +587,8 @@ class MeshtasticPresetBridge:
         # Disconnect interfaces
         self._disconnect_primary()
         self._disconnect_secondary()
+        if self._primary_downlink is not None:
+            self._primary_downlink.close()
 
         # Wait for threads
         for thread in [self._primary_thread, self._secondary_thread,
@@ -1048,6 +1107,27 @@ class MeshtasticPresetBridge:
                     source_id=msg.source_id[-4:] if msg.source_id else "????",
                 )
                 content = prefix + content
+
+            # True-origin downlink injection (primary/meshtasticd leg only).
+            # Makes the forward show as the REAL source node on :9443 instead
+            # of self-TX. Only for broadcasts (downlink is a channel inject);
+            # any failure falls through to the toradio sendText path below so
+            # a message is never dropped.
+            if (dest_name == "primary" and self._primary_downlink is not None
+                    and msg.is_broadcast):
+                origin = self._node_id_to_num(msg.source_id)
+                if origin is not None and self._primary_downlink.inject(
+                    content, origin, hop_limit=3,
+                ):
+                    with self._stats_lock:
+                        self.stats['downlink_injected'] += 1
+                    logger.info(
+                        f"Bridged {msg.source_preset} -> {dest_name} "
+                        f"(downlink as !{origin:08x}): {content[:50]}...")
+                    return True
+                logger.debug(
+                    "Downlink inject unavailable for %s — toradio fallback",
+                    dest_name)
 
             # Send to interface (works for TCP, MQTT, and serial interfaces).
             # Broadcasts OMIT destinationId so each interface uses its own
