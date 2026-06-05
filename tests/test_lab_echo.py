@@ -137,7 +137,12 @@ def test_on_receive_handles_invalid_utf8_bytes():
 
 
 def test_send_ack_skips_when_recall_returns_none():
-    """If rnsd has forgotten the path, _send_ack must NOT raise."""
+    """Unknown identity even after a path request → skip, must NOT raise.
+
+    The routed-leaf fix (moc5, 2026-06-04) means a recall miss now
+    triggers RNS.Transport.request_path before giving up — assert the
+    request happens AND the skip stays graceful when it doesn't help.
+    """
     from lab.lxmf_echo import _EchoState, _send_ack
     from lab._lab_common import PingMessage
 
@@ -150,12 +155,42 @@ def test_send_ack_skips_when_recall_returns_none():
     fake_lxmf = MagicMock()
 
     ping = PingMessage(seq=1, sender="moc")
-    with patch.dict("sys.modules", {"RNS": fake_rns, "LXMF": fake_lxmf}):
+    with patch.dict("sys.modules", {"RNS": fake_rns, "LXMF": fake_lxmf}), \
+            patch("lab.lxmf_echo.PATH_REQUEST_WAIT_S", 0.0):
         # Must not raise; router.handle_outbound must NOT be called.
         _send_ack(state, b"\xaa" * 16, ping)
 
+    fake_rns.Transport.request_path.assert_called_once_with(b"\xaa" * 16)
     state.router.handle_outbound.assert_not_called()
     assert state.tx_count == 0
+
+
+def test_send_ack_path_request_fetches_identity_routed_leaf():
+    """The moc5 routed-leaf shape: recall misses (announce never reached
+    this box), the on-demand path request delivers the identity, and the
+    ACK goes out — instead of the silent skip that timed out every
+    fleet->moc5 trace on 2026-06-04."""
+    from lab.lxmf_echo import _EchoState, _send_ack
+    from lab._lab_common import PingMessage
+
+    state = _EchoState()
+    state.router = MagicMock()
+    state.source = MagicMock()
+
+    fake_rns = MagicMock()
+    fake_identity = MagicMock()
+    # First recall misses; after request_path the identity is cached.
+    fake_rns.Identity.recall.side_effect = [None, fake_identity]
+    fake_lxmf = MagicMock()
+
+    ping = PingMessage(seq=7, sender="hub-tester")
+    with patch.dict("sys.modules", {"RNS": fake_rns, "LXMF": fake_lxmf}), \
+            patch("lab.lxmf_echo.PATH_REQUEST_WAIT_S", 1.0):
+        _send_ack(state, b"\xcc" * 16, ping)
+
+    fake_rns.Transport.request_path.assert_called_once_with(b"\xcc" * 16)
+    state.router.handle_outbound.assert_called_once()
+    assert state.tx_count == 1
 
 
 def test_send_ack_calls_handle_outbound_on_recall_success():

@@ -34,6 +34,12 @@ logger = logging.getLogger("lab.echo")
 # without flooding the channel.
 ANNOUNCE_INTERVAL_S = 3600
 
+# Bounded wait for an on-demand path request when a requester's identity
+# is not in the local cache (the routed-leaf case — see _send_ack).
+# Pings arrive on a 10-min cadence, so a few seconds inside the rx
+# callback is harmless.
+PATH_REQUEST_WAIT_S = 5.0
+
 
 def _build_client_config(tmpdir: Path) -> Path:
     """Write a share-instance client config that matches rnsd's keying.
@@ -150,13 +156,28 @@ def _send_ack(state: _EchoState, dest_hash: bytes, ping):
 
     dest_identity = RNS.Identity.recall(dest_hash)
     if dest_identity is None:
-        # Recall is fast in shared-instance mode (rnsd holds the path).
-        # A None here means the path has been forgotten — possible if
-        # rnsd restarted between rx and ack. Log and bail; tracer will
-        # see a timeout, which is the right signal.
+        # Flat-LAN boxes hear every announce, so recall always hit and a
+        # None looked like "path forgotten". A ROUTED LEAF (moc5 behind
+        # the AREDN hAP, 2026-06-04) receives pings from tracers whose
+        # announces never propagated to it — recall misses and every
+        # reply died here while the inbound ping arrived fine. Cure:
+        # fetch the identity on demand with a bounded path request (the
+        # path response carries the announcing identity), exactly like
+        # the tracer's outbound leg already does.
+        logger.info(
+            "echo: identity for %s not cached — requesting path",
+            dest_hash.hex(),
+        )
+        RNS.Transport.request_path(dest_hash)
+        deadline = time.time() + PATH_REQUEST_WAIT_S
+        while dest_identity is None and time.time() < deadline:
+            time.sleep(0.25)
+            dest_identity = RNS.Identity.recall(dest_hash)
+    if dest_identity is None:
         logger.warning(
-            "echo: tx skipped seq=%d to=%s (Identity.recall returned None)",
-            ping.seq, dest_hash.hex(),
+            "echo: tx skipped seq=%d to=%s (Identity.recall returned None "
+            "after %.0fs path request)",
+            ping.seq, dest_hash.hex(), PATH_REQUEST_WAIT_S,
         )
         return
 
