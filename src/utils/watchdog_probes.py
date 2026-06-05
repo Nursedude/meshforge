@@ -68,6 +68,7 @@ SIGNAL_CLASSES = (
     "parity_drift",  # 2026-06-01: MeshForge<->MeshAnchor RNS-reliability parity diverged (lead-repo port debt)
     "rns_version_drift",  # 2026-06-01: rns/lxmf installed off the pinned +mf.N fork version (T2-isolate arc)
     "role_drift",  # 2026-06-03: live systemd unit state diverges from the box's effective declared role (fleet_roles.yaml + deployment.json overrides)
+    "channel_feed_dark",  # 2026-06-04: no decoded text on a watched Meshtastic channel — the .32 dark-feed / PSK-rotation-canary lesson (silence is the failure mode)
 )
 
 SEVERITIES = ("info", "degraded", "wedge")
@@ -1593,6 +1594,149 @@ def _load_recent_fires(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Probe: channel feed dark (2026-06-04 — the .32 dark-feed lesson)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _journal_newest_match(
+    unit: str,
+    pattern: str,
+    lookback: str,
+    journalctl_path: str = "journalctl",
+) -> Optional[str]:
+    """Newest journal line of ``unit`` matching ``pattern`` within ``lookback``.
+
+    Returns the ``short-unix``-formatted line (epoch-seconds first token) or
+    None on no match / journalctl unavailable / timeout. ``-r -n 1`` makes the
+    busy-feed case cheap (journalctl stops at the first newest-first match);
+    the no-match case is bounded by ``--since`` and the subprocess timeout.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                journalctl_path, "-u", unit, "--since", f"-{lookback}",
+                "-g", pattern, "-r", "-n", "1", "-o", "short-unix",
+                "-q", "--no-pager",
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    # rc 1 = "no entries matched" on some systemd builds; only >1 is an error.
+    if proc.returncode not in (0, 1):
+        return None
+    lines = proc.stdout.strip().splitlines()
+    return lines[0] if lines else None
+
+
+def _short_unix_ts(line: str) -> Optional[float]:
+    """Parse the epoch timestamp from a ``-o short-unix`` journal line."""
+    try:
+        return float(line.split(None, 1)[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def probe_channel_feed_dark(
+    *,
+    channel: int = 2,
+    unit: str = "meshtasticd.service",
+    dark_after_s: float = 6 * 3600.0,
+    lookback: str = "24h",
+    journalctl_path: str = "journalctl",
+    systemctl_path: str = "systemctl",
+    main_pid: Optional[int] = None,
+    newest_line_fn=None,
+    now: Optional[float] = None,
+) -> Optional[Signal]:
+    """Fire when a watched channel's decoded-text feed goes silent.
+
+    The .32 dark-feed lesson (2026-06-04 PSK rotation): a consumer missed
+    the re-key and its feed went silently dark — heartbeats stayed green
+    because *silence looks identical to "no traffic"* unless something
+    watches for it. On a normally-busy mesh, hours of zero decoded text on
+    the meshforge channel mean a missed PSK re-key, a deaf radio (the moc2
+    antenna case — ``channel_utilization=0.0`` tell), or a dead uplink path.
+
+    Observation source: meshtasticd's MQTT-json uplink journal lines
+    (``serialized json message: {"channel":N,...,"type":"text"}``) — the
+    only channel-tagged decoded-text record available without touching the
+    single-consumer ``/api/v1/fromradio`` (#17). Self-guards (returns None):
+
+    - meshtasticd inactive (``service_inactive`` owns that), or
+    - the box emits NO json-uplink lines at all in the lookback window
+      (mqtt module unconfigured — e.g. a collector that only RXes;
+      unobservable is not dark), or
+    - journalctl unavailable/timeout.
+
+    A box whose json pipeline is alive but shows no ch-``channel`` text for
+    ``dark_after_s`` fires ``degraded`` — the sentinel boxes (busy gateways
+    like moc) effectively canary the channel for the whole fleet via the
+    mini signal_class flow.
+    """
+    pid = main_pid if main_pid is not None else _resolve_main_pid(
+        unit, systemctl_path=systemctl_path
+    )
+    if pid is None:
+        return None
+
+    if newest_line_fn is None:
+        def newest_line_fn(pattern: str) -> Optional[str]:
+            return _journal_newest_match(
+                unit, pattern, lookback, journalctl_path=journalctl_path
+            )
+
+    # Observability gate: any json-uplink line at all? None → this box
+    # cannot see channel traffic (mqtt module off) — silence is not dark.
+    any_json = newest_line_fn("serialized json message")
+    if any_json is None:
+        return None
+
+    ts_now = now if now is not None else time.time()
+    ch_text = newest_line_fn(f'"channel":{channel},.*"type":"text"')
+
+    if ch_text is None:
+        age_desc = f"none within the {lookback} lookback window"
+        age_s = None
+    else:
+        last_ts = _short_unix_ts(ch_text)
+        if last_ts is None:
+            return None  # unparseable journal line — indeterminate
+        age_s = ts_now - last_ts
+        if age_s < dark_after_s:
+            return None  # feed is alive
+        age_desc = f"last decoded {age_s / 3600.0:.1f}h ago"
+
+    json_age = _short_unix_ts(any_json)
+    json_age_desc = (
+        f"{(ts_now - json_age) / 3600.0:.1f}h ago" if json_age is not None else "unknown"
+    )
+    detail = (
+        f"No decoded text on Meshtastic channel {channel} ({age_desc}) while "
+        f"the json-uplink pipeline is observable (newest json line "
+        f"{json_age_desc}). On a normally-busy mesh this is the dark-feed "
+        f"tell: missed PSK re-key (decode gate = hash(name,psk)), deaf radio "
+        f"(check channel_utilization in DeviceTelemetry), or dead uplink "
+        f"path. Verify: journalctl -u meshtasticd | grep '\"channel\":{channel}' ; "
+        f"then send a test message from another fleet box on ch{channel}."
+    )
+    extra: dict = {
+        "channel": channel,
+        "dark_after_s": dark_after_s,
+        "lookback": lookback,
+    }
+    if age_s is not None:
+        extra["age_s"] = round(age_s, 1)
+    return Signal(
+        cls="channel_feed_dark",
+        subject=f"meshtastic-ch{channel}",
+        severity="degraded",
+        detail=detail,
+        extra=extra,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Helpers shared by the runner
 # ─────────────────────────────────────────────────────────────────────
 
@@ -1637,6 +1781,7 @@ __all__ = [
     "probe_parity_drift",
     "probe_rns_version_drift",
     "probe_role_drift",
+    "probe_channel_feed_dark",
     "probe_delivery_write_canary",
     "probe_service_inactive",
     "probe_tracer_peer_unreachable",

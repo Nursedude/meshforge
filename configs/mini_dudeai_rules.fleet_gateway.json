@@ -216,7 +216,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 1800,
-      "annotation": "2026-06-03: live systemd unit state diverges from the box's declared role (fleet_roles.yaml + deployment.json overrides) — the moc2 legibility class. Documented service_overrides do NOT fire. Fix: review python3 scripts/provision_role.py, then sudo --apply or correct the declared role. Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
+      "annotation": "2026-06-03: live systemd unit state diverges from the box's declared role (fleet_roles.yaml + deployment.json overrides) \u2014 the moc2 legibility class. Documented service_overrides do NOT fire. Fix: review python3 scripts/provision_role.py, then sudo --apply or correct the declared role. Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
     },
     {
       "id": "rns_rpc_unresponsive_any",
@@ -276,6 +276,25 @@
       },
       "cooldown_s": 1800,
       "annotation": "Issue #73 \u2014 open fds approaching the soft RLIMIT_NOFILE (proactive companion to http_local; fires BEFORE :5000 wedges with [Errno 24]). Restart the service to clear, then find the fd leak (sudo ls /proc/PID/fd | wc -l)."
+    },
+    {
+      "id": "channel_feed_dark_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "channel_feed_dark",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] mesh channel feed dark",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning"
+        ]
+      },
+      "cooldown_s": 7200,
+      "annotation": "2026-06-04 .32 dark-feed lesson: hours of zero decoded text on the meshforge channel while the json-uplink pipeline is alive = missed PSK re-key (decode gate = hash(name,psk)), deaf radio (channel_utilization=0.0 tell), or dead uplink. Send a ch2 test from another fleet box to discriminate."
     }
   ]
 }

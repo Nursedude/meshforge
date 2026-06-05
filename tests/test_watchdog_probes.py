@@ -33,6 +33,7 @@ from utils.watchdog_probes import (  # noqa: E402
     SEVERITIES,
     SIGNAL_CLASSES,
     Signal,
+    probe_channel_feed_dark,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
     probe_foundation_drift,
@@ -84,6 +85,7 @@ def test_signal_classes_closed_enum_is_documented():
         "parity_drift",
         "rns_version_drift",
         "role_drift",
+        "channel_feed_dark",
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -943,6 +945,127 @@ def test_fd_exhaustion_none_when_soft_limit_unlimited(tmp_path):
         "meshforge-map.service", proc_root=root, main_pid=4242
     )
     assert sig is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-06-04 — channel_feed_dark (the .32 dark-feed / rotation-canary)
+# ─────────────────────────────────────────────────────────────────────
+
+_NOW = 1_780_642_400.0
+
+
+def _journal_fake(json_age_s=60.0, ch_text_age_s=None, now=_NOW, patterns=None):
+    """Build a newest_line_fn: json-pipeline line at ``json_age_s``; ch-text
+    line at ``ch_text_age_s`` (None = no match). Records queried patterns."""
+    def fn(pattern):
+        if patterns is not None:
+            patterns.append(pattern)
+        if pattern == "serialized json message":
+            return f"{now - json_age_s:.6f} host meshtasticd[1]: json"
+        if ch_text_age_s is None:
+            return None
+        return f"{now - ch_text_age_s:.6f} host meshtasticd[1]: text"
+    return fn
+
+
+def test_channel_feed_dark_fires_when_text_stale():
+    """json pipeline alive, last ch2 text 7h old (>6h default) → degraded."""
+    sig = probe_channel_feed_dark(
+        main_pid=1002,
+        newest_line_fn=_journal_fake(ch_text_age_s=7 * 3600.0),
+        now=_NOW,
+    )
+    assert sig is not None
+    assert sig.cls == "channel_feed_dark"
+    assert sig.severity == "degraded"
+    assert sig.subject == "meshtastic-ch2"
+    assert sig.extra["age_s"] == pytest.approx(7 * 3600.0, abs=1.0)
+    assert "PSK re-key" in sig.detail
+
+
+def test_channel_feed_dark_quiet_when_text_fresh():
+    """ch2 text 10 minutes old → feed alive → None."""
+    sig = probe_channel_feed_dark(
+        main_pid=1002,
+        newest_line_fn=_journal_fake(ch_text_age_s=600.0),
+        now=_NOW,
+    )
+    assert sig is None
+
+
+def test_channel_feed_dark_fires_when_no_text_in_lookback():
+    """json pipeline alive but zero ch2 text in the whole lookback → fire,
+    detail names the lookback window instead of an age."""
+    sig = probe_channel_feed_dark(
+        main_pid=1002,
+        newest_line_fn=_journal_fake(ch_text_age_s=None),
+        now=_NOW,
+    )
+    assert sig is not None
+    assert "24h lookback" in sig.detail
+    assert "age_s" not in sig.extra
+
+
+def test_channel_feed_dark_none_when_unobservable():
+    """The moc5/collector shape: NO json-uplink lines at all (mqtt module
+    unconfigured) → unobservable is not dark → None, never a false alarm."""
+    sig = probe_channel_feed_dark(
+        main_pid=1002, newest_line_fn=lambda pattern: None, now=_NOW,
+    )
+    assert sig is None
+
+
+def test_channel_feed_dark_none_when_unit_inactive():
+    """meshtasticd down → service_inactive owns it; this probe stays None."""
+    sig = probe_channel_feed_dark(
+        systemctl_path="/nonexistent/systemctl",
+        newest_line_fn=_journal_fake(ch_text_age_s=7 * 3600.0),
+        now=_NOW,
+    )
+    assert sig is None
+
+
+def test_channel_feed_dark_none_on_unparseable_timestamp():
+    """A journal line whose first token isn't an epoch → indeterminate → None."""
+    def fn(pattern):
+        if pattern == "serialized json message":
+            return f"{_NOW - 60.0:.6f} host meshtasticd[1]: json"
+        return "garbled line with no timestamp"
+    sig = probe_channel_feed_dark(main_pid=1002, newest_line_fn=fn, now=_NOW)
+    assert sig is None
+
+
+def test_channel_feed_dark_channel_param_respected():
+    """The queried journal pattern carries the configured channel index."""
+    patterns: list = []
+    probe_channel_feed_dark(
+        channel=5,
+        main_pid=1002,
+        newest_line_fn=_journal_fake(ch_text_age_s=600.0, patterns=patterns),
+        now=_NOW,
+    )
+    assert any('"channel":5,' in p for p in patterns)
+    sig = probe_channel_feed_dark(
+        channel=5,
+        main_pid=1002,
+        newest_line_fn=_journal_fake(ch_text_age_s=7 * 3600.0),
+        now=_NOW,
+    )
+    assert sig is not None and sig.subject == "meshtastic-ch5"
+
+
+def test_channel_feed_dark_threshold_boundary():
+    """Just under the threshold stays quiet; just over fires."""
+    under = probe_channel_feed_dark(
+        main_pid=1002, dark_after_s=3600.0,
+        newest_line_fn=_journal_fake(ch_text_age_s=3599.0), now=_NOW,
+    )
+    over = probe_channel_feed_dark(
+        main_pid=1002, dark_after_s=3600.0,
+        newest_line_fn=_journal_fake(ch_text_age_s=3601.0), now=_NOW,
+    )
+    assert under is None
+    assert over is not None
 
 
 # ─────────────────────────────────────────────────────────────────────

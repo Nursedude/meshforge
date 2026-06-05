@@ -47,6 +47,7 @@ from typing import Dict, List, Optional, Tuple
 from utils.rns_status_parser import run_rnstatus
 from utils.watchdog_probes import (
     Signal,
+    probe_channel_feed_dark,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
     probe_foundation_drift,
@@ -310,6 +311,17 @@ def run_all_probes(
     # moc2 lesson, 2026-06-03) — only undeclared divergence fires, debounced
     # 2 ticks to ride out fleet-roll windows.
     sig = probe_role_drift()
+    if sig is not None:
+        signals.append(sig)
+
+    # Channel-feed dark — the .32 dark-feed lesson (2026-06-04 PSK rotation):
+    # silence is the failure mode. Watches meshtasticd's json-uplink journal
+    # for decoded ch2 text; hours of silence on a box whose json pipeline is
+    # otherwise alive = missed re-key / deaf radio / dead uplink path.
+    # Self-guards: None when meshtasticd is down (service_inactive owns that)
+    # or when the box emits no json-uplink lines at all (unobservable —
+    # e.g. mqtt module unconfigured; a collector that only RXes).
+    sig = probe_channel_feed_dark()
     if sig is not None:
         signals.append(sig)
 
