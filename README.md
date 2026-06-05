@@ -10,10 +10,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Nursedude/meshforge"><img src="https://img.shields.io/badge/version-0.6.0--beta-blue.svg" alt="Version"></a>
+  <a href="https://github.com/Nursedude/meshforge"><img src="https://img.shields.io/badge/version-0.6.1--beta-blue.svg" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green.svg" alt="License"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.9+-yellow.svg" alt="Python"></a>
-  <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-4719%20passing-brightgreen.svg" alt="Tests"></a>
+  <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-5839%20passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 <p align="center">
@@ -68,6 +68,15 @@ sudo python3 src/launcher_tui/main.py
 ```
 
 **Built for:** HAM operators, emergency comms teams, off-grid builders, preppers, and mesh enthusiasts who want professional-grade network visibility without the complexity.
+
+### How It's Operated — a Human + AI Fleet
+
+The reference fleet (multiple Pis across home-LAN and AREDN-linked remote sites, plus a cloud peer) is run as a **human+AI collaboration**: a HAM operator pair-engineering with Claude — architecture, code, and live fleet operations over SSH — while two on-box organs keep watch between sessions:
+
+- **The watchdog** — one probe per failure class learned in the field (wedged RPC, fd leaks, permission drift, role drift, channel silence…). Every real incident becomes a probe; nothing is diagnosed twice.
+- **mini-dudeai** — a tiny on-box rule engine that turns watchdog signals into per-box briefs, fleet-wide rollups, and pages. The next session warm-starts from what mini saw.
+
+The loop compounds: incidents → probes → signals → briefs → faster sessions. A recent data point — a brand-new Pi at a remote AREDN site went from bare SSH to fully-federated, lab-measured fleet member *in one evening*, surfacing (and fixing) two latent cross-repo bugs along the way. The collaboration record lives in [`docs/substack/`](docs/substack/) and the development blog.
 
 ---
 
@@ -243,7 +252,7 @@ Main Menu (MeshForge NOC)
 
 ---
 
-## What Works (v0.6.0-beta)
+## What Works (v0.6.1-beta)
 
 ### Status Definitions
 

@@ -3,9 +3,9 @@ MeshForge - LoRa Mesh Network Development & Operations Suite
 Version information and changelog
 """
 
-__version__ = "0.6.0-beta"
-__version_info__ = (0, 6, 0, 'beta')
-__release_date__ = "2026-05-02"
+__version__ = "0.6.1-beta"
+__version_info__ = (0, 6, 1, 'beta')
+__release_date__ = "2026-06-04"
 __app_name__ = "MeshForge"
 __app_description__ = "Mesh Network Operations Center & Development Ecosystem"
 __app_tagline__ = "Build. Test. Deploy. Monitor."
@@ -20,6 +20,18 @@ ALPHA_VERSION = "0.6.0-alpha"
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "0.6.1-beta",
+        "date": "2026-06-04",
+        "status": "beta",
+        "changes": [
+            "FLEET: First ROUTED RNS leaf onboarded — an AREDN-sited collector behind a MikroTik hAP gateway node joins via TCPClientInterface to the fleet hub, federates its mesh-side node directory (~2.7k nodes), and participates in the full lab tracer matrix. Port-forward + WAN-interface-scope recipe documented; the hAP itself is now CLI-managed (AREDN /etc/config.mesh/setup ↔ uci redirect anatomy captured).",
+            "WATCHDOG: probe_channel_feed_dark — the silence canary. Watches meshtasticd's MQTT-json uplink journal for decoded text on the meshforge channel; hours of silence while the json pipeline is alive fires `channel_feed_dark` (degraded) — the tell for a missed PSK re-key, a deaf radio, or a dead uplink path. Self-guards to None on boxes with no json uplink (unobservable ≠ dark). Mini rule `channel_feed_dark_any` pages via ntfy. Born from the 2026-06-04 PSK-rotation dark-feed incident: silence is the failure mode.",
+            "LAB: lxmf_echo routed-leaf fix — bare Identity.recall() in the ACK path missed for tracers whose announces hadn't propagated to a routed leaf, silently skipping every reply while inbound pings arrived fine. Echo now issues a bounded RNS.Transport.request_path() on recall miss (the path response carries the announcing identity), mirroring the outbound leg. Ported to MeshAnchor same-day.",
+            "FLEET: meshtasticd 2.7.24 fleet-wide — canary graduated (24h soak, 0 crash signatures, the 2.7.15 double-free class confirmed fixed) and the conditional roll executed autonomously by the scheduled checker; verified across all boxes.",
+            "FEDERATION: peer_name plumbing completed for every federation peer (Issue #54 close-out) — no more null-named peers in /api/status.federation or the /fleet panel.",
+        ],
+    },
     {
         "version": "0.6.0-beta",
         "date": "2026-05-02",
