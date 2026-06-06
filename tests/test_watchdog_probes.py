@@ -2162,3 +2162,35 @@ def test_confirmation_stall_uses_recent_ring_not_cumulative():
     )
     assert sig.severity == "wedge"
     assert sig.extra["cumulative_confirmation_rate"] == 0.95
+
+
+def test_channel_feed_dark_none_when_json_pipeline_itself_stale():
+    """Issue #74 freshness gate: the newest json line is ITSELF older
+    than dark_after_s → the whole json pipeline died. Firing
+    channel_feed_dark would misdirect the operator toward PSK re-key /
+    deaf radio when the uplink module is the real failure —
+    whole-pipeline-dark is unobservable for channel-specific dark."""
+    sig = probe_channel_feed_dark(
+        main_pid=1002,
+        newest_line_fn=_journal_fake(
+            json_age_s=10 * 3600.0,  # pipeline silent for 10h
+            ch_text_age_s=12 * 3600.0,
+        ),
+        now=_NOW,
+    )
+    assert sig is None
+
+
+def test_channel_feed_dark_fires_when_json_fresh_but_text_dark():
+    """Companion boundary: json line fresh (pipeline alive) + stale
+    ch text → still fires. The gate must only suppress the
+    whole-pipeline-dead shape."""
+    sig = probe_channel_feed_dark(
+        main_pid=1002,
+        newest_line_fn=_journal_fake(
+            json_age_s=120.0, ch_text_age_s=7 * 3600.0,
+        ),
+        now=_NOW,
+    )
+    assert sig is not None
+    assert sig.cls == "channel_feed_dark"

@@ -332,3 +332,72 @@ class TestExitOnWedgeDefault:
             with pytest.raises(WedgeTimeout):
                 bounded_call("test.default_exit", synth, timeout_s=10.0)
             mock_exit.assert_called_once_with(2)
+
+
+class TestNoExitEnvBackstopIssue74:
+    """MESHFORGE_BOUNDED_RPC_NO_EXIT=1 — incident-response kill switch
+    for the wedge abort, plus the outstanding-wedge gauge that keeps
+    the suppressed aborts visible (each is a thread blocked in a hung
+    call that os._exit would normally reap)."""
+
+    def test_backstop_suppresses_exit_on_synthetic_wedge(self, monkeypatch):
+        monkeypatch.setenv("MESHFORGE_BOUNDED_RPC_NO_EXIT", "1")
+        with patch("gateway.bounded_rpc.os._exit") as mock_exit:
+            def synth():
+                raise WedgeTimeout("synthetic")
+            with pytest.raises(WedgeTimeout):
+                bounded_call("test.backstop", synth, timeout_s=10.0)
+            mock_exit.assert_not_called()
+        # The wedge EVENT still counts — only the abort is suppressed.
+        assert get_wedge_counters().get("test.backstop") == 1
+
+    def test_backstop_real_timeout_tracks_outstanding_gauge(self, monkeypatch):
+        """Watchdog fires, abort suppressed → gauge goes 1 while the
+        call is wedged, returns to 0 when it finally completes."""
+        monkeypatch.setenv("MESHFORGE_BOUNDED_RPC_NO_EXIT", "1")
+        release = threading.Event()
+        result = {}
+
+        with patch("gateway.bounded_rpc.os._exit") as mock_exit:
+            def hang():
+                release.wait(5.0)
+                return "done"
+
+            def worker():
+                result["r"] = bounded_call(
+                    "test.outstanding", hang,
+                    timeout_s=0.05, exit_on_wedge=True,
+                )
+
+            t = threading.Thread(target=worker, daemon=True)
+            t.start()
+            deadline = time.monotonic() + 3.0
+            while (bounded_rpc.get_outstanding_wedges() != 1
+                   and time.monotonic() < deadline):
+                time.sleep(0.01)
+            assert bounded_rpc.get_outstanding_wedges() == 1, (
+                "suppressed abort must surface as an outstanding wedge"
+            )
+            mock_exit.assert_not_called()
+
+            release.set()
+            t.join(timeout=3.0)
+
+        assert result.get("r") == "done"
+        assert bounded_rpc.get_outstanding_wedges() == 0, (
+            "late completion must return the gauge unit"
+        )
+
+    def test_backstop_unset_means_exit_still_fires(self):
+        """Default (env unset) preserves production abort semantics."""
+        assert bounded_rpc._no_exit_env() is False
+        with patch("gateway.bounded_rpc.os._exit") as mock_exit:
+            def synth():
+                raise WedgeTimeout("synthetic")
+            with pytest.raises(WedgeTimeout):
+                bounded_call("test.backstop_off", synth, timeout_s=10.0)
+            mock_exit.assert_called_once_with(2)
+
+    def test_backstop_garbage_value_means_off(self, monkeypatch):
+        monkeypatch.setenv("MESHFORGE_BOUNDED_RPC_NO_EXIT", "banana")
+        assert bounded_rpc._no_exit_env() is False

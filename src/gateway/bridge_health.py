@@ -779,12 +779,15 @@ class DeliveryTracker:
 
         total = stats["total_sent"]
         confirmed = stats["confirmed"]
-        rate = (confirmed / total * 100) if total > 0 else 0.0
+        # None at zero traffic, not 0.0 — "no data" must not read as
+        # "0% confirmed = total failure" (Issue #74; aligns with the
+        # DeliveryCounters sentinel: rate = None iff sent == 0).
+        rate = round(confirmed / total * 100, 1) if total > 0 else None
 
         return {
             **stats,
             "pending_count": pending,
-            "confirmation_rate_pct": round(rate, 1),
+            "confirmation_rate_pct": rate,
         }
 
     def get_recent_deliveries(self, limit: int = 20) -> List[Dict[str, Any]]:

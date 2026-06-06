@@ -1159,7 +1159,14 @@ class RNSMeshtasticBridge(
                                 _hash, f"wedge:{label}"
                             )
                     except Exception:
-                        pass
+                        # Isolated so the default publish+counter+abort
+                        # still run — but VISIBLY (Issue #74): with
+                        # exit_on_wedge=False a broken trip_open would
+                        # otherwise be undetectable.
+                        logger.exception(
+                            "circuit trip_open failed during wedge "
+                            "for %s", _hash,
+                        )
                     default_on_wedge(label, target, timeout_s)
                 if not bounded_call("rnsd.has_path",
                                     RNS.Transport.has_path, destination_hash,
@@ -1290,7 +1297,12 @@ class RNSMeshtasticBridge(
                             _hash, f"wedge:{label}"
                         )
                 except Exception:
-                    pass
+                    # See send_to_rns counterpart — visible failure
+                    # over silent fallback (Issue #74).
+                    logger.exception(
+                        "circuit trip_open failed during wedge "
+                        "for %s", _hash,
+                    )
                 default_on_wedge(label, target, timeout_s)
 
             if not bounded_call("rnsd.has_path",

@@ -4404,3 +4404,47 @@ class TestCircuitBreakerWiringIssue74:
 
         bridge._rns_loop()
         bridge._circuit_breaker.reset_all.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Issue #74: trip_open failure inside the wedge hook is VISIBLE
+# ---------------------------------------------------------------------------
+
+class TestTripOpenFailureVisibleIssue74:
+    """The composite _on_wedge isolates a trip_open exception so the
+    default publish+counter+abort still run — but it must log it, not
+    swallow it: with the abort suppressed (env backstop / tests) a
+    broken trip_open would otherwise be undetectable."""
+
+    def test_trip_open_failure_logged_and_publish_still_runs(
+        self, bridge, caplog, monkeypatch
+    ):
+        import logging
+        import sys
+        from gateway import bounded_rpc
+        from gateway.bounded_rpc import WedgeTimeout
+
+        monkeypatch.setenv("MESHFORGE_BOUNDED_RPC_NO_EXIT", "1")
+        bounded_rpc._reset_counters_for_tests()
+
+        fake_rns = MagicMock(name="RNS")
+        fake_rns.Transport.has_path.side_effect = WedgeTimeout("synthetic")
+        fake_lxmf = MagicMock(name="LXMF")
+        bridge._connected_rns = True
+        bridge._lxmf_source = MagicMock()
+        bridge._lxmf_router = MagicMock()
+        bridge._circuit_breaker.trip_open.side_effect = RuntimeError(
+            "breaker boom"
+        )
+
+        with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
+            with caplog.at_level(logging.ERROR):
+                result = bridge.send_to_rns("hello", b"\xab" * 16)
+
+        assert result is False
+        assert any(
+            "trip_open failed" in r.getMessage() for r in caplog.records
+        ), "broken trip_open must be logged, not silently swallowed"
+        # The default hook still ran: wedge counter bumped.
+        assert bounded_rpc.get_wedge_counters().get("rnsd.has_path") == 1
+        bounded_rpc._reset_counters_for_tests()

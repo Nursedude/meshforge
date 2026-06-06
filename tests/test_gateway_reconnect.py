@@ -140,13 +140,17 @@ class TestReconnectStrategyIntegration:
     """Integration tests for reconnect behavior."""
 
     def test_wait_returns_actual_delay(self, strategy):
-        """wait() should sleep for the calculated delay."""
-        with patch('time.sleep') as mock_sleep:
+        """wait() should block for (and return) the calculated delay.
+
+        Issue #74: wait() is Event.wait-based now (no time.sleep) —
+        patch the never-set fallback event with a pre-set one so the
+        test is instant while still asserting the computed delay."""
+        import threading
+        preset = threading.Event()
+        preset.set()
+        with patch('gateway.reconnect._NEVER_SET', preset):
             delay = strategy.wait()
-            mock_sleep.assert_called_once()
-            # Verify sleep was called with a reasonable delay
-            actual_delay = mock_sleep.call_args[0][0]
-            assert 0.9 <= actual_delay <= 1.1
+        assert 0.9 <= delay <= 1.1
 
     def test_execute_with_retry_succeeds(self, strategy):
         """execute_with_retry should succeed when function succeeds."""
@@ -163,7 +167,7 @@ class TestReconnectStrategyIntegration:
         # Fail twice, then succeed
         mock_func = Mock(side_effect=[Exception("fail1"), Exception("fail2"), "success"])
 
-        with patch('time.sleep'):  # Don't actually sleep
+        with patch.object(strategy, 'wait'):  # Don't actually wait
             result = strategy.execute_with_retry(mock_func)
 
         assert result == "success"
@@ -174,7 +178,7 @@ class TestReconnectStrategyIntegration:
         """execute_with_retry should give up after max_attempts."""
         mock_func = Mock(side_effect=Exception("always fails"))
 
-        with patch('time.sleep'):  # Don't actually sleep
+        with patch.object(strategy, 'wait'):  # Don't actually wait
             with pytest.raises(Exception, match="always fails"):
                 strategy.execute_with_retry(mock_func)
 
@@ -207,3 +211,40 @@ class TestRNSReconnect:
         assert config.initial_delay >= 1.0
         # Allow longer max for network issues
         assert config.max_delay >= 60.0
+
+
+class TestWaitNeverSleepsIssue74:
+    """ReconnectStrategy.wait() must always be Event.wait-based — the
+    old bare time.sleep fallback (no stop_event) was an MF010 loaded
+    gun: a daemon caller omitting the event slept uninterruptibly for
+    up to max_delay (60s) on shutdown."""
+
+    def test_wait_with_preset_stop_event_returns_immediately(self):
+        import threading
+        import time as _time
+        strategy = ReconnectStrategy.for_rns()
+        strategy.record_failure()  # arm a real (multi-second) delay
+        stop = threading.Event()
+        stop.set()
+        t0 = _time.monotonic()
+        strategy.wait(stop)
+        assert _time.monotonic() - t0 < 0.5
+
+    def test_wait_source_contains_no_time_sleep(self):
+        import inspect
+        from gateway.reconnect import ReconnectStrategy as _RS
+        src = inspect.getsource(_RS.wait)
+        assert "time.sleep" not in src, (
+            "wait() regressed to a bare time.sleep — MF010; use the "
+            "never-set Event fallback"
+        )
+
+    def test_wait_without_event_still_respects_delay(self):
+        import time as _time
+        strategy = ReconnectStrategy(
+            config=ReconnectConfig(initial_delay=0.1, jitter=0.0)
+        )
+        strategy.record_failure()
+        t0 = _time.monotonic()
+        strategy.wait(None)
+        assert _time.monotonic() - t0 >= 0.09

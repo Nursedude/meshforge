@@ -1926,6 +1926,17 @@ def probe_channel_feed_dark(
         return None
 
     ts_now = now if now is not None else time.time()
+
+    # Freshness gate (Issue #74): existence within the 24h lookback
+    # isn't enough — if the newest json line is ITSELF older than
+    # dark_after_s, the whole json pipeline died, and firing
+    # channel_feed_dark would misdirect the operator toward PSK
+    # re-key / deaf radio when the uplink module is the real failure.
+    # Whole-pipeline-dark is unobservable for channel-SPECIFIC dark.
+    json_ts = _short_unix_ts(any_json)
+    if json_ts is not None and (ts_now - json_ts) >= dark_after_s:
+        return None
+
     ch_text = newest_line_fn(f'"channel":{channel},.*"type":"text"')
 
     if ch_text is None:

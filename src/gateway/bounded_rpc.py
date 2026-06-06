@@ -78,6 +78,12 @@ class WedgeTimeout(RuntimeError):
 _wedge_counters: Dict[str, int] = defaultdict(int)
 _counter_lock = threading.Lock()
 
+# Gauge of wedged calls we chose NOT to abort on (env backstop or
+# test mode). Each is a calling thread blocked in a hung fn — without
+# this, "we disabled the abort" silently hides N dead threads
+# (Issue #74).
+_outstanding_wedges = 0
+
 
 def get_wedge_counters() -> Dict[str, int]:
     """Snapshot of per-label wedge counts since process start.
@@ -90,10 +96,38 @@ def get_wedge_counters() -> Dict[str, int]:
         return dict(_wedge_counters)
 
 
+def get_outstanding_wedges() -> int:
+    """Wedged-but-not-aborted calls currently in flight.
+
+    Nonzero only when the abort was suppressed (the
+    ``MESHFORGE_BOUNDED_RPC_NO_EXIT`` backstop, or
+    ``exit_on_wedge=False``) — each unit is a thread blocked in a
+    hung call that ``os._exit`` would normally have reaped.
+    """
+    with _counter_lock:
+        return _outstanding_wedges
+
+
 def _reset_counters_for_tests() -> None:
     """Test-only: zero out counters between cases."""
+    global _outstanding_wedges
     with _counter_lock:
         _wedge_counters.clear()
+        _outstanding_wedges = 0
+
+
+def _no_exit_env() -> bool:
+    """Operator kill switch for the wedge abort (Issue #74).
+
+    ``MESHFORGE_BOUNDED_RPC_NO_EXIT=1`` disables ``os._exit(2)``
+    fleet-wide without a redeploy — incident-response escape hatch
+    when a flaky-but-live rnsd keeps tripping the 15s budget and the
+    restart loop is doing more harm than the hang (systemd
+    Restart=on-failure eventually rate-limits into hard `failed`).
+    Mirrors the per-label timeout env convention.
+    """
+    raw = os.environ.get("MESHFORGE_BOUNDED_RPC_NO_EXIT", "")
+    return raw.strip().lower() in ("1", "true", "yes")
 
 
 def _env_override_timeout(label: str) -> Optional[float]:
@@ -218,8 +252,15 @@ def bounded_call(
                 logger.exception(
                     "bounded_rpc: on_wedge hook raised for %s", full
                 )
-            if exit_on_wedge:
+            if exit_on_wedge and not _no_exit_env():
                 os._exit(2)
+            # Not aborting (env backstop / test mode): the wrapped fn
+            # may never return — account for the wedged-but-alive
+            # call so operators can see N suppressed aborts.
+            global _outstanding_wedges
+            with _counter_lock:
+                _outstanding_wedges += 1
+                fired["counted"] = True
 
     watchdog = threading.Thread(
         target=_watchdog, daemon=True, name=f"bounded-{label}",
@@ -244,8 +285,15 @@ def bounded_call(
                 "bounded_rpc: on_wedge hook raised for %s (synthetic)",
                 label if not target else f"{label}[{target}]",
             )
-        if exit_on_wedge:
+        if exit_on_wedge and not _no_exit_env():
             os._exit(2)
         raise
     finally:
         done.set()
+        # The call DID complete after the watchdog counted it as
+        # wedged-outstanding — return the unit (it un-wedged late).
+        if fired["wedge"]:
+            with _counter_lock:
+                if fired.get("counted"):
+                    globals()["_outstanding_wedges"] -= 1
+                    fired["counted"] = False

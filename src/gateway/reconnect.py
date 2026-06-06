@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
 
+# Never-set fallback event so wait() is always Event.wait-based — a
+# bare time.sleep here was an MF010 loaded gun: any daemon caller that
+# omitted stop_event slept uninterruptibly for up to max_delay (60s)
+# on shutdown (Issue #74).
+_NEVER_SET = threading.Event()
+
 
 @dataclass
 class ReconnectConfig:
@@ -99,10 +105,10 @@ class ReconnectStrategy:
         """
         delay = self.get_delay()
         logger.debug(f"Reconnect backoff: waiting {delay:.2f}s (attempt {self.attempts})")
-        if stop_event:
-            stop_event.wait(delay)  # Returns immediately if event is set
-        else:
-            time.sleep(delay)
+        # Always Event.wait-based: interruptible when a stop_event is
+        # provided, and timing-identical (without the MF010 hazard)
+        # when it isn't.
+        (stop_event or _NEVER_SET).wait(delay)
         return delay
 
     def record_failure(self) -> None:
