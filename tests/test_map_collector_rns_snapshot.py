@@ -297,6 +297,18 @@ class TestInitRnsSingletonHostGuard:
     instance, never CREATE one (becoming the @rns host with no interfaces ->
     2026-05-28 fleet routing outage). See project_rns_map_host_race."""
 
+    @pytest.fixture(autouse=True)
+    def _isolated_tempdir(self, tmp_path, monkeypatch):
+        """init_rns_singleton WRITES <tempdir>/meshforge_rns_client/config
+        before reaching the (mocked) chokepoint. Unredirected, these tests
+        overwrite the box's REAL client config with instance_name='test rns'
+        and NO rpc_key — poisoning the gateway's #41 rpc_key preflight
+        (TestStartStop fails on any box where rnsd pins rpc_key) until a
+        service restart regenerates it. Found during the Issue #74 review."""
+        monkeypatch.setattr(
+            "tempfile.gettempdir", lambda: str(tmp_path)
+        )
+
     def test_skips_and_does_not_create_when_no_shared_instance(self):
         # init_rns_singleton routes through the guarded chokepoint
         # (utils.rns_init.open_reticulum) as a pure consumer. When the shared
