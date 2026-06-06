@@ -87,6 +87,7 @@ class RuleEngine:
         history_path: str,
         candidate_path: str | None = None,
         brief_path: str | None = None,
+        clean_exit_path: str | None = None,
     ) -> None:
         self.sources = sources
         self.actions = actions
@@ -94,6 +95,12 @@ class RuleEngine:
         self.candidate_path = candidate_path
         self.state_store = StateStore(state_path)
         self.history = HistoryWriter(history_path)
+        # Opt-in: when set, run() writes a bare wall-clock float here on
+        # graceful stop (SIGTERM/SIGINT/request_stop). BootHealthSource reads
+        # it to tell a planned reboot (marker ~ last_tick) from a crash
+        # (last_tick advanced past a stale/absent marker). None = no marker
+        # (standalone default, unchanged).
+        self.clean_exit_path = clean_exit_path
         # Opt-in: when set, run() atomic-writes a warm-start brief here after
         # every tick so any box (not just session hosts) carries a fresh,
         # readable view of mini's posture. None = no brief file (standalone
@@ -301,8 +308,15 @@ class RuleEngine:
                 print(f"tick error (continuing): {type(e).__name__}: {e}",
                       flush=True)
             self._write_brief_safe()
+            # Seed AFTER the tick, never before the first one: the tick runs
+            # BootHealthSource.collect(), which must see the true pre-seed
+            # marker state to assess (and latch) this boot's verdict —
+            # seeding first would stamp a fresh marker and mask a real crash
+            # that happened before the marker file first existed.
+            self._seed_clean_exit_if_missing()
             self._stop.wait(interval_s)
         print("mini-dudeai engine stopped", flush=True)
+        self._write_clean_exit_marker()
 
     def _write_brief_safe(self) -> None:
         """Atomic-write the warm-start brief if brief_path is set. Never raises —
@@ -316,6 +330,38 @@ class RuleEngine:
         except Exception as e:
             print(f"brief write failed (continuing): {type(e).__name__}: {e}",
                   flush=True)
+
+    def _write_clean_exit_marker(self) -> None:
+        """Stamp the clean-exit marker (bare wall-clock float, atomic).
+
+        Written on graceful stop so BootHealthSource can rule the prior
+        shutdown clean on the next boot. Bare float string — NOT json —
+        because BootHealthSource._read_float does float(read().strip()).
+        Best-effort: a marker-write failure must not raise (same contract
+        as _write_brief_safe)."""
+        if not self.clean_exit_path:
+            return
+        try:
+            tmp = self.clean_exit_path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(f"{time.time():.3f}")
+            os.replace(tmp, self.clean_exit_path)
+        except OSError as e:
+            print(f"clean-exit marker write failed (continuing): "
+                  f"{type(e).__name__}: {e}", flush=True)
+
+    def _seed_clean_exit_if_missing(self) -> None:
+        """Deploy-window seed: create the marker if it has never existed.
+
+        On a fresh deploy the marker is absent until the first graceful stop;
+        a planned reboot whose stop path is interrupted (e.g. SIGKILL after a
+        hung shutdown) would then read as a crash. Seeding narrows that
+        window. Called only AFTER a tick (see run()) so the first
+        BootHealthSource assessment of a fresh boot latches before any seed
+        can mask it. Never overwrites an existing marker."""
+        if not self.clean_exit_path or os.path.exists(self.clean_exit_path):
+            return
+        self._write_clean_exit_marker()
 
     def request_stop(self) -> None:
         self._stop.set()

@@ -335,6 +335,25 @@
       },
       "cooldown_s": 3600,
       "annotation": "MF Issue #74 (2026-06-06): sends keep flowing but the recent-ring confirm rate collapsed (<=50% degraded, <=10% wedge, >=20 ring sends). The bridge self-report reads HEALTHY while shouting into a void \u2014 check RNS paths to fan-out peers + /api/gateway/delivery drop_reasons."
+    },
+    {
+      "id": "unexpected_reboot_alert",
+      "match": {
+        "kind": "unexpected_reboot",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] Unexpected reboot",
+        "message": "{subject}: {detail}",
+        "priority": "urgent",
+        "tags": [
+          "rotating_light",
+          "electric_plug"
+        ]
+      },
+      "cooldown_s": 3600,
+      "annotation": "Box hard-reset with no clean shutdown (BootHealthSource; wired 2026-06-06 after the primary box's 3rd power-cut). Gateway seed carries the ntfy alert only \u2014 no digest action is wired on gateway boxes. Forensic method: tail ~/power_history.log (throttled bit 0x10000 = brownout occurred; 0x0 throughout = instant external cut) + journalctl -b -1 -o short-precise | tail. Full method in the hard-reset memory topic file."
     }
   ]
 }

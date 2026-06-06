@@ -6,6 +6,9 @@ What this preset configures:
       kind="federation_peer_unhealthy" (per peer in_backoff or unreachable)
       kind="source_error" (when the URL is unreachable — federator down)
   - DigestStaleSource → ~/situation_digest.md → kind="digest_stale" if > 30m old
+  - BootHealthSource → ~/mini_dudeai_clean_exit (+ state/assessment/power log)
+      → kind="unexpected_reboot" on an unclean boot; planned reboots stay
+      silent because the engine stamps the clean-exit marker on graceful stop
   - NtfyAction (fleet topic from env), FileAnnotateAction (digest annotations),
     ProposeEscalationAction, NoopAction.
 
@@ -21,7 +24,9 @@ from ..actions import (
     FileAnnotateAction, NoopAction, NtfyAction, ProposeEscalationAction,
 )
 from ..engine import RuleEngine
-from ..sources import FileMtimeSource, HttpJsonSource, JsonFileSource
+from ..sources import (
+    BootHealthSource, FileMtimeSource, HttpJsonSource, JsonFileSource,
+)
 from ..sources.base import Condition, Source
 
 DEFAULT_FEDERATOR_URL = "http://localhost:5000/api/status"
@@ -108,6 +113,7 @@ def build_engine(
     digest_stale_threshold_s: int = DEFAULT_DIGEST_STALE_THRESHOLD_S,
     enable_federation: bool | None = None,
     enable_digest: bool | None = None,
+    enable_boot_health: bool | None = None,
 ) -> RuleEngine:
     """Wire up the engine the way the fleet's primary node runs it today.
 
@@ -120,11 +126,19 @@ def build_engine(
     boxes that have no local :5000 and no situation_digest set both "0" so mini
     watches only their own watchdog.json (no per-tick source_error noise/pages).
     The watchdog source is always wired — it is every box's local-health feed.
+
+    enable_boot_health: unexpected-reboot detection (BootHealthSource). Defaults
+    ON for every box — gateways included; a hard reset is fleet-relevant
+    everywhere (env MINI_DUDEAI_ENABLE_BOOT_HEALTH = "0" to disable). When on,
+    the SAME clean_exit_path is passed to BOTH the source (reader) and the
+    engine (writer-on-graceful-stop) — that pairing is the whole mechanism.
     """
     if enable_federation is None:
         enable_federation = os.environ.get("MINI_DUDEAI_ENABLE_FEDERATION", "1") != "0"
     if enable_digest is None:
         enable_digest = os.environ.get("MINI_DUDEAI_ENABLE_DIGEST", "1") != "0"
+    if enable_boot_health is None:
+        enable_boot_health = os.environ.get("MINI_DUDEAI_ENABLE_BOOT_HEALTH", "1") != "0"
     home = home or os.path.expanduser("~")
     rules_path = rules_path or os.path.join(home, "mini_dudeai_rules.json")
     state_path = state_path or os.path.join(home, "mini_dudeai_state.json")
@@ -168,6 +182,21 @@ def build_engine(
             subject="situation_digest.md",
             name="digest",
         ))
+    # Unexpected-reboot detection. Per-box files in $HOME (like the brief —
+    # NOT the fleet_sync-mirrored memory dir). clean_exit_path is computed
+    # once here and fed to BOTH BootHealthSource and RuleEngine below: the
+    # engine stamps it on graceful stop, the source reads it on the next
+    # fresh boot. power_history.log may be absent on a box — the source
+    # treats an unreadable power log as "no evidence", not an error.
+    clean_exit_path = os.path.join(home, "mini_dudeai_clean_exit")
+    if enable_boot_health:
+        sources.append(BootHealthSource(
+            state_path=state_path,
+            clean_exit_path=clean_exit_path,
+            assessment_path=os.path.join(home, "mini_dudeai_boot_assessment.json"),
+            power_log_path=os.path.join(home, "power_history.log"),
+            name="boot_health",
+        ))
     actions = {
         "ntfy": NtfyAction(topic=ntfy_topic),
         "annotate_digest": FileAnnotateAction(path=annotate_path),
@@ -182,4 +211,5 @@ def build_engine(
         history_path=history_path,
         candidate_path=rules_path + ".candidate",
         brief_path=brief_path,
+        clean_exit_path=clean_exit_path if enable_boot_health else None,
     )

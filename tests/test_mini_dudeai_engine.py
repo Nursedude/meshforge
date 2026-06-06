@@ -526,3 +526,81 @@ def test_fleet_preset_sets_brief_path(tmp_path, monkeypatch):
         enable_digest=False,
     )
     assert eng.brief_path == os.path.join(str(tmp_path), "mini_dudeai_brief.md")
+
+
+# === clean-exit marker (unexpected-reboot wiring, 2026-06-06) =====
+#
+# The marker is BootHealthSource's linchpin: the engine stamps it on graceful
+# stop, so a planned reboot reads clean and a crash (marker stale/absent)
+# reads unclean. These tests pin the writer side; the reader side is pinned
+# in test_mini_dudeai_boot_health.py.
+
+
+class MarkerProbeSource(Source):
+    """Record whether the clean-exit marker exists at collect() time, then
+    stop the engine — drives run() through exactly one tick. Pins the seeding
+    ordering: the first tick must see the true (pre-seed) marker state."""
+
+    name = "marker_probe"
+
+    def __init__(self, marker_path):
+        self.marker_path = marker_path
+        self.engine = None  # set after construction
+        self.marker_existed_at_collect = []
+
+    def collect(self):
+        self.marker_existed_at_collect.append(os.path.exists(self.marker_path))
+        self.engine.request_stop()
+        return []
+
+
+def test_clean_exit_marker_written_on_graceful_stop(tmp_path):
+    import time
+    marker = tmp_path / "clean_exit"
+    engine = _engine(tmp_path, [StaticSource()], [])
+    engine.clean_exit_path = str(marker)
+    engine.request_stop()           # graceful stop before any tick
+    engine.run(interval_s=0.01)
+    assert marker.exists()
+    val = float(marker.read_text().strip())   # bare float, NOT json
+    assert abs(time.time() - val) < 60
+
+
+def test_no_marker_when_clean_exit_path_none(tmp_path):
+    engine = _engine(tmp_path, [StaticSource()], [])
+    assert engine.clean_exit_path is None     # standalone default unchanged
+    engine.request_stop()
+    engine.run(interval_s=0.01)               # must not raise
+    assert not list(tmp_path.glob("*clean_exit*"))
+
+
+def test_seed_happens_after_first_tick_not_before(tmp_path):
+    """Deploy-window seed ordering: BootHealthSource (running inside the
+    tick) must observe the marker ABSENT on the first tick of a fresh deploy
+    — seeding before the tick would mask a real crash. After run() returns
+    the marker exists (seed + graceful-stop write)."""
+    marker = tmp_path / "clean_exit"
+    probe = MarkerProbeSource(str(marker))
+    engine = _engine(tmp_path, [probe], [])
+    engine.clean_exit_path = str(marker)
+    probe.engine = engine
+    engine.run(interval_s=0.01)
+    assert probe.marker_existed_at_collect == [False]
+    assert marker.exists()
+
+
+def test_seed_does_not_clobber_existing_marker(tmp_path):
+    marker = tmp_path / "clean_exit"
+    marker.write_text("123.0")
+    engine = _engine(tmp_path, [StaticSource()], [])
+    engine.clean_exit_path = str(marker)
+    engine._seed_clean_exit_if_missing()
+    assert marker.read_text() == "123.0"      # seed only creates, never overwrites
+
+
+def test_marker_write_failure_does_not_raise(tmp_path):
+    """Same contract as _write_brief_safe: a marker-write failure must not
+    take down the stop path."""
+    engine = _engine(tmp_path, [StaticSource()], [])
+    engine.clean_exit_path = str(tmp_path)    # a directory — os.replace fails
+    engine._write_clean_exit_marker()         # must not raise

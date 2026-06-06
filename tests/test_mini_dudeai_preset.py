@@ -27,6 +27,7 @@ def test_fleet_preset_wires_expected_sources(tmp_path, monkeypatch):
     assert "watchdog" in source_names
     assert "federation" in source_names
     assert "digest" in source_names
+    assert "boot_health" in source_names
 
 
 def test_fleet_preset_wires_expected_actions(tmp_path, monkeypatch):
@@ -68,7 +69,9 @@ def test_watchdog_extractor_legacy_cls_fallback():
 
 def test_gateway_mode_disables_federation_and_digest(tmp_path, monkeypatch):
     """Gateway boxes (no :5000, no digest) wire watchdog-only — no per-tick
-    source_error noise from an unreachable federator / missing digest."""
+    source_error noise from an unreachable federator / missing digest.
+    boot_health stays: a hard reset is fleet-relevant on gateways too
+    (unexpected-reboot wiring, 2026-06-06)."""
     monkeypatch.setenv("MINI_DUDEAI_NTFY_TOPIC", "test-topic")
     engine = build_engine(
         home=str(tmp_path),
@@ -77,7 +80,7 @@ def test_gateway_mode_disables_federation_and_digest(tmp_path, monkeypatch):
         enable_digest=False,
     )
     names = [getattr(s, "name", "?") for s in engine.sources]
-    assert names == ["watchdog"]
+    assert names == ["watchdog", "boot_health"]
 
 
 def test_source_gating_via_env(tmp_path, monkeypatch):
@@ -85,4 +88,42 @@ def test_source_gating_via_env(tmp_path, monkeypatch):
     monkeypatch.setenv("MINI_DUDEAI_ENABLE_FEDERATION", "0")
     monkeypatch.setenv("MINI_DUDEAI_ENABLE_DIGEST", "0")
     engine = build_engine(home=str(tmp_path), watchdog_path=str(tmp_path / "w.json"))
-    assert [getattr(s, "name", "?") for s in engine.sources] == ["watchdog"]
+    assert [getattr(s, "name", "?") for s in engine.sources] == ["watchdog", "boot_health"]
+
+
+# === boot_health wiring (unexpected-reboot, 2026-06-06) ============
+
+
+def test_boot_health_wired_by_default_with_ssot_paths(tmp_path, monkeypatch):
+    """BootHealthSource defaults ON for every box, and the clean_exit_path is
+    a single source of truth: the SAME path feeds the source (reader) and the
+    engine (writer-on-graceful-stop). A path mismatch silently breaks the
+    whole mechanism — every planned reboot would page as a crash."""
+    monkeypatch.setenv("MINI_DUDEAI_NTFY_TOPIC", "test-topic")
+    engine = build_engine(
+        home=str(tmp_path),
+        watchdog_path=str(tmp_path / "watchdog.json"),
+        enable_federation=False,
+        enable_digest=False,
+    )
+    bh = next(s for s in engine.sources if getattr(s, "name", "") == "boot_health")
+    home = str(tmp_path)
+    assert bh.clean_exit_path == os.path.join(home, "mini_dudeai_clean_exit")
+    assert engine.clean_exit_path == bh.clean_exit_path          # the SSOT pairing
+    assert bh.state_path == os.path.join(home, "mini_dudeai_state.json")
+    assert bh.assessment_path == os.path.join(home, "mini_dudeai_boot_assessment.json")
+    assert bh.power_log_path == os.path.join(home, "power_history.log")
+
+
+def test_boot_health_env_gate_off(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINI_DUDEAI_NTFY_TOPIC", "test-topic")
+    monkeypatch.setenv("MINI_DUDEAI_ENABLE_BOOT_HEALTH", "0")
+    engine = build_engine(
+        home=str(tmp_path),
+        watchdog_path=str(tmp_path / "w.json"),
+        enable_federation=False,
+        enable_digest=False,
+    )
+    names = [getattr(s, "name", "?") for s in engine.sources]
+    assert "boot_health" not in names
+    assert engine.clean_exit_path is None    # gate covers writer AND reader
