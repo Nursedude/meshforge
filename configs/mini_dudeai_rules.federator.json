@@ -358,6 +358,46 @@
       },
       "cooldown_s": 7200,
       "annotation": "2026-06-04 .32 dark-feed lesson: hours of zero decoded text on the meshforge channel while the json-uplink pipeline is alive = missed PSK re-key (decode gate = hash(name,psk)), deaf radio (channel_utilization=0.0 tell), or dead uplink. Send a ch2 test from another fleet box to discriminate."
+    },
+    {
+      "id": "queue_backlog_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "queue_backlog",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] gateway queue backpressure",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning",
+          "incoming_envelope"
+        ]
+      },
+      "cooldown_s": 3600,
+      "annotation": "MF Issue #74 (2026-06-06): persistent-queue depth near the shed threshold (>=80%/95% of max -> LOW/NORMAL loss) or dead-letter growth per tick. Backlog masks delivery failures. Check /api/gateway/queue + gateway journal for the failing destination."
+    },
+    {
+      "id": "delivery_confirmation_stall_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "delivery_confirmation_stall",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] delivery confirmations collapsed",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning",
+          "mailbox_with_no_mail"
+        ]
+      },
+      "cooldown_s": 3600,
+      "annotation": "MF Issue #74 (2026-06-06): sends keep flowing but the recent-ring confirm rate collapsed (<=50% degraded, <=10% wedge, >=20 ring sends). The bridge self-report reads HEALTHY while shouting into a void \u2014 check RNS paths to fan-out peers + /api/gateway/delivery drop_reasons."
     }
   ]
 }
