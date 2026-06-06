@@ -230,28 +230,16 @@ keep MF012 ≤40k chars headroom open for future entries.
 
 ---
 
-## Issue #65: Two-tier federation backoff cap — long-outage cadence (2026-05-18)
+## Issues #64 + #65: federation directory gzip + two-tier backoff cap (2026-05-18)
 
-**Resolved — body moved to `persistent_issues_archive.md` (2026-06-03, MF012
-trim).** One-line essence: second-tier backoff cap in `map_federation.py`
-(`extended_threshold=40` ≈6 h continuous failure → multiplier cap 60 ≈1 h between
-polls) separates transient outages (tier-1, 10×) from permanent ones (e.g.
-gateway-only moc3); `backoff_multiplier=60` in `/api/status.federation` is the
-operator tell. Tests: `TestBackoffExtendedCapIssue65` (8). Closed the federation
-triad (#54/#55/#56/#59/#64/#65).
-
-
----
-
-## Issue #64: `/api/nodes/directory` gzip negotiation + size-budget alarm (2026-05-18)
-
-**Resolved — body moved to `persistent_issues_archive.md` (2026-05-31, MF012
-trim).** One-line essence: `fetch_peer_directory` now sends
-`Accept-Encoding: gzip` + decodes (urllib doesn't auto-decode like requests),
-turning the 35 MB directory into 4.7 MB on the wire (7.6×); plus a 40 MB
-`size_alarm` budget gauge in `get_directory_stats()`. Tests:
-`TestGzipNegotiationIssue64`, `TestDirectorySizeBudgetAlarmIssue64`,
-`TestServeJsonSizeObserverIssue64`.
+**Resolved — bodies in `persistent_issues_archive.md` (MF012 trims).**
+#64: `fetch_peer_directory` sends `Accept-Encoding: gzip` + decodes (35 MB →
+4.7 MB wire) + 40 MB `size_alarm` gauge. #65: second-tier backoff cap in
+`map_federation.py` (≈6 h continuous failure → multiplier cap 60 ≈1 h cadence)
+for permanent outages (gateway-only moc3); `backoff_multiplier=60` is the
+operator tell. Tests: `TestGzipNegotiationIssue64` etc. +
+`TestBackoffExtendedCapIssue65` (8). Closed the federation triad
+(#54/#55/#56/#59/#64/#65).
 
 
 ---
@@ -385,9 +373,19 @@ remains as a working clone for code/mirror work.
   runs — the calling service fails loud with the operator-actionable
   RuntimeError instead of the 30+-minute-to-debug EOFError stack.
 
-The allowlist is deliberately narrow. MeshAnchor's daemon cmdline
-contains "meshanchor" but NOT "rnsd"/"reticulum" — so it gets caught.
-Any future foreign RNS-hosting daemon will be caught the same way.
+Allowlist deliberately narrow ("rnsd"/"reticulum") — any foreign
+RNS-hosting daemon gets caught.
+
+**Boot-race addendum (2026-06-06, `84a79ca` + MA `9065d973`)**: same
+class, NO foreign daemon needed — lab echo started 4s before rnsd at
+boot, found no listener, boot-claimed; rnsd joined as interface-less
+client → ALL destinations no-route (federator + moc2, same day). Two
+chokepoint fixes: (a) listener absent + rnsd ENABLED → bounded wait
+(30s) for rnsd; lab path fails loud, `open_reticulum` returns None
+even when `require_listener=False`; (b) `ss` truncates spaced
+instance names at the first space, so the owner guard was silently
+DEAD on such boxes — parser now matches the truncated token. New
+`service_check.is_service_enabled()`.
 
 **Tests** (12 new in `tests/test_lab_common.py`):
 - `test_parse_ss_listener_line_*` (3) — parser pins against real
