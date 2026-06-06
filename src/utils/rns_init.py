@@ -59,6 +59,7 @@ import re
 import socket
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Iterator, Optional, Union
 
@@ -79,6 +80,14 @@ RNS_INIT_TIMEOUT_S = float(os.environ.get("MESHFORGE_LAB_RNS_INIT_TIMEOUT", "60"
 # seconds is generous; the point is to never block the calling thread.
 DEFAULT_CONNECT_PROBE_TIMEOUT_S = float(
     os.environ.get("MESHFORGE_RNS_PROBE_TIMEOUT", "5")
+)
+
+# How long to wait for an *enabled* rnsd to claim `@rns/<instance>` before
+# giving up (Issue #69 boot-race guard). The measured race window at boot is
+# ~4s (echo claimed 13:00:05, rnsd lost at 13:00:09 — the federator box, 2026-06-06);
+# 30s is generous without eating a oneshot unit's TimeoutStartSec budget.
+DEFAULT_WAIT_FOR_RNSD_TIMEOUT_S = float(
+    os.environ.get("MESHFORGE_RNS_WAIT_FOR_RNSD_TIMEOUT", "30")
 )
 
 # Cmdline substrings that are legitimate owners of an `@rns/<instance>`
@@ -103,10 +112,22 @@ def _parse_ss_listener_line(line: str, instance_name: str) -> Optional[tuple]:
     Tolerant of the kernel's varying field count (the address column
     sometimes wraps). Anchors on the ``@rns/<instance>`` token and on the
     ``users:(("<cmd>",pid=<n>,...))`` tail that ``ss -p`` appends.
+
+    Space-containing instance names (the federator box, 2026-06-06): ``ss`` splits
+    its columns on whitespace, so an abstract socket named
+    ``@rns/kilauea lab rns`` is *displayed* truncated at the first space
+    (``@rns/kilauea``) — the full needle never matches and the Issue #69
+    guard silently dies. Fall back to the truncated form, anchored on a
+    trailing space so ``kilauea`` can't match a different ``kilauea-x``
+    instance.
     """
     needle = f"@rns/{instance_name}"
     if needle not in line:
-        return None
+        if " " not in instance_name:
+            return None
+        truncated = f"@rns/{instance_name.split(' ', 1)[0]} "
+        if truncated not in line:
+            return None
     m = re.search(r'users:\(\("([^"]+)",pid=(\d+),', line)
     if not m:
         return None
@@ -270,6 +291,69 @@ def _probe_shared_instance_connect(
             sock.close()
 
 
+# ---------------------------------------------------------------- #69 boot race
+
+
+def _rnsd_unit_enabled() -> bool:
+    """True iff ``rnsd.service`` is enabled on this box — i.e. rnsd is the
+    *designated* ``@rns/<instance>`` host even if it hasn't started yet.
+    Lazy import keeps module import cheap; False on any error (no wait,
+    behave as before).
+    """
+    try:
+        from utils.service_check import is_service_enabled
+        return is_service_enabled("rnsd")
+    except Exception:
+        return False
+
+
+def _wait_for_rnsd_listener(
+    instance_name: str,
+    timeout_s: float = DEFAULT_WAIT_FOR_RNSD_TIMEOUT_S,
+    poll_interval_s: float = 0.5,
+) -> bool:
+    """Issue #69 boot-race guard: the ``@rns/<instance>`` listener is absent
+    but rnsd is ENABLED on this box — rnsd is the designated host and is
+    almost certainly still starting (the measured window is ~4 seconds at
+    boot). If the caller constructs ``RNS.Reticulum()`` now, IT becomes the
+    shared-instance host: rnsd then silently joins as a client, none of its
+    configured network interfaces ever come up, and every RNS destination on
+    the box is ``no-route`` until an operator unwinds the ownership by hand
+    (the federator box, 2026-06-06 — lab echo claimed the instance, the whole fleet
+    tracer leg went dark).
+
+    Polls the passive ``/proc/net/unix`` presence scan (cheap, no connect)
+    until the listener appears or ``timeout_s`` elapses. Returns True when
+    the listener appeared (caller proceeds and joins as a client), False on
+    timeout (caller must NOT construct — fail loud or degrade, per its
+    contract). The subsequent #68 connect probe still tells accepting from
+    wedged; this only closes the who-binds-first race.
+    """
+    deadline = time.monotonic() + timeout_s
+    logger.info(
+        "rns_init: @rns/%s listener absent but rnsd.service is enabled — "
+        "waiting up to %.0fs for rnsd to claim it instead of boot-claiming "
+        "the shared instance (Issue #69 boot race).",
+        instance_name, timeout_s,
+    )
+    while time.monotonic() < deadline:
+        if _shared_instance_listener_present(instance_name):
+            logger.info(
+                "rns_init: @rns/%s listener appeared — joining as client.",
+                instance_name,
+            )
+            return True
+        time.sleep(poll_interval_s)
+    logger.error(
+        "rns_init: rnsd.service is enabled but never claimed @rns/%s within "
+        "%.0fs — refusing to boot-claim the shared instance. Check "
+        "`systemctl status rnsd`; this process will retry per its own "
+        "restart/cycle policy.",
+        instance_name, timeout_s,
+    )
+    return False
+
+
 # ---------------------------------------------------------------- construct
 
 
@@ -346,6 +430,21 @@ def init_reticulum_with_watchdog(
     instance_name = _read_instance_name_from_config(configdir)
     if instance_name:
         check_rns_listener_owner(instance_name)
+        # Issue #69 boot race: never boot-claim an instance that an enabled
+        # rnsd is about to host. Fail LOUD on timeout — these daemons run
+        # under systemd Restart=/timer policies, so refusing now means a
+        # clean retry later instead of a poisoned instance for the whole box.
+        if (
+            not _shared_instance_listener_present(instance_name)
+            and _rnsd_unit_enabled()
+            and not _wait_for_rnsd_listener(instance_name)
+        ):
+            raise RuntimeError(
+                f"rnsd.service is enabled but has not claimed "
+                f"@rns/{instance_name} — refusing to boot-claim the shared "
+                f"instance (Issue #69 boot race). Check `systemctl status "
+                f"rnsd`, then restart this service."
+            )
     return _construct_reticulum_with_watchdog(
         configdir, loglevel=loglevel, timeout_s=timeout_s,
     )
@@ -382,11 +481,17 @@ def open_reticulum(
       1. RNS module missing            -> return None.
       2. Singleton already constructed -> return it (idempotent).
       3. #69 listener-owner preflight  -> raise on a FOREIGN owner (fail-loud).
-      4. #68 bounded connect probe:
+      4. #68 bounded connect probe (+ #69 boot-race wait):
+         - listener absent + rnsd.service ENABLED -> wait bounded for rnsd
+           to claim it (boot race: a client constructing first becomes the
+           @rns host and rnsd silently joins as an interface-less client —
+           the federator box, 2026-06-06). Appears -> proceed as client; never
+           appears -> return None regardless of ``require_listener``.
          - listener absent + ``require_listener`` -> return None (a pure
            consumer must never construct, or it becomes the @rns host — the
-           2026-05-28 ~21h fleet outage). Absent + not required -> construct
-           (standalone is legitimate, e.g. gateway with no rnsd).
+           2026-05-28 ~21h fleet outage). Absent + not required + rnsd not
+           enabled -> construct (standalone is legitimate, e.g. gateway
+           with no rnsd).
          - listener present but connect times out (wedged) -> return None.
          - listener present and accepting -> construct.
       5. Construct under the ``os._exit`` watchdog backstop.
@@ -428,7 +533,18 @@ def open_reticulum(
 
         # (4) fail-OPEN on absent (for consumers) or wedged rnsd.
         if probe:
-            if not _shared_instance_listener_present(instance_name):
+            listener_present = _shared_instance_listener_present(instance_name)
+            if not listener_present and _rnsd_unit_enabled():
+                # Issue #69 boot race: rnsd is the designated host but hasn't
+                # claimed yet (it's probably still starting). Wait instead of
+                # boot-claiming the instance out from under it.
+                listener_present = _wait_for_rnsd_listener(instance_name)
+                if not listener_present:
+                    # rnsd never showed. Constructing standalone here would
+                    # poison the box the moment rnsd recovers, so degrade
+                    # regardless of require_listener.
+                    return None
+            if not listener_present:
                 if require_listener:
                     logger.warning(
                         "rns_init: @rns/%s shared instance not present and "
@@ -438,7 +554,8 @@ def open_reticulum(
                         instance_name,
                     )
                     return None
-                # else: no listener but standalone construction is allowed.
+                # else: no listener, rnsd not enabled — standalone
+                # construction is legitimate (e.g. gateway with no rnsd).
             elif not _probe_shared_instance_connect(
                 instance_name, connect_probe_timeout_s
             ):

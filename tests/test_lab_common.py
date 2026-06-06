@@ -151,6 +151,39 @@ def test_parse_ss_listener_line_returns_none_for_unrelated_socket():
     assert _parse_ss_listener_line(line, "fleet-test") is None
 
 
+# Real `ss -xnpl` line from the federator box, 2026-06-06: the abstract socket is
+# `@rns/kilauea lab rns` (verified in /proc/net/unix) but ss splits columns
+# on whitespace and DISPLAYS it truncated at the first space. The full-name
+# needle never matches, so the Issue #69 owner guard was silently dead on
+# any box whose instance_name contains spaces.
+_SS_OUTPUT_SPACED_INSTANCE = (
+    'u_str LISTEN 0      0                                           '
+    '@rns/kilauea 49100            * 0    '
+    'users:(("rnsd",pid=5993,fd=5))\n'
+)
+
+
+def test_parse_ss_listener_line_matches_ss_truncated_spaced_instance():
+    line = _SS_OUTPUT_SPACED_INSTANCE.splitlines()[0]
+    assert _parse_ss_listener_line(line, "kilauea lab rns") == (5993, "rnsd")
+
+
+def test_parse_ss_listener_line_spaced_instance_rejects_prefix_collision():
+    """The truncated fallback anchors on a trailing space: instance
+    `kilauea lab rns` must not match a socket named `@rns/kilaueaX`."""
+    line = (
+        'u_str LISTEN 0      0     @rns/kilaueaX 49100   * 0    '
+        'users:(("rogue",pid=4242,fd=5))'
+    )
+    assert _parse_ss_listener_line(line, "kilauea lab rns") is None
+
+
+def test_parse_ss_listener_line_unspaced_instance_behavior_unchanged():
+    """No-space instance names keep the strict full-needle match only."""
+    line = _SS_OUTPUT_SPACED_INSTANCE.splitlines()[0]
+    assert _parse_ss_listener_line(line, "kilaueafull") is None
+
+
 def _patch_ss_and_proc(monkeypatch, ss_output, cmdlines):
     """Fake `ss -xnpl` output and /proc/<pid>/cmdline reads.
 
@@ -281,6 +314,9 @@ def test_init_reticulum_with_watchdog_invokes_preflight(monkeypatch, tmp_path):
             return _FakeReticulum(configdir, loglevel)
 
     monkeypatch.setattr("utils.rns_init.check_rns_listener_owner", _fake_check)
+    # Hermetic: on a fleet box the real `systemctl is-enabled rnsd` says
+    # enabled and the #69 boot-race wait would block for its full timeout.
+    monkeypatch.setattr("utils.rns_init._rnsd_unit_enabled", lambda: False)
     monkeypatch.setitem(sys.modules, "RNS", _FakeRNSModule)
 
     init_reticulum_with_watchdog(str(tmp_path), timeout_s=2.0)
@@ -313,6 +349,72 @@ def test_init_reticulum_with_watchdog_propagates_preflight_failure(monkeypatch, 
     with pytest.raises(RuntimeError, match="rogue"):
         init_reticulum_with_watchdog(str(tmp_path), timeout_s=2.0)
     assert not reticulum_called, "preflight failure must prevent RNS.Reticulum() call"
+
+
+def test_init_reticulum_with_watchdog_refuses_bootclaim_when_rnsd_enabled(
+    monkeypatch, tmp_path
+):
+    """Issue #69 boot race (the federator box, 2026-06-06): no listener yet, but rnsd
+    is ENABLED — lab daemons must refuse to construct (boot-claiming the
+    instance makes rnsd join as an interface-less client; the whole box goes
+    no-route). Fail-loud RuntimeError so systemd Restart=/timer retries."""
+    (tmp_path / "config").write_text(
+        "[reticulum]\ninstance_name = test-instance\n"
+    )
+
+    reticulum_called = []
+
+    class _FakeRNSModule:
+        @staticmethod
+        def Reticulum(configdir, loglevel):
+            reticulum_called.append(True)
+            return _FakeReticulum(configdir, loglevel)
+
+    monkeypatch.setattr(
+        "utils.rns_init.check_rns_listener_owner", lambda name: None
+    )
+    monkeypatch.setattr(
+        "utils.rns_init._shared_instance_listener_present", lambda name: False
+    )
+    monkeypatch.setattr("utils.rns_init._rnsd_unit_enabled", lambda: True)
+    monkeypatch.setattr(
+        "utils.rns_init._wait_for_rnsd_listener", lambda name: False
+    )
+    monkeypatch.setitem(sys.modules, "RNS", _FakeRNSModule)
+
+    with pytest.raises(RuntimeError, match="boot-claim"):
+        init_reticulum_with_watchdog(str(tmp_path), timeout_s=2.0)
+    assert not reticulum_called
+
+
+def test_init_reticulum_with_watchdog_joins_when_listener_appears(
+    monkeypatch, tmp_path
+):
+    """Boot race resolves: rnsd claims the listener during the wait — the
+    lab daemon proceeds and joins as a client."""
+    (tmp_path / "config").write_text(
+        "[reticulum]\ninstance_name = test-instance\n"
+    )
+
+    class _FakeRNSModule:
+        @staticmethod
+        def Reticulum(configdir, loglevel):
+            return _FakeReticulum(configdir, loglevel)
+
+    monkeypatch.setattr(
+        "utils.rns_init.check_rns_listener_owner", lambda name: None
+    )
+    monkeypatch.setattr(
+        "utils.rns_init._shared_instance_listener_present", lambda name: False
+    )
+    monkeypatch.setattr("utils.rns_init._rnsd_unit_enabled", lambda: True)
+    monkeypatch.setattr(
+        "utils.rns_init._wait_for_rnsd_listener", lambda name: True
+    )
+    monkeypatch.setitem(sys.modules, "RNS", _FakeRNSModule)
+
+    result = init_reticulum_with_watchdog(str(tmp_path), timeout_s=2.0)
+    assert isinstance(result, _FakeReticulum)
 
 
 # ----------------------------------------- init_reticulum_with_watchdog

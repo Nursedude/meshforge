@@ -118,24 +118,32 @@ class TestOpenReticulum:
             construct.assert_not_called()
 
     def test_require_listener_absent_degrades_no_construct(self):
-        """Host-race guard: a pure consumer never constructs when @rns absent."""
+        """Host-race guard: a pure consumer never constructs when @rns absent.
+
+        ``_rnsd_unit_enabled`` is patched False so the test stays hermetic —
+        on a fleet box the real ``systemctl is-enabled rnsd`` says enabled
+        and the #69 boot-race wait would block for its full timeout.
+        """
         with patch.object(ri, "_HAS_RNS", True), \
              patch.object(ri, "_existing_instance", return_value=None), \
              patch.object(ri, "_read_instance_name_from_config", return_value="inst"), \
              patch.object(ri, "check_rns_listener_owner", return_value=None), \
              patch.object(ri, "_shared_instance_listener_present", return_value=False), \
+             patch.object(ri, "_rnsd_unit_enabled", return_value=False), \
              patch.object(ri, "_construct_reticulum_with_watchdog") as construct:
             assert ri.open_reticulum("/tmp/x", require_listener=True) is None
             construct.assert_not_called()
 
     def test_standalone_constructs_when_listener_absent(self):
-        """require_listener=False: standalone init is legitimate (e.g. gateway)."""
+        """require_listener=False + rnsd NOT enabled: standalone init is
+        legitimate (e.g. gateway with no rnsd)."""
         sentinel = object()
         with patch.object(ri, "_HAS_RNS", True), \
              patch.object(ri, "_existing_instance", return_value=None), \
              patch.object(ri, "_read_instance_name_from_config", return_value="inst"), \
              patch.object(ri, "check_rns_listener_owner", return_value=None), \
              patch.object(ri, "_shared_instance_listener_present", return_value=False), \
+             patch.object(ri, "_rnsd_unit_enabled", return_value=False), \
              patch.object(ri, "_construct_reticulum_with_watchdog",
                           return_value=sentinel) as construct:
             assert ri.open_reticulum("/tmp/x", require_listener=False) is sentinel
@@ -202,6 +210,70 @@ class TestOpenReticulum:
                           return_value=sentinel):
             assert ri.open_reticulum("/tmp/x") is sentinel
             assert seen.get("checked") == "boxinst"
+
+
+# --------------------------------------------- #69 boot-race guard
+
+
+class TestBootRaceGuard:
+    """Issue #69 boot race (the federator box, 2026-06-06): a client service starting
+    before an enabled rnsd must wait for rnsd to claim ``@rns/<instance>``,
+    never boot-claim it. lab echo claimed the instance 4s before rnsd
+    started; rnsd silently joined as an interface-less client and every RNS
+    destination on the box was no-route until manual recovery."""
+
+    def test_absent_listener_rnsd_enabled_waits_then_joins(self):
+        """Listener appears during the wait -> proceed as client."""
+        sentinel = object()
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance", return_value=None), \
+             patch.object(ri, "_read_instance_name_from_config", return_value="inst"), \
+             patch.object(ri, "check_rns_listener_owner", return_value=None), \
+             patch.object(ri, "_shared_instance_listener_present", return_value=False), \
+             patch.object(ri, "_rnsd_unit_enabled", return_value=True), \
+             patch.object(ri, "_wait_for_rnsd_listener", return_value=True) as wait, \
+             patch.object(ri, "_probe_shared_instance_connect", return_value=True), \
+             patch.object(ri, "_construct_reticulum_with_watchdog",
+                          return_value=sentinel) as construct:
+            assert ri.open_reticulum("/tmp/x") is sentinel
+            wait.assert_called_once_with("inst")
+            construct.assert_called_once()
+
+    def test_absent_listener_rnsd_enabled_never_appears_degrades(self):
+        """rnsd enabled but never claims -> None even with
+        require_listener=False. Constructing standalone would poison the box
+        the moment rnsd recovers."""
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance", return_value=None), \
+             patch.object(ri, "_read_instance_name_from_config", return_value="inst"), \
+             patch.object(ri, "check_rns_listener_owner", return_value=None), \
+             patch.object(ri, "_shared_instance_listener_present", return_value=False), \
+             patch.object(ri, "_rnsd_unit_enabled", return_value=True), \
+             patch.object(ri, "_wait_for_rnsd_listener", return_value=False), \
+             patch.object(ri, "_construct_reticulum_with_watchdog") as construct:
+            assert ri.open_reticulum("/tmp/x", require_listener=False) is None
+            construct.assert_not_called()
+
+    def test_wait_helper_returns_true_when_listener_appears(self):
+        present = iter([False, False, True])
+        with patch.object(ri, "_shared_instance_listener_present",
+                          side_effect=lambda _name: next(present)):
+            assert ri._wait_for_rnsd_listener(
+                "inst", timeout_s=2.0, poll_interval_s=0.01
+            ) is True
+
+    def test_wait_helper_returns_false_on_timeout(self):
+        with patch.object(ri, "_shared_instance_listener_present",
+                          return_value=False):
+            assert ri._wait_for_rnsd_listener(
+                "inst", timeout_s=0.05, poll_interval_s=0.01
+            ) is False
+
+    def test_rnsd_unit_enabled_false_on_import_error(self):
+        """Any failure resolving service_check degrades to no-wait (legacy
+        behavior) rather than blocking RNS init."""
+        with patch.dict(sys.modules, {"utils.service_check": None}):
+            assert ri._rnsd_unit_enabled() is False
 
 
 # --------------------------------------------- _existing_instance

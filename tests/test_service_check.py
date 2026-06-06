@@ -160,6 +160,58 @@ class TestIsServiceUnitInstalled:
             assert is_service_unit_installed('meshforge-map') is False
 
 
+class TestIsServiceEnabled:
+    """Tests for is_service_enabled — used by the RNS-init boot-race guard
+    (Issue #69) to know whether rnsd WILL host @rns/<instance> even when it
+    hasn't started yet."""
+
+    def test_enabled_returns_true(self):
+        from utils.service_check import is_service_enabled
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="enabled\n")
+            assert is_service_enabled('rnsd') is True
+            args, _ = mock_run.call_args
+            assert args[0] == ['systemctl', 'is-enabled', 'rnsd']
+
+    def test_enabled_runtime_returns_true(self):
+        from utils.service_check import is_service_enabled
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="enabled-runtime\n")
+            assert is_service_enabled('rnsd') is True
+
+    def test_disabled_returns_false(self):
+        from utils.service_check import is_service_enabled
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout="disabled\n")
+            assert is_service_enabled('rnsd') is False
+
+    def test_not_found_returns_false(self):
+        """No unit at all (e.g. CI runner) → False, no boot-race wait."""
+        from utils.service_check import is_service_enabled
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=4, stdout="", stderr="Failed to get unit file state")
+            assert is_service_enabled('rnsd') is False
+
+    def test_masked_returns_false(self):
+        from utils.service_check import is_service_enabled
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout="masked\n")
+            assert is_service_enabled('rnsd') is False
+
+    def test_systemctl_missing_returns_false(self):
+        from utils.service_check import is_service_enabled
+        with patch('subprocess.run', side_effect=FileNotFoundError):
+            assert is_service_enabled('rnsd') is False
+
+    def test_user_scope_argv(self):
+        from utils.service_check import is_service_enabled
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="enabled\n")
+            assert is_service_enabled('meshforge-echo', user=True) is True
+            args, _ = mock_run.call_args
+            assert args[0] == ['systemctl', '--user', 'is-enabled', 'meshforge-echo']
+
+
 class TestCheckService:
     """Tests for check_service function."""
 
