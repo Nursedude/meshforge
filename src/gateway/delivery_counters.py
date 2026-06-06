@@ -444,12 +444,17 @@ class DeliveryCounters:
                 self._consecutive_write_errors = 0
                 self._last_write_error = None
                 self._last_write_error_ts = None
+            if prior_errors > 0:
+                # Clear the persisted count too so cross-process
+                # readers see the recovery (Issue #74).
+                self._persist_write_error_state(0, None)
         except sqlite3.Error as e:
             with self._lock:
                 self._consecutive_write_errors += 1
                 self._last_write_error_ts = time.time()
                 self._last_write_error = str(e)
                 error_count = self._consecutive_write_errors
+                error_ts_ms = round(self._last_write_error_ts * 1000)
             # First failure logs ERROR (operator-visible). Subsequent
             # failures throttle to DEBUG to avoid flooding journald —
             # snapshot.health.consecutive_write_errors keeps the count.
@@ -464,7 +469,55 @@ class DeliveryCounters:
                     "delivery_counters: write failure #%d: %s",
                     error_count, e,
                 )
+            self._persist_write_error_state(error_count, error_ts_ms)
         return event
+
+    def _persist_write_error_state(
+        self, count: int, ts_ms: Optional[int]
+    ) -> None:
+        """Best-effort UPSERT of the runtime write-error state (Issue #74).
+
+        Cross-process honesty: the map daemon serves ``snapshot()`` to
+        the watchdog's delivery_write_canary probe, but the in-memory
+        error counters live in the WRITER (gateway) process — before
+        this persist, the probe's degraded branch always read 0 from
+        the map daemon's reader instance and could never fire on a
+        mid-run write regression. Wrapped in its own try/except so a
+        failure here can't recurse or mask the original error (this is
+        often called BECAUSE a write just failed — when the DB is fully
+        down, the local fields plus ``last_successful_write_ts``
+        staleness still carry the signal).
+        """
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO counters(key, value) "
+                    "VALUES('meta.consecutive_write_errors', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (count,),
+                )
+                if ts_ms is not None:
+                    conn.execute(
+                        "INSERT INTO counters(key, value) "
+                        "VALUES('meta.last_write_error_ts', ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (ts_ms,),
+                    )
+                else:
+                    # Recovery: clear the persisted ts too — the
+                    # health contract is "no error state after a
+                    # successful write" (see
+                    # test_runtime_write_recovery_clears_error_state).
+                    conn.execute(
+                        "DELETE FROM counters "
+                        "WHERE key = 'meta.last_write_error_ts'"
+                    )
+                conn.commit()
+        except sqlite3.Error as e:
+            logger.debug(
+                "delivery_counters: could not persist write-error "
+                "state (%s) — local fields carry it", e,
+            )
 
     def _persist(self, event: DeliveryEvent) -> None:
         """Single-transaction write: bump counters + insert event +
@@ -569,10 +622,13 @@ class DeliveryCounters:
         first_event_ts: Optional[float] = None
         last_event_ts: Optional[float] = None
         # Cross-process health fields (set by the last writer's
-        # preflight; see `_run_preflight`). May be None when no writer
+        # preflight / write-error persist; see `_run_preflight` and
+        # `_persist_write_error_state`). May be None when no writer
         # has touched this DB yet.
         db_preflight_ok: Optional[bool] = None
         db_preflight_ts: Optional[float] = None
+        db_write_errors: Optional[int] = None
+        db_write_error_ts: Optional[float] = None
 
         for key, value in rows:
             if key.startswith("state."):
@@ -590,6 +646,10 @@ class DeliveryCounters:
                 db_preflight_ts = value / 1000.0
             elif key == "meta.preflight_ok":
                 db_preflight_ok = bool(value)
+            elif key == "meta.consecutive_write_errors":
+                db_write_errors = int(value)
+            elif key == "meta.last_write_error_ts":
+                db_write_error_ts = value / 1000.0
 
         sent = state_totals.get(DeliveryState.SENT.value, 0)
         confirmed = state_totals.get(DeliveryState.CONFIRMED.value, 0)
@@ -611,18 +671,32 @@ class DeliveryCounters:
                 d["note"] = note
             recent.append(d)
 
-        # Health block (Issue #63 / reliability backlog #2). The
-        # cross-process truth is what's persisted in the DB
-        # (`db_preflight_*` — set by the last writer). The local-only
-        # fields (preflight_error, consecutive_write_errors,
-        # last_write_error*) reflect THIS process's recent write
-        # outcomes — useful in the writer's own diagnostics but absent
-        # in the reader's snapshot (those fields stay at their init
-        # values). Operators interpret: `db_preflight_ok=false` → the
-        # last writer failed at startup. `last_event_ts` stale relative
-        # to expected traffic → mid-run write regression. `last_write_error`
-        # populated → THIS daemon's record() is currently failing.
+        # Health block (Issue #63 / reliability backlog #2; #74
+        # cross-process write-error truth). The cross-process truth is
+        # what's persisted in the DB (`db_preflight_*` and
+        # `db_write_errors*` — set by the last writer). Before #74 the
+        # runtime write-error fields were local-only, so a READER
+        # (the map daemon serving the watchdog probe) always saw 0 and
+        # the probe's degraded branch could never fire. Now the count
+        # merges via max(local, persisted): the reader (local 0) gets
+        # the writer's persisted truth; the writer wins when its own
+        # error-state persist also failed (DB fully down). The error
+        # STRING stays local-only (counters values are numeric).
+        # Operators interpret: `db_preflight_ok=false` → the last
+        # writer failed at startup. `consecutive_write_errors>0` →
+        # mid-run write regression (also: `last_event_ts` stale
+        # relative to expected traffic).
         with self._lock:
+            write_errors = max(
+                self._consecutive_write_errors, db_write_errors or 0
+            )
+            # ts only meaningful alongside a nonzero count — a healed
+            # write path reports no error state at all.
+            write_error_ts = None if write_errors == 0 else max(
+                (t for t in (self._last_write_error_ts, db_write_error_ts)
+                 if t is not None),
+                default=None,
+            )
             health = {
                 "db_path": str(self._db_path),
                 "preflight_ok": (
@@ -635,8 +709,8 @@ class DeliveryCounters:
                 ),
                 "preflight_error": self._preflight_error,
                 "last_successful_write_ts": last_event_ts,
-                "consecutive_write_errors": self._consecutive_write_errors,
-                "last_write_error_ts": self._last_write_error_ts,
+                "consecutive_write_errors": write_errors,
+                "last_write_error_ts": write_error_ts,
                 "last_write_error": self._last_write_error,
             }
 

@@ -799,3 +799,73 @@ class TestLastSuccessfulWriteTsHeartbeat:
             "last_successful_write_ts advanced even though the write "
             "failed — the heartbeat is no longer a real heartbeat."
         )
+
+
+class TestCrossProcessWriteErrorTruthIssue74:
+    """Issue #74: the runtime write-error count must be visible to a
+    READER process. Before this fix, `consecutive_write_errors` was
+    local-only — the map daemon (which serves snapshot() to the
+    watchdog's delivery_write_canary probe) always read 0, so the
+    probe's degraded branch could NEVER fire on a mid-run write
+    regression. Only the persisted preflight (wedge branch) worked.
+    """
+
+    @staticmethod
+    def _break_persist(counters):
+        import sqlite3 as _sq
+
+        def broken_persist(event):
+            raise _sq.OperationalError("attempt to write a readonly database")
+
+        original = counters._persist
+        counters._persist = broken_persist  # type: ignore[assignment]
+        return original
+
+    def test_reader_snapshot_shows_writer_runtime_errors(self, tmp_path):
+        """Two instances, one DB — the cross-process contract."""
+        db_path = tmp_path / "x.db"
+        writer = DeliveryCounters(db_path=db_path)
+        self._break_persist(writer)
+        for i in range(3):
+            writer.record(DeliveryState.SENT, f"m{i}", protocol="rns")
+
+        reader = DeliveryCounters(db_path=db_path, run_preflight=False)
+        health = reader.snapshot()["health"]
+        assert health["consecutive_write_errors"] == 3, (
+            "Reader must see the writer's persisted write-error count "
+            "— that's what makes the watchdog probe's degraded branch "
+            "live (it polls the map daemon, not the gateway)."
+        )
+        assert health["last_write_error_ts"] is not None
+
+    def test_recovery_clears_persisted_state_for_reader(self, tmp_path):
+        db_path = tmp_path / "x.db"
+        writer = DeliveryCounters(db_path=db_path)
+        original = self._break_persist(writer)
+        writer.record(DeliveryState.SENT, "m1", protocol="rns")
+        writer.record(DeliveryState.SENT, "m2", protocol="rns")
+        writer._persist = original  # type: ignore[assignment]
+        writer.record(DeliveryState.SENT, "m3", protocol="rns")  # recovery
+
+        reader = DeliveryCounters(db_path=db_path, run_preflight=False)
+        health = reader.snapshot()["health"]
+        assert health["consecutive_write_errors"] == 0, (
+            "Recovery must clear the persisted count too, or the probe "
+            "alarms forever on a healed write path."
+        )
+
+    def test_writer_local_count_wins_when_db_fully_down(self, tmp_path):
+        """When the error-state persist itself fails (DB fully down),
+        the WRITER's own snapshot still carries its local count via
+        max(local, persisted)."""
+        import sqlite3 as _sq
+        c = DeliveryCounters(db_path=tmp_path / "x.db")
+
+        def broken_connect():
+            raise _sq.OperationalError("unable to open database file")
+
+        c._connect = broken_connect  # type: ignore[assignment]
+        c.record(DeliveryState.SENT, "m1", protocol="rns")
+        c.record(DeliveryState.SENT, "m2", protocol="rns")
+        health = c.snapshot()["health"]
+        assert health["consecutive_write_errors"] == 2
