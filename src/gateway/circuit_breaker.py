@@ -96,7 +96,23 @@ class CircuitBreaker:
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     def __post_init__(self):
-        self._last_state_change = time.time()
+        # Issue #74: elapsed-time math (_last_state_change,
+        # _last_failure_time) runs on time.monotonic() — Pi fleet boxes
+        # NTP-step after boot, and a wall-clock step would freeze an
+        # OPEN circuit (backward) or recover it prematurely (forward).
+        # Wall clock is kept ONLY for the operator-facing _stats
+        # timestamps.
+        self._last_state_change = time.monotonic()
+        if self.half_open_max_calls != 1:
+            # >1 admits multiple concurrent trial calls into a
+            # known-bad destination and the slot is never returned on
+            # completion — unsupported until the slot becomes a true
+            # gauge. Clamp loudly rather than misbehave quietly.
+            logger.warning(
+                f"Circuit {self.destination}: half_open_max_calls="
+                f"{self.half_open_max_calls} unsupported, clamping to 1"
+            )
+            self.half_open_max_calls = 1
 
     @property
     def state(self) -> CircuitState:
@@ -125,9 +141,17 @@ class CircuitBreaker:
                 return True
 
             if self._state == CircuitState.OPEN:
-                # Check if recovery timeout has elapsed
-                if time.time() - self._last_failure_time >= self.recovery_timeout:
+                # Check if recovery timeout has elapsed (monotonic —
+                # immune to NTP steps, see __post_init__)
+                if time.monotonic() - self._last_failure_time >= self.recovery_timeout:
                     self._transition_to(CircuitState.HALF_OPEN)
+                    # The transitioning caller IS the trial call — take
+                    # the slot, or a second caller slips through before
+                    # the trial resolves (off-by-one found by the
+                    # Issue #74 review: _transition_to zeroes the
+                    # counter and this path returned True without
+                    # incrementing it).
+                    self._half_open_calls = 1
                     return True
                 # Still in recovery period
                 self._stats.total_blocked += 1
@@ -161,12 +185,13 @@ class CircuitBreaker:
 
     def record_failure(self, error: str = "") -> None:
         """Record a failed request."""
-        now = time.time()
         with self._lock:
             self._failure_count += 1
             self._stats.failure_count += 1
-            self._stats.last_failure_time = now
-            self._last_failure_time = now
+            # Wall clock for the operator-facing stat, monotonic for
+            # the recovery-elapsed math in can_execute().
+            self._stats.last_failure_time = time.time()
+            self._last_failure_time = time.monotonic()
 
             if self._state == CircuitState.HALF_OPEN:
                 # Recovery failed, re-open the circuit
@@ -189,7 +214,7 @@ class CircuitBreaker:
         if self._state != new_state:
             old_state = self._state
             self._state = new_state
-            self._last_state_change = time.time()
+            self._last_state_change = time.monotonic()
             self._stats.state_changes += 1
 
             if new_state == CircuitState.HALF_OPEN:
@@ -228,16 +253,15 @@ class CircuitBreaker:
         with self._lock:
             if self._state == CircuitState.OPEN:
                 return False
-            now = time.time()
             # `can_execute()` reads `_last_failure_time` (the dataclass
-            # field) to compute recovery-timeout elapsed; `get_stats()`
-            # surfaces `_stats.last_failure_time` (the sub-dataclass
-            # attribute). They are independent stores — update both, or
-            # the circuit will immediately transition to HALF_OPEN on the
-            # next `can_execute()` because `_last_failure_time=0.0` is
-            # ~unix-epoch ago.
-            self._last_failure_time = now
-            self._stats.last_failure_time = now
+            # field, monotonic) to compute recovery-timeout elapsed;
+            # `get_stats()` surfaces `_stats.last_failure_time` (the
+            # sub-dataclass attribute, wall clock). They are independent
+            # stores — update both, or the circuit will immediately
+            # transition to HALF_OPEN on the next `can_execute()`
+            # because `_last_failure_time=0.0` is ~boot-time ago.
+            self._last_failure_time = time.monotonic()
+            self._stats.last_failure_time = time.time()
             # Bump both internal counter AND stats counter — get_stats()
             # merges `_stats.to_dict()` over the per-circuit dict, so a
             # solo `_failure_count` write would be shadowed when surfaced
@@ -258,7 +282,7 @@ class CircuitBreaker:
                 "destination": self.destination,
                 "state": self._state.value,
                 "failure_count": self._failure_count,
-                "time_in_state": time.time() - self._last_state_change,
+                "time_in_state": time.monotonic() - self._last_state_change,
                 "recovery_timeout": self.recovery_timeout,
                 **self._stats.to_dict(),
             }

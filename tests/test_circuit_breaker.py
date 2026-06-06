@@ -462,5 +462,96 @@ class TestServiceRegistryFactory:
         assert "injected" not in get_all_registries()
 
 
+class TestMonotonicClockIssue74:
+    """Issue #74: recovery-elapsed math must run on time.monotonic().
+
+    Pi fleet boxes NTP-step after boot; with wall-clock math a backward
+    step froze an OPEN circuit past recovery_timeout and a forward step
+    recovered it prematurely. The pre-#74 test
+    (test_half_open_after_recovery_timeout) used a real time.sleep and
+    passed regardless of clock source — these tests drive a fake
+    monotonic counter so the clock choice is actually pinned."""
+
+    def _fake_clocks(self):
+        """Controllable monotonic + wall clocks."""
+        state = {"mono": 1000.0, "wall": 5_000_000.0}
+        return state
+
+    def test_recovery_driven_by_monotonic_not_wall(self):
+        cb = CircuitBreaker(
+            destination="node", failure_threshold=1, recovery_timeout=10.0
+        )
+        clocks = self._fake_clocks()
+        with patch("gateway.circuit_breaker.time") as mock_time:
+            mock_time.monotonic.side_effect = lambda: clocks["mono"]
+            mock_time.time.side_effect = lambda: clocks["wall"]
+            cb.record_failure("boom")
+            assert cb.is_open
+            # Wall clock LEAPS FORWARD 1h — must NOT recover early.
+            clocks["wall"] += 3600.0
+            assert cb.can_execute() is False
+            # Monotonic passes recovery_timeout — recovers on schedule.
+            clocks["mono"] += 10.5
+            assert cb.can_execute() is True
+            assert cb.state == CircuitState.HALF_OPEN
+
+    def test_backward_wall_step_does_not_freeze_recovery(self):
+        cb = CircuitBreaker(
+            destination="node", failure_threshold=1, recovery_timeout=10.0
+        )
+        clocks = self._fake_clocks()
+        with patch("gateway.circuit_breaker.time") as mock_time:
+            mock_time.monotonic.side_effect = lambda: clocks["mono"]
+            mock_time.time.side_effect = lambda: clocks["wall"]
+            cb.record_failure("boom")
+            # NTP steps the wall clock BACKWARD 1h (the post-boot sync
+            # case). Monotonic keeps advancing; recovery must too.
+            clocks["wall"] -= 3600.0
+            clocks["mono"] += 10.5
+            assert cb.can_execute() is True
+            assert cb.state == CircuitState.HALF_OPEN
+
+    def test_trip_open_recovery_also_monotonic(self):
+        cb = CircuitBreaker(destination="node", recovery_timeout=10.0)
+        clocks = self._fake_clocks()
+        with patch("gateway.circuit_breaker.time") as mock_time:
+            mock_time.monotonic.side_effect = lambda: clocks["mono"]
+            mock_time.time.side_effect = lambda: clocks["wall"]
+            cb.trip_open("wedge:rnsd.handle_outbound")
+            assert cb.is_open
+            clocks["wall"] += 7200.0  # wall leap must not matter
+            assert cb.can_execute() is False
+            clocks["mono"] += 10.5
+            assert cb.can_execute() is True
+
+    def test_stats_timestamps_stay_wall_clock(self):
+        """Operator-facing last_failure_time remains a real timestamp."""
+        cb = CircuitBreaker(destination="node", failure_threshold=1)
+        before = time.time()
+        cb.record_failure("boom")
+        after = time.time()
+        assert before <= cb.get_stats()["last_failure_time"] <= after
+
+    def test_half_open_second_call_blocked(self):
+        """Explicit pin: only ONE trial call gets through HALF_OPEN."""
+        cb = CircuitBreaker(
+            destination="node", failure_threshold=1, recovery_timeout=0.05
+        )
+        cb.record_failure("boom")
+        time.sleep(0.1)
+        assert cb.can_execute() is True   # takes the trial slot
+        assert cb.state == CircuitState.HALF_OPEN
+        assert cb.can_execute() is False  # second caller blocked
+
+    def test_half_open_max_calls_clamped_to_one(self, caplog):
+        """>1 is unsupported (slot never returned on completion) —
+        clamped loudly at construction."""
+        import logging
+        with caplog.at_level(logging.WARNING):
+            cb = CircuitBreaker(destination="node", half_open_max_calls=3)
+        assert cb.half_open_max_calls == 1
+        assert any("clamping" in r.message for r in caplog.records)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
