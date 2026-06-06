@@ -69,6 +69,8 @@ SIGNAL_CLASSES = (
     "rns_version_drift",  # 2026-06-01: rns/lxmf installed off the pinned +mf.N fork version (T2-isolate arc)
     "role_drift",  # 2026-06-03: live systemd unit state diverges from the box's effective declared role (fleet_roles.yaml + deployment.json overrides)
     "channel_feed_dark",  # 2026-06-04: no decoded text on a watched Meshtastic channel — the .32 dark-feed / PSK-rotation-canary lesson (silence is the failure mode)
+    "queue_backlog",  # Issue #74 (2026-06-06): persistent-queue depth near shed threshold / dead-letter growth — backlog masks delivery failures
+    "delivery_confirmation_stall",  # Issue #74 (2026-06-06): sends flow but confirmations collapsed — bridge self-report reads HEALTHY while shouting into a void
 )
 
 SEVERITIES = ("info", "degraded", "wedge")
@@ -1377,6 +1379,237 @@ def probe_delivery_write_canary(
         )
 
     return None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Probe: queue backpressure (Issue #74)
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_QUEUE_BACKLOG_STATE_PATH = "/var/lib/meshforge/queue_backlog_debounce.json"
+
+
+def _load_dead_letter_baseline(state_path: str) -> Optional[int]:
+    """Read the last-seen dead_letter count. Best-effort: any error → None.
+
+    None means 'no baseline yet' — the first observation establishes
+    the baseline and never fires, so a long-uptime box with a static
+    historical dead-letter pile doesn't false-alarm on watchdog
+    restart (the probe judges GROWTH, not absolute count).
+    """
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            value = json.load(fh).get("dead_letter")
+        return int(value) if value is not None and int(value) >= 0 else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _save_dead_letter_baseline(state_path: str, count: int) -> None:
+    """Persist the dead_letter baseline (atomic-rename, never raises)."""
+    try:
+        parent = os.path.dirname(state_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = state_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"dead_letter": int(count)}, fh, separators=(",", ":"))
+        os.replace(tmp, state_path)
+    except OSError:
+        pass
+
+
+def probe_queue_backlog(
+    *,
+    host: str = "127.0.0.1",
+    port: int = 5000,
+    timeout_s: float = 3.0,
+    depth_degraded: float = 0.80,
+    depth_wedge: float = 0.95,
+    dead_letter_growth_degraded: int = 10,
+    dead_letter_growth_wedge: int = 50,
+    state_path: Optional[str] = None,
+) -> Optional[Signal]:
+    """Persistent-queue backpressure via ``/api/gateway/queue`` (Issue #74).
+
+    A deep backlog masks delivery failures: messages sit 'pending'
+    while the operator reads the gateway as healthy, and at the shed
+    threshold ``_shed_overflow`` starts silently dropping LOW/NORMAL
+    priority. Two legs, max severity wins:
+
+      - depth: queue_depth / max_queue_size ≥ 95% → wedge (shed is
+        imminent/active), ≥ 80% → degraded. Skipped when
+        max_queue_size ≤ 0 (unlimited — no ceiling to judge against,
+        mirrors the fd probe's "unlimited" guard).
+      - dead-letter GROWTH since the last tick (baseline persisted to
+        ``state_path``, parity-debounce pattern): ≥ 50 new → wedge
+        (retries exhausting en masse), ≥ 10 new → degraded. A static
+        historical pile never fires.
+
+    Reads over localhost HTTP, never the queue DB directly — the
+    watchdog is root in a hardened sandbox and the DB lives under the
+    operator's home (the #60-class trap; derive context from the
+    SERVICE). Transport/shape errors → None (http_local /
+    service_inactive own those).
+    """
+    url = f"http://{host}:{port}/api/gateway/queue"
+    try:
+        with urlopen(url, timeout=timeout_s) as resp:
+            payload = json.loads(resp.read())
+    except (URLError, socket.timeout, json.JSONDecodeError, OSError, ValueError):
+        return None
+    if not isinstance(payload, dict) or "queue_depth" not in payload:
+        return None
+
+    try:
+        queue_depth = int(payload.get("queue_depth") or 0)
+        max_queue_size = int(payload.get("max_queue_size") or 0)
+        dead_letter = int(payload.get("dead_letter") or 0)
+    except (TypeError, ValueError):
+        return None
+
+    findings: List[Tuple[str, str]] = []  # (severity, detail-fragment)
+
+    if max_queue_size > 0:
+        usage = queue_depth / max_queue_size
+        if usage >= depth_wedge:
+            findings.append((
+                "wedge",
+                f"queue at {usage:.0%} of max ({queue_depth}/"
+                f"{max_queue_size}) — shed threshold; LOW/NORMAL "
+                f"priority messages are being dropped",
+            ))
+        elif usage >= depth_degraded:
+            findings.append((
+                "degraded",
+                f"queue backlog building: {usage:.0%} of max "
+                f"({queue_depth}/{max_queue_size})",
+            ))
+
+    sp = state_path or DEFAULT_QUEUE_BACKLOG_STATE_PATH
+    baseline = _load_dead_letter_baseline(sp)
+    _save_dead_letter_baseline(sp, dead_letter)
+    if baseline is not None:
+        growth = dead_letter - baseline
+        if growth >= dead_letter_growth_wedge:
+            findings.append((
+                "wedge",
+                f"dead-letter spiked +{growth} since last tick "
+                f"(now {dead_letter}) — retries exhausting en masse",
+            ))
+        elif growth >= dead_letter_growth_degraded:
+            findings.append((
+                "degraded",
+                f"dead-letter grew +{growth} since last tick "
+                f"(now {dead_letter})",
+            ))
+
+    if not findings:
+        return None
+
+    severity = "wedge" if any(s == "wedge" for s, _ in findings) else "degraded"
+    return Signal(
+        cls="queue_backlog",
+        subject="meshforge-gateway",
+        severity=severity,
+        detail=(
+            "Persistent queue backpressure: "
+            + "; ".join(d for _, d in findings)
+            + ". Check /api/gateway/queue and the gateway journal for "
+            "the failing destination."
+        ),
+        issue_ref=74,
+        extra={
+            "queue_depth": queue_depth,
+            "max_queue_size": max_queue_size,
+            "dead_letter": dead_letter,
+            "dead_letter_baseline": baseline,
+        },
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Probe: delivery confirmation stall (Issue #74)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def probe_delivery_confirmation_stall(
+    *,
+    host: str = "127.0.0.1",
+    port: int = 5000,
+    timeout_s: float = 3.0,
+    min_sent: int = 20,
+    rate_degraded: float = 0.50,
+    rate_wedge: float = 0.10,
+) -> Optional[Signal]:
+    """Sends flow but confirmations collapsed (Issue #74).
+
+    Closes the honest-signal gap where the bridge's own status reads
+    HEALTHY while nothing confirms: its rolling windows decay to
+    quiet/healthy when events stop, so a gateway shouting into a void
+    looks fine from inside. The watchdog judges from outside instead.
+
+    Judges a WINDOWED rate from the snapshot's recent-events ring
+    (last 50, newest-last) — the lifetime-cumulative confirmation_rate
+    would mask a recent collapse on a long-lived box.
+
+    Self-guards (silence is NOT failure here — the explicit inversion
+    of channel_feed_dark):
+      - transport/shape errors → None (other probes own those)
+      - confirmation_rate is None (zero traffic ever) → None
+      - ring SENT < min_sent → None (low-traffic box: one unconfirmed
+        message tanks the ratio; busy gateways canary for the fleet)
+
+    Severities: ring rate ≤ 10% → wedge, ≤ 50% → degraded.
+    """
+    url = f"http://{host}:{port}/api/gateway/delivery"
+    try:
+        with urlopen(url, timeout=timeout_s) as resp:
+            payload = json.loads(resp.read())
+    except (URLError, socket.timeout, json.JSONDecodeError, OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    if payload.get("confirmation_rate") is None:
+        # delivery_counters returns None iff sent == 0 — no traffic
+        # has ever flowed; nothing to judge.
+        return None
+
+    recent = payload.get("recent")
+    if not isinstance(recent, list):
+        return None
+
+    ring_sent = sum(1 for e in recent
+                    if isinstance(e, dict) and e.get("state") == "sent")
+    ring_confirmed = sum(1 for e in recent
+                         if isinstance(e, dict) and e.get("state") == "confirmed")
+    if ring_sent < min_sent:
+        return None
+
+    ring_rate = ring_confirmed / ring_sent
+    if ring_rate > rate_degraded:
+        return None
+
+    severity = "wedge" if ring_rate <= rate_wedge else "degraded"
+    return Signal(
+        cls="delivery_confirmation_stall",
+        subject="meshforge-gateway",
+        severity=severity,
+        detail=(
+            f"Delivery confirmations collapsed: {ring_confirmed}/"
+            f"{ring_sent} confirmed in the recent-events window "
+            f"({ring_rate:.0%}) while sends keep flowing. Receivers "
+            f"aren't acking — check RNS paths to the fan-out peers "
+            f"and /api/gateway/delivery drop_reasons."
+        ),
+        issue_ref=74,
+        extra={
+            "ring_sent": ring_sent,
+            "ring_confirmed": ring_confirmed,
+            "ring_rate": round(ring_rate, 3),
+            "cumulative_confirmation_rate": payload.get("confirmation_rate"),
+        },
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────

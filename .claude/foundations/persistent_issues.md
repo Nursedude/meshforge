@@ -552,3 +552,30 @@ text for ≥6h while the json pipeline is alive → `degraded`. Tell for a misse
 (decode gate = hash(name,psk)), deaf radio (`channel_utilization=0.0`), or dead uplink.
 Self-guards None on boxes with no json uplink at all (unobservable ≠ dark — e.g. moc5);
 busy gateways (moc) canary the channel for the whole fleet via mini's signal_class flow.
+
+
+---
+
+## Issue #74: gateway health-check review — decorative breaker, dead canary branch, 2 new probes (2026-06-06)
+
+Code review of the gateway health core found and fixed four honest-signal defects:
+(1) **circuit breaker was write-only** — `can_send_to`/`record_send_*` had ZERO
+callers; sends never gated, organic failures never fed threshold-OPEN; only
+`trip_open` from the wedge hook touched it. Now both RNS send paths gate + record;
+`_queue_send_rns` raises a retriable-pattern error ("temporarily unavailable") on
+open circuit so RetryPolicy backs off; reconnect success `reset_all()`s stale OPEN
+state. (2) **wall-clock recovery math** — `time.time()` froze OPEN circuits on
+post-boot NTP backsteps; now `time.monotonic()` (+ HALF_OPEN off-by-one fixed: the
+transitioning caller now takes the trial slot; `half_open_max_calls` clamped 1).
+(3) **delivery_write_canary degraded branch was dead** — `consecutive_write_errors`
+was writer-local; the map daemon serving `snapshot()` always read 0. Now persisted
+to `meta.*` keys + merged `max(local, db)`. (4) Two probe-layer blind spots closed:
+`probe_queue_backlog` (`queue_backlog`; depth ≥80%/95% of max + dead-letter GROWTH
+per tick via new `/api/gateway/queue`; static piles never fire) and
+`probe_delivery_confirmation_stall` (`delivery_confirmation_stall`; recent-ring
+confirm rate ≤50%/≤10% with ≥20 ring sends; None at low/zero traffic — silence is
+NOT failure here, inversion of `channel_feed_dark`). Also fixed: map handler
+imported nonexistent `MessageQueue` symbol (queue endpoint was dead code) →
+`PersistentMessageQueue`. Tests: `TestCircuitBreakerWiringIssue74` (8),
+`TestMonotonicClockIssue74` (6), `TestCrossProcessWriteErrorTruthIssue74` (3),
+probe tests (16) + closed-enum gate bump.

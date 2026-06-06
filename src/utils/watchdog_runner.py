@@ -48,8 +48,10 @@ from utils.rns_status_parser import run_rnstatus
 from utils.watchdog_probes import (
     Signal,
     probe_channel_feed_dark,
+    probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
+    probe_queue_backlog,
     probe_foundation_drift,
     probe_parity_drift,
     probe_rns_version_drift,
@@ -327,6 +329,24 @@ def run_all_probes(
 
     # Delivery write canary — reads gateway's self-reported health.
     sig = probe_delivery_write_canary(port=http_port)
+    if sig is not None:
+        signals.append(sig)
+
+    # Queue backpressure (Issue #74) — depth near the shed threshold /
+    # dead-letter growth via /api/gateway/queue. Self-guards None on
+    # transport errors (http_local/service_inactive own those) and on
+    # an unlimited queue (no ceiling to judge).
+    sig = probe_queue_backlog(port=http_port)
+    if sig is not None:
+        signals.append(sig)
+
+    # Delivery confirmation stall (Issue #74) — sends flowing but
+    # confirmations collapsed, judged from the recent-events ring of
+    # /api/gateway/delivery. The watchdog-layer answer to the bridge's
+    # self-reported HEALTHY-while-nothing-confirms gap. Self-guards
+    # None at zero/low traffic (silence is NOT failure here — the
+    # explicit inversion of channel_feed_dark).
+    sig = probe_delivery_confirmation_stall(port=http_port)
     if sig is not None:
         signals.append(sig)
 

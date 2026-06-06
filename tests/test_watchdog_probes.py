@@ -34,8 +34,10 @@ from utils.watchdog_probes import (  # noqa: E402
     SIGNAL_CLASSES,
     Signal,
     probe_channel_feed_dark,
+    probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
+    probe_queue_backlog,
     probe_foundation_drift,
     probe_parity_drift,
     probe_rns_version_drift,
@@ -86,6 +88,8 @@ def test_signal_classes_closed_enum_is_documented():
         "rns_version_drift",
         "role_drift",
         "channel_feed_dark",
+        "queue_backlog",                # Issue #74
+        "delivery_confirmation_stall",  # Issue #74
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -1930,3 +1934,231 @@ def test_load_config_file_operator_home_wins_over_etc(tmp_path, monkeypatch):
 
     cfg = load_config_file()
     assert cfg == {"http_port": 1111}
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Issue #74 — queue_backlog (persistent-queue backpressure)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _queue_payload(depth=0, max_size=1000, dead_letter=0):
+    return {
+        "queue_depth": depth,
+        "max_queue_size": max_size,
+        "dead_letter": dead_letter,
+        "pending": depth,
+        "in_progress": 0,
+    }
+
+
+def test_queue_backlog_none_on_unreachable_endpoint(tmp_path):
+    from urllib.error import URLError
+
+    def _raise(*args, **kwargs):
+        raise URLError("connection refused")
+
+    with patch("utils.watchdog_probes.urlopen", side_effect=_raise):
+        sig = probe_queue_backlog(state_path=str(tmp_path / "s.json"))
+    assert sig is None
+
+
+def test_queue_backlog_none_when_max_queue_size_unlimited(tmp_path):
+    """max_queue_size=0 (unlimited) → no ceiling to judge the depth
+    leg against. Mirrors the fd probe's 'unlimited' guard."""
+    payload = _queue_payload(depth=50_000, max_size=0)
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        sig = probe_queue_backlog(state_path=str(tmp_path / "s.json"))
+    assert sig is None
+
+
+def test_queue_backlog_degraded_at_80pct_depth(tmp_path):
+    payload = _queue_payload(depth=820, max_size=1000)
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        sig = probe_queue_backlog(state_path=str(tmp_path / "s.json"))
+    assert sig is not None
+    assert sig.cls == "queue_backlog"
+    assert sig.severity == "degraded"
+    assert sig.issue_ref == 74
+    assert "82%" in sig.detail
+
+
+def test_queue_backlog_wedge_at_95pct_depth(tmp_path):
+    """At the shed threshold _shed_overflow drops LOW/NORMAL priority
+    — active message loss, wedge."""
+    payload = _queue_payload(depth=960, max_size=1000)
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        sig = probe_queue_backlog(state_path=str(tmp_path / "s.json"))
+    assert sig is not None
+    assert sig.severity == "wedge"
+    assert "shed" in sig.detail
+
+
+def test_queue_backlog_dead_letter_static_pile_never_fires(tmp_path):
+    """A long-uptime box with 500 historical dead letters must NOT
+    alarm — the probe judges GROWTH, and the first observation only
+    establishes the baseline."""
+    sp = str(tmp_path / "s.json")
+    payload = _queue_payload(depth=10, max_size=1000, dead_letter=500)
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        # First tick: establishes baseline, no fire.
+        assert probe_queue_backlog(state_path=sp) is None
+        # Second tick, same count: still no fire.
+        assert probe_queue_backlog(state_path=sp) is None
+
+
+def test_queue_backlog_fires_on_dead_letter_growth(tmp_path):
+    sp = str(tmp_path / "s.json")
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(
+                   _queue_payload(dead_letter=100))):
+        assert probe_queue_backlog(state_path=sp) is None  # baseline
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(
+                   _queue_payload(dead_letter=115))):
+        sig = probe_queue_backlog(state_path=sp)
+    assert sig is not None
+    assert sig.severity == "degraded"
+    assert "+15" in sig.detail
+
+
+def test_queue_backlog_dead_letter_spike_is_wedge(tmp_path):
+    sp = str(tmp_path / "s.json")
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(
+                   _queue_payload(dead_letter=10))):
+        assert probe_queue_backlog(state_path=sp) is None  # baseline
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(
+                   _queue_payload(dead_letter=75))):
+        sig = probe_queue_backlog(state_path=sp)
+    assert sig is not None
+    assert sig.severity == "wedge"
+    assert "retries exhausting" in sig.detail
+
+
+def test_queue_backlog_takes_max_severity_across_legs(tmp_path):
+    """Depth degraded + dead-letter wedge → wedge wins."""
+    sp = str(tmp_path / "s.json")
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(
+                   _queue_payload(depth=850, max_size=1000, dead_letter=0))):
+        probe_queue_backlog(state_path=sp)  # baseline (fires degraded)
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(
+                   _queue_payload(depth=850, max_size=1000,
+                                  dead_letter=60))):
+        sig = probe_queue_backlog(state_path=sp)
+    assert sig is not None
+    assert sig.severity == "wedge"
+    # Both legs present in the operator detail.
+    assert "85%" in sig.detail and "+60" in sig.detail
+
+
+def test_queue_backlog_none_on_unexpected_shape(tmp_path):
+    """A 503/error JSON body (no queue_depth key) → None, not a
+    KeyError-shaped false alarm."""
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(
+                   {"error": "message_queue_unavailable"})):
+        sig = probe_queue_backlog(state_path=str(tmp_path / "s.json"))
+    assert sig is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Issue #74 — delivery_confirmation_stall
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _delivery_payload(ring_sent=0, ring_confirmed=0,
+                      cumulative_rate=0.9, padding=0):
+    """Build a /api/gateway/delivery-shaped payload. The ring lists
+    SENT then CONFIRMED events (order irrelevant to the probe)."""
+    recent = (
+        [{"state": "sent", "id": f"s{i}"} for i in range(ring_sent)]
+        + [{"state": "confirmed", "id": f"c{i}"}
+           for i in range(ring_confirmed)]
+        + [{"state": "queued", "id": f"q{i}"} for i in range(padding)]
+    )
+    return {
+        "confirmation_rate": cumulative_rate,
+        "state_totals": {"sent": 10_000, "confirmed": 9_000},
+        "recent": recent,
+    }
+
+
+def test_confirmation_stall_none_on_unreachable_endpoint():
+    from urllib.error import URLError
+
+    def _raise(*args, **kwargs):
+        raise URLError("connection refused")
+
+    with patch("utils.watchdog_probes.urlopen", side_effect=_raise):
+        assert probe_delivery_confirmation_stall() is None
+
+
+def test_confirmation_stall_none_when_no_traffic():
+    """confirmation_rate=None ⇔ zero sends ever. Silence is NOT
+    failure here — the explicit inversion of channel_feed_dark."""
+    payload = {"confirmation_rate": None, "recent": []}
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        assert probe_delivery_confirmation_stall() is None
+
+
+def test_confirmation_stall_none_below_min_sent():
+    """3 sends, 0 confirms = 0% — but a low-traffic box must not
+    alarm; one unconfirmed message tanks a tiny denominator."""
+    payload = _delivery_payload(ring_sent=3, ring_confirmed=0)
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        assert probe_delivery_confirmation_stall(min_sent=20) is None
+
+
+def test_confirmation_stall_degraded_at_50pct():
+    payload = _delivery_payload(ring_sent=25, ring_confirmed=10)
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        sig = probe_delivery_confirmation_stall(min_sent=20)
+    assert sig is not None
+    assert sig.cls == "delivery_confirmation_stall"
+    assert sig.severity == "degraded"
+    assert sig.issue_ref == 74
+    assert sig.extra["ring_sent"] == 25
+    assert sig.extra["ring_confirmed"] == 10
+
+
+def test_confirmation_stall_wedge_at_10pct():
+    payload = _delivery_payload(ring_sent=30, ring_confirmed=2)
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        sig = probe_delivery_confirmation_stall(min_sent=20)
+    assert sig is not None
+    assert sig.severity == "wedge"
+
+
+def test_confirmation_stall_healthy_rate_is_quiet():
+    payload = _delivery_payload(ring_sent=25, ring_confirmed=22)
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        assert probe_delivery_confirmation_stall(min_sent=20) is None
+
+
+def test_confirmation_stall_uses_recent_ring_not_cumulative():
+    """The point of the windowed judgment: a long-lived box with a
+    high LIFETIME rate but a collapsed RECENT window must fire —
+    cumulative masks the collapse."""
+    payload = _delivery_payload(
+        ring_sent=30, ring_confirmed=1, cumulative_rate=0.95,
+    )
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        sig = probe_delivery_confirmation_stall(min_sent=20)
+    assert sig is not None, (
+        "cumulative rate 95% must not mask a 3% recent window"
+    )
+    assert sig.severity == "wedge"
+    assert sig.extra["cumulative_confirmation_rate"] == 0.95
