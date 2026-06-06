@@ -4271,3 +4271,136 @@ class TestChunkForMeshPrefix:
         from gateway.base_handler import chunk_for_mesh, is_already_bridged
         chunks = chunk_for_mesh(_LEADERBOARD, prefix="[RNS:abcd] ")
         assert all(is_already_bridged(c) for c in chunks)
+
+
+# ---------------------------------------------------------------------------
+# Issue #74: circuit breaker actually wired into the send paths
+# ---------------------------------------------------------------------------
+
+class TestCircuitBreakerWiringIssue74:
+    """The breaker was write-only before #74: can_send_to /
+    record_send_success / record_send_failure had ZERO callers, so a
+    tripped circuit never stopped the next send and organic failures
+    never fed the threshold-OPEN transition. These tests pin the gate
+    and the outcome recording in both send paths, plus the
+    reset-on-reconnect."""
+
+    @staticmethod
+    def _fake_rns_lxmf_modules():
+        import sys  # noqa: F401  (parallel to TestLxmfCallback helper)
+        fake_rns = MagicMock(name="RNS")
+        fake_rns.Transport.has_path.return_value = True
+        fake_rns.Identity.recall.return_value = MagicMock(name="dest_identity")
+        fake_rns.Destination.OUT = "OUT"
+        fake_rns.Destination.SINGLE = "SINGLE"
+        fake_rns.Destination.return_value = MagicMock(name="destination")
+        fake_lxmf = MagicMock(name="LXMF")
+        fake_lxmf.LXMessage.return_value = MagicMock(name="LXMessage_instance")
+        return fake_rns, fake_lxmf
+
+    def _prime(self, bridge):
+        bridge._connected_rns = True
+        bridge._lxmf_source = MagicMock(name="lxmf_source")
+        bridge._lxmf_router = MagicMock(name="lxmf_router")
+
+    def test_send_to_rns_blocked_when_circuit_open(self, bridge):
+        """Open circuit -> send returns False WITHOUT touching any RNS RPC."""
+        import sys
+        fake_rns, fake_lxmf = self._fake_rns_lxmf_modules()
+        self._prime(bridge)
+        bridge._circuit_breaker.can_send.return_value = False
+        with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
+            result = bridge.send_to_rns("hello", b"\xab" * 16)
+        assert result is False
+        fake_rns.Transport.has_path.assert_not_called()
+        fake_rns.Transport.request_path.assert_not_called()
+
+    def test_send_to_rns_records_success(self, bridge):
+        import sys
+        fake_rns, fake_lxmf = self._fake_rns_lxmf_modules()
+        self._prime(bridge)
+        with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
+            assert bridge.send_to_rns("hello", b"\xab" * 16) is True
+        bridge._circuit_breaker.record_success.assert_called_once_with(
+            (b"\xab" * 16).hex()[:8]
+        )
+
+    def test_send_to_rns_records_failure_on_exception(self, bridge):
+        import sys
+        fake_rns, fake_lxmf = self._fake_rns_lxmf_modules()
+        fake_lxmf.LXMessage.side_effect = RuntimeError("ctor boom")
+        self._prime(bridge)
+        with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
+            assert bridge.send_to_rns("hello", b"\xab" * 16) is False
+        dest, err = bridge._circuit_breaker.record_failure.call_args[0]
+        assert dest == (b"\xab" * 16).hex()[:8]
+        assert "ctor boom" in err
+
+    def test_send_to_rns_records_failure_on_no_path(self, bridge):
+        import sys
+        fake_rns, fake_lxmf = self._fake_rns_lxmf_modules()
+        fake_rns.Transport.has_path.return_value = False
+        self._prime(bridge)
+        # Short-circuit the 50-iteration path-wait loop.
+        bridge._stop_event.set()
+        with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
+            assert bridge.send_to_rns("hello", b"\xab" * 16) is False
+        bridge._stop_event.clear()
+        bridge._circuit_breaker.record_failure.assert_called_once_with(
+            (b"\xab" * 16).hex()[:8], "no path"
+        )
+
+    def test_queue_send_rns_raises_retriable_when_circuit_open(self, bridge):
+        """Queue path RAISES with a retriable-pattern message so
+        RetryPolicy classifies it transient (backoff + retry after the
+        recovery window) instead of the unknown-error one-shot retry a
+        bare `return False` would get."""
+        self._prime(bridge)
+        bridge._circuit_breaker.can_send.return_value = False
+        payload = {"message": "hi", "destination_hash": b"\xab" * 16}
+        with pytest.raises(RuntimeError, match="temporarily unavailable"):
+            bridge._queue_send_rns(payload)
+
+    def test_queue_send_rns_records_success(self, bridge):
+        import sys
+        fake_rns, fake_lxmf = self._fake_rns_lxmf_modules()
+        self._prime(bridge)
+        payload = {"message": "hi", "destination_hash": b"\xab" * 16}
+        with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
+            assert bridge._queue_send_rns(payload) is True
+        bridge._circuit_breaker.record_success.assert_called_once_with(
+            (b"\xab" * 16).hex()[:8]
+        )
+
+    def test_queue_send_rns_records_failure_on_exception(self, bridge):
+        import sys
+        fake_rns, fake_lxmf = self._fake_rns_lxmf_modules()
+        fake_lxmf.LXMessage.side_effect = RuntimeError("queue boom")
+        self._prime(bridge)
+        payload = {"message": "hi", "destination_hash": b"\xab" * 16}
+        with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
+            assert bridge._queue_send_rns(payload) is False
+        dest, err = bridge._circuit_breaker.record_failure.call_args[0]
+        assert dest == (b"\xab" * 16).hex()[:8]
+        assert "queue boom" in err
+
+    def test_reconnect_resets_circuit_breaker(self, bridge):
+        """A fresh RNS transport invalidates stale per-destination OPEN
+        state — reconnect success calls reset_all()."""
+        bridge._running = True
+        bridge._connected_rns = False
+        bridge._rns_init_failed_permanently = False
+        bridge._rns_reconnect.should_retry.return_value = True
+        bridge._rns_reconnect.attempts = 0
+        bridge._circuit_breaker.reset_all.return_value = 2
+
+        def _fake_connect():
+            bridge._connected_rns = True
+        bridge._connect_rns = _fake_connect
+
+        def _stop_loop():
+            bridge._running = False
+        bridge._maybe_start_meshtastic_broadcast = _stop_loop
+
+        bridge._rns_loop()
+        bridge._circuit_breaker.reset_all.assert_called_once()

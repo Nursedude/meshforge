@@ -1133,6 +1133,17 @@ class RNSMeshtasticBridge(
             if destination_hash:
                 # Direct message
                 hash_short = destination_hash.hex()[:8]
+                # Issue #74: gate on the per-destination circuit BEFORE
+                # any RNS RPC. A tripped/open circuit means this
+                # destination recently wedged or failed repeatedly —
+                # diving back into has_path/handle_outbound defeats the
+                # breaker (it was write-only before this gate).
+                if not self.can_send_to(hash_short):
+                    logger.warning(
+                        f"Send to {hash_short} blocked: circuit open "
+                        f"(recent wedge/failures; retry after recovery window)"
+                    )
+                    return False
                 # On-wedge composite: trip the circuit breaker for this
                 # destination THEN run the default publish-+-counter hook.
                 # The watchdog calls `os._exit(2)` after we return, so the
@@ -1169,6 +1180,10 @@ class RNSMeshtasticBridge(
 
                 if not RNS.Transport.has_path(destination_hash):
                     logger.warning("No path to destination")
+                    # Per-destination failure: feeds the threshold-based
+                    # OPEN transition so repeated no-path sends stop
+                    # hammering path requests (Issue #74).
+                    self.record_send_failure(hash_short, "no path")
                     return False
 
                 dest_identity = bounded_call("rnsd.identity_recall",
@@ -1216,12 +1231,17 @@ class RNSMeshtasticBridge(
                          target=hash_short,
                          timeout_s=15.0,
                          on_wedge=_on_wedge)
+            self.record_send_success(hash_short)
             return True
 
         except Exception as e:
             logger.error(f"Failed to send to RNS: {e}")
             with self._stats_lock:
                 self.stats['errors'] += 1
+            if destination_hash:
+                self.record_send_failure(
+                    destination_hash.hex()[:8], str(e)
+                )
             return False
 
     # send_to_meshcore() inherited from MeshCoreBridgeMixin
@@ -1233,6 +1253,24 @@ class RNSMeshtasticBridge(
 
         if not self._connected_rns:
             return False
+
+        # Issue #74: circuit gate BEFORE the try block — the inner
+        # except would swallow a raise into `return False`, which the
+        # queue classifies as an unknown error (one short retry, then
+        # dead-letter). Raising with a retriable-pattern message
+        # ("temporarily unavailable") makes RetryPolicy back off and
+        # retry after the circuit's recovery window instead.
+        if destination_hash:
+            _gate_key = (
+                destination_hash.hex()[:8]
+                if isinstance(destination_hash, bytes)
+                else str(destination_hash).lower()[:8]
+            )
+            if not self.can_send_to(_gate_key):
+                raise RuntimeError(
+                    f"circuit open for {_gate_key}: "
+                    f"destination temporarily unavailable"
+                )
 
         try:
             import RNS
@@ -1272,6 +1310,7 @@ class RNSMeshtasticBridge(
                         return False
 
             if not RNS.Transport.has_path(destination_hash):
+                self.record_send_failure(hash_short, "no path")
                 return False
 
             dest_identity = bounded_call("rnsd.identity_recall",
@@ -1310,10 +1349,18 @@ class RNSMeshtasticBridge(
                          target=hash_short,
                          timeout_s=15.0,
                          on_wedge=_on_wedge)
+            self.record_send_success(hash_short)
             return True
 
         except Exception as e:
             logger.error(f"Queue send to RNS failed: {e}")
+            if destination_hash:
+                _fail_key = (
+                    destination_hash.hex()[:8]
+                    if isinstance(destination_hash, bytes)
+                    else str(destination_hash).lower()[:8]
+                )
+                self.record_send_failure(_fail_key, str(e))
             return False
 
     def _dispatch_rns_xform_spill(self, payload: Dict) -> bool:
@@ -1542,6 +1589,18 @@ class RNSMeshtasticBridge(
                         self.health.record_connection_event("rns", "connected")
                         self._update_subsystem_state("rns", SubsystemState.HEALTHY)
                         logger.info("RNS connection established")
+                        # Issue #74: a fresh transport invalidates stale
+                        # per-destination OPEN state from the prior
+                        # connection (the wedge that tripped them died
+                        # with it). Without this, circuits stay OPEN for
+                        # the full recovery_timeout after recovery.
+                        if self._circuit_breaker is not None:
+                            _reset = self._circuit_breaker.reset_all()
+                            if _reset:
+                                logger.info(
+                                    f"Reset {_reset} circuit(s) after "
+                                    f"RNS reconnect"
+                                )
                         # Start Meshtastic broadcast bridge plug-in (idempotent)
                         self._maybe_start_meshtastic_broadcast()
                     else:
