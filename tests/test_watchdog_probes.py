@@ -973,7 +973,7 @@ def _journal_fake(json_age_s=60.0, ch_text_age_s=None, now=_NOW, patterns=None):
 
 
 def test_channel_feed_dark_fires_when_text_stale():
-    """json pipeline alive, last ch2 text 7h old (>6h default) → degraded."""
+    """json pipeline alive, last meshforge text 7h old (>6h default) → degraded."""
     sig = probe_channel_feed_dark(
         main_pid=1002,
         newest_line_fn=_journal_fake(ch_text_age_s=7 * 3600.0),
@@ -982,7 +982,7 @@ def test_channel_feed_dark_fires_when_text_stale():
     assert sig is not None
     assert sig.cls == "channel_feed_dark"
     assert sig.severity == "degraded"
-    assert sig.subject == "meshtastic-ch2"
+    assert sig.subject == "meshtastic-meshforge"
     assert sig.extra["age_s"] == pytest.approx(7 * 3600.0, abs=1.0)
     assert "PSK re-key" in sig.detail
 
@@ -1040,22 +1040,41 @@ def test_channel_feed_dark_none_on_unparseable_timestamp():
 
 
 def test_channel_feed_dark_channel_param_respected():
-    """The queried journal pattern carries the configured channel index."""
+    """The queried journal pattern carries the configured channel NAME."""
     patterns: list = []
     probe_channel_feed_dark(
-        channel=5,
+        channel_name="testchan",
         main_pid=1002,
         newest_line_fn=_journal_fake(ch_text_age_s=600.0, patterns=patterns),
         now=_NOW,
     )
-    assert any('"channel":5,' in p for p in patterns)
+    assert any("json/testchan/" in p for p in patterns)
     sig = probe_channel_feed_dark(
-        channel=5,
+        channel_name="testchan",
         main_pid=1002,
         newest_line_fn=_journal_fake(ch_text_age_s=7 * 3600.0),
         now=_NOW,
     )
-    assert sig is not None and sig.subject == "meshtastic-ch5"
+    assert sig is not None and sig.subject == "meshtastic-testchan"
+
+
+def test_channel_feed_dark_matches_by_name_not_slot_index():
+    """2026-06-06 federator false-alarm regression: slot layouts are
+    box-local (the fleet 'meshforge' channel sat at slot 3 because slot 2
+    held a box-local channel) — a '"channel":2' grep read a HEALTHY feed as
+    dark for days. The probe must query by the topic NAME (the decode-gate
+    identity) and never by a slot index."""
+    patterns: list = []
+    probe_channel_feed_dark(
+        main_pid=1002,
+        newest_line_fn=_journal_fake(ch_text_age_s=600.0, patterns=patterns),
+        now=_NOW,
+    )
+    text_patterns = [p for p in patterns if '"type":"text"' in p]
+    assert text_patterns, "probe never queried for decoded text"
+    for p in text_patterns:
+        assert "json/meshforge/" in p
+        assert '"channel":' not in p
 
 
 def test_channel_feed_dark_threshold_boundary():

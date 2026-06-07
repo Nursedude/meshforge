@@ -544,9 +544,11 @@ legibility case, see `.claude/research/fleet_architecture_2026_06_03.md` §7-B);
 debounce; fix `provision_role.py --apply` or correct the declared role. 5th probe
 2026-06-04: `probe_channel_feed_dark` (`channel_feed_dark`) — the .32 dark-feed /
 PSK-rotation-canary lesson: **silence is the failure mode**. Watches meshtasticd's
-MQTT-json uplink journal lines (`"channel":2,…,"type":"text"` — the only channel-tagged
-decoded-text record that doesn't touch single-consumer `/api/v1/fromradio`, #17); no ch2
-text for ≥6h while the json pipeline is alive → `degraded`. Tell for a missed PSK re-key
+MQTT-json uplink journal lines (`json/<name>/…"type":"text"` — by channel NAME since
+2026-06-06: `"channel":N` is the box-LOCAL slot index and slot layouts differ, which
+false-alarmed the federator for days; doesn't touch single-consumer `/api/v1/fromradio`,
+#17); no fleet-channel text for ≥6h while the json pipeline is alive → `degraded`. Tell
+for a missed PSK re-key
 (decode gate = hash(name,psk)), deaf radio (`channel_utilization=0.0`), or dead uplink.
 Self-guards None on boxes with no json uplink at all (unobservable ≠ dark — e.g. moc5);
 busy gateways (moc) canary the channel for the whole fleet via mini's signal_class flow.

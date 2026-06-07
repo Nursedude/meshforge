@@ -1872,7 +1872,7 @@ def _short_unix_ts(line: str) -> Optional[float]:
 
 def probe_channel_feed_dark(
     *,
-    channel: int = 2,
+    channel_name: str = "meshforge",
     unit: str = "meshtasticd.service",
     dark_after_s: float = 6 * 3600.0,
     lookback: str = "24h",
@@ -1891,10 +1891,21 @@ def probe_channel_feed_dark(
     the meshforge channel mean a missed PSK re-key, a deaf radio (the moc2
     antenna case — ``channel_utilization=0.0`` tell), or a dead uplink path.
 
-    Observation source: meshtasticd's MQTT-json uplink journal lines
-    (``serialized json message: {"channel":N,...,"type":"text"}``) — the
-    only channel-tagged decoded-text record available without touching the
-    single-consumer ``/api/v1/fromradio`` (#17). Self-guards (returns None):
+    Watched by NAME, not slot index (2026-06-06 federator false-alarm):
+    the ``"channel":N`` field in the json payload is the box-LOCAL slot
+    index, and slot layouts legitimately differ across the fleet (the
+    federator carries a box-local channel at slot 2 and the fleet channel
+    at slot 3 — the old ``"channel":2`` grep read a healthy feed as dark
+    for days). Channel identity is the NAME (half of the decode gate
+    ``hash(name, psk)``), and the json publish-topic journal line carries
+    both the name and the payload:
+    ``JSON publish message to msh/2/json/<name>/!<id>, N bytes:
+    {...,"type":"text",...}`` — so one pattern matches name + text.
+
+    Observation source: meshtasticd's MQTT-json uplink journal lines —
+    the only channel-tagged decoded-text record available without touching
+    the single-consumer ``/api/v1/fromradio`` (#17). Self-guards
+    (returns None):
 
     - meshtasticd inactive (``service_inactive`` owns that), or
     - the box emits NO json-uplink lines at all in the lookback window
@@ -1902,10 +1913,10 @@ def probe_channel_feed_dark(
       unobservable is not dark), or
     - journalctl unavailable/timeout.
 
-    A box whose json pipeline is alive but shows no ch-``channel`` text for
-    ``dark_after_s`` fires ``degraded`` — the sentinel boxes (busy gateways
-    like moc) effectively canary the channel for the whole fleet via the
-    mini signal_class flow.
+    A box whose json pipeline is alive but shows no ``channel_name`` text
+    for ``dark_after_s`` fires ``degraded`` — the sentinel boxes (busy
+    gateways like moc) effectively canary the channel for the whole fleet
+    via the mini signal_class flow.
     """
     pid = main_pid if main_pid is not None else _resolve_main_pid(
         unit, systemctl_path=systemctl_path
@@ -1937,7 +1948,7 @@ def probe_channel_feed_dark(
     if json_ts is not None and (ts_now - json_ts) >= dark_after_s:
         return None
 
-    ch_text = newest_line_fn(f'"channel":{channel},.*"type":"text"')
+    ch_text = newest_line_fn(f'json/{channel_name}/.*"type":"text"')
 
     if ch_text is None:
         age_desc = f"none within the {lookback} lookback window"
@@ -1956,16 +1967,17 @@ def probe_channel_feed_dark(
         f"{(ts_now - json_age) / 3600.0:.1f}h ago" if json_age is not None else "unknown"
     )
     detail = (
-        f"No decoded text on Meshtastic channel {channel} ({age_desc}) while "
-        f"the json-uplink pipeline is observable (newest json line "
-        f"{json_age_desc}). On a normally-busy mesh this is the dark-feed "
-        f"tell: missed PSK re-key (decode gate = hash(name,psk)), deaf radio "
-        f"(check channel_utilization in DeviceTelemetry), or dead uplink "
-        f"path. Verify: journalctl -u meshtasticd | grep '\"channel\":{channel}' ; "
-        f"then send a test message from another fleet box on ch{channel}."
+        f"No decoded text on Meshtastic channel '{channel_name}' "
+        f"({age_desc}) while the json-uplink pipeline is observable (newest "
+        f"json line {json_age_desc}). On a normally-busy mesh this is the "
+        f"dark-feed tell: missed PSK re-key (decode gate = hash(name,psk)), "
+        f"deaf radio (check channel_utilization in DeviceTelemetry), or dead "
+        f"uplink path. Verify: journalctl -u meshtasticd | grep "
+        f"'json/{channel_name}/' ; then send a test message from another "
+        f"fleet box on the '{channel_name}' channel."
     )
     extra: dict = {
-        "channel": channel,
+        "channel_name": channel_name,
         "dark_after_s": dark_after_s,
         "lookback": lookback,
     }
@@ -1973,7 +1985,7 @@ def probe_channel_feed_dark(
         extra["age_s"] = round(age_s, 1)
     return Signal(
         cls="channel_feed_dark",
-        subject=f"meshtastic-ch{channel}",
+        subject=f"meshtastic-{channel_name}",
         severity="degraded",
         detail=detail,
         extra=extra,

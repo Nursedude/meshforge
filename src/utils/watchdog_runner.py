@@ -318,8 +318,10 @@ def run_all_probes(
 
     # Channel-feed dark — the .32 dark-feed lesson (2026-06-04 PSK rotation):
     # silence is the failure mode. Watches meshtasticd's json-uplink journal
-    # for decoded ch2 text; hours of silence on a box whose json pipeline is
-    # otherwise alive = missed re-key / deaf radio / dead uplink path.
+    # for decoded fleet-channel text BY NAME (slot indexes are box-local;
+    # the 2026-06-06 federator false-alarm had the fleet channel at slot 3);
+    # hours of silence on a box whose json pipeline is otherwise alive =
+    # missed re-key / deaf radio / dead uplink path.
     # Self-guards: None when meshtasticd is down (service_inactive owns that)
     # or when the box emits no json-uplink lines at all (unobservable —
     # e.g. mqtt module unconfigured; a collector that only RXes).
