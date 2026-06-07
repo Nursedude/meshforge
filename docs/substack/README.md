@@ -52,6 +52,8 @@ Published at: https://wh6gxznursedude.substack.com/
   _A new Pi at a volcano-side AREDN site: bare SSH to fully-federated fleet member in one evening, two latent bugs the new topology surfaced — and the honest ledger of what the man did, what the AI did, and the guardrails that made the speed safe._
 - **2026-06-06 — [The Circuit Breaker Was Decorative](2026-06-06-the-circuit-breaker-was-decorative.md)**
   _A review of the gateway's safety machinery found it wasn't plugged in: a breaker with zero callers, a canary with a cut alarm wire, a test suite poisoning its own box — ending with every fleet cron required to leave a dated verdict, and a watchdog that had died doing exactly what it was built to detect._
+- **2026-06-07 — [Three Failures Wearing One Symptom](2026-06-07-three-failures-wearing-one-symptom.md)**
+  _A dark web client was a missed re-key AND a connection leak AND a packet-stealing probe, hidden by an instrument that couldn't see half the traffic. Then our stakeout probe false-alarmed on its own assumption, an API we'd blamed on a firmware regression turned out never to have existed, and a brand-new drift probe caught a real drifted radio on its first fleet tick._
 
 ---
 
