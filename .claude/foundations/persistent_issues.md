@@ -121,6 +121,7 @@ Full history in `persistent_issues_archive.md`.
 | #63 (2026-05-18) | `delivery_counters` silent write-path failures (Issue #58 burned 18h before detection). Cure: startup preflight at `__init__` writes/reads `meta.preflight_*` and surfaces via `snapshot()["health"]`; runtime `consecutive_write_errors` counter; ERROR-throttle on first fail, INFO on recovery. Body in archive. | `tests/test_delivery_counters.py` (11): `TestPreflightHealthy` (3), `TestPreflightFailureSurfaces` (2), `TestRuntimeWriteErrorTracking` (4), `TestLastSuccessfulWriteTsHeartbeat` (2) |
 | #70 (2026-05-22) | `meshforge-map` steady-state `http_local_unresponsive` wedges every few hours. Root cause: `/api/nodes/directory` 35 MB body's `json.dumps`+`gzip.compress` are C extensions that hold GIL ~6-10 s; concurrent federation polls pile up under it, `/healthz` stalls past the watchdog's 2 s probe. Fix: short-TTL response cache (`DirectoryResponseCache`, 5 s) with single-flight rebuild on `MapDataCollector`; cache hits skip json.dumps+gzip entirely. 18 tests including 8-thread/1-build single-flight race + 6-thread handler coalescing. Cache stats surface in `/api/status.directory.cache`. Pattern-audit found `/api/nodes/geojson` is the next instance (47 MB, ~35 s wedge under cold collect+gzip); deferred to Issue #71. Commits `1a52aab` (cache) + handler cache-stats surface. | `tests/test_directory_response_cache.py` (13) + `TestDirectoryHandlerCacheIssue70` (5) + `TestStatusExposesDirectoryCache` (2) |
 | #71 (2026-05-22, GitHub #1168) | Pattern extended to the two remaining instances of the same GIL-bound serialization wedge class. `DirectoryResponseCache` promoted to `ResponseByteCache` (key widened to `Hashable` for tuple keys). New `_geojson_response_cache` (TTL=2s, keyed by `(bbox, region, preset)` since each materially alters the response) wraps `/api/nodes/geojson` (47 MB, ~35 s cold). New `_topology_response_cache` (TTL=5s, single `None` key — no query params) wraps `/api/network/topology` (24 MB, 1.4 s every request). Both surface stats blocks at `/api/status.geojson.cache` and `/api/status.topology.cache` matching the directory shape. Closes the last two known instances of the wedge class — any future `http_local_unresponsive` signal is now a NEW class. Commits `7d0b8e5` (class promotion + alias) + `000201f` (wire both endpoints). | `tests/test_response_byte_cache.py` (32: 19 mirrored + 7 new + 6 alias) + `TestGeojsonHandlerCacheIssue71` (5) + `TestTopologyHandlerCacheIssue71` (5) + `TestStatusExposesGeojsonCache` (2) + `TestStatusExposesTopologyCache` (2) |
+| #68 (2026-05-20) | rnsd hard-wedge → map main thread silent-stuck in `unix_stream_connect`; bg threads kept logging, `:5000` never bound. Cure: bounded AF_UNIX probe in `open_reticulum()` chokepoint (MF019) + FIXED AT SOURCE in fork `rns 1.2.5+mf.1` (`LocalClientInterface.connect` settimeout). Detection/recovery recipes + body in archive. | `TestRNSReticulumChokepoint` + fork test `meshforge_local_connect.py` (4) |
 
 ---
 
@@ -244,68 +245,6 @@ operator tell. Tests: `TestGzipNegotiationIssue64` etc. +
 
 ---
 
-## Issue #68: rnsd hard-wedge → meshforge-map main thread silent-stuck in `unix_stream_connect` (2026-05-20)
-
-**Symptom**: moc1's `meshforge-map.service` was `active (running)` for
-56 min but never bound `:5000`. Background threads (WebSocket :5001,
-MQTT) kept logging normally. No error, no traceback. Visible only via
-federation peer_status showing moc1 unreachable.
-
-**Root cause**: rnsd hard-wedged — `active (running)` per systemd,
-but `rnstatus` timed out, journal silent, kernel showed `SYN-SENT`
-piling up on `@rns/default`. `MapServer.start()`
-(`src/utils/map_data_service.py:590`) calls `init_rns_singleton()`
-(`src/utils/_map_collector_rns.py:259`) → `_RNS.Reticulum(configdir=...)`
-which `connect()`s the shared-instance Unix socket uncapped. When
-rnsd doesn't accept, the syscall blocks indefinitely. Main thread
-wedged → HTTP bind never ran. Background threads were started before
-RNS init, so they kept logging.
-
-**Detection** — kernel signals are the only honest ones:
-```bash
-PID=$(systemctl show meshforge-map.service -p MainPID --value)
-sudo cat /proc/$PID/task/$PID/stack   # unix_wait_for_peer / unix_stream_connect
-timeout 5 rnstatus || echo "rnsd RPC wedged"
-sudo ss -xnp | grep '@rns/' | grep -c SYN-SENT   # >0 = clients piled up
-```
-
-**Recovery** (deterministic):
-```bash
-sudo systemctl stop meshforge-map.service     # release blocked connect()
-sudo systemctl restart rnsd.service           # may SIGKILL after TimeoutStopSec
-sudo systemctl start meshforge-map.service    # binds :5000 in ~1.4s
-```
-
-**Class**: variant of "service-running-but-not-serving" (cf #58, #61,
-#63). Novel shape: *main thread* stuck in a kernel syscall while
-background threads keep logging — all userspace signals say healthy.
-
-**Prevention (IMPLEMENTED 2026-05-29, RNS T2-isolate arc sub-arc C)**: the
-deferred pre-flight is now real and central. `utils/rns_init.py::open_reticulum`
-— the project-wide guarded RNS-init chokepoint — runs a bounded `socket.AF_UNIX`
-connect probe (`_probe_shared_instance_connect`, default 5s) against
-`@rns/<instance>` BEFORE constructing. `settimeout()` makes the connect
-interruptible (unlike RNS's internal uninterruptible connect that hangs the
-thread); on timeout it returns `None` (degrade) so the caller keeps serving its
-other legs instead of hanging. A passive `/proc/net/unix` presence scan can't
-tell "accepting" from "wedged" — only the active connect can. All in-process
-callers (map `init_rns_singleton`, gateway `_rns_bridge_connection`,
-`node_tracker`, `commands/rns`) route through it; raw construction is banned by
-**lint MF019 + `TestRNSReticulumChokepoint`**. The construct still carries the
-`os._exit` watchdog backstop for the rare "probe passed, then wedged" race.
-See `.claude/plans/rns_t2_isolate_arc.md`.
-
-**FIXED AT SOURCE (2026-05-30, fork `rns 1.2.5+mf.1`, `6fb9a9ec`)**: now an
-in-library cure, not just a MeshForge guard. `LocalClientInterface.connect()`
-brackets the shared-instance connect with `settimeout(5s, env
-RNS_LOCAL_CONNECT_TIMEOUT)` → a wedged rnsd raises `socket.timeout` (reconnect
-retries / falls back to standalone) instead of hanging in `unix_stream_connect`.
-Fork test `tests/meshforge_local_connect.py` (4). The `rns_init.py` probe +
-`os._exit` backstop STAY as defense-in-depth until soak-proven. See
-[[project_rns_fork_shipped_2026_05_30]].
-
-
----
 
 ## Issue #69: Foreign daemon claims `@rns/<instance>` shared-instance listener — every RNS client EOFs (2026-05-20)
 
@@ -579,3 +518,25 @@ imported nonexistent `MessageQueue` symbol (queue endpoint was dead code) →
 `PersistentMessageQueue`. Tests: `TestCircuitBreakerWiringIssue74` (8),
 `TestMonotonicClockIssue74` (6), `TestCrossProcessWriteErrorTruthIssue74` (3),
 probe tests (16) + closed-enum gate bump.
+
+
+---
+
+## Issue #75: leaked TCPInterface starves :9443 web client — phoneapi_tcp_leak probe (2026-06-07)
+
+moc1's web client showed no inbound texts/ACKs while the radio journal proved RX
+healthy ("waiting for delivery", bot replies invisible). Cause: the map service
+held an UNACCOUNTED persistent TCP to meshtasticd :4403 (`/api/radio/status`
+`persistent_owner: null`) — a leaked `TCPInterface` whose reader thread drained
+the PhoneAPI stream (#17 contention class, leak form). Restarting meshforge-map
+cured it instantly; leak origin not yet identified (recurrence will be caught).
+Diagnosis trap that cost the evening: **json-journal greps cannot see
+`via_mqtt`/downlinked traffic** (firmware loop guard) — the honest RX record is
+`grep 'Received text msg'` router lines. New `probe_phoneapi_tcp_leak`
+(`phoneapi_tcp_leak`, degraded, issue_ref 75): MainPID's socket inodes
+(`/proc/<pid>/fd`) ∩ `/proc/net/tcp*` ESTAB-to-:4403, fires only when the SAME
+inode persists across ticks (legit per-collect sockets live seconds) AND
+persistent_owner is null; accounted owners (listener TCP fallback) and a dark
+status endpoint stay silent. Read-only, sandbox-safe (no ss/sudo). Recovery:
+`sudo systemctl restart meshforge-map.service`. Tests: 8 in
+`tests/test_watchdog_probes.py` (`test_phoneapi_leak_*`) + closed-enum bump.

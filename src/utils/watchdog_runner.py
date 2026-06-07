@@ -51,6 +51,7 @@ from utils.watchdog_probes import (
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
+    probe_phoneapi_tcp_leak,
     probe_queue_backlog,
     probe_foundation_drift,
     probe_parity_drift,
@@ -279,6 +280,18 @@ def run_all_probes(
         # climbing toward the soft RLIMIT_NOFILE *before* it starves
         # accept() and wedges :5000. Read-only /proc walk, root only.
         sig = probe_fd_exhaustion("meshforge-map.service")
+        if sig is not None:
+            signals.append(sig)
+
+        # PhoneAPI TCP-leak probe (Issue #75) — a leaked TCPInterface to
+        # meshtasticd :4403 outside the connection manager's accounting
+        # silently starves the :9443 web client of inbound texts + ACKs
+        # (#17 contention class, leak form — the moc1 2026-06-07 evening).
+        # Same-inode-across-ticks debounce: the collector's legit
+        # per-collect socket lives seconds; only a stuck one fires.
+        sig = probe_phoneapi_tcp_leak(
+            "meshforge-map.service", status_port=http_port,
+        )
         if sig is not None:
             signals.append(sig)
 

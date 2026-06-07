@@ -18,6 +18,7 @@ Plus exercise the edge-transition tracker and atomic-rename writer.
 from __future__ import annotations
 
 import json
+import os
 import socket
 import sys
 import threading
@@ -37,6 +38,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
+    probe_phoneapi_tcp_leak,
     probe_queue_backlog,
     probe_foundation_drift,
     probe_parity_drift,
@@ -90,6 +92,7 @@ def test_signal_classes_closed_enum_is_documented():
         "channel_feed_dark",
         "queue_backlog",                # Issue #74
         "delivery_confirmation_stall",  # Issue #74
+        "phoneapi_tcp_leak",            # Issue #75
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -949,6 +952,149 @@ def test_fd_exhaustion_none_when_soft_limit_unlimited(tmp_path):
         "meshforge-map.service", proc_root=root, main_pid=4242
     )
     assert sig is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Issue #75 — phoneapi_tcp_leak (#17 contention class, leak form)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _fake_phoneapi_proc(tmp_path, pid, *, sockets, estab_to_4403):
+    """Fake /proc: ``sockets`` maps fd→inode for ``pid`` (socket symlinks);
+    ``estab_to_4403`` lists inodes shown ESTABLISHED to remote :4403 in net/tcp."""
+    fd_dir = tmp_path / str(pid) / "fd"
+    fd_dir.mkdir(parents=True, exist_ok=True)
+    for fd, inode in sockets.items():
+        os.symlink(f"socket:[{inode}]", fd_dir / str(fd))
+    net = tmp_path / "net"
+    net.mkdir(exist_ok=True)
+    header = ("  sl  local_address rem_address   st tx_queue rx_queue "
+              "tr tm->when retrnsmt   uid  timeout inode\n")
+    rows = [header]
+    for inode in estab_to_4403:
+        # 0x1133 == 4403; state 01 == ESTABLISHED
+        rows.append(
+            f"   1: 0100007F:EC10 0100007F:1133 01 00000000:00000000 "
+            f"00:00000000 00000000  1000        0 {inode} 1\n"
+        )
+    (net / "tcp").write_text("".join(rows))
+    (net / "tcp6").write_text(header)
+    return str(tmp_path)
+
+
+def test_phoneapi_leak_first_sighting_is_silent_but_recorded(tmp_path):
+    """Tick 1: candidate socket seen → None (could be a legit in-flight
+    collect), but the state file records it for the next tick."""
+    root = _fake_phoneapi_proc(
+        tmp_path, 4242, sockets={15: 99001}, estab_to_4403=[99001])
+    sp = str(tmp_path / "state.json")
+    sig = probe_phoneapi_tcp_leak(
+        "meshforge-map.service", proc_root=root, main_pid=4242,
+        state_path=sp, owner_fetch=lambda: (True, None),
+    )
+    assert sig is None
+    saved = json.loads(Path(sp).read_text())
+    assert saved == {"pid": 4242, "inodes": [99001]}
+
+
+def test_phoneapi_leak_fires_when_same_inode_persists(tmp_path):
+    """Tick 2, same pid + same inode + persistent_owner null → degraded.
+    Pins the moc1 2026-06-07 incident shape."""
+    root = _fake_phoneapi_proc(
+        tmp_path, 4242, sockets={15: 99001}, estab_to_4403=[99001])
+    sp = str(tmp_path / "state.json")
+    Path(sp).write_text(json.dumps({"pid": 4242, "inodes": [99001]}))
+    sig = probe_phoneapi_tcp_leak(
+        "meshforge-map.service", proc_root=root, main_pid=4242,
+        state_path=sp, owner_fetch=lambda: (True, None),
+    )
+    assert sig is not None
+    assert sig.cls == "phoneapi_tcp_leak"
+    assert sig.severity == "degraded"
+    assert sig.issue_ref == 75
+    assert sig.extra["leaked_inodes"] == [99001]
+    assert "persistent_owner=null" in sig.detail
+    assert "systemctl restart meshforge-map.service" in sig.detail
+
+
+def test_phoneapi_leak_silent_when_inode_rotates(tmp_path):
+    """A fresh per-collect socket each tick (different inode) never fires —
+    the legit collector TCP leg lives seconds, not ticks."""
+    root = _fake_phoneapi_proc(
+        tmp_path, 4242, sockets={15: 99002}, estab_to_4403=[99002])
+    sp = str(tmp_path / "state.json")
+    Path(sp).write_text(json.dumps({"pid": 4242, "inodes": [99001]}))
+    sig = probe_phoneapi_tcp_leak(
+        "meshforge-map.service", proc_root=root, main_pid=4242,
+        state_path=sp, owner_fetch=lambda: (True, None),
+    )
+    assert sig is None
+
+
+def test_phoneapi_leak_silent_when_owner_accounted(tmp_path):
+    """An ACCOUNTED persistent connection (listener TCP fallback) is a known
+    tradeoff the listener already warns about — not a leak."""
+    root = _fake_phoneapi_proc(
+        tmp_path, 4242, sockets={15: 99001}, estab_to_4403=[99001])
+    sp = str(tmp_path / "state.json")
+    Path(sp).write_text(json.dumps({"pid": 4242, "inodes": [99001]}))
+    sig = probe_phoneapi_tcp_leak(
+        "meshforge-map.service", proc_root=root, main_pid=4242,
+        state_path=sp, owner_fetch=lambda: (True, "message_listener"),
+    )
+    assert sig is None
+
+
+def test_phoneapi_leak_silent_when_status_endpoint_dark(tmp_path):
+    """Status endpoint unreachable → indeterminate → None (http_local owns
+    a dark map service; this probe never alarms on uncertainty)."""
+    root = _fake_phoneapi_proc(
+        tmp_path, 4242, sockets={15: 99001}, estab_to_4403=[99001])
+    sp = str(tmp_path / "state.json")
+    Path(sp).write_text(json.dumps({"pid": 4242, "inodes": [99001]}))
+    sig = probe_phoneapi_tcp_leak(
+        "meshforge-map.service", proc_root=root, main_pid=4242,
+        state_path=sp, owner_fetch=lambda: (False, None),
+    )
+    assert sig is None
+
+
+def test_phoneapi_leak_silent_after_service_restart(tmp_path):
+    """Same inode number but a different pid in state (service restarted
+    between ticks) → no match, no fire."""
+    root = _fake_phoneapi_proc(
+        tmp_path, 4243, sockets={15: 99001}, estab_to_4403=[99001])
+    sp = str(tmp_path / "state.json")
+    Path(sp).write_text(json.dumps({"pid": 4242, "inodes": [99001]}))
+    sig = probe_phoneapi_tcp_leak(
+        "meshforge-map.service", proc_root=root, main_pid=4243,
+        state_path=sp, owner_fetch=lambda: (True, None),
+    )
+    assert sig is None
+
+
+def test_phoneapi_leak_none_when_pid_unresolved(tmp_path):
+    """Inactive service → None; service_inactive owns it."""
+    sig = probe_phoneapi_tcp_leak(
+        "meshforge-map.service", proc_root=str(tmp_path), main_pid=None,
+        systemctl_path="/nonexistent/systemctl",
+        state_path=str(tmp_path / "state.json"),
+    )
+    assert sig is None
+
+
+def test_phoneapi_leak_none_when_no_socket_to_port(tmp_path):
+    """Process has sockets, none ESTAB to :4403 → None and state cleared."""
+    root = _fake_phoneapi_proc(
+        tmp_path, 4242, sockets={15: 99001}, estab_to_4403=[])
+    sp = str(tmp_path / "state.json")
+    Path(sp).write_text(json.dumps({"pid": 4242, "inodes": [99001]}))
+    sig = probe_phoneapi_tcp_leak(
+        "meshforge-map.service", proc_root=root, main_pid=4242,
+        state_path=sp, owner_fetch=lambda: (True, None),
+    )
+    assert sig is None
+    assert json.loads(Path(sp).read_text())["inodes"] == []
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -2435,3 +2435,70 @@ curl -s http://<box>:5000/api/status | jq \
 #56 (timeout for big bodies), #59 (single-tier backoff), #64 (gzip +
 size alarm), and now #65 (two-tier cap) collectively turn federation-
 persistent-issues from a recurring class into a closed loop.
+
+
+---
+
+# Archived 2026-06-07 (MF012 trim — body moved verbatim from persistent_issues.md)
+
+## Issue #68: rnsd hard-wedge → meshforge-map main thread silent-stuck in `unix_stream_connect` (2026-05-20)
+
+**Symptom**: moc1's `meshforge-map.service` was `active (running)` for
+56 min but never bound `:5000`. Background threads (WebSocket :5001,
+MQTT) kept logging normally. No error, no traceback. Visible only via
+federation peer_status showing moc1 unreachable.
+
+**Root cause**: rnsd hard-wedged — `active (running)` per systemd,
+but `rnstatus` timed out, journal silent, kernel showed `SYN-SENT`
+piling up on `@rns/default`. `MapServer.start()`
+(`src/utils/map_data_service.py:590`) calls `init_rns_singleton()`
+(`src/utils/_map_collector_rns.py:259`) → `_RNS.Reticulum(configdir=...)`
+which `connect()`s the shared-instance Unix socket uncapped. When
+rnsd doesn't accept, the syscall blocks indefinitely. Main thread
+wedged → HTTP bind never ran. Background threads were started before
+RNS init, so they kept logging.
+
+**Detection** — kernel signals are the only honest ones:
+```bash
+PID=$(systemctl show meshforge-map.service -p MainPID --value)
+sudo cat /proc/$PID/task/$PID/stack   # unix_wait_for_peer / unix_stream_connect
+timeout 5 rnstatus || echo "rnsd RPC wedged"
+sudo ss -xnp | grep '@rns/' | grep -c SYN-SENT   # >0 = clients piled up
+```
+
+**Recovery** (deterministic):
+```bash
+sudo systemctl stop meshforge-map.service     # release blocked connect()
+sudo systemctl restart rnsd.service           # may SIGKILL after TimeoutStopSec
+sudo systemctl start meshforge-map.service    # binds :5000 in ~1.4s
+```
+
+**Class**: variant of "service-running-but-not-serving" (cf #58, #61,
+#63). Novel shape: *main thread* stuck in a kernel syscall while
+background threads keep logging — all userspace signals say healthy.
+
+**Prevention (IMPLEMENTED 2026-05-29, RNS T2-isolate arc sub-arc C)**: the
+deferred pre-flight is now real and central. `utils/rns_init.py::open_reticulum`
+— the project-wide guarded RNS-init chokepoint — runs a bounded `socket.AF_UNIX`
+connect probe (`_probe_shared_instance_connect`, default 5s) against
+`@rns/<instance>` BEFORE constructing. `settimeout()` makes the connect
+interruptible (unlike RNS's internal uninterruptible connect that hangs the
+thread); on timeout it returns `None` (degrade) so the caller keeps serving its
+other legs instead of hanging. A passive `/proc/net/unix` presence scan can't
+tell "accepting" from "wedged" — only the active connect can. All in-process
+callers (map `init_rns_singleton`, gateway `_rns_bridge_connection`,
+`node_tracker`, `commands/rns`) route through it; raw construction is banned by
+**lint MF019 + `TestRNSReticulumChokepoint`**. The construct still carries the
+`os._exit` watchdog backstop for the rare "probe passed, then wedged" race.
+See `.claude/plans/rns_t2_isolate_arc.md`.
+
+**FIXED AT SOURCE (2026-05-30, fork `rns 1.2.5+mf.1`, `6fb9a9ec`)**: now an
+in-library cure, not just a MeshForge guard. `LocalClientInterface.connect()`
+brackets the shared-instance connect with `settimeout(5s, env
+RNS_LOCAL_CONNECT_TIMEOUT)` → a wedged rnsd raises `socket.timeout` (reconnect
+retries / falls back to standalone) instead of hanging in `unix_stream_connect`.
+Fork test `tests/meshforge_local_connect.py` (4). The `rns_init.py` probe +
+`os._exit` backstop STAY as defense-in-depth until soak-proven. See
+[[project_rns_fork_shipped_2026_05_30]].
+
+

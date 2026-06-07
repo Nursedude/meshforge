@@ -71,6 +71,7 @@ SIGNAL_CLASSES = (
     "channel_feed_dark",  # 2026-06-04: no decoded text on a watched Meshtastic channel — the .32 dark-feed / PSK-rotation-canary lesson (silence is the failure mode)
     "queue_backlog",  # Issue #74 (2026-06-06): persistent-queue depth near shed threshold / dead-letter growth — backlog masks delivery failures
     "delivery_confirmation_stall",  # Issue #74 (2026-06-06): sends flow but confirmations collapsed — bridge self-report reads HEALTHY while shouting into a void
+    "phoneapi_tcp_leak",  # Issue #75 (2026-06-07): map service holds an unaccounted persistent TCP to meshtasticd :4403 — leaked TCPInterface silently starves the :9443 web client (#17 contention class, leak form)
 )
 
 SEVERITIES = ("info", "degraded", "wedge")
@@ -834,6 +835,208 @@ def probe_fd_exhaustion(
             "open_fds": open_count,
             "soft_limit": soft,
             "ratio": round(ratio, 4),
+        },
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Probe: PhoneAPI TCP leak (Issue #75 — #17 contention class, leak form)
+# ─────────────────────────────────────────────────────────────────────
+
+
+DEFAULT_PHONEAPI_LEAK_STATE_PATH = "/var/lib/meshforge/phoneapi_leak_state.json"
+
+
+def _pid_socket_inodes(pid: int, *, proc_root: str = "/proc") -> Optional[set]:
+    """Socket inodes held by ``pid``'s open fds; None when fd dir unreadable."""
+    fd_dir = Path(proc_root) / str(pid) / "fd"
+    inodes: set = set()
+    try:
+        entries = list(os.scandir(fd_dir))
+    except OSError:
+        return None
+    for entry in entries:
+        try:
+            target = os.readlink(entry.path)
+        except OSError:
+            continue  # fd closed between scandir and readlink
+        if target.startswith("socket:["):
+            try:
+                inodes.add(int(target[8:-1]))
+            except ValueError:
+                continue
+    return inodes
+
+
+def _estab_inodes_to_port(port: int, *, proc_root: str = "/proc") -> set:
+    """Inodes of ESTABLISHED TCP sockets whose REMOTE port is ``port``.
+
+    Parses ``/proc/net/tcp`` + ``tcp6`` directly (fields: rem_address
+    hex ``ip:port`` at [2], state at [3] — ``01`` = ESTABLISHED, inode
+    at [9]). Read-only and dependency-free — works inside the hardened
+    watchdog sandbox where ``ss``/sudo escalation is blocked.
+    """
+    inodes: set = set()
+    for name in ("tcp", "tcp6"):
+        path = Path(proc_root) / "net" / name
+        try:
+            lines = path.read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 10:
+                continue
+            try:
+                rem_port = int(fields[2].rsplit(":", 1)[1], 16)
+                state = fields[3]
+                inode = int(fields[9])
+            except (ValueError, IndexError):
+                continue
+            if state == "01" and rem_port == port:
+                inodes.add(inode)
+    return inodes
+
+
+def _load_phoneapi_leak_state(state_path: str) -> Tuple[Optional[int], set]:
+    """Read ``(pid, inodes)`` seen last tick. Any error → (None, empty) —
+    conservative: an unreadable state suppresses a first fire, never causes one."""
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data.get("pid"), set(int(i) for i in data.get("inodes", []))
+    except (OSError, ValueError, TypeError):
+        return None, set()
+
+
+def _save_phoneapi_leak_state(state_path: str, pid: int, inodes: set) -> None:
+    """Persist this tick's candidate sockets (atomic-rename, never raises)."""
+    try:
+        parent = os.path.dirname(state_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = state_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"pid": int(pid), "inodes": sorted(inodes)},
+                      fh, separators=(",", ":"))
+        os.replace(tmp, state_path)
+    except OSError:
+        pass
+
+
+def _fetch_persistent_owner(
+    status_port: int, timeout: float = 3.0,
+) -> Tuple[bool, Optional[str]]:
+    """``(found, owner)`` from the map's ``/api/radio/status``.
+
+    ``found=False`` when the endpoint is unreachable/unparseable — the
+    probe then stays silent (``http_local`` owns a dark map service).
+    """
+    url = f"http://127.0.0.1:{status_port}/api/radio/status"
+    try:
+        with urlopen(url, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        return True, data.get("persistent_owner")
+    except (URLError, OSError, ValueError):
+        return False, None
+
+
+def probe_phoneapi_tcp_leak(
+    service_name: str = "meshforge-map.service",
+    *,
+    phoneapi_port: int = 4403,
+    status_port: int = 5000,
+    proc_root: str = "/proc",
+    systemctl_path: str = "systemctl",
+    state_path: Optional[str] = None,
+    owner_fetch=None,
+    main_pid: Optional[int] = None,
+) -> Optional[Signal]:
+    """Detect a leaked TCPInterface to meshtasticd's PhoneAPI (:4403).
+
+    Issue #75 (2026-06-07, moc1): something inside the map service
+    created a raw ``TCPInterface`` and never closed it — outside the
+    connection manager's accounting (``/api/radio/status`` reported
+    ``persistent_owner: null``) — and its reader thread silently
+    competed with the meshtasticd :9443 web client for the incoming
+    packet stream. Operator-visible shape: web client shows no inbound
+    texts and no delivery ACKs while the radio journal proves RX is
+    healthy. The #17 contention class in leak form; cost an evening of
+    archaeology because nothing alarmed.
+
+    Detection (read-only, sandbox-safe, no ``ss``/sudo):
+
+    1. The service's MainPID holds an ESTABLISHED TCP socket whose
+       remote port is ``phoneapi_port`` (``/proc/net/tcp*`` inode ∩
+       ``/proc/<pid>/fd`` socket inodes).
+    2. The SAME socket inode (same pid) was already present last tick —
+       a legit per-collect connection lives seconds and never survives
+       two 30s ticks; a leak does. This replaces a naive time threshold
+       and never false-fires on the collector's brief TCP leg.
+    3. The map's own ``/api/radio/status`` reports
+       ``persistent_owner: null`` — an ACCOUNTED owner (e.g. the
+       message listener's documented TCP fallback) is a known tradeoff
+       that the listener already warns about, not a leak.
+
+    Returns None when the service is inactive (``service_inactive``
+    owns that), /proc is unreadable, no candidate socket exists, the
+    socket is first-seen this tick, the owner is accounted, or the
+    status endpoint is unreachable (``http_local`` owns a dark map).
+
+    Recovery: ``sudo systemctl restart <service>`` releases the stolen
+    stream instantly; the web client recovers on its next poll.
+    """
+    pid = main_pid if main_pid is not None else _resolve_main_pid(
+        service_name, systemctl_path=systemctl_path
+    )
+    if pid is None:
+        return None
+
+    sp = state_path or DEFAULT_PHONEAPI_LEAK_STATE_PATH
+
+    pid_inodes = _pid_socket_inodes(pid, proc_root=proc_root)
+    if pid_inodes is None:
+        return None
+    candidates = pid_inodes & _estab_inodes_to_port(
+        phoneapi_port, proc_root=proc_root
+    )
+
+    prev_pid, prev_inodes = _load_phoneapi_leak_state(sp)
+    _save_phoneapi_leak_state(sp, pid, candidates)
+
+    if not candidates:
+        return None
+    persisted = candidates & prev_inodes if prev_pid == pid else set()
+    if not persisted:
+        return None  # first sighting — could be a legit in-flight collect
+
+    fetch = owner_fetch or (lambda: _fetch_persistent_owner(status_port))
+    found, owner = fetch()
+    if not found:
+        return None  # status endpoint dark — http_local owns that
+    if owner:
+        return None  # accounted persistent connection (listener TCP fallback)
+
+    inode_list = sorted(persisted)
+    detail = (
+        f"{service_name} (pid {pid}) holds an UNACCOUNTED persistent TCP "
+        f"connection to meshtasticd :{phoneapi_port} (socket inode(s) "
+        f"{inode_list} persisted across ticks, persistent_owner=null) — "
+        f"a leaked TCPInterface whose reader thread silently starves the "
+        f":9443 web client of inbound texts and delivery ACKs (Issue #75, "
+        f"#17 contention class). Recover: sudo systemctl restart "
+        f"{service_name}"
+    )
+    return Signal(
+        cls="phoneapi_tcp_leak",
+        subject=service_name,
+        severity="degraded",
+        detail=detail,
+        issue_ref=75,
+        extra={
+            "pid": pid,
+            "phoneapi_port": phoneapi_port,
+            "leaked_inodes": inode_list,
         },
     )
 
@@ -2033,6 +2236,7 @@ __all__ = [
     "_tcp_reachable",
     "probe_http_local",
     "probe_fd_exhaustion",
+    "probe_phoneapi_tcp_leak",
     "probe_foundation_drift",
     "probe_parity_drift",
     "probe_rns_version_drift",
