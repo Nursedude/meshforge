@@ -35,6 +35,7 @@ from utils.watchdog_probes import (  # noqa: E402
     SIGNAL_CLASSES,
     Signal,
     probe_channel_feed_dark,
+    probe_mqtt_root_drift,
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
@@ -93,6 +94,7 @@ def test_signal_classes_closed_enum_is_documented():
         "queue_backlog",                # Issue #74
         "delivery_confirmation_stall",  # Issue #74
         "phoneapi_tcp_leak",            # Issue #75
+        "mqtt_root_drift",              # Issue #77
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -2404,3 +2406,161 @@ def test_channel_feed_dark_fires_when_json_fresh_but_text_dark():
     )
     assert sig is not None
     assert sig.cls == "channel_feed_dark"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Issue #77 — mqtt_root_drift (the msh/US split guard)
+# ─────────────────────────────────────────────────────────────────────
+
+# Real journal line shape pinned live on a fleet gateway 2026-06-07 01:25 HST
+# (hostname/node-id synthesized per MF014).
+_PUBLISH_LINE = (
+    "1780831542.000000 fleet-box meshtasticd[770642]: INFO  | "
+    "11:25:42 301860 [Router] JSON publish message to "
+    "{topic}/2/json/LongFast/!aabb0001, 163 bytes: {{...}}"
+)
+
+
+def _publish_line_fn(topic):
+    """newest_line_fn returning a publish line under ``topic`` root
+    (None = no json uplink lines at all)."""
+    def fn(pattern):
+        assert "JSON publish message to" in pattern
+        if topic is None:
+            return None
+        return _PUBLISH_LINE.format(topic=topic)
+    return fn
+
+
+def test_mqtt_root_drift_fires_on_msh_us_split_after_debounce(tmp_path):
+    """The pre-unification moc2 shape: radio publishes msh/US/..., box
+    declares msh → degraded once confirmed over 2 consecutive ticks."""
+    sp = str(tmp_path / "debounce.json")
+    Path(sp).write_text(json.dumps({"streak": 1}))  # tick 1 already seen
+    sig = probe_mqtt_root_drift(
+        main_pid=1002,
+        newest_line_fn=_publish_line_fn("msh/US"),
+        declared_root="msh",
+        state_path=sp,
+    )
+    assert sig is not None
+    assert sig.cls == "mqtt_root_drift"
+    assert sig.severity == "degraded"
+    assert sig.issue_ref == 77
+    assert sig.extra["observed_root"] == "msh/US"
+    assert sig.extra["declared_root"] == "msh"
+    assert "mqtt.root" in sig.detail
+
+
+def test_mqtt_root_drift_first_tick_is_silent_debounce(tmp_path):
+    """Drift on tick 1 → None (mid-rotation window), streak recorded."""
+    sp = str(tmp_path / "debounce.json")
+    sig = probe_mqtt_root_drift(
+        main_pid=1002,
+        newest_line_fn=_publish_line_fn("custom"),
+        declared_root="msh",
+        state_path=sp,
+    )
+    assert sig is None
+    assert json.loads(Path(sp).read_text())["streak"] == 1
+
+
+def test_mqtt_root_drift_silent_on_match_and_resets_streak(tmp_path):
+    """Observed == declared → None, and a stale streak is cleared so a
+    resolved drift doesn't pre-arm the next unrelated blip."""
+    sp = str(tmp_path / "debounce.json")
+    Path(sp).write_text(json.dumps({"streak": 5}))
+    sig = probe_mqtt_root_drift(
+        main_pid=1002,
+        newest_line_fn=_publish_line_fn("msh"),
+        declared_root="msh",
+        state_path=sp,
+    )
+    assert sig is None
+    assert json.loads(Path(sp).read_text())["streak"] == 0
+
+
+def test_mqtt_root_drift_none_when_no_json_uplink(tmp_path):
+    """No publish lines in the lookback → unobservable, not drift (the
+    RX-only collector case — same self-guard as channel_feed_dark)."""
+    sig = probe_mqtt_root_drift(
+        main_pid=1002,
+        newest_line_fn=_publish_line_fn(None),
+        declared_root="msh",
+        state_path=str(tmp_path / "debounce.json"),
+    )
+    assert sig is None
+
+
+def test_mqtt_root_drift_none_when_declared_indeterminate(tmp_path):
+    """gateway.json unreadable / user unresolvable → declared side None →
+    silent. Never alarm on a guess."""
+    sig = probe_mqtt_root_drift(
+        main_pid=1002,
+        newest_line_fn=_publish_line_fn("msh/US"),
+        service_user_fn=lambda: None,  # user unresolvable → declared None
+        state_path=str(tmp_path / "debounce.json"),
+    )
+    assert sig is None
+
+
+def test_mqtt_root_drift_none_when_service_inactive(tmp_path):
+    """meshtasticd down → None; service_inactive owns that."""
+    sig = probe_mqtt_root_drift(
+        main_pid=None,
+        systemctl_path="/nonexistent/systemctl",
+        state_path=str(tmp_path / "debounce.json"),
+    )
+    assert sig is None
+
+
+def test_mqtt_root_drift_none_on_unparseable_publish_line(tmp_path):
+    """A publish line that doesn't match the topic shape → indeterminate,
+    not drift (firmware log-format change must not false-alarm)."""
+    sig = probe_mqtt_root_drift(
+        main_pid=1002,
+        newest_line_fn=lambda p: "1780831542.0 host meshtasticd[1]: "
+                                 "JSON publish message to garbage",
+        declared_root="msh",
+        state_path=str(tmp_path / "debounce.json"),
+    )
+    assert sig is None
+
+
+def test_read_declared_root_topic_default_when_key_absent(tmp_path):
+    """gateway.json present but mqtt_bridge omits root_topic → the
+    GatewayConfig default 'msh' (the consumer's effective value)."""
+    from utils.watchdog_probes import _read_declared_root_topic
+    import pwd as _pwd
+    home = tmp_path
+    cfg_dir = home / ".config" / "meshforge"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "gateway.json").write_text(
+        json.dumps({"mqtt_bridge": {"broker": "localhost"}}))
+
+    class FakePw:
+        pw_dir = str(home)
+
+    orig = _pwd.getpwnam
+    _pwd.getpwnam = lambda u: FakePw()
+    try:
+        assert _read_declared_root_topic("testuser") == "msh"
+    finally:
+        _pwd.getpwnam = orig
+
+
+def test_read_declared_root_topic_none_when_file_missing(tmp_path):
+    """No gateway.json → None (indeterminate), never the default —
+    a box with no gateway config has no declared consumer contract."""
+    from utils.watchdog_probes import _read_declared_root_topic
+    import pwd as _pwd
+
+    class FakePw:
+        pw_dir = str(tmp_path)
+
+    orig = _pwd.getpwnam
+    _pwd.getpwnam = lambda u: FakePw()
+    try:
+        assert _read_declared_root_topic("testuser") is None
+    finally:
+        _pwd.getpwnam = orig

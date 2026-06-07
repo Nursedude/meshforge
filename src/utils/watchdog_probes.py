@@ -72,6 +72,7 @@ SIGNAL_CLASSES = (
     "queue_backlog",  # Issue #74 (2026-06-06): persistent-queue depth near shed threshold / dead-letter growth — backlog masks delivery failures
     "delivery_confirmation_stall",  # Issue #74 (2026-06-06): sends flow but confirmations collapsed — bridge self-report reads HEALTHY while shouting into a void
     "phoneapi_tcp_leak",  # Issue #75 (2026-06-07): map service holds an unaccounted persistent TCP to meshtasticd :4403 — leaked TCPInterface silently starves the :9443 web client (#17 contention class, leak form)
+    "mqtt_root_drift",  # Issue #77 (2026-06-07): radio's observed MQTT publish root prefix diverges from the box's declared mqtt_bridge.root_topic — a zero-config radio join silently reintroduces the msh/US split
 )
 
 SEVERITIES = ("info", "degraded", "wedge")
@@ -2231,6 +2232,169 @@ def probe_channel_feed_dark(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Probe: MQTT root-topic drift (Issue #77 — the msh/US split guard)
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_MQTT_ROOT_DEBOUNCE_PATH = "/var/lib/meshforge/mqtt_root_debounce.json"
+
+# Extract the effective root prefix from a meshtasticd json-uplink journal
+# line: "JSON publish message to msh/2/json/LongFast/!32962f10, 163 bytes:..."
+# → "msh". A region-form root (mqtt.root="msh/US") yields "msh/US" — exactly
+# the pre-unification moc2 drift shape this probe exists to catch.
+_MQTT_PUBLISH_TOPIC_RE = re.compile(
+    r"JSON publish message to (\S+?)/2/json/"
+)
+
+# The GatewayConfig dataclass default (gateway/config.py MQTTBridgeConfig).
+# Used when gateway.json omits the key — that IS the consumer's effective
+# value, so comparing against it is honest, not a guess.
+_GATEWAY_DEFAULT_ROOT_TOPIC = "msh"
+
+
+def _read_declared_root_topic(service_user) -> Optional[str]:
+    """Read ``mqtt_bridge.root_topic`` from the service user's gateway.json.
+
+    The watchdog runs as sandboxed root — home is derived from the service
+    user and READ directly, never escalate (the rns_version_drift lesson).
+    Returns the configured value, the GatewayConfig default when the key is
+    absent (that is the consumer's effective root), or None when the file is
+    unreadable/unparseable (indeterminate → caller stays silent).
+    """
+    if not service_user:
+        return None
+    try:
+        import pwd
+        home = pwd.getpwnam(service_user).pw_dir
+        path = os.path.join(home, ".config", "meshforge", "gateway.json")
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        mqtt = data.get("mqtt_bridge")
+        if not isinstance(mqtt, dict):
+            return _GATEWAY_DEFAULT_ROOT_TOPIC
+        root = mqtt.get("root_topic", _GATEWAY_DEFAULT_ROOT_TOPIC)
+        if isinstance(root, str) and root:
+            return root.strip().strip("/")
+        return _GATEWAY_DEFAULT_ROOT_TOPIC
+    except (KeyError, OSError, ValueError, TypeError):
+        return None
+
+
+def probe_mqtt_root_drift(
+    *,
+    unit: str = "meshtasticd.service",
+    lookback: str = "6h",
+    journalctl_path: str = "journalctl",
+    systemctl_path: str = "systemctl",
+    main_pid: Optional[int] = None,
+    newest_line_fn=None,
+    declared_root: Optional[str] = None,
+    service_user_fn=None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """Fire when the radio's MQTT publish root drifts from the declared root.
+
+    Issue #77 (2026-06-06 fleet unification): the fleet standardized on an
+    explicit ``mqtt.root msh`` after the msh/US topic-root split silently
+    fractured the uplink namespace (moc2 flipped 06-06 23:41). The remaining
+    hole: a zero-config radio join (or a factory-reset radio) reintroduces a
+    divergent root and every consumer pinned to the declared root partially
+    or fully misses its feed — the dark-feed class again, but with the CAUSE
+    visible hours before ``channel_feed_dark`` can prove the symptom.
+
+    Local invariant, no fleet consensus needed (brokers are per-box islands):
+    the root prefix the radio actually publishes under — observable in
+    meshtasticd's json-uplink journal lines, ``JSON publish message to
+    <root>[/<region>]/2/json/<channel>/!<id>`` — must equal the box's own
+    declared consumer root (``gateway.json mqtt_bridge.root_topic``; an
+    absent key means the GatewayConfig default ``msh``, which is the
+    effective value, so the comparison stays honest).
+
+    Observation is journal-only: never queries the radio (a per-tick CLI
+    ``--get mqtt.root`` would open a TCP connection against the PhoneAPI —
+    the #17 contention class this probe family exists to police).
+
+    Self-guards (returns None):
+    - meshtasticd inactive (``service_inactive`` owns that)
+    - no json publish lines in the lookback (unobservable ≠ drift — the
+      RX-only collector case, same gate as ``channel_feed_dark``)
+    - gateway.json unreadable / service user unresolvable (indeterminate)
+    - drift seen but not yet ``debounce_ticks`` consecutive ticks (rides out
+      an operator mid-rotation: radio flipped before config, or vice versa)
+
+    Recovery: ``meshtastic --host localhost --set mqtt.root <declared>``
+    (or fix root_topic in gateway.json if the radio is the intended truth),
+    then verify the next journal publish line carries the declared root.
+    """
+    pid = main_pid if main_pid is not None else _resolve_main_pid(
+        unit, systemctl_path=systemctl_path
+    )
+    if pid is None:
+        return None
+
+    if newest_line_fn is None:
+        def newest_line_fn(pattern: str) -> Optional[str]:
+            return _journal_newest_match(
+                unit, pattern, lookback, journalctl_path=journalctl_path
+            )
+
+    line = newest_line_fn("JSON publish message to ")
+    if line is None:
+        return None  # no json uplink at all — unobservable, not drift
+    m = _MQTT_PUBLISH_TOPIC_RE.search(line)
+    if m is None:
+        return None  # publish line shape changed — indeterminate, not drift
+    observed = m.group(1).strip("/")
+
+    if declared_root is not None:
+        declared = declared_root.strip().strip("/")
+    else:
+        user_fn = service_user_fn
+        if user_fn is None:
+            from utils.rns_tree_perms import _read_rnsd_user
+            user_fn = _read_rnsd_user
+        declared = _read_declared_root_topic(user_fn())
+    if not declared:
+        return None  # declared side indeterminate — never alarm on a guess
+
+    sp = state_path or DEFAULT_MQTT_ROOT_DEBOUNCE_PATH
+    if observed == declared:
+        _save_parity_streak(sp, 0)
+        return None
+
+    streak = _load_parity_streak(sp) + 1
+    _save_parity_streak(sp, streak)
+    if streak < debounce_ticks:
+        return None  # drift seen, not yet confirmed across consecutive ticks
+
+    detail = (
+        f"Radio publishes MQTT under root '{observed}' but this box's "
+        f"declared consumer root is '{declared}' "
+        f"(gateway.json mqtt_bridge.root_topic) — confirmed over {streak} "
+        f"consecutive ticks. Consumers subscribed under '{declared}' are "
+        f"partially or fully deaf to this radio's uplink (the msh/US split, "
+        f"Issue #77; a zero-config radio join is the usual cause). Fix: "
+        f"meshtastic --host localhost --set mqtt.root '{declared}' (or "
+        f"correct root_topic in gateway.json if the radio is the intended "
+        f"truth), then verify the next 'JSON publish message to' journal "
+        f"line carries '{declared}'."
+    )
+    return Signal(
+        cls="mqtt_root_drift",
+        subject="meshtasticd",
+        severity="degraded",
+        detail=detail,
+        issue_ref=77,
+        extra={
+            "observed_root": observed,
+            "declared_root": declared,
+            "streak": streak,
+            "lookback": lookback,
+        },
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Helpers shared by the runner
 # ─────────────────────────────────────────────────────────────────────
 
@@ -2277,6 +2441,7 @@ __all__ = [
     "probe_rns_version_drift",
     "probe_role_drift",
     "probe_channel_feed_dark",
+    "probe_mqtt_root_drift",
     "probe_delivery_write_canary",
     "probe_service_inactive",
     "probe_tracer_peer_unreachable",

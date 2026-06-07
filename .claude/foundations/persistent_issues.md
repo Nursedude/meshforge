@@ -246,135 +246,17 @@ operator tell. Tests: `TestGzipNegotiationIssue64` etc. +
 ---
 
 
-## Issue #69: Foreign daemon claims `@rns/<instance>` shared-instance listener — every RNS client EOFs (2026-05-20)
+## Issue #69: Foreign daemon / boot race claims `@rns/<instance>` — RESOLVED, body in archive (trimmed 2026-06-07)
 
-**Symptom**: VolcanoAI's `/fleet/lab-rollup` showed every fleet box's
-tracer reporting **100% failure** to VolcanoAI for the previous hour
-(5 rows of `meshforge-* -> VolcanoAI ... 100.0 timeout=6` / `no-route=6`).
-The cross-fleet whole-of-rollup signal pointed at VolcanoAI as the
-broken target — `<box> -> moc/moc1/moc2/moc3` pairs were all 0% failure,
-only VolcanoAI as target was failing. Federation HTTP `/api/status`
-between every box was healthy in parallel.
-
-**Root cause**: `meshforge-tracer.service` on VolcanoAI crashed with
-unhandled `EOFError` from `rpc_connection.recv()` deep in RNS's
-`_used_destination_data()`:
-
-```
-File ".../RNS/Reticulum.py", line 1239, in _used_destination_data
-    response = rpc_connection.recv()
-File ".../multiprocessing/connection.py", line 399, in _recv
-    raise EOFError
-```
-
-The `@rns/<volcano ai rns>` abstract Unix socket LISTEN owner was NOT
-rnsd — it was `python3 /opt/meshanchor/src/daemon.py start --foreground`
-(PID 129485, then 200825 after restart), running as root via
-`meshanchor-daemon.service` which had been silently enabled+running on
-VolcanoAI since 2026-05-17. Both MeshAnchor and rnsd register
-`share_instance = Yes` against the same `instance_name`; whichever
-starts first claims the listener. When MeshAnchor's daemon wins, its
-RPC subprocess answers tracer's destination-lookup queries with EOF
-(dialect mismatch with rnsd's RPC protocol), the EOF unwinds through
-`RNS.Identity.recall()` to `run_trace()`, kills the process. The whole
-fleet's `<*> -> VolcanoAI` lab-tracer rows go 100% failure because no
-`lab-tracer (VolcanoAI)` destination is announced while the tracer is
-crashing every fire.
-
-The cross-tenant invariant: **only one RNS host per `instance_name`
-per box**. Two daemons that both run RNS with `share_instance = Yes`
-under the same name will collide; the loser is whoever's RPC dialect
-the listener can't speak.
-
-**Fix (operational, VolcanoAI)**: per [[meshanchor-server-deployment]]
-the canonical MeshAnchor production host is `meshanchor-server`, not
-VolcanoAI. VolcanoAI's `meshanchor-daemon` data dirs hadn't been
-written since 2026-05-08 (12 days idle, bound only to localhost:8081).
-Stopped + disabled the unit; restarted rnsd; tracer immediately turned
-green with all 6 peers `result=ok` (RTTs 1-9s, normal). `/opt/meshanchor`
-remains as a working clone for code/mirror work.
-
-**Fix (code prevention)**: `src/lab/_lab_common.py`:
-- `_parse_ss_listener_line(line, instance_name)` — extract `(pid, cmd)`
-  from `ss -xnpl` output anchored on the `@rns/<instance>` token.
-- `_read_instance_name_from_config(configdir)` — parse `instance_name =`
-  out of the configdir's `config` file; returns None silently when
-  absent (first-ever RNS init).
-- `check_rns_listener_owner(instance_name)` — runs `ss -xnpl`, reads
-  `/proc/<pid>/cmdline` for the full cmdline (ss reports binary
-  basename only, so "python3" identifies nothing), raises `RuntimeError`
-  with the offending PID + cmdline + `sudo kill <PID>` recovery
-  command when the cmdline matches none of the narrow allowlist
-  `_RNS_LISTENER_ALLOWED_PATTERNS = ("rnsd", "reticulum")`. Returns
-  None when no listener exists (RNS will create one).
-- `init_reticulum_with_watchdog()` calls the preflight before the
-  `RNS.Reticulum()` constructor. On collision the constructor never
-  runs — the calling service fails loud with the operator-actionable
-  RuntimeError instead of the 30+-minute-to-debug EOFError stack.
-
-Allowlist deliberately narrow ("rnsd"/"reticulum") — any foreign
-RNS-hosting daemon gets caught.
-
-**Boot-race addendum (2026-06-06, `84a79ca` + MA `9065d973`)**: same
-class, NO foreign daemon needed — lab echo started 4s before rnsd at
-boot, found no listener, boot-claimed; rnsd joined as interface-less
-client → ALL destinations no-route (federator + moc2, same day). Two
-chokepoint fixes: (a) listener absent + rnsd ENABLED → bounded wait
-(30s) for rnsd; lab path fails loud, `open_reticulum` returns None
-even when `require_listener=False`; (b) `ss` truncates spaced
-instance names at the first space, so the owner guard was silently
-DEAD on such boxes — parser now matches the truncated token. New
-`service_check.is_service_enabled()`.
-
-**Tests** (12 new in `tests/test_lab_common.py`):
-- `test_parse_ss_listener_line_*` (3) — parser pins against real
-  2026-05-20 `ss` output, including the rogue line.
-- `test_preflight_passes_when_rnsd_owns_listener` — happy path.
-- `test_preflight_raises_when_meshanchor_daemon_owns_listener` —
-  pins the actual incident shape; asserts the error message includes
-  `@rns/volcano`, the PID, `EOFError`, and a `sudo kill` recovery
-  command.
-- `test_preflight_passes_when_no_listener_present` — first-init.
-- `test_preflight_handles_ss_missing` — container/minimal-environment
-  fallback (skip silently, let RNS handle).
-- `test_preflight_handles_process_vanished_between_ss_and_proc` —
-  race window: ss saw the process but `/proc/<pid>/cmdline` reads
-  fail because it exited. Still surfaces a diagnostic.
-- `test_read_instance_name_from_config_*` (2) — config parsing.
-- `test_init_reticulum_with_watchdog_invokes_preflight` — wire-up
-  proof: the preflight is actually engaged in the prod init path.
-- `test_init_reticulum_with_watchdog_propagates_preflight_failure`
-  — preflight RuntimeError must NOT proceed to `RNS.Reticulum()`.
-
-**Class**: 5th variant of "rnsd RPC fragility" — siblings #58
-(HAT-overlay port hijack), #61 (single-thread socketserver deadlock),
-#63 (delivery_counters write canary), #68 (unix_stream_connect main-
-thread silent wedge). #69's distinguishing shape: not rnsd itself
-malfunctioning, but a FOREIGN daemon hijacking the namespace rnsd
-would have claimed.
-
-**Operator detection recipe**:
-```bash
-# Who owns @rns/<instance> right now?
-sudo ss -xnpl | grep "@rns/"
-# Healthy: users:(("rnsd",pid=...))
-# Hijacked: anything else — get the PID, then:
-sudo cat /proc/<pid>/cmdline | tr '\0' ' '
-
-# If a foreign daemon owns the listener, stop the foreign service,
-# then `sudo systemctl restart rnsd.service` to reclaim, then restart
-# the tracer (or whichever RNS client was crashing).
-```
-
-**Companion to fleet topology rule**: each box runs **one** RNS host
-(rnsd). All RNS-using daemons on that box join as clients via
-`share_instance = Yes` pointing at rnsd's `instance_name`. A box that
-needs to host *both* MeshForge and MeshAnchor radio work (currently
-not a supported topology) would need separate `instance_name`s and
-careful coordination — but the canonical deployment is one project
-per box.
-
-
+5th rnsd-RPC-fragility variant. MeshAnchor daemon hijacked VolcanoAI's `@rns`
+listener (every RNS client EOF'd, fleet tracer 100% fail to VolcanoAI); boot-race
+addendum (06-06, `84a79ca`): a client starting before rnsd boot-claims the
+listener — chokepoint now waits for enabled rnsd + the spaced-instance ss-
+truncation parser fix. Prevention: `check_rns_listener_owner` preflight in
+`_lab_common.py` (allowlist rnsd/reticulum, fail-loud RuntimeError), 12 tests
+in `tests/test_lab_common.py`. Detection recipe + invariant (one RNS host per
+instance_name per box) in `persistent_issues_archive.md`.
+Quick check: `sudo ss -xnpl | grep "@rns/"` — owner must be rnsd.
 ---
 
 ## Issue #72: wedged rnsd RPC — rnstatus hangs though the socket accepts (2026-05-30)
@@ -564,3 +446,28 @@ ESP32-over-WiFi hosts still work. Residual: `radio_failover` HTTP health polls n
 worked against meshtasticd (needs a non-/json source if dual-radio failover revives);
 moc5's `collect_cache_max_age_seconds: 290` stays (TCP leg is the only leg).
 **Tests**: `TestJsonApiAbsentIssue76` (8) in `tests/test_meshtastic_http.py`.
+
+
+---
+
+## Issue #77: mqtt_root_drift probe — the msh/US split guard (2026-06-07)
+
+After the 06-06 fleet unification on explicit `mqtt.root msh` (moc2 was the last
+holdout), the remaining hole: a zero-config radio join or factory reset silently
+reintroduces a divergent root and consumers pinned to the declared root go
+partially deaf — the dark-feed class, but with the CAUSE visible hours before
+`channel_feed_dark` proves the symptom. New `probe_mqtt_root_drift`
+(`mqtt_root_drift`, degraded, issue_ref 77): compares the radio's OBSERVED
+publish root — parsed from meshtasticd's journal `JSON publish message to
+<root>[/<region>]/2/json/<ch>/!<id>` lines (journal-only: never queries the
+radio, which would open a PhoneAPI TCP connection — #17) — against the box's
+DECLARED consumer root (`gateway.json mqtt_bridge.root_topic`; absent key →
+the GatewayConfig default `msh`, the effective value). Local invariant only
+(brokers are per-box islands — no fleet consensus needed). Self-guards None:
+meshtasticd inactive, no json uplink in lookback (unobservable ≠ drift, the
+RX-only case), gateway.json unreadable / service user unresolvable. 2-tick
+debounce (parity-style streak file) rides out an operator mid-rotation. Fix:
+`meshtastic --host localhost --set mqtt.root <declared>` (or correct
+gateway.json if the radio is the intended truth). Tests: 9
+(`test_mqtt_root_drift_*` + `test_read_declared_root_topic_*`) + closed-enum
+gate bump. Journal line shape pinned live on moc 2026-06-07 01:25 HST.

@@ -48,6 +48,7 @@ from utils.rns_status_parser import run_rnstatus
 from utils.watchdog_probes import (
     Signal,
     probe_channel_feed_dark,
+    probe_mqtt_root_drift,
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
@@ -339,6 +340,17 @@ def run_all_probes(
     # or when the box emits no json-uplink lines at all (unobservable —
     # e.g. mqtt module unconfigured; a collector that only RXes).
     sig = probe_channel_feed_dark()
+    if sig is not None:
+        signals.append(sig)
+
+    # MQTT root-topic drift (Issue #77) — the radio's observed publish root
+    # (json-uplink journal lines) vs the box's declared consumer root
+    # (gateway.json mqtt_bridge.root_topic). Catches a zero-config radio
+    # join reintroducing the msh/US split — the CAUSE, hours before
+    # channel_feed_dark can prove the symptom. Journal-only (never queries
+    # the radio — #17); self-guards None on no-json-uplink boxes and an
+    # unreadable declared side; 2-tick debounce rides out mid-rotation.
+    sig = probe_mqtt_root_drift()
     if sig is not None:
         signals.append(sig)
 
