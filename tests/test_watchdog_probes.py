@@ -984,7 +984,7 @@ def _fake_phoneapi_proc(tmp_path, pid, *, sockets, estab_to_4403):
 
 def test_phoneapi_leak_first_sighting_is_silent_but_recorded(tmp_path):
     """Tick 1: candidate socket seen → None (could be a legit in-flight
-    collect), but the state file records it for the next tick."""
+    collect), but the state file records count=1 for the next tick."""
     root = _fake_phoneapi_proc(
         tmp_path, 4242, sockets={15: 99001}, estab_to_4403=[99001])
     sp = str(tmp_path / "state.json")
@@ -994,16 +994,18 @@ def test_phoneapi_leak_first_sighting_is_silent_but_recorded(tmp_path):
     )
     assert sig is None
     saved = json.loads(Path(sp).read_text())
-    assert saved == {"pid": 4242, "inodes": [99001]}
+    assert saved == {"pid": 4242, "inode_counts": {"99001": 1}}
 
 
 def test_phoneapi_leak_fires_when_same_inode_persists(tmp_path):
-    """Tick 2, same pid + same inode + persistent_owner null → degraded.
-    Pins the moc1 2026-06-07 incident shape."""
+    """At the persistence threshold, same pid + same inode +
+    persistent_owner null → degraded. Pins the moc1 2026-06-07 incident
+    shape (a genuinely leaked TCPInterface lives hours)."""
     root = _fake_phoneapi_proc(
         tmp_path, 4242, sockets={15: 99001}, estab_to_4403=[99001])
     sp = str(tmp_path / "state.json")
-    Path(sp).write_text(json.dumps({"pid": 4242, "inodes": [99001]}))
+    Path(sp).write_text(json.dumps(
+        {"pid": 4242, "inode_counts": {"99001": 19}}))  # this tick → 20
     sig = probe_phoneapi_tcp_leak(
         "meshforge-map.service", proc_root=root, main_pid=4242,
         state_path=sp, owner_fetch=lambda: (True, None),
@@ -1013,15 +1015,35 @@ def test_phoneapi_leak_fires_when_same_inode_persists(tmp_path):
     assert sig.severity == "degraded"
     assert sig.issue_ref == 75
     assert sig.extra["leaked_inodes"] == [99001]
+    assert sig.extra["persisted_ticks"] == 20
     assert "persistent_owner=null" in sig.detail
     assert "systemctl restart meshforge-map.service" in sig.detail
 
 
-def test_phoneapi_leak_silent_when_inode_rotates(tmp_path):
-    """A fresh per-collect socket each tick (different inode) never fires —
-    the legit collector TCP leg lives seconds, not ticks."""
+def test_phoneapi_leak_silent_on_slow_collect_below_threshold(tmp_path):
+    """The moc1 2026-06-07 FALSE-ALARM shape: a demand-collect TCP nodedb
+    sync lives 1-4 minutes (2-8 ticks). It must stay silent — only an
+    inode persisting past ~10 min (a real leak) fires."""
     root = _fake_phoneapi_proc(
-        tmp_path, 4242, sockets={15: 99002}, estab_to_4403=[99002])
+        tmp_path, 4242, sockets={15: 99001}, estab_to_4403=[99001])
+    sp = str(tmp_path / "state.json")
+    Path(sp).write_text(json.dumps(
+        {"pid": 4242, "inode_counts": {"99001": 8}}))  # 4 min in → 9th tick
+    sig = probe_phoneapi_tcp_leak(
+        "meshforge-map.service", proc_root=root, main_pid=4242,
+        state_path=sp, owner_fetch=lambda: (True, None),
+    )
+    assert sig is None
+    # ...but the count keeps accumulating toward a real-leak fire
+    saved = json.loads(Path(sp).read_text())
+    assert saved["inode_counts"] == {"99001": 9}
+
+
+def test_phoneapi_leak_legacy_state_format_is_count_one(tmp_path):
+    """Pre-2026-06-07 state files stored a bare 'inodes' list — loaded as
+    count 1, so a mid-upgrade tick never spuriously fires."""
+    root = _fake_phoneapi_proc(
+        tmp_path, 4242, sockets={15: 99001}, estab_to_4403=[99001])
     sp = str(tmp_path / "state.json")
     Path(sp).write_text(json.dumps({"pid": 4242, "inodes": [99001]}))
     sig = probe_phoneapi_tcp_leak(
@@ -1029,6 +1051,25 @@ def test_phoneapi_leak_silent_when_inode_rotates(tmp_path):
         state_path=sp, owner_fetch=lambda: (True, None),
     )
     assert sig is None
+    saved = json.loads(Path(sp).read_text())
+    assert saved["inode_counts"] == {"99001": 2}
+
+
+def test_phoneapi_leak_silent_when_inode_rotates(tmp_path):
+    """A fresh per-collect socket each tick (different inode) never fires
+    and never accumulates — rotation resets the count to 1."""
+    root = _fake_phoneapi_proc(
+        tmp_path, 4242, sockets={15: 99002}, estab_to_4403=[99002])
+    sp = str(tmp_path / "state.json")
+    Path(sp).write_text(json.dumps(
+        {"pid": 4242, "inode_counts": {"99001": 19}}))
+    sig = probe_phoneapi_tcp_leak(
+        "meshforge-map.service", proc_root=root, main_pid=4242,
+        state_path=sp, owner_fetch=lambda: (True, None),
+    )
+    assert sig is None
+    saved = json.loads(Path(sp).read_text())
+    assert saved["inode_counts"] == {"99002": 1}
 
 
 def test_phoneapi_leak_silent_when_owner_accounted(tmp_path):
@@ -1037,7 +1078,8 @@ def test_phoneapi_leak_silent_when_owner_accounted(tmp_path):
     root = _fake_phoneapi_proc(
         tmp_path, 4242, sockets={15: 99001}, estab_to_4403=[99001])
     sp = str(tmp_path / "state.json")
-    Path(sp).write_text(json.dumps({"pid": 4242, "inodes": [99001]}))
+    Path(sp).write_text(json.dumps(
+        {"pid": 4242, "inode_counts": {"99001": 19}}))  # past threshold
     sig = probe_phoneapi_tcp_leak(
         "meshforge-map.service", proc_root=root, main_pid=4242,
         state_path=sp, owner_fetch=lambda: (True, "message_listener"),
@@ -1051,7 +1093,8 @@ def test_phoneapi_leak_silent_when_status_endpoint_dark(tmp_path):
     root = _fake_phoneapi_proc(
         tmp_path, 4242, sockets={15: 99001}, estab_to_4403=[99001])
     sp = str(tmp_path / "state.json")
-    Path(sp).write_text(json.dumps({"pid": 4242, "inodes": [99001]}))
+    Path(sp).write_text(json.dumps(
+        {"pid": 4242, "inode_counts": {"99001": 19}}))  # past threshold
     sig = probe_phoneapi_tcp_leak(
         "meshforge-map.service", proc_root=root, main_pid=4242,
         state_path=sp, owner_fetch=lambda: (False, None),
@@ -1065,7 +1108,8 @@ def test_phoneapi_leak_silent_after_service_restart(tmp_path):
     root = _fake_phoneapi_proc(
         tmp_path, 4243, sockets={15: 99001}, estab_to_4403=[99001])
     sp = str(tmp_path / "state.json")
-    Path(sp).write_text(json.dumps({"pid": 4242, "inodes": [99001]}))
+    Path(sp).write_text(json.dumps(
+        {"pid": 4242, "inode_counts": {"99001": 19}}))  # old pid, high count
     sig = probe_phoneapi_tcp_leak(
         "meshforge-map.service", proc_root=root, main_pid=4243,
         state_path=sp, owner_fetch=lambda: (True, None),
@@ -1088,13 +1132,14 @@ def test_phoneapi_leak_none_when_no_socket_to_port(tmp_path):
     root = _fake_phoneapi_proc(
         tmp_path, 4242, sockets={15: 99001}, estab_to_4403=[])
     sp = str(tmp_path / "state.json")
-    Path(sp).write_text(json.dumps({"pid": 4242, "inodes": [99001]}))
+    Path(sp).write_text(json.dumps(
+        {"pid": 4242, "inode_counts": {"99001": 19}}))
     sig = probe_phoneapi_tcp_leak(
         "meshforge-map.service", proc_root=root, main_pid=4242,
         state_path=sp, owner_fetch=lambda: (True, None),
     )
     assert sig is None
-    assert json.loads(Path(sp).read_text())["inodes"] == []
+    assert json.loads(Path(sp).read_text())["inode_counts"] == {}
 
 
 # ─────────────────────────────────────────────────────────────────────

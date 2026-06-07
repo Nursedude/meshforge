@@ -846,6 +846,14 @@ def probe_fd_exhaustion(
 
 DEFAULT_PHONEAPI_LEAK_STATE_PATH = "/var/lib/meshforge/phoneapi_leak_state.json"
 
+# How many CONSECUTIVE 30s ticks the same socket inode must persist before
+# firing. The original "2 ticks" assumption false-alarmed on moc1 (2026-06-07):
+# a legit demand-collect TCP nodedb sync lives 1-4 MINUTES (2-8 ticks), so the
+# probe flapped NEW/CLEARED every few minutes on rotating per-collect sockets.
+# A real leaked TCPInterface persists for hours — 20 ticks (~10 min) silences
+# the slow-collect class with 2.5x margin while still catching a leak fast.
+DEFAULT_PHONEAPI_LEAK_PERSIST_TICKS = 20
+
 
 def _pid_socket_inodes(pid: int, *, proc_root: str = "/proc") -> Optional[set]:
     """Socket inodes held by ``pid``'s open fds; None when fd dir unreadable."""
@@ -898,26 +906,38 @@ def _estab_inodes_to_port(port: int, *, proc_root: str = "/proc") -> set:
     return inodes
 
 
-def _load_phoneapi_leak_state(state_path: str) -> Tuple[Optional[int], set]:
-    """Read ``(pid, inodes)`` seen last tick. Any error → (None, empty) —
-    conservative: an unreadable state suppresses a first fire, never causes one."""
+def _load_phoneapi_leak_state(state_path: str) -> Tuple[Optional[int], dict]:
+    """Read ``(pid, {inode: consecutive_ticks})`` from last tick.
+
+    Back-compat: the pre-2026-06-07 format stored a bare ``inodes`` list —
+    treat each as count 1 (one prior sighting), so an upgrade mid-flight
+    never spuriously fires. Any error → (None, empty) — conservative: an
+    unreadable state suppresses a fire, never causes one.
+    """
     try:
         with open(state_path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        return data.get("pid"), set(int(i) for i in data.get("inodes", []))
-    except (OSError, ValueError, TypeError):
-        return None, set()
+        counts = data.get("inode_counts")
+        if counts is not None:
+            return data.get("pid"), {int(i): int(c) for i, c in counts.items()}
+        # Legacy format: {"pid": N, "inodes": [...]}
+        return data.get("pid"), {int(i): 1 for i in data.get("inodes", [])}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None, {}
 
 
-def _save_phoneapi_leak_state(state_path: str, pid: int, inodes: set) -> None:
-    """Persist this tick's candidate sockets (atomic-rename, never raises)."""
+def _save_phoneapi_leak_state(state_path: str, pid: int, inode_counts: dict) -> None:
+    """Persist this tick's per-inode consecutive-tick counts
+    (atomic-rename, never raises)."""
     try:
         parent = os.path.dirname(state_path)
         if parent:
             os.makedirs(parent, exist_ok=True)
         tmp = state_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"pid": int(pid), "inodes": sorted(inodes)},
+            json.dump({"pid": int(pid),
+                       "inode_counts": {str(i): int(c)
+                                        for i, c in sorted(inode_counts.items())}},
                       fh, separators=(",", ":"))
         os.replace(tmp, state_path)
     except OSError:
@@ -951,6 +971,7 @@ def probe_phoneapi_tcp_leak(
     state_path: Optional[str] = None,
     owner_fetch=None,
     main_pid: Optional[int] = None,
+    persist_ticks: int = DEFAULT_PHONEAPI_LEAK_PERSIST_TICKS,
 ) -> Optional[Signal]:
     """Detect a leaked TCPInterface to meshtasticd's PhoneAPI (:4403).
 
@@ -969,10 +990,14 @@ def probe_phoneapi_tcp_leak(
     1. The service's MainPID holds an ESTABLISHED TCP socket whose
        remote port is ``phoneapi_port`` (``/proc/net/tcp*`` inode ∩
        ``/proc/<pid>/fd`` socket inodes).
-    2. The SAME socket inode (same pid) was already present last tick —
-       a legit per-collect connection lives seconds and never survives
-       two 30s ticks; a leak does. This replaces a naive time threshold
-       and never false-fires on the collector's brief TCP leg.
+    2. The SAME socket inode (same pid) has persisted for at least
+       ``persist_ticks`` CONSECUTIVE ticks (~10 min at the 30s cadence).
+       The original "survives 2 ticks" rule false-alarmed on moc1
+       (2026-06-07): a legit demand-collect TCP nodedb sync lives 1-4
+       minutes — well past two ticks — so rotating per-collect sockets
+       flapped the signal NEW/CLEARED every few minutes. A real leak
+       persists hours; the higher bar keeps detection fast while never
+       firing on the slow-collect class.
     3. The map's own ``/api/radio/status`` reports
        ``persistent_owner: null`` — an ACCOUNTED owner (e.g. the
        message listener's documented TCP fallback) is a known tradeoff
@@ -1001,14 +1026,20 @@ def probe_phoneapi_tcp_leak(
         phoneapi_port, proc_root=proc_root
     )
 
-    prev_pid, prev_inodes = _load_phoneapi_leak_state(sp)
-    _save_phoneapi_leak_state(sp, pid, candidates)
+    prev_pid, prev_counts = _load_phoneapi_leak_state(sp)
+    # Consecutive-tick count per inode: +1 if seen last tick (same pid),
+    # reset to 1 on a fresh inode or a service restart (pid change).
+    counts = {
+        inode: (prev_counts.get(inode, 0) + 1 if prev_pid == pid else 1)
+        for inode in candidates
+    }
+    _save_phoneapi_leak_state(sp, pid, counts)
 
     if not candidates:
         return None
-    persisted = candidates & prev_inodes if prev_pid == pid else set()
+    persisted = {i for i, c in counts.items() if c >= persist_ticks}
     if not persisted:
-        return None  # first sighting — could be a legit in-flight collect
+        return None  # in-flight collect (lives minutes) — not yet a leak
 
     fetch = owner_fetch or (lambda: _fetch_persistent_owner(status_port))
     found, owner = fetch()
@@ -1018,10 +1049,12 @@ def probe_phoneapi_tcp_leak(
         return None  # accounted persistent connection (listener TCP fallback)
 
     inode_list = sorted(persisted)
+    max_ticks = max(counts[i] for i in persisted)
     detail = (
         f"{service_name} (pid {pid}) holds an UNACCOUNTED persistent TCP "
         f"connection to meshtasticd :{phoneapi_port} (socket inode(s) "
-        f"{inode_list} persisted across ticks, persistent_owner=null) — "
+        f"{inode_list} persisted {max_ticks} consecutive ticks "
+        f"(threshold {persist_ticks}), persistent_owner=null) — "
         f"a leaked TCPInterface whose reader thread silently starves the "
         f":9443 web client of inbound texts and delivery ACKs (Issue #75, "
         f"#17 contention class). Recover: sudo systemctl restart "
@@ -1037,6 +1070,8 @@ def probe_phoneapi_tcp_leak(
             "pid": pid,
             "phoneapi_port": phoneapi_port,
             "leaked_inodes": inode_list,
+            "persisted_ticks": max_ticks,
+            "persist_ticks_threshold": persist_ticks,
         },
     )
 

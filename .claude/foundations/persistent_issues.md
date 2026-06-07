@@ -540,6 +540,10 @@ persistent_owner is null; accounted owners (listener TCP fallback) and a dark
 status endpoint stay silent. Read-only, sandbox-safe (no ss/sudo). Recovery:
 `sudo systemctl restart meshforge-map.service`. Tests: 8 in
 `tests/test_watchdog_probes.py` (`test_phoneapi_leak_*`) + closed-enum bump.
+**False-alarm fix (2026-06-07)**: probe flapped NEW/CLEARED every 1-4 min on moc1 —
+demand-collect TCP nodedb syncs live MINUTES (rotating inodes), so the 2-tick bar
+was too low. Now consecutive-tick counts per inode; fires at ≥20 ticks (~10 min).
+Legacy state loads as count 1. +2 tests (slow-collect silent, legacy format).
 
 
 ---
