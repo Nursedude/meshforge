@@ -94,6 +94,15 @@ class MapDataCollector(
     # map_settings.json to disable (tests, or boxes that drive collect()
     # from elsewhere).
     DEFAULT_PERIODIC_REFRESH_SECONDS = 300
+    # Demand-driven collect() cache window. Callers that omit
+    # max_age_seconds (the geojson endpoint, warm-up) serve cached data
+    # this old before paying a full collect. On boxes where the
+    # meshtasticd leg is expensive (moc5: CH341 USB-SPI radio starves
+    # the daemon's TCP nodedb stream — 14-19 s per sync, paid every
+    # ~60 s under a map browser tab's auto-refresh), raise this in
+    # map_settings.json to just under periodic_refresh_seconds so the
+    # periodic loop becomes the sole payer and demand always hits cache.
+    DEFAULT_COLLECT_CACHE_MAX_AGE_SECONDS = 30
     # Meshtasticd connection defaults
     DEFAULT_MESHTASTICD_HOST = "localhost"
     DEFAULT_MESHTASTICD_PORT = 4403
@@ -215,6 +224,9 @@ class MapDataCollector(
                 # Drives the periodic _collect_locked() heartbeat — see
                 # DEFAULT_PERIODIC_REFRESH_SECONDS comment for the why.
                 "periodic_refresh_seconds": self.DEFAULT_PERIODIC_REFRESH_SECONDS,
+                # Demand-driven collect() cache window — see
+                # DEFAULT_COLLECT_CACHE_MAX_AGE_SECONDS comment for the why.
+                "collect_cache_max_age_seconds": self.DEFAULT_COLLECT_CACHE_MAX_AGE_SECONDS,
                 # External-bulk geographic filter. External-bulk sources
                 # (meshcore_public ~40k worldwide, aredn_worldmap,
                 # public_fallback, mqtt_global) ingest the whole planet
@@ -778,15 +790,23 @@ class MapDataCollector(
             logger.info(message)
             self._last_info_log[source] = now
 
-    def collect(self, max_age_seconds: int = 30) -> Dict[str, Any]:
+    def collect(self, max_age_seconds: Optional[int] = None) -> Dict[str, Any]:
         """Collect nodes from all sources, merge, and return GeoJSON.
 
         Args:
             max_age_seconds: Use cached data if collected within this window.
+                None (the default) reads ``collect_cache_max_age_seconds``
+                from map_settings (default 30) — boxes with an expensive
+                meshtasticd leg raise the setting instead of every caller.
 
         Returns:
             GeoJSON FeatureCollection with all known nodes.
         """
+        if max_age_seconds is None:
+            max_age_seconds = int(self._settings.get(
+                "collect_cache_max_age_seconds",
+                self.DEFAULT_COLLECT_CACHE_MAX_AGE_SECONDS,
+            ))
         # Fast path — cache hit, no lock needed. Class attrs are pointer
         # reassignments, atomic under the GIL. Worst case during a cache
         # write is a stale read of _cached_geojson, which is acceptable.
