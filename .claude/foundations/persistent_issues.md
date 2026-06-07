@@ -540,3 +540,23 @@ persistent_owner is null; accounted owners (listener TCP fallback) and a dark
 status endpoint stay silent. Read-only, sandbox-safe (no ss/sudo). Recovery:
 `sudo systemctl restart meshforge-map.service`. Tests: 8 in
 `tests/test_watchdog_probes.py` (`test_phoneapi_leak_*`) + closed-enum bump.
+
+
+---
+
+## Issue #76: /json/* was NEVER served by meshtasticd — honest-absent probe; fromradio probe-leak killed (2026-06-07)
+
+Research verdict (firmware source): `/json/report`+`/json/nodes` are **ESP32-only**
+(`ContentHandler.cpp`, HAS_WIFI-gated). meshtasticd's `PiWebServer.cpp` only ever
+registered `/api/v1/fromradio|toradio` + a 404 static fallback — not a 2.7.24
+regression; the HTTP leg was dead from day one (open FR: firmware#9164). Worse: the
+old availability probe fell through to **GET /api/v1/fromradio on 404**, reporting
+the dead API "available" forever AND consuming a PhoneAPI packet per 60s re-check
+(#17 contention class); `PROBE_PORTS` also HTTP-probed :4403. Fix
+(`meshtastic_http.py`): tri-state probe (`ok`/`absent`/`down`); alive-but-404 →
+sticky `json_api_absent`, `is_available=False`, 1h recheck; fromradio probe deleted;
+4403 depinned; `availability_reason` surfaces in `/api/status.radio_config`.
+ESP32-over-WiFi hosts still work. Residual: `radio_failover` HTTP health polls never
+worked against meshtasticd (needs a non-/json source if dual-radio failover revives);
+moc5's `collect_cache_max_age_seconds: 290` stays (TCP leg is the only leg).
+**Tests**: `TestJsonApiAbsentIssue76` (8) in `tests/test_meshtastic_http.py`.

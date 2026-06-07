@@ -1,19 +1,22 @@
 """
 Meshtastic HTTP API Client
 
-Connects to meshtasticd's built-in web server to access JSON and protobuf
-endpoints. This is a COMPLEMENTARY interface to the TCP connection (port 4403):
+Accesses the Meshtastic JSON convenience endpoints over HTTP:
 
 - HTTP /json/nodes  → Get all mesh nodes without TCP lock
 - HTTP /json/report → Device health (airtime, memory, battery, radio)
-- HTTP /api/v1/fromradio + /api/v1/toradio → Protobuf messaging
 
-Key advantage: The /json/* endpoints work INDEPENDENTLY of the TCP connection,
-so they don't conflict with the gateway bridge's persistent TCP session.
+⚠️ IMPORTANT (Issue #76): the /json/* endpoints are served ONLY by the ESP32
+firmware webserver (ContentHandler.cpp, gated on HAS_WIFI). meshtasticd
+(Linux-native / Portduino, PiWebServer.cpp) has NEVER served them — its route
+set is /api/v1/fromradio + /api/v1/toradio plus a static-file fallback that
+404s everything else. An open firmware feature request tracks adding them:
+https://github.com/meshtastic/firmware/issues/9164
 
-meshtasticd Webserver config (in /etc/meshtasticd/config.yaml):
-    Webserver:
-        Port: 9443
+So against a local meshtasticd this client is honestly UNAVAILABLE: the probe
+detects the alive-webserver-but-404 signature, marks `json_api_absent`, and
+callers fall back to the TCP interface. The client remains fully useful when
+pointed at an ESP32 node's WiFi webserver.
 
 Reference: https://meshtastic.org/docs/development/device/http-api/
 """
@@ -33,8 +36,15 @@ logger = logging.getLogger(__name__)
 # meshtasticd default HTTPS port (configurable in config.yaml Webserver.Port)
 DEFAULT_HTTP_PORT = 9443
 
-# Ports to probe during auto-detection
-PROBE_PORTS = [9443, 443, 80, 4403]
+# Ports to probe during auto-detection.
+# NOTE: 4403 (the protobuf TCP/PhoneAPI port) must NEVER be probed with HTTP —
+# garbage bytes on the PhoneAPI socket are the Issue #17 contention class.
+PROBE_PORTS = [9443, 443, 80]
+
+# When the webserver is alive but serves no /json/* API (the meshtasticd
+# signature — Issue #76), re-check rarely: the route set only changes with a
+# firmware upgrade, and every wasted probe costs a request per collect cycle.
+JSON_ABSENT_RECHECK_INTERVAL = 3600.0  # seconds
 
 # Connection timeouts — canonical source: utils.timeouts
 from utils.timeouts import HTTP_CONNECT as CONNECT_TIMEOUT  # noqa: E402
@@ -158,14 +168,14 @@ def reset_http_client():
 
 class MeshtasticHTTPClient:
     """
-    HTTP client for meshtasticd's built-in web server.
-
-    Accesses the JSON convenience endpoints that don't require protobuf:
+    HTTP client for the Meshtastic /json/* convenience endpoints:
     - GET /json/nodes  → All known mesh nodes
     - GET /json/report → Device health telemetry
 
-    These endpoints work independently of the TCP connection (port 4403),
-    so they don't conflict with the gateway bridge.
+    Served only by the ESP32 firmware webserver — meshtasticd 404s them
+    (Issue #76; see module docstring). Against a local meshtasticd this
+    client reports `is_available=False` with `json_api_absent=True` and
+    callers should use the TCP interface.
     """
 
     def __init__(
@@ -180,6 +190,7 @@ class MeshtasticHTTPClient:
         self.tls = tls
         self._base_url: Optional[str] = None
         self._available: Optional[bool] = None
+        self._json_api_absent: bool = False  # webserver alive, /json/* 404 (Issue #76)
         self._last_check: float = 0.0
         self._check_interval: float = 60.0  # Re-check availability every 60s
 
@@ -199,37 +210,72 @@ class MeshtasticHTTPClient:
             self._base_url = f"{scheme}://{host}:{port}"
 
     def _auto_detect(self) -> None:
-        """Probe known ports to find meshtasticd's HTTP server."""
+        """Probe known ports to find a webserver that serves the JSON API."""
         # Try configured port first, then common alternatives
         ports_to_try = [self.port] + [p for p in PROBE_PORTS if p != self.port]
 
+        absent_hit = None  # first (url, port, scheme) that answered but 404'd
         for port in ports_to_try:
             for scheme in (["https", "http"] if self.tls else ["http", "https"]):
                 url = f"{scheme}://{self.host}:{port}"
-                if self._probe_url(url):
+                state = self._probe_json_api(url)
+                if state == 'ok':
                     self._base_url = url
                     self.port = port
                     self.tls = (scheme == "https")
                     self._available = True
+                    self._json_api_absent = False
                     self._last_check = time.time()
-                    logger.info(f"meshtasticd HTTP API detected at {url}")
+                    logger.info(f"Meshtastic JSON API detected at {url}")
                     return
+                if state == 'absent' and absent_hit is None:
+                    absent_hit = (url, port, scheme)
 
-        # Nothing found
-        self._available = False
         self._last_check = time.time()
+        self._available = False
+
+        if absent_hit:
+            # A webserver answered but 404'd /json/* — the meshtasticd
+            # signature (Issue #76: PiWebServer serves only /api/v1/*).
+            url, port, scheme = absent_hit
+            self._base_url = url
+            self.port = port
+            self.tls = (scheme == "https")
+            self._json_api_absent = True
+            logger.info(
+                f"Webserver at {url} does not serve the /json/* API "
+                "(meshtasticd exposes only /api/v1/*; JSON endpoints are "
+                "ESP32-only — firmware FR #9164). Callers will use the TCP "
+                f"interface; recheck in {int(JSON_ABSENT_RECHECK_INTERVAL)}s."
+            )
+            return
+
+        # Nothing found at all
+        self._json_api_absent = False
         scheme = "https" if self.tls else "http"
         self._base_url = f"{scheme}://{self.host}:{self.port}"
         logger.warning(
-            f"meshtasticd HTTP API not detected on {self.host} "
+            f"Meshtastic HTTP API not detected on {self.host} "
             f"(tried ports {ports_to_try}). Will retry on next call."
         )
 
-    def _probe_url(self, url: str) -> bool:
-        """Check if a URL responds with valid meshtasticd data."""
-        ctx = self._ssl_ctx if url.startswith("https") else None
+    def _probe_json_api(self, url: str) -> str:
+        """Probe a URL for the Meshtastic /json/* API.
 
-        # Primary probe: /json/report — accept any valid JSON object
+        Returns one of:
+        - 'ok'     — /json/report answered 200 with a JSON object (ESP32
+                     webserver, or a future meshtasticd that grew the API)
+        - 'absent' — a webserver answered but 404'd the path: meshtasticd's
+                     static-file fallback (Issue #76). Server alive, API gone.
+        - 'down'   — no usable webserver at this URL
+
+        ⚠️ Deliberately NO /api/v1/fromradio fallback probe: a GET on
+        fromradio CONSUMES a packet from the PhoneAPI stream and starves the
+        :9443 web client (Issue #17 contention class). Probing the protobuf
+        endpoint to prove "the server is up" is exactly the read-in-a-probe
+        pattern CLAUDE.md bans.
+        """
+        ctx = self._ssl_ctx if url.startswith("https") else None
         try:
             req = urllib.request.Request(
                 f"{url}/json/report",
@@ -240,49 +286,62 @@ class MeshtasticHTTPClient:
                 if resp.status == 200:
                     data = resp.read(4096)
                     if data:
-                        # Accept any JSON object (meshtasticd always returns {})
+                        # Accept any JSON object (firmware returns {} when idle)
                         parsed = json.loads(data)
                         if isinstance(parsed, dict):
-                            return True
-        except (json.JSONDecodeError, ValueError):
-            # Server responded but not valid JSON — might still be meshtasticd
-            # Fall through to secondary probe
-            pass
-        except Exception:
-            pass
-
-        # Secondary probe: /api/v1/fromradio — protobuf endpoint always exists
-        # on meshtasticd webserver even if JSON endpoints are unavailable
-        try:
-            req = urllib.request.Request(
-                f"{url}/api/v1/fromradio",
-                method='GET',
-                headers={'Accept': 'application/x-protobuf'},
-            )
-            with urllib.request.urlopen(req, timeout=CONNECT_TIMEOUT, context=ctx) as resp:
-                # 200 = data available, 204 = no data but server is alive
-                if resp.status in (200, 204):
-                    return True
+                            return 'ok'
+            return 'down'
         except urllib.error.HTTPError as e:
-            # 400/404 still means the webserver is running
-            if e.code in (400, 404, 405):
-                return True
+            # A real HTTP error response means a webserver IS alive here.
+            # 404/405 on /json/report = the API is not served (meshtasticd).
+            if e.code in (404, 405):
+                return 'absent'
+            return 'down'
+        except (json.JSONDecodeError, ValueError):
+            # Responded 200 but not JSON — not the Meshtastic JSON API
+            return 'down'
         except Exception:
-            pass
-
-        return False
+            return 'down'
 
     @property
     def is_available(self) -> bool:
-        """Check if the HTTP API is reachable (cached for check_interval)."""
+        """Check if the JSON API is reachable (cached, honest about absence).
+
+        When the last probe found a webserver that doesn't serve /json/*
+        (meshtasticd — Issue #76), the recheck interval stretches to
+        JSON_ABSENT_RECHECK_INTERVAL so collect cycles stop paying for a
+        round-trip that can only succeed after a firmware upgrade.
+        """
         now = time.time()
-        if self._available is None or (now - self._last_check) > self._check_interval:
-            self._available = self._probe_url(self._base_url)
+        interval = (JSON_ABSENT_RECHECK_INTERVAL if self._json_api_absent
+                    else self._check_interval)
+        if self._available is None or (now - self._last_check) > interval:
+            state = self._probe_json_api(self._base_url)
+            self._available = (state == 'ok')
+            self._json_api_absent = (state == 'absent')
             self._last_check = now
-            if not self._available:
-                # Try auto-detect again
+            if state == 'down':
+                # Server vanished — re-scan ports
                 self._auto_detect()
         return self._available or False
+
+    @property
+    def json_api_absent(self) -> bool:
+        """True when a webserver answers but serves no /json/* API (Issue #76)."""
+        return self._json_api_absent
+
+    @property
+    def availability_reason(self) -> str:
+        """Human-readable availability state for status surfaces."""
+        if self._available:
+            return "ok"
+        if self._json_api_absent:
+            return (
+                "webserver up but /json/* not served — meshtasticd exposes "
+                "only /api/v1/* (JSON endpoints are ESP32-only; firmware "
+                "FR #9164). Using TCP interface instead."
+            )
+        return "no Meshtastic webserver reachable"
 
     def _get_json(self, path: str, timeout: float = READ_TIMEOUT) -> Optional[Any]:
         """
@@ -555,7 +614,12 @@ class MeshtasticHTTPClient:
         )
 
     def __repr__(self) -> str:
-        status = "available" if self._available else "unavailable"
+        if self._available:
+            status = "available"
+        elif self._json_api_absent:
+            status = "json_api_absent"
+        else:
+            status = "unavailable"
         return f"MeshtasticHTTPClient({self._base_url}, {status})"
 
 

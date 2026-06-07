@@ -1280,7 +1280,9 @@ class MapRequestHandler(
             from utils.meshtastic_http import get_http_client
             client = get_http_client()
             if not client.is_available:
-                return {"available": False, "reason": "meshtasticd HTTP not reachable"}
+                # availability_reason distinguishes "webserver down" from
+                # "meshtasticd never serves /json/*" (Issue #76)
+                return {"available": False, "reason": client.availability_reason}
             raw = client.get_report_raw()
             if not raw:
                 return {"available": False, "reason": "no /json/report response"}

@@ -629,5 +629,135 @@ class TestMapDataCollectorIntegration:
                 assert features[0]["properties"]["source"] == "meshtasticd_http"
 
 
+# --- Issue #76: /json/* is ESP32-only — meshtasticd has never served it ---
+
+
+def _http_404(url='https://localhost:9443/json/report'):
+    """Build the meshtasticd static-fallback 404 (PiWebServer signature)."""
+    import urllib.error
+    return urllib.error.HTTPError(url, 404, 'File not found', {}, None)
+
+
+class TestJsonApiAbsentIssue76:
+    """meshtasticd (PiWebServer) 404s /json/* — only ESP32 serves it.
+
+    The old probe fell through to GET /api/v1/fromradio on 404, which
+    (a) reported the dead JSON API as "available" forever, and
+    (b) CONSUMED a PhoneAPI packet per re-check (Issue #17 contention).
+    These tests pin the honest tri-state probe.
+    """
+
+    @patch('utils.meshtastic_http.urllib.request.urlopen')
+    def test_404_marks_json_api_absent_not_available(self, mock_urlopen):
+        """Webserver alive + /json/report 404 → absent, NOT available."""
+        mock_urlopen.side_effect = lambda req, **kw: (_ for _ in ()).throw(
+            _http_404(req.full_url))
+        client = MeshtasticHTTPClient(
+            host='localhost', port=9443, tls=True, auto_detect=True)
+
+        assert client._available is False
+        assert client.json_api_absent is True
+        assert client.is_available is False
+        # base_url still set — the webserver IS there, just no JSON API
+        assert client._base_url is not None
+
+    @patch('utils.meshtastic_http.urllib.request.urlopen')
+    def test_no_fromradio_probe_ever(self, mock_urlopen):
+        """The probe must NEVER touch /api/v1/fromradio (Issue #17 contract).
+
+        A GET on fromradio consumes a packet from the PhoneAPI stream and
+        starves the :9443 web client.
+        """
+        seen_urls = []
+
+        def record(req, **kw):
+            url = req.full_url if hasattr(req, 'full_url') else str(req)
+            seen_urls.append(url)
+            raise _http_404(url)
+
+        mock_urlopen.side_effect = record
+        MeshtasticHTTPClient(
+            host='localhost', port=9443, tls=True, auto_detect=True)
+
+        assert seen_urls, "probe should have issued requests"
+        assert not any('/api/v1/fromradio' in u for u in seen_urls), (
+            f"probe touched the PhoneAPI stream: {seen_urls}")
+
+    def test_4403_never_in_probe_ports(self):
+        """HTTP probes at the protobuf TCP port are Issue #17 contention."""
+        from utils.meshtastic_http import PROBE_PORTS
+        assert 4403 not in PROBE_PORTS
+
+    @patch('utils.meshtastic_http.urllib.request.urlopen')
+    def test_absent_uses_long_recheck_interval(self, mock_urlopen):
+        """After 'absent', is_available must not re-probe within the hour."""
+        import time as _time
+        client = _make_client()
+        client._available = False
+        client._json_api_absent = True
+        client._last_check = _time.time() - 120  # past the 60s normal window
+
+        assert client.is_available is False
+        mock_urlopen.assert_not_called()
+
+    @patch('utils.meshtastic_http.urllib.request.urlopen')
+    def test_absent_rechecks_after_long_interval_and_recovers(self, mock_urlopen):
+        """A firmware that grows the API is picked up at the long recheck."""
+        import time as _time
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_response.read = MagicMock(return_value=b'{"airtime": {}}')
+        mock_urlopen.return_value = mock_response
+
+        client = _make_client()
+        client._available = False
+        client._json_api_absent = True
+        client._last_check = _time.time() - 3700  # past JSON_ABSENT_RECHECK_INTERVAL
+
+        assert client.is_available is True
+        assert client.json_api_absent is False
+
+    @patch('utils.meshtastic_http.urllib.request.urlopen')
+    def test_availability_reason_distinguishes_absent_from_down(self, mock_urlopen):
+        """Status surfaces get an honest reason string (radio_config)."""
+        mock_urlopen.side_effect = lambda req, **kw: (_ for _ in ()).throw(
+            _http_404(req.full_url))
+        client = MeshtasticHTTPClient(
+            host='localhost', port=9443, tls=True, auto_detect=True)
+        assert '/json/*' in client.availability_reason
+        assert 'TCP' in client.availability_reason
+
+        client2 = _make_client()
+        client2._available = False
+        client2._json_api_absent = False
+        assert 'reachable' in client2.availability_reason
+
+    @patch('utils.meshtastic_http.urllib.request.urlopen')
+    def test_connection_refused_is_down_not_absent(self, mock_urlopen):
+        """No webserver at all → 'down' path, normal 60s recheck."""
+        mock_urlopen.side_effect = ConnectionRefusedError("refused")
+        client = MeshtasticHTTPClient(
+            host='localhost', port=9443, tls=True, auto_detect=True)
+        assert client._available is False
+        assert client.json_api_absent is False
+
+    @patch('utils.meshtastic_http.urllib.request.urlopen')
+    def test_collector_falls_to_tcp_when_json_absent(self, mock_urlopen):
+        """_collect_via_http returns [] fast when the JSON API is absent."""
+        mock_urlopen.side_effect = lambda req, **kw: (_ for _ in ()).throw(
+            _http_404(req.full_url))
+        reset_http_client()
+
+        from utils.map_data_collector import MapDataCollector
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            collector = MapDataCollector(cache_dir=Path(tmp), enable_history=False)
+            features = collector._collect_via_http('localhost')
+            assert features == []
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
