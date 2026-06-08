@@ -140,7 +140,16 @@ All 8 sites bound `ok, msg = …` + honest branch (5 audit-confirmed + 3 same-sh
 - **Blast-radius pass:** the other handler swallows are input-handling (`EOFError`/`KeyboardInterrupt` on dialogs) or benign device probes — not status surfaces, out of scope.
 - **MA port:** MeshForge `5a34a80`+`63a1d9b` (fleet-pulled, TUI-only/no restart) / MeshAnchor `8f9def16` (meshanchor-server pulled). All 5 files byte-identical to the MeshForge twins (only nomadnet's "return to MeshAnchor" string + `_update_meshanchor` + MA's None-resolving `get_rns_shared_instance_info`); parity_check in sync.
 
-> **Thread 1 (TUI honest-signal burn-down) is fully closed (S0–S7).** Remaining: Thread 2 (bidirectional addressability feature) and Thread 3 (fleet bootstrap). Two deferred audits still live above: the broader `.save()` sweep (S5) and the MA-divergent honest-signal audit (MeshCore/ActiveHealthProbe, S4).
+> **Thread 1 (TUI honest-signal burn-down) is fully closed (S0–S7).** Remaining: Thread 2 (bidirectional addressability feature) and Thread 3 (fleet bootstrap).
+
+### ✅ MA-divergent honest-signal audit — DONE 2026-06-08 (worklist = candidate S8)
+The deferred audit of MeshAnchor's surfaces with **no MeshForge twin** (MeshCore-primary fork) is complete: 5 parallel read-only agents over ~34 MA-native files, 2 HIGH findings independently re-verified. **11 findings (2 high, 4 med, 5 low).** Full worklist + evidence + fixes: `.claude/research/ma_divergent_honest_signal_audit_2026_06_08.md`. The 2 HIGH are operator-facing **false verdicts**:
+- **H1** `gateway/meshcore_supervisor_handler.py` — MeshCore reads HEALTHY while the radio is physically down (`radio_down` is an unrecognized `record_connection_event` no-op + unconditional `connect()` "connected" → `_connected` latches True; the #74 dead-branch class).
+- **H2** `gateway/lxmf_broadcast_bridge.py:1018` — `mark_delivered()` fires on **enqueue** (delivery is async via `on_delivered` receipt) → status shows `last_ok`/`healthy` for a dead destination forever (the #16 best-effort class).
+- MED: meshcore `.save()` false-"Saved" ×2 (fold into the S5 `.save()` sweep), fleet "Schedules" panel green-on-probe-failure, NomadNet uninstall "removed"-when-not. LOW ×5 (triage). **MeshAnchor is the lead repo for this set** (no MeshForge twin except the `.save()` family); guard home = MA's `tests/test_honest_signal_guards.py`.
+
+### ⬜ S8 — MA-divergent honest-signal burn-down (candidate, MeshAnchor-lead)
+Worklist above. Sequence: H1+H2 (behavioral guards) → M1+M2 (`.save()` family) → M3+M4 (false-clean) → L1–L5 (opportunistic; L1 needs the `check_service` `--user`-unit question answered first).
 
 ---
 
