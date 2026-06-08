@@ -48,11 +48,11 @@ All 8 sites bound `ok, msg = …` + honest branch (5 audit-confirmed + 3 same-sh
 - [x] `startup_health.py`:105 — honest restart note (in-domain, no shell-escape)
 - [x] `rns_diagnostics.py`:704 — gate verdict on `restart_ok and new_user==target_user`
 
-### ⬜ S3 — RNS service-lifecycle false-success + remediation
+### ✅ S3 — RNS service-lifecycle false-success + remediation (DONE 2026-06-08)
 - [x] `rns_interfaces.py` `_fix_rns_ownership`(489) — captures `stop_ok,stop_msg`/`start_ok,start_msg`; "rnsd restarted and permissions re-applied" now gated on `start_ok`, else "FAILED to restart rnsd: {msg}" + in-domain recovery (re-run / Diagnose RNS, no shell). Guard: `TestRnsRestartReturnChecked` (scoped `_BARE_SVC` scan of rns_interfaces.py — handler-wide would FP on ~10 benign/later-slice sites). **HIGH — DONE 2026-06-08**
 - [x] `_rns_diagnostics_engine.py` `diagnose_rns_port_conflict`(627) — binds `start_ok,start_msg`; now gates "Done." on `handler._wait_for_rns_shared_instance(10)` (rnsd started ≠ conflict resolved), honest failure on start-fail or instance-never-up + in-domain recovery. Guard: `TestPortConflictVerifyBeforeDone` (behavioral — line 459's sibling `stop_service` is a legit stop-then-pkill, so no file scan). **DONE 2026-06-08**
-- [ ] `daemon.py` `_daemon_stop`(162) — title on rc==0, else "Stop Failed" + stderr.
-- [ ] MF008 RNS sites: `_rns_interface_mgr.py`:96, `rns_diagnostics.py`:504 → `check_service()`.
+- [x] `daemon.py` `_daemon_stop`(162) — title now on `result.returncode`: "Stop Daemon" on rc==0, else "Stop Failed" + stderr (was always the neutral "Stop Daemon"). **DONE 2026-06-08**
+- [x] MF008 RNS sites: `_rns_interface_mgr.py`:96 (+import) and `rns_diagnostics.py`:504 → `check_service('…').available` (raw `systemctl is-active` removed). MF008 *coverage* extension to handlers/** stays S4. **DONE 2026-06-08**
 
 ### ⬜ S4 — service-state SSOT consolidation (extend MF008 lint to handlers/**)
 - [ ] `service_menu.py` `_show_all_service_status`(105) + `quick_actions.py` `_qa_service_status`(119) — `meshforge` unconditional green dot + dead `failed` branch → `check_service().available` / ServiceState.

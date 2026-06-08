@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 
 from utils.paths import ReticulumPaths
+from utils.service_check import check_service
 
 logger = logging.getLogger(__name__)
 
@@ -92,11 +93,8 @@ def _check_meshtastic_interface(name: str, body: str, blocking: list):
     if tcp_match:
         host_port = tcp_match.group(1)
         try:
-            r = subprocess.run(
-                ['systemctl', 'is-active', 'meshtasticd'],
-                capture_output=True, text=True, timeout=5
-            )
-            if r.stdout.strip() != 'active':
+            # MF008: service state via check_service(), not raw systemctl.
+            if not check_service('meshtasticd').available:
                 blocking.append((
                     name,
                     f"needs meshtasticd ({host_port}) but it is not running",

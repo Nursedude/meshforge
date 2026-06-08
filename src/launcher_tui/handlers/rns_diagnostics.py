@@ -24,7 +24,8 @@ logger = logging.getLogger(__name__)
 from utils.paths import get_real_user_home, ReticulumPaths
 from backend import clear_screen
 from utils.service_check import (
-    apply_config_and_restart, check_process_running, check_udp_port,
+    apply_config_and_restart, check_process_running, check_service,
+    check_udp_port,
     check_rns_shared_instance, get_rns_shared_instance_info,
     start_service, stop_service, _sudo_cmd, _sudo_write,
     daemon_reload, enable_service, get_udp_port_owner,
@@ -500,11 +501,8 @@ class RNSDiagnosticsHandler(BaseHandler):
                 # Check if rnsd is actually running
                 rnsd_running = False
                 try:
-                    r = subprocess.run(
-                        ['systemctl', 'is-active', 'rnsd'],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    rnsd_running = r.stdout.strip() == 'active'
+                    # MF008: service state via check_service(), not raw systemctl.
+                    rnsd_running = check_service('rnsd').available
                 except (subprocess.SubprocessError, OSError):
                     pass
 
