@@ -130,9 +130,17 @@ All 8 sites bound `ok, msg = …` + honest branch (5 audit-confirmed + 3 same-sh
 - **Blast-radius pass:** the provenance class is well-contained — `demo.py`, `dashboard.py`'s `[DEMO MODE ACTIVE]` banner, and `meshcore.py`'s `simulation_mode` line ALL already surface their simulated state honestly (truthful, not defects — no fix). No handler compared `backend == MOCK` before; no existing test touched the three files.
 - **MA port:** MeshForge `1b91f85` (fleet-pulled, TUI-only/no restart) / MeshAnchor `f4afd660` (meshanchor-server pulled). All three files were byte-identical to the MeshForge twins → same edits; parity_check in sync.
 
-### ⬜ S7 — false-clean swallowed-error tail (low severity)
-- [ ] `gateway.py` `_show_gateway_status`(195) circuit-breaker block; `meshcore.py` `_meshcore_status_line`(93) subtitle; `nomadnet.py` `_get_rns_config_for_user`(264) storage-prep; `updates.py` `_update_meshforge`(609) service-file step; `_nomadnet_rns_checks.py` `_check_rns_for_nomadnet`(106) instance_name hardcode (#72 class).
-- [ ] **Guardrail:** "a failed read in a status surface must render '(status unavailable: …)' not vanish"; extend MF003 to handlers.
+### ✅ S7 — false-clean swallowed-error tail (DONE 2026-06-08) — **Thread 1 complete**
+- [x] `gateway.py` `_show_gateway_status` — circuit-breaker read `except Exception: pass` → appends `"CIRCUIT BREAKERS: (status unavailable: {e})"`. An empty section had read as "no open breakers" when the read itself failed.
+- [x] `meshcore.py` `_meshcore_status_line` — config-read failure returns a distinct `"MeshCore: status unavailable (config read failed)"` instead of the no-module neutral subtitle (the two were indistinguishable). **DONE**
+- [x] `updates.py` `_update_meshforge` — service-file step's bare `except Exception: pass` → appends `"(service update error: {e})"` to `svc_msgs` so the "Update Complete" dialog reflects it (mirrors the existing OSError branch). **DONE**
+- [x] `nomadnet.py` `_get_rns_config_for_user` — swallowed `/etc/reticulum/storage` perms-fix failure is stashed on `self._rns_storage_prep_warning` (reset per call) and **surfaced at the NomadNet launch surface** (drift/permission risk), not just a debug-invisible log. **DONE**
+- [x] `_nomadnet_rns_checks.py` `_check_rns_for_nomadnet` — hardcoded `'\x00rns/default'` probe → canonical instance-aware, #68-bounded `utils.rns_init._probe_shared_instance_connect`; instance_name from `ReticulumPaths.get_configured_instance_name()` (sudo/active-config-aware; falls back to `'default'` — no regression on standard boxes; a non-default box no longer gets a false health verdict, #72 class). Removed now-unused `import socket`. **DONE** (resolver swapped from my interim `_read_instance_name_from_config('/etc/reticulum')` in follow-up `63a1d9b` — removed the hardcode the fix itself introduced.)
+- [x] **Guardrail:** `TestSwallowedErrorTailS7` (5 static, skip-if-absent) in `tests/test_honest_signal_guards.py`. **Note:** MF003 catches *bare* `except:`; these defects are *typed* `except Exception: pass`, so the guard is regression tests, **not** an MF003 extension (the plan's earlier "extend MF003" guess didn't fit — MF003 already covers bare-except and no handler has one).
+- **Blast-radius pass:** the other handler swallows are input-handling (`EOFError`/`KeyboardInterrupt` on dialogs) or benign device probes — not status surfaces, out of scope.
+- **MA port:** MeshForge `5a34a80`+`63a1d9b` (fleet-pulled, TUI-only/no restart) / MeshAnchor `8f9def16` (meshanchor-server pulled). All 5 files byte-identical to the MeshForge twins (only nomadnet's "return to MeshAnchor" string + `_update_meshanchor` + MA's None-resolving `get_rns_shared_instance_info`); parity_check in sync.
+
+> **Thread 1 (TUI honest-signal burn-down) is fully closed (S0–S7).** Remaining: Thread 2 (bidirectional addressability feature) and Thread 3 (fleet bootstrap). Two deferred audits still live above: the broader `.save()` sweep (S5) and the MA-divergent honest-signal audit (MeshCore/ActiveHealthProbe, S4).
 
 ---
 
