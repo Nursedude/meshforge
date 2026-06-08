@@ -19,10 +19,13 @@ proceeds:
     provenance (MOCK-MODE banner, honest PSK classification, SAMPLE-DATA note)
     so a HAM never reads np.random noise as real RF and a security audit never
     sees a false encryption verdict.
+  * TestSwallowedErrorTailS7 — S7 false-clean swallowed-error tail: a failed
+    read in a status surface must render "(status unavailable: …)" not vanish,
+    and the RNS health probe must not hardcode the shared-instance name.
 
 Future sessions widen this (the *_service / cfg.save() clusters) — add their
-guards here. The S6 guards skip gracefully when a handler file is absent so the
-suite ports cleanly to MeshAnchor's divergent tree.
+guards here. The S6/S7 guards skip gracefully when a handler file is absent so
+the suite ports cleanly to MeshAnchor's divergent tree.
 """
 import os
 import re
@@ -329,4 +332,66 @@ class TestTrafficDemoProvenance:
         assert "used_demo" in src and "SAMPLE DATA" in src, (
             "demo path visualization must carry a SAMPLE DATA provenance note "
             "into the final dialog (S6)"
+        )
+
+
+# --- S7: false-clean swallowed-error tail (status reads must not vanish) ---
+
+GATEWAY_HANDLER = HANDLERS_DIR / "gateway.py"
+MESHCORE_HANDLER = HANDLERS_DIR / "meshcore.py"
+UPDATES_HANDLER = HANDLERS_DIR / "updates.py"
+NOMADNET_HANDLER = HANDLERS_DIR / "nomadnet.py"
+NOMADNET_CHECKS = HANDLERS_DIR / "_nomadnet_rns_checks.py"
+
+
+def _src_or_skip(fp: Path) -> str:
+    if not fp.exists():
+        pytest.skip(f"{fp.name} not present in this repo")
+    return fp.read_text(encoding="utf-8")
+
+
+class TestSwallowedErrorTailS7:
+    """S7 (#74-#77): the last Thread-1 slice. A failed read in a status surface
+    must render '(status unavailable: …)' rather than silently vanish (an empty
+    section reads as 'all clear'); and the RNS pre-launch health probe must not
+    hardcode the shared-instance socket name. Static source guards (zero-FP,
+    skip-if-absent so they port to MeshAnchor's divergent tree)."""
+
+    def test_gateway_breaker_read_failure_surfaces(self):
+        src = _src_or_skip(GATEWAY_HANDLER)
+        assert "CIRCUIT BREAKERS: (status unavailable" in src, (
+            "a failed circuit-breaker read must render '(status unavailable: …)' "
+            "in _show_gateway_status, not an empty section that reads as "
+            "'no open breakers' (S7)"
+        )
+
+    def test_meshcore_subtitle_distinguishes_read_failure(self):
+        src = _src_or_skip(MESHCORE_HANDLER)
+        assert "MeshCore: status unavailable" in src, (
+            "_meshcore_status_line must not let a config-read failure masquerade "
+            "as the neutral 'feature unavailable' subtitle (S7)"
+        )
+
+    def test_updates_service_step_failure_surfaces(self):
+        src = _src_or_skip(UPDATES_HANDLER)
+        assert "(service update error:" in src, (
+            "the service-file update step must surface an unexpected failure in "
+            "the completion dialog, not pass so 'Update Complete' reads clean (S7)"
+        )
+
+    def test_nomadnet_storage_prep_failure_surfaced(self):
+        src = _src_or_skip(NOMADNET_HANDLER)
+        assert "_rns_storage_prep_warning" in src and "Storage perms not fixed" in src, (
+            "a swallowed /etc/reticulum/storage perms-fix failure must reach the "
+            "NomadNet launch surface (drift/permission risk), not just a log (S7)"
+        )
+
+    def test_nomadnet_rns_probe_is_instance_aware(self):
+        src = _src_or_skip(NOMADNET_CHECKS)
+        assert "_probe_shared_instance_connect" in src, (
+            "the RNS health probe must use the canonical instance-aware helper (S7)"
+        )
+        assert "rns/default" not in src, (
+            "the RNS health probe must not hardcode the 'default' shared-instance "
+            "socket — a non-default box gets a false health verdict (#72 class, S7)"
         )

@@ -91,7 +91,9 @@ class MeshCoreHandler(BaseHandler):
             device = mc.device_path if conn == "serial" else f"{mc.tcp_host}:{mc.tcp_port}"
             return f"MeshCore: ENABLED ({conn} -> {device})"
         except Exception:
-            return "MeshCore companion radio management"
+            # Distinct from the no-module neutral subtitle above: a config-read
+            # failure must not masquerade as "feature unavailable" (S7, #74-#77).
+            return "MeshCore: status unavailable (config read failed)"
 
     def _meshcore_status(self):
         """Show MeshCore connection status."""

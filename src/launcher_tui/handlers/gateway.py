@@ -192,8 +192,11 @@ class GatewayHandler(BaseHandler):
                             lines.extend(["", "CIRCUIT BREAKERS:"])
                             open_found = True
                         lines.append(f"  ⚡ {svc_name}/{dest}: {info.get('state', 'open')}")
-        except Exception:
-            pass
+        except Exception as e:
+            # A failed breaker read must say so, not vanish — an empty section
+            # would read as "no open breakers" when we actually couldn't check
+            # (S7, #74-#77).
+            lines.extend(["", f"CIRCUIT BREAKERS: (status unavailable: {e})"])
 
         self.ctx.dialog.msgbox("Gateway Status", "\n".join(lines), width=50, height=25)
 

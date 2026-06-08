@@ -11,7 +11,6 @@ _rns_repair.py and rns_diagnostics handler.
 
 import logging
 import os
-import socket
 import subprocess
 from pathlib import Path
 
@@ -85,10 +84,16 @@ class NomadNetRNSChecksMixin:
 
         # 1. Gather state (read-only, no mutations)
         rnsd_user = self._get_rnsd_user()
+        # The shared instance socket is @rns/<instance_name>; read the name
+        # rnsd actually uses from its config instead of hardcoding 'default'
+        # (a non-default box was probed on the wrong socket → false health
+        # verdict — #72 class). Absent/unset config falls back to 'default'.
+        from utils.rns_init import _read_instance_name_from_config
+        rns_instance_name = _read_instance_name_from_config('/etc/reticulum') or 'default'
         shared_info = {}
         if get_rns_shared_instance_info:
             try:
-                shared_info = get_rns_shared_instance_info() or {}
+                shared_info = get_rns_shared_instance_info(rns_instance_name) or {}
             except Exception as e:
                 logger.debug("Shared instance info check failed: %s", e)
 
@@ -100,15 +105,13 @@ class NomadNetRNSChecksMixin:
         # instance socket accepts connections and responds to data.
         rnsd_healthy = None
         if rnsd_user and shared_info.get('available', False):
-            try:
-                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                s.settimeout(2)
-                s.connect('\x00rns/default')
-                # If we connected, the shared instance is alive
-                rnsd_healthy = True
-                s.close()
-            except OSError:
-                rnsd_healthy = False
+            # Canonical instance-aware, #68-bounded connect probe
+            # (utils.rns_init) — replaces the old hardcoded default-instance
+            # socket so a box on a non-default instance_name isn't reported
+            # falsely unhealthy, and a wedged-connect is distinguished from a
+            # refusal in the logs.
+            from utils.rns_init import _probe_shared_instance_connect
+            rnsd_healthy = _probe_shared_instance_connect(rns_instance_name, 2.0)
 
         # 2. Pure decision
         result = check_rns_readiness(

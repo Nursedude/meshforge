@@ -230,6 +230,10 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
         """
         import stat
 
+        # Reset each call; set if the storage perms-fix below fails so the
+        # launch surface can warn the operator instead of it vanishing (S7).
+        self._rns_storage_prep_warning = None
+
         etc_rns = Path('/etc/reticulum')
         etc_config = etc_rns / 'config'
 
@@ -262,6 +266,11 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
                     finally:
                         os.umask(old_umask)
             except (OSError, PermissionError) as e:
+                # A failed perms-fix means NomadNet may not write or may drift
+                # to ~/.reticulum (config drift with rnsd). Stash it so the
+                # launch surface surfaces it — don't let it vanish into a
+                # debug-invisible log (S7, #74-#77).
+                self._rns_storage_prep_warning = str(e)
                 logger.warning(f"Could not fix /etc/reticulum/storage: {e}")
 
             return str(etc_rns)
@@ -910,6 +919,13 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
         print("=== Launching NomadNet ===")
         if rns_config_path:
             print(f"Using RNS config: {rns_config_path}")
+        prep_warning = getattr(self, '_rns_storage_prep_warning', None)
+        if prep_warning:
+            # Surface the storage perms-fix failure swallowed in
+            # _get_rns_config_for_user (S7) — the operator needs to know
+            # NomadNet may fail to write or drift to ~/.reticulum.
+            print(f"⚠ Storage perms not fixed: {prep_warning}")
+            print("  NomadNet may fail to write or drift to ~/.reticulum.")
         print("Exit NomadNet (Ctrl+Q) to return to MeshForge.\n")
 
         # When running via sudo, we must run NomadNet as the real user.

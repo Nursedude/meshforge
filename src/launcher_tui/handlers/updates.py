@@ -621,8 +621,10 @@ class UpdatesHandler(BaseHandler):
                 daemon_reload()
         except (OSError, PermissionError) as e:
             svc_msgs.append(f"(warning: {e})")
-        except Exception:
-            pass
+        except Exception as e:
+            # Surface unexpected service-step failures in the completion dialog
+            # instead of "Update Complete" implying the step ran clean (S7).
+            svc_msgs.append(f"(service update error: {e})")
 
         svc_info = ""
         if svc_msgs:
