@@ -364,7 +364,10 @@ class ActiveHealthProbe:
                     "reason": state.last_result.reason,
                     "latency_ms": state.last_result.latency_ms,
                 } if state.last_result else None,
-                "uptime_percent": round(state.uptime_percent, 1),
+                # None (not 0.0) when never checked — 0.0% uptime is a fabricated
+                # value for "no data" (the property keeps 0.0 for the Prometheus
+                # gauge; this surface field is the honest one). (S8 L3)
+                "uptime_percent": round(state.uptime_percent, 1) if state.total_checks else None,
                 "total_checks": state.total_checks,
             }
 

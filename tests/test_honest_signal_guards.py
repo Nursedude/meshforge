@@ -415,3 +415,21 @@ class TestMeshcoreSaveGatedM12:
         assert "Save Failed" in src, (
             "a failed meshcore config write must surface a 'Save Failed' dialog (S8)"
         )
+
+
+# --- S8 L3: uptime_percent surface honesty (shared with MeshAnchor) ---
+
+ACTIVE_HEALTH_PROBE = REPO_ROOT / "src" / "utils" / "active_health_probe.py"
+
+
+class TestUptimePercentSurfaceL3:
+    """S8 L3 (#74-#77): a never-checked service must not report 0.0% uptime — a
+    fabricated value for 'no data'. get_status() emits None instead (the property
+    keeps 0.0 for the Prometheus gauge). Shared with MeshAnchor."""
+
+    def test_uptime_percent_none_when_never_checked(self):
+        src = _src_or_skip(ACTIVE_HEALTH_PROBE)
+        assert "if state.total_checks else None" in src, (
+            "active_health_probe get_status must emit uptime_percent=None (not 0.0) "
+            "for a never-checked service (S8 L3)"
+        )
