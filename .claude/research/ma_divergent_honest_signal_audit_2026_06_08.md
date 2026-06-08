@@ -52,9 +52,9 @@ ones — both are operator-facing **false-HEALTHY / false-DELIVERED verdicts**.
 
 ---
 
-## MED
+## MED — ✅ ALL FIXED 2026-06-08 (M1/M2 MeshForge `57c359d` + MeshAnchor `ff635f69`; M3/M4 MeshAnchor `ff635f69`)
 
-### M1+M2 · MeshCore config `.save()` false-"Saved"
+### M1+M2 · MeshCore config `.save()` false-"Saved" — ✅ FIXED (both repos)
 `src/launcher_tui/handlers/meshcore.py:321` (`_meshcore_configure` save) + `:353` (`_meshcore_toggle`) — SHAPE 4 — CONF high
 
 - `config.save()` called as a bare statement; `GatewayConfig.save()` catches all exceptions and
@@ -63,7 +63,7 @@ ones — both are operator-facing **false-HEALTHY / false-DELIVERED verdicts**.
 - **FIX:** gate on the `.save()` bool (MeshForge S5 idiom) — `if config.save(): … else: "Save Failed — NOT persisted"`.
   *(Same `SettingsManager/GatewayConfig.save()`-discarded family as MeshForge's deferred `.save()` sweep.)*
 
-### M3 · Fleet "Schedules" panel reads green when the timer probe failed
+### M3 · Fleet "Schedules" panel reads green when the timer probe failed — ✅ FIXED (`ff635f69`; latent until next meshanchor-map restart)
 `src/monitoring/fleet_aggregator.py` `_list_timers_scope`/`_schedules_block` (~`:619`/`:683`) — SHAPE 6 — CONF high
 
 - `_list_timers_scope` swallows `TimeoutExpired`/`OSError`/`FileNotFoundError`/`JSONDecodeError`/`rc!=0`
@@ -72,7 +72,7 @@ ones — both are operator-facing **false-HEALTHY / false-DELIVERED verdicts**.
 - **FIX:** return `None` on probe failure (vs `[]` for "no timers") → emit `{healthy: False,
   reason: "timer state unavailable: <err>"}` → panel renders "(timer state unavailable)".
 
-### M4 · NomadNet uninstall claims "removed" when the file is still there
+### M4 · NomadNet uninstall claims "removed" when the file is still there — ✅ FIXED (`ff635f69`)
 `src/launcher_tui/handlers/_nomadnet_tmux_service_ops.py:557-564` — SHAPE 6 (+1) — CONF high
 
 - `_do_nomadnet_uninstall` swallows `path.unlink()` OSError (logged only) and discards the
