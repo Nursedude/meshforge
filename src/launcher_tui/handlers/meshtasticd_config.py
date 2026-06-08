@@ -192,8 +192,16 @@ def activate_hardware_config(config_name: str,
         )
     logger.info("Activated hardware config: %s", config_name)
 
-    apply_config_and_restart('meshtasticd')
-    return True
+    # Honest-signal: propagate the real restart result so callers (e.g.
+    # MeshtasticdRadioHandler._activate_hardware_config) can surface a failed
+    # restart instead of always reporting success. Returning True unconditionally
+    # left that handler's error branch dead code (#74-#77 class).
+    ok, msg = apply_config_and_restart('meshtasticd')
+    if not ok:
+        logger.error(
+            "meshtasticd restart after activating %s failed: %s", config_name, msg
+        )
+    return ok
 
 
 def ensure_meshtasticd_config():

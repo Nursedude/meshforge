@@ -701,13 +701,14 @@ class RNSDiagnosticsHandler(BaseHandler):
                 capture_output=True, timeout=5,
             )
             threading.Event().wait(1)  # MF010: service restart stabilization
-            apply_config_and_restart('rnsd')
+            # Honest-signal: capture the restart result rather than discarding it.
+            restart_ok, restart_msg = apply_config_and_restart('rnsd')
             threading.Event().wait(2)  # MF010: service restart stabilization
 
             # Verify it's running as the right user now
             new_user = self._get_rnsd_user()
 
-            if new_user == target_user:
+            if restart_ok and new_user == target_user:
                 self.ctx.dialog.msgbox(
                     "rnsd Fixed",
                     f"rnsd is now running as {target_user}.\n\n"
@@ -716,10 +717,16 @@ class RNSDiagnosticsHandler(BaseHandler):
                 )
                 return True
             else:
+                # Surface a restart failure explicitly, not only the user check —
+                # rnsd left stopped must not read as "fixed".
+                detail = (
+                    f"rnsd did NOT restart cleanly: {restart_msg}"
+                    if not restart_ok else
+                    f"rnsd is running as '{new_user}' (expected '{target_user}')."
+                )
                 self.ctx.dialog.msgbox(
                     "Fix May Have Failed",
-                    f"rnsd is running as '{new_user}' "
-                    f"(expected '{target_user}').\n\n"
+                    f"{detail}\n\n"
                     f"Check: systemctl status rnsd\n"
                     f"       cat {override_file}",
                 )

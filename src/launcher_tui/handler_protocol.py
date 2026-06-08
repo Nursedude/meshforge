@@ -112,6 +112,34 @@ class TUIContext:
         from utils.tui_logging import log_error
         log_error(context, exc)
 
+    def report_action(
+        self,
+        ok: bool,
+        success_title: str,
+        success_body: str,
+        fail_title: str = "Action Failed",
+        fail_body: str = "",
+    ) -> bool:
+        """Show a success OR failure dialog based on the REAL result of an action.
+
+        The honest-signal contract (Issues #74-#77): never show a hardcoded
+        success message for an operation whose result was never checked. Pass the
+        actual outcome — e.g. the first element of ``apply_config_and_restart()``
+        / ``*_service()`` ``(ok, msg)``, or a ``cfg.save()`` bool — as ``ok``.
+        The success dialog is shown only when ``ok`` is truthy; otherwise an
+        honest failure dialog is shown so a silent no-op can never read as a win.
+
+        Returns ``bool(ok)`` so callers can branch on it.
+        """
+        if ok:
+            self.dialog.msgbox(success_title, success_body)
+        else:
+            self.dialog.msgbox(
+                fail_title,
+                fail_body or "The operation did not complete successfully.",
+            )
+        return bool(ok)
+
     def safe_call(self, name: str, method, *args, **kwargs):
         """Safely call a handler method with exception handling.
 

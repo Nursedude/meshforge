@@ -122,11 +122,21 @@ class EmergencyModeHandler(BaseHandler):
         print(f"Broadcasting: {full_msg}\n")
         try:
             cli_path = self._get_emcomm_cli()
-            subprocess.run(
+            # Honest-signal: gate "sent" on the real CLI exit code. A non-zero
+            # return (no radio, radio busy, TX rejected) must NOT read as sent in
+            # an EMCOMM scenario. Mirrors _emcomm_sos_beacon's returncode check.
+            result = subprocess.run(
                 [cli_path, '--sendtext', full_msg],
-                timeout=30
+                capture_output=True, text=True, timeout=30
             )
-            print("\nMessage sent.")
+            if result.returncode == 0:
+                print("\nMessage sent.")
+            else:
+                err = (result.stderr or result.stdout or "").strip()
+                print(f"\nSEND FAILED (radio/CLI error, rc={result.returncode}).")
+                print("The broadcast did NOT go out — check the radio connection.")
+                if err:
+                    print(f"Details: {err.splitlines()[-1][:200]}")
         except FileNotFoundError:
             print("ERROR: meshtastic CLI not available.")
         except subprocess.TimeoutExpired:
@@ -181,11 +191,21 @@ class EmergencyModeHandler(BaseHandler):
         print(f"Sending to {dest_clean}: {full_msg}\n")
         try:
             cli_path = self._get_emcomm_cli()
-            subprocess.run(
+            # Honest-signal: a directed emergency message must report the real
+            # send result — a non-zero exit (unreachable dest, radio rejected,
+            # TCP to meshtasticd failed) must NOT print "Message sent."
+            result = subprocess.run(
                 [cli_path, '--dest', dest_clean, '--sendtext', full_msg],
-                timeout=30
+                capture_output=True, text=True, timeout=30
             )
-            print("\nMessage sent.")
+            if result.returncode == 0:
+                print("\nMessage sent.")
+            else:
+                err = (result.stderr or result.stdout or "").strip()
+                print(f"\nSEND FAILED (radio/CLI error, rc={result.returncode}).")
+                print(f"The message to {dest_clean} did NOT go out — check the radio.")
+                if err:
+                    print(f"Details: {err.splitlines()[-1][:200]}")
         except FileNotFoundError:
             print("ERROR: meshtastic CLI not available.")
         except subprocess.TimeoutExpired:

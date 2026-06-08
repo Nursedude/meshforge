@@ -101,12 +101,21 @@ class StartupHealthHandler(BaseHandler):
             if self.ctx.dialog.yesno("Config Conflict", msg):
                 try:
                     usb_config.unlink()
+                    # Honest-signal: report whether the restart actually succeeded.
+                    restart_note = ""
                     if _HAS_SERVICE_CHECK:
-                        apply_config_and_restart('meshtasticd')
+                        ok, rmsg = apply_config_and_restart('meshtasticd')
+                        if ok:
+                            restart_note = "Restarted meshtasticd\n"
+                        else:
+                            restart_note = (
+                                f"meshtasticd restart FAILED: {rmsg}\n"
+                                "Use the Service menu to restart meshtasticd.\n"
+                            )
                     self.ctx.dialog.msgbox(
                         "Fixed",
                         "Removed usb-serial.yaml\n"
-                        "Restarted meshtasticd\n\n"
+                        f"{restart_note}\n"
                         "Check: systemctl status meshtasticd"
                     )
                 except Exception as e:

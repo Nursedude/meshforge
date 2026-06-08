@@ -216,13 +216,28 @@ class UpdatesHandler(BaseHandler):
         if success:
             if _HAS_SERVICE_CHECK:
                 self.ctx.dialog.infobox("Restarting", "Restarting meshtasticd service...")
-                _apply_config_and_restart('meshtasticd')
-
-            self.ctx.dialog.msgbox(
-                "Update Complete",
-                "meshtasticd has been updated successfully!\n\n"
-                "The service has been restarted."
-            )
+                # Honest-signal: gate the "restarted" claim on the real result.
+                restart_ok, restart_msg = _apply_config_and_restart('meshtasticd')
+                self.ctx.report_action(
+                    restart_ok,
+                    "Update Complete",
+                    "meshtasticd has been updated successfully!\n\n"
+                    "The service has been restarted.",
+                    "Updated — Restart FAILED",
+                    "meshtasticd was updated but did NOT restart cleanly:\n"
+                    f"{restart_msg}\n\n"
+                    "The radio daemon may be down or running the old version.\n"
+                    "Check: systemctl status meshtasticd",
+                )
+            else:
+                # No service-control available — do not imply a restart happened.
+                self.ctx.dialog.msgbox(
+                    "Update Applied",
+                    "The meshtasticd package was updated.\n\n"
+                    "Service control is unavailable in this environment, so "
+                    "meshtasticd was NOT restarted automatically. Restart it "
+                    "from the Service Management menu to load the new version."
+                )
         else:
             self.ctx.dialog.msgbox(
                 "Update Failed",

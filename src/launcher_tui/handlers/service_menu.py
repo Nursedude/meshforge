@@ -322,13 +322,20 @@ class ServiceMenuHandler(BaseHandler):
                         "Or run: sudo bash scripts/install_noc.sh --force-native"
                     )
             else:
-                apply_config_and_restart('meshtasticd')
-                self.ctx.dialog.msgbox(
+                # Honest-signal: gate the "restarted" claim on the real result.
+                ok, msg = apply_config_and_restart('meshtasticd')
+                self.ctx.report_action(
+                    ok,
                     "Config Fixed",
                     "Configuration corrected!\n\n"
                     "- Removed wrong USB config\n"
                     "- Restarted meshtasticd service\n\n"
-                    "Check status: sudo systemctl status meshtasticd"
+                    "Check status: sudo systemctl status meshtasticd",
+                    "Config Fixed — Restart FAILED",
+                    "The wrong USB config was removed, but meshtasticd did NOT "
+                    f"restart cleanly:\n{msg}\n\n"
+                    "meshtasticd may still be down or in a failed state.\n"
+                    "Check: sudo systemctl status meshtasticd",
                 )
 
         except Exception as e:

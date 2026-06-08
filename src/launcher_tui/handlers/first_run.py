@@ -454,16 +454,21 @@ class FirstRunHandler(BaseHandler):
             # Copy config file
             shutil.copy2(src, dst)
 
-            # Restart meshtasticd
-            apply_config_and_restart('meshtasticd')
-
-            self.ctx.dialog.msgbox(
+            # Restart meshtasticd — honest-signal: gate on the real (ok, msg).
+            ok, msg = apply_config_and_restart('meshtasticd')
+            self.ctx.report_action(
+                ok,
                 "Configuration Applied",
                 f"Applied HAT configuration:\n\n"
                 f"Template: {src.name}\n"
                 f"Config: {dst}\n\n"
                 f"meshtasticd has been restarted.\n"
-                f"Check: systemctl status meshtasticd"
+                f"Check: systemctl status meshtasticd",
+                "Config Applied — Restart FAILED",
+                f"The template was copied to:\n  {dst}\n\n"
+                f"But meshtasticd did NOT restart cleanly:\n{msg}\n\n"
+                f"The radio may be down or still on the old config.\n"
+                f"Check: systemctl status meshtasticd",
             )
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed to apply config: {e}")
@@ -801,15 +806,20 @@ class FirstRunHandler(BaseHandler):
             # Copy config file
             shutil.copy2(source, dest)
 
-            # Restart meshtasticd
-            apply_config_and_restart('meshtasticd')
-
-            self.ctx.dialog.msgbox(
+            # Restart meshtasticd — honest-signal: gate on the real (ok, msg).
+            ok, msg = apply_config_and_restart('meshtasticd')
+            self.ctx.report_action(
+                ok,
                 "Configuration Applied",
                 f"Applied configuration for {hw_config['name']}.\n\n"
                 f"Config: {dest}\n\n"
                 f"meshtasticd has been restarted.\n"
-                f"Check: systemctl status meshtasticd"
+                f"Check: systemctl status meshtasticd",
+                "Config Applied — Restart FAILED",
+                f"The config was written to:\n  {dest}\n\n"
+                f"But meshtasticd did NOT restart cleanly:\n{msg}\n\n"
+                f"The radio may be down or still on the old config.\n"
+                f"Check: systemctl status meshtasticd",
             )
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed to apply config: {e}")
@@ -846,15 +856,21 @@ Logging:
 """
             config_file.write_text(config_content)
 
-            # Restart meshtasticd
-            apply_config_and_restart('meshtasticd')
-
-            self.ctx.dialog.msgbox(
+            # Restart meshtasticd — honest-signal: gate on the real (ok, msg).
+            ok, msg = apply_config_and_restart('meshtasticd')
+            self.ctx.report_action(
+                ok,
                 "USB Configured",
                 f"USB serial configuration created.\n\n"
                 f"Device: {device_path}\n"
                 f"Config: {config_file}\n\n"
-                f"meshtasticd has been restarted."
+                f"meshtasticd has been restarted.",
+                "USB Config Written — Restart FAILED",
+                f"The USB serial config was created at:\n  {config_file}\n\n"
+                f"But meshtasticd did NOT restart cleanly:\n{msg}\n\n"
+                f"The radio service may be down (it will not be reachable on "
+                f":9443 until it restarts).\n"
+                f"Check: systemctl status meshtasticd",
             )
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed to create config: {e}")

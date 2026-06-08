@@ -514,9 +514,15 @@ class TacticalOpsHandler(BaseHandler):
         timeline = self._get_timeline()
         timeline.record(msg)
 
-        # Show result
+        # Show result.
+        # Honest-signal (#74-#77): this path ENCODES the message and RECORDS it
+        # to the local timeline only — it does NOT transmit over any radio or
+        # network. Labeling it "Sent" was a false-success that could let an
+        # operator believe a SITREP/CHECKIN reached the mesh when nothing left
+        # the box. Say exactly what happened; over-the-air transmit is a
+        # separate, not-yet-wired action.
         clear_screen()
-        print(f"=== {tactical_type.name} Sent ===\n")
+        print(f"=== {tactical_type.name} ENCODED (recorded locally — NOT transmitted) ===\n")
         print(f"ID:       {msg.id}")
         print(f"Type:     {tactical_type.name}")
         print(f"Mode:     {badge}")
@@ -531,5 +537,6 @@ class TacticalOpsHandler(BaseHandler):
             chunks = chunk(x1_string, transport)
             print(f"  {transport:12s}: {len(chunks)} chunk(s) (limit {limit}B)")
 
-        print("\nMessage recorded to timeline.")
+        print("\nThis message was encoded and saved to the local timeline.")
+        print("It has NOT been transmitted over any radio or network.")
         self.ctx.wait_for_enter()

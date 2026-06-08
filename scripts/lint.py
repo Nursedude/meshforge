@@ -21,6 +21,7 @@ Checks:
 - MF017: hardened systemd unit (ProtectHome=read-only) ReadWritePaths drift vs the three meshforge buckets (Issue #58)
 - MF018: TUI shell-escapes (editor spawns, "run/install manually", "run with sudo") — the In-Domain Principle ratchet (foundations/in_domain_principle.md)
 - MF019: RNS.Reticulum() constructed outside the guarded chokepoint (must use open_reticulum() from utils.rns_init; #68/#69, RNS T2-isolate arc)
+- MF020: apply_config_and_restart() return (bool, msg) discarded in TUI handlers (hardcoded-success-after-unchecked-action, honest-signal Issues #74-#77)
 
 Usage:
     python3 scripts/lint.py [files...]
@@ -347,6 +348,23 @@ class MeshForgeLinter:
                     "wedged rnsd instead of hanging the thread; #68/#69). If the "
                     "call is genuinely isolated, add it to the chokepoint "
                     "allowlist in lint.py + TestRNSReticulumChokepoint."
+                ))
+
+        # MF020: apply_config_and_restart() return value discarded in a TUI handler.
+        # The function returns (success, msg) precisely so callers surface a
+        # failed daemon restart; a bare-statement call drops it and feeds the
+        # #74-#77 "hardcoded success after an unchecked action" defect class (the
+        # 2026-06-08 TUI audit found 8 such sites). Honest pattern:
+        #   ok, msg = apply_config_and_restart('meshtasticd')
+        #   self.ctx.report_action(ok, "Applied", ..., "Restart Failed", msg)
+        norm_path = filepath.replace(os.sep, '/')
+        if 'launcher_tui/handlers/' in norm_path:
+            if re.match(r'^_?apply_config_and_restart\s*\(', stripped):
+                issues.append(LintIssue(
+                    filepath, lineno, Severity.ERROR, "MF020",
+                    "apply_config_and_restart() return (bool, msg) discarded — "
+                    "bind 'ok, msg = ...' and surface restart failure via "
+                    "ctx.report_action (honest-signal class, Issues #74-#77)"
                 ))
 
         # MF011: _nomadnet_rns_checks.py must not contain repair/service logic
