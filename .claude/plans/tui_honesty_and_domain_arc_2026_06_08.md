@@ -49,7 +49,7 @@ All 8 sites bound `ok, msg = …` + honest branch (5 audit-confirmed + 3 same-sh
 - [x] `rns_diagnostics.py`:704 — gate verdict on `restart_ok and new_user==target_user`
 
 ### ⬜ S3 — RNS service-lifecycle false-success + remediation
-- [ ] `rns_interfaces.py` `_fix_rns_ownership`(489) — capture stop/start_service returns; daemon-left-stopped must not read "restarted" (mirror `rns_monitor.py:149-153`). **HIGH**
+- [x] `rns_interfaces.py` `_fix_rns_ownership`(489) — captures `stop_ok,stop_msg`/`start_ok,start_msg`; "rnsd restarted and permissions re-applied" now gated on `start_ok`, else "FAILED to restart rnsd: {msg}" + in-domain recovery (re-run / Diagnose RNS, no shell). Guard: `TestRnsRestartReturnChecked` (scoped `_BARE_SVC` scan of rns_interfaces.py — handler-wide would FP on ~10 benign/later-slice sites). **HIGH — DONE 2026-06-08**
 - [ ] `_rns_diagnostics_engine.py` `diagnose_rns_port_conflict`(627) — verify via `_wait_for_rns_shared_instance` before "Done."
 - [ ] `daemon.py` `_daemon_stop`(162) — title on rc==0, else "Stop Failed" + stderr.
 - [ ] MF008 RNS sites: `_rns_interface_mgr.py`:96, `rns_diagnostics.py`:504 → `check_service()`.

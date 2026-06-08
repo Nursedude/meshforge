@@ -486,18 +486,30 @@ class RNSInterfacesHandler(BaseHandler):
                 f"with correct ownership?",
             ):
                 from utils.service_check import stop_service, start_service
-                print(f"\n  Restarting rnsd...")
-                stop_service('rnsd')
                 import time
+                print(f"\n  Restarting rnsd...")
+                # stop/start_service return (ok, msg); a discarded return would
+                # let a daemon left stopped read as "restarted" (honest-signal
+                # #74-#77; mirrors rns_monitor.py:149-153).
+                stop_ok, stop_msg = stop_service('rnsd')
+                if not stop_ok:
+                    # Non-fatal on its own — a clean start below still brings
+                    # rnsd up; surface it only as context.
+                    print(f"    Note: stop reported: {stop_msg}")
                 time.sleep(1)
-                start_service('rnsd')
+                start_ok, start_msg = start_service('rnsd')
                 time.sleep(2)
-                # Fix permissions on newly-created auth tokens
-                try:
-                    ReticulumPaths._fix_storage_file_permissions()
-                except Exception:
-                    pass
-                print(f"  rnsd restarted and permissions re-applied")
+                if start_ok:
+                    # Fix permissions on the auth tokens rnsd just regenerated.
+                    try:
+                        ReticulumPaths._fix_storage_file_permissions()
+                    except Exception:
+                        pass
+                    print(f"  rnsd restarted and permissions re-applied")
+                else:
+                    print(f"  FAILED to restart rnsd: {start_msg}")
+                    print(f"  rnsd may be left stopped — re-run this fix or use "
+                          f"Diagnose RNS to recover.")
         elif issues_found == 0:
             print(f"\n  All files have correct ownership and permissions.")
 

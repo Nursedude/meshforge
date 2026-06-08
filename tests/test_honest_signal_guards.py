@@ -7,6 +7,8 @@ proceeds:
 
   * TestApplyConfigRestartReturnChecked — no handler discards
     apply_config_and_restart()'s (ok, msg) (the MF020 contract).
+  * TestRnsRestartReturnChecked — rns_interfaces.py binds stop/start_service()
+    so a failed rnsd restart can't read as success (S3 item 1).
   * TestReportActionHelper — the shared confirm-or-honest dialog primitive.
   * TestMF020LintRule — the lint rule fires on the bad shape, stays quiet on
     the honest one and outside the handler tree.
@@ -42,6 +44,11 @@ _spec.loader.exec_module(lint)
 # Statement-start call (return discarded). Mirrors the MF020 regex in lint.py.
 _BARE_APPLY = re.compile(r'^_?apply_config_and_restart\s*\(')
 
+# Statement-start service-control call (return discarded). Scoped per-file, not
+# handler-wide: ~10 handler sites legitimately fire-and-forget a stop before a
+# checked start, and others belong to later burn-down slices.
+_BARE_SVC = re.compile(r'^(?:stop|start|restart)_service\s*\(')
+
 
 class TestApplyConfigRestartReturnChecked:
     """apply_config_and_restart() returns (success, msg) precisely so callers
@@ -66,6 +73,30 @@ class TestApplyConfigRestartReturnChecked:
         assert not violations, (
             "apply_config_and_restart() return discarded (MF020 / honest-signal "
             "#74-#77) — bind 'ok, msg = ...' and surface restart failure:\n  "
+            + "\n  ".join(violations)
+        )
+
+
+class TestRnsRestartReturnChecked:
+    """S3 item 1 (#74-#77): rns_interfaces._fix_rns_ownership restarts rnsd after
+    a permission fix. The stop/start_service returns must be bound so a daemon
+    left stopped never reads "rnsd restarted" (mirrors rns_monitor.py:149-153).
+    Scoped to rns_interfaces.py — the broad *_service sweep is later slices."""
+
+    def test_no_bare_service_control_in_rns_interfaces(self):
+        fp = HANDLERS_DIR / "rns_interfaces.py"
+        violations = []
+        with open(fp, encoding="utf-8", errors="ignore") as f:
+            for n, line in enumerate(f, 1):
+                s = line.strip()
+                if s.startswith("#"):
+                    continue
+                if _BARE_SVC.match(s):
+                    violations.append(f"rns_interfaces.py:{n}: {s}")
+        assert not violations, (
+            "stop/start_service() return discarded in rns_interfaces.py "
+            "(honest-signal #74-#77) — bind 'ok, msg = ...' and gate the "
+            "'restarted' message on the start result:\n  "
             + "\n  ".join(violations)
         )
 
