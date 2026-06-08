@@ -158,8 +158,15 @@ class DaemonHandler(BaseHandler):
                 [sys.executable, str(daemon_script), "stop"],
                 capture_output=True, text=True, timeout=10
             )
-            output = result.stdout.strip() or result.stderr.strip() or "Stop signal sent."
-            self.ctx.dialog.msgbox("Stop Daemon", output)
+            # The returncode was discarded, so a failed stop still read as the
+            # neutral "Stop Daemon" title (#74-#77). Title on rc.
+            if result.returncode == 0:
+                output = result.stdout.strip() or "Stop signal sent."
+                self.ctx.dialog.msgbox("Stop Daemon", output)
+            else:
+                detail = (result.stderr.strip() or result.stdout.strip()
+                          or f"daemon stop exited with code {result.returncode}")
+                self.ctx.dialog.msgbox("Stop Failed", detail)
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed to stop daemon:\n{e}")
 
