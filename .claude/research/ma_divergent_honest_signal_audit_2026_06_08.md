@@ -91,7 +91,7 @@ ones — both are operator-facing **false-HEALTHY / false-DELIVERED verdicts**.
 
 ## LOW — ✅ ALL RESOLVED 2026-06-08 (MeshAnchor `6311722b`; L3 also MeshForge `1834fcc`)
 
-> L1 documented (necessary exception), L2 reviewed-no-op, L3/L4/L5 fixed. L4 latent until next meshanchor-map restart.
+> L1 documented (necessary exception), L2 reviewed-no-op, L3/L4/L5 fixed. L4 is now LIVE (meshanchor-map restarted 2026-06-08; /fleet/rollup verified 50 peers, 0 spurious errors).
 
 - **L1 · `_chat_pane_service_ops.py:167`** — SHAPE 3 — raw `systemctl --user is-active` instead of
   `check_service()` SSOT (MF008 shape). FAILED is *not* collapsed to green (honest today), but it
