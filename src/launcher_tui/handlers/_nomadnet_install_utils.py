@@ -267,7 +267,7 @@ class NomadNetInstallUtilsMixin:
             summary_lines.append(f"\nRNS upgrade issue:\n{rns_output[:150]}")
 
         self.ctx.dialog.msgbox(
-            "Upgrade Complete",
+            "Upgrade Complete" if rns_upgraded else "Upgrade Incomplete",
             "\n".join(summary_lines),
         )
         return rns_upgraded

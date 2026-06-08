@@ -72,13 +72,14 @@ All 8 sites bound `ok, msg = …` + honest branch (5 audit-confirmed + 3 same-sh
 - [x] **Guardrail:** extended `TestServiceCheckContract.test_no_multiline_systemctl_state_reads_in_handlers` (regression test, NOT a lint change — pre-commit runs lint at `--severity error` so MF008-warning wouldn't gate, and `test_regression_guards.py` IS pre-commit-run; the test also ports cleanly vs the diverged MeshForge/MeshAnchor linters). Catches the list-literal `['systemctl','is-active',…]` form the single-line regex/MF008 both miss. **DONE**
 - ⚠️ **`_rns_repair.py:408` kept raw + allowlisted** (`MULTILINE_READ_ALLOW`): its wait-loop must distinguish `'activating'` (keep waiting) from `'inactive'/'failed'` (crash) — `check_service` collapses `activating`→`NOT_RUNNING` (lossy), so converting it would falsely declare a crash mid-start. Documented at the call site. NOT in the plan's named sites — caught by the blast-radius pass.
 
-### ⬜ S5 — persisted-write + meshtasticd-apply honesty (cfg.save() / result.success)
-- [ ] `dual_radio_failover.py` `_deploy_secondary`(616) gate headline on `svc.available`; `_toggle_failover`(701)/`_edit_config_field`(432/452/500) gate on `cfg.save()`. **HIGH (deploy)**
-- [ ] `channel_config.py` `_set_channel_role`(320) — branch on `result.success` (soft "may require restart" → real Error). **HIGH**
-- [ ] `meshtasticd_radio.py` `_apply_radio_preset`(284) — surface `[unverified]` (don't show "Success" on unconfirmed readback).
-- [ ] `propagation.py` `_toggle_rest_source`(266) — reflect `persisted=False`.
-- [ ] `_nomadnet_install_utils.py` `_upgrade_nomadnet`(270) — gate "Upgrade Complete" on returncode.
-- [ ] **Guardrail:** extend MF020 to `.save()` discarded + a `TestSaveReturnChecked`.
+### ✅ S5 — persisted-write + meshtasticd-apply honesty (DONE 2026-06-08)
+- [x] `dual_radio_failover.py` — `_deploy_secondary` headline gated on `service_ok` (was unconditional "deployed successfully!"); `_toggle_failover` + 3 `_edit_config_field` sites gate on `cfg.save()` (returns bool, True/False never raises) — failed write now surfaces, doesn't read as "Toggled"/"enabled". **HIGH — DONE**
+- [x] `channel_config.py` `_set_channel_role` — branches on `result.success`; failure is a real "Role Change Failed" error, not the soft "may require restart" note. **HIGH — DONE**
+- [x] `meshtasticd_radio.py` `_apply_radio_preset` — `fully_ok` now includes `verified`; unconfirmed readback shows "Partial Success" + " [UNVERIFIED — readback not confirmed]" instead of plain "Success". **DONE**
+- [x] `propagation.py` `_toggle_rest_source` — BOTH branches reflect `data['persisted']` (configure_source returns `.ok` even when the disk write fails). **DONE**
+- [x] `_nomadnet_install_utils.py` `_upgrade_nomadnet` — title "Upgrade Complete" only when `rns_upgraded` (returncode==0), else "Upgrade Incomplete". **DONE**
+- [x] **Guardrail:** `TestSaveReturnChecked.test_no_bare_cfg_save_in_handlers` (regression test, NOT an MF020 lint change — same reasoning as S4: MF020 is warning-only at pre-commit `--severity error`, test_regression_guards IS pre-commit-run, and the test ports cleanly across the diverged linters). Scoped to the zero-FP `cfg.save()` GatewayConfig idiom. **DONE**
+- ⚠️ **Deferred broader `.save()` sweep (blast-radius pass):** `SettingsManager.save()` ALSO returns bool — `automation.py` (`settings.save()` ×9) + `first_run.py` (×1) + `meshcore.py` (`config.save()` ×2, GatewayConfig) all discard a bool. NOT fixed (out of S5's named scope, ~12 sites); many are benign silent-saves with no false-success dialog. A focused audit separating true false-success from benign silent-save is a worthwhile follow-up.
 
 ### ⬜ S6 — fabricated-data labeling (provenance must be visible)
 - [ ] `sdr.py` 5 measurement handlers(117) — prepend "MOCK MODE — SIMULATED DATA" when `rf.backend == MOCK`; `_rf_settings`(351) gate on `set_gain()`. **HIGH (HAMs act on np.random)**

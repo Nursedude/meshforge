@@ -268,6 +268,36 @@ class TestServiceCheckContract:
         )
 
 
+class TestSaveReturnChecked:
+    """GatewayConfig.save() returns bool (True=persisted / False=write-failed).
+    A bare `cfg.save()` in a handler discards it, so a later "saved!"/"toggled"
+    dialog lies when the write failed (#74-#77, S5). Scoped to the `cfg.save()`
+    GatewayConfig idiom (zero-FP — only dual_radio_failover uses it). The broader
+    .save() sweep — `settings.save()` (SettingsManager, also bool; automation/
+    first_run) and meshcore's `config.save()` — is tracked separately in the arc
+    plan; many of those are benign silent-saves with no success dialog to belie."""
+
+    _BARE_CFG_SAVE = re.compile(r"^cfg\.save\(\)$")
+
+    def test_no_bare_cfg_save_in_handlers(self):
+        handlers_dir = os.path.join(SRC_DIR, 'launcher_tui', 'handlers')
+        violations = []
+        for root, _dirs, files in os.walk(handlers_dir):
+            for fn in files:
+                if not fn.endswith('.py'):
+                    continue
+                fp = os.path.join(root, fn)
+                with open(fp, encoding='utf-8', errors='ignore') as f:
+                    for n, line in enumerate(f, 1):
+                        if self._BARE_CFG_SAVE.match(line.strip()):
+                            violations.append(f"{os.path.relpath(fp, SRC_DIR)}:{n}")
+        assert not violations, (
+            "Bare `cfg.save()` (GatewayConfig bool discarded) in a TUI handler "
+            "(#74-#77 / S5) — bind it: `if cfg.save(): <ok> else: <surface the "
+            "write failure>`.\n\nViolations:\n" + "\n".join(violations)
+        )
+
+
 class TestConfigPathContract:
     """Enforce: RNS config paths use ReticulumPaths, not hardcoded paths.
 

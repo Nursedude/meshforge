@@ -263,8 +263,16 @@ class PropagationHandler(BaseHandler):
         current = sources.get(source.value, {})
         is_enabled = current.get('enabled', False)
         if is_enabled:
-            propagation.configure_source(source, enabled=False)
-            self.ctx.dialog.msgbox(name, f"{name} disabled.")
+            # configure_source returns ok even when the disk write fails — the
+            # truth is in data['persisted'], so reflect it (#74-#77).
+            result = propagation.configure_source(source, enabled=False)
+            persisted = bool(result.data.get('persisted', True)) if result and result.data else True
+            self.ctx.dialog.msgbox(
+                name,
+                f"{name} disabled." if persisted else
+                f"{name} disabled for this session, but the change could NOT "
+                "be saved to disk."
+            )
         else:
             host = self.ctx.dialog.inputbox(name, f"{name} host:", current.get('host', 'localhost'))
             if host is None:
@@ -274,7 +282,11 @@ class PropagationHandler(BaseHandler):
                 return
             try:
                 result = propagation.configure_source(source, host=host, port=int(port), enabled=True)
-                self.ctx.dialog.msgbox(name, result.message)
+                persisted = bool(result.data.get('persisted', True)) if result.data else True
+                msg = result.message
+                if not persisted:
+                    msg += "\n\nWARNING: change NOT saved to disk — it will be lost on restart."
+                self.ctx.dialog.msgbox(name, msg)
             except ValueError:
                 self.ctx.dialog.msgbox("Error", "Invalid port number.")
 

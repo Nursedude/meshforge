@@ -429,12 +429,17 @@ class DualRadioFailoverHandler(BaseHandler):
                 f"{action} the service watchdog?"
             ):
                 cfg.failover_watchdog_enabled = not current
-                cfg.save()
-                self.ctx.dialog.msgbox(
-                    "Watchdog",
-                    f"Watchdog {'enabled' if not current else 'disabled'}.\n\n"
-                    "Restart the gateway bridge for changes to take effect."
-                )
+                if cfg.save():
+                    self.ctx.dialog.msgbox(
+                        "Watchdog",
+                        f"Watchdog {'enabled' if not current else 'disabled'}.\n\n"
+                        "Restart the gateway bridge for changes to take effect."
+                    )
+                else:
+                    self.ctx.dialog.msgbox(
+                        "Watchdog",
+                        "Failed to save the gateway config — change NOT persisted."
+                    )
             return
 
         # Service name fields use inputbox with string validation
@@ -449,7 +454,11 @@ class DualRadioFailoverHandler(BaseHandler):
             )
             if result and result.strip():
                 setattr(cfg, attr, result.strip())
-                cfg.save()
+                if not cfg.save():
+                    self.ctx.dialog.msgbox(
+                        "Save Failed",
+                        f"{label} service name NOT saved (config write failed)."
+                    )
             return
 
         # Numeric fields
@@ -497,7 +506,11 @@ class DualRadioFailoverHandler(BaseHandler):
             return
 
         setattr(cfg, attr, value)
-        cfg.save()
+        if not cfg.save():
+            self.ctx.dialog.msgbox(
+                "Save Failed",
+                f"{label} NOT saved (config write failed)."
+            )
 
     # ── Deploy Secondary ───────────────────────────────────────────────
 
@@ -601,8 +614,10 @@ class DualRadioFailoverHandler(BaseHandler):
             svc = check_service("meshtasticd-alt")
             if svc.available:
                 steps_done.append("Service verified running")
+                service_ok = True
             else:
                 steps_done.append(f"Service check: {svc.message}")
+                service_ok = False
 
         except Exception as e:
             self.ctx.dialog.msgbox(
@@ -612,16 +627,25 @@ class DualRadioFailoverHandler(BaseHandler):
             )
             return
 
-        # Success summary
-        self.ctx.dialog.msgbox(
-            "Deploy Complete",
-            "Secondary radio deployed successfully!\n\n"
-            + "\n".join(f"  - {s}" for s in steps_done)
+        # Deploy summary — headline honest about the service verification.
+        body = (
+            "\n".join(f"  - {s}" for s in steps_done)
             + "\n\nNext steps:\n"
             "  1. Edit /etc/meshtasticd-alt/config.yaml for your hardware\n"
             "  2. Run Pre-flight Check to verify both radios\n"
             "  3. Use Enable/Disable to turn on failover"
         )
+        if service_ok:
+            self.ctx.dialog.msgbox(
+                "Deploy Complete",
+                "Secondary radio deployed successfully!\n\n" + body,
+            )
+        else:
+            self.ctx.dialog.msgbox(
+                "Deploy Incomplete",
+                "Secondary radio files deployed, but meshtasticd-alt is NOT "
+                "running yet — see the Service step above.\n\n" + body,
+            )
 
     def _generate_secondary_config(self):
         """Generate minimal meshtasticd config for the secondary radio."""
@@ -699,7 +723,12 @@ class DualRadioFailoverHandler(BaseHandler):
             return
 
         cfg.failover_enabled = not current
-        cfg.save()
+        if not cfg.save():
+            self.ctx.dialog.msgbox(
+                "Toggle Failed",
+                "Failed to save the gateway config — failover state NOT changed."
+            )
+            return
 
         new_state = "ENABLED" if not current else "DISABLED"
         self.ctx.dialog.msgbox(

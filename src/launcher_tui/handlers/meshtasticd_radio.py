@@ -269,7 +269,7 @@ class MeshtasticdRadioHandler(BaseHandler):
                 }
             })
 
-            verify_note = " (verified)" if verified else ""
+            verify_note = " (verified)" if verified else " [UNVERIFIED — readback not confirmed]"
             persistence_note = (
                 "Settings saved for restart persistence.\n"
                 "Will be re-applied if meshtasticd restarts."
@@ -278,9 +278,10 @@ class MeshtasticdRadioHandler(BaseHandler):
                 "Settings will be lost on next meshtasticd restart."
             )
             # The preset call already succeeded (we'd have returned earlier
-            # otherwise). Title reflects whether the secondary steps
-            # (channel slot + persistence save) all also succeeded.
-            fully_ok = slot_result.success and saved
+            # otherwise). "Success" also requires the readback to confirm
+            # (verified) AND the channel slot + persistence save — an
+            # unverified apply is Partial, not a clean Success (#74-#77).
+            fully_ok = slot_result.success and saved and verified
             self.ctx.dialog.msgbox(
                 "Success" if fully_ok else "Partial Success",
                 f"{preset} preset applied!{verify_note}\n\n"

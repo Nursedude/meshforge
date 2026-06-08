@@ -317,7 +317,14 @@ class ChannelConfigHandler(BaseHandler):
                 '--ch-index', str(idx),
                 '--ch-set', 'module_settings.role', choice
             ])
-            self.ctx.dialog.msgbox("Result", result.message if result.success else "Note: Role change may require restart")
+            if result.success:
+                self.ctx.dialog.msgbox(
+                    "Result", result.message or f"Channel {idx} role set to {choice}.")
+            else:
+                # A failed role-set is a real error, not a soft "may need restart".
+                self.ctx.dialog.msgbox(
+                    "Role Change Failed",
+                    f"Could not set channel {idx} role:\n{result.message}")
 
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed:\n{e}")
