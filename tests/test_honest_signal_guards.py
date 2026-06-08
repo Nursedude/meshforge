@@ -395,3 +395,23 @@ class TestSwallowedErrorTailS7:
             "the RNS health probe must not hardcode the 'default' shared-instance "
             "socket — a non-default box gets a false health verdict (#72 class, S7)"
         )
+
+
+# --- S8 M1/M2: meshcore config.save() must gate the success dialog (shared) ---
+
+class TestMeshcoreSaveGatedM12:
+    """S8 M1/M2 (#74-#77): _meshcore_configure / _meshcore_toggle call
+    GatewayConfig.save(), which returns False on a failed write (never raises),
+    so the 'Saved'/'enabled' dialog must gate on the bool — it had fired even
+    when nothing persisted. Shared with MeshAnchor (the meshcore slice of the
+    deferred GatewayConfig/SettingsManager .save() sweep)."""
+
+    def test_meshcore_save_dialogs_gate_on_bool(self):
+        src = _src_or_skip(MESHCORE_HANDLER)
+        assert src.count("saved = config.save()") >= 2, (
+            "_meshcore_configure and _meshcore_toggle must bind config.save()'s "
+            "bool and branch on it, not fire 'Saved' unconditionally (S8 M1/M2)"
+        )
+        assert "Save Failed" in src, (
+            "a failed meshcore config write must surface a 'Save Failed' dialog (S8)"
+        )

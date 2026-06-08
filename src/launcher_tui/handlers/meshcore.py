@@ -311,14 +311,25 @@ class MeshCoreHandler(BaseHandler):
 
             elif choice == "save":
                 try:
-                    config.save()
-                    self.ctx.dialog.msgbox(
-                        "Saved",
-                        "MeshCore configuration saved.\n\n"
-                        "Restart the gateway bridge for changes to take effect."
-                    )
+                    saved = config.save()
                 except Exception as e:
                     self.ctx.dialog.msgbox("Save Error", f"Could not save config:\n\n{e}")
+                else:
+                    # GatewayConfig.save() returns False on a failed write (it
+                    # never raises), so the success dialog must gate on it —
+                    # "Saved" had fired even when nothing persisted (S8 M1, #74-#77).
+                    if saved:
+                        self.ctx.dialog.msgbox(
+                            "Saved",
+                            "MeshCore configuration saved.\n\n"
+                            "Restart the gateway bridge for changes to take effect."
+                        )
+                    else:
+                        self.ctx.dialog.msgbox(
+                            "Save Failed",
+                            "Config write returned failure — changes were NOT "
+                            "persisted. Check disk space / permissions and retry."
+                        )
 
     def _meshcore_toggle(self):
         """Enable or disable MeshCore in gateway config."""
@@ -343,14 +354,23 @@ class MeshCoreHandler(BaseHandler):
         action = "enabled" if mc.enabled else "disabled"
 
         try:
-            config.save()
-            self.ctx.dialog.msgbox(
-                f"MeshCore {action.title()}",
-                f"MeshCore is now {action}.\n\n"
-                f"Restart the gateway bridge for changes to take effect."
-            )
+            saved = config.save()
         except Exception as e:
             self.ctx.dialog.msgbox("Save Error", f"Could not save config:\n\n{e}")
+        else:
+            # gate the toggle confirmation on the write result (S8 M2, #74-#77)
+            if saved:
+                self.ctx.dialog.msgbox(
+                    f"MeshCore {action.title()}",
+                    f"MeshCore is now {action}.\n\n"
+                    f"Restart the gateway bridge for changes to take effect."
+                )
+            else:
+                self.ctx.dialog.msgbox(
+                    "Save Failed",
+                    f"Toggle to {action} was NOT persisted — config write "
+                    "returned failure. Check disk space / permissions and retry."
+                )
 
     def _meshcore_nodes(self):
         """Show MeshCore nodes from the live node tracker."""
