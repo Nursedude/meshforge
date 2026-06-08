@@ -22,6 +22,14 @@ regardless* — the #74–#77 family, now in the TUI. Full audit JSON:
 **Sequencing principle:** life-safety first; build the guardrail early so later
 slices are mechanical applications with a test that prevents recurrence.
 
+**MeshAnchor parity:** the sister app is a near-mirror TUI fork and carries the
+same defect class. S0+S1+S2 were ported to MeshAnchor 2026-06-08 (`f90ecbb4`:
+`report_action`, MF020, the same handler fixes). **Port each future slice
+(S3-S7) to MeshAnchor too** — read MA's `src/launcher_tui/handlers/` (line
+numbers drift slightly; `rns_diagnostics`/`service_menu` differ; no
+`meshtasticd_config` handler there), verify lint+tests, commit+push origin,
+pull on meshanchor-server.
+
 ### ✅ S0 — shared guardrail (DONE 2026-06-08)
 - [x] `TUIContext.report_action(ok, success_title, success_body, fail_title, fail_body)` — confirm-or-honest dialog primitive (`handler_protocol.py`).
 - [x] **Lint MF020** — `apply_config_and_restart()` return discarded (bare statement) in `launcher_tui/handlers/` (`scripts/lint.py`). Zero-false-positive subset of the broad pattern; **extend later** to `*_service` + `.save()` correlated-with-success-string.
