@@ -84,12 +84,12 @@ class NomadNetRNSChecksMixin:
 
         # 1. Gather state (read-only, no mutations)
         rnsd_user = self._get_rnsd_user()
-        # The shared instance socket is @rns/<instance_name>; read the name
-        # rnsd actually uses from its config instead of hardcoding 'default'
-        # (a non-default box was probed on the wrong socket → false health
-        # verdict — #72 class). Absent/unset config falls back to 'default'.
-        from utils.rns_init import _read_instance_name_from_config
-        rns_instance_name = _read_instance_name_from_config('/etc/reticulum') or 'default'
+        # The shared instance socket is @rns/<instance_name>; resolve the name
+        # rnsd actually uses (canonical, sudo/active-config-aware) instead of
+        # hardcoding 'default' — a non-default box was probed on the wrong
+        # socket → false health verdict (#72 class). Falls back to 'default'.
+        from utils.paths import ReticulumPaths
+        rns_instance_name = ReticulumPaths.get_configured_instance_name()
         shared_info = {}
         if get_rns_shared_instance_info:
             try:
