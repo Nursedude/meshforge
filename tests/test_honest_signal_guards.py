@@ -9,6 +9,8 @@ proceeds:
     apply_config_and_restart()'s (ok, msg) (the MF020 contract).
   * TestRnsRestartReturnChecked — rns_interfaces.py binds stop/start_service()
     so a failed rnsd restart can't read as success (S3 item 1).
+  * TestPortConflictVerifyBeforeDone — diagnose_rns_port_conflict() verifies the
+    shared instance is up before printing "Done." (S3 item 2).
   * TestReportActionHelper — the shared confirm-or-honest dialog primitive.
   * TestMF020LintRule — the lint rule fires on the bad shape, stays quiet on
     the honest one and outside the handler tree.
@@ -99,6 +101,45 @@ class TestRnsRestartReturnChecked:
             "'restarted' message on the start result:\n  "
             + "\n  ".join(violations)
         )
+
+
+class TestPortConflictVerifyBeforeDone:
+    """S3 item 2 (#74-#77): _rns_diagnostics_engine.diagnose_rns_port_conflict()
+    must confirm rnsd actually claimed the shared instance
+    (handler._wait_for_rns_shared_instance) before printing 'Done.' — starting
+    rnsd != resolving the port conflict, and the discarded start_service() return
+    hid a failed start. Behavioral (not a source scan: line 459's sibling
+    stop_service is a legitimate stop-then-pkill path)."""
+
+    def _run(self, monkeypatch, capsys, *, start_ok, instance_up):
+        import handlers._rns_diagnostics_engine as eng
+        # Isolate side effects: replace the module's subprocess/time refs so the
+        # real pkill never fires and sleeps are no-ops (real modules untouched).
+        monkeypatch.setattr(eng, "subprocess", MagicMock())
+        monkeypatch.setattr(eng, "time", MagicMock())
+        monkeypatch.setattr(eng, "start_service", lambda name: (start_ok, "boom"))
+        handler = MagicMock()
+        handler._check_lxmf_app_conflict.return_value = "NomadNet"
+        handler.ctx.dialog.yesno.return_value = True
+        handler._wait_for_rns_shared_instance.return_value = instance_up
+        eng.diagnose_rns_port_conflict(handler)
+        return capsys.readouterr().out, handler
+
+    def test_done_only_when_instance_verified(self, monkeypatch, capsys):
+        out, _ = self._run(monkeypatch, capsys, start_ok=True, instance_up=True)
+        assert "Done." in out
+
+    def test_no_done_when_instance_never_up(self, monkeypatch, capsys):
+        out, _ = self._run(monkeypatch, capsys, start_ok=True, instance_up=False)
+        assert "Done." not in out
+        assert "NOT available" in out
+
+    def test_no_done_and_no_verify_when_start_fails(self, monkeypatch, capsys):
+        out, handler = self._run(monkeypatch, capsys, start_ok=False, instance_up=True)
+        assert "Done." not in out
+        assert "FAILED to start rnsd" in out
+        # Never started → never claim to have verified.
+        handler._wait_for_rns_shared_instance.assert_not_called()
 
 
 class TestReportActionHelper:

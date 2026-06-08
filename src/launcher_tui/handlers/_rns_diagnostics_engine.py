@@ -621,10 +621,22 @@ def diagnose_rns_port_conflict(handler):
                 time.sleep(1)
 
                 print("Starting rnsd...")
-                start_service('rnsd')
-                time.sleep(2)
+                start_ok, start_msg = start_service('rnsd')
+                if not start_ok:
+                    print(f"FAILED to start rnsd: {start_msg}")
+                    print("Re-run Diagnose RNS once the port is free.")
+                    return
 
-                print(f"Done. Startup order: rnsd -> {conflicting_app} -> MeshForge\n")
+                # "Done" only after rnsd actually claims the shared instance —
+                # a started-but-not-listening rnsd has NOT resolved the conflict
+                # (honest-signal #74-#77: verify the port, don't assume).
+                if handler._wait_for_rns_shared_instance(max_wait=10):
+                    print(f"Done. Startup order: rnsd -> {conflicting_app} -> MeshForge\n")
+                else:
+                    print("rnsd started but its shared instance is NOT available "
+                          "after 10s.")
+                    print(f"The port may still be held — re-run Diagnose RNS or "
+                          f"verify {conflicting_app} fully stopped.")
             return
 
         rnsd_running = check_process_running('rnsd')
