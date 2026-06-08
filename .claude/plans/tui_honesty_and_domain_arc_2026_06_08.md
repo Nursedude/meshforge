@@ -24,10 +24,11 @@ slices are mechanical applications with a test that prevents recurrence.
 
 **MeshAnchor parity:** the sister app is a near-mirror TUI fork and carries the
 same defect class. S0+S1+S2 ported 2026-06-08 (`f90ecbb4`); **S3 ported
-(`a32122f5`)** — all 4 sites byte-identical (only "-> MeshAnchor" string differs);
-**S4 ported (`fb3e22d7`)** — parity sites adapt (svc name `meshanchor`, no
-`extensions.py` in MA). All parity_check in sync, meshanchor-server pulled.
-**Port each future slice (S5-S7) to MeshAnchor too** — read MA's
+(`a32122f5`)** — byte-identical (only "-> MeshAnchor" string); **S4 ported
+(`fb3e22d7`)** — svc name `meshanchor`, no `extensions.py`; **S5 ported
+(`7c5078c8`)** — byte-identical, no `meshtasticd_radio.py` in MA (skipped that
+one site). All parity_check in sync, meshanchor-server pulled.
+**Port each future slice (S6-S7) to MeshAnchor too** — read MA's
 `src/launcher_tui/handlers/` (line numbers drift; `rns_diagnostics`/`service_menu`
 differ; no `meshtasticd_config`/`extensions` there), verify lint+tests,
 commit+push origin, pull on meshanchor-server.
