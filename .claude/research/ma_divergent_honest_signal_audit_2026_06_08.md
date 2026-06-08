@@ -16,6 +16,13 @@
 **Result: 11 findings (2 high, 4 med, 5 low).** The 2 HIGH are the load-bearing
 ones — both are operator-facing **false-HEALTHY / false-DELIVERED verdicts**.
 
+> **✅ STATUS 2026-06-08: ALL 11 RESOLVED.** HIGH H1/H2 (`73c86dd1`), MED M1-M4
+> (`ff635f69` + MeshForge `57c359d`), LOW L1-L5 (`6311722b` + MeshForge `1834fcc`).
+> L3 was a mis-classified *shared* file → fixed in both repos. M3 + L4 are latent
+> until the next `meshanchor-map` restart (M3 already restarted live 13:26 HST).
+> This audit is closed; the only remaining honest-signal item is the broader
+> `automation`/`first_run` `.save()` sweep (deferred S5).
+
 ---
 
 ## HIGH (verified — ✅ BOTH FIXED + deployed in MeshAnchor `73c86dd1`, slice S8 2026-06-08)
@@ -82,7 +89,9 @@ ones — both are operator-facing **false-HEALTHY / false-DELIVERED verdicts**.
 
 ---
 
-## LOW (triage / opportunistic)
+## LOW — ✅ ALL RESOLVED 2026-06-08 (MeshAnchor `6311722b`; L3 also MeshForge `1834fcc`)
+
+> L1 documented (necessary exception), L2 reviewed-no-op, L3/L4/L5 fixed. L4 latent until next meshanchor-map restart.
 
 - **L1 · `_chat_pane_service_ops.py:167`** — SHAPE 3 — raw `systemctl --user is-active` instead of
   `check_service()` SSOT (MF008 shape). FAILED is *not* collapsed to green (honest today), but it
