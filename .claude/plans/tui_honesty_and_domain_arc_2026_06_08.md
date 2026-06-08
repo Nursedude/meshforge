@@ -42,6 +42,46 @@ preserve info `check_service` drops → allowlisted + commented, not converted. 
 fuller honest-signal audit of MA's divergent handlers (MeshCore menu, MeshCore
 gateway handler, ActiveHealthProbe) remains a worthwhile fan-out.
 
+### Per-slice execution playbook (the proven S3–S5 method — follow for S6+)
+
+Each slice is the same loop. The non-obvious rules cost real reasoning to derive;
+follow them, don't re-derive:
+
+1. **Read the contract, don't assume.** For each named site, read the helper/
+   return it depends on BEFORE editing — e.g. `GatewayConfig.save()`/
+   `SettingsManager.save()` return `bool`; `check_service` collapses systemd
+   `activating`→`NOT_RUNNING` (lossy — broke a naive `_rns_repair` swap);
+   `configure_source` returns `.ok` even when `persisted=False`.
+2. **Blast-radius pass FIRST.** `grep` the whole pattern across `handlers/` before
+   writing the guard — the plan's named sites are rarely all of them (S3.4 found
+   `_rns_repair`; S5 found `automation`/`first_run`/`meshcore` `.save()`). Decide
+   per extra site: **FIX** (clean swap) · **ALLOWLIST + call-site comment** (the
+   helper is lossy there — `_rns_repair`/`meshcore`/`ai_tools`) · **DEFER + document**
+   (a broader sweep, e.g. the `.save()` one). Never silently skip.
+3. **Guard = a regression test in `tests/test_regression_guards.py`, NOT a lint
+   rule.** Pre-commit runs lint at `--severity error`, so MF008/MF020 *warnings*
+   don't gate; it DOES run `test_regression_guards.py`. And a test ports cleanly
+   across the **diverged** `MeshForgeLinter`/`MeshAnchorLinter`. Scope it zero-FP.
+4. **Verify (route truth to a file): ** `py_compile` changed files · `grep` residual
+   pattern gone · `lint.py --all` exit 0 · `pytest test_regression_guards
+   test_honest_signal_guards` · affected handlers `-k` · `pytest --collect-only`
+   (import check). Use `1>/tmp/x 2>&1; echo EXIT=$?; tail` — never `pytest | tail`.
+5. **Commit locally per slice** (power-cut safety — VolcanoAI history), then **push
+   origin + targeted `git -C /opt/meshforge pull --ff-only` per box** (moc/moc1/
+   moc2/moc3/moc5). TUI-only → **NO daemon restart**; never `fleet_sync.sh` (it
+   restarts remotes — #68 cold-start risk / soak break). `meshanchor-server` is
+   MeshAnchor-only (no `/opt/meshforge`).
+6. **Port the slice to MeshAnchor ("doing it twice" — the most-forgotten step).**
+   MA is a near-mirror that DIVERGES: **Read each MA file before Edit** (harness
+   requires it); line numbers drift; service name is `meshanchor` not `meshforge`;
+   some files are ABSENT (`extensions.py`, `meshtasticd_radio.py`,
+   `meshtasticd_config.py`); `check_rns_shared_instance()` is no-arg in MA. Same
+   verify gates **+ `python3 scripts/parity_check.py` in sync**; commit+push origin;
+   `ssh meshanchor-server 'git -C /opt/meshanchor pull --ff-only'`. MA-native sites
+   with no MeshForge twin get their own allowlist+comment.
+7. **Update plan checkboxes + `project_session_handoff_2026_06_08` + `MEMORY.md`**
+   each slice so `/warmstart` stays honest.
+
 ### ✅ S0 — shared guardrail (DONE 2026-06-08)
 - [x] `TUIContext.report_action(ok, success_title, success_body, fail_title, fail_body)` — confirm-or-honest dialog primitive (`handler_protocol.py`).
 - [x] **Lint MF020** — `apply_config_and_restart()` return discarded (bare statement) in `launcher_tui/handlers/` (`scripts/lint.py`). Zero-false-positive subset of the broad pattern; **extend later** to `*_service` + `.save()` correlated-with-success-string.
