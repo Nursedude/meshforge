@@ -269,15 +269,16 @@ class TestServiceCheckContract:
 
 
 class TestSaveReturnChecked:
-    """GatewayConfig.save() returns bool (True=persisted / False=write-failed).
-    A bare `cfg.save()` in a handler discards it, so a later "saved!"/"toggled"
-    dialog lies when the write failed (#74-#77, S5). Scoped to the `cfg.save()`
-    GatewayConfig idiom (zero-FP — only dual_radio_failover uses it). The broader
-    .save() sweep — `settings.save()` (SettingsManager, also bool; automation/
-    first_run) and meshcore's `config.save()` — is tracked separately in the arc
-    plan; many of those are benign silent-saves with no success dialog to belie."""
+    """GatewayConfig.save() AND SettingsManager.save() return bool (True=persisted
+    / False=write-failed). A bare `cfg.save()` / `config.save()` / `settings.save()`
+    in a handler discards it, so a later "saved!"/"toggled" dialog lies when the
+    write failed (#74-#77). The full .save() sweep is complete (S5 cfg.save +
+    S8 M1/M2 meshcore config.save + the automation/first_run settings.save sweep) —
+    so this now guards all three idioms handler-wide. Gated forms (`report_action(
+    cfg.save(), …)`, `ok = settings.save()`, `if config.save():`, `_save_or_warn(…)`)
+    are not bare statements and don't match."""
 
-    _BARE_CFG_SAVE = re.compile(r"^cfg\.save\(\)$")
+    _BARE_SAVE = re.compile(r"^(cfg|config|settings)\.save\(\)$")
 
     def test_no_bare_cfg_save_in_handlers(self):
         handlers_dir = os.path.join(SRC_DIR, 'launcher_tui', 'handlers')
@@ -289,12 +290,13 @@ class TestSaveReturnChecked:
                 fp = os.path.join(root, fn)
                 with open(fp, encoding='utf-8', errors='ignore') as f:
                     for n, line in enumerate(f, 1):
-                        if self._BARE_CFG_SAVE.match(line.strip()):
+                        if self._BARE_SAVE.match(line.strip()):
                             violations.append(f"{os.path.relpath(fp, SRC_DIR)}:{n}")
         assert not violations, (
-            "Bare `cfg.save()` (GatewayConfig bool discarded) in a TUI handler "
-            "(#74-#77 / S5) — bind it: `if cfg.save(): <ok> else: <surface the "
-            "write failure>`.\n\nViolations:\n" + "\n".join(violations)
+            "Bare `cfg/config/settings.save()` (write-result bool discarded) in a "
+            "TUI handler (#74-#77) — bind it: `if <x>.save(): <ok> else: <surface "
+            "the write failure>` (or report_action / _save_or_warn).\n\n"
+            "Violations:\n" + "\n".join(violations)
         )
 
 

@@ -192,10 +192,11 @@ class AutomationHandler(BaseHandler):
         if choice == "1":
             ping_cfg["enabled"] = not ping_cfg.get("enabled", False)
             settings.set("auto_ping", ping_cfg)
-            settings.save()
             state = "enabled" if ping_cfg["enabled"] else "disabled"
-            self.ctx.dialog.msgbox(
-                "Auto-Ping", f"Auto-ping {state}.", height=6, width=35
+            self.ctx.report_action(
+                settings.save(),
+                "Auto-Ping", f"Auto-ping {state}.",
+                "Save Failed", f"Auto-ping {state} this session but could NOT be saved — won't persist.",
             )
 
         elif choice == "2":
@@ -210,7 +211,7 @@ class AutomationHandler(BaseHandler):
                     minutes = max(1, min(1440, int(val)))
                     ping_cfg["interval_minutes"] = minutes
                     settings.set("auto_ping", ping_cfg)
-                    settings.save()
+                    self._save_or_warn(settings, "Ping interval")
                 except ValueError:
                     self.ctx.dialog.msgbox(
                         "Error", "Invalid number.", height=6, width=30
@@ -245,12 +246,11 @@ class AutomationHandler(BaseHandler):
         if choice == "1":
             trace_cfg["enabled"] = not trace_cfg.get("enabled", False)
             settings.set("auto_traceroute", trace_cfg)
-            settings.save()
             state = "enabled" if trace_cfg["enabled"] else "disabled"
-            self.ctx.dialog.msgbox(
-                "Auto-Traceroute",
-                f"Auto-traceroute {state}.",
-                height=6, width=40,
+            self.ctx.report_action(
+                settings.save(),
+                "Auto-Traceroute", f"Auto-traceroute {state}.",
+                "Save Failed", f"Auto-traceroute {state} this session but could NOT be saved — won't persist.",
             )
 
         elif choice == "2":
@@ -265,7 +265,7 @@ class AutomationHandler(BaseHandler):
                     minutes = max(5, min(1440, int(val)))
                     trace_cfg["interval_minutes"] = minutes
                     settings.set("auto_traceroute", trace_cfg)
-                    settings.save()
+                    self._save_or_warn(settings, "Traceroute interval")
                 except ValueError:
                     self.ctx.dialog.msgbox(
                         "Error", "Invalid number.", height=6, width=30
@@ -277,7 +277,6 @@ class AutomationHandler(BaseHandler):
         elif choice == "4":
             trace_cfg["auto_discover"] = not auto_disc
             settings.set("auto_traceroute", trace_cfg)
-            settings.save()
             new_state = "enabled" if trace_cfg["auto_discover"] else "disabled"
             desc = (
                 "All online nodes from the node inventory will be\n"
@@ -286,10 +285,10 @@ class AutomationHandler(BaseHandler):
                 if trace_cfg["auto_discover"]
                 else "Only statically configured targets will be traced."
             )
-            self.ctx.dialog.msgbox(
-                "Auto-Discover",
-                f"Auto-discovery {new_state}.\n\n{desc}",
-                height=10, width=55,
+            self.ctx.report_action(
+                settings.save(),
+                "Auto-Discover", f"Auto-discovery {new_state}.\n\n{desc}",
+                "Save Failed", f"Auto-discovery {new_state} this session but could NOT be saved — won't persist.",
             )
 
     def _configure_welcome(self) -> None:
@@ -315,12 +314,11 @@ class AutomationHandler(BaseHandler):
         if choice == "1":
             welcome_cfg["enabled"] = not welcome_cfg.get("enabled", False)
             settings.set("auto_welcome", welcome_cfg)
-            settings.save()
             state = "enabled" if welcome_cfg["enabled"] else "disabled"
-            self.ctx.dialog.msgbox(
-                "Auto-Welcome",
-                f"Auto-welcome {state}.",
-                height=6, width=38,
+            self.ctx.report_action(
+                settings.save(),
+                "Auto-Welcome", f"Auto-welcome {state}.",
+                "Save Failed", f"Auto-welcome {state} this session but could NOT be saved — won't persist.",
             )
 
         elif choice == "2":
@@ -333,7 +331,7 @@ class AutomationHandler(BaseHandler):
             if val:
                 welcome_cfg["message"] = val
                 settings.set("auto_welcome", welcome_cfg)
-                settings.save()
+                self._save_or_warn(settings, "Welcome message")
 
         elif choice == "3":
             val = self.ctx.dialog.inputbox(
@@ -347,7 +345,7 @@ class AutomationHandler(BaseHandler):
                     hours = max(1, min(168, int(val)))
                     welcome_cfg["cooldown_hours"] = hours
                     settings.set("auto_welcome", welcome_cfg)
-                    settings.save()
+                    self._save_or_warn(settings, "Welcome cooldown")
                 except ValueError:
                     self.ctx.dialog.msgbox(
                         "Error", "Invalid number.", height=6, width=30
@@ -379,12 +377,31 @@ class AutomationHandler(BaseHandler):
             ]
             cfg["targets"] = new_targets
             settings.set(config_key, cfg)
-            settings.save()
-            self.ctx.dialog.msgbox(
-                f"{label} Targets Updated",
-                f"Set {len(new_targets)} target(s).",
-                height=6, width=35
+            self.ctx.report_action(
+                settings.save(),
+                f"{label} Targets Updated", f"Set {len(new_targets)} target(s).",
+                "Save Failed",
+                f"{len(new_targets)} target(s) applied this session but could NOT "
+                "be saved — won't persist across a restart.",
             )
+
+    def _save_or_warn(self, settings, what: str) -> bool:
+        """Persist settings; surface a failed write instead of swallowing it.
+
+        SettingsManager.save() returns False on a failed disk write (never
+        raises) and these sites have no success dialog, so without this a failed
+        persist is silent and the change quietly won't survive a restart
+        (honest-signal .save() sweep, #74-#77).
+        """
+        ok = settings.save()
+        if not ok:
+            self.ctx.dialog.msgbox(
+                "Save Failed",
+                f"{what} was applied this session but could NOT be saved — it "
+                "won't persist across a restart. Check disk space / permissions.",
+                height=8, width=52,
+            )
+        return ok
 
     def _start_automation(self) -> None:
         """Start all enabled automation tasks."""

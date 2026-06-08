@@ -1117,8 +1117,12 @@ Logging:
                     from utils.common import SettingsManager
                     settings = SettingsManager("meshforge")
                     settings.set("callsign", callsign.upper())
-                    settings.save()
-                    self.ctx.dialog.msgbox("Saved", f"Callsign set to: {callsign.upper()}")
+                    self.ctx.report_action(
+                        settings.save(),
+                        "Saved", f"Callsign set to: {callsign.upper()}",
+                        "Save Failed",
+                        f"Callsign {callsign.upper()} could NOT be saved — it won't persist.",
+                    )
                 except Exception as e:
                     self.ctx.dialog.msgbox("Note", f"Could not save settings: {e}")
 
