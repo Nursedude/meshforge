@@ -23,12 +23,13 @@ regardless* — the #74–#77 family, now in the TUI. Full audit JSON:
 slices are mechanical applications with a test that prevents recurrence.
 
 **MeshAnchor parity:** the sister app is a near-mirror TUI fork and carries the
-same defect class. S0+S1+S2 were ported to MeshAnchor 2026-06-08 (`f90ecbb4`:
-`report_action`, MF020, the same handler fixes). **Port each future slice
-(S3-S7) to MeshAnchor too** — read MA's `src/launcher_tui/handlers/` (line
-numbers drift slightly; `rns_diagnostics`/`service_menu` differ; no
-`meshtasticd_config` handler there), verify lint+tests, commit+push origin,
-pull on meshanchor-server.
+same defect class. S0+S1+S2 ported 2026-06-08 (`f90ecbb4`); **S3 ported
+2026-06-08 (`a32122f5`)** — all 4 S3 sites were byte-identical in MA (only the
+"-> MeshAnchor" startup-order string differs), parity_check in sync,
+meshanchor-server pulled. **Port each future slice (S4-S7) to MeshAnchor too** —
+read MA's `src/launcher_tui/handlers/` (line numbers drift slightly;
+`rns_diagnostics`/`service_menu` differ; no `meshtasticd_config` handler there),
+verify lint+tests, commit+push origin, pull on meshanchor-server.
 
 ### ✅ S0 — shared guardrail (DONE 2026-06-08)
 - [x] `TUIContext.report_action(ok, success_title, success_body, fail_title, fail_body)` — confirm-or-honest dialog primitive (`handler_protocol.py`).
