@@ -108,16 +108,22 @@ class ServiceMenuHandler(BaseHandler):
 
         for svc in ['meshtasticd', 'rnsd', 'meshforge']:
             if svc == 'meshforge':
-                is_systemd = False
+                svc_status = None
                 try:
                     svc_status = check_service(svc)
-                    is_systemd = svc_status.available
                 except Exception:
                     pass
 
-                if is_systemd:
+                if svc_status is not None and svc_status.available:
                     print(f"  \033[0;32m●\033[0m {svc:<18} running (service)")
+                elif svc_status is not None and svc_status.state in (
+                    ServiceState.FAILED, ServiceState.DEGRADED
+                ):
+                    # A failed meshforge unit must not read as a green dot.
+                    print(f"  \033[0;31m●\033[0m {svc:<18} FAILED (service)")
+                    failed_services.append(svc)
                 else:
+                    # No active/failed unit — but this code IS the running TUI.
                     print(f"  \033[0;32m●\033[0m {svc:<18} running (interactive)")
                 continue
 

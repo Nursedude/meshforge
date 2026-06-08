@@ -216,6 +216,10 @@ class TestServiceCheckContract:
     # Known exceptions (non-core services, display-only)
     KNOWN_EXCEPTIONS = 1  # cli/diagnose.py openwebrx check
 
+    # Handler files that legitimately read raw systemctl status_text because
+    # check_service() is lossy for their purpose (documented at the call site).
+    MULTILINE_READ_ALLOW = {'_rns_repair.py'}  # 'activating' vs 'inactive'/'failed'
+
     def test_no_new_raw_systemctl_state_checks(self):
         """No NEW files should use raw systemctl for service state decisions."""
         matches = _scan_python_files(
@@ -236,6 +240,31 @@ class TestServiceCheckContract:
             f"(expected <= {self.KNOWN_EXCEPTIONS}).\n"
             f"Use check_service() from utils.service_check instead (Issue #20).\n\n"
             f"Violations:\n" + "\n".join(violations)
+        )
+
+    def test_no_multiline_systemctl_state_reads_in_handlers(self):
+        """The single-line guard above misses the list-literal form
+        (``subprocess.run(\\n  ['systemctl', 'is-active', svc])``) where the verb
+        and 'subprocess' land on different lines — the Issue #20 / honest-signal
+        #74-#77 class. Service state in TUI handlers must come from
+        check_service(), not a raw is-active read (S4)."""
+        matches = _scan_python_files(
+            r"""(?:'systemctl'|"systemctl").*(?:'is-active'|"is-active")""",
+        )
+        violations = []
+        for filepath, lineno, _line in matches:
+            if 'launcher_tui/handlers/' not in filepath.replace('\\', '/'):
+                continue
+            if os.path.basename(filepath) in self.MULTILINE_READ_ALLOW:
+                continue
+            violations.append(f"{filepath}:{lineno}")
+
+        assert not violations, (
+            "Raw ['systemctl', 'is-active', …] state read in a TUI handler "
+            "(Issue #20 / honest-signal #74-#77) — use check_service().available.\n"
+            "If the raw status_text is genuinely required (e.g. distinguishing "
+            "'activating'), add the file to MULTILINE_READ_ALLOW with a reason.\n\n"
+            "Violations:\n" + "\n".join(violations)
         )
 
 

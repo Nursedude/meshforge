@@ -55,11 +55,12 @@ All 8 sites bound `ok, msg = …` + honest branch (5 audit-confirmed + 3 same-sh
 - [x] `daemon.py` `_daemon_stop`(162) — title now on `result.returncode`: "Stop Daemon" on rc==0, else "Stop Failed" + stderr (was always the neutral "Stop Daemon"). **DONE 2026-06-08**
 - [x] MF008 RNS sites: `_rns_interface_mgr.py`:96 (+import) and `rns_diagnostics.py`:504 → `check_service('…').available` (raw `systemctl is-active` removed). MF008 *coverage* extension to handlers/** stays S4. **DONE 2026-06-08**
 
-### ⬜ S4 — service-state SSOT consolidation (extend MF008 lint to handlers/**)
-- [ ] `service_menu.py` `_show_all_service_status`(105) + `quick_actions.py` `_qa_service_status`(119) — `meshforge` unconditional green dot + dead `failed` branch → `check_service().available` / ServiceState.
-- [ ] `dashboard.py` `_service_status_display`(140) — raw `systemctl is-active` fallback → `check_service()`.
-- [ ] `extensions.py` `_ma_is_running`(132) → `check_service().available`.
-- [ ] **Guardrail:** extend MF008 file coverage to `launcher_tui/handlers/**` + regression test.
+### ✅ S4 — service-state SSOT consolidation (DONE 2026-06-08)
+- [x] `service_menu.py` `_show_all_service_status` + `quick_actions.py` `_qa_service_status` — `meshforge` green-either-way now branches on `check_service().available`/`ServiceState.FAILED/DEGRADED` (adds the missing FAILED dot); quick_actions' **dead `failed` branch revived** (it used `check_systemd_service`→active/inactive only, so a FAILED svc read as "inactive"). **DONE**
+- [x] `dashboard.py` `_service_status_display` fallback — raw `systemctl is-active` → `check_service()` + `ServiceState` (FAILED now shows red, mirrors the primary `ServiceRunState` branch). **DONE**
+- [x] `extensions.py` `_ma_is_running` → `check_service(self._MA_SERVICE).available`. **DONE**
+- [x] **Guardrail:** extended `TestServiceCheckContract.test_no_multiline_systemctl_state_reads_in_handlers` (regression test, NOT a lint change — pre-commit runs lint at `--severity error` so MF008-warning wouldn't gate, and `test_regression_guards.py` IS pre-commit-run; the test also ports cleanly vs the diverged MeshForge/MeshAnchor linters). Catches the list-literal `['systemctl','is-active',…]` form the single-line regex/MF008 both miss. **DONE**
+- ⚠️ **`_rns_repair.py:408` kept raw + allowlisted** (`MULTILINE_READ_ALLOW`): its wait-loop must distinguish `'activating'` (keep waiting) from `'inactive'/'failed'` (crash) — `check_service` collapses `activating`→`NOT_RUNNING` (lossy), so converting it would falsely declare a crash mid-start. Documented at the call site. NOT in the plan's named sites — caught by the blast-radius pass.
 
 ### ⬜ S5 — persisted-write + meshtasticd-apply honesty (cfg.save() / result.success)
 - [ ] `dual_radio_failover.py` `_deploy_secondary`(616) gate headline on `svc.available`; `_toggle_failover`(701)/`_edit_config_field`(432/452/500) gate on `cfg.save()`. **HIGH (deploy)**

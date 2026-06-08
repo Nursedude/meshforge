@@ -137,21 +137,23 @@ class DashboardHandler(BaseHandler):
                     print(f"  \033[2m○\033[0m {name:<18} stopped")
                     degraded.append((name, False))
         else:
+            # MF008: service state via check_service(), not raw systemctl —
+            # mirrors the primary branch's RUNNING/FAILED/stopped distinction.
+            from utils.service_check import check_service, ServiceState
             for svc in ['meshtasticd', 'rnsd', 'mosquitto']:
                 try:
-                    result = subprocess.run(
-                        ['systemctl', 'is-active', svc],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    status = result.stdout.strip()
-                    if status == 'active':
+                    svc_status = check_service(svc)
+                    if svc_status.available:
                         if svc == 'meshtasticd' and not self._meshtasticd_api_reachable():
                             print(f"  \033[0;33m◐\033[0m {svc:<18} active but unreachable (no radio? see Diagnostics)")
                             degraded.append((svc, True))
                         else:
                             print(f"  \033[0;32m●\033[0m {svc:<18} running")
+                    elif svc_status.state in (ServiceState.FAILED, ServiceState.DEGRADED):
+                        print(f"  \033[0;31m●\033[0m {svc:<18} FAILED")
+                        degraded.append((svc, False))
                     else:
-                        print(f"  \033[2m○\033[0m {svc:<18} {status}")
+                        print(f"  \033[2m○\033[0m {svc:<18} {svc_status.state.value}")
                         degraded.append((svc, False))
                 except Exception:
                     print(f"  ? {svc:<18} unknown")

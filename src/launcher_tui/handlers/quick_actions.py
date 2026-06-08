@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # Centralized service checking — first-party, always available
 from utils.service_check import (
     check_systemd_service, check_process_running, check_port,
-    check_rns_shared_instance,
+    check_rns_shared_instance, check_service, ServiceState,
     apply_config_and_restart, restart_service,
 )
 from utils.paths import ReticulumPaths
@@ -97,36 +97,45 @@ class QuickActionsHandler(BaseHandler):
         warnings = []
         for svc in services:
             if svc == 'meshforge':
-                is_systemd = False
+                svc_status = None
                 try:
-                    is_running, _ = check_systemd_service(svc)
-                    is_systemd = is_running
+                    svc_status = check_service(svc)
                 except Exception:
                     pass
-                mode = "service" if is_systemd else "interactive"
-                print(f"  * {svc:<18} running ({mode})")
+                if svc_status is not None and svc_status.available:
+                    print(f"  * {svc:<18} running (service)")
+                elif svc_status is not None and svc_status.state in (
+                    ServiceState.FAILED, ServiceState.DEGRADED
+                ):
+                    print(f"  ! {svc:<18} FAILED (service)")
+                else:
+                    # No active/failed unit — this code IS the running TUI.
+                    print(f"  * {svc:<18} running (interactive)")
                 continue
 
             try:
-                is_running, is_enabled = check_systemd_service(svc)
-                status = 'active' if is_running else 'inactive'
+                svc_status = check_service(svc)
+                _, is_enabled = check_systemd_service(svc)
 
                 boot_info = ""
-                if status == 'active' and not is_enabled:
+                if svc_status.available and not is_enabled:
                     boot_info = "  (not enabled at boot)"
                     warnings.append(svc)
 
-                if status == 'active':
+                if svc_status.available:
                     if svc == 'rnsd' and not check_rns_shared_instance(
                         ReticulumPaths.get_configured_instance_name()
                     ):
                         print(f"  ! {svc:<18} running (shared instance not available)")
                     else:
                         print(f"  * {svc:<18} running{boot_info}")
-                elif status == 'failed':
+                elif svc_status.state in (ServiceState.FAILED, ServiceState.DEGRADED):
+                    # Revived: check_systemd_service only returned active/inactive,
+                    # so the old `status == 'failed'` branch was dead — a FAILED
+                    # service read as plain "inactive" (#74-#77).
                     print(f"  ! {svc:<18} FAILED")
                 else:
-                    print(f"  - {svc:<18} {status}")
+                    print(f"  - {svc:<18} {svc_status.state.value}")
             except (subprocess.SubprocessError, OSError) as e:
                 logger.debug("Service status check for %s failed: %s", svc, e)
                 print(f"  ? {svc:<18} unknown")

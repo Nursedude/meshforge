@@ -399,6 +399,11 @@ def repair_rns_shared_instance(handler) -> bool:
         if instance_ok:
             break
         try:
+            # Intentional raw is-active (not check_service): this loop must
+            # distinguish 'activating' (mid-start — keep waiting) from
+            # 'failed'/'inactive' (crashed — stop). check_service collapses
+            # 'activating' into NOT_RUNNING, which would falsely declare a crash
+            # mid-start. Allowlisted in TestServiceCheckContract.
             r = subprocess.run(
                 ['systemctl', 'is-active', 'rnsd'],
                 capture_output=True, text=True, timeout=5

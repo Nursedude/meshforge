@@ -130,13 +130,11 @@ class ExtensionsHandler(BaseHandler):
                 self._ma_update()
 
     def _ma_is_running(self) -> bool:
-        """Check if mesh_bot service is active."""
+        """Check if mesh_bot service is active (MF008: via check_service)."""
+        from utils.service_check import check_service
         try:
-            result = subprocess.run(
-                ["systemctl", "is-active", self._MA_SERVICE],
-                capture_output=True, text=True, timeout=5)
-            return result.stdout.strip() == "active"
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return check_service(self._MA_SERVICE).available
+        except Exception:
             return False
 
     def _ma_diagnose_service(self) -> Tuple[Optional[str], bool]:
