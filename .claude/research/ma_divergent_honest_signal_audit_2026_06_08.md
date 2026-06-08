@@ -18,9 +18,9 @@ ones — both are operator-facing **false-HEALTHY / false-DELIVERED verdicts**.
 
 ---
 
-## HIGH (verified — fix first)
+## HIGH (verified — ✅ BOTH FIXED + deployed in MeshAnchor `73c86dd1`, slice S8 2026-06-08)
 
-### H1 · MeshCore shows HEALTHY while the radio is physically down
+### H1 · MeshCore shows HEALTHY while the radio is physically down — ✅ FIXED (`73c86dd1`)
 `src/gateway/meshcore_supervisor_handler.py:133` + `:323-331` — SHAPE 3 — **CONF high (re-verified)**
 
 - `connect()` fires `record_connection_event("meshcore", "connected")` **unconditionally**
@@ -35,7 +35,7 @@ ones — both are operator-facing **false-HEALTHY / false-DELIVERED verdicts**.
 - **FIX:** emit the recognized `"connected"`/`"disconnected"` events from `_on_connection_state_event`,
   and gate the `connect()` "connected" report on `hello.get("connected")`.
 
-### H2 · LXMF broadcast presents an enqueue as a confirmed delivery
+### H2 · LXMF broadcast presents an enqueue as a confirmed delivery — ✅ FIXED (`73c86dd1`)
 `src/gateway/lxmf_broadcast_bridge.py:1018` — SHAPE 2 — **CONF high (re-verified)**
 
 - `call_boundary("rnsd.handle_outbound", self._router.handle_outbound, lxm, …)` only **enqueues**

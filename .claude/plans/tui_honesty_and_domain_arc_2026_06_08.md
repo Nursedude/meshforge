@@ -148,8 +148,14 @@ The deferred audit of MeshAnchor's surfaces with **no MeshForge twin** (MeshCore
 - **H2** `gateway/lxmf_broadcast_bridge.py:1018` — `mark_delivered()` fires on **enqueue** (delivery is async via `on_delivered` receipt) → status shows `last_ok`/`healthy` for a dead destination forever (the #16 best-effort class).
 - MED: meshcore `.save()` false-"Saved" ×2 (fold into the S5 `.save()` sweep), fleet "Schedules" panel green-on-probe-failure, NomadNet uninstall "removed"-when-not. LOW ×5 (triage). **MeshAnchor is the lead repo for this set** (no MeshForge twin except the `.save()` family); guard home = MA's `tests/test_honest_signal_guards.py`.
 
-### ⬜ S8 — MA-divergent honest-signal burn-down (candidate, MeshAnchor-lead)
-Worklist above. Sequence: H1+H2 (behavioral guards) → M1+M2 (`.save()` family) → M3+M4 (false-clean) → L1–L5 (opportunistic; L1 needs the `check_service` `--user`-unit question answered first).
+### 🔶 S8 — MA-divergent honest-signal burn-down (MeshAnchor-lead) — HIGH done, MED/LOW open
+- [x] **H1** `gateway/meshcore_supervisor_handler.py` (MeshAnchor `73c86dd1`, deployed) — `connect()` now reflects the radio's actual state via `hello.get("connected")` (was unconditional "connected"); `_on_connection_state_event` emits the recognized `"connected"`/`"disconnected"` events (was the no-op `radio_up`/`radio_down`) so a radio-down clears `_connected`. No longer reads HEALTHY while the radio is down. **DONE**
+- [x] **H2** `gateway/lxmf_broadcast_bridge.py` (`73c86dd1`, deployed) — `SubscriberStore.mark_delivered`→`mark_fanout_enqueued` (honest docstring); status dict exposes `last_fanout_enqueued` (deprecated `last_delivery` alias kept for API stability); TUI labels `last_fanout` + "delivery NOT confirmed (#16)" legend instead of `last_ok`/"Last OK". State machine + DB column unchanged (no migration). True-receipt→confirmed-delivery field is a noted follow-up. **DONE**
+- [x] **Guard:** `TestMADivergentS8` (4 static, skip-if-absent) in MA's `tests/test_honest_signal_guards.py`; updated `test_lxmf_broadcast_bridge.py` call sites. MA-native (no MeshForge twin; `bridge_health` untouched → no port). Verify: lint 0, 175 affected+guard pass, collect 5067, parity in sync.
+- [ ] **M1+M2** meshcore `.save()` ×2 — fold into the deferred S5 `.save()` sweep (same `GatewayConfig/SettingsManager.save()`-bool family).
+- [ ] **M3** fleet "Schedules" panel green-on-probe-failure (`fleet_aggregator.py` `_list_timers_scope`→`None` on failure → "(timer state unavailable)").
+- [ ] **M4** NomadNet uninstall "removed"-when-unlink-failed (`_nomadnet_tmux_service_ops.py:557`).
+- [ ] **L1–L5** opportunistic (L1 needs the `check_service` `--user`-unit question answered first). Full list in the audit doc.
 
 ---
 
