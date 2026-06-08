@@ -5,6 +5,7 @@ Converted from channel_config_mixin.py as part of the mixin-to-registry migratio
 """
 
 import sys
+import re
 import secrets
 import base64
 
@@ -118,7 +119,12 @@ class ChannelConfigHandler(BaseHandler):
                     raw = result.raw or ''
                     name = self._parse_channel_field(raw, 'name', f'Channel {i}')
                     role = self._parse_channel_field(raw, 'role', 'DISABLED')
-                    psk = 'Set' if 'psk' in raw.lower() and 'none' not in raw.lower() else 'None'
+                    # Classify THIS channel's psk field (not a whole-output
+                    # substring scan: 'none'/'psk' appearing anywhere in the blob
+                    # gave a false encryption verdict — wrong for a security
+                    # audit). Unparseable -> '?' (honest unknown, never false
+                    # 'None'). (S6, #74-#77)
+                    psk = self._classify_psk(self._parse_channel_field(raw, 'psk', ''))
                     channels.append({
                         'index': i,
                         'name': name,
@@ -171,6 +177,26 @@ class ChannelConfigHandler(BaseHandler):
                 if len(parts) >= 2:
                     return parts[1].strip()[:15]
         return default
+
+    @staticmethod
+    def _classify_psk(psk_field: str) -> str:
+        """Map a parsed channel 'psk' field value to an honest display token.
+
+        Derived from the channel's own psk field, so the encryption state
+        shown is trustworthy for a security audit (S6, #74-#77):
+          ''/unparseable -> '?'   (unknown, NOT a false 'None')
+          none/unset      -> 'None'
+          AQ== (the well-known default key) -> 'Default' (effectively public)
+          anything else   -> 'Set'
+        """
+        v = re.sub(r'[^a-z0-9=]', '', (psk_field or '').lower())
+        if not v:
+            return '?'
+        if v in ('none', 'unset', 'disabled', '0', 'null'):
+            return 'None'
+        if v in ('aq', 'aq=', 'aq=='):
+            return 'Default'
+        return 'Set'
 
     def _edit_channel_menu(self):
         """Select and edit a specific channel."""

@@ -144,7 +144,7 @@ class SDRHandler(BaseHandler):
             return
         ascii_spectrum = rf.generate_ascii_spectrum(snapshot, width=70, height=12)
         lines = [ascii_spectrum, "", f"Timestamp: {snapshot.timestamp.strftime('%H:%M:%S')}", f"Noise Floor: {snapshot.noise_floor_dbm:.1f} dBm", f"Peak: {snapshot.peak_power_dbm:.1f} dBm at {snapshot.peak_freq / 1e6:.3f} MHz"]
-        self.ctx.dialog.msgbox("Spectrum Snapshot", "\n".join(lines))
+        self.ctx.dialog.msgbox("Spectrum Snapshot", self._mock_banner(rf) + "\n".join(lines))
 
     def _rf_waterfall(self):
         rf = self._get_rf_awareness()
@@ -160,6 +160,9 @@ class SDRHandler(BaseHandler):
             return
         band = LoRaBand.US_915
         clear_screen()
+        banner = self._mock_banner(rf)
+        if banner:
+            print(banner)
         print("=== RF Waterfall Display ===")
         print(f"Band: {band.description}")
         print(f"Center: {band.center_freq / 1e6:.3f} MHz")
@@ -232,7 +235,7 @@ class SDRHandler(BaseHandler):
         else:
             assessment = "Very High - Channel congested"
         lines.extend(["", f"Assessment: {assessment}"])
-        self.ctx.dialog.msgbox("Channel Utilization", "\n".join(lines))
+        self.ctx.dialog.msgbox("Channel Utilization", self._mock_banner(rf) + "\n".join(lines))
 
     def _rf_survey(self):
         rf = self._get_rf_awareness()
@@ -263,7 +266,21 @@ class SDRHandler(BaseHandler):
             lines.append(f"  {freq_mhz:7.2f} MHz: {power_bar} {point.power_dbm:.1f} dBm")
         stats = survey.statistics
         lines.extend(["", "STATISTICS:", f"  Min Power: {stats.get('power_min_dbm', 0):.1f} dBm", f"  Max Power: {stats.get('power_max_dbm', 0):.1f} dBm", f"  Avg Power: {stats.get('power_avg_dbm', 0):.1f} dBm", f"  Avg SNR: {stats.get('snr_avg_db', 0):.1f} dB"])
-        self.ctx.dialog.msgbox("Survey Results", "\n".join(lines))
+        self.ctx.dialog.msgbox("Survey Results", self._mock_banner(rf) + "\n".join(lines))
+
+    @staticmethod
+    def _mock_banner(rf):
+        """Provenance banner for simulated SDR output, else '' (S6, #74-#77).
+
+        In the MOCK backend every measurement below is np.random noise
+        (utils.rf_awareness.MockSDR.receive_samples) — a HAM must never read
+        it as real RF. Returned as a body prefix so the warning rides with the
+        data itself, not just the connect prompt.
+        """
+        if rf is not None and getattr(rf.backend, "name", "") == "MOCK":
+            return ("*** MOCK MODE — SIMULATED DATA (no SDR hardware) ***\n"
+                    "Values below are random test data, NOT real RF.\n\n")
+        return ""
 
     @staticmethod
     def _power_bar(power_dbm, min_dbm, max_dbm, width=15):
@@ -324,7 +341,7 @@ class SDRHandler(BaseHandler):
         else:
             lines.extend(["No significant interference detected.", "Channel appears clear."])
         lines.extend(["", f"Noise Floor: {noise_floor:.1f} dBm"])
-        self.ctx.dialog.msgbox("Interference Analysis", "\n".join(lines))
+        self.ctx.dialog.msgbox("Interference Analysis", self._mock_banner(rf) + "\n".join(lines))
 
     def _rf_settings(self):
         rf = self._get_rf_awareness()
@@ -348,9 +365,16 @@ class SDRHandler(BaseHandler):
                         gain = float(gain_str)
                         if 0 <= gain <= 50:
                             rf._gain = gain
-                            if rf.is_connected:
-                                rf.set_gain(gain)
-                            self.ctx.dialog.msgbox("Updated", f"Gain set to {gain:.0f} dB")
+                            if not rf.is_connected:
+                                # Stored as a preference; nothing to apply yet —
+                                # don't imply the hardware changed.
+                                self.ctx.dialog.msgbox("Gain Stored", f"Gain preference set to {gain:.0f} dB.\nConnect an SDR (RF Status) to apply it to hardware.")
+                            elif rf.set_gain(gain):
+                                self.ctx.dialog.msgbox("Updated", f"Gain set to {gain:.0f} dB")
+                            else:
+                                # set_gain() returned False — the SDR rejected it;
+                                # the old code claimed "Gain set" regardless (#74-#77).
+                                self.ctx.dialog.msgbox("Gain Not Applied", f"Stored {gain:.0f} dB but the SDR rejected the change.\nCheck the connection (RF Status) and retry.")
                         else:
                             self.ctx.dialog.msgbox("Error", "Gain must be 0-50 dB")
                     except ValueError:

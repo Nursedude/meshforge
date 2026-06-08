@@ -542,7 +542,8 @@ class TrafficInspectorHandler(BaseHandler):
                     visualizer.add_path_trace(pkt.id, hops)
                     path_count += 1
 
-            if path_count == 0:
+            used_demo = path_count == 0
+            if used_demo:
                 # Create demo data if no real paths
                 self.ctx.dialog.msgbox(
                     "Generating Demo",
@@ -570,6 +571,15 @@ class TrafficInspectorHandler(BaseHandler):
             # Generate HTML
             output_path = visualizer.generate()
 
+            # Provenance: when no real paths existed the graph is demo hops with
+            # fabricated SNR/RSSI — the final dialog must say so, not just the
+            # dismissable "Generating Demo" prompt above (S6, #74-#77).
+            demo_note = (
+                "\n*** SAMPLE DATA — not real traffic ***\n"
+                "No path data was captured; the graph shows demo hops.\n"
+                if used_demo else ""
+            )
+
             # Detect SSH/headless environment
             is_ssh = bool(os.environ.get('SSH_CLIENT') or os.environ.get('SSH_TTY'))
             has_display = bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
@@ -578,17 +588,19 @@ class TrafficInspectorHandler(BaseHandler):
                 # SSH/headless - show path only, don't try browser
                 self.ctx.dialog.msgbox(
                     "Path Visualization Generated",
-                    f"HTML visualization saved to:\n{output_path}\n\n"
+                    f"HTML visualization saved to:\n{output_path}\n"
+                    f"{demo_note}\n"
                     "No graphical display detected.\n"
                     "Copy this file to view in a browser.",
-                    height=12, width=60
+                    height=14, width=60
                 )
             else:
                 self.ctx.dialog.msgbox(
                     "Path Visualization Generated",
-                    f"HTML visualization saved to:\n{output_path}\n\n"
+                    f"HTML visualization saved to:\n{output_path}\n"
+                    f"{demo_note}\n"
                     "Opening in browser...",
-                    height=9, width=60
+                    height=11, width=60
                 )
 
                 # Try to open in browser (only when display available)

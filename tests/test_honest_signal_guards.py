@@ -14,9 +14,15 @@ proceeds:
   * TestReportActionHelper — the shared confirm-or-honest dialog primitive.
   * TestMF020LintRule — the lint rule fires on the bad shape, stays quiet on
     the honest one and outside the handler tree.
+  * TestSdrMockProvenance / TestChannelPskProvenance / TestTrafficDemoProvenance
+    — S6 fabricated-data labeling: simulated/demo output must carry visible
+    provenance (MOCK-MODE banner, honest PSK classification, SAMPLE-DATA note)
+    so a HAM never reads np.random noise as real RF and a security audit never
+    sees a false encryption verdict.
 
-Future sessions widen this (the *_service / cfg.save() / fabricated-data
-clusters) — add their guards here.
+Future sessions widen this (the *_service / cfg.save() clusters) — add their
+guards here. The S6 guards skip gracefully when a handler file is absent so the
+suite ports cleanly to MeshAnchor's divergent tree.
 """
 import os
 import re
@@ -217,3 +223,110 @@ class TestMF020LintRule:
         fp = d / "elsewhere.py"
         fp.write_text("def go():\n    apply_config_and_restart('meshtasticd')\n")
         assert not self._mf020(lint.MeshForgeLinter().lint_file(str(fp)))
+
+
+# --- S6: fabricated-data provenance (mock/demo paths must be labeled) ---
+
+SDR_HANDLER = HANDLERS_DIR / "sdr.py"
+CHANNEL_HANDLER = HANDLERS_DIR / "channel_config.py"
+TRAFFIC_HANDLER = HANDLERS_DIR / "traffic_inspector.py"
+
+
+class _FakeBackend:
+    def __init__(self, name):
+        self.name = name
+
+
+class _FakeRF:
+    """Minimal stand-in for RFAwareness: only .backend.name is read by the banner."""
+    def __init__(self, name):
+        self.backend = _FakeBackend(name)
+
+
+class TestSdrMockProvenance:
+    """S6 (#74-#77): in the MOCK backend every SDR measurement is np.random noise
+    (utils.rf_awareness.MockSDR.receive_samples). Each measurement surface must
+    carry a provenance banner so a HAM never reads simulated dBm as real RF."""
+
+    def _cls(self):
+        if not SDR_HANDLER.exists():
+            pytest.skip("sdr.py not present in this repo")
+        from handlers.sdr import SDRHandler
+        return SDRHandler
+
+    def test_banner_fires_in_mock_backend(self):
+        banner = self._cls()._mock_banner(_FakeRF("MOCK"))
+        assert "MOCK MODE" in banner and "SIMULATED" in banner
+
+    def test_banner_silent_on_real_backend_and_none(self):
+        cls = self._cls()
+        assert cls._mock_banner(_FakeRF("SOAPY")) == ""
+        assert cls._mock_banner(None) == ""
+
+    def test_all_measurement_surfaces_carry_banner(self):
+        if not SDR_HANDLER.exists():
+            pytest.skip("sdr.py not present in this repo")
+        src = SDR_HANDLER.read_text(encoding="utf-8")
+        # spectrum / waterfall / utilization / survey / interference — 5 surfaces.
+        assert src.count("self._mock_banner(rf)") >= 5, (
+            "an SDR measurement surface is missing its MOCK-MODE provenance banner (S6)"
+        )
+
+    def test_gain_message_gated_on_set_gain_return(self):
+        if not SDR_HANDLER.exists():
+            pytest.skip("sdr.py not present in this repo")
+        src = SDR_HANDLER.read_text(encoding="utf-8")
+        # "Gain set to" must live under the set_gain() truth, not fire regardless.
+        assert "elif rf.set_gain(gain):" in src, (
+            "_rf_settings must gate 'Gain set' on set_gain()'s return (S6)"
+        )
+
+
+class TestChannelPskProvenance:
+    """S6 (#74-#77): the channel PSK column must reflect THIS channel's psk
+    field, not a whole-output substring scan (which gave a false encryption
+    verdict — wrong for a security audit)."""
+
+    def _cls(self):
+        if not CHANNEL_HANDLER.exists():
+            pytest.skip("channel_config.py not present in this repo")
+        from handlers.channel_config import ChannelConfigHandler
+        return ChannelConfigHandler
+
+    def test_classify_psk_tokens(self):
+        cls = self._cls()
+        assert cls._classify_psk("none") == "None"
+        assert cls._classify_psk("unset") == "None"
+        assert cls._classify_psk("AQ==") == "Default"      # well-known default key
+        assert cls._classify_psk('"AQ=="') == "Default"    # quoted/dict-style dump
+        assert cls._classify_psk("aB3xK9p2Qz==") == "Set"  # a real-looking key
+
+    def test_unknown_is_question_not_false_none(self):
+        cls = self._cls()
+        # the honest contract: when we can't parse it, say '?' not 'None'.
+        assert cls._classify_psk("") == "?"
+        assert cls._classify_psk(None) == "?"
+
+    def test_no_whole_output_substring_idiom(self):
+        if not CHANNEL_HANDLER.exists():
+            pytest.skip("channel_config.py not present in this repo")
+        src = CHANNEL_HANDLER.read_text(encoding="utf-8")
+        assert "'none' not in raw.lower()" not in src, (
+            "channel PSK must not be derived from a whole-output substring scan "
+            "(false encryption verdict — S6)"
+        )
+
+
+class TestTrafficDemoProvenance:
+    """S6 (#74-#77): the HTML path view falls back to demo hops with fabricated
+    SNR/RSSI when no real paths exist. The final 'generated' dialog must label
+    that as sample data, not just the dismissable prompt."""
+
+    def test_demo_path_labels_final_dialog(self):
+        if not TRAFFIC_HANDLER.exists():
+            pytest.skip("traffic_inspector.py not present in this repo")
+        src = TRAFFIC_HANDLER.read_text(encoding="utf-8")
+        assert "used_demo" in src and "SAMPLE DATA" in src, (
+            "demo path visualization must carry a SAMPLE DATA provenance note "
+            "into the final dialog (S6)"
+        )
