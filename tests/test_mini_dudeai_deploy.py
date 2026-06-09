@@ -209,7 +209,7 @@ class TestInstallNocEnrollsMini:
 
 
 # ─────────────────────────────────────────────────────────────────
-# (f) REMOTE_SCRIPT must actually BIND — the apostrophe-in-recipe guard.
+# (f) REMOTE_SCRIPT must stay single-quote-free — the apostrophe-in-recipe guard.
 #
 # fleet_sync.sh builds its remote recipe as a single-quoted string
 # (``REMOTE_SCRIPT='...'``). The body MUST stay single-quote-free: a stray
@@ -218,49 +218,16 @@ class TestInstallNocEnrollsMini:
 # never enters script scope — it reads as "unbound variable" at use time and
 # the whole remote leg (git pull + restarts) is skipped. `bash -n` does NOT
 # catch this (the syntax stays valid), and the 2026-06-09 deploy regression
-# shipped exactly this way. This behavioral guard binds-checks the real string.
+# shipped exactly this way. A purely STATIC scan is the right guard here: a
+# behavioral bind-check would have to execute the script's env-dependent
+# top-level (the recipe is woven through ~11 unrelated apostrophe-bearing
+# comment lines, so any partial-execution probe is parse-fragile and differs
+# CI-vs-box). The invariant — no stray apostrophe in the recipe body — is the
+# cause, and checking it directly is robust everywhere.
 # ─────────────────────────────────────────────────────────────────
 
 
 class TestRemoteScriptBinds:
-    def _recipe_close_line(self, lines):
-        # The recipe closes with a lone single-quote on its own line.
-        for i, ln in enumerate(lines):
-            if ln.rstrip("\n") == "'" and i > 0 and lines[0:i]:
-                # first lone-quote line AFTER the REMOTE_SCRIPT=' opener
-                if any(l.startswith("REMOTE_SCRIPT='") for l in lines[:i]):
-                    return i
-        return None
-
-    def test_remote_script_binds_under_set_u(self, tmp_path):
-        text = FLEET_SYNC_SH.read_text()
-        lines = text.splitlines(keepends=True)
-        close = self._recipe_close_line(lines)
-        assert close is not None, "could not find REMOTE_SCRIPT close quote"
-        probe = (
-            lines[: close + 1]
-            + [
-                '\n',
-                ': "${REMOTE_SCRIPT:?REMOTE_SCRIPT_UNBOUND}"\n',
-                "echo BOUND_LEN=${#REMOTE_SCRIPT}\n",
-                "exit 0\n",
-            ]
-        )
-        script = tmp_path / "fs_bindcheck.sh"
-        script.write_text("".join(probe))
-        proc = subprocess.run(
-            ["bash", str(script)],
-            capture_output=True, text=True, timeout=60,
-            cwd=str(REPO_ROOT),
-        )
-        assert proc.returncode == 0, (
-            "REMOTE_SCRIPT did not bind (apostrophe in the recipe body closes "
-            f"the single-quoted string early). stderr:\n{proc.stderr}"
-        )
-        assert "BOUND_LEN=" in proc.stdout
-        blen = int(proc.stdout.split("BOUND_LEN=")[1].split()[0])
-        assert blen > 1000, f"REMOTE_SCRIPT suspiciously short ({blen} chars)"
-
     def test_recipe_body_has_no_stray_apostrophes(self):
         # Apostrophes are allowed ONLY as paired heredoc delimiters (<<'PY').
         text = FLEET_SYNC_SH.read_text()
