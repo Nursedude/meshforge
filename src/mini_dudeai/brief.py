@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 
 from ._util import atomic_write_text, read_json
 
@@ -241,17 +242,23 @@ def write_brief(state_path: str, history_path: str, out_path: str,
     return text
 
 
+_STAMP_RE = re.compile(r"^(_generated )\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+
+
 def _strip_volatile(text: str) -> str:
-    """Drop the `_generated <stamp> · last tick <age> ago …` line — the one
-    line guaranteed to differ every tick even when the brief's substance is
-    identical."""
-    return "\n".join(l for l in text.splitlines()
-                     if not l.startswith("_generated "))
+    """Mask the timestamp inside the `_generated <stamp> …` line — the one
+    token guaranteed to differ every tick even when the brief's substance is
+    identical. Only the STAMP is masked, not the whole line: a change to the
+    line's wording (a format bump) must still register as changed content,
+    or quiet boxes would keep serving the old wording forever."""
+    return "\n".join(
+        _STAMP_RE.sub(r"\1<stamp>", l) if l.startswith("_generated ") else l
+        for l in text.splitlines())
 
 
 def _brief_unchanged(out_path: str, new_text: str) -> bool:
     """True when the existing brief matches new_text modulo the volatile
-    stamp line. Never raises — any read problem means 'changed, write it'."""
+    stamp. Never raises — any read problem means 'changed, write it'."""
     try:
         with open(out_path, encoding="utf-8", errors="replace") as f:
             existing = f.read()
