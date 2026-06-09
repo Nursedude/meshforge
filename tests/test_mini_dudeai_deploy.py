@@ -250,3 +250,21 @@ class TestRemoteScriptBinds:
             "(will unbind REMOTE_SCRIPT): "
             + "; ".join(f"L{n}: {t.strip()}" for n, t in offenders)
         )
+
+
+# ─────────────────────────────────────────────────────────────────
+# (g) The federator's self-sync must restart the watchdog — it carries the
+# mini probes. The remote leg (sync_repo) restarts meshforge-watchdog; the self
+# leg omitted it, so a watchdog code change (e.g. the #79 mini probes) reached
+# all 5 remotes but NOT the federator until a manual restart (caught 2026-06-09).
+# ─────────────────────────────────────────────────────────────────
+
+
+class TestSelfSyncRestartsWatchdog:
+    def test_self_sync_includes_watchdog(self):
+        text = FLEET_SYNC_SH.read_text()
+        assert "sync_local_unit meshforge-watchdog" in text, (
+            "fleet_sync self-sync must restart meshforge-watchdog on the "
+            "federator — it carries the mini probes; otherwise a watchdog code "
+            "change silently never reaches THIS box (the #79 deploy gap)."
+        )

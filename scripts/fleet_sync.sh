@@ -806,6 +806,12 @@ echo
 echo "Self-sync (this box):"
 sync_local_unit meshforge-gateway /opt/meshforge
 sync_local_unit meshforge-map     /opt/meshforge
+# The federator (self) runs the watchdog too. The remote leg restarts it via
+# sync_repo, but the self leg omitted it — so a watchdog code change (e.g. a new
+# probe) silently did NOT reach THIS box until a manual restart. Caught
+# 2026-06-09: the 3 new mini probes (#79) deployed to all 5 remotes but not the
+# federator. Keep self in parity with the remote watchdog restart.
+sync_local_unit meshforge-watchdog /opt/meshforge
 sync_local_unit meshforge-maps    /opt/meshforge-maps
 # mini-dudeai is a USER unit — restart it on the user bus when its code changed.
 sync_local_user_unit meshforge-mini-dudeai /opt/meshforge
