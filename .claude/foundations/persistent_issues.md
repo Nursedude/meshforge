@@ -401,6 +401,19 @@ imported nonexistent `MessageQueue` symbol (queue endpoint was dead code) →
 `TestMonotonicClockIssue74` (6), `TestCrossProcessWriteErrorTruthIssue74` (3),
 probe tests (16) + closed-enum gate bump.
 
+**FIX 2026-06-09: `probe_delivery_confirmation_stall` was measuring disjoint protocol
+populations (false-alarmed on moc).** delivery_counters uses different lifecycle states
+per protocol — RNS `queued→confirmed` (never `sent`), Meshtastic `queued→sent` (never
+`confirmed`; no ACK consumption). So `confirmed/sent` was (RNS-confirmed ÷ Meshtastic-sent),
+two different populations → ~50% on any mesh-heavy box (cumulative 181%). Rewrote to judge
+ONLY confirmable protocols (those in `state_by_protocol.confirmed`; RNS today, Meshtastic
+once step-4 ACK lands) comparing their REAL terminal outcomes — `confirmed` vs failed-delivery
+`dropped` (`_DELIVERY_FAILURE_REASONS`; benign `dedup` excluded); `min_sent`→`min_terminal`;
+no-confirmable / small-sample → None. Ported to MeshAnchor `check_delivery_confirmation_stall`
+(same bug). ⚠️ residual: the `/api/gateway/delivery.confirmation_rate` DISPLAY metric is still
+the cross-population ratio (181%) — operator-facing only, not a pager; separate slice. Real
+completeness = Meshtastic ACK consumption (Thread-2 step 4). No new signal class.
+
 
 ---
 

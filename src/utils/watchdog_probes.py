@@ -1782,34 +1782,54 @@ def probe_queue_backlog(
 # ─────────────────────────────────────────────────────────────────────
 
 
+# Drop reasons that mean a delivery was ATTEMPTED and FAILED — the
+# denominator-mates of `confirmed` for a confirmable protocol. Benign
+# drops (dedup, capacity shedding) are NOT delivery failures and must
+# never count against the confirmation rate.
+_DELIVERY_FAILURE_REASONS = frozenset({
+    "rns_delivery_failed", "retries_exhausted", "destination_unreachable",
+    "delivery_timeout", "non_retriable_error", "circuit_open", "wedged",
+})
+
+
 def probe_delivery_confirmation_stall(
     *,
     host: str = "127.0.0.1",
     port: int = 5000,
     timeout_s: float = 3.0,
-    min_sent: int = 20,
+    min_terminal: int = 20,
     rate_degraded: float = 0.50,
     rate_wedge: float = 0.10,
 ) -> Optional[Signal]:
-    """Sends flow but confirmations collapsed (Issue #74).
+    """A confirmable protocol's deliveries are failing instead of confirming
+    (Issue #74).
 
-    Closes the honest-signal gap where the bridge's own status reads
-    HEALTHY while nothing confirms: its rolling windows decay to
-    quiet/healthy when events stop, so a gateway shouting into a void
-    looks fine from inside. The watchdog judges from outside instead.
+    Closes the honest-signal gap where the bridge's own status reads HEALTHY
+    while nothing confirms. Judges a WINDOWED rate from the snapshot's
+    recent-events ring (last 50, newest-last) — the lifetime-cumulative rate
+    would mask a recent collapse.
 
-    Judges a WINDOWED rate from the snapshot's recent-events ring
-    (last 50, newest-last) — the lifetime-cumulative confirmation_rate
-    would mask a recent collapse on a long-lived box.
+    CRUCIAL: judges ONLY protocols that actually have a confirmation mechanism
+    (record `confirmed` events — RNS today; Meshtastic too once ROUTING_APP
+    ACK consumption lands), and compares that protocol's two REAL terminal
+    outcomes — `confirmed` vs a failed-delivery `dropped` — NOT the meaningless
+    cross-population `confirmed/sent` ratio. The counters use disjoint lifecycle
+    states per protocol (RNS: queued→confirmed, never `sent`; Meshtastic:
+    queued→sent, never `confirmed`), so `confirmed/sent` was (RNS-confirmed ÷
+    Meshtastic-sent) — two different message populations that never measured a
+    coherent rate and false-alarmed ~50% on every mesh-heavy gateway.
 
-    Self-guards (silence is NOT failure here — the explicit inversion
-    of channel_feed_dark):
+    Self-guards (silence is NOT failure here — the explicit inversion of
+    channel_feed_dark):
       - transport/shape errors → None (other probes own those)
-      - confirmation_rate is None (zero traffic ever) → None
-      - ring SENT < min_sent → None (low-traffic box: one unconfirmed
-        message tanks the ratio; busy gateways canary for the fleet)
+      - no confirmable protocol → None (nothing tracks confirmation; e.g. an
+        RNS-less box — Meshtastic has no ACK)
+      - confirmable terminal events < min_terminal → None (low-traffic /
+        small-sample box: one failure tanks a tiny denominator; on a
+        mesh-heavy box the 50-event ring holds few RNS events, so None is the
+        correct, honest answer over too small a sample)
 
-    Severities: ring rate ≤ 10% → wedge, ≤ 50% → degraded.
+    Severities: rate ≤ 10% → wedge, ≤ 50% → degraded.
     """
     url = f"http://{host}:{port}/api/gateway/delivery"
     try:
@@ -1820,42 +1840,58 @@ def probe_delivery_confirmation_stall(
     if not isinstance(payload, dict):
         return None
 
-    if payload.get("confirmation_rate") is None:
-        # delivery_counters returns None iff sent == 0 — no traffic
-        # has ever flowed; nothing to judge.
+    # Confirmable = protocols that have ever recorded a `confirmed` event.
+    # Meshtastic isn't here until ACK consumption exists, so its
+    # structurally-unconfirmable sends never drag the rate.
+    confirmed_by_proto = (payload.get("state_by_protocol") or {}).get("confirmed") or {}
+    confirmable = {
+        p for p, c in confirmed_by_proto.items()
+        if isinstance(c, (int, float)) and not isinstance(c, bool) and c > 0
+    }
+    if not confirmable:
         return None
 
     recent = payload.get("recent")
     if not isinstance(recent, list):
         return None
 
-    ring_sent = sum(1 for e in recent
-                    if isinstance(e, dict) and e.get("state") == "sent")
-    ring_confirmed = sum(1 for e in recent
-                         if isinstance(e, dict) and e.get("state") == "confirmed")
-    if ring_sent < min_sent:
+    ring_confirmed = 0
+    ring_failed = 0
+    for e in recent:
+        if not isinstance(e, dict) or e.get("protocol") not in confirmable:
+            continue
+        st = e.get("state")
+        if st == "confirmed":
+            ring_confirmed += 1
+        elif st == "dropped" and e.get("drop_reason") in _DELIVERY_FAILURE_REASONS:
+            ring_failed += 1
+
+    terminal = ring_confirmed + ring_failed
+    if terminal < min_terminal:
         return None
 
-    ring_rate = ring_confirmed / ring_sent
+    ring_rate = ring_confirmed / terminal
     if ring_rate > rate_degraded:
         return None
 
     severity = "wedge" if ring_rate <= rate_wedge else "degraded"
+    protos = ", ".join(sorted(confirmable))
     return Signal(
         cls="delivery_confirmation_stall",
         subject="meshforge-gateway",
         severity=severity,
         detail=(
-            f"Delivery confirmations collapsed: {ring_confirmed}/"
-            f"{ring_sent} confirmed in the recent-events window "
-            f"({ring_rate:.0%}) while sends keep flowing. Receivers "
-            f"aren't acking — check RNS paths to the fan-out peers "
-            f"and /api/gateway/delivery drop_reasons."
+            f"Delivery confirmations collapsed: {ring_confirmed}/{terminal} "
+            f"{protos} messages confirmed in the recent window "
+            f"({ring_rate:.0%}); the rest failed delivery. Check RNS paths "
+            f"to the fan-out peers and /api/gateway/delivery drop_reasons."
         ),
         issue_ref=74,
         extra={
-            "ring_sent": ring_sent,
+            "confirmable": sorted(confirmable),
             "ring_confirmed": ring_confirmed,
+            "ring_failed": ring_failed,
+            "terminal": terminal,
             "ring_rate": round(ring_rate, 3),
             "cumulative_confirmation_rate": payload.get("confirmation_rate"),
         },

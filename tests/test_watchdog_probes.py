@@ -2311,19 +2311,30 @@ def test_queue_backlog_none_on_unexpected_shape(tmp_path):
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _delivery_payload(ring_sent=0, ring_confirmed=0,
-                      cumulative_rate=0.9, padding=0):
-    """Build a /api/gateway/delivery-shaped payload. The ring lists
-    SENT then CONFIRMED events (order irrelevant to the probe)."""
+def _delivery_payload(*, confirmed=0, failed=0, mesh_sent=0, dedup_drops=0,
+                      confirmable=("rns",), cumulative_rate=0.9):
+    """Build a /api/gateway/delivery-shaped payload (the REAL shape: ring
+    events carry protocol + drop_reason, plus state_by_protocol).
+
+    confirmed/failed = rns ring events (state=confirmed / dropped+
+    rns_delivery_failed). mesh_sent = meshtastic `sent` events (structurally
+    unconfirmable — must NOT count). dedup_drops = rns dropped+dedup (benign).
+    confirmable = protocols listed in state_by_protocol.confirmed (() = none).
+    """
     recent = (
-        [{"state": "sent", "id": f"s{i}"} for i in range(ring_sent)]
-        + [{"state": "confirmed", "id": f"c{i}"}
-           for i in range(ring_confirmed)]
-        + [{"state": "queued", "id": f"q{i}"} for i in range(padding)]
+        [{"state": "confirmed", "protocol": "rns", "id": f"c{i}"}
+         for i in range(confirmed)]
+        + [{"state": "dropped", "protocol": "rns",
+            "drop_reason": "rns_delivery_failed", "id": f"f{i}"}
+           for i in range(failed)]
+        + [{"state": "dropped", "protocol": "rns",
+            "drop_reason": "dedup", "id": f"d{i}"} for i in range(dedup_drops)]
+        + [{"state": "sent", "protocol": "meshtastic", "id": f"m{i}"}
+           for i in range(mesh_sent)]
     )
     return {
         "confirmation_rate": cumulative_rate,
-        "state_totals": {"sent": 10_000, "confirmed": 9_000},
+        "state_by_protocol": {"confirmed": {p: 9_000 for p in confirmable}},
         "recent": recent,
     }
 
@@ -2338,68 +2349,74 @@ def test_confirmation_stall_none_on_unreachable_endpoint():
         assert probe_delivery_confirmation_stall() is None
 
 
-def test_confirmation_stall_none_when_no_traffic():
-    """confirmation_rate=None ⇔ zero sends ever. Silence is NOT
-    failure here — the explicit inversion of channel_feed_dark."""
-    payload = {"confirmation_rate": None, "recent": []}
+def test_confirmation_stall_mesh_sends_do_not_false_alarm():
+    """THE bug: 20 meshtastic `sent` + 10 rns `confirmed` made the old
+    confirmed/sent ratio read 50% and fire. Meshtastic is unconfirmable, so
+    the honest rate is 10/10 = 100% — None. (min low so the sample passes,
+    proving it's the mesh-exclusion, not the min-gate, that silences it.)"""
+    payload = _delivery_payload(confirmed=10, failed=0, mesh_sent=20)
     with patch("utils.watchdog_probes.urlopen",
                return_value=_http_json_mock(payload)):
-        assert probe_delivery_confirmation_stall() is None
+        assert probe_delivery_confirmation_stall(min_terminal=5) is None
 
 
-def test_confirmation_stall_none_below_min_sent():
-    """3 sends, 0 confirms = 0% — but a low-traffic box must not
-    alarm; one unconfirmed message tanks a tiny denominator."""
-    payload = _delivery_payload(ring_sent=3, ring_confirmed=0)
+def test_confirmation_stall_no_confirmable_protocol_is_none():
+    """No protocol records confirmations (RNS-less box; mesh has no ACK) →
+    nothing to judge."""
+    payload = _delivery_payload(mesh_sent=30, confirmable=())
     with patch("utils.watchdog_probes.urlopen",
                return_value=_http_json_mock(payload)):
-        assert probe_delivery_confirmation_stall(min_sent=20) is None
+        assert probe_delivery_confirmation_stall(min_terminal=5) is None
 
 
-def test_confirmation_stall_degraded_at_50pct():
-    payload = _delivery_payload(ring_sent=25, ring_confirmed=10)
+def test_confirmation_stall_below_min_terminal_is_none():
+    """Few confirmable terminal events — one failure can't tank a tiny
+    denominator (the mesh-heavy-box small-RNS-sample case)."""
+    payload = _delivery_payload(confirmed=2, failed=1, mesh_sent=40)
     with patch("utils.watchdog_probes.urlopen",
                return_value=_http_json_mock(payload)):
-        sig = probe_delivery_confirmation_stall(min_sent=20)
+        assert probe_delivery_confirmation_stall(min_terminal=20) is None
+
+
+def test_confirmation_stall_rns_healthy_is_quiet():
+    payload = _delivery_payload(confirmed=24, failed=1)
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        assert probe_delivery_confirmation_stall(min_terminal=20) is None
+
+
+def test_confirmation_stall_dedup_drops_excluded():
+    """Benign dedup drops are NOT delivery failures — a healthy RNS box with
+    lots of dedup must stay quiet."""
+    payload = _delivery_payload(confirmed=24, failed=0, dedup_drops=30)
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        sig = probe_delivery_confirmation_stall(min_terminal=20)
+    assert sig is None
+
+
+def test_confirmation_stall_rns_collapse_degraded():
+    payload = _delivery_payload(confirmed=10, failed=15)
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        sig = probe_delivery_confirmation_stall(min_terminal=20)
     assert sig is not None
     assert sig.cls == "delivery_confirmation_stall"
-    assert sig.severity == "degraded"
+    assert sig.severity == "degraded"           # 10/25 = 40%
     assert sig.issue_ref == 74
-    assert sig.extra["ring_sent"] == 25
     assert sig.extra["ring_confirmed"] == 10
+    assert sig.extra["ring_failed"] == 15
+    assert sig.extra["terminal"] == 25
+    assert sig.extra["confirmable"] == ["rns"]
 
 
-def test_confirmation_stall_wedge_at_10pct():
-    payload = _delivery_payload(ring_sent=30, ring_confirmed=2)
+def test_confirmation_stall_rns_collapse_wedge():
+    payload = _delivery_payload(confirmed=2, failed=23)
     with patch("utils.watchdog_probes.urlopen",
                return_value=_http_json_mock(payload)):
-        sig = probe_delivery_confirmation_stall(min_sent=20)
+        sig = probe_delivery_confirmation_stall(min_terminal=20)
     assert sig is not None
-    assert sig.severity == "wedge"
-
-
-def test_confirmation_stall_healthy_rate_is_quiet():
-    payload = _delivery_payload(ring_sent=25, ring_confirmed=22)
-    with patch("utils.watchdog_probes.urlopen",
-               return_value=_http_json_mock(payload)):
-        assert probe_delivery_confirmation_stall(min_sent=20) is None
-
-
-def test_confirmation_stall_uses_recent_ring_not_cumulative():
-    """The point of the windowed judgment: a long-lived box with a
-    high LIFETIME rate but a collapsed RECENT window must fire —
-    cumulative masks the collapse."""
-    payload = _delivery_payload(
-        ring_sent=30, ring_confirmed=1, cumulative_rate=0.95,
-    )
-    with patch("utils.watchdog_probes.urlopen",
-               return_value=_http_json_mock(payload)):
-        sig = probe_delivery_confirmation_stall(min_sent=20)
-    assert sig is not None, (
-        "cumulative rate 95% must not mask a 3% recent window"
-    )
-    assert sig.severity == "wedge"
-    assert sig.extra["cumulative_confirmation_rate"] == 0.95
+    assert sig.severity == "wedge"               # 2/25 = 8%
 
 
 def test_channel_feed_dark_none_when_json_pipeline_itself_stale():
