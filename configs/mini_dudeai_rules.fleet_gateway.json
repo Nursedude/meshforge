@@ -354,6 +354,96 @@
       },
       "cooldown_s": 3600,
       "annotation": "Box hard-reset with no clean shutdown (BootHealthSource; wired 2026-06-06 after the primary box's 3rd power-cut). Gateway seed carries the ntfy alert only \u2014 no digest action is wired on gateway boxes. Forensic method: tail ~/power_history.log (throttled bit 0x10000 = brownout occurred; 0x0 throughout = instant external cut) + journalctl -b -1 -o short-precise | tail. Full method in the hard-reset memory topic file."
+    },
+    {
+      "id": "phoneapi_tcp_leak_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "phoneapi_tcp_leak",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] PhoneAPI TCP leak",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning"
+        ]
+      },
+      "cooldown_s": 3600,
+      "annotation": "Issue #75 \u2014 an unaccounted persistent TCP to meshtasticd :4403 is draining the PhoneAPI stream (web client goes deaf to inbound texts/ACKs while the radio journal shows healthy RX). Recovery: sudo systemctl restart meshforge-map.service, then verify /api/radio/status persistent_owner."
+    },
+    {
+      "id": "mqtt_root_drift_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "mqtt_root_drift",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] MQTT root drift",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning"
+        ]
+      },
+      "cooldown_s": 7200,
+      "annotation": "Issue #77 \u2014 the radio's OBSERVED publish root diverged from the box's DECLARED consumer root (zero-config join or factory reset reintroduces msh/US). This is the CAUSE of the dark-feed class, visible hours before channel_feed_dark proves the symptom. Fix: meshtastic --host localhost --set mqtt.root <declared> (or correct gateway.json if the radio is the intended truth)."
+    },
+    {
+      "id": "cron_verdict_stale_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "cron_verdict_stale",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "Issue #78 \u2014 a crontab-wired cron_verdict.sh cron went silent past its cadence, or its latest verdict is FAIL/CONCERN. The silent-cron class: the cron may have been firing into a deleted path for weeks. Check ~/cron_verdicts.log + crontab -l on the box. Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
+    },
+    {
+      "id": "history_write_stalled_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "history_write_stalled",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "Issue #79 \u2014 mini's loop is alive and firing but history.jsonl stopped accumulating (swallowed write failure: perms/owner/disk). The warm-context feed is the casualty. Check file perms + free disk on the mini host. Side-effect-free escalation; NO ntfy page."
+    },
+    {
+      "id": "rules_seed_drift_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "rules_seed_drift",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "Issue #79 \u2014 the box's live ~/mini_dudeai_rules.json is missing rule ids its role seed carries (a seed bump didn't reach this box). Fix: merge the new seed rules into the live file via the candidate flow (preserve box-local rules). Side-effect-free escalation; NO ntfy page."
+    },
+    {
+      "id": "memory_index_oversize_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "memory_index_oversize",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "Issue #79 \u2014 MEMORY.md crept over the ~24KB context-load limit; sessions silently partial-load the index. Remedy: demote older/shipped entries to MEMORY_ARCHIVE.md (mini_dudeai.memory_apply.demote_memory). Side-effect-free escalation; NO ntfy page."
     }
   ]
 }

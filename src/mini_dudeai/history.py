@@ -54,6 +54,11 @@ def _rotate_if_needed(path: str, max_bytes: int) -> str | None:
         # Iterate from the end so the newest entries survive; always keep at
         # least the last line so a single over-target line can't empty the file.
         lines = data.splitlines(keepends=True)
+        # A crash mid-append can leave a torn final line with no trailing
+        # newline. Terminate it so it stays an ISOLATED malformed line readers
+        # skip, instead of fusing with the next appended record.
+        if lines and not lines[-1].endswith(b"\n"):
+            lines[-1] += b"\n"
         kept: list[bytes] = []
         total = 0
         for line in reversed(lines):
@@ -65,7 +70,52 @@ def _rotate_if_needed(path: str, max_bytes: int) -> str | None:
         tmp = path + ".rot.tmp"
         with open(tmp, "wb") as f:
             f.writelines(kept)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
+        return None
+    except OSError as e:
+        return f"{type(e).__name__}: {e}"
+
+
+def _repair_torn_tail(path: str) -> None:
+    """If the file's last byte is not a newline (crash mid-append), write one.
+
+    This converts a torn fragment into a single isolated malformed line (one
+    record lost, readers skip it) instead of letting the NEXT append fuse two
+    records into one unparseable line (two records lost, invisibly).
+    Best-effort: OSError is swallowed — the append's own error is what gets
+    reported.
+    """
+    try:
+        with open(path, "rb+") as f:
+            f.seek(0, os.SEEK_END)
+            if f.tell() == 0:
+                return
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                f.write(b"\n")
+    except OSError:
+        pass
+
+
+def append_jsonl(path: str, entries: list[dict], max_bytes: int) -> str | None:
+    """The one append-only JSONL write posture, shared by every appender
+    (history, audit ledger, dream deltas): rotate-if-over-cap, repair a torn
+    tail, append, swallow OSError into a returned string.
+
+    Returns None on success, error string on failure. Never raises — a
+    disk/perms problem must never crash an observation loop.
+    """
+    if not entries:
+        return None
+    _rotate_if_needed(path, max_bytes)
+    if os.path.exists(path):
+        _repair_torn_tail(path)
+    try:
+        with open(path, "a") as f:
+            for e in entries:
+                f.write(json.dumps(e, default=str) + "\n")
         return None
     except OSError as e:
         return f"{type(e).__name__}: {e}"
@@ -85,13 +135,4 @@ class HistoryWriter:
         written is never the one dropped. A rotation failure is non-fatal — we
         still attempt the append (the append's own OSError is what's reported).
         """
-        if not entries:
-            return None
-        _rotate_if_needed(self.path, self.max_bytes)
-        try:
-            with open(self.path, "a") as f:
-                for e in entries:
-                    f.write(json.dumps(e, default=str) + "\n")
-            return None
-        except OSError as e:
-            return f"{type(e).__name__}: {e}"
+        return append_jsonl(self.path, entries, self.max_bytes)

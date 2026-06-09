@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from .history import _rotate_if_needed
+from .history import append_jsonl
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -516,15 +516,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.ledger:
         ledger_path = os.path.expanduser(args.ledger)
-        # Bound the append-only ledger before writing — keep the most-recent
-        # verdicts, never drop the line we're about to add. Rotation failure is
-        # non-fatal (the append still proceeds, matching the warning posture).
-        _rotate_if_needed(ledger_path, DEFAULT_LEDGER_MAX_BYTES)
-        try:
-            with open(ledger_path, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(report.to_dict(), separators=(",", ":")) + "\n")
-        except OSError as exc:
-            print(f"warning: could not append ledger: {exc}", file=sys.stderr)
+        # Shared append posture (rotate-if-over-cap + torn-tail repair +
+        # swallowed OSError) — same implementation as history/dreams.
+        err = append_jsonl(ledger_path, [report.to_dict()],
+                           DEFAULT_LEDGER_MAX_BYTES)
+        if err:
+            print(f"warning: could not append ledger: {err}", file=sys.stderr)
 
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))

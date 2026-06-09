@@ -2689,3 +2689,41 @@ curl -s http://127.0.0.1:5000/api/status | jq \
 run_rnstatus path; plus parser-level timed_out flag + timeout_s plumbing.
 The closed-enum gate `test_signal_classes_closed_enum_is_documented` was
 bumped with the new class.
+
+
+---
+
+## Issue #73: meshforge-map fd-leak → [Errno 24] → :5000 wedge; + proactive fd probe (2026-05-31) — archived from persistent_issues 2026-06-09
+
+**Symptom**: meshanchor-server `:5000` browser-spin; map `active`, rnsd healthy
+(rnstatus OK, `@rns` owned by rnsd) — NOT the #68/#72 RNS class. Journal:
+`[Errno 24] Too many open files`. The map process held **1024 fds (298 ESTAB to
+`[::1]:1883`)** against the 1024 soft `RLIMIT_NOFILE` — `accept()` on `:5000`
+couldn't get an fd, so even `/healthz` hung.
+
+**Root cause**: shared `monitoring/mqtt_subscriber.py::_connect()` created a new
+paho `Client` every call without tearing down the prior one; the reconnect loop
+orphaned a client per cycle and `loop_start()` kept its socket alive. Fixed in
+BOTH repos (MeshForge `5712b56`, MeshAnchor `6e1d2306`): `_connect()` calls
+`_disconnect()` before re-creating; atexit registered once. Deployed fleet-wide
++ verified (mqtt socks back to 1, fds low). Tests `TestReconnectFdLeak` (2) in
+each repo's `tests/test_mqtt_robustness.py`.
+
+**Detection gap closed**: `http_local_unresponsive` (#61) caught the *symptom*
+only AFTER `:5000` went dark, and pointed at thread stacks (wrong cause). New
+**`probe_fd_exhaustion`** (signal class `fd_exhaustion`, issue_ref 73) is the
+proactive companion: counts `/proc/<MainPID>/fd` vs the soft `Max open files`
+from `/proc/<pid>/limits`, fires `degraded` ≥80% / `wedge` ≥95%, names the
+fd-leak cause. Read-only, bounded, None on inactive/unreadable/unlimited. Wired
+in `watchdog_runner` next to `probe_http_local` (gated on map expected-active).
+Tests: 6 in `tests/test_watchdog_probes.py` (`test_fd_exhaustion_*`) + closed-
+enum gate bumped.
+
+**Operator recipe**:
+```bash
+curl -s http://127.0.0.1:5000/api/status | jq '.watchdog.signals[]? | select(.class=="fd_exhaustion")'
+P=$(systemctl show meshforge-map.service -p MainPID --value)
+sudo ls /proc/$P/fd | wc -l   # vs soft limit in /proc/$P/limits
+```
+Decision tell: `[Errno 24]`/climbing fds = fd leak (restart map, find leak);
+`rnstatus` wedged = RNS class (restart rnsd).

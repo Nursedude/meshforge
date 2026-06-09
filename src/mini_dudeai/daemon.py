@@ -16,6 +16,34 @@ import sys
 from .config import build_engine_from_config, load_config
 
 
+def _acquire_instance_lock(lock_path: str):
+    """Exclusive advisory lock keyed to the state file. Returns the open file
+    (hold it for process lifetime; the kernel releases on exit) or None when
+    another process already holds it.
+
+    Why: the daemon and a `--once`/`--dream` invocation share the same state/
+    history/deltas paths. Two concurrent writers are a read-modify-write race
+    on edge state (duplicate fires, bypassed cooldowns) — refusing loudly is
+    the honest behavior, not interleaving quietly.
+    """
+    import fcntl
+    try:
+        f = open(lock_path, "w")
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            f.close()
+        except Exception:
+            pass
+        return None
+    try:
+        f.write(str(os.getpid()))
+        f.flush()
+    except OSError:
+        pass
+    return f
+
+
 def _import_preset(name: str):
     """Resolve a preset name to its build_engine() function.
 
@@ -72,6 +100,18 @@ def main(argv: list[str] | None = None) -> int:
         write_brief(state_path, engine.history.path, out)
         print(f"mini-dudeai brief: wrote {out}")
         return 0
+
+    # Everything past --brief mutates state/history/deltas: take the
+    # single-instance lock so a cron `--once`/`--dream` can never interleave
+    # with the live daemon's tick on the same files.
+    lock_path = engine.state_store.path + ".lock"
+    instance_lock = _acquire_instance_lock(lock_path)
+    if instance_lock is None:
+        print(f"mini-dudeai: another mini-dudeai process holds {lock_path} "
+              f"(the daemon?) — refusing to run concurrently against the same "
+              f"state files. Stop the daemon or point --config at different "
+              f"paths.", file=sys.stderr)
+        return 1
 
     if args.dream:
         from .dreams import write_dreams

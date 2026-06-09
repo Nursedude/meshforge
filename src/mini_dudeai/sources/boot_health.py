@@ -71,6 +71,7 @@ class BootHealthSource(Source):
         boot_window_s: float = 900.0,
         clean_slack_s: float = 180.0,
         uptime_path: str = "/proc/uptime",
+        boot_id_path: str = "/proc/sys/kernel/random/boot_id",
         name: str = "boot_health",
     ) -> None:
         self.state_path = state_path
@@ -80,6 +81,7 @@ class BootHealthSource(Source):
         self.boot_window_s = boot_window_s
         self.clean_slack_s = clean_slack_s
         self.uptime_path = uptime_path
+        self.boot_id_path = boot_id_path
         self.name = name
 
     def collect(self) -> Iterable[Condition]:
@@ -117,19 +119,52 @@ class BootHealthSource(Source):
     # --- internals ----------------------------------------------------
 
     def _assess(self, boot_time: float, now: float) -> dict:
-        """Compute (once per boot) and latch the clean/unclean verdict."""
-        prev, _ = read_json(self.assessment_path)
-        if isinstance(prev, dict) and abs(prev.get("boot_time_ts", 0) - boot_time) < 120:
-            return prev  # already assessed this boot
+        """Compute and latch the per-boot clean/unclean verdict.
 
-        state, _ = read_json(self.state_path)
-        last_tick = float((state or {}).get("last_tick_ts", 0) or 0)
-        clean_exit = self._read_float(self.clean_exit_path)
+        Latch identity is the kernel boot_id (stable per boot, immune to the
+        pre-NTP clock steps of this RTC-less fleet) with the old boot_time
+        ±120s key as fallback when boot_id is unreadable. The old time-only
+        key had two failure modes: a short hard cut whose fake-hwclock error
+        was under 120s latched a wrong pre-NTP verdict FOREVER (silently
+        missing exactly the short-power-cut class the detector was built
+        for), and a step over 120s broke the key and let a definitive
+        verdict flip mid-window.
+
+        Verdict mutability: clean/unclean/unknown_first_run compare two
+        PRE-BOOT timestamps (last_tick vs clean-exit marker) and are
+        clock-robust — once latched they never change. Only "indeterminate"
+        (the gate that compares last_tick to the possibly-stale boot_time)
+        may be re-assessed and upgraded, using the pre-boot facts STORED at
+        first sight — by the next tick the live state file already reflects
+        this boot's ticks, so re-reading it could never upgrade.
+        """
+        boot_id = self._read_boot_id()
+        prev, _ = read_json(self.assessment_path)
+        same_boot = False
+        if isinstance(prev, dict):
+            if boot_id and prev.get("boot_id"):
+                same_boot = prev.get("boot_id") == boot_id
+            else:
+                same_boot = abs(prev.get("boot_time_ts", 0) - boot_time) < 120
+        if same_boot and prev.get("verdict") != "indeterminate":
+            return prev  # definitive verdict for this boot — immutable
+
+        if same_boot:
+            # Re-assessing an indeterminate latch: judge the STORED pre-boot
+            # facts against the (possibly now NTP-corrected) boot_time.
+            last_tick = float(prev.get("last_tick_ts", 0) or 0)
+            clean_exit = float(prev.get("clean_exit_ts", 0) or 0)
+            power_tail = prev.get("power_tail")
+        else:
+            state, _ = read_json(self.state_path)
+            last_tick = float((state or {}).get("last_tick_ts", 0) or 0)
+            clean_exit = self._read_float(self.clean_exit_path)
+            power_tail = self._last_power_line()
 
         if last_tick <= 0:
             verdict = "unknown_first_run"          # mini never ran before
         elif last_tick >= boot_time:
-            verdict = "indeterminate"              # mini ticked within this boot
+            verdict = "indeterminate"              # clock says mini ticked within this boot
         elif clean_exit >= last_tick - self.clean_slack_s:
             verdict = "clean"                      # graceful shutdown recorded
         else:
@@ -137,18 +172,28 @@ class BootHealthSource(Source):
 
         assessment = {
             "verdict": verdict,
+            "boot_id": boot_id,
             "boot_time_ts": int(boot_time),
             "last_tick_ts": last_tick,
             "clean_exit_ts": clean_exit,
             "down_gap_s": int(max(0.0, boot_time - last_tick)) if last_tick > 0 else 0,
-            "power_tail": self._last_power_line(),
+            "power_tail": power_tail,
             "assessed_at_ts": int(now),
         }
+        if same_boot and verdict == prev.get("verdict"):
+            return assessment  # still indeterminate — nothing new to latch
         try:
             atomic_write_json(self.assessment_path, assessment)
         except OSError:
             pass  # latching is best-effort; verdict is still returned
         return assessment
+
+    def _read_boot_id(self) -> str | None:
+        try:
+            with open(self.boot_id_path) as f:
+                return f.read().strip() or None
+        except OSError:
+            return None
 
     def _read_uptime(self) -> float | None:
         try:

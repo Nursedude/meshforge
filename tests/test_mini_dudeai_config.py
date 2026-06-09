@@ -196,9 +196,20 @@ def test_validate_config_missing_rules_path():
 def test_validate_config_reports_missing_field_with_path():
     errs = validate_config({
         "rules_path": "~/r.json",
-        "sources": [{"kind": "file_mtime", "path": "~/x"}],  # missing max_age_s
+        "sources": [{"kind": "json_file", "path": "~/x"}],  # missing condition_kind
     })
-    assert any("sources[0]" in e and "max_age_s" in e for e in errs)
+    assert any("sources[0]" in e and "condition_kind" in e for e in errs)
+
+
+def test_validate_config_accepts_file_mtime_without_max_age_s():
+    """max_age_s is builder-defaulted (1800) — requiring it was validator/builder
+    drift (2026-06-09 review): validate_config rejected a config the builder
+    fully supported."""
+    errs = validate_config({
+        "rules_path": "~/r.json",
+        "sources": [{"kind": "file_mtime", "path": "~/x"}],
+    })
+    assert errs == []
 
 
 def test_validate_config_unknown_kind_lists_registered():

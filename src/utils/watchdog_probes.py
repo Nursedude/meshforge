@@ -2778,12 +2778,22 @@ def probe_history_write_failure(
         if last_tick <= 0.0 or (now - last_tick) > _MINI_LOOP_FRESH_S:
             return None  # loop not ticking → not a write-failure (daemon stopped)
 
-        rules = state_doc.get("rules") or {}
-        fires = 0
-        if isinstance(rules, dict):
-            for rs in rules.values():
-                if isinstance(rs, dict):
-                    fires += int(rs.get("fire_count", 0) or 0)
+        # Activity baseline: prefer the engine's history_appends_total counter
+        # (advances on EVERY successful history append, edge_up AND edge_down).
+        # The old fires-only sum was blind to edge_down-only windows: history
+        # appends were failing but per-rule fire_count (edge_up-only) never
+        # advanced, so the stall went undetected. Fallback keeps older state
+        # files working until their first post-upgrade tick.
+        appends_total = state_doc.get("history_appends_total")
+        if isinstance(appends_total, (int, float)) and appends_total >= 0:
+            fires = int(appends_total)
+        else:
+            rules = state_doc.get("rules") or {}
+            fires = 0
+            if isinstance(rules, dict):
+                for rs in rules.values():
+                    if isinstance(rs, dict):
+                        fires += int(rs.get("fire_count", 0) or 0)
 
         prior = _load_history_stall_state(sp)
         prior_fires = int(prior.get("fires", -1))
@@ -2841,6 +2851,12 @@ _ROLE_TO_MINI_SEED = {
     "primary": "federator",       # the :5000 federator/manager box
     "full-gateway": "fleet_gateway",
     "gateway-only": "fleet_gateway",
+    # collector (moc5) and cloud-publisher (moc1) both `inherits: full-gateway`
+    # in fleet_roles.yaml and run mini (install_noc enrolls the user units on
+    # every fleet box) — leaving them unmapped made this probe permanently
+    # inert on exactly the boxes most likely to be forgotten in a re-seed.
+    "collector": "fleet_gateway",
+    "cloud-publisher": "fleet_gateway",
 }
 
 
@@ -2933,10 +2949,19 @@ def probe_rules_seed_drift(
 
 # The operator memory index path (relative to the operator home) + its
 # context-load limit. MEMORY.md silently partial-loads when it exceeds this,
-# so a bump is a latent legibility failure. ~24 KB = the harness load cap.
+# so a bump is a latent legibility failure. The limit derives from the
+# WRITER-side guard (mini_dudeai.memory_apply) so the writer's warning and
+# this fleet probe can never judge the same file against different numbers —
+# they used to (24,000 vs 24,576), leaving a band where the writer warned on
+# every append while the fleet stayed silent.
 _MEMORY_INDEX_REL = os.path.join(
     ".claude", "projects", "-opt-meshforge", "memory", "MEMORY.md")
-MEMORY_INDEX_LIMIT_BYTES = 24 * 1024  # ~24 KB
+try:
+    from mini_dudeai.memory_apply import (
+        MEMORY_INDEX_SOFT_LIMIT_BYTES as MEMORY_INDEX_LIMIT_BYTES,
+    )
+except Exception:  # mini package absent in some contexts — keep the same number
+    MEMORY_INDEX_LIMIT_BYTES = 24_000
 
 
 def probe_memory_index_oversize(

@@ -36,7 +36,7 @@
           "uptime_path": {"type": "string", "default": "/proc/uptime"}
         },
         "allOf": [
-          {"if": {"properties": {"kind": {"const": "file_mtime"}}}, "then": {"required": ["path", "max_age_s"]}},
+          {"if": {"properties": {"kind": {"const": "file_mtime"}}}, "then": {"required": ["path"]}},
           {"if": {"properties": {"kind": {"const": "json_file"}}}, "then": {"required": ["path", "condition_kind"]}},
           {"if": {"properties": {"kind": {"const": "http_json"}}}, "then": {"required": ["url", "condition_kind"]}},
           {"if": {"properties": {"kind": {"const": "boot_health"}}}, "then": {"required": ["state_path", "clean_exit_path", "assessment_path"]}}

@@ -29,8 +29,8 @@ import json
 import os
 import time
 
-from ._util import read_json
-from .history import _rotate_if_needed
+from ._util import atomic_write_text, read_json
+from .history import append_jsonl
 
 # --- tunables (conservative defaults; override per call for tests/tuning) -----
 
@@ -421,25 +421,14 @@ def write_dreams(state_path: str, history_path: str, deltas_path: str,
     skip = _skip_keys(existing, now_ts)
     fresh = [d for d in detected if d.get("key") not in skip]
 
-    appended_err = None
-    if fresh:
-        # Bound the append-only deltas file before writing — keep the freshest
-        # proposals, never drop the lines we're about to add. Rotation failure
-        # is non-fatal (the append still proceeds), matching the writer posture.
-        _rotate_if_needed(deltas_path, DEFAULT_DELTAS_MAX_BYTES)
-        try:
-            with open(deltas_path, "a") as f:
-                for d in fresh:
-                    f.write(json.dumps(d, default=str) + "\n")
-        except OSError as e:
-            appended_err = f"{type(e).__name__}: {e}"
+    # Shared append posture (rotate-if-over-cap + torn-tail repair + swallowed
+    # OSError) — one implementation for history/audit/dreams, not three
+    # divergent copies.
+    appended_err = append_jsonl(deltas_path, fresh, DEFAULT_DELTAS_MAX_BYTES)
 
     narr_err = None
     try:
-        tmp = narrative_path + ".tmp"
-        with open(tmp, "w") as f:
-            f.write(narrative)
-        os.replace(tmp, narrative_path)
+        atomic_write_text(narrative_path, narrative)
     except OSError as e:
         narr_err = f"{type(e).__name__}: {e}"
 
@@ -482,11 +471,9 @@ def resolve_delta(deltas_path: str, key: str, status: str,
             break
     else:
         return False
-    tmp = deltas_path + ".tmp"
-    with open(tmp, "w") as f:
-        for d in deltas:
-            f.write(json.dumps(d, default=str) + "\n")
-    os.replace(tmp, deltas_path)
+    atomic_write_text(
+        deltas_path,
+        "".join(json.dumps(d, default=str) + "\n" for d in deltas))
     return True
 
 

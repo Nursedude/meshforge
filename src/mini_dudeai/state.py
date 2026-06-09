@@ -29,6 +29,9 @@ def _empty_rule_state(rule_id: str, subject: str) -> dict:
         # A rule with grace_s only fires once the condition has matched
         # continuously for >= grace_s, suppressing self-clearing transients.
         "pending_since_ts": 0.0,
+        # observed ticks in the current streak — the wall-clock span alone is
+        # forgeable by NTP steps / restarts (see RuleEngine._grace_min_ticks).
+        "pending_ticks": 0,
     }
 
 

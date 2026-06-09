@@ -2923,15 +2923,25 @@ class TestRulesSeedDrift:
         assert sig is None
 
     def test_ambiguous_role_is_none(self, tmp_path):
-        """A role with no dedicated mini seed (e.g. collector) → None, no guess.
-        Inject only `role` so the probe reaches the role->seed mapping and hits
-        the ambiguous short-circuit (a live file MISSING rules would otherwise
-        fire — proving the guard, not the sets)."""
+        """A role with no dedicated mini seed → None, no guess. (collector and
+        cloud-publisher were ONCE the example here — they run mini and are now
+        mapped; bot/meshanchor-noc are provisioned by external repos and stay
+        genuinely unmapped.) Inject only `role` so the probe reaches the
+        role->seed mapping and hits the ambiguous short-circuit (a live file
+        MISSING rules would otherwise fire — proving the guard, not the sets)."""
         # a live file that WOULD drift against any seed, to prove role gates first
         (tmp_path / "mini_dudeai_rules.json").write_text(json.dumps({"rules": []}))
         sig = probe_rules_seed_drift(
-            mini_home=str(tmp_path), role="collector")
+            mini_home=str(tmp_path), role="bot")
         assert sig is None
+
+    def test_collector_and_cloud_publisher_are_watched(self, tmp_path):
+        """collector (moc5) and cloud-publisher (moc1) run mini — the probe
+        must NOT self-guard None on them (the 2026-06-09 review gap)."""
+        (tmp_path / "mini_dudeai_rules.json").write_text(json.dumps({"rules": []}))
+        for role in ("collector", "cloud-publisher"):
+            sig = probe_rules_seed_drift(mini_home=str(tmp_path), role=role)
+            assert sig is not None and sig.cls == "rules_seed_drift"
 
     def test_known_roles_map_to_seeds(self):
         """primary → federator seed; gateway roles → fleet_gateway seed."""

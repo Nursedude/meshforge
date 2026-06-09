@@ -21,7 +21,8 @@ from dataclasses import asdict
 from typing import Any
 
 from .actions.base import Action, Outcome
-from ._util import atomic_write_json, read_json
+from ._util import atomic_write_bytes, atomic_write_text, read_json
+from .candidate import STRUCTURAL_MATCH_KEYS
 from .history import HistoryWriter
 from .sources.base import Condition, Source
 from .state import StateStore
@@ -51,12 +52,13 @@ def _match_rule(rule: dict, cond: Condition) -> bool:
     for ex in m.get("subject_exclude_globs") or []:
         if fnmatch.fnmatchcase(cond.subject, ex):
             return False
-    # extras filter — any extra match.* key (other than glob aliases and kind)
-    # must equal the corresponding entry in cond.extras.
-    glob_keys = {"kind", "subject_glob", "peer_glob", "source_glob",
-                 "subject_exclude_globs"}
+    # extras filter — any extra match.* key (other than the structural keys)
+    # must equal the corresponding entry in cond.extras. The structural set is
+    # shared with candidate.lint_rules_document so a typo'd structural key
+    # (which lands here and silently matches nothing) draws an authoring
+    # warning instead of dying quiet.
     for k, v in m.items():
-        if k in glob_keys:
+        if k in STRUCTURAL_MATCH_KEYS:
             continue
         if cond.extras.get(k) != v:
             return False
@@ -109,6 +111,28 @@ class RuleEngine:
         # expensive collect/eval.
         self.brief_path = brief_path
         self._stop = threading.Event()
+        # Last successfully-loaded ruleset + the rules-file mtime it came from.
+        # Two jobs: (a) steady-state ticks skip the re-parse/re-validate when
+        # the file hasn't changed; (b) a transient read error degrades to the
+        # LAST-GOOD rules instead of an empty list — an empty list used to
+        # silently deactivate every active condition (no edge_down) and then
+        # re-fire them all as fresh edge_ups on the next good tick.
+        self._rules_cache: tuple[int, list[dict]] | None = None
+        self._last_good_rules: list[dict] | None = None
+        # True when the most recent load_rules() could not produce ANY ruleset
+        # (unreadable file and no last-good in memory). tick() then holds all
+        # edge state instead of interpreting "no rules" as "nothing active".
+        self._rules_unavailable = False
+        # Per-source hold cache: the last successfully-collected conditions of
+        # each source. When a source errors, its real conditions are absent
+        # for the tick — and absence used to read as recovery (false edge_down
+        # "CLEARED" pages). Holding the last-known conditions while the source
+        # is blind keeps edge state honest: unobservable ≠ resolved.
+        self._source_cache: dict[str, list[Condition]] = {}
+        # Tick interval (set by run()); lets grace_s translate into a minimum
+        # number of OBSERVED ticks so wall-clock jumps (NTP steps on the
+        # RTC-less fleet) can't satisfy a debounce the box never observed.
+        self._interval_s: float | None = None
 
     # --- rules loading + candidate promotion --------------------------
 
@@ -138,10 +162,7 @@ class RuleEngine:
         try:
             with open(self.rules_path, "rb") as src:
                 payload = src.read()
-            tmp = self.bak_path + ".tmp"
-            with open(tmp, "wb") as dst:
-                dst.write(payload)
-            os.replace(tmp, self.bak_path)
+            atomic_write_bytes(self.bak_path, payload)
         except OSError as e:
             print(f"rules: backup of canonical before promote failed "
                   f"(continuing): {type(e).__name__}: {e}", flush=True)
@@ -156,10 +177,7 @@ class RuleEngine:
         try:
             with open(self.bak_path, "rb") as src:
                 payload = src.read()
-            tmp = self.rules_path + ".restore.tmp"
-            with open(tmp, "wb") as dst:
-                dst.write(payload)
-            os.replace(tmp, self.rules_path)
+            atomic_write_bytes(self.rules_path, payload)
             return {"restored": True}
         except OSError as e:
             return {"restored": False, "reason": f"restore failed: {e}"}
@@ -170,9 +188,27 @@ class RuleEngine:
         cand, err = read_json(self.candidate_path)
         if err:
             return {"promoted": False, "reason": f"candidate unreadable: {err}"}
-        _, errs = self._validate_rules(cand)
+        valid, errs = self._validate_rules(cand)
         if errs:
             return {"promoted": False, "reason": f"validation errors: {errs[:3]}"}
+        if not valid:
+            # A structurally-valid document with ZERO rules would silently
+            # wipe the canonical ruleset and turn the agent dark with only an
+            # INFO line. Refuse when the canonical file currently has rules —
+            # an intentional wipe is an out-of-band operator action, not a
+            # candidate promotion.
+            cur, _ = read_json(self.rules_path)
+            cur_valid, _ = self._validate_rules(cur) if cur is not None else ([], [])
+            if cur_valid:
+                return {"promoted": False,
+                        "reason": f"candidate has 0 rules; refusing to wipe "
+                                  f"{len(cur_valid)} canonical rule(s)"}
+        # Authoring lint: a candidate can be valid and still carry a typo'd
+        # match key that makes a rule silently match nothing. Surface loudly
+        # at the promotion boundary (warnings never block).
+        from .candidate import lint_rules_document
+        for w in lint_rules_document(cand):
+            print(f"rules: WARN (candidate): {w}", flush=True)
         # Preserve the immediately-prior good rules before the destructive
         # overwrite, so a bad-but-valid candidate is recoverable (restore_backup).
         self._backup_canonical()
@@ -184,42 +220,146 @@ class RuleEngine:
 
     def load_rules(self) -> tuple[list[dict], list[str]]:
         promo = self._promote_candidate()
-        data, err = read_json(self.rules_path)
-        if err or not data:
-            return [], [f"rules file unreadable: {err or 'empty'}"]
-        rules, errs = self._validate_rules(data)
+        errs: list[str] = []
         if promo and promo.get("promoted"):
             errs.append("INFO: promoted candidate rules to canonical")
         elif promo and not promo.get("promoted"):
             errs.append(f"WARN: candidate rules NOT promoted: {promo.get('reason')}")
+
+        # mtime gate: the rules file changes on promotion or operator edit —
+        # rarely. Steady-state ticks reuse the parsed+validated ruleset for
+        # one stat() instead of a full JSON parse + validation (and instead
+        # of re-printing the same validation errors every 30s forever).
+        mtime_ns: int | None = None
+        try:
+            mtime_ns = os.stat(self.rules_path).st_mtime_ns
+        except OSError:
+            pass
+        if (mtime_ns is not None and self._rules_cache is not None
+                and self._rules_cache[0] == mtime_ns):
+            self._rules_unavailable = False
+            return self._rules_cache[1], errs
+
+        data, err = read_json(self.rules_path)
+        if err or not data:
+            # Degrade to the LAST-GOOD ruleset, never to "no rules": an empty
+            # ruleset reads downstream as "nothing is active", which silently
+            # deactivates every live condition and re-fires them all later.
+            if self._last_good_rules is not None:
+                self._rules_unavailable = False
+                errs.append(
+                    f"WARN: rules file unreadable ({err or 'empty'}) — holding "
+                    f"last-good ruleset ({len(self._last_good_rules)} rules)")
+                return list(self._last_good_rules), errs
+            self._rules_unavailable = True
+            errs.append(f"rules file unreadable: {err or 'empty'} — no last-good "
+                        f"ruleset in memory; holding ALL edge state this tick")
+            return [], errs
+
+        rules, verrs = self._validate_rules(data)
+        errs.extend(verrs)
+        from .candidate import lint_rules_document
+        for w in lint_rules_document(data):
+            errs.append(f"WARN: {w}")
+        self._rules_unavailable = False
+        self._last_good_rules = list(rules)
+        if mtime_ns is not None:
+            self._rules_cache = (mtime_ns, list(rules))
         return rules, errs
 
     # --- the tick -----------------------------------------------------
+
+    # Per-source hold cap — bounds the state-file footprint of the hold cache.
+    SOURCE_HOLD_CAP = 200
+
+    @staticmethod
+    def _cond_to_dict(c: Condition) -> dict:
+        return {"kind": c.kind, "subject": c.subject, "detail": c.detail,
+                "source": c.source, "extras": c.extras}
+
+    @staticmethod
+    def _cond_from_dict(d: dict) -> Condition:
+        return Condition(
+            kind=str(d.get("kind", "?")), subject=str(d.get("subject", "?")),
+            detail=str(d.get("detail", "")), source=str(d.get("source", "")),
+            extras=d.get("extras") or {},
+        )
+
+    def _grace_min_ticks(self, grace_s: float) -> int:
+        """Minimum OBSERVED ticks a grace streak must span before firing.
+
+        Wall-clock span alone is forgeable: an NTP step (RTC-less fleet) or a
+        daemon restart makes "now - pending_since" exceed grace_s without the
+        box ever observing the condition persist. Requiring the streak to also
+        span grace_s/interval observed ticks (min 2) makes the debounce mean
+        what it says: matched continuously, as witnessed by this process.
+        """
+        if self._interval_s and self._interval_s > 0:
+            return max(2, int(grace_s // self._interval_s))
+        return 2
 
     def tick(self) -> dict:
         """One evaluation cycle. Returns the post-tick state dict."""
         now_ts = time.time()
         state = self.state_store.load()
         StateStore.prune_24h(state, now_ts)
+        prev_rule_count = state.get("rule_count")
         rules, rule_errs = self.load_rules()
         for e in rule_errs:
             print(f"rules: {e}", flush=True)
+        if not rules and not self._rules_unavailable and prev_rule_count:
+            print(f"rules: WARN ruleset is EMPTY (was {prev_rule_count} rules) "
+                  f"— the agent observes nothing", flush=True)
 
-        # Collect from every source. A source failure becomes a source_error
-        # condition (the source handles its own try/except); engine doesn't
-        # need to wrap.
+        # Rehydrate the per-source hold cache after a restart, so a source
+        # that is ALREADY failing when the daemon comes back doesn't read as
+        # "everything recovered".
+        if not self._source_cache and isinstance(state.get("source_hold"), dict):
+            for name, items in state["source_hold"].items():
+                if isinstance(items, list):
+                    self._source_cache[name] = [
+                        self._cond_from_dict(d) for d in items
+                        if isinstance(d, dict)
+                    ][:self.SOURCE_HOLD_CAP]
+
+        # Collect from every source. A failing source (raised, or emitted a
+        # source_error condition) has its REAL conditions held from the last
+        # good collect: absence caused by blindness must not read as recovery
+        # (false edge_down "CLEARED" while the problem persists). The
+        # source_error condition still flows so rules can page the blindness.
         conds: list[Condition] = []
         for src in self.sources:
+            name = getattr(src, "name", str(src))
+            src_conds: list[Condition] = []
+            failed = False
             try:
                 for c in src.collect():
-                    conds.append(c)
+                    src_conds.append(c)
             except Exception as e:  # genuinely broken source — emit error and continue
-                conds.append(Condition(
+                failed = True
+                src_conds.append(Condition(
                     kind="source_error",
-                    subject=getattr(src, "name", str(src)),
+                    subject=name,
                     detail=f"source raised {type(e).__name__}: {e}",
-                    source=getattr(src, "name", str(src)),
+                    source=name,
                 ))
+            if not failed and any(c.kind == "source_error" for c in src_conds):
+                failed = True
+            if failed:
+                held = self._source_cache.get(name, [])
+                if held:
+                    print(f"source {name}: errored — holding {len(held)} "
+                          f"last-known condition(s) (unobservable ≠ resolved)",
+                          flush=True)
+                conds.extend(c for c in src_conds if c.kind == "source_error")
+                conds.extend(held)
+            else:
+                self._source_cache[name] = src_conds[:self.SOURCE_HOLD_CAP]
+                conds.extend(src_conds)
+        state["source_hold"] = {
+            n: [self._cond_to_dict(c) for c in lst]
+            for n, lst in self._source_cache.items()
+        }
 
         matched_keys: set[str] = set()
         history_entries: list[dict] = []
@@ -240,6 +380,13 @@ class RuleEngine:
                 if rs.get("currently_active"):
                     continue  # still firing — no transition
                 since_fire = now_ts - rs.get("last_fired_ts", 0.0)
+                if since_fire < 0:
+                    # Wall clock stepped BACKWARD (NTP on the RTC-less fleet):
+                    # a negative age would extend cooldown suppression by the
+                    # step size. Re-anchor to now — suppression is then bounded
+                    # by at most one cooldown from the step, never more.
+                    rs["last_fired_ts"] = now_ts
+                    since_fire = 0.0
                 if cooldown and since_fire < cooldown:
                     continue
                 # Grace/debounce: the condition must persist continuously for
@@ -247,15 +394,25 @@ class RuleEngine:
                 # first tick the condition appears; a self-clearing transient
                 # (e.g. a ~30s federator blip during our own restarts) never
                 # reaches grace, so it is suppressed. The streak is reset below
-                # when the condition is absent for a tick.
+                # when the condition is absent for a tick — and it must ALSO
+                # span a minimum number of observed ticks, because a forward
+                # NTP step (or a restart, see run()) can make the wall-clock
+                # span exceed grace_s after a single observation.
                 if grace:
                     if not rs.get("pending_since_ts"):
                         rs["pending_since_ts"] = now_ts
-                    if now_ts - rs["pending_since_ts"] < grace:
+                        rs["pending_ticks"] = 1
+                    else:
+                        rs["pending_ticks"] = int(rs.get("pending_ticks", 1) or 1) + 1
+                        if rs["pending_since_ts"] > now_ts:
+                            rs["pending_since_ts"] = now_ts  # backward step — restart span
+                    if (now_ts - rs["pending_since_ts"] < grace
+                            or rs["pending_ticks"] < self._grace_min_ticks(grace)):
                         continue  # not persisted long enough — hold, no fire
                 outcome = self._execute(rule, cond, "edge_up")
                 rs["currently_active"] = True
                 rs["pending_since_ts"] = 0.0  # streak consumed by the fire
+                rs["pending_ticks"] = 0
                 rs["last_fired_ts"] = now_ts
                 rs["fire_count"] = rs.get("fire_count", 0) + 1
                 rs["fires_window"].append(now_ts)
@@ -265,34 +422,56 @@ class RuleEngine:
                 ))
                 fire_count += 1
 
-        # Edge-DOWN: was active, no longer matched this tick.
-        for key, rs in list(state["rules"].items()):
-            # Reset a grace streak that broke before it could fire: the
-            # condition was building toward grace_s but is absent this tick, so
-            # the next appearance starts a fresh streak (this is what makes a
-            # transient never accumulate enough persistence to fire).
-            if key not in matched_keys and rs.get("pending_since_ts"):
-                rs["pending_since_ts"] = 0.0
-            if not rs.get("currently_active"):
-                continue
-            if key in matched_keys:
-                continue
-            rule = next((r for r in rules if r["id"] == rs.get("rule_id")), None)
-            if rule is None:
+        # Edge-DOWN: was active, no longer matched this tick. SKIPPED entirely
+        # when no ruleset could be loaded: with zero rules, every active state
+        # looks unmatched, and "rules unobservable" must not read as "every
+        # condition resolved" (it silently dropped active escalations with no
+        # edge_down, then re-fired them all as fresh pages on the next good
+        # tick).
+        if self._rules_unavailable:
+            print("rules: holding ALL edge state this tick (no ruleset "
+                  "available — unobservable ≠ resolved)", flush=True)
+        else:
+            for key, rs in list(state["rules"].items()):
+                # Reset a grace streak that broke before it could fire: the
+                # condition was building toward grace_s but is absent this tick, so
+                # the next appearance starts a fresh streak (this is what makes a
+                # transient never accumulate enough persistence to fire).
+                if key not in matched_keys and rs.get("pending_since_ts"):
+                    rs["pending_since_ts"] = 0.0
+                    rs["pending_ticks"] = 0
+                if not rs.get("currently_active"):
+                    continue
+                if key in matched_keys:
+                    continue
+                rule = next((r for r in rules if r["id"] == rs.get("rule_id")), None)
+                if rule is None:
+                    # The rule was removed from the ruleset while its condition
+                    # was active. We can't run its action (the action config
+                    # lived in the rule), but the deactivation must be LOUD and
+                    # on the record — this used to be a silent state flip.
+                    rs["currently_active"] = False
+                    detail = ("rule removed from ruleset while active; "
+                              "deactivated without running its action")
+                    print(f"rules: {rs.get('rule_id')!r} ({key}): {detail}",
+                          flush=True)
+                    history_entries.append(self._history_entry(
+                        now_ts, rs.get("rule_id", "?"), rs.get("subject", "?"),
+                        "edge_down", detail, Outcome(action="none", ok=True),
+                    ))
+                    continue
+                synth_cond = Condition(
+                    kind=rule.get("match", {}).get("kind", "?"),
+                    subject=rs.get("subject", "?"),
+                    detail=rs.get("last_detail", ""),
+                )
+                outcome = self._execute(rule, synth_cond, "edge_down")
                 rs["currently_active"] = False
-                continue
-            synth_cond = Condition(
-                kind=rule.get("match", {}).get("kind", "?"),
-                subject=rs.get("subject", "?"),
-                detail=rs.get("last_detail", ""),
-            )
-            outcome = self._execute(rule, synth_cond, "edge_down")
-            rs["currently_active"] = False
-            history_entries.append(self._history_entry(
-                now_ts, rule["id"], rs.get("subject", "?"), "edge_down",
-                rs.get("last_detail", ""), outcome,
-            ))
-            fire_count += 1
+                history_entries.append(self._history_entry(
+                    now_ts, rule["id"], rs.get("subject", "?"), "edge_down",
+                    rs.get("last_detail", ""), outcome,
+                ))
+                fire_count += 1
 
         state["last_tick_ts"] = now_ts
         state["last_tick_iso"] = datetime.datetime.fromtimestamp(now_ts).isoformat()
@@ -301,10 +480,18 @@ class RuleEngine:
         state["error_count"] = error_count
         state["fire_count"] = fire_count
         state["host"] = os.uname().nodename
-        self.state_store.save(state)
+        # Append history BEFORE saving state so the appends counter only
+        # advances when the write actually landed — probe_history_write_failure
+        # reads it as the honest "history should have grown" baseline (the old
+        # fires-only baseline was blind to edge_down-only windows).
         hist_err = self.history.append(history_entries)
         if hist_err:
             print(f"history append failed: {hist_err}", flush=True)
+        elif history_entries:
+            state["history_appends_total"] = (
+                int(state.get("history_appends_total", 0) or 0)
+                + len(history_entries))
+        self.state_store.save(state)
         return state
 
     def _execute(self, rule: dict, cond: Condition, transition: str) -> Outcome:
@@ -343,6 +530,15 @@ class RuleEngine:
         """Block, ticking every interval_s seconds until SIGTERM/SIGINT."""
         signal.signal(signal.SIGTERM, lambda *_: self._stop.set())
         signal.signal(signal.SIGINT, lambda *_: self._stop.set())
+        self._interval_s = interval_s
+        # A grace streak is "matched continuously AS OBSERVED" — daemon
+        # downtime is not observation. A persisted streak surviving a restart
+        # let two unrelated transients bracketing the restart satisfy grace_s
+        # instantly (the exact restart-window transients grace exists to
+        # suppress), so the streak restarts with the daemon. (--once/cron mode
+        # deliberately KEEPS streaks across invocations: there, each
+        # invocation IS a tick.)
+        self._reset_pending_streaks()
         print(f"mini-dudeai engine started · interval={interval_s}s · "
               f"host={os.uname().nodename}", flush=True)
         while not self._stop.is_set():
@@ -391,12 +587,26 @@ class RuleEngine:
         if not self.clean_exit_path:
             return
         try:
-            tmp = self.clean_exit_path + ".tmp"
-            with open(tmp, "w") as f:
-                f.write(f"{time.time():.3f}")
-            os.replace(tmp, self.clean_exit_path)
+            atomic_write_text(self.clean_exit_path, f"{time.time():.3f}")
         except OSError as e:
             print(f"clean-exit marker write failed (continuing): "
+                  f"{type(e).__name__}: {e}", flush=True)
+
+    def _reset_pending_streaks(self) -> None:
+        """Zero every persisted grace streak (daemon startup). Best-effort."""
+        try:
+            state = self.state_store.load()
+            touched = False
+            for rs in state.get("rules", {}).values():
+                if isinstance(rs, dict) and (rs.get("pending_since_ts")
+                                             or rs.get("pending_ticks")):
+                    rs["pending_since_ts"] = 0.0
+                    rs["pending_ticks"] = 0
+                    touched = True
+            if touched:
+                self.state_store.save(state)
+        except OSError as e:
+            print(f"pending-streak reset failed (continuing): "
                   f"{type(e).__name__}: {e}", flush=True)
 
     def _seed_clean_exit_if_missing(self) -> None:

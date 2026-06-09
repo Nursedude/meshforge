@@ -17,7 +17,7 @@ import datetime
 import json
 import os
 
-from ._util import atomic_write_json, read_json
+from ._util import atomic_write_text, read_json
 
 DEFAULT_STALE_S = 300.0  # 30s tick → >5m means the daemon likely stopped
 ESCALATION_WINDOW_S = 86400.0  # only surface escalations fired in the last 24h
@@ -216,10 +216,7 @@ def write_brief(state_path: str, history_path: str, out_path: str,
         from .dreams import count_pending_deltas
         pending = count_pending_deltas(deltas_path)
     text = build_brief(state or {}, history, now_ts, pending_deltas=pending)
-    tmp = out_path + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(text)
-    os.replace(tmp, out_path)
+    atomic_write_text(out_path, text)
     return text
 
 

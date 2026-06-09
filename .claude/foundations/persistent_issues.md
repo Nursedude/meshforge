@@ -267,40 +267,14 @@ Quick check: `sudo ss -xnpl | grep "@rns/"` — owner must be rnsd.
 
 ---
 
-## Issue #73: meshforge-map fd-leak → [Errno 24] → :5000 wedge; + proactive fd probe (2026-05-31)
+## Issue #73 (2026-05-31): meshforge-map fd-leak — RESOLVED, body in archive (trimmed 2026-06-09)
 
-**Symptom**: meshanchor-server `:5000` browser-spin; map `active`, rnsd healthy
-(rnstatus OK, `@rns` owned by rnsd) — NOT the #68/#72 RNS class. Journal:
-`[Errno 24] Too many open files`. The map process held **1024 fds (298 ESTAB to
-`[::1]:1883`)** against the 1024 soft `RLIMIT_NOFILE` — `accept()` on `:5000`
-couldn't get an fd, so even `/healthz` hung.
-
-**Root cause**: shared `monitoring/mqtt_subscriber.py::_connect()` created a new
-paho `Client` every call without tearing down the prior one; the reconnect loop
-orphaned a client per cycle and `loop_start()` kept its socket alive. Fixed in
-BOTH repos (MeshForge `5712b56`, MeshAnchor `6e1d2306`): `_connect()` calls
-`_disconnect()` before re-creating; atexit registered once. Deployed fleet-wide
-+ verified (mqtt socks back to 1, fds low). Tests `TestReconnectFdLeak` (2) in
-each repo's `tests/test_mqtt_robustness.py`.
-
-**Detection gap closed**: `http_local_unresponsive` (#61) caught the *symptom*
-only AFTER `:5000` went dark, and pointed at thread stacks (wrong cause). New
-**`probe_fd_exhaustion`** (signal class `fd_exhaustion`, issue_ref 73) is the
-proactive companion: counts `/proc/<MainPID>/fd` vs the soft `Max open files`
-from `/proc/<pid>/limits`, fires `degraded` ≥80% / `wedge` ≥95%, names the
-fd-leak cause. Read-only, bounded, None on inactive/unreadable/unlimited. Wired
-in `watchdog_runner` next to `probe_http_local` (gated on map expected-active).
-Tests: 6 in `tests/test_watchdog_probes.py` (`test_fd_exhaustion_*`) + closed-
-enum gate bumped.
-
-**Operator recipe**:
-```bash
-curl -s http://127.0.0.1:5000/api/status | jq '.watchdog.signals[]? | select(.class=="fd_exhaustion")'
-P=$(systemctl show meshforge-map.service -p MainPID --value)
-sudo ls /proc/$P/fd | wc -l   # vs soft limit in /proc/$P/limits
-```
-Decision tell: `[Errno 24]`/climbing fds = fd leak (restart map, find leak);
-`rnstatus` wedged = RNS class (restart rnsd).
+mqtt_subscriber `_connect()` leaked a paho Client per reconnect → 1024 fds →
+`[Errno 24]` wedged `:5000` (NOT the RNS class). Fixed both repos (MF `5712b56`,
+MA `6e1d2306`); proactive `probe_fd_exhaustion` (degraded ≥80% / wedge ≥95% of
+soft RLIMIT_NOFILE). Decision tell: `[Errno 24]`/climbing fds = fd leak (restart
+map, find leak); `rnstatus` wedged = RNS class (restart rnsd). Full body +
+operator recipe in `persistent_issues_archive.md`.
 
 Three watchdog probes added 2026-06-01 (audit-organ→Signal→mini pattern,
 [[project_mini_scales_via_watchdog_probes_2026_06_01]]; all `degraded`; **recurring
@@ -499,3 +473,35 @@ closed enum (issue_ref 79). (7) schema-vs-validator drift test pins
 `mini_dudeai_config.schema.json` to the hand-rolled validator. Tests: +~90 across
 `test_mini_dudeai_*` / `test_watchdog_probes`. ⚠️ Probes are DEGRADED-only + self-guard
 None off-box; deploy user-bus restart needs linger (install_noc enables it).
+
+
+---
+
+## Issue #80: mini-dudeai honest-failure-modes review — one defect class, 18/18 confirmed (2026-06-09)
+
+Full-effort review of the engine: 18 candidates verified, 18 survived — ALL
+one class: **a degraded internal state mapped to a valid-looking value**
+(read error→empty ruleset→"nothing active"; source error→absent conditions→
+"recovered"/false CLEARED; `{"rules": null}`→zero validation errors→promotion
+wipes alerting; typo'd match key→extras filter→rule silently dead). Fixed in
+one pass; pinned by `tests/test_mini_dudeai_honest_failure_modes.py` (30) +
+seed-coverage gate. Key cures: unreadable rules / erroring sources now **HOLD
+edge state** (last-good ruleset cache + per-source condition hold persisted in
+`state.source_hold` — unobservable ≠ resolved); empty/null candidates can't
+wipe canonical; `lint_rules_document` warns on non-structural match keys at
+authoring+promotion; grace needs OBSERVED ticks (`pending_ticks`, NTP/restart
+can't forge the span) + cooldown clamps backward clock steps + run() resets
+streaks; single-instance flock (`--once` vs daemon race); `_util._atomic_write`
+(mkstemp+fsync) + shared `append_jsonl` (torn-tail repair) across history/
+audit/dreams; boot_health latches on kernel **boot_id**, definitive verdicts
+immutable, `indeterminate` re-assessed post-NTP from STORED pre-boot facts
+(catches the short-power-cut class the ±120s time key missed); **both role
+seeds now route all 23 signal classes** (6 were firing into a void:
+phoneapi_tcp_leak #75, mqtt_root_drift #77, cron_verdict_stale #78 + the 3 #79
+self-probes) and `TestSeedCoversSignalClasses` FAILS on any future unrouted
+class; probe fixes — `_ROLE_TO_MINI_SEED` covers collector/cloud-publisher,
+history-stall baseline = `state.history_appends_total` (counts edge_downs),
+memory-index limit imports the writer's constant; config-mode boot_health
+plumbs `clean_exit_path` (reader/writer pair). **THE LESSON — apply at WRITE
+time:** `.claude/rules/honest_failure_modes.md` (9-point checklist; every
+`except`/`or []`/`.get(default)` must answer "what does the consumer SEE?").

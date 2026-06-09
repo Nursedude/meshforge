@@ -216,7 +216,7 @@ def _build_action(spec: dict) -> Action:
 # know their required fields); they may add an entry here if they want field
 # checks. Keep in sync with the seed builders above.
 _SOURCE_REQUIRED: dict[str, list[str]] = {
-    "file_mtime": ["path", "max_age_s"],
+    "file_mtime": ["path"],  # max_age_s is optional — _seed_file_mtime defaults it to 1800
     "json_file": ["path", "condition_kind"],
     "http_json": ["url", "condition_kind"],
     "boot_health": ["state_path", "clean_exit_path", "assessment_path"],
@@ -298,6 +298,17 @@ def build_engine_from_config(config: dict) -> tuple[RuleEngine, float]:
     candidate_path = config.get("candidate_path")
     if candidate_path:
         candidate_path = os.path.expanduser(candidate_path)
+    # boot_health is a reader/writer PAIR: the source READS the clean-exit
+    # marker, the engine WRITES it on graceful stop. Wiring only the reader
+    # (the old behavior) made every planned reboot assess as a crash —
+    # perpetual false unexpected_reboot fires for JSON-config users. If a
+    # boot_health source is configured, plumb its marker path into the engine
+    # so both halves exist.
+    clean_exit_path = None
+    for spec in config.get("sources") or []:
+        if isinstance(spec, dict) and spec.get("kind") == "boot_health":
+            clean_exit_path = os.path.expanduser(spec["clean_exit_path"])
+            break
     engine = RuleEngine(
         sources=sources,
         actions=actions,
@@ -305,6 +316,7 @@ def build_engine_from_config(config: dict) -> tuple[RuleEngine, float]:
         state_path=state_path,
         history_path=history_path,
         candidate_path=candidate_path,
+        clean_exit_path=clean_exit_path,
     )
     interval_s = float(config.get("interval_s", 30))
     return engine, interval_s
