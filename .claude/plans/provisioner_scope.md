@@ -106,9 +106,18 @@ count, non-zero exit if any required item failed. Operator-legible, greppable.
   drift in the sync report. Read-only + advisory (counts as a warn, never fails
   the sync or mutates); opt out with `MESHFORGE_SKIP_ROLE_CHECK=1`. Verified
   live (full role table + invariants OK, 0 warn).
-- **v3 — closes the loop with the watchdog:** drift detected at runtime →
-  provisioner re-converges (this is the "encode judgment into the system" step;
-  pairs with watchdog auto-remediation off dry-run).
+- **v3 — closes the loop with the watchdog (SHIPPED 2026-06-08 `6f0d4b2`, GATED
+  OFF):** drift detected at runtime → provisioner re-converges. The `role_drift`
+  signal (`probe_role_drift`) + Phase-2 auto-remediation machinery (7 gates,
+  dry-run-first) already existed; v3 generalized Phase 2 from one `systemctl
+  restart` action to a pluggable remediation — `AutoRestartRule.action`
+  (`"restart"`|`"reconverge"`) + `execute_reconverge()` (runs `provision_role.py
+  --apply`; its non-zero exit on a failed apply, incl. a sandbox-blocked
+  foundation chown, is the honest success signal). Same gates. Ships **inert**
+  (no reconverge rule on any box → zero runtime change); operator opts in
+  per-box in `watchdog.json` dry-run-first (`cooldown_s=1800, max=1/h`,
+  re-applies the whole role). 8 tests. This is the "encode judgment into the
+  system" step.
 
 ## Testing
 
