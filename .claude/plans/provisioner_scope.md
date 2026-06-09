@@ -117,7 +117,14 @@ count, non-zero exit if any required item failed. Operator-legible, greppable.
   (no reconverge rule on any box → zero runtime change); operator opts in
   per-box in `watchdog.json` dry-run-first (`cooldown_s=1800, max=1/h`,
   re-applies the whole role). 8 tests. This is the "encode judgment into the
-  system" step.
+  system" step. **LIVE-PROVEN on moc1 2026-06-08** (induced a reversible drift →
+  watchdog logged `PHASE 2 DRY-RUN action=reconverge ... persisted 5 ticks`). ⚠️
+  The fire-test surfaced a CRITICAL bug (fixed `5bf7334`): `probe_role_drift` +
+  `probe_parity_drift` were silently dead on the py3.13 fleet — the importlib
+  load of their SSOT scripts didn't register the module in `sys.modules` before
+  `exec_module`, so the py3.12+ `@dataclass` field-type eval raised
+  `AttributeError` and the probes' `except: return None` swallowed it. The v3
+  trigger only works because of that fix.
 
 ## Testing
 
