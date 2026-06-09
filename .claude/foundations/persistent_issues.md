@@ -482,10 +482,12 @@ The `/fleet` "Scheduled & Running" panel surfaced a stale `diag24h_watchdog`
 deleted `routine-bin/` since ~May 21**, silently failing under `>/dev/null
 2>&1`. The cron-verdict regime (`scripts/cron_verdict.sh`, the "every cron
 leaves a dated verdict" recorder) existed but had **no active alerter** — the
-"silence is the failure mode" class with no watchdog. New
+"silence is the failure mode" class with no watchdog-LAYER alerter. New
 `probe_cron_verdict_stale` (`cron_verdict_stale`, degraded, issue_ref 78) is
-that alerter, built as a probe (not the never-written
-`cron_verdict_freshness.sh`) so it flows to mini + the panel.
+that alerter — built as a probe so it flows to mini + the `/fleet` panel,
+per-box, integrated with the observability spine. (Complements — does NOT
+replace — the cron-based `cron_verdict_freshness.sh` ntfy monitor that DOES
+exist on the manager box VolcanoAI; defense in depth, different surfaces.)
 
 **Load-bearing design — cross-references the crontab, not just the log:** a
 verdict-log-only probe would FALSE-ALARM on stale ORPHAN verdicts (the
