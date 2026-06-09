@@ -149,9 +149,17 @@ count, non-zero exit if any required item failed. Operator-legible, greppable.
 - **Singleton source of truth:** assert via a flag in `deployment.json`
   (`role: primary` is inherently singleton) + a cross-box `fleet_hosts` probe, or
   a dedicated fleet manifest field? v1 asserts locally + warns.
-- **Config-delta verification vs enforcement:** for the map `defaults`
-  (bbox/cap/position), should v1 *set* them or only *assert + warn*? Lean: assert
-  + warn in v1 (operator-position is deployment-specific), enforce caches/caps.
+- **Config-delta verification vs enforcement:** ~~for the map `defaults`
+  (bbox/cap/position), should v1 *set* them or only *assert + warn*?~~ **RESOLVED
+  2026-06-08 (`b84023f`): ASSERT, because the map defaults are NOT settable.**
+  Ground-truth: `response_caches` are unconditional in `MapDataCollector` (#70/#71),
+  `node_cap` is the `DEFAULT_DIRECTORY_MAX_ROWS` code constant (#49/#50), `bbox`
+  auto-derives from the operator position (deployment-specific). So "enforce
+  caches/caps" can't mean *set* — they're code-baked. `config_delta_actions()`
+  asserts them against real state (read-only even under `--apply`): a code↔yaml
+  `node_cap` cross-check (catches declaration drift), response-cache presence, and
+  a bbox geo-anchor check. The ONE force-settable delta — meshtasticd `mqtt.root`
+  (#77) — is a radio-touching enforcement for its own slice (PhoneAPI/#17).
 
 ## Effort (rough)
 
