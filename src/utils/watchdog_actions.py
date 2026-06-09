@@ -1,9 +1,11 @@
 """Per-box watchdog Phase 2 — auto-restart actions.
 
 Companion to ``utils/watchdog_runner.py`` + ``utils/watchdog_probes.py``.
-Phase 1 emits signals only; Phase 2 adds the ability to act on them by
-issuing ``systemctl restart <service>``. The capability is gated behind
-multiple independent safety layers:
+Phase 1 emits signals only; Phase 2 adds the ability to act on them —
+either ``systemctl restart <service>`` (the default action) or, for the
+``role_drift`` signal, ``provision_role.py --apply`` to re-converge the box
+to its declared role (the v3 self-healing loop; ``action: "reconverge"``).
+The capability is gated behind multiple independent safety layers:
 
 1. **Default OFF**: The feature is disabled unless the per-box config
    file at ``~/.config/meshforge/watchdog.json`` (or ``/etc/meshforge/``)
@@ -73,12 +75,21 @@ class AutoRestartRule:
     All knobs have safe defaults — the operator only needs to declare
     the class+service pair to enable a remediation. Tighter values can
     be set per rule.
+
+    ``action`` selects the remediation: ``"restart"`` (default) issues
+    ``systemctl restart <service>``; ``"reconverge"`` runs
+    ``provision_role.py --apply`` (re-converge the box to its declared role —
+    the ``role_drift`` self-healing loop, v3). For a reconverge rule ``service``
+    is the matched signal subject (the box's role name) and the cooldown/
+    rate-limit key, NOT a unit to restart. Reconverge re-applies the WHOLE role
+    (units + foundation perms), so prefer a generous ``cooldown_s``.
     """
     signal_class: str
     service: str
     consecutive_ticks: int = DEFAULT_CONSECUTIVE_TICKS
     cooldown_s: float = DEFAULT_COOLDOWN_S
     max_restarts_per_hour: int = DEFAULT_MAX_RESTARTS_PER_HOUR
+    action: str = "restart"
 
 
 @dataclass(frozen=True)
@@ -244,10 +255,21 @@ def parse_phase2_config(raw: dict) -> Phase2Config:
                 "consecutive_ticks": 5,
                 "cooldown_s": 600,
                 "max_restarts_per_hour": 2
+              },
+              {
+                "signal_class": "role_drift",
+                "service": "<role name = the role_drift signal subject>",
+                "action": "reconverge",
+                "cooldown_s": 1800,
+                "max_restarts_per_hour": 1
               }
             ]
           }
         }
+
+    ``action`` defaults to ``"restart"``; ``"reconverge"`` runs
+    ``provision_role.py --apply`` (role_drift, v3). An unknown action is
+    coerced to ``"restart"`` (logged WARNING).
 
     A missing section, missing ``enabled``, or non-True ``enabled`` all
     yield ``Phase2Config(enabled=False)``. Any malformed rule is silently
@@ -289,12 +311,21 @@ def _parse_rule(raw: object, idx: int) -> Optional[AutoRestartRule]:
     cooldown = _coerce_positive_float(raw.get("cooldown_s"), DEFAULT_COOLDOWN_S)
     max_rate = _coerce_positive_int(raw.get("max_restarts_per_hour"), DEFAULT_MAX_RESTARTS_PER_HOUR)
 
+    action = raw.get("action", "restart")
+    if action not in ("restart", "reconverge"):
+        logger.warning(
+            "watchdog: phase2 allowlist entry %d unknown action %r — defaulting to 'restart'",
+            idx, action,
+        )
+        action = "restart"
+
     return AutoRestartRule(
         signal_class=sig_class,
         service=service,
         consecutive_ticks=ticks,
         cooldown_s=cooldown,
         max_restarts_per_hour=max_rate,
+        action=action,
     )
 
 
@@ -352,6 +383,43 @@ def execute_restart(
     return False
 
 
+def execute_reconverge(
+    *,
+    meshforge_root: str = "/opt/meshforge",
+    python_path: str = "python3",
+    timeout_s: float = 120.0,
+) -> bool:
+    """Run ``provision_role.py --apply`` — the ``role_drift`` remediation (v3).
+
+    Re-converges the box to its declared role. The provisioner is idempotent and
+    exits NON-ZERO on any failed apply — including a foundation chown the
+    watchdog's hardened sandbox blocked (``ProtectSystem``/``ReadWritePaths`` are
+    inherited by this child) — so its exit code is the HONEST success signal, not
+    merely "the process ran". An operator enabling this rule must dry-run-first
+    and verify a real apply lands (#60 sandbox-path-drift caution). Logged at
+    WARNING on failure; the runner decides whether to retry next tick.
+    """
+    cmd = [python_path, f"{meshforge_root}/scripts/provision_role.py", "--apply"]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("watchdog: reconverge timeout")
+        return False
+    except (FileNotFoundError, OSError) as exc:
+        logger.warning("watchdog: reconverge failed to invoke err=%s", exc)
+        return False
+
+    if result.returncode == 0:
+        return True
+    logger.warning(
+        "watchdog: reconverge non-zero exit rc=%d stderr=%s",
+        result.returncode, (result.stderr or "").strip()[:300],
+    )
+    return False
+
+
 __all__ = [
     "AutoRestartRule",
     "Phase2Config",
@@ -360,6 +428,7 @@ __all__ = [
     "decide_restarts",
     "parse_phase2_config",
     "execute_restart",
+    "execute_reconverge",
     "DEFAULT_CONSECUTIVE_TICKS",
     "DEFAULT_COOLDOWN_S",
     "DEFAULT_MAX_RESTARTS_PER_HOUR",

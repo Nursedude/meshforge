@@ -74,6 +74,7 @@ from utils.watchdog_actions import (
     RestartHistory,
     decide_restarts,
     execute_restart,
+    execute_reconverge,
     parse_phase2_config,
 )
 
@@ -100,7 +101,13 @@ DEFAULT_TICK_S = 30.0
 #           "service": "rnsd.service",
 #           "consecutive_ticks": 5,
 #           "cooldown_s": 600,
-#           "max_restarts_per_hour": 2 }
+#           "max_restarts_per_hour": 2 },
+#         { "signal_class": "role_drift",                     # v3 self-healing
+#           "service": "<this box's role, e.g. full-gateway>",# = the signal subject
+#           "action": "reconverge",                          # provision_role.py --apply
+#           "consecutive_ticks": 5,
+#           "cooldown_s": 1800,                               # generous: re-applies whole role
+#           "max_restarts_per_hour": 1 }
 #       ]
 #     }
 #   }
@@ -736,18 +743,24 @@ def run_loop(
                 tick_s=tick_s,
             )
             for d in decisions:
+                action = getattr(d.rule, "action", "restart")
                 logger.warning(
-                    "watchdog: PHASE 2 %s service=%s reason=%s",
-                    "DRY-RUN" if d.dry_run else "RESTART",
-                    d.service, d.reason,
+                    "watchdog: PHASE 2 %s action=%s target=%s reason=%s",
+                    "DRY-RUN" if d.dry_run else action.upper(),
+                    action, d.service, d.reason,
                 )
                 if d.dry_run:
                     continue
-                if execute_restart(d.service):
+                # Dispatch the remediation: "reconverge" re-applies the whole
+                # role via provision_role.py --apply (role_drift, v3); anything
+                # else is a systemctl restart of the matched service.
+                ok = (execute_reconverge() if action == "reconverge"
+                      else execute_restart(d.service))
+                if ok:
                     restart_history.record(d.service, now)
-                    logger.info("watchdog: restart succeeded service=%s", d.service)
+                    logger.info("watchdog: phase2 %s succeeded target=%s", action, d.service)
                 else:
-                    logger.error("watchdog: restart FAILED service=%s", d.service)
+                    logger.error("watchdog: phase2 %s FAILED target=%s", action, d.service)
 
         stop_event.wait(tick_s)
 

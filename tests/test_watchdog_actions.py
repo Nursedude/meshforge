@@ -22,6 +22,7 @@ from utils.watchdog_actions import (
     decide_restarts,
     parse_phase2_config,
     execute_restart,
+    execute_reconverge,
     DEFAULT_CONSECUTIVE_TICKS,
     DEFAULT_COOLDOWN_S,
     DEFAULT_MAX_RESTARTS_PER_HOUR,
@@ -609,3 +610,90 @@ class TestExecuteRestart:
                    side_effect=FileNotFoundError("systemctl")):
             ok = execute_restart("rnsd.service")
         assert ok is False
+
+
+# ─────────────────────────────────────────────────────────────────────
+# v3 — role_drift -> reconverge (a second remediation action). Same gates;
+# the only new surface is the `action` field + execute_reconverge dispatch.
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestReconvergeAction:
+    def test_role_drift_reconverge_rule_produces_decision(self):
+        # subject = the box's role name; the rule's service must match it.
+        config = Phase2Config(
+            enabled=True,
+            rules=(_rule("role_drift", "full-gateway", action="reconverge",
+                         consecutive_ticks=1),),
+        )
+        sig = _sig("role_drift", "full-gateway", severity="degraded")
+        decisions = decide_restarts(
+            signals_with_first_seen=[(sig, 0.0)],
+            config=config, history=RestartHistory(),
+            now=1000.0, tick_s=TICK_S,
+        )
+        assert len(decisions) == 1
+        assert decisions[0].rule.action == "reconverge"
+        assert decisions[0].service == "full-gateway"
+
+    def test_reconverge_gates_apply_same_as_restart(self):
+        # below the consecutive-ticks threshold -> no decision (gates shared)
+        config = Phase2Config(
+            enabled=True,
+            rules=(_rule("role_drift", "primary", action="reconverge",
+                         consecutive_ticks=5),),
+        )
+        sig = _sig("role_drift", "primary", severity="degraded")
+        decisions = decide_restarts(
+            signals_with_first_seen=[(sig, 990.0)],  # 10s elapsed << 5 ticks
+            config=config, history=RestartHistory(),
+            now=1000.0, tick_s=TICK_S,
+        )
+        assert decisions == []
+
+    def test_parse_action_reconverge(self):
+        cfg = parse_phase2_config({"phase2_auto_restart": {
+            "enabled": True,
+            "allowlist": [{"signal_class": "role_drift", "service": "primary",
+                           "action": "reconverge"}],
+        }})
+        assert cfg.rules[0].action == "reconverge"
+
+    def test_parse_unknown_action_defaults_restart(self):
+        cfg = parse_phase2_config({"phase2_auto_restart": {
+            "enabled": True,
+            "allowlist": [{"signal_class": "role_drift", "service": "primary",
+                           "action": "nuke-from-orbit"}],
+        }})
+        assert cfg.rules[0].action == "restart"
+
+    def test_parse_default_action_is_restart(self):
+        cfg = parse_phase2_config({"phase2_auto_restart": {
+            "enabled": True,
+            "allowlist": [{"signal_class": "rns_shared_instance_unresponsive",
+                           "service": "rnsd.service"}],
+        }})
+        assert cfg.rules[0].action == "restart"
+
+    def test_execute_reconverge_runs_provisioner_apply(self):
+        completed = MagicMock(returncode=0, stderr="")
+        with patch("utils.watchdog_actions.subprocess.run",
+                   return_value=completed) as mock_run:
+            ok = execute_reconverge(meshforge_root="/opt/meshforge")
+        assert ok is True
+        args, kwargs = mock_run.call_args
+        assert args[0] == ["python3", "/opt/meshforge/scripts/provision_role.py", "--apply"]
+        assert kwargs["timeout"] == 120.0
+
+    def test_execute_reconverge_nonzero_exit_is_false(self):
+        # the provisioner exits non-zero on a failed apply (e.g. sandbox-blocked
+        # foundation chown) — that honest exit code must read as failure.
+        completed = MagicMock(returncode=1, stderr="foundation apply failed")
+        with patch("utils.watchdog_actions.subprocess.run", return_value=completed):
+            assert execute_reconverge() is False
+
+    def test_execute_reconverge_timeout_is_false(self):
+        import subprocess as sp
+        with patch("utils.watchdog_actions.subprocess.run",
+                   side_effect=sp.TimeoutExpired(cmd="provision_role", timeout=120)):
+            assert execute_reconverge() is False
