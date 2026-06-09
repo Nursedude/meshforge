@@ -101,18 +101,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"mini-dudeai brief: wrote {out}")
         return 0
 
-    # Everything past --brief mutates state/history/deltas: take the
-    # single-instance lock so a cron `--once`/`--dream` can never interleave
-    # with the live daemon's tick on the same files.
-    lock_path = engine.state_store.path + ".lock"
-    instance_lock = _acquire_instance_lock(lock_path)
-    if instance_lock is None:
-        print(f"mini-dudeai: another mini-dudeai process holds {lock_path} "
-              f"(the daemon?) — refusing to run concurrently against the same "
-              f"state files. Stop the daemon or point --config at different "
-              f"paths.", file=sys.stderr)
-        return 1
-
     if args.dream:
         from .dreams import write_dreams
         state_path = engine.state_store.path
@@ -130,6 +118,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  WARN: append_error={summary['append_error']} "
                   f"narrative_error={summary['narrative_error']}")
         return 0
+
+    # --once and the daemon run a full tick — the SAME writers on the SAME
+    # state/history files, a read-modify-write race on edge state. The
+    # single-instance lock makes the loser refuse loudly. Scope: tick paths
+    # ONLY — the daemon holds the lock for its lifetime, and --dream/--brief
+    # write DIFFERENT files (deltas/narrative/brief), so gating them here
+    # would make the nightly dream timer refuse forever on every box.
+    lock_path = engine.state_store.path + ".lock"
+    instance_lock = _acquire_instance_lock(lock_path)
+    if instance_lock is None:
+        print(f"mini-dudeai: another mini-dudeai process holds {lock_path} "
+              f"(the daemon?) — refusing to run a concurrent tick against the "
+              f"same state files. Stop the daemon or point --config at "
+              f"different paths.", file=sys.stderr)
+        return 1
 
     if args.once:
         state = engine.tick()
