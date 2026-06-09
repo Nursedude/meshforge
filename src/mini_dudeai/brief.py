@@ -124,9 +124,15 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
     host = state.get("host", "?")
 
     stamp = datetime.datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M:%S")
+    # No "last tick Ns ago" here: that claim is only true at WRITE time, and
+    # the SD-wear guard skips rewrites when content is unchanged — a frozen
+    # "0s ago" would be a valid-looking stale claim (the exact #80 defect
+    # class). Freshness is re-derived from state.last_tick_ts by the
+    # consumers (warmstart banner, rollup pane); the stamp honestly means
+    # "content as of".
     lines = [
         f"# mini-dudeai warm brief — {host}",
-        f"_generated {stamp} · last tick {age} ago · read this FIRST, then "
+        f"_generated {stamp} · read this FIRST, then "
         f"mini_dudeai_history.jsonl → state → memory_",
         "",
     ]
