@@ -168,9 +168,9 @@ class TestPrelaunchCheckIntegration:
             ):
                 yield
 
-    @patch('handlers._nomadnet_rns_checks.socket')
+    @patch('utils.rns_init._probe_shared_instance_connect', return_value=True)
     @patch('handlers._nomadnet_rns_checks.get_rns_shared_instance_info')
-    def test_prelaunch_passes_when_ready(self, mock_info, mock_socket):
+    def test_prelaunch_passes_when_ready(self, mock_info, mock_probe):
         """When RNS is ready, check returns True with no dialog."""
         mock_info.return_value = {'available': True}
         h = _make_nomadnet()
@@ -214,9 +214,9 @@ class TestPrelaunchCheckIntegration:
             result = h._check_rns_for_nomadnet()
         assert result is False
 
-    @patch('handlers._nomadnet_rns_checks.socket')
+    @patch('utils.rns_init._probe_shared_instance_connect', return_value=True)
     @patch('handlers._nomadnet_rns_checks.get_rns_shared_instance_info')
-    def test_prelaunch_user_mismatch_warning(self, mock_info, mock_socket):
+    def test_prelaunch_user_mismatch_warning(self, mock_info, mock_probe):
         """User mismatch shows a menu and, on 'continue', allows launch."""
         mock_info.return_value = {'available': True}
         h = _make_nomadnet()
@@ -513,15 +513,12 @@ class TestPrelaunchDegradedFlow:
             ):
                 yield
 
-    @patch('handlers._nomadnet_rns_checks.socket')
+    @patch('utils.rns_init._probe_shared_instance_connect', return_value=False)
     @patch('handlers._nomadnet_rns_checks.get_rns_shared_instance_info')
-    def test_prelaunch_degraded_user_picks_restart(self, mock_info, mock_socket):
+    def test_prelaunch_degraded_user_picks_restart(self, mock_info, mock_probe):
         """Degraded rnsd, user picks restart -> restart_rnsd called."""
         mock_info.return_value = {'available': True}
-        # Socket connect raises -> degraded
-        mock_sock_inst = MagicMock()
-        mock_sock_inst.connect.side_effect = OSError("Connection refused")
-        mock_socket.socket.return_value = mock_sock_inst
+        # Shared-instance probe reports unhealthy -> degraded
         h = _make_nomadnet()
         h.ctx.dialog._menu_returns = ["restart"]
         with patch.object(h, '_get_rnsd_user', return_value='pi'):
@@ -530,14 +527,11 @@ class TestPrelaunchDegradedFlow:
                     result = h._check_rns_for_nomadnet()
         assert result is True
 
-    @patch('handlers._nomadnet_rns_checks.socket')
+    @patch('utils.rns_init._probe_shared_instance_connect', return_value=False)
     @patch('handlers._nomadnet_rns_checks.get_rns_shared_instance_info')
-    def test_prelaunch_degraded_user_picks_continue(self, mock_info, mock_socket):
+    def test_prelaunch_degraded_user_picks_continue(self, mock_info, mock_probe):
         """Degraded rnsd, user picks continue -> launches anyway."""
         mock_info.return_value = {'available': True}
-        mock_sock_inst = MagicMock()
-        mock_sock_inst.connect.side_effect = OSError("Connection refused")
-        mock_socket.socket.return_value = mock_sock_inst
         h = _make_nomadnet()
         h.ctx.dialog._menu_returns = ["continue"]
         with patch.object(h, '_get_rnsd_user', return_value='pi'):
@@ -545,14 +539,11 @@ class TestPrelaunchDegradedFlow:
                 result = h._check_rns_for_nomadnet()
         assert result is True
 
-    @patch('handlers._nomadnet_rns_checks.socket')
+    @patch('utils.rns_init._probe_shared_instance_connect', return_value=False)
     @patch('handlers._nomadnet_rns_checks.get_rns_shared_instance_info')
-    def test_prelaunch_degraded_user_cancels(self, mock_info, mock_socket):
+    def test_prelaunch_degraded_user_cancels(self, mock_info, mock_probe):
         """Degraded rnsd, user cancels -> returns False."""
         mock_info.return_value = {'available': True}
-        mock_sock_inst = MagicMock()
-        mock_sock_inst.connect.side_effect = OSError("Connection refused")
-        mock_socket.socket.return_value = mock_sock_inst
         h = _make_nomadnet()
         h.ctx.dialog._menu_returns = [None]  # cancel
         with patch.object(h, '_get_rnsd_user', return_value='pi'):
@@ -560,12 +551,12 @@ class TestPrelaunchDegradedFlow:
                 result = h._check_rns_for_nomadnet()
         assert result is False
 
-    @patch('handlers._nomadnet_rns_checks.socket')
+    @patch('utils.rns_init._probe_shared_instance_connect', return_value=True)
     @patch('handlers._nomadnet_rns_checks.get_rns_shared_instance_info')
-    def test_prelaunch_healthy_skips_degraded_dialog(self, mock_info, mock_socket):
+    def test_prelaunch_healthy_skips_degraded_dialog(self, mock_info, mock_probe):
         """Healthy rnsd skips degraded dialog entirely."""
         mock_info.return_value = {'available': True}
-        # Socket connects fine -> healthy
+        # Shared-instance probe reports healthy -> no degraded dialog
         h = _make_nomadnet()
         with patch.object(h, '_get_rnsd_user', return_value='pi'):
             with patch.dict(os.environ, {'SUDO_USER': 'pi'}):
