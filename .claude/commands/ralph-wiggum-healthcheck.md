@@ -58,8 +58,10 @@ print(f'Total: {report.total_issues}')
 
 ### 5. Test Health
 ```bash
-python3 -m pytest tests/ -v --tb=no -q 2>&1 | tail -20
+python3 -m pytest tests/ --tb=no -q 1>/tmp/hc_pytest.log 2>&1; echo EXIT=$?
+tail -20 /tmp/hc_pytest.log
 ```
+Judge from EXIT, not from the tail.
 
 ### 6. Fragmentation Analysis
 - Find duplicated information across `.claude/` files
