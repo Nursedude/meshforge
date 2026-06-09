@@ -6,6 +6,28 @@
 > is never ingested. Question: is *any* honest per-DM confirmation possible in
 > this mode **without** a PhoneAPI `fromradio` read (which #17/#75 forbid)?
 
+## ✅ UPDATE 2026-06-08 — BUILT (operator chose to implement)
+
+The `/e/` path below was implemented the same day:
+- **`src/utils/meshtastic_se_crypto.py`** — native AES-CTR ServiceEnvelope decrypt
+  (no `meshing_around` dep), **proven live on moc** (NODEINFO/POSITION decoded +
+  cross-checked vs `/json/`) + round-trip unit tests.
+- **`send_text_direct_with_id`** returns the minted packet_id (bool wrapper kept).
+- **`MQTTBridgeHandler`** decodes ROUTING_APP from `/e/` when a DM is pending
+  (cost-guarded) and feeds the step-4 `AckTracker` → `delivery_counters`
+  CONFIRMED / DROPPED. The old "inert" warning became an "ACTIVE" log (warns only
+  if the crypto deps are absent). New `meshtastic.channel_keys` config supplies
+  the PSKs to decrypt the `/e/` channel.
+- Live on moc: the **ACTIVE** log fired, `/e/` subscribed, gateway healthy.
+
+**Still pending a live positive CONFIRMED** — two environmental blockers, neither a
+code defect: (a) the quiet mesh has no reachable node to ACK a DM; (b) moc's
+downlink channel uses a custom PSK not in the gateway config, so the operator must
+set `channel_keys` to decrypt its `/e/` ACKs (live PSKs must not be read/printed).
+The default LongFast channel works zero-config.
+
+Original feasibility analysis (retained):
+
 ## Verdict
 
 **Theoretically yes — via the `/e/` ServiceEnvelope MQTT topic — but it is

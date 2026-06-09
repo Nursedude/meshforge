@@ -682,10 +682,10 @@ class TestSeenOnRfRegistration:
 # Thread-2 step 4 — honest-signal: ACK consumption is inert in mqtt_bridge mode
 # ---------------------------------------------------------------------------
 
-class TestAckConsumptionInertWarning:
-    """The soak finding (2026-06-08): step 4 is wired into the TCP handler;
-    in mqtt_bridge mode the ROUTING_APP ACK is never ingested. The handler
-    must say so loudly instead of letting an operator believe it works."""
+class TestAckConsumptionViaServiceEnvelope:
+    """Thread-2 step 4 in mqtt_bridge mode: ACK consumption via the /e/
+    ServiceEnvelope topic (the soak-proven path). Active when crypto is
+    available; an honest INERT warning only when it isn't."""
 
     def _build(self, ack_enabled):
         import threading
@@ -698,16 +698,138 @@ class TestAckConsumptionInertWarning:
             stop_event=threading.Event(), stats={},
             stats_lock=threading.Lock(), message_queue=MagicMock())
 
-    def test_warns_when_flag_on(self, caplog):
+    def test_active_log_when_crypto_available(self, caplog):
         import logging
-        with caplog.at_level(logging.WARNING):
-            self._build(ack_enabled=True)
-        hits = [r.message for r in caplog.records
-                if "INERT" in r.message and "mqtt_bridge" in r.message]
-        assert hits, "expected an inert-ACK warning in mqtt_bridge mode"
+        from unittest.mock import patch
+        with patch('gateway.mqtt_bridge_handler.crypto_available',
+                   return_value=True):
+            with caplog.at_level(logging.INFO):
+                h = self._build(ack_enabled=True)
+        assert any("ACTIVE" in r.message and "/e/" in r.message
+                   for r in caplog.records)
+        assert not [r for r in caplog.records if "INERT" in r.message]
+        assert h.ack_tracker is not None
+
+    def test_inert_warning_only_when_crypto_unavailable(self, caplog):
+        import logging
+        from unittest.mock import patch
+        with patch('gateway.mqtt_bridge_handler.crypto_available',
+                   return_value=False):
+            with caplog.at_level(logging.WARNING):
+                self._build(ack_enabled=True)
+        assert any("INERT" in r.message for r in caplog.records)
 
     def test_silent_when_flag_off(self, caplog):
         import logging
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.INFO):
             self._build(ack_enabled=False)
-        assert not [r for r in caplog.records if "INERT" in r.message]
+        assert not [r for r in caplog.records
+                    if "ACK consumption" in r.message or "INERT" in r.message]
+
+
+class TestEServiceEnvelopeAckIngestion:
+    """The /e/ ACK pipeline: a decoded ROUTING_APP that matches an in-flight
+    DM becomes CONFIRMED / DROPPED; TX registers the packet_id."""
+
+    def _h(self, ack_enabled=True):
+        import threading
+        from gateway.config import GatewayConfig
+        from gateway.mqtt_bridge_handler import MQTTBridgeHandler
+        config = GatewayConfig()
+        config.rns.meshtastic_ack_consumption_enabled = ack_enabled
+        return MQTTBridgeHandler(
+            config=config, node_tracker=MagicMock(), health=MagicMock(),
+            stop_event=threading.Event(), stats={},
+            stats_lock=threading.Lock(), message_queue=MagicMock())
+
+    def _rec(self, monkeypatch):
+        rec = MagicMock()
+        monkeypatch.setattr('gateway.delivery_counters.record', rec)
+        return rec
+
+    def test_confirmed_on_positive_ack(self, monkeypatch):
+        from gateway.delivery_counters import DeliveryState
+        rec = self._rec(monkeypatch)
+        h = self._h()
+        h.ack_tracker.register(0xAA01, "msg-7")
+        dp = MagicMock(request_id=0xAA01)
+        dp.routing_error_name.return_value = "NONE"
+        h._handle_routing_envelope(dp)
+        rec.assert_called_once_with(DeliveryState.CONFIRMED,
+                                    msg_id="msg-7", protocol="meshtastic")
+        assert h.stats.get("mesh_ack_confirmed") == 1
+
+    def test_dropped_on_nak(self, monkeypatch):
+        from gateway.delivery_counters import DeliveryState, DropReason
+        rec = self._rec(monkeypatch)
+        h = self._h()
+        h.ack_tracker.register(0xBB02, "msg-9")
+        dp = MagicMock(request_id=0xBB02)
+        dp.routing_error_name.return_value = "MAX_RETRANSMIT"
+        h._handle_routing_envelope(dp)
+        args, kwargs = rec.call_args
+        assert args[0] == DeliveryState.DROPPED
+        assert kwargs["msg_id"] == "msg-9"
+        assert kwargs["drop_reason"] == DropReason.RETRIES_EXHAUSTED
+        assert kwargs["note"] == "meshtastic_nak:MAX_RETRANSMIT"
+        assert h.stats.get("mesh_ack_failed") == 1
+
+    def test_unmatched_routing_is_noop(self, monkeypatch):
+        rec = self._rec(monkeypatch)
+        h = self._h()
+        dp = MagicMock(request_id=0xDEAD)
+        dp.routing_error_name.return_value = "NONE"
+        h._handle_routing_envelope(dp)
+        rec.assert_not_called()
+
+    def test_protobuf_message_skips_when_disabled(self, monkeypatch):
+        h = self._h(ack_enabled=False)
+        called = {"n": 0}
+        monkeypatch.setattr('gateway.mqtt_bridge_handler.decode_service_envelope',
+                            lambda *a, **k: called.__setitem__("n", called["n"]+1))
+        h._handle_protobuf_message("msh/2/e/LongFast/!x", b"\x00")
+        assert called["n"] == 0   # never decoded — disabled
+
+    def test_protobuf_message_skips_when_no_pending(self, monkeypatch):
+        h = self._h(ack_enabled=True)
+        called = {"n": 0}
+        monkeypatch.setattr('gateway.mqtt_bridge_handler.decode_service_envelope',
+                            lambda *a, **k: called.__setitem__("n", called["n"]+1))
+        # no DM registered → pending_count 0 → no decode (cost guard)
+        h._handle_protobuf_message("msh/2/e/LongFast/!x", b"\x00")
+        assert called["n"] == 0
+
+    def test_protobuf_message_decodes_routing_when_pending(self, monkeypatch):
+        from gateway.delivery_counters import DeliveryState
+        rec = self._rec(monkeypatch)
+        h = self._h(ack_enabled=True)
+        h.ack_tracker.register(0xCAFE, "msg-x")
+        dp = MagicMock(request_id=0xCAFE, is_routing=True)
+        dp.routing_error_name.return_value = "NONE"
+        monkeypatch.setattr('gateway.mqtt_bridge_handler.decode_service_envelope',
+                            lambda *a, **k: dp)
+        h._handle_protobuf_message("msh/2/e/LongFast/!x", b"\x01\x02")
+        rec.assert_called_once_with(DeliveryState.CONFIRMED,
+                                    msg_id="msg-x", protocol="meshtastic")
+
+    def test_maybe_register_skips_broadcast(self):
+        h = self._h()
+        h._maybe_register_ack(0x1234, 0xFFFFFFFF, None, record_sent=False)
+        assert h.ack_tracker.pending_count() == 0
+
+    def test_maybe_register_dm(self, monkeypatch):
+        self._rec(monkeypatch)
+        h = self._h()
+        h._maybe_register_ack(0x1234, 0xAABB0001, "q-1", record_sent=False)
+        assert h.ack_tracker.resolve(0x1234) == ("q-1", "meshtastic")
+
+    def test_channel_keys_include_default_and_downlink(self):
+        h = self._h()
+        h.config.meshtastic.downlink_psk = "Zm9vYmFy"
+        h.config.meshtastic.channel_keys = ["YmF6cXV4", "Zm9vYmFy"]  # dup ignored
+        keys = h._channel_keys()
+        from utils.meshtastic_se_crypto import DEFAULT_KEY_B64
+        assert keys[0] == DEFAULT_KEY_B64
+        assert "Zm9vYmFy" in keys
+        assert "YmF6cXV4" in keys
+        assert keys.count("Zm9vYmFy") == 1  # no duplicates

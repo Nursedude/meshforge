@@ -100,7 +100,7 @@ def _next_stateless_packet_id() -> int:
         return _stateless_packet_counter
 
 
-def send_text_direct(
+def send_text_direct_with_id(
     text: str,
     host: str = "localhost",
     port: int = 9443,
@@ -110,7 +110,7 @@ def send_text_direct(
     want_ack: bool = True,
     hop_limit: Optional[int] = None,
     timeout: float = 5.0,
-) -> bool:
+) -> Optional[int]:
     """Send a text message via HTTP protobuf WITHOUT creating a session.
 
     This is the preferred TX path for all message sending. It PUTs a
@@ -136,17 +136,20 @@ def send_text_direct(
         timeout: HTTP request timeout in seconds
 
     Returns:
-        True if meshtasticd accepted the packet, False on error
+        The minted packet_id (int) if meshtasticd accepted the packet, else
+        None. The id lets a caller correlate the recipient's ROUTING_APP ACK
+        (request_id == this id) for honest delivery confirmation. The legacy
+        ``send_text_direct`` wraps this to a bool for accept/fail callers.
     """
     if not _pb2_available:
         logger.debug("send_text_direct: protobuf not available")
-        return False
+        return None
 
     # Circuit breaker — stop hammering a downed meshtasticd
     cb_dest = f"{host}:{port}"
     if not _protobuf_circuit.can_send(cb_dest):
         logger.debug(f"Circuit open for {cb_dest}, skipping send_text_direct")
-        return False
+        return None
 
     dest = destination if destination is not None else 0xFFFFFFFF
     packet_id = _next_stateless_packet_id()
@@ -191,18 +194,42 @@ def send_text_direct(
                     )
                     logger.debug(f"Message content: {text[:50]}")
                     _protobuf_circuit.record_success(cb_dest)
-                    return True
+                    return packet_id
                 logger.warning(f"send_text_direct: unexpected status {resp.status}")
                 _protobuf_circuit.record_failure(cb_dest, f"HTTP {resp.status}")
-                return False
+                return None
     except urllib.error.HTTPError as e:
         logger.warning(f"send_text_direct: HTTP {e.code}: {e.reason}")
         _protobuf_circuit.record_failure(cb_dest, f"HTTP {e.code}")
-        return False
+        return None
     except Exception as e:
         logger.debug(f"send_text_direct: {e}")
         _protobuf_circuit.record_failure(cb_dest, str(e))
-        return False
+        return None
+
+
+def send_text_direct(
+    text: str,
+    host: str = "localhost",
+    port: int = 9443,
+    tls: bool = True,
+    destination: Optional[int] = None,
+    channel_index: int = 0,
+    want_ack: bool = True,
+    hop_limit: Optional[int] = None,
+    timeout: float = 5.0,
+) -> bool:
+    """Backward-compatible bool wrapper over :func:`send_text_direct_with_id`.
+
+    Returns True iff meshtasticd accepted the packet. Callers that need the
+    packet_id (to correlate the ROUTING_APP ACK) should call
+    ``send_text_direct_with_id`` directly.
+    """
+    return send_text_direct_with_id(
+        text, host=host, port=port, tls=tls, destination=destination,
+        channel_index=channel_index, want_ack=want_ack, hop_limit=hop_limit,
+        timeout=timeout,
+    ) is not None
 
 
 # ---------------------------------------------------------------------------

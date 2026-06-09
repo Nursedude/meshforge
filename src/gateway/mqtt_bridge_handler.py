@@ -38,9 +38,14 @@ from datetime import datetime
 from queue import Full
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
+from gateway import delivery_counters as _dc
+from .ack_tracker import AckTracker, routing_error_to_drop_reason
 from .base_handler import (
     BaseMessageHandler, dual_path_dedup_enabled, dual_path_dedup_window_s,
     get_rf_tx_registry, is_already_bridged,
+)
+from utils.meshtastic_se_crypto import (
+    DEFAULT_KEY_B64, crypto_available, decode_service_envelope,
 )
 from utils.safe_import import safe_import
 
@@ -115,26 +120,31 @@ class MQTTBridgeHandler(BaseMessageHandler):
             should_bridge=should_bridge,
         )
 
-        # Honest-signal (Thread-2 step 4): ROUTING_APP ACK consumption is
-        # wired into the TCP MeshtasticHandler (persistent meshtastic.receive
-        # carries every packet incl. ROUTING_APP; sendText sets wantAck). This
-        # MQTT bridge is the zero-interference mode (#17/#75): TX via HTTP
-        # toradio, RX via MQTT json — and meshtasticd's json uplink does NOT
-        # carry ROUTING_APP, while reading fromradio is exactly what this mode
-        # exists to avoid. So a wantAck DM's ACK never reaches the gateway here
-        # and step 4 is INERT in mqtt_bridge mode. Warn loudly rather than let
-        # an operator believe they enabled honest mesh confirmation when they
-        # didn't (the feature works only on a TCP-mode gateway).
+        # Thread-2 step 4 — honest Meshtastic delivery confirmation in
+        # mqtt_bridge mode, via the /e/ ServiceEnvelope MQTT topic (the path
+        # the soak proved out, .claude/research/mqtt_bridge_ack_feasibility_*).
+        # The gateway already TXes wantAck DMs (send_text_direct default) and
+        # already subscribes to /2/e/; the recipient's ROUTING_APP ACK rides
+        # /e/ encrypted, so we decode it there — staying entirely within MQTT,
+        # NO fromradio read (#17/#75 preserved). In-flight packet_id->msg_id
+        # map; the ACK resolves it to CONFIRMED / DROPPED(real NAK reason).
+        self._ack_tracker = AckTracker(
+            ttl_sec=getattr(config.rns, 'ack_pending_ttl_sec', None),
+            max_pending=getattr(config.rns, 'ack_pending_max', None),
+        )
         if getattr(config.rns, 'meshtastic_ack_consumption_enabled', False):
-            logger.warning(
-                "rns.meshtastic_ack_consumption_enabled is set but the gateway "
-                "is in mqtt_bridge mode — ROUTING_APP ACK consumption (Thread-2 "
-                "step 4 / #74) is INERT here. The ACK arrives only on the "
-                "PhoneAPI fromradio stream, which this zero-interference mode "
-                "does not read (#17/#75), and meshtasticd's MQTT json uplink "
-                "carries no routing packets. Meshtastic delivery stays 'Sent "
-                "(not guaranteed)'. ACK consumption requires a TCP-mode gateway."
-            )
+            if crypto_available():
+                logger.info(
+                    "Meshtastic ACK consumption ACTIVE (mqtt_bridge / #74): "
+                    "decoding ROUTING_APP from the /e/ ServiceEnvelope topic "
+                    "to confirm wantAck DMs — no fromradio read.")
+            else:
+                logger.warning(
+                    "rns.meshtastic_ack_consumption_enabled is set but the "
+                    "cryptography/meshtastic-protobuf deps needed to decode "
+                    "the /e/ ServiceEnvelope topic are unavailable — ACK "
+                    "consumption is INERT (delivery stays 'Sent, not "
+                    "guaranteed'). Install requirements to enable.")
 
         # TX load balancer (optional, for dual-radio setups)
         self._load_balancer = load_balancer
@@ -168,6 +178,91 @@ class MQTTBridgeHandler(BaseMessageHandler):
         # signal instead of silently frozen counters.
         self._last_uplink_at: Optional[float] = None
         self._stale_warning_emitted: bool = False
+
+    # --- Thread-2 step 4: ACK consumption via /e/ ------------------------
+
+    @property
+    def ack_tracker(self) -> AckTracker:
+        """In-flight Meshtastic DM ACK tracker (shared sweep contract)."""
+        return self._ack_tracker
+
+    def _ack_consumption_enabled(self) -> bool:
+        try:
+            return bool(getattr(
+                self.config.rns, 'meshtastic_ack_consumption_enabled', False))
+        except Exception:
+            return False
+
+    def _channel_keys(self) -> List[str]:
+        """Base64 channel PSKs to try when decrypting /e/ packets.
+
+        The default key (LongFast) plus the operator's downlink_psk if set —
+        a directed downlink's ACK rides the channel it was sent on, so these
+        two cover the primary + the gateway's keyed channel.
+        """
+        keys = [DEFAULT_KEY_B64]
+        psk = getattr(self.config.meshtastic, 'downlink_psk', '') or ''
+        if isinstance(psk, str) and psk and psk not in keys:
+            keys.append(psk)
+        for k in getattr(self.config.meshtastic, 'channel_keys', None) or []:
+            if isinstance(k, str) and k and k not in keys:
+                keys.append(k)
+        return keys
+
+    def _maybe_register_ack(self, packet_id, dest_num, msg_id,
+                            record_sent: bool) -> None:
+        """Arm ACK confirmation for a just-sent DM (mqtt_bridge / #74).
+
+        No-op for broadcasts (no per-node ACK) and when disabled. The direct
+        send path synthesizes an id + records SENT (record_sent=True); the
+        queue path passes its _queue_msg_id (SENT owned by mark_delivered).
+        """
+        try:
+            if not self._ack_consumption_enabled():
+                return
+            if (dest_num is None or dest_num == 0xFFFFFFFF
+                    or not isinstance(packet_id, int) or packet_id <= 0):
+                return
+            if not msg_id:
+                msg_id = f"mesh-{packet_id:08x}"
+            if record_sent:
+                _dc.record(_dc.DeliveryState.SENT, msg_id=msg_id,
+                           protocol="meshtastic")
+            self._ack_tracker.register(packet_id, msg_id, protocol="meshtastic")
+        except Exception as e:
+            logger.debug(f"Could not arm ACK tracking: {e}")
+
+    def _handle_routing_envelope(self, dp) -> None:
+        """A decoded ROUTING_APP /e/ packet → CONFIRMED / DROPPED if it
+        matches one of our in-flight DMs. Never raises into the MQTT loop."""
+        try:
+            resolved = self._ack_tracker.resolve(dp.request_id)
+            if resolved is None:
+                return
+            msg_id, protocol = resolved
+            err = dp.routing_error_name()
+            if err in (None, "", "NONE"):
+                _dc.record(_dc.DeliveryState.CONFIRMED, msg_id=msg_id,
+                           protocol=protocol)
+                with self._stats_lock:
+                    self.stats['mesh_ack_confirmed'] = (
+                        self.stats.get('mesh_ack_confirmed', 0) + 1)
+                logger.info(
+                    f"Meshtastic ACK confirmed delivery of {msg_id} "
+                    f"(pkt={dp.request_id:#0x}, via /e/)")
+            else:
+                reason = routing_error_to_drop_reason(err)
+                _dc.record(_dc.DeliveryState.DROPPED, msg_id=msg_id,
+                           protocol=protocol, drop_reason=reason,
+                           note=f"meshtastic_nak:{err}"[:80])
+                with self._stats_lock:
+                    self.stats['mesh_ack_failed'] = (
+                        self.stats.get('mesh_ack_failed', 0) + 1)
+                logger.warning(
+                    f"Meshtastic NAK for {msg_id} (pkt={dp.request_id:#0x}): "
+                    f"{err} -> {reason.value}")
+        except Exception as e:
+            logger.debug(f"Error handling /e/ routing envelope: {e}")
 
     def run_loop(self) -> None:
         """
@@ -429,16 +524,28 @@ class MQTTBridgeHandler(BaseMessageHandler):
             self._update_nodeinfo(data)
 
     def _handle_protobuf_message(self, topic: str, payload: bytes) -> None:
-        """
-        Handle protobuf-encoded ServiceEnvelope from meshtasticd MQTT.
+        """Handle a protobuf ServiceEnvelope (/e/) from meshtasticd MQTT.
 
-        For now, we prefer JSON mode. Protobuf is more complex and requires
-        the meshtastic protobuf definitions. This is a placeholder for
-        future enhancement.
-        """
-        # Log that we received a protobuf message but prefer JSON
-        logger.debug(f"Protobuf message on {topic} ({len(payload)} bytes) - "
-                     "use json_enabled=true for full parsing")
+        Thread-2 step 4: the /e/ topic carries every MeshPacket the radio
+        hears, including the ROUTING_APP ACK for a wantAck DM we sent. We
+        decode it (channel-decrypt — no fromradio read) to confirm delivery.
+
+        Cost-bounded: only decode when ACK consumption is enabled AND at
+        least one DM is awaiting its ACK — so a quiet/disabled gateway pays
+        nothing, and a busy one only decrypts while a confirmation is
+        actually pending. Bridging of mesh TEXT still goes via the /json/
+        path (this only consumes routing)."""
+        if not self._ack_consumption_enabled():
+            return
+        try:
+            if self._ack_tracker.pending_count() == 0:
+                return
+            dp = decode_service_envelope(payload, self._channel_keys())
+            if dp is None or not dp.is_routing or dp.request_id <= 0:
+                return
+            self._handle_routing_envelope(dp)
+        except Exception as e:
+            logger.debug(f"Protobuf /e/ decode failed on {topic}: {e}")
 
     def _bridge_text_message(self, data: dict, topic: str) -> None:
         """Bridge a text message from Meshtastic to RNS."""
@@ -702,7 +809,8 @@ class MQTTBridgeHandler(BaseMessageHandler):
         except Exception as e:
             logger.debug(f"Error processing nodeinfo: {e}")
 
-    def send_text(self, message: str, destination: str = None, channel: int = 0) -> bool:
+    def send_text(self, message: str, destination: str = None, channel: int = 0,
+                  msg_id: Optional[str] = None, record_sent: bool = True) -> bool:
         """
         Send a text message to Meshtastic network.
 
@@ -713,6 +821,10 @@ class MQTTBridgeHandler(BaseMessageHandler):
             message: Text content to send
             destination: Destination node ID (None for broadcast)
             channel: Channel index to send on
+            msg_id: delivery_counters id to confirm against the ROUTING_APP
+                ACK (queue path passes _queue_msg_id; direct path synthesizes)
+            record_sent: record a SENT transition here (direct path); False
+                when the persistent queue already owns the SENT (queue path)
 
         Returns:
             True if message sent successfully, False otherwise.
@@ -720,7 +832,8 @@ class MQTTBridgeHandler(BaseMessageHandler):
         message = self._truncate_if_needed(message)
 
         # Try HTTP protobuf first (preferred — no TCP contention, no subprocess)
-        if self._send_via_http_protobuf(message, destination, channel):
+        if self._send_via_http_protobuf(message, destination, channel,
+                                        msg_id=msg_id, record_sent=record_sent):
             # Dual-path dedup: record broadcast TX so the OTHER path to this
             # radio (mesh_bridge's cross-preset forward of the same content)
             # can suppress its duplicate. This toradio route is the LIVE R→M
@@ -743,7 +856,8 @@ class MQTTBridgeHandler(BaseMessageHandler):
         return False
 
     def _send_via_http_protobuf(
-        self, message: str, destination: str = None, channel: int = 0
+        self, message: str, destination: str = None, channel: int = 0,
+        msg_id: Optional[str] = None, record_sent: bool = True,
     ) -> bool:
         """Send text via HTTP protobuf transport (preferred TX path).
 
@@ -761,7 +875,7 @@ class MQTTBridgeHandler(BaseMessageHandler):
 
         # Primary: stateless direct send — zero fromradio contention
         try:
-            from .meshtastic_protobuf_client import send_text_direct
+            from .meshtastic_protobuf_client import send_text_direct_with_id
             host = self.config.meshtastic.host
 
             # Use load balancer for port selection if available
@@ -771,8 +885,13 @@ class MQTTBridgeHandler(BaseMessageHandler):
             else:
                 http_port = getattr(self.config.meshtastic, 'http_port', 9443) or 9443
 
-            if send_text_direct(text=message, host=host, port=http_port,
-                                destination=dest_num, channel_index=channel):
+            # Capture the minted packet_id so a DM's ROUTING_APP ACK (which
+            # rides /e/) can confirm it (Thread-2 step 4 / #74).
+            pkt_id = send_text_direct_with_id(
+                text=message, host=host, port=http_port,
+                destination=dest_num, channel_index=channel)
+            if pkt_id is not None:
+                self._maybe_register_ack(pkt_id, dest_num, msg_id, record_sent)
                 return True
         except Exception as e:
             logger.debug(f"Stateless HTTP protobuf TX failed: {e}")
@@ -911,7 +1030,11 @@ class MQTTBridgeHandler(BaseMessageHandler):
                 f"RF): {message[:50]}...")
             return True
 
-        return self.send_text(message, destination, channel)
+        # Queue owns the SENT transition (mark_delivered on _queue_msg_id);
+        # arm ACK confirmation against that same id (record_sent=False).
+        return self.send_text(message, destination, channel,
+                              msg_id=payload.get('_queue_msg_id'),
+                              record_sent=False)
 
     def test_connection(self) -> bool:
         """Test MQTT broker connectivity."""

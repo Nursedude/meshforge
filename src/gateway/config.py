@@ -280,6 +280,14 @@ class MeshtasticConfig:
     # out of committed configs (security rules MF014/MF015). Empty disables
     # downlink injection (falls back to toradio).
     downlink_psk: str = ""
+    # Extra base64 channel PSKs the gateway uses to DECRYPT the /e/
+    # ServiceEnvelope topic when consuming ROUTING_APP ACKs (Thread-2 step 4 /
+    # #74). The default LongFast key + downlink_psk are tried automatically;
+    # add the PSK of the channel directed downlinks go out on here when it
+    # isn't either of those (e.g. a custom fleet channel). Operator-specific
+    # secrets — same MF014/MF015 rules as downlink_psk; keep out of committed
+    # configs. Empty = default key (+ downlink_psk) only.
+    channel_keys: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -486,14 +494,15 @@ class RNSConfig:
     # rollout). Broadcasts are unaffected (no per-node ACK exists). RX
     # parsing of ROUTING_APP is inert when off: without wantAck the
     # recipient sends no ACK, so the in-flight tracker stays empty.
-    # ⚠️ TCP-MODE ONLY: the ACK is consumed via the persistent
-    # meshtastic.receive stream in the TCP MeshtasticHandler. In
-    # bridge_mode=mqtt_bridge (the fleet default, zero-interference) the
-    # gateway TXes via HTTP toradio and RXes via MQTT json — which carries
-    # no ROUTING_APP — so this flag is INERT there and the handler warns at
-    # startup. Honest mesh confirmation in mqtt_bridge mode would need a
-    # different signal (the ACK is unreachable without reading fromradio,
-    # which that mode exists to avoid per #17/#75).
+    # Works in BOTH bridge modes. TCP mode: the ACK rides the persistent
+    # meshtastic.receive stream (MeshtasticHandler). mqtt_bridge mode (fleet
+    # default): the ACK is decoded from the encrypted /e/ ServiceEnvelope
+    # MQTT topic (MQTTBridgeHandler + utils.meshtastic_se_crypto) — staying
+    # within MQTT, NO fromradio read, so the #17/#75 zero-interference
+    # invariant holds. mqtt_bridge confirms only DMs whose recipient ACK the
+    # gateway's radio actually HEARS (1-hop / relayed-back) on a channel it
+    # can decrypt; needs the cryptography + meshtastic-protobuf deps (the
+    # handler warns at startup if they're absent).
     meshtastic_ack_consumption_enabled: bool = False
     ack_pending_ttl_sec: int = 600          # forget an un-acked DM after ~10 min
     ack_pending_max: int = 1024             # in-flight DM cap, oldest-evicted
