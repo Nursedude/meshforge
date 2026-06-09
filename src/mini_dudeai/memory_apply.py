@@ -85,6 +85,13 @@ TYPES_REQUIRING_WHY_HOWTO = ("feedback", "project")
 
 #: kebab-case slug: lowercase alphanumerics, single hyphen separators.
 _KEBAB_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+#: Memory-store FILENAME stems use underscores (and sometimes hyphens), unlike
+#: the kebab-case frontmatter ``name:`` slug. demote_memory operates on the
+#: FILE (its MEMORY.md pointer), so it must validate against this looser stem
+#: charset — using _KEBAB_RE here rejected every underscore-named entry in the
+#: real store (e.g. ``project_session_handoff_2026_06_09``), making the demote
+#: discipline unusable (caught 2026-06-09 dogfooding it on the live index).
+_FILE_STEM_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 #: Index filename used inside ``memory_dir``.
 INDEX_FILENAME = "MEMORY.md"
@@ -695,7 +702,8 @@ def _supersede_index_line(memory_dir: Path, filename: str) -> bool:
     return True
 
 
-def demote_memory(name: str, memory_dir: Path) -> ApplyResult:
+def demote_memory(name: str, memory_dir: Path, *,
+                  breadcrumb: bool = True) -> ApplyResult:
     """Move a stale one-line pointer from MEMORY.md to MEMORY_ARCHIVE.md.
 
     Mechanizes the "demote oldest/shipped entries to the archive rather than
@@ -718,23 +726,32 @@ def demote_memory(name: str, memory_dir: Path) -> ApplyResult:
     """
     memory_dir = Path(memory_dir)
 
-    if not isinstance(name, str) or not _KEBAB_RE.match(name):
+    if not isinstance(name, str) or not _FILE_STEM_RE.match(name):
         return ApplyResult(
             status="invalid",
-            reason=f"name {name!r} is not kebab-case",
+            reason=f"name {name!r} is not a valid memory-file stem",
         )
 
     filename = f"{name}.md"
     index_text = _read_index(memory_dir)
     breadcrumb_marker = f"{DEMOTE_BREADCRUMB_PREFIX} {filename} -->"
     if not _index_has_entry(index_text, filename):
-        # Already demoted? A prior breadcrumb means the move happened — that's
-        # an idempotent no-op, not an error.
-        if breadcrumb_marker in index_text:
+        # Already demoted? A prior breadcrumb (breadcrumb mode) OR the line
+        # already sitting in the archive (clean breadcrumb=False mode) means the
+        # move happened — an idempotent no-op, not an error.
+        archived_already = False
+        try:
+            arc = _archive_path(memory_dir)
+            if arc.exists():
+                archived_already = _index_has_entry(
+                    arc.read_text(encoding="utf-8"), filename)
+        except OSError:
+            archived_already = False
+        if breadcrumb_marker in index_text or archived_already:
             return ApplyResult(
                 status="demoted",
                 index_updated=False,
-                reason=f"{filename} already demoted (breadcrumb present)",
+                reason=f"{filename} already demoted",
             )
         return ApplyResult(
             status="invalid",
@@ -792,8 +809,16 @@ def demote_memory(name: str, memory_dir: Path) -> ApplyResult:
         _atomic_write(archive, archive_text)
         archive_changed = True
 
-    # --- Replace the pointer in MEMORY.md with a breadcrumb comment. ---
-    lines[pointer_idx] = f"{DEMOTE_BREADCRUMB_PREFIX} {filename} -->"
+    # --- Remove the pointer from MEMORY.md. ---
+    # Default leaves a one-line breadcrumb comment (visible, not a silent
+    # delete). But in a load-capped index those breadcrumbs themselves
+    # accumulate and re-bloat what loads every session — so breadcrumb=False
+    # removes the line cleanly; the archive + git history remain the audit
+    # trail (use it for bulk demote passes).
+    if breadcrumb:
+        lines[pointer_idx] = f"{DEMOTE_BREADCRUMB_PREFIX} {filename} -->"
+    else:
+        del lines[pointer_idx]
     new_index = "\n".join(lines)
     if not new_index.endswith("\n"):
         new_index += "\n"
@@ -875,8 +900,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     g.add_argument("--supersede", metavar="NAME",
                    help="kebab-case name of an existing memory to supersede.")
     g.add_argument("--demote", metavar="NAME",
-                   help="kebab-case name whose MEMORY.md pointer to move to "
-                        "MEMORY_ARCHIVE.md (keeps the index under the load cap).")
+                   help="file-stem name (underscores ok) whose MEMORY.md pointer "
+                        "to move to MEMORY_ARCHIVE.md (keeps the index under the "
+                        "load cap).")
+    p.add_argument("--no-breadcrumb", action="store_true",
+                   help="With --demote: remove the pointer cleanly instead of "
+                        "leaving a breadcrumb comment (for bulk demote passes on "
+                        "a load-capped index; archive + git stay the audit trail).")
     p.add_argument("--dry-run", action="store_true",
                    help="Render but write nothing (apply only).")
     p.add_argument("--allow-overwrite", action="store_true",
@@ -898,7 +928,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             superseded_by=args.superseded_by, note=args.note, date=args.date,
         )
     elif args.demote:
-        result = demote_memory(args.demote, memory_dir)
+        result = demote_memory(args.demote, memory_dir,
+                               breadcrumb=not args.no_breadcrumb)
     else:
         try:
             with open(os.path.expanduser(args.candidate), encoding="utf-8") as fh:

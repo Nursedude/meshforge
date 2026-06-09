@@ -871,6 +871,53 @@ def test_demote_brings_index_back_under_cap(tmp_path):
     assert after < before
 
 
+def test_demote_accepts_underscore_filename_stem(tmp_path):
+    """Regression: the REAL store is underscore-named (project_session_handoff_*).
+
+    demote validated `name` against kebab-case (_KEBAB_RE, hyphens only), so it
+    rejected every underscore entry as 'not kebab-case' — unusable on the live
+    index (caught 2026-06-09 dogfooding it). The earlier tests all used hyphen
+    names, so they passed green over a broken tool. This pins the real shape.
+    """
+    name = "project_session_handoff_2026_06_09"
+    (tmp_path / f"{name}.md").write_text("# body\n", encoding="utf-8")
+    (tmp_path / "MEMORY.md").write_text(
+        f"# Index\n\n- [Old Handoff]({name}.md) — a hook\n", encoding="utf-8")
+
+    result = demote_memory(name, tmp_path)
+    assert result.status == "demoted", result.reason  # NOT 'invalid'
+    assert result.index_updated is True
+    archive = (tmp_path / ARCHIVE_FILENAME).read_text(encoding="utf-8")
+    assert f"]({name}.md) — a hook" in archive
+
+
+def test_demote_breadcrumb_false_removes_line_cleanly(tmp_path):
+    """breadcrumb=False removes the pointer outright (no breadcrumb clutter) —
+
+    the mode for bulk demote passes on a load-capped index, where accumulated
+    breadcrumbs would themselves re-bloat what loads every session.
+    """
+    name = "bulk_demote_entry_2026_06_09"
+    (tmp_path / f"{name}.md").write_text("# body\n", encoding="utf-8")
+    (tmp_path / "MEMORY.md").write_text(
+        f"# Index\n\n- [Entry]({name}.md) — hook\n"
+        f"- [Keep](keep-fact.md) — keep\n", encoding="utf-8")
+
+    result = demote_memory(name, tmp_path, breadcrumb=False)
+    assert result.status == "demoted"
+    index = (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
+    archive = (tmp_path / ARCHIVE_FILENAME).read_text(encoding="utf-8")
+    assert name not in index                       # line fully gone
+    assert "demoted to MEMORY_ARCHIVE.md" not in index   # no breadcrumb clutter
+    assert "](keep-fact.md)" in index              # siblings preserved
+    assert f"]({name}.md) — hook" in archive       # moved, not lost
+
+    # Idempotent in clean mode — detected via the archive, not a breadcrumb.
+    second = demote_memory(name, tmp_path, breadcrumb=False)
+    assert second.status == "demoted"
+    assert second.index_updated is False
+
+
 def test_demote_missing_pointer_invalid(tmp_path):
     # No MEMORY.md / no such pointer → invalid, nothing written.
     result = demote_memory("nope-fact", tmp_path)
@@ -880,9 +927,10 @@ def test_demote_missing_pointer_invalid(tmp_path):
 
 
 def test_demote_bad_name_invalid(tmp_path):
+    # A space (or any non [a-z0-9_-]) is not a valid file stem.
     result = demote_memory("Bad Name", tmp_path)
     assert result.status == "invalid"
-    assert "kebab-case" in result.reason
+    assert "memory-file stem" in result.reason
 
 
 def test_demote_appends_to_existing_archive(tmp_path):
