@@ -78,12 +78,20 @@ def build_bridge_with_real_pipeline(*, config, mock_daemon):
     from gateway.message_queue import PersistentMessageQueue
 
     _orig_send = _mpc.send_text_direct
+    _orig_send_id = _mpc.send_text_direct_with_id
 
     def _http_send_text_direct(*args, **kwargs):
         kwargs["tls"] = False
         return _orig_send(*args, **kwargs)
 
+    def _http_send_text_direct_with_id(*args, **kwargs):
+        kwargs["tls"] = False
+        return _orig_send_id(*args, **kwargs)
+
+    # The bridge's HTTP TX path now calls send_text_direct_with_id (returns the
+    # packet_id for ACK correlation); patch both so the plain-HTTP mock is hit.
     _mpc.send_text_direct = _http_send_text_direct
+    _mpc.send_text_direct_with_id = _http_send_text_direct_with_id
 
     db_path = getattr(config, "_test_queue_db_path", None)
     if db_path is None:

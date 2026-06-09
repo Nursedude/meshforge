@@ -68,8 +68,10 @@ def _restore_send_text_direct():
         yield
         return
     original = _mpc.send_text_direct
+    original_id = _mpc.send_text_direct_with_id
     yield
     _mpc.send_text_direct = original
+    _mpc.send_text_direct_with_id = original_id
 
 
 @pytest.fixture(autouse=True)
