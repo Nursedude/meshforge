@@ -40,6 +40,14 @@ jobs:
             echo "No potential hardcoded passwords found"
           fi
 
+      - name: Check Python syntax
+        # compileall exits nonzero on any syntax error (the old standalone
+        # syntax-check job used `find -exec py_compile \;`, which swallowed
+        # per-file failures and could never fail). Folded in here — the
+        # static checks share one runner/checkout/Python so action bumps
+        # touch fewer sites. Branch protection only names the `test` check.
+        run: python -m compileall -q src
+
   test:
     name: Test Suite
     runs-on: ${{ matrix.os }}
@@ -107,12 +115,21 @@ jobs:
         if: failure() && steps.pytest.outcome == 'failure'
         shell: bash
         run: |
+          # Single extraction, shared with the PR-comment step below — the
+          # two steps used to grep /tmp/pytest.log independently and their
+          # patterns drifted (assert|Error: head -50 vs AssertionError
+          # head -30), so log dump and PR comment could disagree.
+          {
+            echo "--- FAILED lines ---"
+            grep -aE "^FAILED|^ERROR|^tests/.*FAIL|assert|Error:|^E +" /tmp/pytest.log | head -50 || true
+            echo
+            echo "--- short test summary info ---"
+            awk '/short test summary info/{flag=1} flag' /tmp/pytest.log | head -50 || true
+          } > /tmp/failure_summary.txt
           echo "============================================"
           echo "==  PYTEST FAILURE SUMMARY (CI-EXTRACTED) =="
           echo "============================================"
-          grep -aE "^FAILED|^ERROR|^tests/.*FAIL|assert|Error:|^E +" /tmp/pytest.log | head -50 || true
-          echo "--- short test summary info ---"
-          awk '/short test summary info/{flag=1} flag' /tmp/pytest.log | head -50 || true
+          cat /tmp/failure_summary.txt
           echo "============================================"
 
       - name: Comment failure summary on PR
@@ -126,15 +143,13 @@ jobs:
         run: |
           echo "DEBUG: entering comment step for PR #${PR_NUMBER} on ${REPO}"
           echo "DEBUG: /tmp/pytest.log size: $(wc -c </tmp/pytest.log 2>/dev/null || echo MISSING)"
+          # Reuses the extraction written by "Dump failure summary" above —
+          # same if-condition (minus the PR gate), so it always exists here.
           {
             echo "## CI failure summary (Python ${PY_VERSION})"
             echo
             echo '```'
-            echo "--- FAILED lines ---"
-            grep -aE "^FAILED|^ERROR|^tests/.*FAIL|AssertionError|^E +" /tmp/pytest.log | head -30 || true
-            echo
-            echo "--- short test summary info ---"
-            awk '/short test summary info/{flag=1} flag' /tmp/pytest.log | head -30 || true
+            cat /tmp/failure_summary.txt
             echo '```'
           } > /tmp/comment.md
           echo "DEBUG: comment body:"
@@ -142,23 +157,8 @@ jobs:
           echo "DEBUG: posting comment…"
           gh pr comment "$PR_NUMBER" --body-file /tmp/comment.md --repo "$REPO" && echo "DEBUG: gh exit=$?" || echo "DEBUG: gh exit=$?"
 
-  syntax-check:
-    name: Syntax Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
-        with:
-          python-version: '3.11'
-
-      - name: Check Python syntax
-        # compileall exits nonzero on any syntax error (the previous
-        # `find -exec py_compile \;` form swallowed per-file failures and
-        # could never fail) and uses one interpreter instead of one per file.
-        run: python -m compileall -q src
-        # NOTE: the old `security` job was deleted — its shell=True grep was a
-        # strict subset of lint rule MF002 (already gating via lint.py --all),
-        # and its secrets step could never fail; the secrets grep now lives in
-        # the lint job as an explicitly-advisory step.
+# NOTE: the old standalone `syntax-check` and `security` jobs were
+# consolidated into the `lint` job (2026-06-09): syntax-check's gate moved
+# there as a compileall step; security's shell=True grep was a strict subset
+# of lint rule MF002 and its secrets step could never fail (now an advisory
+# step in lint). One runner instead of three for the static checks.

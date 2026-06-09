@@ -36,6 +36,10 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
+          # Full commit graph but no historical blob payload — the job only
+          # runs rev-list counts and diff stats; the diff lazily fetches just
+          # the PR-touched blobs from the promisor remote.
+          filter: blob:none
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Compute behind / ahead / diff stat
