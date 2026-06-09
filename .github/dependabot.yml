@@ -1,0 +1,11 @@
+# Auto-PR for GitHub Actions version bumps. Added after the 2026-06 Node 24
+# major sweep (checkout v5 / setup-python v6 / github-script v8) sat a week
+# behind the deprecation warning because nothing watched for it — the manual
+# process also left sister-repo MeshAnchor stale. Dependabot updates SHA pins
+# natively (uses: <sha> # vN comments are maintained).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

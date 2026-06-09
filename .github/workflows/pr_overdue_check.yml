@@ -26,10 +26,14 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.head.repo.fork == false || github.event.pull_request.author_association == 'COLLABORATOR'
+    # Fork PRs are skipped entirely: under the `pull_request` trigger a
+    # fork-origin PR always gets a read-only GITHUB_TOKEN (the permissions
+    # block above cannot elevate it, and author_association doesn't change
+    # token scope), so the comment/label writes below could only 403.
+    if: github.event.pull_request.head.repo.fork == false
     steps:
       - name: Checkout PR with full history
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
@@ -63,13 +67,13 @@ jobs:
           STAT_FILE=$(mktemp)
           git diff "$BASE_TIP..$HEAD_SHA" --stat | tail -25 > "$STAT_FILE"
           STAT_BLOCK=$(cat "$STAT_FILE")
-          # Total lines changed (insertions + deletions).
-          SHORTSTAT=$(git diff "$BASE_TIP..$HEAD_SHA" --shortstat 2>/dev/null || true)
-          TOTAL_LINES=$(echo "$SHORTSTAT" \
-              | grep -oE '[0-9]+ insertions|[0-9]+ deletions' \
-              | grep -oE '^[0-9]+' \
-              | paste -sd+ \
-              | bc 2>/dev/null || echo 0)
+          # Total lines changed (insertions + deletions). numstat is
+          # machine-readable — no shortstat prose parsing (which missed
+          # singular "1 insertion"), no bc dependency, no silent
+          # `|| echo 0` masking a broken pipeline. Binary files report
+          # "-" which awk coerces to 0.
+          TOTAL_LINES=$(git diff --numstat "$BASE_TIP..$HEAD_SHA" \
+              | awk '{ins+=$1; del+=$2} END {print ins+del+0}')
 
           {
               echo "behind=$BEHIND"
@@ -83,7 +87,7 @@ jobs:
 
       - name: Comment on PR (or update existing)
         if: steps.stats.outputs.behind != '0'
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           BEHIND: ${{ steps.stats.outputs.behind }}
           AHEAD: ${{ steps.stats.outputs.ahead }}
