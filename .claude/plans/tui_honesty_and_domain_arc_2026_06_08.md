@@ -184,11 +184,36 @@ Matrix/SSB ghost model); small alias-pool + correlation-token toward Meshtastic
 NodeNum). Honors the **wire-compat invariant** (no RNS/Meshtastic wire change)
 and the **honest-delivery principle** (#16 "not guaranteed").
 
-- [ ] Phase F1: promote `ContactMappingTable`/`SessionStore` from default-off → on; durable (survive restart) reply mapping with TTL/GC.
-- [ ] Phase F2: per-node LXMF identity minting toward RNS (resolve #35 attribution).
-- [ ] Phase F3: alias-pool + reply-token on the Meshtastic leg; wire to `@id` directed downlink.
-- [ ] Phase F4: real "Transmit" action for tactical_ops (closes the S1 relabel honestly).
+**Build order = research §7's 7 steps** (finer + safer than the F1–F4 sketch;
+each independently shippable, all behind default-off `rns.reply_routing_enabled`):
+
+- [x] **Steps 1+2 — durable correlation table + restart-survivable reply rung
+  (SHIPPED `c8c7152`, fleet-pulled, inert).** New `BridgeCorrelationStore`
+  (`src/gateway/correlation_store.py`, mirrors `SessionStore`: lazy `connect_tuned`,
+  MF013 `DBSpec` `gateway_correlation`, lazy-TTL + oldest-evict, no sweeper thread,
+  swallow-and-log). Full research §5.1 schema up front (`mesh_packet_id`/`lxmf_msg_hash`
+  nullable) so steps 3–4 need no migration. M→R durable write beside the reply-context
+  record; R→M "memory" rung promoted to **cache-then-durable** so a stock reply routes
+  to the right mesh node **after a gateway restart** (the property the in-memory
+  `ReplyContextStore` loses — it silently downgraded directed replies to broadcast on
+  every restart). New `reply_routed_from_memory_db` stat = the soak tell. Durable r2m
+  observability row on a resolved directed downlink. No wire change; `CanonicalMessage`
+  untouched (MA parity holds); MeshAnchor has **no reply-routing twin** (0 matches) →
+  MeshForge-lead, no port this slice. Tests: `tests/test_correlation_store.py` (17) +
+  restart-shape in `test_rns_bridge.py` (4). lint 0 / db_audit OK / 317 rns_bridge /
+  6008 collected / parity in sync. **NOT yet field-soaked** — no box has the flag on.
+- [ ] Step 3 — set LXMF `FIELD_REPLY_TO=0x30` to `lxmf_msg_hash` on bridged-out messages (native threading in stock NomadNet/Sideband). Column already provisioned.
+- [ ] Step 4 — consume Meshtastic `ROUTING_APP` `request_id == mesh_packet_id` for honest ACK/NAK (feeds #66/#74). Column already provisioned.
+- [ ] Step 5 — Meshtastic alias pool (Twilio model) over `DownlinkInjector.inject_nodeinfo`.
+- [ ] Step 6 — explicit downlink loop-tag invariant + regression test (highest-risk; ship with its test).
+- [ ] Step 7 — per-node LXMF identity minting toward RNS (the #35 *structural* fix). **Defer until 1–6 are field-proven**; needs a public-net interop proof.
+- [ ] (F4 from the original sketch) real "Transmit" action for tactical_ops — closes the S1 relabel honestly. Independent of the reply arc.
 - [ ] Keep `CanonicalMessage` compatible with MeshAnchor; land RNS-side changes here first (lead repo).
+
+**Next-session entry point:** the durable rung is shipped but **unsoaked**. Either (a)
+canary-soak it — turn `rns.reply_routing_enabled` ON on one gateway box, restart its
+gateway, and prove `reply_routed_from_memory_db` increments across a restart (research §8
+field test #1); or (b) build step 3 (LXMF `FIELD_REPLY_TO` threading) next.
 
 ---
 
