@@ -68,6 +68,7 @@ from .identity_binding import IdentityBinder
 from .message_routing import MessageRouter
 from .reply_context import ReplyContextStore
 from .session_store import SessionStore
+from .correlation_store import BridgeCorrelationStore
 from .meshcore_bridge_mixin import MeshCoreBridgeMixin
 from ._rns_bridge_connection import RNSConnectionMixin
 from ._rns_bridge_xform import MessageTransformMixin
@@ -313,6 +314,16 @@ class RNSMeshtasticBridge(
         self._sessions = SessionStore(
             idle_timeout_sec=getattr(_rns_cfg, 'session_idle_timeout_sec', None),
             max_sessions=getattr(_rns_cfg, 'session_max_entries', None),
+        )
+
+        # Thread-2 bidirectional addressability: durable per-message
+        # correlation store. Fronts the in-memory ReplyContextStore so a
+        # stock-client reply routes to the right mesh node even after a
+        # bridge restart (the property ReplyContextStore loses). Lazy —
+        # opens no DB until first gated use (rns.reply_routing_enabled).
+        self._correlation = BridgeCorrelationStore(
+            ttl_sec=getattr(_rns_cfg, 'correlation_ttl_sec', None),
+            max_rows=getattr(_rns_cfg, 'correlation_max_rows', None),
         )
 
         # Persistent message queue for reliable delivery
@@ -1103,6 +1114,26 @@ class RNSMeshtasticBridge(
             logger.info(f"session sweep: pruned {removed} expired session(s)")
         return removed
 
+    def _sweep_expired_correlations(self) -> int:
+        """Prune expired/over-cap correlation rows (~every 30s from
+        _bridge_loop).
+
+        Thread-2 bidirectional addressability. Gated: a strict no-op when
+        reply routing is off — never opens gateway_correlation.db. Logs
+        only when something was pruned. Never raises.
+        """
+        if not self._reply_routing_on():
+            return 0
+        try:
+            removed = self._correlation.expire_idle()
+        except Exception as e:
+            logger.warning(f"correlation sweep failed: {e}")
+            return 0
+        if removed:
+            logger.info(
+                f"correlation sweep: pruned {removed} expired row(s)")
+        return removed
+
     def send_to_rns(
         self,
         message: str,
@@ -1788,6 +1819,9 @@ class RNSMeshtasticBridge(
                     # Theme-A step 3: prune idle sessions (gated no-op
                     # when sessions are off).
                     self._sweep_expired_sessions()
+                    # Thread-2: prune expired correlation rows (gated
+                    # no-op when reply routing is off).
+                    self._sweep_expired_correlations()
 
             except Exception as e:
                 logger.error(f"Bridge loop error: {e}")

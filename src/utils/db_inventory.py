@@ -227,6 +227,22 @@ INVENTORY: List[DBSpec] = [
             "Created lazily — file absent until rns.sessions_enabled."
         ),
     ),
+    DBSpec(
+        name="gateway_correlation",
+        path_factory=lambda: _meshforge_config_dir() / "gateway_correlation.db",
+        creator_module="gateway.correlation_store",
+        has_auto_prune=True,
+        retention_days=None,  # idle-TTL + row-cap based (correlation_ttl_sec)
+        notes=(
+            "Thread-2 bidirectional addressability: per-message mesh<->RNS "
+            "correlation (the mautrix Message-table analogue). One row per "
+            "bridged message; the latest m2r row per rns_peer_hash drives "
+            "restart-survivable reply routing. Idle-TTL'd via expire_idle() "
+            "(bridge ~30s sweep + lazy WHERE in lookup) and oldest-evicted at "
+            "correlation_max_rows. Created lazily — file absent until "
+            "rns.reply_routing_enabled."
+        ),
+    ),
 ]
 
 

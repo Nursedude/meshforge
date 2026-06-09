@@ -3535,6 +3535,94 @@ class TestReplyRoutingEndToEnd:
         assert bridge.stats['reply_routed_from_memory'] == 1
 
 
+class TestCorrelationRestartReplyRouting:
+    """Thread-2 — the durable reply rung. After a bridge restart the
+    in-memory ReplyContextStore is empty, but the durable correlation
+    store still resolves the reply back to the originating mesh node —
+    the property the in-memory cache loses (the reason this slice exists)."""
+
+    PEER = "abcd0123abcd0123abcd0123abcd0123"
+    NODE = "!aabb0042"
+
+    def _msg(self, content="my reply", fields=None):
+        from gateway.rns_bridge import BridgedMessage
+        return BridgedMessage(
+            source_network="rns", source_id=self.PEER,
+            destination_id=None, content=content,
+            metadata={"lxmf_fields": fields} if fields else {},
+        )
+
+    def _capture(self, bridge, msg):
+        captured = {}
+
+        def capture_send(content, destination=None, channel=0):
+            captured["content"] = content
+            captured["destination"] = destination
+            return True
+
+        with patch.object(bridge, 'send_to_meshtastic', side_effect=capture_send):
+            bridge._process_rns_to_mesh(msg)
+        return captured
+
+    def _enable(self, bridge, tmp_path):
+        from gateway.correlation_store import BridgeCorrelationStore
+        bridge.config.rns.reply_routing_enabled = True
+        bridge.config.rns.get_peer_gateway_destinations.return_value = []
+        bridge._correlation = BridgeCorrelationStore(
+            db_path=str(tmp_path / "corr.db"))
+        return bridge._correlation
+
+    def test_durable_rung_routes_after_restart(self, bridge, tmp_path):
+        corr = self._enable(bridge, tmp_path)
+        # M→R happened pre-restart: the durable store holds the mapping.
+        corr.record(self.NODE, self.PEER, direction="m2r")
+        # Post-restart shape: the in-memory cache is empty.
+        bridge._reply_context.clear()
+
+        captured = self._capture(bridge, self._msg())
+
+        assert captured["destination"] == self.NODE
+        assert bridge.stats['reply_routed_from_memory_db'] == 1
+        assert bridge.stats.get('reply_routed_from_memory', 0) == 0
+        # The DB hit warmed the in-process cache for next time.
+        assert bridge._reply_context.get(self.PEER) == "meshtastic:" + self.NODE
+
+    def test_cache_hit_skips_db(self, bridge, tmp_path):
+        corr = self._enable(bridge, tmp_path)
+        corr.record(self.NODE, self.PEER, direction="m2r")
+        # Cache already warm — the fast path wins, route is 'memory'.
+        bridge._reply_context.record(self.PEER, "meshtastic:!55556666")
+
+        captured = self._capture(bridge, self._msg())
+
+        assert captured["destination"] == "!55556666"
+        assert bridge.stats['reply_routed_from_memory'] == 1
+        assert bridge.stats.get('reply_routed_from_memory_db', 0) == 0
+
+    def test_flag_off_never_touches_durable_store(self, bridge, tmp_path):
+        corr = self._enable(bridge, tmp_path)
+        corr.record(self.NODE, self.PEER, direction="m2r")
+        bridge.config.rns.reply_routing_enabled = False  # flag off
+        bridge._reply_context.clear()
+
+        captured = self._capture(bridge, self._msg())
+
+        assert captured["destination"] is None  # legacy broadcast
+        assert bridge.stats.get('reply_routed_from_memory_db', 0) == 0
+
+    def test_directed_downlink_writes_r2m_observability_row(self, bridge, tmp_path):
+        corr = self._enable(bridge, tmp_path)
+        # An explicit @addr downlink resolves to a node; the r2m row is
+        # recorded for observability (NOT read for routing this slice).
+        captured = self._capture(bridge, self._msg(content="@!11112222 hi"))
+
+        assert captured["destination"] == "!11112222"
+        r2m = [r for r in corr.list_recent() if r["direction"] == "r2m"]
+        assert len(r2m) == 1
+        assert r2m[0]["mesh_node"] == "!11112222"
+        assert r2m[0]["rns_peer_hash"] == self.PEER
+
+
 class TestIdentityReplyContactRung:
     """Theme-A step 2 — contact rung in the R→M reply chain.
     Precedence: @addr > field > memory > contact > broadcast."""

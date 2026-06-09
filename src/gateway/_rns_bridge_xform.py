@@ -15,8 +15,9 @@ Host class must provide:
 - self.send_to_rns(content, destination_hash, *, title, fields)
 - self.send_to_meshtastic(content, destination, channel)
 - self._get_rns_destination(meshtastic_id) (defined here; override-able)
-- self._reply_context (ReplyContextStore — Theme-A reply routing)
+- self._reply_context (ReplyContextStore — Theme-A reply routing cache)
 - self._identity_binder (IdentityBinder — Theme-A identity SSOT)
+- self._correlation (BridgeCorrelationStore — Thread-2 durable reply mapping)
 """
 
 import logging
@@ -317,6 +318,15 @@ class MessageTransformMixin:
                         dest_hex = dest_hash.hex().lower()
                         if dest_hex not in peer_gateways:
                             self._reply_context.record(dest_hex, reply_token)
+                            # Thread-2: durable mirror of the reply mapping
+                            # so it survives a bridge restart (the property
+                            # the in-memory cache loses). Channel by NAME
+                            # (#77), not the box-local slot index.
+                            self._correlation.record(
+                                msg.source_id, dest_hex,
+                                channel=str(
+                                    (msg.metadata or {}).get("channel", "")),
+                                direction="m2r")
                     # Theme-A step 3: a successful DIRECTED M→R DM opens/
                     # refreshes the session (broadcast fan-out never does).
                     if (self._sessions_on()
@@ -579,11 +589,22 @@ class MessageTransformMixin:
                     destination = resolved
                     reply_route = "field"
                 else:
-                    resolved = self._resolve_reply_token(
-                        self._reply_context.get((msg.source_id or '').lower()))
+                    # Reply-context: fast in-process cache first, then the
+                    # durable correlation store (Thread-2) so the mapping
+                    # survives a bridge restart — the property the in-memory
+                    # cache loses. A DB hit warms the cache for next time.
+                    key = (msg.source_id or '').lower()
+                    token = self._reply_context.get(key)
+                    db_hit = False
+                    if token is None:
+                        token = self._correlation.lookup_reply_token(key)
+                        if token:
+                            db_hit = True
+                            self._reply_context.record(key, token)
+                    resolved = self._resolve_reply_token(token)
                     if resolved:
                         destination = resolved
-                        reply_route = "memory"
+                        reply_route = "memory_db" if db_hit else "memory"
                 if destination is None and self._identity_on():
                     mesh_addr = self._identity_binder.resolve(
                         'rns', (msg.source_id or '').lower(), 'meshtastic')
@@ -597,8 +618,21 @@ class MessageTransformMixin:
                             reply_route = "contact"
                 if reply_route:
                     with self._stats_lock:
-                        key = f'reply_routed_from_{reply_route}'
-                        self.stats[key] = self.stats.get(key, 0) + 1
+                        skey = f'reply_routed_from_{reply_route}'
+                        self.stats[skey] = self.stats.get(skey, 0) + 1
+
+            # Thread-2: durable r2m observability — record that this RNS
+            # peer directed a message at a specific mesh node. NOT read for
+            # routing in this slice; gated on reply_routing so flag-off
+            # boxes never open the DB, and excludes synthetic / re-bridged
+            # content (same gate as the reply-routing rungs above).
+            if (destination is not None
+                    and self._reply_routing_on()
+                    and msg.source_id
+                    and not self._reply_excluded(
+                        original_body, lxmf_fields, msg.source_id or '')):
+                self._correlation.record(
+                    destination, msg.source_id, direction="r2m")
 
             # Dual-path dedup (gated, default off). On a box whose LOCAL
             # mesh_bridge also carries this RF traffic, a broadcast the
