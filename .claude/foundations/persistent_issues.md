@@ -505,3 +505,8 @@ memory-index limit imports the writer's constant; config-mode boot_health
 plumbs `clean_exit_path` (reader/writer pair). **THE LESSON — apply at WRITE
 time:** `.claude/rules/honest_failure_modes.md` (9-point checklist; every
 `except`/`or []`/`.get(default)` must answer "what does the consumer SEE?").
+**Residual closed (`1899261`, same day): seed-CONTENT drift.** `seed_provenance`
+stamped in-document by `candidate.merge_seed_rules` (THE merge path); probe
+gains a STALE leg via the writer's `rule_body_sha` (guarded import, no fallback
+hasher): live==stamp but seed moved → fire; tuned/unstamped → exempt (stamps
+ratchet in via merges; unstamped boxes can't false-alarm).
