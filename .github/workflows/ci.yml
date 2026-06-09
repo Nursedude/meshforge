@@ -40,16 +40,33 @@ jobs:
             echo "No potential hardcoded passwords found"
           fi
 
+  # Branch protection REQUIRES the literal context "Syntax Check" — the
+  # 2026-06-09 consolidation folded this into lint and every PR became
+  # unmergeable (green checks, but the required context never reported).
+  # Keep this job's name in lockstep with the protection rule.
+  syntax-check:
+    name: Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.11'
+
       - name: Check Python syntax
         # compileall exits nonzero on any syntax error (the old standalone
         # syntax-check job used `find -exec py_compile \;`, which swallowed
-        # per-file failures and could never fail). Folded in here — the
-        # static checks share one runner/checkout/Python so action bumps
-        # touch fewer sites. Branch protection only names the `test` check.
+        # per-file failures and could never fail).
         run: python -m compileall -q src
 
   test:
-    name: Test Suite
+    # Explicit name: the bare "Test Suite" auto-name appends ALL matrix
+    # axes — adding the os axis renamed the context to
+    # "Test Suite (3.11, ubuntu-latest)" and broke the required check
+    # "Test Suite (3.11)". Pin the context to python-version only.
+    name: Test Suite (${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10  # Kill job if tests hang
     permissions:
@@ -157,8 +174,11 @@ jobs:
           echo "DEBUG: posting comment…"
           gh pr comment "$PR_NUMBER" --body-file /tmp/comment.md --repo "$REPO" && echo "DEBUG: gh exit=$?" || echo "DEBUG: gh exit=$?"
 
-# NOTE: the old standalone `syntax-check` and `security` jobs were
-# consolidated into the `lint` job (2026-06-09): syntax-check's gate moved
-# there as a compileall step; security's shell=True grep was a strict subset
-# of lint rule MF002 and its secrets step could never fail (now an advisory
-# step in lint). One runner instead of three for the static checks.
+# NOTE: the old standalone `security` job was consolidated into `lint`
+# (2026-06-09): its shell=True grep was a strict subset of lint rule MF002
+# and its secrets step could never fail (now an advisory step in lint).
+# `syntax-check` was briefly folded in too, but branch protection requires
+# the "Syntax Check" context by name, which made every PR unmergeable —
+# restored as a standalone job the same day. If a required-context name
+# must change, the branch protection rule changes in the SAME operation
+# (repo settings → Branches), or PRs silently wedge with all-green checks.
