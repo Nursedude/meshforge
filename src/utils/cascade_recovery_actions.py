@@ -494,32 +494,32 @@ class CascadeRecoveryActor:
             # Shouldn't happen — guarded in __init__ — but keep the
             # audit trail honest if a future patch adds a partial
             # registration.
-            self._append_audit(AuditEntry(
-                ts=self._clock(), event=event.to_dict(),
-                action=self._action, outcome="failed",
-                error=f"no handler registered for {self._action!r}",
-            ))
             with self._lock:
                 self._stats.actions_failed += 1
                 self._stats.last_action_outcome = "failed"
                 self._stats.last_error = "no_handler"
                 self._stats.last_action_ts = self._clock()
+                self._append_audit_unlocked(AuditEntry(
+                    ts=self._clock(), event=event.to_dict(),
+                    action=self._action, outcome="failed",
+                    error=f"no handler registered for {self._action!r}",
+                ))
             return
 
         try:
             handler(self, event)
         except Exception as e:
             logger.exception("cascade_recovery worker raised on %s", self._action)
-            self._append_audit(AuditEntry(
-                ts=self._clock(), event=event.to_dict(),
-                action=self._action, outcome="failed",
-                error=repr(e),
-            ))
             with self._lock:
                 self._stats.actions_failed += 1
                 self._stats.last_action_outcome = "failed"
                 self._stats.last_error = repr(e)
                 self._stats.last_action_ts = self._clock()
+                self._append_audit_unlocked(AuditEntry(
+                    ts=self._clock(), event=event.to_dict(),
+                    action=self._action, outcome="failed",
+                    error=repr(e),
+                ))
 
     def _action_restart_rnsd(self, event: WedgeEvent) -> None:
         """Run ``sudo systemctl restart rnsd`` and record outcome.
@@ -533,56 +533,62 @@ class CascadeRecoveryActor:
         try:
             result = self._subprocess_runner(cmd, 30.0)
         except subprocess.TimeoutExpired as e:
-            self._append_audit(AuditEntry(
-                ts=self._clock(), event=event.to_dict(),
-                action=self._action, outcome="failed",
-                error=f"timeout: {e}",
-            ))
+            # Stats + audit row written atomically under ONE lock, stats first.
+            # The audit row is the commit point an observer (or the test) waits
+            # on; writing it before the stats update opened a race where the row
+            # was visible while last_error was still None (flaky CI). Setting
+            # stats first, inside the lock, makes "audit row seen" imply "stats
+            # set" (snapshot() takes the same lock).
             with self._lock:
                 self._stats.actions_failed += 1
                 self._stats.last_action_outcome = "failed"
                 self._stats.last_error = "timeout"
                 self._stats.last_action_ts = self._clock()
+                self._append_audit_unlocked(AuditEntry(
+                    ts=self._clock(), event=event.to_dict(),
+                    action=self._action, outcome="failed",
+                    error=f"timeout: {e}",
+                ))
             return
         except Exception as e:
-            self._append_audit(AuditEntry(
-                ts=self._clock(), event=event.to_dict(),
-                action=self._action, outcome="failed",
-                error=repr(e),
-            ))
             with self._lock:
                 self._stats.actions_failed += 1
                 self._stats.last_action_outcome = "failed"
                 self._stats.last_error = repr(e)
                 self._stats.last_action_ts = self._clock()
+                self._append_audit_unlocked(AuditEntry(
+                    ts=self._clock(), event=event.to_dict(),
+                    action=self._action, outcome="failed",
+                    error=repr(e),
+                ))
             return
 
         if result.returncode == 0:
-            self._append_audit(AuditEntry(
-                ts=self._clock(), event=event.to_dict(),
-                action=self._action, outcome="succeeded",
-            ))
             with self._lock:
                 self._stats.actions_succeeded += 1
                 self._stats.last_action_outcome = "succeeded"
                 self._stats.last_error = None
                 self._stats.last_action_ts = self._clock()
+                self._append_audit_unlocked(AuditEntry(
+                    ts=self._clock(), event=event.to_dict(),
+                    action=self._action, outcome="succeeded",
+                ))
             logger.warning(
                 "cascade_recovery: restarted rnsd in response to wedge "
                 "label=%s target=%s", event.label, event.target,
             )
         else:
             err_tail = (result.stderr or "")[-400:]
-            self._append_audit(AuditEntry(
-                ts=self._clock(), event=event.to_dict(),
-                action=self._action, outcome="failed",
-                error=f"rc={result.returncode}: {err_tail}",
-            ))
             with self._lock:
                 self._stats.actions_failed += 1
                 self._stats.last_action_outcome = "failed"
                 self._stats.last_error = f"rc={result.returncode}"
                 self._stats.last_action_ts = self._clock()
+                self._append_audit_unlocked(AuditEntry(
+                    ts=self._clock(), event=event.to_dict(),
+                    action=self._action, outcome="failed",
+                    error=f"rc={result.returncode}: {err_tail}",
+                ))
 
     # ── gate ────────────────────────────────────────────────────
 
