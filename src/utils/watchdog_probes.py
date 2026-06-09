@@ -74,6 +74,9 @@ SIGNAL_CLASSES = (
     "phoneapi_tcp_leak",  # Issue #75 (2026-06-07): map service holds an unaccounted persistent TCP to meshtasticd :4403 — leaked TCPInterface silently starves the :9443 web client (#17 contention class, leak form)
     "mqtt_root_drift",  # Issue #77 (2026-06-07): radio's observed MQTT publish root prefix diverges from the box's declared mqtt_bridge.root_topic — a zero-config radio join silently reintroduces the msh/US split
     "cron_verdict_stale",  # Issue #78 (2026-06-08): a cron WIRED to cron_verdict.sh reported FAIL/CONCERN or went silent past its schedule cadence — silence is the failure mode (cross-references the crontab so stale ORPHAN verdicts never false-alarm)
+    "history_write_stalled",  # mini-dudeai Issue #79 (2026-06-09): the mini loop is alive (state.json last_tick advancing) but its history/ledger files stopped accumulating — a swallowed-and-printed write failure with no fleet signal
+    "rules_seed_drift",  # mini-dudeai Issue #79 (2026-06-09): the live ~/mini_dudeai_rules.json is MISSING rule ids the box-role seed (configs/mini_dudeai_rules.<role>.json) carries — the live file fell behind a seed bump (extra box-local rules are legitimate and ignored)
+    "memory_index_oversize",  # mini-dudeai Issue #79 (2026-06-09): the operator memory index (MEMORY.md) is over its ~24 KB context-load limit and silently partial-loads — demote older/shipped entries to MEMORY_ARCHIVE.md
 )
 
 SEVERITIES = ("info", "degraded", "wedge")
@@ -2650,6 +2653,346 @@ def probe_cron_verdict_stale(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Probes: mini-dudeai self-health (audit 2026-06-09)
+#
+# mini-dudeai is the per-box observation loop. These three probes watch
+# the loop's OWN integrity from outside it — the watchdog sees mini's
+# files (state/history/rules) the same root-context, in-process way the
+# other drift probes read the rnsd-user env. All self-guard None when
+# mini isn't running on this box (no files / loop not ticking), so a box
+# that doesn't run mini never false-alarms.
+# ─────────────────────────────────────────────────────────────────────
+
+# Canonical mini file names (mini_dudeai/presets/meshforge_fleet.py).
+_MINI_STATE_NAME = "mini_dudeai_state.json"
+_MINI_HISTORY_NAME = "mini_dudeai_history.jsonl"
+_MINI_RULES_NAME = "mini_dudeai_rules.json"
+
+# A mini tick is 30s; treat the loop as ALIVE only when state.json's
+# last_tick is within this window (≈4 ticks of slack). A stale state means
+# the daemon is stopped — not a write-failure to surface here.
+_MINI_LOOP_FRESH_S = 150.0
+
+DEFAULT_HISTORY_STALL_STATE_PATH = "/var/lib/meshforge/mini_history_stall.json"
+
+
+def _resolve_mini_home() -> Optional[str]:
+    """Resolve the mini operator's home dir, root-context safe.
+
+    mini runs as a systemd --user unit owned by the operator, so the
+    watchdog (sandboxed root) must derive the home from the operator UID
+    and read it directly — never escalate (the rns_version_drift /
+    cron_verdict lesson). None when no operator user is resolvable.
+    """
+    try:
+        from utils.fleet_test_runner import _find_operator_user
+        op = _find_operator_user()
+    except Exception:
+        op = None
+    if not op:
+        return None
+    try:
+        import pwd
+        return pwd.getpwuid(op[0]).pw_dir
+    except (KeyError, OSError):
+        return None
+
+
+def _load_history_stall_state(state_path: str) -> dict:
+    """Read the prior (fires, history mtime, streak) baseline. Any error → empty."""
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _save_history_stall_state(state_path: str, *, fires: int,
+                              hist_mtime: float, streak: int) -> None:
+    """Persist the baseline (atomic-rename, never raises)."""
+    try:
+        parent = os.path.dirname(state_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = state_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"fires": int(fires), "hist_mtime": float(hist_mtime),
+                       "streak": int(streak)}, fh, separators=(",", ":"))
+        os.replace(tmp, state_path)
+    except OSError:
+        pass
+
+
+def probe_history_write_failure(
+    *,
+    mini_home: Optional[str] = None,
+    state_doc: Optional[dict] = None,
+    history_mtime: Optional[float] = None,
+    now: Optional[float] = None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """Surface a PERSISTENT mini history-write failure (Issue #79).
+
+    The engine swallows-and-prints a ``history append failed`` (HistoryWriter
+    never raises into the tick) — so a perms/disk problem that kills ONLY the
+    history file (state.json keeps writing fine) is invisible to the fleet. This
+    probe makes it a signal: the loop is ALIVE (state.json ``last_tick_ts`` is
+    recent) and the engine has FIRED more rules since we last looked (cumulative
+    ``rules[*].fire_count`` advanced — fires are exactly what should append to
+    history), yet the history file's mtime did NOT advance. A quiet box (no new
+    fires) never touches history, so it can't false-alarm — the cumulative-fire
+    delta is the honest distinguisher, not a bare mtime check.
+
+    Self-guards None: mini not active (no state file / stale ``last_tick_ts``),
+    no new fires since the baseline (nothing should have been appended), or the
+    home can't be resolved. 2-tick debounce rides a single-tick read race.
+    Severity ``degraded``: the loop still works; history (the warm-context feed)
+    is the casualty.
+    """
+    try:
+        now = time.time() if now is None else now
+        sp = state_path or DEFAULT_HISTORY_STALL_STATE_PATH
+
+        if state_doc is None or history_mtime is None:
+            home = mini_home or _resolve_mini_home()
+            if not home:
+                return None
+            if state_doc is None:
+                try:
+                    with open(os.path.join(home, _MINI_STATE_NAME),
+                              "r", encoding="utf-8") as fh:
+                        doc = json.load(fh)
+                except (OSError, ValueError):
+                    return None  # no readable state → mini not active here
+                state_doc = doc if isinstance(doc, dict) else {}
+            if history_mtime is None:
+                try:
+                    history_mtime = os.stat(
+                        os.path.join(home, _MINI_HISTORY_NAME)).st_mtime
+                except OSError:
+                    history_mtime = 0.0  # absent — fires>0 below makes that a failure
+
+        last_tick = float(state_doc.get("last_tick_ts", 0.0) or 0.0)
+        if last_tick <= 0.0 or (now - last_tick) > _MINI_LOOP_FRESH_S:
+            return None  # loop not ticking → not a write-failure (daemon stopped)
+
+        rules = state_doc.get("rules") or {}
+        fires = 0
+        if isinstance(rules, dict):
+            for rs in rules.values():
+                if isinstance(rs, dict):
+                    fires += int(rs.get("fire_count", 0) or 0)
+
+        prior = _load_history_stall_state(sp)
+        prior_fires = int(prior.get("fires", -1))
+        prior_mtime = float(prior.get("hist_mtime", 0.0) or 0.0)
+        streak = int(prior.get("streak", 0) or 0)
+
+        # First sighting (no baseline): record + stay silent.
+        if prior_fires < 0:
+            _save_history_stall_state(sp, fires=fires, hist_mtime=history_mtime,
+                                      streak=0)
+            return None
+
+        fires_advanced = fires > prior_fires
+        history_advanced = history_mtime > prior_mtime
+        stalled = fires_advanced and not history_advanced
+
+        if not stalled:
+            _save_history_stall_state(sp, fires=fires, hist_mtime=history_mtime,
+                                      streak=0)
+            return None
+
+        streak += 1
+        # Persist the new fires baseline but KEEP the frozen mtime so a
+        # continuing stall keeps accumulating the streak.
+        _save_history_stall_state(sp, fires=fires, hist_mtime=history_mtime,
+                                  streak=streak)
+        if streak < debounce_ticks:
+            return None
+
+        delta = fires - prior_fires
+        return Signal(
+            cls="history_write_stalled",
+            subject="mini-dudeai",
+            severity="degraded",
+            detail=(
+                f"mini loop is alive (last_tick {int(now - last_tick)}s ago) and "
+                f"fired {delta}+ more rule(s) but {_MINI_HISTORY_NAME} stopped "
+                f"accumulating (mtime frozen) over {streak} consecutive ticks — a "
+                f"swallowed history-write failure. Check the file's perms/owner + "
+                f"free disk on the mini host; the loop keeps ticking, the "
+                f"warm-context feed is the casualty."
+            ),
+            issue_ref=79,
+            extra={"fires": fires, "delta": delta, "streak": streak,
+                   "history_mtime": history_mtime},
+        )
+    except Exception:
+        return None
+
+
+# Map a deployment.json role → the mini-dudeai role seed it should track.
+# Only confident mappings are listed; an unmapped role is AMBIGUOUS (no
+# dedicated mini seed) and self-guards None rather than guess a seed.
+_ROLE_TO_MINI_SEED = {
+    "primary": "federator",       # the :5000 federator/manager box
+    "full-gateway": "fleet_gateway",
+    "gateway-only": "fleet_gateway",
+}
+
+
+def probe_rules_seed_drift(
+    *,
+    meshforge_root: str = "/opt/meshforge",
+    mini_home: Optional[str] = None,
+    role: Optional[str] = None,
+    live_ids: Optional[set] = None,
+    seed_ids: Optional[set] = None,
+) -> Optional[Signal]:
+    """Surface a live ``mini_dudeai_rules.json`` that fell behind its role seed (Issue #79).
+
+    The fleet ships a per-role mini seed (``configs/mini_dudeai_rules.<role>.json``)
+    that is the canonical rule set for the box's role; the live file is seeded from
+    it then evolves per-box (candidate promotions, MF014 box-local rules). When the
+    seed gains a NEW rule (a seed bump for a new failure class) but the live file
+    wasn't re-seeded, the box silently misses that rule. This makes the gap a signal.
+
+    Fires ``degraded`` only when the seed carries rule ids the live file is MISSING.
+    Extra live-only rules are LEGITIMATE (box-local additions) and never fire — this
+    is a one-directional "live behind seed" check. Self-guards None: box declares no
+    role, the role has no confident mini-seed mapping (ambiguous — don't guess),
+    either file is unreadable, or there's no gap.
+    """
+    try:
+        if live_ids is None or seed_ids is None:
+            # Resolve role (deployment.json) → seed name.
+            if role is None:
+                try:
+                    from utils.rns_tree_perms import _read_rnsd_user
+                    service_user = _read_rnsd_user()
+                except Exception:
+                    service_user = None
+                role, _ov = _read_deployment_declaration(service_user)
+            if not role:
+                return None  # no declared role → not applicable
+            seed_name = _ROLE_TO_MINI_SEED.get(role)
+            if not seed_name:
+                return None  # role has no dedicated mini seed → ambiguous, no guess
+
+            if seed_ids is None:
+                seed_path = os.path.join(
+                    meshforge_root, "configs",
+                    f"mini_dudeai_rules.{seed_name}.json")
+                try:
+                    with open(seed_path, "r", encoding="utf-8") as fh:
+                        seed_doc = json.load(fh)
+                except (OSError, ValueError):
+                    return None  # seed unreadable → indeterminate
+                seed_ids = {r.get("id") for r in (seed_doc.get("rules") or [])
+                            if isinstance(r, dict) and r.get("id")}
+
+            if live_ids is None:
+                home = mini_home or _resolve_mini_home()
+                if not home:
+                    return None
+                try:
+                    with open(os.path.join(home, _MINI_RULES_NAME),
+                              "r", encoding="utf-8") as fh:
+                        live_doc = json.load(fh)
+                except (OSError, ValueError):
+                    return None  # live file unreadable → mini not seeded here
+                live_ids = {r.get("id") for r in (live_doc.get("rules") or [])
+                            if isinstance(r, dict) and r.get("id")}
+
+        missing = sorted(seed_ids - live_ids)
+        if not missing:
+            return None  # live is at-or-ahead of the seed → no drift
+
+        shown = ", ".join(missing[:5]) + (
+            f" (+{len(missing) - 5} more)" if len(missing) > 5 else "")
+        return Signal(
+            cls="rules_seed_drift",
+            subject="mini-dudeai",
+            severity="degraded",
+            detail=(
+                f"live mini rules are MISSING {len(missing)} rule(s) the role seed "
+                f"carries: {shown}. The seed gained rule(s) the box wasn't "
+                f"re-seeded with — review + merge from "
+                f"configs/mini_dudeai_rules.<role>.json (box-local extra rules are "
+                f"kept; this is a one-way behind-seed check)."
+            ),
+            issue_ref=79,
+            extra={"missing": missing, "role": role},
+        )
+    except Exception:
+        return None
+
+
+# The operator memory index path (relative to the operator home) + its
+# context-load limit. MEMORY.md silently partial-loads when it exceeds this,
+# so a bump is a latent legibility failure. ~24 KB = the harness load cap.
+_MEMORY_INDEX_REL = os.path.join(
+    ".claude", "projects", "-opt-meshforge", "memory", "MEMORY.md")
+MEMORY_INDEX_LIMIT_BYTES = 24 * 1024  # ~24 KB
+
+
+def probe_memory_index_oversize(
+    *,
+    operator_home: Optional[str] = None,
+    size_bytes: Optional[int] = None,
+    limit_bytes: int = MEMORY_INDEX_LIMIT_BYTES,
+) -> Optional[Signal]:
+    """Surface the operator memory index (MEMORY.md) over its load limit (Issue #79).
+
+    The persistent memory store's hot index (``MEMORY.md``) is loaded into every
+    session's context; over the ~24 KB harness cap it silently partial-loads, so
+    later index lines never reach the assistant. The store itself warns at write
+    time, but nothing on the FLEET surface flags a box whose index has crept over.
+    This makes it a continuously-monitored signal so the remedy (demote older /
+    shipped entries to ``MEMORY_ARCHIVE.md``) gets prompted, not deferred.
+
+    Read-only ``stat`` of the index in the operator home, root-context safe.
+    Self-guards None: the index file isn't present on this box (not the
+    memory-holding host), or the home can't be resolved. Fires ``degraded`` only
+    when the size strictly exceeds the limit.
+    """
+    try:
+        if size_bytes is None:
+            home = operator_home or _resolve_mini_home()
+            if not home:
+                return None
+            path = os.path.join(str(home), _MEMORY_INDEX_REL)
+            try:
+                size_bytes = os.stat(path).st_size
+            except OSError:
+                return None  # absent / unreadable → not this box, no alarm
+        if size_bytes <= limit_bytes:
+            return None
+
+        over = size_bytes - limit_bytes
+        return Signal(
+            cls="memory_index_oversize",
+            subject="MEMORY.md",
+            severity="degraded",
+            detail=(
+                f"operator memory index MEMORY.md is {size_bytes} bytes — "
+                f"{over} over the ~{limit_bytes // 1024} KB context-load limit, so "
+                f"it silently partial-loads (later index lines never reach the "
+                f"session). Demote older/shipped entries to MEMORY_ARCHIVE.md "
+                f"(keep index lines to one tight hook)."
+            ),
+            issue_ref=79,
+            extra={"size_bytes": size_bytes, "limit_bytes": limit_bytes,
+                   "over_bytes": over},
+        )
+    except Exception:
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Helpers shared by the runner
 # ─────────────────────────────────────────────────────────────────────
 
@@ -2700,4 +3043,8 @@ __all__ = [
     "probe_delivery_write_canary",
     "probe_service_inactive",
     "probe_tracer_peer_unreachable",
+    "probe_cron_verdict_stale",
+    "probe_history_write_failure",
+    "probe_rules_seed_drift",
+    "probe_memory_index_oversize",
 ]

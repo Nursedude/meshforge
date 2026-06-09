@@ -16,8 +16,18 @@ from mini_dudeai import (
     registered_source_kinds,
     validate_config,
 )
+from mini_dudeai.config import (
+    _ACTION_REGISTRY,
+    _ACTION_REQUIRED,
+    _SOURCE_REGISTRY,
+    _SOURCE_REQUIRED,
+)
 from mini_dudeai.sources.base import Condition, Source
 from mini_dudeai.actions.base import Action, Outcome
+
+_CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "..", "configs")
+_SCHEMA_PATH = os.path.join(_CONFIGS_DIR, "mini_dudeai_config.schema.json")
+_EXAMPLE_PATH = os.path.join(_CONFIGS_DIR, "mini_dudeai_config.example.json")
 
 
 def test_load_config_missing_path(tmp_path):
@@ -240,3 +250,139 @@ def test_boot_health_builds_from_config(tmp_path):
     src = engine.sources[0]
     assert src.boot_window_s == 600
     assert src.power_log_path == str(tmp_path / "power.log")
+
+
+# --- schema-vs-validator drift guard (Risk #7) --------------------------
+#
+# configs/mini_dudeai_config.schema.json is a draft-07 reference for humans
+# and editors; the runtime validates with a hand-rolled, dep-free validator
+# (config.validate_config) backed by _SOURCE_REGISTRY/_ACTION_REGISTRY and
+# the _SOURCE_REQUIRED/_ACTION_REQUIRED tables. The schema and the in-code
+# tables independently re-enumerate the same source/action kinds + their
+# required fields, and nothing else cross-checks them — so they can silently
+# drift. These tests pin them in sync. If one fails, update WHICHEVER of the
+# schema or config.py is wrong so the two agree (the failure message names
+# the exact drifted kind/field).
+#
+# We compare the schema against the BUILT-IN surface — the keys of
+# _SOURCE_REQUIRED / _ACTION_REQUIRED — NOT the live _*_REGISTRY dicts. The
+# schema deliberately documents only the shipped/built-in kinds (its
+# description says custom register_source()/register_action() kinds are
+# accepted at runtime but intentionally not enumerated), and those registries
+# are process-global and get polluted by other tests that register dummy
+# kinds. The _*_REQUIRED tables are the canonical built-in enumeration: their
+# comment in config.py says "the built-in kinds", and the seed builders
+# register exactly those. A separate test asserts every built-in key is also
+# in the live registry, so the required-table can't list a phantom kind.
+
+
+def _load_schema() -> dict:
+    """Parse the reference JSON Schema (stdlib only — no jsonschema dep)."""
+    with open(_SCHEMA_PATH, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _schema_kind_enum(schema: dict, section: str) -> set:
+    """Return the `kind` enum set for the 'sources' or 'actions' section.
+
+    sources are a list of objects; actions are a map (additionalProperties).
+    """
+    if section == "sources":
+        item = schema["properties"]["sources"]["items"]
+    else:
+        item = schema["properties"]["actions"]["additionalProperties"]
+    return set(item["properties"]["kind"]["enum"])
+
+
+def _schema_required_by_kind(schema: dict, section: str) -> dict:
+    """Map each kind to its schema-required field set, from the allOf if/then.
+
+    A kind with no allOf branch has no required fields beyond `kind`, so it
+    maps to an empty set — the same meaning as an empty list in the in-code
+    _*_REQUIRED tables.
+    """
+    if section == "sources":
+        item = schema["properties"]["sources"]["items"]
+    else:
+        item = schema["properties"]["actions"]["additionalProperties"]
+    out: dict[str, set] = {k: set() for k in _schema_kind_enum(schema, section)}
+    for branch in item.get("allOf", []):
+        kind = branch["if"]["properties"]["kind"]["const"]
+        out[kind] = set(branch["then"]["required"])
+    return out
+
+
+def test_schema_source_kinds_match_builtins():
+    """Schema source-kind enum == the built-in kinds (_SOURCE_REQUIRED keys)."""
+    schema_kinds = _schema_kind_enum(_load_schema(), "sources")
+    code_kinds = set(_SOURCE_REQUIRED)
+    assert schema_kinds == code_kinds, (
+        "source-kind drift between schema and config._SOURCE_REQUIRED: "
+        f"only in schema={sorted(schema_kinds - code_kinds)}, "
+        f"only in code={sorted(code_kinds - schema_kinds)}"
+    )
+
+
+def test_schema_action_kinds_match_builtins():
+    """Schema action-kind enum == the built-in kinds (_ACTION_REQUIRED keys)."""
+    schema_kinds = _schema_kind_enum(_load_schema(), "actions")
+    code_kinds = set(_ACTION_REQUIRED)
+    assert schema_kinds == code_kinds, (
+        "action-kind drift between schema and config._ACTION_REQUIRED: "
+        f"only in schema={sorted(schema_kinds - code_kinds)}, "
+        f"only in code={sorted(code_kinds - schema_kinds)}"
+    )
+
+
+def test_builtin_kinds_are_actually_registered():
+    """Every built-in _*_REQUIRED key must resolve in the live registry.
+
+    Guards the other direction: the required-table can't name a kind the
+    validator wouldn't accept (a phantom built-in). Uses subset (not ==)
+    because the global registries may carry dummy kinds from sibling tests.
+    """
+    assert set(_SOURCE_REQUIRED) <= set(_SOURCE_REGISTRY), (
+        "config._SOURCE_REQUIRED names kinds absent from _SOURCE_REGISTRY: "
+        f"{sorted(set(_SOURCE_REQUIRED) - set(_SOURCE_REGISTRY))}"
+    )
+    assert set(_ACTION_REQUIRED) <= set(_ACTION_REGISTRY), (
+        "config._ACTION_REQUIRED names kinds absent from _ACTION_REGISTRY: "
+        f"{sorted(set(_ACTION_REQUIRED) - set(_ACTION_REGISTRY))}"
+    )
+
+
+def test_schema_source_required_fields_match_code():
+    """Per-kind required source fields: schema allOf == _SOURCE_REQUIRED."""
+    schema_req = _schema_required_by_kind(_load_schema(), "sources")
+    for kind in set(schema_req) | set(_SOURCE_REQUIRED):
+        code = set(_SOURCE_REQUIRED.get(kind, []))
+        sch = schema_req.get(kind, set())
+        assert code == sch, (
+            f"required-field drift for source kind {kind!r}: "
+            f"only in schema={sorted(sch - code)}, "
+            f"only in config._SOURCE_REQUIRED={sorted(code - sch)}"
+        )
+
+
+def test_schema_action_required_fields_match_code():
+    """Per-kind required action fields: schema allOf == _ACTION_REQUIRED."""
+    schema_req = _schema_required_by_kind(_load_schema(), "actions")
+    for kind in set(schema_req) | set(_ACTION_REQUIRED):
+        code = set(_ACTION_REQUIRED.get(kind, []))
+        sch = schema_req.get(kind, set())
+        assert code == sch, (
+            f"required-field drift for action kind {kind!r}: "
+            f"only in schema={sorted(sch - code)}, "
+            f"only in config._ACTION_REQUIRED={sorted(code - sch)}"
+        )
+
+
+def test_example_config_passes_hand_rolled_validator():
+    """The shipped example config must stay runnable under validate_config."""
+    with open(_EXAMPLE_PATH, encoding="utf-8") as fh:
+        example = json.load(fh)
+    errs = validate_config(example)
+    assert errs == [], (
+        "configs/mini_dudeai_config.example.json no longer validates cleanly: "
+        + "; ".join(errs)
+    )

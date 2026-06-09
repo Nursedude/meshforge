@@ -30,8 +30,14 @@ import os
 import time
 
 from ._util import read_json
+from .history import _rotate_if_needed
 
 # --- tunables (conservative defaults; override per call for tests/tuning) -----
+
+# Cap for the append-only memory-deltas JSONL. Generous (retains many weeks of
+# proposals/resolutions) but bounded — the nightly pass is the only writer, so
+# growth is slow, yet an unattended box must never let it grow without limit.
+DEFAULT_DELTAS_MAX_BYTES = 1_000_000  # 1 MB
 
 DEFAULT_LOOKBACK_S = 86400.0          # 24h synthesis window
 FLAP_MIN_FIRES = 4                    # >= this many fires/24h to consider flapping
@@ -417,6 +423,10 @@ def write_dreams(state_path: str, history_path: str, deltas_path: str,
 
     appended_err = None
     if fresh:
+        # Bound the append-only deltas file before writing — keep the freshest
+        # proposals, never drop the lines we're about to add. Rotation failure
+        # is non-fatal (the append still proceeds), matching the writer posture.
+        _rotate_if_needed(deltas_path, DEFAULT_DELTAS_MAX_BYTES)
         try:
             with open(deltas_path, "a") as f:
                 for d in fresh:

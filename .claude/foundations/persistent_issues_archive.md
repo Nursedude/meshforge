@@ -2633,3 +2633,59 @@ needs to host *both* MeshForge and MeshAnchor radio work (currently
 not a supported topology) would need separate `instance_name`s and
 careful coordination — but the canonical deployment is one project
 per box.
+
+
+---
+
+## Issue #72: wedged rnsd RPC — rnstatus hangs though the socket accepts (2026-05-30)
+
+**Class**: 6th variant of the rnsd-RPC fragility family (siblings #58,
+#61, #63, #68, #69). The watchdog already had two RNS probes but a real
+gap between them: `probe_rns_shared_instance_responsive` is a bare
+`connect()` timer — it catches a connect that never completes (the #68
+SYN-SENT pile-up) but returns **healthy the instant the socket
+accepts**. `probe_rns_interface_down_peer_reachable` runs `rnstatus` but
+**bails on any `parse_error`** (and its comment wrongly claimed
+"shared-instance probes own that"). So the case where rnsd **accepts the
+connection but the RPC round-trip hangs/EOFs** (`rpc_connection.recv()`
+deep in `RNS.Reticulum`, the #69 mechanism) was unowned: `rnstatus`
+itself times out, yet no probe surfaced it.
+
+**Fix**: structured `RNSStatus.timed_out` flag set **only** on a
+`run_rnstatus` subprocess TIMEOUT (`rns_status_parser.py`); `run_rnstatus`
+gained a `timeout_s` arg (default 15s for existing callers). New
+`probe_rns_rpc_responsive` (signal class `rns_rpc_unresponsive`,
+severity wedge, subject `rnsd`, issue_ref 68) fires iff `timed_out` —
+distinct from a fast error (binary missing / "no shared instance" /
+refused), which leaves `timed_out` False so `service_inactive` owns
+rnsd-down and RNS-less boxes never false-alarm. `run_all_probes` now
+makes **one** bounded `run_rnstatus(timeout_s=8.0)` per tick and shares
+the parsed result with both rnstatus-consuming probes (a wedged rnsd
+can't stall the 30s tick with two long-timeout subprocesses).
+
+**FIXED AT SOURCE (2026-05-30, fork `rns 1.2.5+mf.2`, `11227832`)**: the
+watchdog above *detects* the wedge; the fork now *prevents* it. All 20
+client-side RPC recvs route through `_rpc_recv()` → `poll(8s, env RNS_RPC_TIMEOUT)`
+before `recv()`, so a wedged-but-accepting rnsd raises `TimeoutError` (EOF
+fast-fails too) instead of blocking forever. Server `rpc_loop` recv untouched.
+Fork test `tests/meshforge_rpc_timeout.py` (3); watchdog probe STAYS as
+defense-in-depth. See [[project_rns_fork_shipped_2026_05_30]].
+
+**Recovery**: `sudo systemctl restart rnsd.service`, then restart
+RNS-using services (meshforge-map, meshforge-echo, tracer).
+
+**Operator detection recipe**:
+```bash
+# rnstatus hangs but the listener still accepts? (the #72 shape)
+timeout 8 rnstatus >/dev/null 2>&1 || echo "rnstatus RPC wedged"
+sudo ss -xnpl | grep '@rns/'   # listener present + owned by rnsd
+# Watchdog signal:
+curl -s http://127.0.0.1:5000/api/status | jq \
+  '.watchdog.signals[]? | select(.class=="rns_rpc_unresponsive")'
+```
+
+**Tests**: `TestProbeRnsRpcResponsive` in `tests/test_watchdog_probes.py`
+(9): timed_out→wedge; healthy/binary-missing/clean-down→None; standalone
+run_rnstatus path; plus parser-level timed_out flag + timeout_s plumbing.
+The closed-enum gate `test_signal_classes_closed_enum_is_documented` was
+bumped with the new class.

@@ -266,16 +266,50 @@ fi
 # Deploy user-level service templates
 REAL_USER="${SUDO_USER:-$USER}"
 REAL_HOME=$(eval echo "~${REAL_USER}")
+REAL_UID="$(id -u "${REAL_USER}" 2>/dev/null || echo "")"
 USER_SYSTEMD_DIR="${REAL_HOME}/.config/systemd/user"
+
+# User-scope systemctl that bridges a sudo/root context to the operator's
+# user bus (Issue #45 documented incantation, shared with install_nomadnet.sh).
+# Used to daemon-reload + restart changed USER units so a `git pull` actually
+# lands the new code on the running daemon (the defect: nothing restarted the
+# mini user units before, leaving the daemon on OLD code until a hand-restart).
+run_user_systemctl() {
+    if [[ "$(id -un)" == "${REAL_USER}" ]]; then
+        systemctl --user "$@"
+    elif [[ -n "${REAL_UID}" ]]; then
+        sudo -u "${REAL_USER}" -H \
+            env "XDG_RUNTIME_DIR=/run/user/${REAL_UID}" \
+                "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${REAL_UID}/bus" \
+            systemctl --user "$@"
+    else
+        return 1
+    fi
+}
+
+USER_SVC_UPDATED=false
 if [[ -d "$INSTALL_DIR/templates/systemd" ]]; then
     mkdir -p "$USER_SYSTEMD_DIR"
+    # *-user.service templates map to <name>.service (existing behavior).
     for tmpl in "$INSTALL_DIR/templates/systemd/"*-user.service; do
         if [[ -f "$tmpl" ]]; then
             svc_name=$(basename "$tmpl" | sed 's/-user\.service/.service/')
             cp "$tmpl" "$USER_SYSTEMD_DIR/$svc_name" 2>/dev/null || true
         fi
     done
+    # mini-dudeai user units have NO -user suffix, so the loop above misses
+    # them; enumerate them explicitly (service + dream service/timer). Copy
+    # 1:1 — the unit names match the template names exactly.
+    for mini_tmpl in \
+        "$INSTALL_DIR/templates/systemd/meshforge-mini-dudeai.service" \
+        "$INSTALL_DIR/templates/systemd/meshforge-mini-dudeai-dream.service" \
+        "$INSTALL_DIR/templates/systemd/meshforge-mini-dudeai-dream.timer"; do
+        if [[ -f "$mini_tmpl" ]]; then
+            cp "$mini_tmpl" "$USER_SYSTEMD_DIR/$(basename "$mini_tmpl")" 2>/dev/null || true
+        fi
+    done
     chown -R "${REAL_USER}:" "$USER_SYSTEMD_DIR" 2>/dev/null || true
+    USER_SVC_UPDATED=true
     echo -e "  ${GREEN}✓ User service templates deployed${NC}"
 fi
 
@@ -283,6 +317,24 @@ fi
 if $SVC_UPDATED; then
     systemctl daemon-reload 2>/dev/null || true
     echo -e "  ${GREEN}✓ systemctl daemon-reload${NC}"
+fi
+
+# Restart changed USER units on the operator's bus so the running daemon picks
+# up the new code. try-restart only touches an already-active unit, so an
+# operator-disabled/stopped mini daemon stays stopped (intent honored). Without
+# this step the git pull above leaves the daemon on OLD code until a manual
+# restart — the deploy gap this fix closes.
+if $USER_SVC_UPDATED; then
+    if run_user_systemctl daemon-reload 2>/dev/null; then
+        # mini-dudeai is the daemon to refresh on code change; the dream
+        # .timer pulls a fresh oneshot at its next fire, so it needs no
+        # restart here.
+        run_user_systemctl try-restart meshforge-mini-dudeai.service 2>/dev/null || true
+        echo -e "  ${GREEN}✓ mini-dudeai user unit refreshed (try-restart)${NC}"
+    else
+        echo -e "  ${YELLOW}⚠ Could not reach the operator user bus to restart mini-dudeai.${NC}"
+        echo -e "  ${YELLOW}  As ${REAL_USER}: systemctl --user restart meshforge-mini-dudeai.service${NC}"
+    fi
 fi
 
 # ─────────────────────────────────────────────────────────────────

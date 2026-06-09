@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from .history import _rotate_if_needed
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Status vocabulary + artifact names
@@ -51,6 +53,12 @@ DEGRADED = "degraded"
 STATE_FILE = "mini_dudeai_state.json"
 HISTORY_FILE = "mini_dudeai_history.jsonl"
 DELTAS_FILE = "mini_dudeai_memory_deltas.jsonl"
+
+# Cap for the append-only honesty ledger (`--ledger`). One verdict line per
+# audit run; left unbounded it grows ~30 KB/day with no ceiling. 2 MB is
+# generous — many weeks of forensic verdicts — but bounded. Rotation keeps the
+# most-recent verdicts (the ones an operator/cron actually cares about).
+DEFAULT_LEDGER_MAX_BYTES = 2_000_000  # 2 MB
 
 # A mini --once fire is expected hourly; allow ~1.5 cycles before a stale
 # state means "claims state but isn't actually ticking". Overridable.
@@ -507,8 +515,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     report = run_audit(ctx)
 
     if args.ledger:
+        ledger_path = os.path.expanduser(args.ledger)
+        # Bound the append-only ledger before writing — keep the most-recent
+        # verdicts, never drop the line we're about to add. Rotation failure is
+        # non-fatal (the append still proceeds, matching the warning posture).
+        _rotate_if_needed(ledger_path, DEFAULT_LEDGER_MAX_BYTES)
         try:
-            with open(os.path.expanduser(args.ledger), "a", encoding="utf-8") as fh:
+            with open(ledger_path, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(report.to_dict(), separators=(",", ":")) + "\n")
         except OSError as exc:
             print(f"warning: could not append ledger: {exc}", file=sys.stderr)

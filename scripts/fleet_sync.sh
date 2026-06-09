@@ -337,6 +337,71 @@ sync_repo() {
     return 0
 }
 
+# sync_user_unit <short> <repo_path> <unit_name> <pre_head>
+# USER-bus sibling of sync_repo for operator-scope units (no system unit,
+# no sudo). The mini-dudeai daemon runs as a `systemctl --user` unit; nothing
+# restarted it after a git pull before this, so it sat on OLD code until a
+# hand-restart. Same code-vs-docs restart gate + try-restart (honor disabled)
+# semantics as sync_repo, but on the user bus.
+#
+# The remote recipe runs as the operator over SSH; `systemctl --user` needs
+# XDG_RUNTIME_DIR. Non-interactive SSH may not set it, so derive it from the
+# operator uid and export it for the call.
+sync_user_unit() {
+    local short="$1" repo="$2" unit="$3" pre_head="$4"
+
+    if [ ! -d "$repo/.git" ]; then
+        echo "SKIP $short no_repo"
+        return 0
+    fi
+
+    # The repo was already pulled by sync_repo above (same path); compare the
+    # caller-pinned pre-pull HEAD to the now-current HEAD using the same
+    # code-vs-docs include list. No commits / docs-only -> no restart.
+    local new_head_full new_head
+    new_head_full=$(cd "$repo" 2>/dev/null && git rev-parse HEAD 2>/dev/null || echo "")
+    new_head=$(cd "$repo" 2>/dev/null && git rev-parse --short HEAD 2>/dev/null || echo "?")
+
+    if [ -z "$pre_head" ] || [ "$pre_head" = "$new_head_full" ]; then
+        echo "PASS $short $new_head unchanged"
+        return 0
+    fi
+    if ! (cd "$repo" 2>/dev/null && git diff --name-only "$pre_head" "$new_head_full" 2>/dev/null \
+            | grep -qE "^src/|^pyproject\.toml$|^requirements.*\.txt$"); then
+        echo "PASS $short $new_head docs_only"
+        return 0
+    fi
+
+    local uid xdg
+    uid=$(id -u 2>/dev/null || echo "")
+    xdg="${XDG_RUNTIME_DIR:-}"
+    if [ -z "$xdg" ] && [ -n "$uid" ]; then
+        xdg="/run/user/$uid"
+    fi
+
+    if ! XDG_RUNTIME_DIR="$xdg" systemctl --user list-unit-files "${unit}.service" >/dev/null 2>&1; then
+        echo "PASS $short $new_head no_unit"
+        return 0
+    fi
+    # try-restart only acts on an already-active unit; an operator-disabled
+    # mini daemon stays stopped.
+    if XDG_RUNTIME_DIR="$xdg" systemctl --user try-restart "${unit}.service" >/dev/null 2>uunit.err; then
+        rm -f uunit.err
+        if XDG_RUNTIME_DIR="$xdg" systemctl --user is-active "${unit}.service" >/dev/null 2>&1; then
+            echo "PASS $short $new_head restarted"
+        else
+            echo "PASS $short $new_head not_running"
+        fi
+    else
+        local emsg
+        emsg=$(tr "\n" "|" < uunit.err | head -c 200)
+        rm -f uunit.err
+        echo "FAIL $short user_restart $emsg"
+        return 1
+    fi
+    return 0
+}
+
 # Run all three syncs even if one fails so a broken meshforge-maps does not
 # mask a successful meshforge update. meshforge-map is the singular :5000
 # map daemon from this repo (separate from the :8808 sister meshforge-maps);
@@ -361,6 +426,11 @@ sync_repo meshforge-map   /opt/meshforge       meshforge-map     "$MF_PRE_HEAD" 
 # src/utils/watchdog_probes.py + src/utils/watchdog_actions.py.
 # Operator-disabled units stay disabled (try-restart semantics).
 sync_repo meshforge-watchdog /opt/meshforge   meshforge-watchdog "$MF_PRE_HEAD"     || rc1c=$?
+# mini-dudeai runs on the USER bus (systemctl --user), not as a system unit,
+# so sync_repo's sudo try-restart can't reach it. This user-bus sibling picks
+# up src/mini_dudeai/* code changes from the same /opt/meshforge pull, so a git
+# pull actually lands new mini code on the running daemon (the deploy gap).
+sync_user_unit meshforge-mini-dudeai /opt/meshforge meshforge-mini-dudeai "$MF_PRE_HEAD" || rc1d=$?
 sync_repo meshforge-maps  /opt/meshforge-maps  meshforge-maps    "$MFMAPS_PRE_HEAD" || rc2=$?
 
 # Smoke: catch rollup self-loopback in ~/.config/meshanchor/fleet.json.
@@ -667,11 +737,76 @@ sync_local_unit() {
     fi
 }
 
+# USER-bus sibling of sync_local_unit. mini-dudeai runs as a `systemctl --user`
+# unit on this box too, so the sudo system-bus restart above can't reach it.
+# fleet_sync runs AS the operator here (not over SSH), so `systemctl --user`
+# works natively. Same proc-mtime vs newest-code-commit staleness check.
+sync_local_user_unit() {
+    local unit="$1" repo="$2"
+    local self_tag
+    self_tag="self ($(hostname -s))"
+
+    if ! systemctl --user list-unit-files "${unit}.service" 2>/dev/null | grep -q "$unit"; then
+        return 0  # not installed locally — silent skip
+    fi
+    if ! systemctl --user is-active "${unit}.service" >/dev/null 2>&1; then
+        return 0  # honor operator-disabled / not-running units
+    fi
+    if [ ! -d "$repo/.git" ]; then
+        return 0
+    fi
+
+    local pid daemon_started newest_code_commit now
+    pid="$(systemctl --user show "${unit}.service" -p MainPID --value 2>/dev/null)"
+    if [ -z "$pid" ] || [ "$pid" = "0" ]; then
+        return 0
+    fi
+    daemon_started="$(stat -c %Y "/proc/$pid" 2>/dev/null || echo 0)"
+    if [ "$daemon_started" = "0" ]; then
+        return 0
+    fi
+
+    newest_code_commit="$(git -C "$repo" log -1 --format=%ct \
+        -- 'src/*' 'pyproject.toml' 'requirements*.txt' 2>/dev/null)"
+    if [ -z "$newest_code_commit" ]; then
+        return 0
+    fi
+
+    if [ "$newest_code_commit" -le "$daemon_started" ]; then
+        printf '[%-30s] PASS %s current (no restart needed)\n' \
+            "$self_tag" "$unit"
+        action_pass=$((action_pass + 1))
+        return 0
+    fi
+
+    if [ "$NO_RESTART" = "1" ]; then
+        printf '[%-30s] SKIP %s self-restart suppressed (--no-restart; code changed)\n' \
+            "$self_tag" "$unit"
+        action_skip=$((action_skip + 1))
+        return 0
+    fi
+
+    now="$(date +%s)"
+    local age_s=$(( now - daemon_started ))
+    local lag_s=$(( newest_code_commit - daemon_started ))
+    if systemctl --user restart "${unit}.service" >/dev/null 2>&1; then
+        printf '[%-30s] PASS %s restarted (was %ds old, %ds behind code)\n' \
+            "$self_tag" "$unit" "$age_s" "$lag_s"
+        action_pass=$((action_pass + 1))
+    else
+        printf '[%-30s] FAIL %s user-restart (systemctl --user error)\n' \
+            "$self_tag" "$unit"
+        action_fail=$((action_fail + 1))
+    fi
+}
+
 echo
 echo "Self-sync (this box):"
 sync_local_unit meshforge-gateway /opt/meshforge
 sync_local_unit meshforge-map     /opt/meshforge
 sync_local_unit meshforge-maps    /opt/meshforge-maps
+# mini-dudeai is a USER unit — restart it on the user bus when its code changed.
+sync_local_user_unit meshforge-mini-dudeai /opt/meshforge
 
 # Self-side fleet-config smokes. Mirrors the remote checks so the
 # canonical box (which fleet_hosts deliberately excludes) gets the same

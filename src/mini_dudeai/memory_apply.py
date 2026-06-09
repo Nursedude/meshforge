@@ -43,6 +43,7 @@ flagged mini-origin auto-trust as a day-one provenance-rot backdoor).
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import tempfile
@@ -50,12 +51,34 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 ALLOWED_MEM_TYPES = ("user", "feedback", "project", "reference")
 ALLOWED_ORIGINS = ("mini", "claude", "operator")
+
+#: Soft cap (bytes) on the MEMORY.md index. The SessionStart context loader
+#: truncates the index when it exceeds the ~24.4 KB load limit, silently
+#: dropping every pointer line below the cut. We warn (never block) when an
+#: append crosses this cap so the operator/cloud-session knows to demote a
+#: stale entry to MEMORY_ARCHIVE.md before the next tick. A small headroom
+#: margin below the real 24,985-byte limit leaves room for one more line.
+#: Overridable per-call (size_limit=) and via the MINI_MEMORY_INDEX_LIMIT_BYTES
+#: env var so tests can exercise the guard with a tiny cap.
+MEMORY_INDEX_SOFT_LIMIT_BYTES = 24_000
+
+#: Env var name that overrides MEMORY_INDEX_SOFT_LIMIT_BYTES at runtime.
+MEMORY_INDEX_LIMIT_ENV = "MINI_MEMORY_INDEX_LIMIT_BYTES"
+
+#: Filename of the cold archive the demote operation moves stale pointers into.
+ARCHIVE_FILENAME = "MEMORY_ARCHIVE.md"
+
+#: Note appended to MEMORY.md (as a comment) in place of a demoted pointer so
+#: the move leaves a breadcrumb instead of a silent deletion.
+DEMOTE_BREADCRUMB_PREFIX = "<!-- demoted to MEMORY_ARCHIVE.md:"
 
 #: mem_types that must carry the Why / How-to-apply convention in the body.
 TYPES_REQUIRING_WHY_HOWTO = ("feedback", "project")
@@ -126,6 +149,12 @@ class ApplyResult:
       * ``skipped_exists`` — file already present, no overwrite requested.
       * ``dry_run``        — nothing touched; ``content`` holds would-be text.
       * ``invalid``        — validation failed; nothing written.
+      * ``demoted``        — a pointer line was moved to MEMORY_ARCHIVE.md.
+
+    ``index_warning`` is set (and a WARNING is logged) when the MEMORY.md index
+    is over its soft size cap. It NEVER blocks the write — losing a memory is
+    worse than an over-cap index. The operator/cloud-session reacts by demoting
+    a stale entry via :func:`demote_memory`.
     """
 
     status: str
@@ -133,6 +162,7 @@ class ApplyResult:
     index_updated: bool = False
     reason: str = ""
     content: Optional[str] = None
+    index_warning: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +366,61 @@ def _index_path(memory_dir: Path) -> Path:
     return Path(memory_dir) / INDEX_FILENAME
 
 
+def _archive_path(memory_dir: Path) -> Path:
+    return Path(memory_dir) / ARCHIVE_FILENAME
+
+
+def _resolve_index_limit(size_limit: Optional[int]) -> int:
+    """Return the effective soft cap: explicit arg > env var > module default.
+
+    A non-positive or unparseable override falls through to the next source so
+    a bad env value can never disable the guard silently.
+    """
+    if size_limit is not None and size_limit > 0:
+        return size_limit
+    env_raw = os.environ.get(MEMORY_INDEX_LIMIT_ENV)
+    if env_raw:
+        try:
+            env_val = int(env_raw)
+        except ValueError:
+            env_val = 0
+        if env_val > 0:
+            return env_val
+    return MEMORY_INDEX_SOFT_LIMIT_BYTES
+
+
+def _index_size_bytes(memory_dir: Path) -> int:
+    """Size of MEMORY.md in bytes (0 if absent/unreadable)."""
+    index = _index_path(memory_dir)
+    try:
+        return index.stat().st_size
+    except OSError:
+        return 0
+
+
+def check_index_size(
+    memory_dir: Path, *, size_limit: Optional[int] = None
+) -> Optional[str]:
+    """Return a WARNING string if MEMORY.md is over its soft cap, else None.
+
+    Also logs the warning at WARNING level. Read-only: never touches disk
+    beyond a stat(). Used by the apply path (post-append) and standalone by an
+    operator/cloud-session that wants to check the index without writing.
+    """
+    limit = _resolve_index_limit(size_limit)
+    size = _index_size_bytes(memory_dir)
+    if size <= limit:
+        return None
+    warning = (
+        f"MEMORY.md index is {size:,} bytes, over the {limit:,}-byte soft cap. "
+        "Pointer lines below the context-load cut are NOT auto-loaded — demote "
+        "a stale entry to MEMORY_ARCHIVE.md (demote_memory) to bring it back "
+        "under limit."
+    )
+    logger.warning(warning)
+    return warning
+
+
 def _read_index(memory_dir: Path) -> str:
     index = _index_path(memory_dir)
     if not index.exists():
@@ -376,6 +461,7 @@ def apply_memory_candidate(
     *,
     dry_run: bool = False,
     allow_overwrite: bool = False,
+    size_limit: Optional[int] = None,
 ) -> ApplyResult:
     """Materialize ``candidate`` into ``memory_dir`` (file + index line).
 
@@ -389,6 +475,11 @@ def apply_memory_candidate(
         with the would-be file content in ``result.content``; touch nothing.
       * Otherwise write the file atomically, then append the MEMORY.md line
         only if an entry for the file isn't already present.
+
+    Size guard: after appending an index line, the MEMORY.md size is checked
+    against the soft cap (``size_limit`` arg > env var > module default). If it
+    is over-cap, ``result.index_warning`` is set and a WARNING logged — the
+    append is NEVER blocked (losing a memory is worse than an over-cap index).
     """
     memory_dir = Path(memory_dir)
 
@@ -403,12 +494,16 @@ def apply_memory_candidate(
     if dry_run:
         index_text = _read_index(memory_dir)
         would_update_index = not _index_has_entry(index_text, target.name)
+        # Surface a pre-existing over-cap index even on a dry run so the
+        # operator sees it before committing the real write.
+        warning = check_index_size(memory_dir, size_limit=size_limit)
         return ApplyResult(
             status="dry_run",
             path=target,
             index_updated=would_update_index,
             reason="dry_run: nothing written",
             content=content,
+            index_warning=warning,
         )
 
     if target.exists() and not allow_overwrite:
@@ -418,6 +513,7 @@ def apply_memory_candidate(
             index_updated=False,
             reason=f"{target.name} already exists (allow_overwrite=False)",
             content=content,
+            index_warning=check_index_size(memory_dir, size_limit=size_limit),
         )
 
     _atomic_write(target, content)
@@ -428,12 +524,16 @@ def apply_memory_candidate(
         _append_index_line(memory_dir, index_line)
         index_updated = True
 
+    # Post-append size guard — surface but never block (see docstring).
+    warning = check_index_size(memory_dir, size_limit=size_limit)
+
     return ApplyResult(
         status="written",
         path=target,
         index_updated=index_updated,
         reason="written",
         content=content,
+        index_warning=warning,
     )
 
 
@@ -595,6 +695,121 @@ def _supersede_index_line(memory_dir: Path, filename: str) -> bool:
     return True
 
 
+def demote_memory(name: str, memory_dir: Path) -> ApplyResult:
+    """Move a stale one-line pointer from MEMORY.md to MEMORY_ARCHIVE.md.
+
+    Mechanizes the "demote oldest/shipped entries to the archive rather than
+    letting the index grow" discipline that keeps MEMORY.md under the
+    context-load cap. The canonical ``<name>.md`` file is NEVER touched — only
+    the index pointer moves; the archive stays a cold, grep-able store.
+
+    Operation (atomic, content-preserving, idempotent):
+      * Find the ``- [...](<name>.md) — ...`` pointer line in MEMORY.md.
+      * Append it verbatim to MEMORY_ARCHIVE.md (creating the file if needed,
+        with a header on first write). If the archive already carries an
+        identical line for this name, it is not duplicated (idempotent).
+      * Replace the line in MEMORY.md with a one-line breadcrumb comment so the
+        move is visible, not a silent deletion. (A second demote of the same
+        name is a no-op: the pointer is already a breadcrumb.)
+      * Both files are written atomically (tmp + fsync + os.replace).
+
+    Mirrors the supersede() shape: validate-or-``invalid``, never raises,
+    never deletes content.
+    """
+    memory_dir = Path(memory_dir)
+
+    if not isinstance(name, str) or not _KEBAB_RE.match(name):
+        return ApplyResult(
+            status="invalid",
+            reason=f"name {name!r} is not kebab-case",
+        )
+
+    filename = f"{name}.md"
+    index_text = _read_index(memory_dir)
+    breadcrumb_marker = f"{DEMOTE_BREADCRUMB_PREFIX} {filename} -->"
+    if not _index_has_entry(index_text, filename):
+        # Already demoted? A prior breadcrumb means the move happened — that's
+        # an idempotent no-op, not an error.
+        if breadcrumb_marker in index_text:
+            return ApplyResult(
+                status="demoted",
+                index_updated=False,
+                reason=f"{filename} already demoted (breadcrumb present)",
+            )
+        return ApplyResult(
+            status="invalid",
+            reason=f"no MEMORY.md pointer line for {filename}; nothing to demote",
+        )
+
+    needle = f"]({filename})"
+    lines = index_text.split("\n")
+    pointer_line: Optional[str] = None
+    pointer_idx = -1
+    for i, line in enumerate(lines):
+        # Only a real pointer line (markdown list item), not a prior breadcrumb.
+        if needle in line and line.lstrip().startswith("- ["):
+            pointer_line = line
+            pointer_idx = i
+            break
+
+    if pointer_line is None:
+        # The entry is already demoted (breadcrumb only) — idempotent no-op.
+        return ApplyResult(
+            status="demoted",
+            index_updated=False,
+            reason=f"{filename} already demoted (breadcrumb present)",
+        )
+
+    # --- Append to the archive (idempotent on the exact line). ---
+    archive = _archive_path(memory_dir)
+    try:
+        existing_archive = (
+            archive.read_text(encoding="utf-8") if archive.exists() else ""
+        )
+    except OSError as exc:
+        return ApplyResult(
+            status="invalid",
+            reason=f"could not read {ARCHIVE_FILENAME}: {exc}",
+        )
+
+    archive_changed = False
+    pointer_body = pointer_line.rstrip("\n")
+    if pointer_body not in existing_archive:
+        if not existing_archive:
+            archive_text = (
+                "# MeshForge Memory Archive\n\n"
+                "> Cold store of demoted index pointers (grep-able). Moved here "
+                "by demote_memory() to keep MEMORY.md under the context-load "
+                "cap. The canonical `<name>.md` files are unaffected.\n\n"
+                + pointer_body
+                + "\n"
+            )
+        else:
+            archive_text = existing_archive
+            if not archive_text.endswith("\n"):
+                archive_text += "\n"
+            archive_text += pointer_body + "\n"
+        _atomic_write(archive, archive_text)
+        archive_changed = True
+
+    # --- Replace the pointer in MEMORY.md with a breadcrumb comment. ---
+    lines[pointer_idx] = f"{DEMOTE_BREADCRUMB_PREFIX} {filename} -->"
+    new_index = "\n".join(lines)
+    if not new_index.endswith("\n"):
+        new_index += "\n"
+    _atomic_write(_index_path(memory_dir), new_index)
+
+    reason = "demoted to archive" if archive_changed else (
+        "demoted (line already in archive; MEMORY.md breadcrumbed)"
+    )
+    return ApplyResult(
+        status="demoted",
+        index_updated=True,
+        reason=reason,
+        content=pointer_body,
+    )
+
+
 # ---------------------------------------------------------------------------
 # CLI entrypoint (thin — lets a cron / cadence session invoke without inlining
 # Python). Logic above is unchanged; this only wires argparse to it.
@@ -630,15 +845,16 @@ def candidate_from_dict(data: dict) -> MemoryCandidate:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    """CLI: apply a candidate JSON, or supersede an existing memory.
+    """CLI: apply a candidate JSON, supersede, or demote an existing memory.
 
     Apply:    python3 -m mini_dudeai.memory_apply --candidate c.json --dir DIR
                                                   [--dry-run] [--allow-overwrite]
     Supersede: python3 -m mini_dudeai.memory_apply --supersede NAME --dir DIR
                                                    --note "..." [--superseded-by NAME]
                                                    [--date YYYY-MM-DD]
+    Demote:   python3 -m mini_dudeai.memory_apply --demote NAME --dir DIR
 
-    Exit code: 0 on written/dry_run/skipped_exists, 1 on invalid.
+    Exit code: 0 on written/dry_run/skipped_exists/demoted, 1 on invalid.
     """
     import argparse
     import json
@@ -646,7 +862,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(
         prog="mini-dudeai-memory-apply",
         description="Materialize a memory candidate into the canonical store, "
-                    "or supersede an existing one. Deterministic; provenance "
+                    "supersede an existing one, or demote a stale index "
+                    "pointer to MEMORY_ARCHIVE.md. Deterministic; provenance "
                     "gate barred mini-origin verified=True writes.",
     )
     p.add_argument("--dir", required=True,
@@ -657,6 +874,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help="Path to a candidate JSON file to apply.")
     g.add_argument("--supersede", metavar="NAME",
                    help="kebab-case name of an existing memory to supersede.")
+    g.add_argument("--demote", metavar="NAME",
+                   help="kebab-case name whose MEMORY.md pointer to move to "
+                        "MEMORY_ARCHIVE.md (keeps the index under the load cap).")
     p.add_argument("--dry-run", action="store_true",
                    help="Render but write nothing (apply only).")
     p.add_argument("--allow-overwrite", action="store_true",
@@ -677,6 +897,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             args.supersede, memory_dir,
             superseded_by=args.superseded_by, note=args.note, date=args.date,
         )
+    elif args.demote:
+        result = demote_memory(args.demote, memory_dir)
     else:
         try:
             with open(os.path.expanduser(args.candidate), encoding="utf-8") as fh:
@@ -696,6 +918,8 @@ def main(argv: Optional[List[str]] = None) -> int:
           + (f" -> {result.path}" if result.path else "")
           + (" [index updated]" if result.index_updated else ""),
           file=stream)
+    if result.index_warning:
+        print(f"WARNING: {result.index_warning}", file=_stderr())
     if result.status == "dry_run" and result.content:
         print("--- would write ---")
         print(result.content, end="")
@@ -710,6 +934,9 @@ def _stderr():
 __all__ = [
     "ALLOWED_MEM_TYPES",
     "ALLOWED_ORIGINS",
+    "MEMORY_INDEX_SOFT_LIMIT_BYTES",
+    "MEMORY_INDEX_LIMIT_ENV",
+    "ARCHIVE_FILENAME",
     "Provenance",
     "MemoryCandidate",
     "ApplyResult",
@@ -718,6 +945,8 @@ __all__ = [
     "render_index_line",
     "apply_memory_candidate",
     "supersede_memory",
+    "demote_memory",
+    "check_index_size",
     "candidate_from_dict",
     "main",
 ]

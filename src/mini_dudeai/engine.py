@@ -118,6 +118,52 @@ class RuleEngine:
         from .candidate import validate_rules_document
         return validate_rules_document(data)
 
+    @property
+    def bak_path(self) -> str:
+        """Single-slot backup of the immediately-prior canonical rules.
+
+        Written by _promote_candidate BEFORE it overwrites the canonical
+        file, so the last good ruleset is always recoverable (restore_backup)
+        after a promotion that turns out wrong."""
+        return self.rules_path + ".bak"
+
+    def _backup_canonical(self) -> None:
+        """Copy the current canonical rules to .bak atomically (tmp + replace).
+
+        Best-effort: a backup-write failure must not block promotion (the new
+        candidate already validated). First-run no-op: nothing to back up when
+        the canonical file doesn't exist yet."""
+        if not os.path.exists(self.rules_path):
+            return  # first run — no prior good version to preserve
+        try:
+            with open(self.rules_path, "rb") as src:
+                payload = src.read()
+            tmp = self.bak_path + ".tmp"
+            with open(tmp, "wb") as dst:
+                dst.write(payload)
+            os.replace(tmp, self.bak_path)
+        except OSError as e:
+            print(f"rules: backup of canonical before promote failed "
+                  f"(continuing): {type(e).__name__}: {e}", flush=True)
+
+    def restore_backup(self) -> dict:
+        """Restore the canonical rules from the single-slot .bak.
+
+        Recovery helper for a promotion that proved wrong — atomic copy of
+        .bak back over the canonical file. Returns {"restored": bool, ...}."""
+        if not os.path.exists(self.bak_path):
+            return {"restored": False, "reason": "no backup present"}
+        try:
+            with open(self.bak_path, "rb") as src:
+                payload = src.read()
+            tmp = self.rules_path + ".restore.tmp"
+            with open(tmp, "wb") as dst:
+                dst.write(payload)
+            os.replace(tmp, self.rules_path)
+            return {"restored": True}
+        except OSError as e:
+            return {"restored": False, "reason": f"restore failed: {e}"}
+
     def _promote_candidate(self) -> dict | None:
         if not self.candidate_path or not os.path.exists(self.candidate_path):
             return None
@@ -127,6 +173,9 @@ class RuleEngine:
         _, errs = self._validate_rules(cand)
         if errs:
             return {"promoted": False, "reason": f"validation errors: {errs[:3]}"}
+        # Preserve the immediately-prior good rules before the destructive
+        # overwrite, so a bad-but-valid candidate is recoverable (restore_backup).
+        self._backup_canonical()
         try:
             os.replace(self.candidate_path, self.rules_path)
             return {"promoted": True}

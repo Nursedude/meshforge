@@ -286,6 +286,49 @@ def test_main_writes_ledger_line(tmp_path):
     assert "healthy" in rec and "checks" in rec
 
 
+# --- ledger rotation (B3 risk #3: the unbounded ~30 KB/day append) -----------
+
+def test_main_rotates_oversized_ledger_before_appending(tmp_path, monkeypatch):
+    """An oversized honesty ledger is trimmed under its cap before the new
+    verdict is written; the freshest verdict survives and every line stays
+    valid JSON (the on-disk format is unchanged, only bounded)."""
+    monkeypatch.setattr(audit, "DEFAULT_LEDGER_MAX_BYTES", 5_000)
+    _write_state(tmp_path, last_tick_ts=time.time())
+    ledger = tmp_path / "ledger.jsonl"
+
+    # seed the ledger over the cap with tagged old verdict lines
+    with open(ledger, "w", encoding="utf-8") as fh:
+        for i in range(500):
+            fh.write(json.dumps({"seq": i, "healthy": True,
+                                 "pad": "x" * 40}) + "\n")
+    assert ledger.stat().st_size > 5_000
+
+    audit.main(["--dir", str(tmp_path), "--freshness", "5400",
+                "--ledger", str(ledger)])
+
+    assert ledger.stat().st_size <= 5_000
+    lines = [l for l in ledger.read_text().splitlines() if l.strip()]
+    parsed = [json.loads(l) for l in lines]      # every line still valid JSON
+    # the new verdict (an audit report dict) is the last line
+    assert "checks" in parsed[-1] and "healthy" in parsed[-1]
+    # oldest seeded verdict was dropped; some newer seeded ones survive
+    seqs = [p.get("seq") for p in parsed if "seq" in p]
+    assert 0 not in seqs
+    assert max(seqs) == 499
+
+
+def test_main_under_cap_ledger_not_rotated(tmp_path, monkeypatch):
+    """A small ledger just grows by one line — no rotation churn."""
+    monkeypatch.setattr(audit, "DEFAULT_LEDGER_MAX_BYTES", 2_000_000)
+    _write_state(tmp_path, last_tick_ts=time.time())
+    ledger = tmp_path / "ledger.jsonl"
+    audit.main(["--dir", str(tmp_path), "--freshness", "5400",
+                "--ledger", str(ledger)])
+    audit.main(["--dir", str(tmp_path), "--freshness", "5400",
+                "--ledger", str(ledger)])
+    assert len([l for l in ledger.read_text().splitlines() if l.strip()]) == 2
+
+
 def test_run_audit_never_crashes_on_check_exception(tmp_path, monkeypatch):
     """An audit organ that crashes is its own dishonesty. A check that
     raises must be recorded DEGRADED, not propagate."""

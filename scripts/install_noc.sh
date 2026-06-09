@@ -1751,6 +1751,65 @@ systemctl daemon-reload
 
 echo -e "  ${GREEN}✓ System integration complete${NC}"
 
+# ─────────────────────────────────────────────────────────────────
+# Enroll the mini-dudeai USER units (the local rule-loop watcher).
+# These run on the operator's user bus (systemctl --user), NOT as system
+# units, so they need explicit copy + daemon-reload + enable on the user bus.
+# Idempotent: copy is overwrite-safe, enable --now is a no-op if already on.
+# The daemon needs ~/.config/meshforge/mini_dudeai.env (operator-specific
+# ntfy topic, MF014) before it can pass the preset's MINI_DUDEAI_NTFY_TOPIC
+# guard; until that exists the unit Restart=on-failure-loops harmlessly and
+# the operator wires the env file post-install.
+# ─────────────────────────────────────────────────────────────────
+MINI_USER="$(resolve_operator_user)"
+MINI_HOME="$(getent passwd "$MINI_USER" | cut -d: -f6)"
+MINI_UID="$(id -u "$MINI_USER" 2>/dev/null || echo "")"
+MINI_USER_SYSTEMD_DIR="${MINI_HOME}/.config/systemd/user"
+
+# User-scope systemctl bridged from this sudo/root context (Issue #45
+# incantation; same shape as install_nomadnet.sh / update.sh).
+mini_user_systemctl() {
+    if [[ "$(id -un)" == "${MINI_USER}" ]]; then
+        systemctl --user "$@"
+    elif [[ -n "${MINI_UID}" ]]; then
+        sudo -u "${MINI_USER}" -H \
+            env "XDG_RUNTIME_DIR=/run/user/${MINI_UID}" \
+                "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${MINI_UID}/bus" \
+            systemctl --user "$@"
+    else
+        return 1
+    fi
+}
+
+MINI_TMPL_DIR="$INSTALL_DIR/templates/systemd"
+if [[ -f "$MINI_TMPL_DIR/meshforge-mini-dudeai.service" ]]; then
+    mkdir -p "$MINI_USER_SYSTEMD_DIR"
+    for mini_unit in meshforge-mini-dudeai.service \
+                     meshforge-mini-dudeai-dream.service \
+                     meshforge-mini-dudeai-dream.timer; do
+        if [[ -f "$MINI_TMPL_DIR/$mini_unit" ]]; then
+            cp "$MINI_TMPL_DIR/$mini_unit" "$MINI_USER_SYSTEMD_DIR/$mini_unit" 2>/dev/null || true
+        fi
+    done
+    chown -R "${MINI_USER}:" "$MINI_USER_SYSTEMD_DIR" 2>/dev/null || true
+
+    # Lingering keeps the user bus + units alive without an active login —
+    # required for a 24/7 watcher on a headless box.
+    loginctl enable-linger "$MINI_USER" 2>/dev/null || true
+
+    if mini_user_systemctl daemon-reload 2>/dev/null; then
+        # Enable+start the daemon and the nightly dream timer (the dream
+        # .service is pulled by its timer — enable the timer, not the service).
+        mini_user_systemctl enable --now meshforge-mini-dudeai.service 2>/dev/null || true
+        mini_user_systemctl enable --now meshforge-mini-dudeai-dream.timer 2>/dev/null || true
+        echo -e "  ${GREEN}✓ mini-dudeai user units enrolled (service + nightly dream timer)${NC}"
+    else
+        echo -e "  ${YELLOW}⚠ mini-dudeai units copied but the user bus was unreachable.${NC}"
+        echo -e "  ${YELLOW}  As ${MINI_USER}: systemctl --user daemon-reload && systemctl --user enable --now meshforge-mini-dudeai.service meshforge-mini-dudeai-dream.timer${NC}"
+    fi
+    echo -e "  ${YELLOW}  mini-dudeai needs ${MINI_HOME}/.config/meshforge/mini_dudeai.env (ntfy topic, MF014).${NC}"
+fi
+
 # Radio hardware already detected and configured above (ask_radio_type + SPI/USB setup)
 
 # ─────────────────────────────────────────────────────────────────

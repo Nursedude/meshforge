@@ -343,6 +343,113 @@ def test_candidate_rejected_when_invalid(tmp_path):
     assert candidate.exists()
 
 
+# === candidate promotion: single-slot backup + rollback (#6) ============
+
+def _promote_engine(tmp_path, prior_rules, candidate_rules):
+    """Build an engine with a canonical `prior_rules` and a candidate file."""
+    rules_path = _write_rules(tmp_path, prior_rules)
+    candidate = tmp_path / "rules.json.candidate"
+    candidate.write_text(json.dumps({"rules": candidate_rules}))
+    engine = RuleEngine(
+        sources=[StaticSource([])],
+        actions={"none": NoopAction()},
+        rules_path=rules_path,
+        state_path=str(tmp_path / "state.json"),
+        history_path=str(tmp_path / "history.jsonl"),
+        candidate_path=str(candidate),
+    )
+    return engine, rules_path
+
+
+def test_promotion_writes_bak_equal_to_prior(tmp_path):
+    """A successful promotion leaves a .bak byte-equal to the PRIOR canonical
+    rules — the immediately-prior good version is recoverable."""
+    prior = [{"id": "r1", "match": {"kind": "x"}, "action": {"kind": "none"}}]
+    cand = [{"id": "r2", "match": {"kind": "y"}, "action": {"kind": "none"}}]
+    engine, rules_path = _promote_engine(tmp_path, prior, cand)
+    prior_bytes = open(rules_path, "rb").read()  # capture before overwrite
+
+    engine.tick()
+
+    # canonical now carries the candidate
+    after = json.loads(open(rules_path).read())
+    assert [r["id"] for r in after["rules"]] == ["r2"]
+    # .bak preserves the prior good version, byte-for-byte
+    bak = rules_path + ".bak"
+    assert os.path.exists(bak)
+    assert open(bak, "rb").read() == prior_bytes
+    assert [r["id"] for r in json.loads(open(bak).read())["rules"]] == ["r1"]
+
+
+def test_rejected_candidate_leaves_canonical_and_bak_untouched(tmp_path):
+    """A malformed/rejected candidate must NOT overwrite canonical and must NOT
+    create (or alter) the .bak — only a real promotion touches the backup."""
+    prior = [{"id": "r1", "match": {"kind": "x"}, "action": {"kind": "none"}}]
+    engine, rules_path = _promote_engine(
+        tmp_path, prior, [{"id": "r2"}])  # missing match/action → invalid
+    bak = rules_path + ".bak"
+    assert not os.path.exists(bak)  # precondition
+
+    engine.tick()
+
+    after = json.loads(open(rules_path).read())
+    assert [r["id"] for r in after["rules"]] == ["r1"]   # canonical unchanged
+    assert not os.path.exists(bak)                        # no spurious backup
+
+
+def test_first_run_promotion_no_canonical_skips_bak(tmp_path):
+    """First-run case: no existing canonical file → promotion succeeds and
+    writes NO .bak (nothing prior to preserve)."""
+    candidate = tmp_path / "rules.json.candidate"
+    candidate.write_text(json.dumps({"rules": [
+        {"id": "r2", "match": {"kind": "y"}, "action": {"kind": "none"}}]}))
+    rules_path = str(tmp_path / "rules.json")  # does NOT exist yet
+    engine = RuleEngine(
+        sources=[StaticSource([])],
+        actions={"none": NoopAction()},
+        rules_path=rules_path,
+        state_path=str(tmp_path / "state.json"),
+        history_path=str(tmp_path / "history.jsonl"),
+        candidate_path=str(candidate),
+    )
+
+    engine.tick()
+
+    assert [r["id"] for r in json.loads(open(rules_path).read())["rules"]] == ["r2"]
+    assert not os.path.exists(rules_path + ".bak")  # no prior version existed
+
+
+def test_restore_backup_recovers_prior_rules(tmp_path):
+    """After a promotion, restore_backup() copies the .bak back over canonical —
+    the rollback path for a bad-but-valid candidate."""
+    prior = [{"id": "r1", "match": {"kind": "x"}, "action": {"kind": "none"}}]
+    cand = [{"id": "r2", "match": {"kind": "y"}, "action": {"kind": "none"}}]
+    engine, rules_path = _promote_engine(tmp_path, prior, cand)
+    engine.tick()
+    assert [r["id"] for r in json.loads(open(rules_path).read())["rules"]] == ["r2"]
+
+    res = engine.restore_backup()
+    assert res["restored"] is True
+    assert [r["id"] for r in json.loads(open(rules_path).read())["rules"]] == ["r1"]
+
+
+def test_restore_backup_without_backup_reports_false(tmp_path):
+    """restore_backup() with no .bak present is a safe no-op reporting restored=False."""
+    rules_path = _write_rules(tmp_path, [{"id": "r1", "match": {"kind": "x"},
+                                          "action": {"kind": "none"}}])
+    engine = RuleEngine(
+        sources=[StaticSource([])],
+        actions={"none": NoopAction()},
+        rules_path=rules_path,
+        state_path=str(tmp_path / "state.json"),
+        history_path=str(tmp_path / "history.jsonl"),
+    )
+    res = engine.restore_backup()
+    assert res["restored"] is False
+    # canonical untouched
+    assert [r["id"] for r in json.loads(open(rules_path).read())["rules"]] == ["r1"]
+
+
 # === observability ===============================================
 
 def test_fire_counter_increments(tmp_path):

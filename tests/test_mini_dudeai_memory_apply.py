@@ -12,9 +12,14 @@ import pytest
 
 from mini_dudeai.memory_apply import (
     ALLOWED_MEM_TYPES,
+    ARCHIVE_FILENAME,
+    MEMORY_INDEX_LIMIT_ENV,
+    MEMORY_INDEX_SOFT_LIMIT_BYTES,
     MemoryCandidate,
     Provenance,
     apply_memory_candidate,
+    check_index_size,
+    demote_memory,
     render_index_line,
     render_memory_file,
     supersede_memory,
@@ -685,3 +690,238 @@ def test_cli_supersede_requires_note(tmp_path, capsys):
     err = capsys.readouterr().err
     assert rc == 1
     assert "note" in err.lower()
+
+
+# ---------------------------------------------------------------------------
+# PART A1: MEMORY.md size guard (Defect #2 — index over-limit silent truncation)
+# ---------------------------------------------------------------------------
+
+
+def _seed_index_over(tmp_path, limit):
+    """Write a MEMORY.md whose size exceeds ``limit`` bytes."""
+    index = tmp_path / "MEMORY.md"
+    # One byte per 'x' plus the newline — pad past the cap.
+    index.write_text("x" * (limit + 50) + "\n", encoding="utf-8")
+    return index
+
+
+def test_check_index_size_none_when_under_cap(tmp_path):
+    (tmp_path / "MEMORY.md").write_text("- [a](a.md) — hook\n", encoding="utf-8")
+    assert check_index_size(tmp_path, size_limit=10_000) is None
+
+
+def test_check_index_size_none_when_index_absent(tmp_path):
+    # No MEMORY.md at all → size 0 → no warning.
+    assert check_index_size(tmp_path) is None
+
+
+def test_check_index_size_warns_over_cap(tmp_path):
+    _seed_index_over(tmp_path, 100)
+    warning = check_index_size(tmp_path, size_limit=100)
+    assert warning is not None
+    assert "over the" in warning
+    assert "MEMORY_ARCHIVE.md" in warning
+
+
+def test_check_index_size_uses_env_override(tmp_path, monkeypatch):
+    _seed_index_over(tmp_path, 80)
+    monkeypatch.setenv(MEMORY_INDEX_LIMIT_ENV, "80")
+    # No explicit arg → env value (80) governs → over cap → warns.
+    assert check_index_size(tmp_path) is not None
+
+
+def test_check_index_size_explicit_arg_beats_env(tmp_path, monkeypatch):
+    # Index is ~150 bytes; env says 80 (would warn) but explicit arg 10_000
+    # (would not) wins.
+    _seed_index_over(tmp_path, 80)
+    monkeypatch.setenv(MEMORY_INDEX_LIMIT_ENV, "80")
+    assert check_index_size(tmp_path, size_limit=10_000) is None
+
+
+def test_check_index_size_bad_env_falls_through_to_default(tmp_path, monkeypatch):
+    # A garbage env value must NOT disable the guard — fall through to default.
+    _seed_index_over(tmp_path, MEMORY_INDEX_SOFT_LIMIT_BYTES)
+    monkeypatch.setenv(MEMORY_INDEX_LIMIT_ENV, "not-an-int")
+    assert check_index_size(tmp_path) is not None
+
+
+def test_apply_warns_when_index_over_cap(tmp_path):
+    # Pre-seed a near-cap index so the append crosses a tiny cap.
+    (tmp_path / "MEMORY.md").write_text("- [a](a.md) — hook\n", encoding="utf-8")
+    cand = make_candidate(name="overcap-fact")
+    result = apply_memory_candidate(cand, tmp_path, size_limit=5)
+    # Append still succeeds — never blocked.
+    assert result.status == "written"
+    assert (tmp_path / "overcap-fact.md").exists()
+    # ...but the warning fires.
+    assert result.index_warning is not None
+    assert "soft cap" in result.index_warning
+
+
+def test_apply_no_warning_under_cap(tmp_path):
+    cand = make_candidate(name="undercap-fact")
+    result = apply_memory_candidate(cand, tmp_path, size_limit=10_000)
+    assert result.status == "written"
+    assert result.index_warning is None
+
+
+def test_apply_never_blocks_append_on_over_cap(tmp_path):
+    """Losing a memory is worse than an over-cap index — append must persist."""
+    cand = make_candidate(name="persist-fact")
+    result = apply_memory_candidate(cand, tmp_path, size_limit=1)
+    assert result.status == "written"
+    index = (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
+    assert "](persist-fact.md)" in index  # the line is really there
+    assert result.index_warning is not None
+
+
+def test_apply_logs_warning_at_warning_level(tmp_path, caplog):
+    import logging
+    cand = make_candidate(name="logged-fact")
+    with caplog.at_level(logging.WARNING, logger="mini_dudeai.memory_apply"):
+        apply_memory_candidate(cand, tmp_path, size_limit=1)
+    assert any("soft cap" in rec.message for rec in caplog.records)
+
+
+def test_apply_dry_run_surfaces_preexisting_over_cap(tmp_path):
+    _seed_index_over(tmp_path, 50)
+    cand = make_candidate(name="dry-overcap")
+    result = apply_memory_candidate(
+        cand, tmp_path, dry_run=True, size_limit=50
+    )
+    assert result.status == "dry_run"
+    assert result.index_warning is not None
+    # Dry run still touches nothing.
+    assert not (tmp_path / "dry-overcap.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# PART A2: demote_memory (mechanize the move-to-archive discipline)
+# ---------------------------------------------------------------------------
+
+
+def test_demote_moves_pointer_to_archive(tmp_path):
+    cand = make_candidate(name="stale-fact", index_hook="the stale hook")
+    apply_memory_candidate(cand, tmp_path)
+
+    result = demote_memory("stale-fact", tmp_path)
+    assert result.status == "demoted"
+    assert result.index_updated is True
+
+    index = (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
+    archive = (tmp_path / ARCHIVE_FILENAME).read_text(encoding="utf-8")
+
+    # Pointer line moved out of the index...
+    assert "- [Example Fact](stale-fact.md)" not in index
+    # ...into the archive verbatim...
+    assert "](stale-fact.md) — the stale hook" in archive
+    # ...with a breadcrumb left behind in the index.
+    assert "demoted to MEMORY_ARCHIVE.md: stale-fact.md" in index
+
+
+def test_demote_never_deletes_canonical_file(tmp_path):
+    cand = make_candidate(name="keepfile-fact")
+    apply_memory_candidate(cand, tmp_path)
+    demote_memory("keepfile-fact", tmp_path)
+    # The canonical .md is untouched.
+    assert (tmp_path / "keepfile-fact.md").exists()
+
+
+def test_demote_is_idempotent(tmp_path):
+    cand = make_candidate(name="idem-demote")
+    apply_memory_candidate(cand, tmp_path)
+
+    first = demote_memory("idem-demote", tmp_path)
+    assert first.status == "demoted"
+    archive_after_first = (tmp_path / ARCHIVE_FILENAME).read_text(encoding="utf-8")
+
+    second = demote_memory("idem-demote", tmp_path)
+    assert second.status == "demoted"
+    assert second.index_updated is False  # nothing more to move
+    archive_after_second = (tmp_path / ARCHIVE_FILENAME).read_text(encoding="utf-8")
+
+    # Archive not duplicated by the second call.
+    assert archive_after_first == archive_after_second
+    assert archive_after_second.count("](idem-demote.md)") == 1
+
+
+def test_demote_loses_no_content(tmp_path):
+    """The exact pointer text survives the move (no information lost)."""
+    cand = make_candidate(name="content-fact", index_hook="precise hook text")
+    apply_memory_candidate(cand, tmp_path)
+    original_line = [
+        ln for ln in (tmp_path / "MEMORY.md").read_text(
+            encoding="utf-8"
+        ).split("\n") if "content-fact.md" in ln
+    ][0]
+
+    demote_memory("content-fact", tmp_path)
+    archive = (tmp_path / ARCHIVE_FILENAME).read_text(encoding="utf-8")
+    assert original_line in archive
+
+
+def test_demote_brings_index_back_under_cap(tmp_path):
+    """The operator tool actually shrinks the index (the whole point)."""
+    # Write several real entries, then demote one and confirm the index shrank.
+    for i in range(3):
+        apply_memory_candidate(make_candidate(name=f"f{i}-fact"), tmp_path)
+    before = (tmp_path / "MEMORY.md").stat().st_size
+    demote_memory("f0-fact", tmp_path)
+    after = (tmp_path / "MEMORY.md").stat().st_size
+    assert after < before
+
+
+def test_demote_missing_pointer_invalid(tmp_path):
+    # No MEMORY.md / no such pointer → invalid, nothing written.
+    result = demote_memory("nope-fact", tmp_path)
+    assert result.status == "invalid"
+    assert "nothing to demote" in result.reason
+    assert not (tmp_path / ARCHIVE_FILENAME).exists()
+
+
+def test_demote_bad_name_invalid(tmp_path):
+    result = demote_memory("Bad Name", tmp_path)
+    assert result.status == "invalid"
+    assert "kebab-case" in result.reason
+
+
+def test_demote_appends_to_existing_archive(tmp_path):
+    a = make_candidate(name="alpha-fact")
+    b = make_candidate(name="beta-fact")
+    apply_memory_candidate(a, tmp_path)
+    apply_memory_candidate(b, tmp_path)
+
+    demote_memory("alpha-fact", tmp_path)
+    demote_memory("beta-fact", tmp_path)
+
+    archive = (tmp_path / ARCHIVE_FILENAME).read_text(encoding="utf-8")
+    assert "](alpha-fact.md)" in archive
+    assert "](beta-fact.md)" in archive
+    # Header written once, not per demote.
+    assert archive.count("# MeshForge Memory Archive") == 1
+
+
+def test_demote_writes_atomically_no_tmp_left(tmp_path):
+    cand = make_candidate(name="atomic-demote")
+    apply_memory_candidate(cand, tmp_path)
+    demote_memory("atomic-demote", tmp_path)
+    # No stray .tmp files left from the atomic write.
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+    assert leftovers == []
+
+
+def test_cli_demote_moves_pointer(tmp_path, capsys):
+    from mini_dudeai.memory_apply import main as _main
+
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    cand = _write_candidate_json(tmp_path, name="cli-demote-fact")
+    assert _main(["--candidate", str(cand), "--dir", str(mem)]) == 0
+    capsys.readouterr()  # drain
+
+    rc = _main(["--demote", "cli-demote-fact", "--dir", str(mem)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "demoted" in out
+    archive = (mem / ARCHIVE_FILENAME).read_text(encoding="utf-8")
+    assert "](cli-demote-fact.md)" in archive

@@ -22,6 +22,7 @@ Checks:
 - MF018: TUI shell-escapes (editor spawns, "run/install manually", "run with sudo") — the In-Domain Principle ratchet (foundations/in_domain_principle.md)
 - MF019: RNS.Reticulum() constructed outside the guarded chokepoint (must use open_reticulum() from utils.rns_init; #68/#69, RNS T2-isolate arc)
 - MF020: apply_config_and_restart() return (bool, msg) discarded in TUI handlers (hardcoded-success-after-unchecked-action, honest-signal Issues #74-#77)
+- MF021: subprocess/systemctl/os.system/Popen/shell=True in the mini-dudeai engine/sources/actions (observation-only invariant — mini observes, never executes)
 
 Usage:
     python3 scripts/lint.py [files...]
@@ -861,6 +862,120 @@ def check_in_domain_escapes(files: List[str], repo_root: str = '.') -> List[Lint
     return issues
 
 
+# MF021: the mini-dudeai observation-only invariant. mini-dudeai is a
+# deterministic, dependency-free stdlib rule-loop agent. Its doctrine is that
+# the engine and ALL built-in sources/actions OBSERVE the system (read files,
+# parse /proc, http GET) but NEVER EXECUTE it — no subprocess, no systemctl, no
+# os.system/popen/exec, no Popen, no shell=True. This was true by grep but had
+# no automated guard (unlike Issue #29's MF007/008/009/019). MF021 pins it.
+#
+# Scope is deliberately narrow: engine.py + sources/*.py + actions/*.py. NOT
+# rollup.py / dreams.py (cloud-session orchestration tools that legitimately
+# ssh-fan the fleet and are NOT engine/sources/actions). The check is on CODE
+# lines only — a token in a comment or docstring is fine (e.g. boot_health.py's
+# module docstring "mini-dudeai is observation-only (no subprocess)").
+MF021_SCAN_ROOTS = (
+    os.path.join('src', 'mini_dudeai', 'engine.py'),
+    os.path.join('src', 'mini_dudeai', 'sources'),
+    os.path.join('src', 'mini_dudeai', 'actions'),
+)
+# Word-boundary patterns for the forbidden execution surfaces. shell=True is a
+# kwarg (allow optional whitespace around the =).
+MF021_FORBIDDEN = (
+    (re.compile(r'\bsubprocess\b'), 'subprocess'),
+    (re.compile(r'\bsystemctl\b'), 'systemctl'),
+    (re.compile(r'\bos\.system\b'), 'os.system'),
+    (re.compile(r'\bos\.popen\b'), 'os.popen'),
+    (re.compile(r'\bos\.exec\w*\b'), 'os.exec*'),
+    (re.compile(r'\bPopen\b'), 'Popen'),
+    (re.compile(r'\bshell\s*=\s*True\b'), 'shell=True'),
+)
+
+
+def _mf021_code_lines(content: str):
+    """Yield (lineno, code_text) for lines outside comments and docstrings.
+
+    Tracks triple-quoted string state so a forbidden token mentioned in a
+    docstring is not flagged; strips trailing ``# ...`` inline comments from
+    code lines. Conservative: a line that opens/closes a docstring is treated
+    as docstring (not code), matching how the other rules skip string-literal
+    lines. A one-line triple-quoted docstring on its own line is skipped too.
+    """
+    in_docstring = False
+    doc_delim = ''
+    for lineno, raw in enumerate(content.splitlines(), 1):
+        stripped = raw.strip()
+        if in_docstring:
+            # Look for the closing delimiter on this line.
+            if doc_delim in stripped:
+                in_docstring = False
+            continue
+        # A line that starts a docstring/triple-quoted block.
+        for delim in ('"""', "'''"):
+            if stripped.startswith(delim) or stripped.startswith('r' + delim) \
+                    or stripped.startswith('f' + delim):
+                body = stripped.split(delim, 1)[1]
+                # Closed on the same line? (e.g. a one-line docstring)
+                if delim in body:
+                    body = ''  # whole thing is a string literal — skip
+                else:
+                    in_docstring = True
+                    doc_delim = delim
+                break
+        else:
+            # Not a docstring opener. Skip pure comment lines.
+            if stripped.startswith('#'):
+                continue
+            # Strip an inline comment tail (best-effort; not quote-aware, but
+            # the forbidden tokens are distinctive enough that a token only in
+            # a trailing comment is exceedingly rare and erring toward the
+            # invariant is the safe direction).
+            code = raw.split('#', 1)[0]
+            yield lineno, code
+            continue
+        # If we entered a docstring on this opener line, nothing to yield.
+        continue
+
+
+def _mf021_scan_file(filepath: str, rel_path: str) -> List[LintIssue]:
+    issues: List[LintIssue] = []
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+    except (IOError, OSError):
+        return issues
+    for lineno, code in _mf021_code_lines(content):
+        for pattern, token in MF021_FORBIDDEN:
+            if pattern.search(code):
+                issues.append(LintIssue(
+                    rel_path, lineno, Severity.ERROR, "MF021",
+                    f"'{token}' in mini-dudeai {rel_path} — the engine, sources "
+                    f"and actions are OBSERVATION-ONLY (read state, never execute "
+                    f"it). No subprocess/systemctl/os.system/popen/exec/Popen/"
+                    f"shell=True. If you need to run something, it belongs in a "
+                    f"cloud-session tool (rollup.py), not the deterministic loop.",
+                ))
+    return issues
+
+
+def check_mini_dudeai_observation_only(repo_root: str = '.') -> List[LintIssue]:
+    """MF021: pin the mini-dudeai observation-only invariant (no execution)."""
+    issues: List[LintIssue] = []
+    for root in MF021_SCAN_ROOTS:
+        full = os.path.join(repo_root, root)
+        if os.path.isfile(full):
+            rel = os.path.relpath(full, repo_root).replace(os.sep, '/')
+            issues.extend(_mf021_scan_file(full, rel))
+        elif os.path.isdir(full):
+            for fname in sorted(os.listdir(full)):
+                if not fname.endswith('.py'):
+                    continue
+                fpath = os.path.join(full, fname)
+                rel = os.path.relpath(fpath, repo_root).replace(os.sep, '/')
+                issues.extend(_mf021_scan_file(fpath, rel))
+    return issues
+
+
 def main():
     parser = argparse.ArgumentParser(description='MeshForge Linter')
     parser.add_argument('files', nargs='*', help='Files to lint')
@@ -913,6 +1028,11 @@ def main():
     # the audit cost.
     if not args.staged:
         issues.extend(check_systemd_sandbox_paths())
+
+    # MF021: mini-dudeai observation-only invariant. Scans the fixed engine/
+    # sources/actions set (cheap), so run it in both whole-tree and --staged
+    # modes — an execution token sneaking into the loop must always fail.
+    issues.extend(check_mini_dudeai_observation_only())
 
     # Filter by severity
     severity_order = {'error': 0, 'warning': 1, 'info': 2}

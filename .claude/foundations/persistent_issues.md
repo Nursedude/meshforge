@@ -183,6 +183,7 @@ def test_rns(self): ...
 | MF010 | `time.sleep()` in daemon loops |
 | MF014 | Operator-specific values (hostnames, personal email, `/home/<user>/`) — break repo portability |
 | MF019 | `RNS.Reticulum()` constructed outside the chokepoint (use `open_reticulum()` from `utils.rns_init`; #68/#69) |
+| MF021 | `subprocess`/`systemctl`/`os.system`/`Popen`/`shell=True` in mini-dudeai engine + built-in sources/actions (observation-only invariant; #79) |
 
 ### Layer 2: Regression Guard Tests (`tests/test_regression_guards.py`)
 - `TestTCPConnectionContract` — No new direct TCPInterface
@@ -261,56 +262,7 @@ Quick check: `sudo ss -xnpl | grep "@rns/"` — owner must be rnsd.
 
 ## Issue #72: wedged rnsd RPC — rnstatus hangs though the socket accepts (2026-05-30)
 
-**Class**: 6th variant of the rnsd-RPC fragility family (siblings #58,
-#61, #63, #68, #69). The watchdog already had two RNS probes but a real
-gap between them: `probe_rns_shared_instance_responsive` is a bare
-`connect()` timer — it catches a connect that never completes (the #68
-SYN-SENT pile-up) but returns **healthy the instant the socket
-accepts**. `probe_rns_interface_down_peer_reachable` runs `rnstatus` but
-**bails on any `parse_error`** (and its comment wrongly claimed
-"shared-instance probes own that"). So the case where rnsd **accepts the
-connection but the RPC round-trip hangs/EOFs** (`rpc_connection.recv()`
-deep in `RNS.Reticulum`, the #69 mechanism) was unowned: `rnstatus`
-itself times out, yet no probe surfaced it.
-
-**Fix**: structured `RNSStatus.timed_out` flag set **only** on a
-`run_rnstatus` subprocess TIMEOUT (`rns_status_parser.py`); `run_rnstatus`
-gained a `timeout_s` arg (default 15s for existing callers). New
-`probe_rns_rpc_responsive` (signal class `rns_rpc_unresponsive`,
-severity wedge, subject `rnsd`, issue_ref 68) fires iff `timed_out` —
-distinct from a fast error (binary missing / "no shared instance" /
-refused), which leaves `timed_out` False so `service_inactive` owns
-rnsd-down and RNS-less boxes never false-alarm. `run_all_probes` now
-makes **one** bounded `run_rnstatus(timeout_s=8.0)` per tick and shares
-the parsed result with both rnstatus-consuming probes (a wedged rnsd
-can't stall the 30s tick with two long-timeout subprocesses).
-
-**FIXED AT SOURCE (2026-05-30, fork `rns 1.2.5+mf.2`, `11227832`)**: the
-watchdog above *detects* the wedge; the fork now *prevents* it. All 20
-client-side RPC recvs route through `_rpc_recv()` → `poll(8s, env RNS_RPC_TIMEOUT)`
-before `recv()`, so a wedged-but-accepting rnsd raises `TimeoutError` (EOF
-fast-fails too) instead of blocking forever. Server `rpc_loop` recv untouched.
-Fork test `tests/meshforge_rpc_timeout.py` (3); watchdog probe STAYS as
-defense-in-depth. See [[project_rns_fork_shipped_2026_05_30]].
-
-**Recovery**: `sudo systemctl restart rnsd.service`, then restart
-RNS-using services (meshforge-map, meshforge-echo, tracer).
-
-**Operator detection recipe**:
-```bash
-# rnstatus hangs but the listener still accepts? (the #72 shape)
-timeout 8 rnstatus >/dev/null 2>&1 || echo "rnstatus RPC wedged"
-sudo ss -xnpl | grep '@rns/'   # listener present + owned by rnsd
-# Watchdog signal:
-curl -s http://127.0.0.1:5000/api/status | jq \
-  '.watchdog.signals[]? | select(.class=="rns_rpc_unresponsive")'
-```
-
-**Tests**: `TestProbeRnsRpcResponsive` in `tests/test_watchdog_probes.py`
-(9): timed_out→wedge; healthy/binary-missing/clean-down→None; standalone
-run_rnstatus path; plus parser-level timed_out flag + timeout_s plumbing.
-The closed-enum gate `test_signal_classes_closed_enum_is_documented` was
-bumped with the new class.
+6th rnsd-RPC-fragility variant — rnsd **accepts the connection but the RPC round-trip hangs/EOFs**, a gap between the two existing RNS probes. Cure: `RNSStatus.timed_out` (set only on a `run_rnstatus` subprocess TIMEOUT) + `probe_rns_rpc_responsive` (`rns_rpc_unresponsive`, wedge), and **FIXED AT SOURCE** in fork `rns 1.2.5+mf.2` (`_rpc_recv()` poll(8s) before recv). Recovery: restart rnsd then RNS-using services. Quick check: `timeout 8 rnstatus >/dev/null 2>&1 || echo wedged`. **Full body + detection recipe + tests in `persistent_issues_archive.md`** (trimmed 2026-06-09 for MF012 headroom).
 
 
 ---
@@ -521,3 +473,29 @@ the `_parse_crontab`/`_parse_cron_verdicts` parsers from `fleet_snapshot`.
 Tests: `TestCronVerdictStale` (11) incl. the orphan-filter + inert-when-unwired
 cases, + closed-enum gate bump. Regime remainder (wire live crons; triage the
 7 dead) = per-box operator passes.
+
+
+---
+
+## Issue #79: mini-dudeai hardening — deploy gap, memory guards, rotation, self-probes (2026-06-09)
+
+Deep-research audit of mini-dudeai (MeshForge-OWNED deterministic rule-loop agent;
+NO MeshAnchor twin — MA's `src/agent/` is an unrelated command-exec daemon) found 1
+defect + several risks, all fixed in one pass. (1) **DEPLOY GAP** (defect): nothing
+restarted the mini USER daemon after `git pull` (fleet_sync/update.sh only restart the
+3 SYSTEM units) — added user-bus `sync_user_unit`/`sync_local_user_unit`, an update.sh
+user-unit restart, and install_noc enrollment of all 3 mini user units (XDG_RUNTIME_DIR
+bridge, no hardcoded user). (2) **MEMORY.md over the ~24KB load limit, unguarded**
+(defect): `memory_apply.check_index_size` warns (NEVER blocks an append) + `demote_memory`
+atomically moves a stale pointer to MEMORY_ARCHIVE.md + `probe_memory_index_oversize`.
+(3) unbounded append-only growth: `_rotate_if_needed` (atomic, keep-newest, valid JSONL)
+on history/deltas/ledger (1/1/2 MB caps). (4) cadence pinned `--model`
+(`MINI_DUDEAI_CADENCE_MODEL`, default opus). (5) observation-only invariant (no
+subprocess/systemctl in engine+sources+actions) now **lint-pinned MF021** + test-pinned.
+(6) rules promotion writes a `.bak` (rollback) + `probe_rules_seed_drift` (live behind
+role seed). (8) `probe_history_write_failure` (loop alive + fires advancing but history
+mtime frozen). All 3 new probes wired in `watchdog_runner.run_all_probes`, classes in the
+closed enum (issue_ref 79). (7) schema-vs-validator drift test pins
+`mini_dudeai_config.schema.json` to the hand-rolled validator. Tests: +~90 across
+`test_mini_dudeai_*` / `test_watchdog_probes`. ⚠️ Probes are DEGRADED-only + self-guard
+None off-box; deploy user-bus restart needs linger (install_noc enables it).

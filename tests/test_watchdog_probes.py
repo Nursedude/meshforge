@@ -38,6 +38,10 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_mqtt_root_drift,
     probe_cron_verdict_stale,
     _cron_max_interval,
+    probe_history_write_failure,
+    probe_rules_seed_drift,
+    probe_memory_index_oversize,
+    MEMORY_INDEX_LIMIT_BYTES,
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
@@ -98,6 +102,9 @@ def test_signal_classes_closed_enum_is_documented():
         "phoneapi_tcp_leak",            # Issue #75
         "mqtt_root_drift",              # Issue #77
         "cron_verdict_stale",           # Issue #78
+        "history_write_stalled",        # mini-dudeai audit #8
+        "rules_seed_drift",             # mini-dudeai audit #6
+        "memory_index_oversize",        # mini-dudeai audit #2
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -2776,3 +2783,226 @@ class TestCronVerdictStale:
         assert _cron_max_interval("@daily") == 86400.0
         assert _cron_max_interval("@reboot") == float("inf")
         assert _cron_max_interval("garbage") == 26 * 3600.0
+
+
+# ─────────────────────────────────────────────────────────────────────
+# mini-dudeai self-health probes (audit 2026-06-09)
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestHistoryWriteFailure:
+    """mini loop alive (state.json last_tick recent) + cumulative fires advancing
+    but history.jsonl mtime frozen = a swallowed history-write failure (audit #8).
+    A quiet box (no new fires) must never false-alarm. Hermetic: inject docs."""
+
+    NOW = 2_000_000_000.0
+
+    def _state(self, *, fires, last_tick_ago=10.0):
+        """A mini state doc with cumulative `fires` spread over two rules."""
+        a = fires // 2
+        b = fires - a
+        return {
+            "last_tick_ts": self.NOW - last_tick_ago,
+            "rules": {
+                "r1|x": {"fire_count": a},
+                "r2|y": {"fire_count": b},
+            },
+        }
+
+    def _run(self, tmp_path, *, fires_seq, mtime_seq):
+        """Run the probe once per (fires, mtime) pair; return the signals list."""
+        sp = str(tmp_path / "hist_stall.json")
+        out = []
+        for fires, mtime in zip(fires_seq, mtime_seq):
+            out.append(probe_history_write_failure(
+                state_doc=self._state(fires=fires),
+                history_mtime=mtime,
+                now=self.NOW, state_path=sp))
+        return out
+
+    def test_signal_class_registered(self):
+        assert "history_write_stalled" in SIGNAL_CLASSES
+
+    def test_loop_stopped_is_none(self, tmp_path):
+        """Stale last_tick (daemon stopped) → None even if fires look advanced."""
+        sp = str(tmp_path / "s.json")
+        sig = probe_history_write_failure(
+            state_doc=self._state(fires=10, last_tick_ago=10_000.0),
+            history_mtime=0.0, now=self.NOW, state_path=sp)
+        assert sig is None
+
+    def test_quiet_box_no_new_fires_is_none(self, tmp_path):
+        """Fires never advance (no edge events) → history untouched is fine."""
+        # baseline tick, then two more with the SAME fire total and frozen mtime.
+        sigs = self._run(tmp_path, fires_seq=[5, 5, 5], mtime_seq=[100.0, 100.0, 100.0])
+        assert sigs == [None, None, None]
+
+    def test_healthy_history_advances_is_none(self, tmp_path):
+        """Fires advance AND mtime advances → healthy, no signal."""
+        sigs = self._run(tmp_path, fires_seq=[5, 7, 9], mtime_seq=[100.0, 200.0, 300.0])
+        assert sigs == [None, None, None]
+
+    def test_stall_fires_after_debounce(self, tmp_path):
+        """Fires advance but mtime frozen for 2 consecutive ticks → fires on 2nd."""
+        # tick0: baseline. tick1: fires 5→8, mtime frozen (streak 1, silent).
+        # tick2: fires 8→11, mtime still frozen (streak 2, FIRE).
+        sigs = self._run(tmp_path, fires_seq=[5, 8, 11],
+                         mtime_seq=[100.0, 100.0, 100.0])
+        assert sigs[0] is None
+        assert sigs[1] is None
+        sig = sigs[2]
+        assert sig is not None
+        assert sig.cls == "history_write_stalled"
+        assert sig.severity == "degraded"
+        assert sig.issue_ref == 79
+        assert sig.subject == "mini-dudeai"
+
+    def test_recovery_clears_streak(self, tmp_path):
+        """A healthy tick (mtime advances) between stalls resets the streak."""
+        sp = str(tmp_path / "s.json")
+        # baseline
+        probe_history_write_failure(state_doc=self._state(fires=5),
+                                    history_mtime=100.0, now=self.NOW, state_path=sp)
+        # stall: streak 1
+        s1 = probe_history_write_failure(state_doc=self._state(fires=8),
+                                         history_mtime=100.0, now=self.NOW,
+                                         state_path=sp)
+        assert s1 is None
+        # recovery: mtime advances → streak resets to 0
+        s2 = probe_history_write_failure(state_doc=self._state(fires=10),
+                                         history_mtime=500.0, now=self.NOW,
+                                         state_path=sp)
+        assert s2 is None
+        assert json.loads(Path(sp).read_text())["streak"] == 0
+
+    def test_missing_home_is_none(self, tmp_path):
+        """No resolvable mini home and no injected docs → None (not this box)."""
+        with patch("utils.watchdog_probes._resolve_mini_home", return_value=None):
+            sig = probe_history_write_failure(
+                now=self.NOW, state_path=str(tmp_path / "s.json"))
+        assert sig is None
+
+
+class TestRulesSeedDrift:
+    """Live mini_dudeai_rules.json MISSING rule ids the role seed carries (audit #6).
+    Extra box-local live rules are legitimate and never fire. Hermetic: inject sets."""
+
+    def test_signal_class_registered(self):
+        assert "rules_seed_drift" in SIGNAL_CLASSES
+
+    def test_live_behind_seed_fires(self):
+        sig = probe_rules_seed_drift(
+            role="primary",
+            seed_ids={"a", "b", "c"},
+            live_ids={"a", "b"})
+        assert sig is not None
+        assert sig.cls == "rules_seed_drift"
+        assert sig.severity == "degraded"
+        assert sig.issue_ref == 79
+        assert "c" in sig.extra["missing"]
+
+    def test_extra_box_local_rules_ignored(self):
+        """Live has EXTRA rules not in the seed but none missing → None (legit)."""
+        sig = probe_rules_seed_drift(
+            role="primary",
+            seed_ids={"a", "b"},
+            live_ids={"a", "b", "box_local_mf014"})
+        assert sig is None
+
+    def test_in_sync_is_none(self):
+        sig = probe_rules_seed_drift(
+            role="primary", seed_ids={"a", "b"}, live_ids={"a", "b"})
+        assert sig is None
+
+    def test_no_role_is_none(self):
+        """Box declares no role → not applicable. _read_deployment_declaration
+        returning (None, {}) short-circuits before any seed/home read."""
+        with patch("utils.watchdog_probes._read_deployment_declaration",
+                   return_value=(None, {})):
+            sig = probe_rules_seed_drift()
+        assert sig is None
+
+    def test_ambiguous_role_is_none(self, tmp_path):
+        """A role with no dedicated mini seed (e.g. collector) → None, no guess.
+        Inject only `role` so the probe reaches the role->seed mapping and hits
+        the ambiguous short-circuit (a live file MISSING rules would otherwise
+        fire — proving the guard, not the sets)."""
+        # a live file that WOULD drift against any seed, to prove role gates first
+        (tmp_path / "mini_dudeai_rules.json").write_text(json.dumps({"rules": []}))
+        sig = probe_rules_seed_drift(
+            mini_home=str(tmp_path), role="collector")
+        assert sig is None
+
+    def test_known_roles_map_to_seeds(self):
+        """primary → federator seed; gateway roles → fleet_gateway seed."""
+        from utils.watchdog_probes import _ROLE_TO_MINI_SEED
+        assert _ROLE_TO_MINI_SEED["primary"] == "federator"
+        assert _ROLE_TO_MINI_SEED["full-gateway"] == "fleet_gateway"
+        assert _ROLE_TO_MINI_SEED["gateway-only"] == "fleet_gateway"
+
+    def test_real_seed_loads_for_primary(self, tmp_path):
+        """End-to-end against the repo's federator seed: a live file missing one
+        of its rules fires; a superset stays silent."""
+        meshforge_root = str(Path(__file__).resolve().parent.parent)
+        seed = json.loads(Path(
+            meshforge_root, "configs", "mini_dudeai_rules.federator.json"
+        ).read_text())
+        seed_ids = [r["id"] for r in seed["rules"]]
+        assert seed_ids  # sanity: the seed actually has rules
+        home = tmp_path
+        # live = seed minus the first rule → drift
+        (home / "mini_dudeai_rules.json").write_text(json.dumps(
+            {"rules": [r for r in seed["rules"] if r["id"] != seed_ids[0]]}))
+        sig = probe_rules_seed_drift(
+            meshforge_root=meshforge_root, mini_home=str(home), role="primary")
+        assert sig is not None
+        assert seed_ids[0] in sig.extra["missing"]
+        # live = full seed → no drift
+        (home / "mini_dudeai_rules.json").write_text(json.dumps(seed))
+        sig2 = probe_rules_seed_drift(
+            meshforge_root=meshforge_root, mini_home=str(home), role="primary")
+        assert sig2 is None
+
+
+class TestMemoryIndexOversize:
+    """MEMORY.md over its ~24 KB context-load limit silently partial-loads (audit #2).
+    Hermetic: inject size / a tmp file."""
+
+    def test_signal_class_registered(self):
+        assert "memory_index_oversize" in SIGNAL_CLASSES
+
+    def test_oversize_fires(self):
+        sig = probe_memory_index_oversize(size_bytes=MEMORY_INDEX_LIMIT_BYTES + 1000)
+        assert sig is not None
+        assert sig.cls == "memory_index_oversize"
+        assert sig.severity == "degraded"
+        assert sig.issue_ref == 79
+        assert sig.extra["over_bytes"] == 1000
+        assert "MEMORY_ARCHIVE.md" in sig.detail
+
+    def test_at_limit_is_none(self):
+        sig = probe_memory_index_oversize(size_bytes=MEMORY_INDEX_LIMIT_BYTES)
+        assert sig is None
+
+    def test_under_limit_is_none(self):
+        sig = probe_memory_index_oversize(size_bytes=1024)
+        assert sig is None
+
+    def test_absent_file_is_none(self, tmp_path):
+        """No MEMORY.md in the resolved home → None (not the memory host)."""
+        sig = probe_memory_index_oversize(operator_home=str(tmp_path))
+        assert sig is None
+
+    def test_reads_real_file_in_home(self, tmp_path):
+        """Stat a real on-disk MEMORY.md at the known relative path."""
+        mem = tmp_path / ".claude" / "projects" / "-opt-meshforge" / "memory"
+        mem.mkdir(parents=True)
+        (mem / "MEMORY.md").write_text("x" * (MEMORY_INDEX_LIMIT_BYTES + 500))
+        sig = probe_memory_index_oversize(operator_home=str(tmp_path))
+        assert sig is not None
+        assert sig.extra["size_bytes"] == MEMORY_INDEX_LIMIT_BYTES + 500
+
+    def test_no_home_is_none(self):
+        with patch("utils.watchdog_probes._resolve_mini_home", return_value=None):
+            sig = probe_memory_index_oversize()
+        assert sig is None

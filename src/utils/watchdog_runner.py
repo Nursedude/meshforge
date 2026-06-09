@@ -53,8 +53,11 @@ from utils.watchdog_probes import (
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
+    probe_history_write_failure,
+    probe_memory_index_oversize,
     probe_phoneapi_tcp_leak,
     probe_queue_backlog,
+    probe_rules_seed_drift,
     probe_foundation_drift,
     probe_parity_drift,
     probe_rns_version_drift,
@@ -397,6 +400,21 @@ def run_all_probes(
     # Tracer peer unreachable — reads tracer-<unix>.json files.
     # Returns 0..N signals depending on peer count.
     signals.extend(probe_tracer_peer_unreachable())
+
+    # mini-dudeai self-health (Issue #79) — three read-only, self-guarding
+    # probes that return None when mini isn't on this box. They watch the
+    # observer's own reliability surfaces: a swallowed history-write failure
+    # while the loop ticks, a live rules file fallen behind its role seed, and
+    # the operator memory index (MEMORY.md) over its context-load limit.
+    sig = probe_history_write_failure()
+    if sig is not None:
+        signals.append(sig)
+    sig = probe_rules_seed_drift()
+    if sig is not None:
+        signals.append(sig)
+    sig = probe_memory_index_oversize()
+    if sig is not None:
+        signals.append(sig)
 
     return signals
 

@@ -330,6 +330,57 @@ def test_write_dreams_tolerates_missing_files(tmp_path):
     assert np_.exists()
 
 
+# --- deltas-file rotation (B3 risk #3: unbounded append-only growth) -----------
+
+def test_write_dreams_rotates_oversized_deltas_file(tmp_path, monkeypatch):
+    """An oversized memory-deltas file is trimmed under its cap before the next
+    append, the newest proposal lands, and the file stays valid JSONL — without
+    breaking the dedup/tail readers (the on-disk format is unchanged)."""
+    from mini_dudeai import dreams as dreams_mod
+
+    # tiny cap so a modest pre-existing file is "over"
+    monkeypatch.setattr(dreams_mod, "DEFAULT_DELTAS_MAX_BYTES", 4_000)
+
+    sp, hp = _persistent_state_file(tmp_path)
+    dp = tmp_path / "deltas.jsonl"
+    np_ = tmp_path / "dreams.md"
+
+    # seed many OLD resolved deltas (resolved long ago so they won't be re-proposed
+    # and won't block the fresh persistent_active key) — they only exist to bloat.
+    with open(dp, "w") as f:
+        for i in range(400):
+            f.write(json.dumps({
+                "key": f"old::{i}", "status": "rejected",
+                "resolved_ts": NOW - 10 * 86400, "ts": NOW - 11 * 86400,
+                "summary": "x" * 40,
+            }) + "\n")
+    assert dp.stat().st_size > 4_000
+
+    summary = write_dreams(str(sp), str(hp), str(dp), str(np_), now_ts=NOW)
+    assert summary["appended"] == 1            # the fresh persistent_active proposal
+    assert dp.stat().st_size <= 4_000          # bounded now
+
+    lines = [l for l in dp.read_text().splitlines() if l.strip()]
+    keys = [json.loads(l)["key"] for l in lines]   # every line still valid JSON
+    # the just-written proposal survived rotation
+    assert "persistent_active::r::moc3" in keys
+    # oldest bloat entries were dropped (newest-kept contract)
+    assert "old::0" not in keys
+
+
+def test_write_dreams_under_cap_deltas_untouched(tmp_path):
+    """A small deltas file is not rotated — second pass simply dedups, file grows
+    only by genuinely new lines (no spurious rotation churn)."""
+    sp, hp = _persistent_state_file(tmp_path)
+    dp = tmp_path / "deltas.jsonl"
+    np_ = tmp_path / "dreams.md"
+    write_dreams(str(sp), str(hp), str(dp), str(np_), now_ts=NOW)
+    body_after_first = dp.read_bytes()
+    # same still-proposed key -> deduped, nothing appended, file unchanged
+    write_dreams(str(sp), str(hp), str(dp), str(np_), now_ts=NOW + 60)
+    assert dp.read_bytes() == body_after_first
+
+
 # --- brief integration --------------------------------------------------------
 
 def test_brief_surfaces_pending_deltas():

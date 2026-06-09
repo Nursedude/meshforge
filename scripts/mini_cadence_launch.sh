@@ -31,6 +31,12 @@ REPO="${MESHFORGE_REPO:-/opt/meshforge}"
 RUNBOOK="$REPO/.claude/prompts/mini_cadence.md"
 ENV_FILE="${MINI_ENV_FILE:-$HOME/.config/meshforge/mini_dudeai.env}"
 PRESET="${MINI_PRESET:-meshforge_fleet}"
+# Pin the cadence model explicitly. Ratification is high-judgment work (verify
+# live truth before authoring durable memory), so we never ride on whatever the
+# `claude` CLI happens to default to — that can silently drift. Most-capable Opus
+# for the judgment; overridable via env so an operator can change it without
+# editing the script.
+MODEL="${MINI_DUDEAI_CADENCE_MODEL:-claude-opus-4-8}"
 # Bound the session so a wedged run can't pin a fleet box (cf. the rnsd-RPC
 # fragility class — everything mini-adjacent carries a timeout).
 TIMEOUT_S="${MINI_CADENCE_TIMEOUT_S:-900}"
@@ -85,12 +91,13 @@ if ! command -v claude >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "mini-cadence: proposed deltas present — launching cadence session (timeout ${TIMEOUT_S}s)."
+echo "mini-cadence: proposed deltas present — launching cadence session (model ${MODEL}, timeout ${TIMEOUT_S}s)."
 # -p runs headless with the runbook as the prompt; the session reads the rest of
-# the runbook file itself for the full procedure. Capture the rc without letting
-# `set -e` abort before we log it.
+# the runbook file itself for the full procedure. --model pins the ratification
+# model explicitly (see MODEL above). Capture the rc without letting `set -e`
+# abort before we log it.
 rc=0
-timeout "$TIMEOUT_S" claude -p "Run the mini-dudeai cadence pass per $RUNBOOK. \
+timeout "$TIMEOUT_S" claude --model "$MODEL" -p "Run the mini-dudeai cadence pass per $RUNBOOK. \
 Resolve every proposed memory-delta: verify each against live truth, then ratify \
 (authoring a verified canonical memory via mini_dudeai.memory_apply) or reject. \
 Never write verified=True without a check you ran. One bounded pass, then stop." || rc=$?
