@@ -486,6 +486,14 @@ class RNSConfig:
     # rollout). Broadcasts are unaffected (no per-node ACK exists). RX
     # parsing of ROUTING_APP is inert when off: without wantAck the
     # recipient sends no ACK, so the in-flight tracker stays empty.
+    # ⚠️ TCP-MODE ONLY: the ACK is consumed via the persistent
+    # meshtastic.receive stream in the TCP MeshtasticHandler. In
+    # bridge_mode=mqtt_bridge (the fleet default, zero-interference) the
+    # gateway TXes via HTTP toradio and RXes via MQTT json — which carries
+    # no ROUTING_APP — so this flag is INERT there and the handler warns at
+    # startup. Honest mesh confirmation in mqtt_bridge mode would need a
+    # different signal (the ACK is unreachable without reading fromradio,
+    # which that mode exists to avoid per #17/#75).
     meshtastic_ack_consumption_enabled: bool = False
     ack_pending_ttl_sec: int = 600          # forget an un-acked DM after ~10 min
     ack_pending_max: int = 1024             # in-flight DM cap, oldest-evicted

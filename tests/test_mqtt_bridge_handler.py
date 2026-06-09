@@ -676,3 +676,38 @@ class TestSeenOnRfRegistration:
                               "destination": None, "channel": 2}) is True
         tx.send_text.assert_not_called()
         assert tx.stats["dispatch_dedup_suppressed"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Thread-2 step 4 — honest-signal: ACK consumption is inert in mqtt_bridge mode
+# ---------------------------------------------------------------------------
+
+class TestAckConsumptionInertWarning:
+    """The soak finding (2026-06-08): step 4 is wired into the TCP handler;
+    in mqtt_bridge mode the ROUTING_APP ACK is never ingested. The handler
+    must say so loudly instead of letting an operator believe it works."""
+
+    def _build(self, ack_enabled):
+        import threading
+        from gateway.config import GatewayConfig
+        from gateway.mqtt_bridge_handler import MQTTBridgeHandler
+        config = GatewayConfig()
+        config.rns.meshtastic_ack_consumption_enabled = ack_enabled
+        return MQTTBridgeHandler(
+            config=config, node_tracker=MagicMock(), health=MagicMock(),
+            stop_event=threading.Event(), stats={},
+            stats_lock=threading.Lock(), message_queue=MagicMock())
+
+    def test_warns_when_flag_on(self, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING):
+            self._build(ack_enabled=True)
+        hits = [r.message for r in caplog.records
+                if "INERT" in r.message and "mqtt_bridge" in r.message]
+        assert hits, "expected an inert-ACK warning in mqtt_bridge mode"
+
+    def test_silent_when_flag_off(self, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING):
+            self._build(ack_enabled=False)
+        assert not [r for r in caplog.records if "INERT" in r.message]

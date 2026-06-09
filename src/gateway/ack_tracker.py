@@ -16,6 +16,16 @@ Meshtastic was structurally *unconfirmable* and the #74
 flowing, Meshtastic joins the confirmable set: honest end-to-end proof
 instead of the "Sent (not guaranteed)" ceiling (#16).
 
+⚠️ **TCP-mode only.** The ACK is observed via the persistent
+``meshtastic.receive`` stream in the TCP ``MeshtasticHandler`` (which
+carries *every* packet, including ``ROUTING_APP``). In
+``bridge_mode=mqtt_bridge`` — the fleet's zero-interference default — the
+gateway TXes via HTTP toradio and RXes via MQTT json (no ``ROUTING_APP``),
+and reading fromradio is exactly what that mode avoids (#17/#75); so this
+machinery is never wired there and ``MQTTBridgeHandler`` warns at startup
+if the flag is set. Honest mesh confirmation in mqtt_bridge mode is an open
+problem (the ACK is unreachable without a PhoneAPI read).
+
 Meshtastic only ACKs DMs — a broadcast gets an *implicit* overhear, not a
 ``ROUTING_APP`` packet — so this tracker is populated for DM downlinks
 only. It is deliberately **in-memory** (no DB): an ACK arrives within

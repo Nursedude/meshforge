@@ -115,6 +115,27 @@ class MQTTBridgeHandler(BaseMessageHandler):
             should_bridge=should_bridge,
         )
 
+        # Honest-signal (Thread-2 step 4): ROUTING_APP ACK consumption is
+        # wired into the TCP MeshtasticHandler (persistent meshtastic.receive
+        # carries every packet incl. ROUTING_APP; sendText sets wantAck). This
+        # MQTT bridge is the zero-interference mode (#17/#75): TX via HTTP
+        # toradio, RX via MQTT json — and meshtasticd's json uplink does NOT
+        # carry ROUTING_APP, while reading fromradio is exactly what this mode
+        # exists to avoid. So a wantAck DM's ACK never reaches the gateway here
+        # and step 4 is INERT in mqtt_bridge mode. Warn loudly rather than let
+        # an operator believe they enabled honest mesh confirmation when they
+        # didn't (the feature works only on a TCP-mode gateway).
+        if getattr(config.rns, 'meshtastic_ack_consumption_enabled', False):
+            logger.warning(
+                "rns.meshtastic_ack_consumption_enabled is set but the gateway "
+                "is in mqtt_bridge mode — ROUTING_APP ACK consumption (Thread-2 "
+                "step 4 / #74) is INERT here. The ACK arrives only on the "
+                "PhoneAPI fromradio stream, which this zero-interference mode "
+                "does not read (#17/#75), and meshtasticd's MQTT json uplink "
+                "carries no routing packets. Meshtastic delivery stays 'Sent "
+                "(not guaranteed)'. ACK consumption requires a TCP-mode gateway."
+            )
+
         # TX load balancer (optional, for dual-radio setups)
         self._load_balancer = load_balancer
 
