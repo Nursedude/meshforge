@@ -61,3 +61,90 @@ def test_write_candidate_roundtrips_grace_edit(tmp_path):
     ok, _ = write_candidate(str(cand), [edited])
     assert ok
     assert json.loads(cand.read_text())["rules"][0]["grace_s"] == 90
+
+
+# --- seed provenance (Issue #80 residual: seed CONTENT drift) ----------------
+
+from mini_dudeai.candidate import (  # noqa: E402
+    PROVENANCE_KEY, merge_seed_rules, rule_body_sha,
+)
+
+SEED_A = {"id": "a", "match": {"kind": "source_error"},
+          "action": {"kind": "ntfy", "title": "t"}, "cooldown_s": 600}
+SEED_B = {"id": "b", "match": {"kind": "signal_class", "class": "x"},
+          "action": {"kind": "ntfy", "title": "u"}}
+
+
+class TestRuleBodySha:
+    def test_key_order_and_whitespace_invariant(self):
+        reordered = {"cooldown_s": 600, "action": {"title": "t", "kind": "ntfy"},
+                     "match": {"kind": "source_error"}, "id": "a"}
+        assert rule_body_sha(SEED_A) == rule_body_sha(reordered)
+
+    def test_provenance_stamp_excluded_from_hash(self):
+        stamped = {**SEED_A, PROVENANCE_KEY: {"origin": "seed:x",
+                                              "seed_sha": "deadbeef"}}
+        assert rule_body_sha(stamped) == rule_body_sha(SEED_A)
+
+    def test_body_change_changes_hash(self):
+        assert rule_body_sha(SEED_A) != rule_body_sha(
+            {**SEED_A, "cooldown_s": 60})
+
+
+class TestMergeSeedRules:
+    def test_missing_seed_rule_added_and_stamped(self):
+        merged, report = merge_seed_rules([SEED_A], [SEED_A, SEED_B], "fed")
+        assert report["added"] == ["b"]
+        added = next(r for r in merged if r["id"] == "b")
+        assert added[PROVENANCE_KEY] == {
+            "origin": "seed:fed", "seed_sha": rule_body_sha(SEED_B)}
+
+    def test_exact_copy_gets_stamp_bootstrap_ratchet(self):
+        merged, report = merge_seed_rules([dict(SEED_A)], [SEED_A], "fed")
+        assert report["stamped"] == ["a"]
+        assert merged[0][PROVENANCE_KEY]["seed_sha"] == rule_body_sha(SEED_A)
+
+    def test_idempotent_second_merge_is_unchanged(self):
+        merged1, _ = merge_seed_rules([dict(SEED_A)], [SEED_A], "fed")
+        merged2, report2 = merge_seed_rules(merged1, [SEED_A], "fed")
+        assert report2["unchanged"] == ["a"]
+        assert merged2 == merged1
+
+    def test_stale_old_seed_copy_refreshed_to_current_seed(self):
+        old_seed = {**SEED_A, "cooldown_s": 60}
+        live = [{**old_seed,
+                 PROVENANCE_KEY: {"origin": "seed:fed",
+                                  "seed_sha": rule_body_sha(old_seed)}}]
+        merged, report = merge_seed_rules(live, [SEED_A], "fed")
+        assert report["refreshed"] == ["a"]
+        assert merged[0]["cooldown_s"] == 600
+        assert merged[0][PROVENANCE_KEY]["seed_sha"] == rule_body_sha(SEED_A)
+
+    def test_box_tuned_rule_kept_verbatim(self):
+        # stamped from the CURRENT seed, then tuned locally → tuning wins
+        tuned = {**SEED_A, "cooldown_s": 30,
+                 PROVENANCE_KEY: {"origin": "seed:fed",
+                                  "seed_sha": rule_body_sha(SEED_A)}}
+        merged, report = merge_seed_rules([tuned], [SEED_A], "fed")
+        assert report["tuned"] == ["a"]
+        assert merged[0]["cooldown_s"] == 30
+
+    def test_unstamped_divergent_rule_is_tuned_not_refreshed(self):
+        # pre-provenance hand edit: differs from seed, no stamp → exempt
+        edited = {**SEED_A, "cooldown_s": 30}
+        merged, report = merge_seed_rules([edited], [SEED_A], "fed")
+        assert report["tuned"] == ["a"]
+        assert merged[0]["cooldown_s"] == 30
+
+    def test_box_local_rule_kept(self):
+        local = {"id": "mf014_local", "match": {"kind": "source_error"},
+                 "action": {"kind": "ntfy"}}
+        merged, report = merge_seed_rules([local], [SEED_A], "fed")
+        assert report["local"] == ["mf014_local"]
+        assert report["added"] == ["a"]
+        assert [r["id"] for r in merged] == ["mf014_local", "a"]
+
+    def test_merged_output_validates(self):
+        merged, _ = merge_seed_rules([dict(SEED_A)], [SEED_A, SEED_B], "fed")
+        rules, errors = validate_rules_document({"rules": merged})
+        assert errors == [] and len(rules) == 2

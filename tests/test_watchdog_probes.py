@@ -2978,6 +2978,92 @@ class TestRulesSeedDrift:
             meshforge_root=meshforge_root, mini_home=str(home), role="primary")
         assert sig2 is None
 
+    # --- content leg (Issue #80 residual: seed tunes a rule the box keeps) ---
+
+    SEED_RULE = {"id": "a", "match": {"kind": "source_error"},
+                 "action": {"kind": "ntfy", "title": "t"}, "cooldown_s": 600}
+
+    def _stamped_copy(self, rule):
+        from mini_dudeai.candidate import PROVENANCE_KEY, rule_body_sha
+        return {**rule, PROVENANCE_KEY: {"origin": "seed:test",
+                                         "seed_sha": rule_body_sha(rule)}}
+
+    def test_stale_seed_owned_copy_fires(self):
+        """Live carries an UNMODIFIED stamped copy of an OLDER seed body while
+        the seed has since tuned the rule → content drift fires."""
+        old_body = {**self.SEED_RULE, "cooldown_s": 60}
+        sig = probe_rules_seed_drift(
+            role="primary",
+            seed_rules=[self.SEED_RULE],
+            live_rules=[self._stamped_copy(old_body)])
+        assert sig is not None
+        assert sig.cls == "rules_seed_drift"
+        assert sig.extra["stale"] == ["a"]
+        assert sig.extra["missing"] == []
+        assert "STALE" in sig.detail
+
+    def test_box_tuned_rule_exempt(self):
+        """Live body differs from its own stamp (the box tuned it after the
+        merge) → legitimate per-box tuning, silent."""
+        tuned = {**self._stamped_copy(self.SEED_RULE), "cooldown_s": 30}
+        sig = probe_rules_seed_drift(
+            role="primary",
+            seed_rules=[self.SEED_RULE], live_rules=[tuned])
+        assert sig is None
+
+    def test_unstamped_divergent_rule_exempt(self):
+        """Pre-provenance live rule (no stamp) that differs from the seed →
+        indeterminate, exempt — unobservable ≠ drift."""
+        edited = {**self.SEED_RULE, "cooldown_s": 30}
+        sig = probe_rules_seed_drift(
+            role="primary",
+            seed_rules=[self.SEED_RULE], live_rules=[edited])
+        assert sig is None
+
+    def test_in_sync_stamped_copy_silent(self):
+        sig = probe_rules_seed_drift(
+            role="primary",
+            seed_rules=[self.SEED_RULE],
+            live_rules=[self._stamped_copy(self.SEED_RULE)])
+        assert sig is None
+
+    def test_missing_and_stale_combine_in_one_signal(self):
+        old_body = {**self.SEED_RULE, "cooldown_s": 60}
+        other = {"id": "b", "match": {"kind": "source_error"},
+                 "action": {"kind": "ntfy"}}
+        sig = probe_rules_seed_drift(
+            role="primary",
+            seed_rules=[self.SEED_RULE, other],
+            live_rules=[self._stamped_copy(old_body)])
+        assert sig is not None
+        assert sig.extra["missing"] == ["b"]
+        assert sig.extra["stale"] == ["a"]
+
+    def test_content_leg_self_guards_without_shared_hasher(self):
+        """mini package absent → no duplicated fallback hasher; the content leg
+        goes dark (honest) while the ID leg still works."""
+        old_body = {**self.SEED_RULE, "cooldown_s": 60}
+        live = [self._stamped_copy(old_body)]
+        with patch("utils.watchdog_probes._mini_rule_body_sha", None):
+            stale_sig = probe_rules_seed_drift(
+                role="primary",
+                seed_rules=[self.SEED_RULE], live_rules=live)
+            id_sig = probe_rules_seed_drift(
+                role="primary",
+                seed_rules=[self.SEED_RULE,
+                            {"id": "b", "match": {}, "action": {}}],
+                live_rules=live)
+        assert stale_sig is None
+        assert id_sig is not None and id_sig.extra["missing"] == ["b"]
+
+    def test_legacy_id_set_injection_still_works(self):
+        """Sets-only injection (the #79 call shape) keeps working — content leg
+        simply has no bodies to judge."""
+        sig = probe_rules_seed_drift(
+            role="primary", seed_ids={"a", "b"}, live_ids={"a"})
+        assert sig is not None and sig.extra["missing"] == ["b"]
+        assert sig.extra["stale"] == []
+
 
 class TestMemoryIndexOversize:
     """MEMORY.md over its ~24 KB context-load limit silently partial-loads (audit #2).

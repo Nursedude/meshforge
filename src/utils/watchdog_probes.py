@@ -2844,6 +2844,21 @@ def probe_history_write_failure(
         return None
 
 
+# Seed-content provenance (Issue #80 residual): hasher + stamp key come from
+# the MERGE WRITER (mini_dudeai.candidate) so writer and reader can never hash
+# the same rule differently. No fallback hasher — a duplicated implementation
+# is the two-constants drift trap — so when the mini package is absent the
+# content-drift leg self-guards off and the ID leg below still works.
+try:
+    from mini_dudeai.candidate import (
+        PROVENANCE_KEY as _MINI_PROVENANCE_KEY,
+        rule_body_sha as _mini_rule_body_sha,
+    )
+except Exception:  # mini package absent in some contexts
+    _MINI_PROVENANCE_KEY = None
+    _mini_rule_body_sha = None
+
+
 # Map a deployment.json role → the mini-dudeai role seed it should track.
 # Only confident mappings are listed; an unmapped role is AMBIGUOUS (no
 # dedicated mini seed) and self-guards None rather than guess a seed.
@@ -2867,8 +2882,10 @@ def probe_rules_seed_drift(
     role: Optional[str] = None,
     live_ids: Optional[set] = None,
     seed_ids: Optional[set] = None,
+    live_rules: Optional[list] = None,
+    seed_rules: Optional[list] = None,
 ) -> Optional[Signal]:
-    """Surface a live ``mini_dudeai_rules.json`` that fell behind its role seed (Issue #79).
+    """Surface a live ``mini_dudeai_rules.json`` that fell behind its role seed (Issue #79 + #80 content leg).
 
     The fleet ships a per-role mini seed (``configs/mini_dudeai_rules.<role>.json``)
     that is the canonical rule set for the box's role; the live file is seeded from
@@ -2876,14 +2893,28 @@ def probe_rules_seed_drift(
     seed gains a NEW rule (a seed bump for a new failure class) but the live file
     wasn't re-seeded, the box silently misses that rule. This makes the gap a signal.
 
-    Fires ``degraded`` only when the seed carries rule ids the live file is MISSING.
-    Extra live-only rules are LEGITIMATE (box-local additions) and never fire — this
-    is a one-directional "live behind seed" check. Self-guards None: box declares no
-    role, the role has no confident mini-seed mapping (ambiguous — don't guess),
-    either file is unreadable, or there's no gap.
+    Two drift legs, one signal:
+
+    - **missing** (ID leg, #79): the seed carries rule ids the live file lacks.
+    - **stale** (content leg, #80 residual): a live rule whose body is an
+      UNMODIFIED copy of an OLDER seed body — its ``seed_provenance.seed_sha``
+      stamp (written by ``mini_dudeai.candidate.merge_seed_rules``) equals the
+      live body hash, but the current seed body hashes differently, i.e. the
+      seed TUNED the rule and the box never got the bump. A live rule whose
+      body differs from its stamp was box-tuned (legitimate, exempt) and an
+      unstamped rule is indeterminate (pre-provenance — exempt; unobservable
+      ≠ drift, stamps ratchet in via the merge helper).
+
+    Extra live-only rules are LEGITIMATE (box-local additions) and never fire —
+    this is a one-directional "live behind seed" check. Self-guards None: box
+    declares no role, the role has no confident mini-seed mapping (ambiguous —
+    don't guess), either file is unreadable, or there's no gap. The content leg
+    additionally self-guards off when the mini package (the shared hasher) is
+    unimportable — no duplicated fallback hasher.
     """
     try:
-        if live_ids is None or seed_ids is None:
+        if (live_ids is None and live_rules is None) or \
+                (seed_ids is None and seed_rules is None):
             # Resolve role (deployment.json) → seed name.
             if role is None:
                 try:
@@ -2898,7 +2929,7 @@ def probe_rules_seed_drift(
             if not seed_name:
                 return None  # role has no dedicated mini seed → ambiguous, no guess
 
-            if seed_ids is None:
+            if seed_ids is None and seed_rules is None:
                 seed_path = os.path.join(
                     meshforge_root, "configs",
                     f"mini_dudeai_rules.{seed_name}.json")
@@ -2907,10 +2938,10 @@ def probe_rules_seed_drift(
                         seed_doc = json.load(fh)
                 except (OSError, ValueError):
                     return None  # seed unreadable → indeterminate
-                seed_ids = {r.get("id") for r in (seed_doc.get("rules") or [])
-                            if isinstance(r, dict) and r.get("id")}
+                seed_rules = [r for r in (seed_doc.get("rules") or [])
+                              if isinstance(r, dict) and r.get("id")]
 
-            if live_ids is None:
+            if live_ids is None and live_rules is None:
                 home = mini_home or _resolve_mini_home()
                 if not home:
                     return None
@@ -2920,28 +2951,65 @@ def probe_rules_seed_drift(
                         live_doc = json.load(fh)
                 except (OSError, ValueError):
                     return None  # live file unreadable → mini not seeded here
-                live_ids = {r.get("id") for r in (live_doc.get("rules") or [])
-                            if isinstance(r, dict) and r.get("id")}
+                live_rules = [r for r in (live_doc.get("rules") or [])
+                              if isinstance(r, dict) and r.get("id")]
+
+        seed_by_id = {r["id"]: r for r in (seed_rules or [])
+                      if isinstance(r, dict) and r.get("id")}
+        live_by_id = {r["id"]: r for r in (live_rules or [])
+                      if isinstance(r, dict) and r.get("id")}
+        if seed_ids is None:
+            seed_ids = set(seed_by_id)
+        if live_ids is None:
+            live_ids = set(live_by_id)
 
         missing = sorted(seed_ids - live_ids)
-        if not missing:
+
+        # Content leg — needs full rule bodies AND the shared hasher.
+        stale: list = []
+        if seed_by_id and live_by_id and _mini_rule_body_sha is not None:
+            for rid in sorted(seed_ids & live_ids):
+                if rid not in seed_by_id or rid not in live_by_id:
+                    continue  # ids injected wider than the rules provided
+                live_rule = live_by_id[rid]
+                live_sha = _mini_rule_body_sha(live_rule)
+                if live_sha == _mini_rule_body_sha(seed_by_id[rid]):
+                    continue  # in sync with the current seed
+                prov = live_rule.get(_MINI_PROVENANCE_KEY)
+                stamp_sha = prov.get("seed_sha") if isinstance(prov, dict) \
+                    else None
+                if stamp_sha == live_sha:
+                    stale.append(rid)  # untouched copy of an older seed body
+                # else: box-tuned or unstamped → exempt
+
+        if not missing and not stale:
             return None  # live is at-or-ahead of the seed → no drift
 
-        shown = ", ".join(missing[:5]) + (
-            f" (+{len(missing) - 5} more)" if len(missing) > 5 else "")
+        parts = []
+        if missing:
+            shown = ", ".join(missing[:5]) + (
+                f" (+{len(missing) - 5} more)" if len(missing) > 5 else "")
+            parts.append(
+                f"MISSING {len(missing)} rule(s) the role seed carries: {shown}")
+        if stale:
+            shown = ", ".join(stale[:5]) + (
+                f" (+{len(stale) - 5} more)" if len(stale) > 5 else "")
+            parts.append(
+                f"STALE {len(stale)} seed-owned rule(s) — the seed tuned the "
+                f"body but this box still runs the old copy: {shown}")
         return Signal(
             cls="rules_seed_drift",
             subject="mini-dudeai",
             severity="degraded",
             detail=(
-                f"live mini rules are MISSING {len(missing)} rule(s) the role seed "
-                f"carries: {shown}. The seed gained rule(s) the box wasn't "
-                f"re-seeded with — review + merge from "
-                f"configs/mini_dudeai_rules.<role>.json (box-local extra rules are "
-                f"kept; this is a one-way behind-seed check)."
+                f"live mini rules behind the role seed — {'; '.join(parts)}. "
+                f"Review + merge from configs/mini_dudeai_rules.<role>.json via "
+                f"mini_dudeai.candidate.merge_seed_rules (box-local extras and "
+                f"box-TUNED rules are kept; this is a one-way behind-seed "
+                f"check)."
             ),
             issue_ref=79,
-            extra={"missing": missing, "role": role},
+            extra={"missing": missing, "stale": stale, "role": role},
         )
     except Exception:
         return None
