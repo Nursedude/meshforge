@@ -427,9 +427,11 @@ sync_repo meshforge-map   /opt/meshforge       meshforge-map     "$MF_PRE_HEAD" 
 # Operator-disabled units stay disabled (try-restart semantics).
 sync_repo meshforge-watchdog /opt/meshforge   meshforge-watchdog "$MF_PRE_HEAD"     || rc1c=$?
 # mini-dudeai runs on the USER bus (systemctl --user), not as a system unit,
-# so sync_repo's sudo try-restart can't reach it. This user-bus sibling picks
+# so the sync_repo sudo try-restart cannot reach it. This user-bus sibling picks
 # up src/mini_dudeai/* code changes from the same /opt/meshforge pull, so a git
 # pull actually lands new mini code on the running daemon (the deploy gap).
+# (Recipe rule: this body must stay single-quote-free — an apostrophe here
+# terminates the outer REMOTE_SCRIPT string, see the note ~line 451.)
 sync_user_unit meshforge-mini-dudeai /opt/meshforge meshforge-mini-dudeai "$MF_PRE_HEAD" || rc1d=$?
 sync_repo meshforge-maps  /opt/meshforge-maps  meshforge-maps    "$MFMAPS_PRE_HEAD" || rc2=$?
 
