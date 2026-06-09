@@ -204,13 +204,17 @@ each independently shippable, all behind default-off `rns.reply_routing_enabled`
   6008 collected / parity in sync. **NOT yet field-soaked** — no box has the flag on.
 - [ ] Step 3 — set LXMF `FIELD_REPLY_TO=0x30` to `lxmf_msg_hash` on bridged-out messages (native threading in stock NomadNet/Sideband). Column already provisioned.
 - [x] **Step 4 — consume Meshtastic `ROUTING_APP` ACK/NAK for honest delivery
-  confirmation (Thread-2 Phase 2, default-off). ⚠️ TCP-MODE-ONLY — INERT on the
-  fleet's `mqtt_bridge` mode (soak caught it 2026-06-08; honest-signal warning +
-  TCP-only docs shipped `81ac4ac`). The ACK is wired through the TCP
-  `MeshtasticHandler`'s persistent `meshtastic.receive`; `mqtt_bridge` mode TXes via
-  HTTP toradio + RXes via MQTT json (no ROUTING_APP) and can't read fromradio
-  (#17/#75), so the ACK is unreachable there. Honest mqtt_bridge confirmation = open
-  problem / separate slice.** New `src/gateway/ack_tracker.py`:
+  confirmation (Thread-2 Phase 2, default-off) — WORKS IN BOTH BRIDGE MODES.** TCP
+  mode: the ACK rides the persistent `meshtastic.receive` (`MeshtasticHandler`).
+  `mqtt_bridge` mode (fleet default): the soak (2026-06-08) caught the TCP wiring
+  INERT here (`81ac4ac` honest-signal), then the `/e/` ServiceEnvelope path was
+  BUILT (`204da9e`+`3fc9321`): `src/utils/meshtastic_se_crypto.py` native AES-CTR
+  decrypt (proven live vs `/json/`), `send_text_direct_with_id`, `MQTTBridgeHandler`
+  decodes ROUTING_APP from `/e/` (cost-guarded, NO fromradio read → #17/#75 held),
+  `meshtastic.channel_keys` config. Live CONFIRMED awaits a reachable node + the
+  downlink channel's PSK in `channel_keys` (custom channels; default = zero-config).
+  Research: `.claude/research/mqtt_bridge_ack_feasibility_2026_06_08.md`. New
+  `src/gateway/ack_tracker.py`:
   in-memory, bounded, monotonic-TTL'd `AckTracker` (packet_id→msg_id for in-flight
   DMs) + pure `parse_routing_ack` (mirrors the meshtastic lib's own `isAck` rule:
   `routing.errorReason` absent/`NONE` ⇒ ACK) + `routing_error_to_drop_reason`
