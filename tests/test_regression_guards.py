@@ -709,9 +709,17 @@ class TestDeliveryCallbackSymmetry:
         import ast
         import os
 
-        path = os.path.join(SRC_DIR, "gateway", "rns_bridge.py")
-        with open(path, "r", encoding="utf-8") as f:
-            tree = ast.parse(f.read(), filename=path)
+        # 2026-06-09 rns_bridge split: the helper now lives in
+        # bridge_ack_mixin.py and the two send paths in
+        # bridge_send_mixin.py, both mixed into RNSMeshtasticBridge in
+        # rns_bridge.py. Parse all three so the guard keeps holding
+        # wherever the methods are defined.
+        trees = []
+        for fname in ("rns_bridge.py", "bridge_ack_mixin.py",
+                      "bridge_send_mixin.py"):
+            path = os.path.join(SRC_DIR, "gateway", fname)
+            with open(path, "r", encoding="utf-8") as f:
+                trees.append(ast.parse(f.read(), filename=path))
 
         # send_to_rns and _queue_send_rns delegate callback wiring to
         # _register_lxmf_delivery_callbacks (the Fork-D helper).
@@ -723,13 +731,14 @@ class TestDeliveryCallbackSymmetry:
         # Both shapes satisfy the contract.
 
         def _method_calls(method_name):
-            for node in ast.walk(tree):
-                if (isinstance(node, ast.FunctionDef)
-                        and node.name == method_name):
-                    return {
-                        n.attr for n in ast.walk(node)
-                        if isinstance(n, ast.Attribute)
-                    }
+            for tree in trees:
+                for node in ast.walk(tree):
+                    if (isinstance(node, ast.FunctionDef)
+                            and node.name == method_name):
+                        return {
+                            n.attr for n in ast.walk(node)
+                            if isinstance(n, ast.Attribute)
+                        }
             return None
 
         helper_attrs = _method_calls("_register_lxmf_delivery_callbacks")
@@ -752,8 +761,9 @@ class TestDeliveryCallbackSymmetry:
         for method in ("send_to_rns", "_queue_send_rns"):
             attrs = _method_calls(method)
             assert attrs is not None, (
-                f"src/gateway/rns_bridge.py no longer defines {method} — "
-                f"this regression guard needs its target list refreshed."
+                f"src/gateway/rns_bridge.py (or its bridge_*_mixin.py "
+                f"split files) no longer defines {method} — this "
+                f"regression guard needs its target list refreshed."
             )
             directly_wires = (
                 "register_delivery_callback" in attrs
