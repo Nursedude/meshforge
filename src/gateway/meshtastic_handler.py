@@ -20,6 +20,10 @@ from datetime import datetime
 from queue import Full
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
+from gateway import delivery_counters as _dc
+from .ack_tracker import (
+    AckTracker, parse_routing_ack, routing_error_to_drop_reason,
+)
 from .base_handler import (
     BaseMessageHandler, dual_path_dedup_enabled, dual_path_dedup_window_s,
     get_rf_tx_registry, is_already_bridged,
@@ -108,6 +112,17 @@ class MeshtasticHandler(BaseMessageHandler):
         # Network topology reference (optional)
         self._network_topology = None
 
+        # Thread-2 step 4 — honest Meshtastic delivery confirmation. In-flight
+        # map of a sent DM's packet_id -> its delivery_counters msg_id, so an
+        # arriving ROUTING_APP ACK/NAK resolves to CONFIRMED / DROPPED. Survives
+        # reconnects (handler instance persists); lost only on a full restart
+        # (a still-pending DM stays SENT — honest). Gated by config; inert when
+        # off (no DM is ever registered, so the ROUTING_APP branch no-ops).
+        self._ack_tracker = AckTracker(
+            ttl_sec=getattr(self.config.rns, 'ack_pending_ttl_sec', None),
+            max_pending=getattr(self.config.rns, 'ack_pending_max', None),
+        )
+
     @property
     def interface(self):
         """Get the Meshtastic interface."""
@@ -116,6 +131,54 @@ class MeshtasticHandler(BaseMessageHandler):
     def set_network_topology(self, topology) -> None:
         """Set network topology reference for relay node tracking."""
         self._network_topology = topology
+
+    @property
+    def ack_tracker(self) -> AckTracker:
+        """In-flight Meshtastic DM ACK tracker (Thread-2 step 4)."""
+        return self._ack_tracker
+
+    def _ack_consumption_enabled(self) -> bool:
+        """Whether to send DMs wantAck + consume their ROUTING_APP ACKs."""
+        try:
+            return bool(getattr(
+                self.config.rns, 'meshtastic_ack_consumption_enabled', False))
+        except Exception:
+            return False
+
+    def _register_ack_for_send(self, result, destination, msg_id,
+                               record_sent: bool) -> None:
+        """Arm ACK confirmation for a just-sent DM (Thread-2 step 4).
+
+        No-op for broadcasts (no per-node ACK exists) and when ack
+        consumption is disabled. ``result`` is the meshtastic library's
+        returned MeshPacket — its ``.id`` is the packet_id the recipient
+        will echo as the ROUTING_APP ``request_id``.
+
+        ``msg_id`` ties CONFIRMED to the SAME id earlier states were
+        recorded against. The queue dispatch path passes its
+        ``_queue_msg_id`` (QUEUED/SENT already on that id — do NOT
+        re-record SENT, the queue owns it). The direct send path has no
+        queue lifecycle, so it synthesizes an id and records SENT here so
+        the eventual CONFIRMED is not an orphan.
+        """
+        try:
+            if not destination or not self._ack_consumption_enabled():
+                return
+            packet_id = getattr(result, 'id', None)
+            if not isinstance(packet_id, int) or isinstance(packet_id, bool) \
+                    or packet_id <= 0:
+                return
+            if not msg_id:
+                msg_id = f"mesh-{packet_id:08x}"
+            if record_sent:
+                _dc.record(
+                    _dc.DeliveryState.SENT,
+                    msg_id=msg_id,
+                    protocol="meshtastic",
+                )
+            self._ack_tracker.register(packet_id, msg_id, protocol="meshtastic")
+        except Exception as e:
+            logger.debug(f"Could not arm ACK tracking: {e}")
 
     def run_loop(self) -> None:
         """
@@ -288,18 +351,28 @@ class MeshtasticHandler(BaseMessageHandler):
             if self._interface:
                 # For broadcasts, use ^all instead of None
                 dest = destination if destination else "^all"
-                logger.debug(f"Sending to Meshtastic: dest={dest}, ch={channel}, msg={message[:50]}")
+                # Thread-2 step 4: request an end-to-end ACK for DMs so the
+                # recipient's ROUTING_APP reply confirms delivery. Broadcasts
+                # get no per-node ACK, so leave wantAck off (firmware default).
+                want_ack = self._ack_consumption_enabled() and bool(destination)
+                logger.debug(f"Sending to Meshtastic: dest={dest}, ch={channel}, "
+                             f"wantAck={want_ack}, msg={message[:50]}")
                 with timed_boundary("meshtasticd.send_text", target=str(dest)):
                     result = self._interface.sendText(
                         message,
                         destinationId=dest,
-                        channelIndex=channel
+                        channelIndex=channel,
+                        wantAck=want_ack,
                     )
                 if result is None or result is False:
                     logger.warning(f"sendText returned {result} — TX may have failed "
                                    f"(dest={dest}, ch={channel})")
                     return False
                 logger.debug(f"sendText returned: {result}")
+                # Direct send path has no queue lifecycle — record SENT + arm
+                # ACK confirmation against a synthesized id (record_sent=True).
+                self._register_ack_for_send(
+                    result, destination, msg_id=None, record_sent=True)
                 # Dual-path dedup: record broadcast TX so the OTHER path to
                 # this radio (mesh_bridge's cross-preset forward of the same
                 # content) can suppress its duplicate. Registration is
@@ -354,11 +427,22 @@ class MeshtasticHandler(BaseMessageHandler):
         try:
             if self._interface:
                 dest = destination if destination else "^all"
+                # Thread-2 step 4: wantAck for DMs (see send_text).
+                want_ack = self._ack_consumption_enabled() and bool(destination)
                 with timed_boundary("meshtasticd.send_text", target=str(dest)):
-                    result = self._interface.sendText(message, destinationId=dest, channelIndex=channel)
+                    result = self._interface.sendText(
+                        message, destinationId=dest, channelIndex=channel,
+                        wantAck=want_ack)
                 if result is None or result is False:
                     logger.warning(f"Queue sendText returned {result} — TX may have failed")
                     return False
+                # The queue records SENT via mark_delivered() on the SAME
+                # _queue_msg_id; arm ACK confirmation against it (record_sent
+                # =False so SENT isn't double-counted). CONFIRMED then joins
+                # QUEUED→SENT on one id for end-to-end lifecycle.
+                self._register_ack_for_send(
+                    result, destination, msg_id=payload.get('_queue_msg_id'),
+                    record_sent=False)
                 # Dual-path dedup: see send_text — same registration for the
                 # persistent-queue dispatch path (the live R→M route).
                 if not destination:
@@ -421,9 +505,63 @@ class MeshtasticHandler(BaseMessageHandler):
             # Handle text messages
             if portnum == 'TEXT_MESSAGE_APP':
                 self._handle_text_message(packet, decoded, from_id)
+            # Thread-2 step 4: a ROUTING_APP packet is the recipient's
+            # end-to-end ACK/NAK for one of our wantAck DMs. Consume it so
+            # delivery_counters records the honest terminal state (#74).
+            elif portnum == 'ROUTING_APP':
+                self._handle_routing_ack(decoded)
 
         except Exception as e:
             logger.error(f"Error processing Meshtastic message: {e}")
+
+    def _handle_routing_ack(self, decoded: dict) -> None:
+        """Resolve a ROUTING_APP ACK/NAK to a CONFIRMED / DROPPED transition.
+
+        Inert unless the packet's ``request_id`` matches a DM we sent with
+        wantAck (i.e. ack consumption is enabled and we registered it). An
+        unmatched routing packet — someone else's, or a duplicate ACK we
+        already resolved — is silently ignored. Never raises into the RX
+        thread; the bridge's hot path must not break on a counter call.
+        """
+        try:
+            ack = parse_routing_ack(decoded)
+            if ack is None:
+                return
+            resolved = self._ack_tracker.resolve(ack.request_id)
+            if resolved is None:
+                return
+            msg_id, protocol = resolved
+            if ack.ok:
+                _dc.record(
+                    _dc.DeliveryState.CONFIRMED,
+                    msg_id=msg_id,
+                    protocol=protocol,
+                )
+                with self._stats_lock:
+                    self.stats['mesh_ack_confirmed'] = (
+                        self.stats.get('mesh_ack_confirmed', 0) + 1)
+                logger.info(
+                    f"Meshtastic ACK confirmed delivery of {msg_id} "
+                    f"(pkt={ack.request_id:#0x})"
+                )
+            else:
+                reason = routing_error_to_drop_reason(ack.reason)
+                _dc.record(
+                    _dc.DeliveryState.DROPPED,
+                    msg_id=msg_id,
+                    protocol=protocol,
+                    drop_reason=reason,
+                    note=f"meshtastic_nak:{ack.reason}"[:80],
+                )
+                with self._stats_lock:
+                    self.stats['mesh_ack_failed'] = (
+                        self.stats.get('mesh_ack_failed', 0) + 1)
+                logger.warning(
+                    f"Meshtastic NAK for {msg_id} (pkt={ack.request_id:#0x}): "
+                    f"{ack.reason} -> {reason.value}"
+                )
+        except Exception as e:
+            logger.debug(f"Error handling ROUTING_APP ack: {e}")
 
     def _handle_text_message(self, packet: dict, decoded: dict, from_id: str) -> None:
         """Process a text message from Meshtastic."""

@@ -1822,10 +1822,34 @@ class RNSMeshtasticBridge(
                     # Thread-2: prune expired correlation rows (gated
                     # no-op when reply routing is off).
                     self._sweep_expired_correlations()
+                    # Thread-2 step 4: prune never-acked in-flight DMs from
+                    # the mesh ACK tracker (in-memory; self-bounds on
+                    # register too — this is hygiene for an idle gateway).
+                    self._sweep_expired_acks()
 
             except Exception as e:
                 logger.error(f"Bridge loop error: {e}")
                 self._stop_event.wait(1)
+
+    def _sweep_expired_acks(self) -> int:
+        """Prune never-acked in-flight DMs from the mesh ACK tracker
+        (~every 30s from _bridge_loop).
+
+        Thread-2 step 4. The tracker is in-memory and self-bounds on every
+        register; this sweep reclaims entries on a gateway that sent DMs
+        then went idle. A strict no-op when the handler is absent. Never
+        raises.
+        """
+        try:
+            if self._mesh_handler is None:
+                return 0
+            removed = self._mesh_handler.ack_tracker.expire_idle()
+        except Exception as e:
+            logger.warning(f"ack sweep failed: {e}")
+            return 0
+        if removed:
+            logger.debug(f"ack sweep: pruned {removed} un-acked DM(s)")
+        return removed
 
     def _sync_subsystem_states(self) -> None:
         """Synchronize subsystem states from connection status.

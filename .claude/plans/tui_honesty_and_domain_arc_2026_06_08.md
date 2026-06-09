@@ -203,7 +203,30 @@ each independently shippable, all behind default-off `rns.reply_routing_enabled`
   restart-shape in `test_rns_bridge.py` (4). lint 0 / db_audit OK / 317 rns_bridge /
   6008 collected / parity in sync. **NOT yet field-soaked** — no box has the flag on.
 - [ ] Step 3 — set LXMF `FIELD_REPLY_TO=0x30` to `lxmf_msg_hash` on bridged-out messages (native threading in stock NomadNet/Sideband). Column already provisioned.
-- [ ] Step 4 — consume Meshtastic `ROUTING_APP` `request_id == mesh_packet_id` for honest ACK/NAK (feeds #66/#74). Column already provisioned.
+- [x] **Step 4 — consume Meshtastic `ROUTING_APP` ACK/NAK for honest delivery
+  confirmation (Thread-2 Phase 2, default-off).** New `src/gateway/ack_tracker.py`:
+  in-memory, bounded, monotonic-TTL'd `AckTracker` (packet_id→msg_id for in-flight
+  DMs) + pure `parse_routing_ack` (mirrors the meshtastic lib's own `isAck` rule:
+  `routing.errorReason` absent/`NONE` ⇒ ACK) + `routing_error_to_drop_reason`
+  (full Routing.Error enum → DropReason; every mapping is a member of the #74
+  probe's `_DELIVERY_FAILURE_REASONS`). `MeshtasticHandler._on_receive` gains a
+  `ROUTING_APP` branch → `delivery_counters` CONFIRMED / DROPPED(real NAK reason in
+  note). Send sites (`send_text` direct + `queue_send` queue — the only two R→M
+  TCPInterface chokepoints; no DownlinkInjector on the reply path) set
+  `wantAck=True` for DMs and register the packet_id; queue path keys on
+  `_queue_msg_id` so CONFIRMED joins QUEUED→SENT, direct path synthesizes an id +
+  records its own SENT. Gated by new `rns.meshtastic_ack_consumption_enabled`
+  (default False); inert when off (no DM registered → RX branch no-ops). **This
+  makes Meshtastic join the #74 confirmable set** — the probe auto-includes any
+  protocol that records a `confirmed` event (no probe change). Bridge sweep prunes
+  un-acked DMs. No wire change (wantAck is a standard MeshPacket field). No DB (in
+  memory) → no db_inventory entry. Tests: `tests/test_ack_tracker.py` (44) +
+  `TestMeshAckConsumption` in `tests/test_meshtastic_handler.py` (13) + 3 mesh-
+  confirmable guards in `tests/test_watchdog_probes.py`. lint 0 / parity in sync /
+  6086 pass (6 pre-existing unrelated NomadNet stale-patch failures). **NOT yet
+  field-soaked** — flag off on all boxes. Limitation noted: the mqtt
+  downlink-inject puppet path (if ever used) mints packet_ids in meshtasticd and
+  is not ACK-instrumentable by this mechanism — a separate slice if needed.
 - [ ] Step 5 — Meshtastic alias pool (Twilio model) over `DownlinkInjector.inject_nodeinfo`.
 - [ ] Step 6 — explicit downlink loop-tag invariant + regression test (highest-risk; ship with its test).
 - [ ] Step 7 — per-node LXMF identity minting toward RNS (the #35 *structural* fix). **Defer until 1–6 are field-proven**; needs a public-net interop proof.

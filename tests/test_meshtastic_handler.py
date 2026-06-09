@@ -279,7 +279,8 @@ class TestSendText:
         mock_iface.sendText.assert_called_once_with(
             "Hello mesh!",
             destinationId="!aabb0001",
-            channelIndex=0
+            channelIndex=0,
+            wantAck=False,
         )
 
     def test_send_text_broadcast(self, handler):
@@ -294,7 +295,8 @@ class TestSendText:
         mock_iface.sendText.assert_called_once_with(
             "Hello everyone!",
             destinationId="^all",
-            channelIndex=0
+            channelIndex=0,
+            wantAck=False,
         )
 
     def test_send_text_not_connected(self, handler):
@@ -385,7 +387,7 @@ class TestQueueSend:
 
         assert result is True
         mock_iface.sendText.assert_called_once_with(
-            "Test msg", destinationId="!aabb", channelIndex=1
+            "Test msg", destinationId="!aabb", channelIndex=1, wantAck=False,
         )
 
     def test_queue_send_broadcast(self, handler):
@@ -399,7 +401,7 @@ class TestQueueSend:
 
         assert result is True
         mock_iface.sendText.assert_called_once_with(
-            "Broadcast", destinationId="^all", channelIndex=0
+            "Broadcast", destinationId="^all", channelIndex=0, wantAck=False,
         )
 
     def test_queue_send_not_connected(self, handler):
@@ -1095,3 +1097,155 @@ class TestDispatchTimeDedupRecheck:
         assert h.queue_send({"message": "fresh content",
                              "destination": None, "channel": 2}) is True
         h._interface.sendText.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Thread-2 step 4 — Meshtastic ROUTING_APP ACK consumption (#74)
+# ---------------------------------------------------------------------------
+
+class TestMeshAckConsumption:
+    """The honest-delivery rung: a wantAck DM's ROUTING_APP ACK/NAK becomes
+    a real CONFIRMED / DROPPED delivery_counters transition, so Meshtastic
+    joins the #74 confirmable set."""
+
+    def _connected(self, handler, packet_id=0xABCD1234):
+        handler._connected = True
+        iface = MagicMock()
+        iface.sendText.return_value = MagicMock(id=packet_id)
+        handler._interface = iface
+        return handler
+
+    def _rec(self, monkeypatch):
+        """Patch delivery_counters.record; return the capturing mock."""
+        from unittest.mock import MagicMock as _MM
+        rec = _MM()
+        monkeypatch.setattr('gateway.delivery_counters.record', rec)
+        return rec
+
+    # --- send side: wantAck + registration -------------------------------
+
+    def test_dm_sets_wantack_and_registers_when_enabled(self, handler, monkeypatch):
+        from gateway.delivery_counters import DeliveryState
+        rec = self._rec(monkeypatch)
+        h = self._connected(handler, packet_id=0x11112222)
+        h.config.rns.meshtastic_ack_consumption_enabled = True
+
+        assert h.send_text("hi", destination="!aabb0001", channel=0) is True
+        # wantAck requested for the DM
+        _, kwargs = h._interface.sendText.call_args
+        assert kwargs["wantAck"] is True
+        # packet_id registered → resolvable as the synthesized id
+        resolved = h.ack_tracker.resolve(0x11112222)
+        assert resolved == ("mesh-11112222", "meshtastic")
+        # direct path records its own SENT (no queue lifecycle)
+        rec.assert_any_call(DeliveryState.SENT,
+                            msg_id="mesh-11112222", protocol="meshtastic")
+
+    def test_broadcast_no_wantack_no_register(self, handler, monkeypatch):
+        self._rec(monkeypatch)
+        h = self._connected(handler)
+        h.config.rns.meshtastic_ack_consumption_enabled = True
+
+        assert h.send_text("all hands") is True   # broadcast
+        _, kwargs = h._interface.sendText.call_args
+        assert kwargs["wantAck"] is False
+        assert h.ack_tracker.pending_count() == 0
+
+    def test_dm_disabled_flag_no_register(self, handler, monkeypatch):
+        self._rec(monkeypatch)
+        h = self._connected(handler, packet_id=0x33334444)
+        h.config.rns.meshtastic_ack_consumption_enabled = False
+
+        assert h.send_text("hi", destination="!aabb0001") is True
+        _, kwargs = h._interface.sendText.call_args
+        assert kwargs["wantAck"] is False
+        assert h.ack_tracker.resolve(0x33334444) is None
+
+    def test_queue_send_dm_registers_with_queue_msg_id(self, handler, monkeypatch):
+        from gateway.delivery_counters import DeliveryState
+        rec = self._rec(monkeypatch)
+        h = self._connected(handler, packet_id=0x55556666)
+        h.config.rns.meshtastic_ack_consumption_enabled = True
+
+        ok = h.queue_send({"message": "reply", "destination": "!b03bb70c",
+                           "channel": 2, "_queue_msg_id": "q-123"})
+        assert ok is True
+        # registered against the queue's id (so CONFIRMED joins QUEUED→SENT)
+        assert h.ack_tracker.resolve(0x55556666) == ("q-123", "meshtastic")
+        # queue owns SENT — queue_send must NOT double-record it
+        for c in rec.call_args_list:
+            assert c.args[:1] != (DeliveryState.SENT,) or \
+                c.kwargs.get("msg_id") != "q-123"
+
+    # --- receive side: ROUTING_APP → CONFIRMED / DROPPED -----------------
+
+    def test_positive_ack_records_confirmed(self, handler, monkeypatch):
+        from gateway.delivery_counters import DeliveryState
+        rec = self._rec(monkeypatch)
+        h = self._connected(handler)
+        h.config.rns.meshtastic_ack_consumption_enabled = True
+        h.ack_tracker.register(0xAA01, "msg-7")
+
+        h._handle_routing_ack({"portnum": "ROUTING_APP",
+                               "requestId": 0xAA01, "routing": {}})
+
+        rec.assert_called_once_with(DeliveryState.CONFIRMED,
+                                    msg_id="msg-7", protocol="meshtastic")
+        assert h.stats.get("mesh_ack_confirmed") == 1
+
+    def test_nak_records_dropped_with_reason(self, handler, monkeypatch):
+        from gateway.delivery_counters import DeliveryState, DropReason
+        rec = self._rec(monkeypatch)
+        h = self._connected(handler)
+        h.config.rns.meshtastic_ack_consumption_enabled = True
+        h.ack_tracker.register(0xBB02, "msg-9")
+
+        h._handle_routing_ack({"portnum": "ROUTING_APP", "requestId": 0xBB02,
+                               "routing": {"errorReason": "MAX_RETRANSMIT"}})
+
+        assert rec.call_count == 1
+        args, kwargs = rec.call_args
+        assert args[0] == DeliveryState.DROPPED
+        assert kwargs["msg_id"] == "msg-9"
+        assert kwargs["protocol"] == "meshtastic"
+        assert kwargs["drop_reason"] == DropReason.RETRIES_EXHAUSTED
+        assert kwargs["note"] == "meshtastic_nak:MAX_RETRANSMIT"
+        assert h.stats.get("mesh_ack_failed") == 1
+
+    def test_unmatched_ack_is_noop(self, handler, monkeypatch):
+        rec = self._rec(monkeypatch)
+        h = self._connected(handler)
+        h.config.rns.meshtastic_ack_consumption_enabled = True
+        # nothing registered for this request_id
+        h._handle_routing_ack({"portnum": "ROUTING_APP",
+                               "requestId": 0xDEAD, "routing": {}})
+        rec.assert_not_called()
+
+    def test_on_receive_dispatches_routing_app(self, handler, monkeypatch):
+        from gateway.delivery_counters import DeliveryState
+        rec = self._rec(monkeypatch)
+        h = self._connected(handler)
+        h.config.rns.meshtastic_ack_consumption_enabled = True
+        h.ack_tracker.register(0xCAFE, "msg-x")
+
+        h._on_receive({"decoded": {"portnum": "ROUTING_APP",
+                                   "requestId": 0xCAFE, "routing": {}}})
+        rec.assert_called_once_with(DeliveryState.CONFIRMED,
+                                    msg_id="msg-x", protocol="meshtastic")
+
+    def test_end_to_end_send_then_ack_same_msg_id(self, handler, monkeypatch):
+        """The full rung: queue-send a DM, then its ACK arrives via
+        _on_receive → CONFIRMED on the SAME _queue_msg_id."""
+        from gateway.delivery_counters import DeliveryState
+        rec = self._rec(monkeypatch)
+        h = self._connected(handler, packet_id=0x0BADF00D)
+        h.config.rns.meshtastic_ack_consumption_enabled = True
+
+        h.queue_send({"message": "ping", "destination": "!b03bb70c",
+                      "channel": 2, "_queue_msg_id": "q-777"})
+        h._on_receive({"decoded": {"portnum": "ROUTING_APP",
+                                   "requestId": 0x0BADF00D, "routing": {}}})
+
+        rec.assert_called_with(DeliveryState.CONFIRMED,
+                              msg_id="q-777", protocol="meshtastic")
+        assert h.ack_tracker.resolve(0x0BADF00D) is None  # consumed once

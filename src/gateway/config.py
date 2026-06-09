@@ -476,6 +476,19 @@ class RNSConfig:
     # them on RF). Default off (canary-first). DMs are never suppressed.
     dual_path_dedup_enabled: bool = False
     dual_path_dedup_window_sec: int = 60    # registry hit window (seconds)
+    # Theme-A step 4 (Thread-2 Phase 2) — honest Meshtastic delivery
+    # confirmation. When True, directed downlinks (DMs to a specific mesh
+    # node) are sent wantAck=True and the gateway consumes the recipient's
+    # ROUTING_APP ACK/NAK, recording the real CONFIRMED / DROPPED(reason)
+    # terminal state in delivery_counters. This makes Meshtastic join the
+    # confirmable set (Issue #74) with end-to-end proof instead of the
+    # "Sent (not guaranteed)" ceiling (#16). Default False (observe-first
+    # rollout). Broadcasts are unaffected (no per-node ACK exists). RX
+    # parsing of ROUTING_APP is inert when off: without wantAck the
+    # recipient sends no ACK, so the in-flight tracker stays empty.
+    meshtastic_ack_consumption_enabled: bool = False
+    ack_pending_ttl_sec: int = 600          # forget an un-acked DM after ~10 min
+    ack_pending_max: int = 1024             # in-flight DM cap, oldest-evicted
 
     def get_lxmf_destinations(self) -> List[str]:
         """Return default_lxmf_destination normalized to a list of non-empty hex strings."""

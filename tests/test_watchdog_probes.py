@@ -2419,6 +2419,66 @@ def test_confirmation_stall_rns_collapse_wedge():
     assert sig.severity == "wedge"               # 2/25 = 8%
 
 
+def _mesh_delivery_payload(*, confirmed=0, failed=0,
+                           drop_reason="retries_exhausted"):
+    """A delivery payload where MESHTASTIC is the confirmable protocol —
+    the post-step-4 world: meshtastic records `confirmed` (ROUTING_APP ACK)
+    and failed-delivery `dropped` (NAK→DropReason) events, so it joins the
+    #74 confirmable set exactly like RNS."""
+    recent = (
+        [{"state": "confirmed", "protocol": "meshtastic", "id": f"mc{i}"}
+         for i in range(confirmed)]
+        + [{"state": "dropped", "protocol": "meshtastic",
+            "drop_reason": drop_reason, "id": f"mf{i}"}
+           for i in range(failed)]
+    )
+    return {
+        "confirmation_rate": 0.9,
+        "state_by_protocol": {"confirmed": {"meshtastic": confirmed or 1}},
+        "recent": recent,
+    }
+
+
+def test_confirmation_stall_meshtastic_joins_confirmable_set():
+    """Step 4 headline: once Meshtastic records ROUTING_APP ACKs it becomes
+    confirmable and the probe judges its REAL delivery rate — a mesh
+    delivery collapse now fires (it never could before, mesh was excluded)."""
+    payload = _mesh_delivery_payload(confirmed=2, failed=23)
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        sig = probe_delivery_confirmation_stall(min_terminal=20)
+    assert sig is not None
+    assert sig.cls == "delivery_confirmation_stall"
+    assert sig.severity == "wedge"               # 2/25 = 8% ≤ 10% wedge
+    assert sig.extra["confirmable"] == ["meshtastic"]
+    assert sig.extra["ring_confirmed"] == 2
+    assert sig.extra["ring_failed"] == 23
+
+
+def test_confirmation_stall_meshtastic_healthy_is_quiet():
+    """Honest Meshtastic confirmations (DMs that ACK) keep the probe
+    silent — the desired steady state of step 4."""
+    payload = _mesh_delivery_payload(confirmed=24, failed=1)
+    with patch("utils.watchdog_probes.urlopen",
+               return_value=_http_json_mock(payload)):
+        assert probe_delivery_confirmation_stall(min_terminal=20) is None
+
+
+def test_confirmation_stall_meshtastic_nak_reasons_count_as_failures():
+    """Every NAK→DropReason mapping (ack_tracker) must be a delivery
+    failure the probe counts — guards the cross-module invariant from the
+    probe side (the producer side is tested in test_ack_tracker)."""
+    from gateway.ack_tracker import _NAK_DROP_REASON
+    for dr in set(_NAK_DROP_REASON.values()):
+        payload = _mesh_delivery_payload(confirmed=1, failed=24,
+                                         drop_reason=dr.value)
+        with patch("utils.watchdog_probes.urlopen",
+                   return_value=_http_json_mock(payload)):
+            sig = probe_delivery_confirmation_stall(min_terminal=20)
+        assert sig is not None, f"{dr.value} did not count as a failure"
+        assert sig.extra["ring_failed"] == 24
+
+
 def test_channel_feed_dark_none_when_json_pipeline_itself_stale():
     """Issue #74 freshness gate: the newest json line is ITSELF older
     than dark_after_s → the whole json pipeline died. Firing
