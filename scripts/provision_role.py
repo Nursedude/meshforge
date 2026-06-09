@@ -10,7 +10,11 @@ operation (no raw systemctl here — MF008).
   v1 scope (see .claude/plans/provisioner_scope.md):
     - unit states: enabled | disabled | absent
     - masking invariant: rival RNS host masked on a box that owns rnsd (Issue #69)
-    - config deltas (bbox/cap/caches): ADVISORY warn (assert, don't enforce, in v1)
+    - config deltas (bbox/cap/caches): ASSERTED against real state — code<->yaml
+      node_cap cross-check, response-cache presence, bbox geo-anchor. The map
+      defaults are code-baked / deployment-specific, NOT operator-settable, so
+      this converges by assertion not mutation (see config_delta_actions). The
+      one force-settable delta (meshtasticd mqtt.root #77) is a separate slice.
     - external roles (provisioned_by:*) and singletons: reported, not enforced
 
 Usage:
@@ -198,11 +202,9 @@ def plan(role_def: dict, overrides: Optional[Dict[str, dict]] = None) -> List[Ac
                 actions.append(Action(f"mask:{rival}", "present", "masked", "mask",
                                       detail="rival RNS host on an rnsd box — Issue #69 invariant"))
 
-    # Config deltas (v1: advisory only — assert, don't enforce).
-    if services.get("meshforge-map") == "enabled":
-        actions.append(Action("delta:node-directory", "?", "bbox+cap+caches", "warn",
-                              required=False,
-                              detail="verify bbox_filter/node_cap/response-caches via /api/status.directory"))
+    # Config deltas (bbox/cap/caches) are asserted against real state in
+    # config_delta_actions() (appended in main, parallel to foundation_actions) —
+    # they are cross-cutting map `defaults`, not per-role unit state.
     if role_def.get("singleton"):
         actions.append(Action("invariant:singleton", "?", "unique-in-fleet", "warn",
                               required=False,
@@ -235,6 +237,89 @@ def foundation_actions() -> List[Action]:
         detail = detail[:297] + "..."
     return [Action("foundation:perms", f"{len(drift)} drift item(s)",
                    "operator-owned", "foundation", required=True, detail=detail)]
+
+
+def _has_geo_anchor() -> "tuple[bool, str]":
+    """Does this box have a geographic anchor for the directory bbox filter?
+
+    The filter is effective only with EITHER an explicit
+    ``map_settings.external_bulk_bbox`` OR an ``operator_position.json`` (the bbox
+    auto-derives from the latter; no anchor => the directory serves the unfiltered
+    firehose). Read straight from the real user's config (MF001) — no
+    SettingsManager so a sudo invocation can't read root's home by mistake.
+    """
+    cfg = get_real_user_home() / ".config" / "meshforge"
+    if (cfg / "operator_position.json").exists():
+        return True, "operator_position.json"
+    ms = cfg / "map_settings.json"
+    try:
+        if ms.exists() and json.loads(ms.read_text()).get("external_bulk_bbox"):
+            return True, "external_bulk_bbox"
+    except (json.JSONDecodeError, OSError):
+        pass
+    return False, "none"
+
+
+def config_delta_actions(role_def: dict, defaults: dict) -> List[Action]:
+    """Assert the cross-cutting map `defaults` (fleet_roles.yaml) against real
+    state — MAP-running roles only. Parallel to foundation_actions().
+
+    GROUND-TRUTH (2026-06-08): the declared map defaults are NOT operator-settable
+    config; they are baked into code (the "software fits the box" invariant) or
+    deployment-specific:
+      - response_caches  : instantiated unconditionally in MapDataCollector (#70/#71)
+      - node_cap         : the DEFAULT_DIRECTORY_MAX_ROWS code constant (#49/#50)
+      - bbox_filter      : effective only with a geo-anchor (operator position) — deployment-specific
+    So this converges by ASSERTION not mutation: read the real values, flag genuine
+    drift (a code constant that no longer matches the declared default — a
+    reproducibility hazard) or a missing deployment input (no anchor => bbox off =>
+    unfiltered directory). The one force-settable delta (meshtasticd mqtt.root #77)
+    is a radio-touching enforcement deferred to its own slice.
+    """
+    actions: List[Action] = []
+    if role_def.get("services", {}).get("meshforge-map") != "enabled":
+        return actions
+    nd = (defaults or {}).get("node_directory", {})
+
+    # node_cap: code constant vs declared default — catches code<->yaml drift.
+    declared_cap = nd.get("node_cap")
+    if declared_cap is not None:
+        try:
+            from utils.node_history import DEFAULT_DIRECTORY_MAX_ROWS as code_cap
+        except Exception as e:
+            actions.append(Action("delta:node-cap", "?", str(declared_cap), "warn",
+                                  required=False, detail=f"node_history read failed: {e}"))
+        else:
+            verb = "noop" if code_cap == declared_cap else "warn"
+            detail = "" if verb == "noop" else (
+                "code DEFAULT_DIRECTORY_MAX_ROWS drifted from the declared node_cap — "
+                "reconcile node_history.py and fleet_roles.yaml")
+            actions.append(Action("delta:node-cap", str(code_cap), str(declared_cap),
+                                  verb, required=False, detail=detail))
+
+    # response_caches: code-always-on; assert the layer is importable.
+    if (defaults or {}).get("response_caches"):
+        try:
+            from utils._response_byte_cache import ResponseByteCache  # noqa: F401
+            actions.append(Action("delta:response-caches", "code-always-on",
+                                  "directory+geojson+topology", "noop",
+                                  detail="unconditional in MapDataCollector (#70/#71)"))
+        except Exception as e:
+            actions.append(Action("delta:response-caches", "?", "present", "warn",
+                                  required=False, detail=f"ResponseByteCache import failed: {e}"))
+
+    # bbox_filter effectiveness: needs a geo-anchor (deployment-specific).
+    if nd.get("bbox_filter") and nd.get("operator_position_required"):
+        anchored, how = _has_geo_anchor()
+        if anchored:
+            actions.append(Action("delta:bbox-anchor", how, "anchored", "noop"))
+        else:
+            actions.append(Action("delta:bbox-anchor", "none", "anchored", "warn",
+                                  required=False,
+                                  detail="no operator_position.json and no map_settings."
+                                         "external_bulk_bbox — bbox_filter is OFF, the "
+                                         "directory serves the unfiltered firehose"))
+    return actions
 
 
 # --------------------------------------------------------------------------
@@ -464,6 +549,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Cross-cutting permission foundation (D1/D3) — appended to every converge,
     # role-independent. Continuously enforces the born-correct perms (mf.4/#73).
     actions += foundation_actions()
+    # Cross-cutting map `defaults` (bbox/cap/caches) — asserted against real
+    # state for MAP-running roles (code-baked / deployment-specific, not mutated).
+    actions += config_delta_actions(role_def, catalog.get("defaults", {}))
     render(actions, args.apply)
 
     changes = [a for a in actions if a.verb in ("enable", "disable", "mask", "foundation")]

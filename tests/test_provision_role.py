@@ -415,3 +415,67 @@ class TestGatherFleetRoles:
         with patch("subprocess.run", side_effect=OSError("no ssh")):
             rm = pr.gather_fleet_roles(["dead"], self_role="primary")
         assert rm["dead"] is None
+
+
+# --------------------------------------------------------------------------
+# config_delta_actions — map `defaults` asserted against real state (not mutated).
+# The defaults are code-baked (caches/cap) or deployment-specific (bbox anchor),
+# so these PASS when satisfied and WARN on genuine drift; they never mutate.
+# --------------------------------------------------------------------------
+
+from utils.node_history import DEFAULT_DIRECTORY_MAX_ROWS as _REAL_CAP  # noqa: E402
+
+_MAP_ROLE = {"services": {"meshforge-map": "enabled"}}
+_NON_MAP_ROLE = {"services": {"meshforge-gateway": "enabled"}}
+_DEFAULTS = {
+    "node_directory": {"bbox_filter": True, "node_cap": _REAL_CAP,
+                       "operator_position_required": True},
+    "response_caches": {"directory": True, "geojson": True, "topology": True},
+}
+
+
+def _by_item(actions, item):
+    return next((a for a in actions if a.item == item), None)
+
+
+class TestConfigDeltaActions:
+    def test_non_map_role_emits_nothing(self):
+        assert pr.config_delta_actions(_NON_MAP_ROLE, _DEFAULTS) == []
+
+    def test_node_cap_match_is_noop(self):
+        a = _by_item(pr.config_delta_actions(_MAP_ROLE, _DEFAULTS), "delta:node-cap")
+        assert a is not None and a.verb == "noop"
+        assert a.current == str(_REAL_CAP) and a.desired == str(_REAL_CAP)
+
+    def test_node_cap_drift_warns(self):
+        d = {"node_directory": {"node_cap": _REAL_CAP + 1}}
+        a = _by_item(pr.config_delta_actions(_MAP_ROLE, d), "delta:node-cap")
+        assert a is not None and a.verb == "warn" and not a.required
+        assert "drifted" in a.detail
+
+    def test_response_caches_present_is_noop(self):
+        a = _by_item(pr.config_delta_actions(_MAP_ROLE, _DEFAULTS), "delta:response-caches")
+        assert a is not None and a.verb == "noop"
+
+    def test_bbox_anchor_position_file_is_noop(self, tmp_path, monkeypatch):
+        cfg = tmp_path / ".config" / "meshforge"
+        cfg.mkdir(parents=True)
+        (cfg / "operator_position.json").write_text('{"lat": 19.4, "lon": -155.3}')
+        monkeypatch.setattr(pr, "get_real_user_home", lambda: tmp_path)
+        a = _by_item(pr.config_delta_actions(_MAP_ROLE, _DEFAULTS), "delta:bbox-anchor")
+        assert a is not None and a.verb == "noop" and a.current == "operator_position.json"
+
+    def test_bbox_anchor_external_bbox_is_noop(self, tmp_path, monkeypatch):
+        cfg = tmp_path / ".config" / "meshforge"
+        cfg.mkdir(parents=True)
+        (cfg / "map_settings.json").write_text('{"external_bulk_bbox": {"lat_min": 19}}')
+        monkeypatch.setattr(pr, "get_real_user_home", lambda: tmp_path)
+        a = _by_item(pr.config_delta_actions(_MAP_ROLE, _DEFAULTS), "delta:bbox-anchor")
+        assert a is not None and a.verb == "noop" and a.current == "external_bulk_bbox"
+
+    def test_bbox_anchor_missing_warns(self, tmp_path, monkeypatch):
+        (tmp_path / ".config" / "meshforge").mkdir(parents=True)  # no anchor at all
+        monkeypatch.setattr(pr, "get_real_user_home", lambda: tmp_path)
+        a = _by_item(pr.config_delta_actions(_MAP_ROLE, _DEFAULTS), "delta:bbox-anchor")
+        assert a is not None and a.verb == "warn" and not a.required
+        assert "bbox_filter is OFF" in a.detail
