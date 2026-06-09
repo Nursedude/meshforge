@@ -29,7 +29,7 @@ import json
 import os
 import time
 
-from ._util import atomic_write_text, read_json
+from ._util import atomic_write_text, read_json, resolve_home
 from .history import append_jsonl
 
 # --- tunables (conservative defaults; override per call for tests/tuning) -----
@@ -477,9 +477,25 @@ def resolve_delta(deltas_path: str, key: str, status: str,
     return True
 
 
+# mtime-keyed cache: the brief calls count_pending_deltas EVERY tick, but
+# the deltas file changes only when the nightly dream pass appends or a
+# human ratifies — a full JSONL parse per tick (up to 1MB) to produce an
+# integer that changes ~once a day.
+_PENDING_COUNT_CACHE: dict = {}
+
+
 def count_pending_deltas(deltas_path: str) -> int:
     """How many memory-deltas await ratification. Used by the warm-start brief."""
-    return len(_unresolved_keys(_load_deltas(deltas_path)))
+    try:
+        mtime_ns = os.stat(deltas_path).st_mtime_ns
+    except OSError:
+        return 0
+    hit = _PENDING_COUNT_CACHE.get(deltas_path)
+    if hit and hit[0] == mtime_ns:
+        return hit[1]
+    n = len(_unresolved_keys(_load_deltas(deltas_path)))
+    _PENDING_COUNT_CACHE[deltas_path] = (mtime_ns, n)
+    return n
 
 
 def _read_history_tail(path: str, last: int) -> list[dict]:
@@ -507,8 +523,8 @@ def _read_history_tail(path: str, last: int) -> list[dict]:
 
 
 def _default_deltas_path() -> str:
-    """Standard deltas file in the invoking user's home (package convention)."""
-    return os.path.join(os.path.expanduser("~"), "mini_dudeai_memory_deltas.jsonl")
+    """Standard deltas file in the mini home (package convention)."""
+    return os.path.join(resolve_home(), "mini_dudeai_memory_deltas.jsonl")
 
 
 def main(argv: list[str] | None = None) -> int:

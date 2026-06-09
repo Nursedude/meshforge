@@ -198,15 +198,29 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
 
 def write_brief(state_path: str, history_path: str, out_path: str,
                 history_tail: int = 60, now_ts: float | None = None,
-                deltas_path: str | None = None) -> str:
+                deltas_path: str | None = None,
+                state: dict | None = None) -> str:
     """Read mini's state + history-tail, build the brief, atomic-write it. Returns text.
 
     If `deltas_path` is given (or the standard sibling file exists), surfaces the
     count of unratified B3 memory-deltas in the brief.
+
+    `state` lets the engine pass the tick's in-memory dict so the per-tick
+    path doesn't re-read and re-parse the state file it wrote microseconds
+    earlier; the decoupled callers (--brief CLI, cron) omit it and read disk.
+
+    SD-wear guard: the rendered text is compared against the existing brief
+    with the volatile `_generated …` stamp line excluded — when nothing else
+    changed (the common quiet-box tick), the write is skipped entirely
+    instead of burning a tmp+fsync+rename cycle on flash every 30s forever.
+    The file's mtime then honestly reflects the last CONTENT change; the
+    freshness story lives in the state file's last_tick_ts, which warmstart
+    already re-derives from.
     """
     import time
     now_ts = time.time() if now_ts is None else now_ts
-    state, _ = read_json(state_path)
+    if state is None:
+        state, _ = read_json(state_path)
     history = _read_history_tail(history_path, history_tail)
     if deltas_path is None:
         deltas_path = os.path.join(
@@ -216,15 +230,55 @@ def write_brief(state_path: str, history_path: str, out_path: str,
         from .dreams import count_pending_deltas
         pending = count_pending_deltas(deltas_path)
     text = build_brief(state or {}, history, now_ts, pending_deltas=pending)
-    atomic_write_text(out_path, text)
+    if not _brief_unchanged(out_path, text):
+        atomic_write_text(out_path, text)
     return text
 
 
-def _read_history_tail(path: str, last: int) -> list[dict]:
-    """Last `last` parsed JSONL objects. Skips malformed lines, never raises."""
+def _strip_volatile(text: str) -> str:
+    """Drop the `_generated <stamp> · last tick <age> ago …` line — the one
+    line guaranteed to differ every tick even when the brief's substance is
+    identical."""
+    return "\n".join(l for l in text.splitlines()
+                     if not l.startswith("_generated "))
+
+
+def _brief_unchanged(out_path: str, new_text: str) -> bool:
+    """True when the existing brief matches new_text modulo the volatile
+    stamp line. Never raises — any read problem means 'changed, write it'."""
     try:
-        with open(path) as f:
-            lines = [l for l in f if l.strip()][-last:]
+        with open(out_path, encoding="utf-8", errors="replace") as f:
+            existing = f.read()
+    except OSError:
+        return False
+    return _strip_volatile(existing) == _strip_volatile(new_text)
+
+
+# Tail-read window: 60 entries × ~300-500B each ≈ 30KB; 128KB gives ample
+# slack. A box sitting near history's 1MB rotation cap used to re-read and
+# line-split the whole file every 30s tick to extract these lines.
+_TAIL_WINDOW_BYTES = 131072
+
+
+def _read_history_tail(path: str, last: int) -> list[dict]:
+    """Last `last` parsed JSONL objects, read block-wise from the file's end.
+    Skips malformed lines, never raises."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            start = max(0, size - _TAIL_WINDOW_BYTES)
+            f.seek(start)
+            data = f.read()
+        lines = [l for l in data.decode("utf-8", "replace").splitlines()
+                 if l.strip()]
+        if start > 0:
+            # The window almost certainly cut the first line mid-record.
+            lines = lines[1:]
+            if len(lines) < last:
+                # Pathological line lengths — fall back to the full read.
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    lines = [l for l in f if l.strip()]
+        lines = lines[-last:]
     except OSError:
         return []
     out = []

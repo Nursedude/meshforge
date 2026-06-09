@@ -117,14 +117,16 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
 
 
 def _default_paths() -> tuple[str, str]:
-    """Standard mini file locations in the invoking user's home.
+    """Standard mini file locations in the mini home.
 
-    Matches the package convention (meshforge_fleet preset uses
-    ``os.path.expanduser("~")``) — mini stays stdlib-only and decoupled from
-    the meshforge utils tree. The brief is written here by the user-run daemon,
-    so this resolves to the same place when the hook runs as that user.
+    Uses the shared resolver (``_util.resolve_home``: $MINI_DUDEAI_HOME → ~)
+    so every consumer agrees on the artifact dir — mini stays stdlib-only and
+    decoupled from the meshforge utils tree. The brief is written here by the
+    user-run daemon, so this resolves to the same place when the hook runs as
+    that user.
     """
-    home = os.path.expanduser("~")
+    from ._util import resolve_home
+    home = resolve_home()
     return (
         os.path.join(home, "mini_dudeai_brief.md"),
         os.path.join(home, "mini_dudeai_state.json"),

@@ -8,13 +8,13 @@ engine will see on each emitted Condition.
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 from .._util import read_json
-from .base import Condition, Source
+from .base import ExtractorSource
 
 
-class JsonFileSource(Source):
+class JsonFileSource(ExtractorSource):
     """Read a JSON file each tick, emit one Condition per extracted item.
 
     Args:
@@ -38,36 +38,8 @@ class JsonFileSource(Source):
         self.extractor = extractor
         self.name = name or f"json_file:{path}"
 
-    def collect(self) -> Iterable[Condition]:
+    def _read(self):
         data, err = read_json(self.path)
         if err:
-            yield Condition(
-                kind="source_error",
-                subject=self.name,
-                detail=f"{self.path} unreadable: {err}",
-                source=self.name,
-            )
-            return
-        if data is None:
-            return
-        try:
-            items = self.extractor(data) or []
-        except Exception as e:  # extractor is user code — never crash on it
-            yield Condition(
-                kind="source_error",
-                subject=self.name,
-                detail=f"extractor raised {type(e).__name__}: {e}",
-                source=self.name,
-            )
-            return
-        for item in items:
-            subject = str(item.get("subject", "?"))
-            detail = str(item.get("detail", ""))
-            extras = {k: v for k, v in item.items() if k not in ("subject", "detail")}
-            yield Condition(
-                kind=self.kind,
-                subject=subject,
-                detail=detail,
-                source=self.name,
-                extras=extras,
-            )
+            return None, f"{self.path} unreadable: {err}"
+        return data, None

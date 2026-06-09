@@ -21,7 +21,10 @@ from dataclasses import asdict
 from typing import Any
 
 from .actions.base import Action, Outcome
-from ._util import atomic_write_bytes, atomic_write_text, read_json
+from ._util import (
+    atomic_write_bytes, atomic_write_text, log_error, log_info, log_warning,
+    read_json,
+)
 from .candidate import STRUCTURAL_MATCH_KEYS
 from .history import HistoryWriter
 from .sources.base import Condition, Source
@@ -133,6 +136,9 @@ class RuleEngine:
         # number of OBSERVED ticks so wall-clock jumps (NTP steps on the
         # RTC-less fleet) can't satisfy a debounce the box never observed.
         self._interval_s: float | None = None
+        # Set by load_rules() when a candidate promoted; tick() converts it
+        # into a history record (ruleset-change provenance).
+        self._pending_promo_record: dict | None = None
 
     # --- rules loading + candidate promotion --------------------------
 
@@ -164,8 +170,8 @@ class RuleEngine:
                 payload = src.read()
             atomic_write_bytes(self.bak_path, payload)
         except OSError as e:
-            print(f"rules: backup of canonical before promote failed "
-                  f"(continuing): {type(e).__name__}: {e}", flush=True)
+            log_error(f"rules: backup of canonical before promote failed "
+                      f"(continuing): {type(e).__name__}: {e}")
 
     def restore_backup(self) -> dict:
         """Restore the canonical rules from the single-slot .bak.
@@ -191,30 +197,34 @@ class RuleEngine:
         valid, errs = self._validate_rules(cand)
         if errs:
             return {"promoted": False, "reason": f"validation errors: {errs[:3]}"}
-        if not valid:
+        cur, _ = read_json(self.rules_path)
+        cur_valid, _ = self._validate_rules(cur) if cur is not None else ([], [])
+        if not valid and cur_valid:
             # A structurally-valid document with ZERO rules would silently
             # wipe the canonical ruleset and turn the agent dark with only an
             # INFO line. Refuse when the canonical file currently has rules —
             # an intentional wipe is an out-of-band operator action, not a
             # candidate promotion.
-            cur, _ = read_json(self.rules_path)
-            cur_valid, _ = self._validate_rules(cur) if cur is not None else ([], [])
-            if cur_valid:
-                return {"promoted": False,
-                        "reason": f"candidate has 0 rules; refusing to wipe "
-                                  f"{len(cur_valid)} canonical rule(s)"}
+            return {"promoted": False,
+                    "reason": f"candidate has 0 rules; refusing to wipe "
+                              f"{len(cur_valid)} canonical rule(s)"}
         # Authoring lint: a candidate can be valid and still carry a typo'd
         # match key that makes a rule silently match nothing. Surface loudly
         # at the promotion boundary (warnings never block).
         from .candidate import lint_rules_document
         for w in lint_rules_document(cand):
-            print(f"rules: WARN (candidate): {w}", flush=True)
+            log_warning(f"rules: WARN (candidate): {w}")
         # Preserve the immediately-prior good rules before the destructive
         # overwrite, so a bad-but-valid candidate is recoverable (restore_backup).
         self._backup_canonical()
         try:
             os.replace(self.candidate_path, self.rules_path)
-            return {"promoted": True}
+            old_ids = {r["id"] for r in cur_valid if r.get("id")}
+            new_ids = {r["id"] for r in valid if r.get("id")}
+            return {"promoted": True,
+                    "added": sorted(new_ids - old_ids),
+                    "removed": sorted(old_ids - new_ids),
+                    "rule_count": len(valid)}
         except OSError as e:
             return {"promoted": False, "reason": f"replace failed: {e}"}
 
@@ -222,7 +232,14 @@ class RuleEngine:
         promo = self._promote_candidate()
         errs: list[str] = []
         if promo and promo.get("promoted"):
-            errs.append("INFO: promoted candidate rules to canonical")
+            # Stash for tick() to put on the history record: a ruleset change
+            # is the single event that most changes mini's behavior, and the
+            # auditable record used to be blind to it (journal line only).
+            self._pending_promo_record = promo
+            errs.append("INFO: promoted candidate rules to canonical "
+                        f"(+{len(promo.get('added', []))} "
+                        f"-{len(promo.get('removed', []))} "
+                        f"→ {promo.get('rule_count', '?')} rules)")
         elif promo and not promo.get("promoted"):
             errs.append(f"WARN: candidate rules NOT promoted: {promo.get('reason')}")
 
@@ -306,10 +323,15 @@ class RuleEngine:
         prev_rule_count = state.get("rule_count")
         rules, rule_errs = self.load_rules()
         for e in rule_errs:
-            print(f"rules: {e}", flush=True)
+            if e.startswith("INFO"):
+                log_info(f"rules: {e}")
+            elif e.startswith("WARN"):
+                log_warning(f"rules: {e}")
+            else:
+                log_error(f"rules: {e}")
         if not rules and not self._rules_unavailable and prev_rule_count:
-            print(f"rules: WARN ruleset is EMPTY (was {prev_rule_count} rules) "
-                  f"— the agent observes nothing", flush=True)
+            log_warning(f"rules: WARN ruleset is EMPTY (was {prev_rule_count} "
+                        f"rules) — the agent observes nothing")
 
         # Rehydrate the per-source hold cache after a restart, so a source
         # that is ALREADY failing when the daemon comes back doesn't read as
@@ -348,9 +370,9 @@ class RuleEngine:
             if failed:
                 held = self._source_cache.get(name, [])
                 if held:
-                    print(f"source {name}: errored — holding {len(held)} "
-                          f"last-known condition(s) (unobservable ≠ resolved)",
-                          flush=True)
+                    log_warning(f"source {name}: errored — holding {len(held)} "
+                                f"last-known condition(s) (unobservable ≠ "
+                                f"resolved)")
                 conds.extend(c for c in src_conds if c.kind == "source_error")
                 conds.extend(held)
             else:
@@ -365,6 +387,19 @@ class RuleEngine:
         history_entries: list[dict] = []
         fire_count = 0
         error_count = sum(1 for c in conds if c.kind == "source_error")
+
+        # Ruleset-change provenance: a promotion is the event that most
+        # changes mini's behavior — it goes on the same auditable record the
+        # honesty audit certifies, not just a journal line.
+        if self._pending_promo_record:
+            promo = self._pending_promo_record
+            self._pending_promo_record = None
+            history_entries.append(self._history_entry(
+                now_ts, "__ruleset__", "canonical", "ruleset_promoted",
+                f"candidate promoted: +{promo.get('added', [])} "
+                f"-{promo.get('removed', [])} → {promo.get('rule_count', '?')} "
+                f"rules", Outcome(action="none", ok=True),
+            ))
 
         # Edge-UP: rule matches a live condition now.
         for rule in rules:
@@ -413,10 +448,7 @@ class RuleEngine:
                 rs["currently_active"] = True
                 rs["pending_since_ts"] = 0.0  # streak consumed by the fire
                 rs["pending_ticks"] = 0
-                rs["last_fired_ts"] = now_ts
-                rs["fire_count"] = rs.get("fire_count", 0) + 1
-                rs["fires_window"].append(now_ts)
-                rs["fire_count_24h"] = len(rs["fires_window"])
+                StateStore.record_fire(rs, now_ts)
                 history_entries.append(self._history_entry(
                     now_ts, rule["id"], cond.subject, "edge_up", cond.detail, outcome,
                 ))
@@ -429,8 +461,8 @@ class RuleEngine:
         # edge_down, then re-fired them all as fresh pages on the next good
         # tick).
         if self._rules_unavailable:
-            print("rules: holding ALL edge state this tick (no ruleset "
-                  "available — unobservable ≠ resolved)", flush=True)
+            log_error("rules: holding ALL edge state this tick (no ruleset "
+                      "available — unobservable ≠ resolved)")
         else:
             for key, rs in list(state["rules"].items()):
                 # Reset a grace streak that broke before it could fire: the
@@ -453,8 +485,7 @@ class RuleEngine:
                     rs["currently_active"] = False
                     detail = ("rule removed from ruleset while active; "
                               "deactivated without running its action")
-                    print(f"rules: {rs.get('rule_id')!r} ({key}): {detail}",
-                          flush=True)
+                    log_warning(f"rules: {rs.get('rule_id')!r} ({key}): {detail}")
                     history_entries.append(self._history_entry(
                         now_ts, rs.get("rule_id", "?"), rs.get("subject", "?"),
                         "edge_down", detail, Outcome(action="none", ok=True),
@@ -486,7 +517,7 @@ class RuleEngine:
         # fires-only baseline was blind to edge_down-only windows).
         hist_err = self.history.append(history_entries)
         if hist_err:
-            print(f"history append failed: {hist_err}", flush=True)
+            log_error(f"history append failed: {hist_err}")
         elif history_entries:
             state["history_appends_total"] = (
                 int(state.get("history_appends_total", 0) or 0)
@@ -539,20 +570,20 @@ class RuleEngine:
         # deliberately KEEPS streaks across invocations: there, each
         # invocation IS a tick.)
         self._reset_pending_streaks()
-        print(f"mini-dudeai engine started · interval={interval_s}s · "
-              f"host={os.uname().nodename}", flush=True)
+        log_info(f"mini-dudeai engine started · interval={interval_s}s · "
+                 f"host={os.uname().nodename}")
         while not self._stop.is_set():
+            state = None
             try:
                 state = self.tick()
                 if state.get("fire_count") or state.get("error_count"):
-                    print(f"tick {state.get('last_tick_iso')}: "
-                          f"fires={state.get('fire_count')} "
-                          f"src_errors={state.get('error_count')}", flush=True)
+                    log_info(f"tick {state.get('last_tick_iso')}: "
+                             f"fires={state.get('fire_count')} "
+                             f"src_errors={state.get('error_count')}")
             except Exception as e:
                 # Observation tool must never die on a bad cycle.
-                print(f"tick error (continuing): {type(e).__name__}: {e}",
-                      flush=True)
-            self._write_brief_safe()
+                log_error(f"tick error (continuing): {type(e).__name__}: {e}")
+            self._write_brief_safe(state)
             # Seed AFTER the tick, never before the first one: the tick runs
             # BootHealthSource.collect(), which must see the true pre-seed
             # marker state to assess (and latch) this boot's verdict —
@@ -560,21 +591,24 @@ class RuleEngine:
             # that happened before the marker file first existed.
             self._seed_clean_exit_if_missing()
             self._stop.wait(interval_s)
-        print("mini-dudeai engine stopped", flush=True)
+        log_info("mini-dudeai engine stopped")
         self._write_clean_exit_marker()
 
-    def _write_brief_safe(self) -> None:
+    def _write_brief_safe(self, state: dict | None = None) -> None:
         """Atomic-write the warm-start brief if brief_path is set. Never raises —
         a brief-write failure must not take down the observation loop (same
-        contract as the tick error handler)."""
+        contract as the tick error handler). `state` is the tick's return
+        value, threaded through so the brief doesn't re-read and re-parse the
+        state file the tick wrote microseconds earlier."""
         if not self.brief_path:
             return
         try:
             from .brief import write_brief
-            write_brief(self.state_store.path, self.history.path, self.brief_path)
+            write_brief(self.state_store.path, self.history.path,
+                        self.brief_path, state=state)
         except Exception as e:
-            print(f"brief write failed (continuing): {type(e).__name__}: {e}",
-                  flush=True)
+            log_warning(f"brief write failed (continuing): "
+                        f"{type(e).__name__}: {e}")
 
     def _write_clean_exit_marker(self) -> None:
         """Stamp the clean-exit marker (bare wall-clock float, atomic).
@@ -589,8 +623,8 @@ class RuleEngine:
         try:
             atomic_write_text(self.clean_exit_path, f"{time.time():.3f}")
         except OSError as e:
-            print(f"clean-exit marker write failed (continuing): "
-                  f"{type(e).__name__}: {e}", flush=True)
+            log_error(f"clean-exit marker write failed (continuing): "
+                      f"{type(e).__name__}: {e}")
 
     def _reset_pending_streaks(self) -> None:
         """Zero every persisted grace streak (daemon startup). Best-effort."""
@@ -606,8 +640,8 @@ class RuleEngine:
             if touched:
                 self.state_store.save(state)
         except OSError as e:
-            print(f"pending-streak reset failed (continuing): "
-                  f"{type(e).__name__}: {e}", flush=True)
+            log_warning(f"pending-streak reset failed (continuing): "
+                        f"{type(e).__name__}: {e}")
 
     def _seed_clean_exit_if_missing(self) -> None:
         """Deploy-window seed: create the marker if it has never existed.

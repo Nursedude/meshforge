@@ -51,24 +51,38 @@ SourceBuilder = Callable[[dict], Source]
 ActionBuilder = Callable[[dict], Action]
 _SOURCE_REGISTRY: dict[str, SourceBuilder] = {}
 _ACTION_REGISTRY: dict[str, ActionBuilder] = {}
+# Per-kind required spec fields — populated by register_source/register_action
+# (declared at registration so builder and validation can't drift).
+_SOURCE_REQUIRED: dict[str, list[str]] = {}
+_ACTION_REQUIRED: dict[str, list[str]] = {}
 
 
-def register_source(kind: str, builder: SourceBuilder) -> None:
+def register_source(kind: str, builder: SourceBuilder,
+                    required: tuple = ()) -> None:
     """Register a config-instantiable Source under `kind`.
 
     `builder` receives the source spec dict (the JSON object with its "kind"
-    key) and returns a Source. Lets third-party / uConsole code add custom
+    key) and returns a Source. `required` names the spec fields
+    validate_config must enforce for this kind — declared AT registration so
+    the builder and its validation can never be edited separately (a
+    hand-maintained side table once required max_age_s while the builder
+    happily defaulted it). Lets third-party / uConsole code add custom
     sources a JSON config can then reference by string:
 
         from mini_dudeai import register_source
-        register_source("my_sensor", lambda spec: MySensorSource(spec["dev"]))
+        register_source("my_sensor",
+                        lambda spec: MySensorSource(spec["dev"]),
+                        required=("dev",))
     """
     _SOURCE_REGISTRY[kind] = builder
+    _SOURCE_REQUIRED[kind] = list(required)
 
 
-def register_action(kind: str, builder: ActionBuilder) -> None:
+def register_action(kind: str, builder: ActionBuilder,
+                    required: tuple = ()) -> None:
     """Register a config-instantiable Action under `kind`. See register_source."""
     _ACTION_REGISTRY[kind] = builder
+    _ACTION_REQUIRED[kind] = list(required)
 
 
 def registered_source_kinds() -> list[str]:
@@ -177,18 +191,30 @@ def _seed_ntfy(spec: dict) -> Action:
     )
 
 
-_SOURCE_REGISTRY.update({
-    "file_mtime": _seed_file_mtime,
-    "json_file": _seed_json_file,
-    "http_json": _seed_http_json,
-    "boot_health": _seed_boot_health,
-})
-_ACTION_REGISTRY.update({
-    "ntfy": _seed_ntfy,
-    "annotate": lambda spec: FileAnnotateAction(path=os.path.expanduser(spec["path"])),
-    "propose_escalation": lambda spec: ProposeEscalationAction(),
-    "none": lambda spec: NoopAction(),
-})
+# Built-in kinds register through the same API third parties use; required
+# fields travel WITH the registration (mirrored in
+# mini_dudeai_config.schema.json — the drift test pins the two together).
+register_source("file_mtime", _seed_file_mtime,
+                required=("path",))  # max_age_s defaults to 1800 in the builder
+register_source("json_file", _seed_json_file,
+                required=("path", "condition_kind"))
+register_source("http_json", _seed_http_json,
+                required=("url", "condition_kind"))
+register_source("boot_health", _seed_boot_health,
+                required=("state_path", "clean_exit_path", "assessment_path"))
+register_action("ntfy", _seed_ntfy, required=("topic",))
+register_action("annotate",
+                lambda spec: FileAnnotateAction(path=os.path.expanduser(spec["path"])),
+                required=("path",))
+register_action("propose_escalation", lambda spec: ProposeEscalationAction())
+register_action("none", lambda spec: NoopAction())
+
+# Snapshot of the kinds shipped in the box, taken immediately after the
+# built-in registrations: the schema's enum is pinned against THESE (the
+# drift test), not against the live registry, which legitimately grows with
+# third-party register_source/register_action calls.
+BUILTIN_SOURCE_KINDS = frozenset(_SOURCE_REGISTRY)
+BUILTIN_ACTION_KINDS = frozenset(_ACTION_REGISTRY)
 
 
 def _build_source(spec: dict) -> Source:
@@ -211,22 +237,6 @@ def _build_action(spec: dict) -> Action:
     return builder(spec)
 
 
-# Per-kind required fields for the built-in kinds. Third-party kinds registered
-# via register_source/action are validated only for kind-existence (we can't
-# know their required fields); they may add an entry here if they want field
-# checks. Keep in sync with the seed builders above.
-_SOURCE_REQUIRED: dict[str, list[str]] = {
-    "file_mtime": ["path"],  # max_age_s is optional — _seed_file_mtime defaults it to 1800
-    "json_file": ["path", "condition_kind"],
-    "http_json": ["url", "condition_kind"],
-    "boot_health": ["state_path", "clean_exit_path", "assessment_path"],
-}
-_ACTION_REQUIRED: dict[str, list[str]] = {
-    "ntfy": ["topic"],
-    "annotate": ["path"],
-    "propose_escalation": [],
-    "none": [],
-}
 
 
 def validate_config(config: dict) -> list[str]:

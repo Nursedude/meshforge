@@ -23,10 +23,10 @@ class Condition:
     detail: str = ""        # human-readable detail (for messages, history)
     source: str = ""        # which source emitted (traceability)
     extras: dict[str, Any] = field(default_factory=dict)  # extra fields rules can match on
-
-    def key(self) -> tuple[str, str]:
-        """Identity used for edge-transition tracking."""
-        return (self.kind, self.subject)
+    # NOTE: edge-transition identity is StateStore.rule_key(rule_id, subject) —
+    # keyed per RULE, not per condition. (A Condition.key() method used to live
+    # here claiming to be the tracking identity; it had zero callers and sent
+    # maintainers to the wrong place.)
 
 
 class Source:
@@ -45,3 +45,54 @@ class Source:
         kind="source_error" so rules can react to going blind.
         """
         raise NotImplementedError
+
+
+class ExtractorSource(Source):
+    """Template for read→extract→project sources (json_file, http_json).
+
+    The two used to be ~30-line copy-paste twins; any fix to the shared
+    error/projection path had to be hand-applied to both and they were one
+    patch away from emitting different Condition shapes. Subclasses set
+    `kind`/`extractor`/`name` and implement `_read()`:
+
+        def _read(self) -> tuple[Any, str | None]:
+            return data, None            # success (data may be None = empty)
+            return None, "why it broke"  # → one source_error Condition
+    """
+
+    kind: str = "condition"
+    extractor = None  # callable(parsed) -> list[dict]; set by subclass __init__
+
+    def _read(self):
+        raise NotImplementedError
+
+    def collect(self) -> Iterable[Condition]:
+        data, err_detail = self._read()
+        if err_detail:
+            yield Condition(
+                kind="source_error", subject=self.name,
+                detail=err_detail, source=self.name,
+            )
+            return
+        if data is None:
+            return
+        try:
+            items = self.extractor(data) or []
+        except Exception as e:  # extractor is user code — never crash on it
+            yield Condition(
+                kind="source_error", subject=self.name,
+                detail=f"extractor raised {type(e).__name__}: {e}",
+                source=self.name,
+            )
+            return
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            subject = str(item.get("subject", "?"))
+            detail = str(item.get("detail", ""))
+            extras = {k: v for k, v in item.items()
+                      if k not in ("subject", "detail")}
+            yield Condition(
+                kind=self.kind, subject=subject, detail=detail,
+                source=self.name, extras=extras,
+            )

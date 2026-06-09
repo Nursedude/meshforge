@@ -14,6 +14,43 @@ import zlib
 DEFAULT_FETCH_MAX_BYTES = 8_000_000
 
 
+def resolve_home():
+    """The ONE home-dir resolution for mini artifacts: $MINI_DUDEAI_HOME → ~.
+
+    Seven call sites used to hand-roll this with THREE different precedence
+    rules — audit.py honored MINI_DUDEAI_HOME while the daemon/dreams/rollup
+    ignored it, so the honesty audit could certify a DIFFERENT artifact dir
+    than the one the daemon actually wrote. One resolver, every consumer.
+    """
+    env = os.environ.get("MINI_DUDEAI_HOME")
+    if env:
+        return os.path.expanduser(env)
+    return os.path.expanduser("~")
+
+
+def _journal_prio(n):
+    """sd-daemon priority prefix — journald maps '<N>' line prefixes on
+    stdout/stderr to log priorities, so `journalctl -p err` filtering works
+    fleet-wide with zero dependencies. Outside systemd (no JOURNAL_STREAM)
+    the prefix is omitted and output is unchanged (tests, CLI)."""
+    return f"<{n}>" if os.environ.get("JOURNAL_STREAM") else ""
+
+
+def log_error(msg):
+    """Failure that needs operator attention (journald priority err)."""
+    print(f"{_journal_prio(3)}{msg}", flush=True)
+
+
+def log_warning(msg):
+    """Degraded-but-coping (journald priority warning)."""
+    print(f"{_journal_prio(4)}{msg}", flush=True)
+
+
+def log_info(msg):
+    """Routine narration (journald priority info)."""
+    print(f"{_journal_prio(6)}{msg}", flush=True)
+
+
 def read_json(path):
     """Return (data, None) on success, (None, error_str) on failure. Never raises."""
     try:

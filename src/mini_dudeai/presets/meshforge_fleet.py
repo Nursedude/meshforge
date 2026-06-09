@@ -139,7 +139,8 @@ def build_engine(
         enable_digest = os.environ.get("MINI_DUDEAI_ENABLE_DIGEST", "1") != "0"
     if enable_boot_health is None:
         enable_boot_health = os.environ.get("MINI_DUDEAI_ENABLE_BOOT_HEALTH", "1") != "0"
-    home = home or os.path.expanduser("~")
+    from .._util import resolve_home
+    home = home or resolve_home()
     rules_path = rules_path or os.path.join(home, "mini_dudeai_rules.json")
     state_path = state_path or os.path.join(home, "mini_dudeai_state.json")
     history_path = history_path or os.path.join(home, "mini_dudeai_history.jsonl")

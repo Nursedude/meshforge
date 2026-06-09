@@ -487,10 +487,11 @@ def render_text(report: AuditReport) -> str:
 def resolve_artifact_dir(explicit: Optional[str]) -> Path:
     if explicit:
         return Path(explicit).expanduser()
-    env = os.environ.get("MINI_DUDEAI_HOME")
-    if env:
-        return Path(env).expanduser()
-    return Path(os.path.expanduser("~"))
+    # Shared resolver ($MINI_DUDEAI_HOME → ~): the audit used to be the ONLY
+    # consumer honoring the env var, so it could certify a different artifact
+    # dir than the one the daemon wrote.
+    from ._util import resolve_home
+    return Path(resolve_home())
 
 
 def main(argv: Optional[List[str]] = None) -> int:

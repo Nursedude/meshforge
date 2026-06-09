@@ -465,6 +465,157 @@ class TestSeedCoversSignalClasses:
             f"Add a rule (or an explicit ALLOWED_UNROUTED entry with a reason).")
 
 
+class TestCleanupBatch:
+    """Pins for the residual-cleanup batch (same review, second pass)."""
+
+    def test_prune_retires_dead_state_keys(self, tmp_path):
+        import time as _time
+        from mini_dudeai.state import StateStore, _empty_rule_state
+        now = _time.time()
+        state = {"rules": {}}
+        dead = _empty_rule_state("old_rule", "gone-peer")
+        dead["last_fired_ts"] = now - 30 * 86400  # ancient
+        live = _empty_rule_state("live_rule", "moc9")
+        live["currently_active"] = True
+        recent = _empty_rule_state("recent_rule", "moc1")
+        recent["last_fired_ts"] = now - 3600
+        pending = _empty_rule_state("pending_rule", "moc2")
+        pending["pending_since_ts"] = now - 10
+        state["rules"] = {"a": dead, "b": live, "c": recent, "d": pending}
+        StateStore.prune_24h(state, now)
+        assert set(state["rules"]) == {"b", "c", "d"}  # only the dead key retired
+
+    def test_record_fire_single_derivation(self):
+        import time as _time
+        from mini_dudeai.state import StateStore, _empty_rule_state
+        rs = _empty_rule_state("r", "s")
+        now = _time.time()
+        StateStore.record_fire(rs, now)
+        assert rs["fire_count"] == 1
+        assert rs["fires_window"] == [now]
+        assert rs["fire_count_24h"] == 1
+        assert rs["last_fired_ts"] == now
+
+    def test_brief_skips_rewrite_when_unchanged(self, tmp_path):
+        from mini_dudeai.brief import write_brief
+        state_path = str(tmp_path / "state.json")
+        hist_path = str(tmp_path / "h.jsonl")
+        out_path = str(tmp_path / "brief.md")
+        # FRESH state (the quiet-healthy box — the common case the SD-wear
+        # guard targets). A stale box's banner embeds the age and so
+        # legitimately rewrites; alive boxes show a static "🟢 alive" line.
+        state = {"last_tick_ts": 1000.0, "rules": {}, "rule_count": 3, "host": "x"}
+        with open(state_path, "w") as f:
+            json.dump(state, f)
+        write_brief(state_path, hist_path, out_path, now_ts=1010.0)
+        first = os.stat(out_path).st_mtime_ns
+        # Same substance, later stamp — only the volatile _generated line
+        # differs, so the write must be skipped (SD wear, every 30s forever).
+        write_brief(state_path, hist_path, out_path, now_ts=1040.0)
+        assert os.stat(out_path).st_mtime_ns == first
+        # Substance changes → write happens.
+        state["rule_count"] = 4
+        with open(state_path, "w") as f:
+            json.dump(state, f)
+        write_brief(state_path, hist_path, out_path, now_ts=1070.0)
+        assert os.stat(out_path).st_mtime_ns != first
+
+    def test_history_tail_blockwise_matches_full_read(self, tmp_path):
+        from mini_dudeai.brief import _read_history_tail
+        path = str(tmp_path / "big.jsonl")
+        with open(path, "w") as f:
+            for i in range(5000):
+                f.write(json.dumps({"i": i, "pad": "x" * 200}) + "\n")
+        tail = _read_history_tail(path, 60)
+        assert len(tail) == 60
+        assert [e["i"] for e in tail] == list(range(4940, 5000))
+
+    def test_resolve_home_honors_env(self, monkeypatch, tmp_path):
+        from mini_dudeai._util import resolve_home
+        monkeypatch.setenv("MINI_DUDEAI_HOME", str(tmp_path))
+        assert resolve_home() == str(tmp_path)
+        monkeypatch.delenv("MINI_DUDEAI_HOME")
+        assert resolve_home() == os.path.expanduser("~")
+
+    def test_log_helpers_prefix_priority_under_journald(self, monkeypatch, capsys):
+        from mini_dudeai._util import log_error, log_info
+        monkeypatch.setenv("JOURNAL_STREAM", "8:12345")
+        log_error("boom")
+        log_info("fine")
+        out = capsys.readouterr().out
+        assert "<3>boom" in out and "<6>fine" in out
+        monkeypatch.delenv("JOURNAL_STREAM")
+        log_error("plain")
+        assert capsys.readouterr().out == "plain\n"
+
+    def test_promotion_writes_provenance_history(self, tmp_path):
+        src = FlippableSource([])
+        eng, _ = make_engine(tmp_path, src)
+        with open(eng.candidate_path, "w") as f:
+            json.dump({"rules": [
+                {"id": "peer_down",
+                 "match": {"kind": "peer_unhealthy", "subject_glob": "*"},
+                 "action": {"kind": "recording"}},
+                {"id": "brand_new",
+                 "match": {"kind": "x", "subject_glob": "*"},
+                 "action": {"kind": "none"}},
+            ]}, f)
+        eng.tick()
+        with open(eng.history.path) as f:
+            entries = [json.loads(l) for l in f if l.strip()]
+        promos = [e for e in entries if e["transition"] == "ruleset_promoted"]
+        assert len(promos) == 1
+        assert "brand_new" in promos[0]["detail"]
+
+    def test_rollup_deep_fires_respect_window(self):
+        from mini_dudeai.rollup import build_box_deep
+        now = 1_000_000.0
+        history = [
+            {"ts": now - 100, "iso": "recent", "transition": "edge_up",
+             "rule_id": "r1", "subject": "s", "detail": ""},
+            {"ts": now - 90000, "iso": "old", "transition": "edge_up",
+             "rule_id": "r2", "subject": "s", "detail": ""},  # > 24h old
+        ]
+        posture = build_box_deep("box", {"last_tick_ts": now - 5}, history, now)
+        assert [f["rule_id"] for f in posture["fires"]] == ["r1"]
+
+    def test_collect_local_distinguishes_corrupt_from_absent(self, tmp_path):
+        from mini_dudeai.rollup import collect_local
+        absent = str(tmp_path / "nope.json")
+        assert collect_local(1000.0, state_path=absent) is None
+        corrupt = str(tmp_path / "state.json")
+        with open(corrupt, "w") as f:
+            f.write("{ torn")
+        posture = collect_local(1000.0, state_path=corrupt)
+        assert posture is not None
+        assert "unreadable" in posture.get("error", "")
+
+    def test_extractor_sources_share_shape(self, tmp_path):
+        """json_file and http_json are now one template — same source_error
+        shape, same projection."""
+        from mini_dudeai.sources import ExtractorSource, JsonFileSource
+        src = JsonFileSource(path=str(tmp_path / "missing.json"), kind="k",
+                             extractor=lambda d: d)
+        assert isinstance(src, ExtractorSource)
+        conds = list(src.collect())
+        assert len(conds) == 1 and conds[0].kind == "source_error"
+
+    def test_pending_deltas_count_cached_by_mtime(self, tmp_path):
+        from mini_dudeai import dreams
+        path = str(tmp_path / "deltas.jsonl")
+        with open(path, "w") as f:
+            f.write(json.dumps({"key": "k1", "status": "proposed"}) + "\n")
+        assert dreams.count_pending_deltas(path) == 1
+        # Cache hit: same mtime → no reparse (poke the cache to prove the
+        # cached value is what's served).
+        mtime = os.stat(path).st_mtime_ns
+        dreams._PENDING_COUNT_CACHE[path] = (mtime, 99)
+        assert dreams.count_pending_deltas(path) == 99
+        # File change → cache invalidated, real count returns.
+        os.utime(path, ns=(mtime + 1_000_000, mtime + 1_000_000))
+        assert dreams.count_pending_deltas(path) == 1
+
+
 class TestProbeAlignment:
     def test_role_seed_map_covers_mini_running_roles(self):
         from utils.watchdog_probes import _ROLE_TO_MINI_SEED

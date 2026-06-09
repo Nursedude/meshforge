@@ -29,6 +29,8 @@ import subprocess
 import sys
 import time
 
+from ._util import read_json, resolve_home
+
 from .brief import (
     DEFAULT_STALE_S,
     ESCALATION_WINDOW_S,
@@ -159,12 +161,17 @@ def collect_local(now_ts: float, state_path: str | None = None,
     """Read the manager box's own state file directly (it's excluded from
     fleet_hosts). Returns None if there is no local mini state at all."""
     if state_path is None:
-        state_path = os.path.join(os.path.expanduser("~"), _STATE_BASENAME)
-    try:
-        with open(state_path) as f:
-            state = json.load(f)
-    except (OSError, ValueError):
-        return None
+        state_path = os.path.join(resolve_home(), _STATE_BASENAME)
+    state, err = read_json(state_path)
+    if err == "not found":
+        return None  # genuinely no mini here
+    if err:
+        # CORRUPT is not ABSENT: a truncated state file (the very failure
+        # class the fleet pane exists to expose) used to render identically
+        # to "box runs no mini" — silently. Surface it as a broken posture.
+        posture = parse_state_posture("self", {}, now_ts, stale_s, self_box=True)
+        posture["error"] = f"state unreadable: {err}"
+        return posture
     label = (state.get("host") if isinstance(state, dict) else None) or "self"
     return parse_state_posture(label, state, now_ts, stale_s, self_box=True)
 
@@ -238,8 +245,10 @@ def collect_fleet(now_ts: float | None = None,
 
 # === deep merge: escalations + fires across the fleet ============
 # The breadth pane (above) is posture-only. --deep additionally pulls each box's
-# history.jsonl (tiny — mini prunes to a 24h rolling window) and merges every
-# box's escalations + edge_up fires into one box-tagged, time-sorted feed.
+# history.jsonl (bounded at 1MB by rotation — weeks of forensic record, NOT a
+# 24h file) and merges every box's escalations + edge_up fires into one
+# box-tagged, time-sorted feed; build_box_deep filters fires to the window so
+# the "(24h window)" header tells the truth.
 
 def _parse_history_lines(text: str) -> list[dict]:
     """Parse JSONL history text into dicts; skip malformed lines, never raise."""
@@ -300,11 +309,16 @@ def build_box_deep(host: str, state: dict, history: list[dict], now_ts: float,
         {"ts": ts, "box": host, "stale": stale, "esc": esc}
         for ts, esc in recent_escalations(history, now_ts, window_s, with_ts=True)
     ]
+    # Filter fires to the window: history.jsonl holds WEEKS (1MB rotation cap),
+    # and unfiltered fires made the deep feed's "(24h window)" header a lie —
+    # week-old transitions presented as recent fleet activity.
+    cutoff = now_ts - window_s
     posture["fires"] = [
         {"ts": h.get("ts"), "box": host, "stale": stale,
          "iso": str(h.get("iso", ""))[:19], "rule_id": h.get("rule_id"),
          "subject": h.get("subject"), "detail": str(h.get("detail", ""))[:90]}
-        for h in history if h.get("transition") == "edge_up"
+        for h in history
+        if h.get("transition") == "edge_up" and float(h.get("ts") or 0) >= cutoff
     ]
     return posture
 
@@ -333,7 +347,7 @@ def collect_local_deep(now_ts: float, state_path: str | None = None,
                        stale_s: float = DEFAULT_STALE_S,
                        window_s: float = ESCALATION_WINDOW_S) -> dict | None:
     """Read the manager box's own state + history directly. None if no state."""
-    home = os.path.expanduser("~")
+    home = resolve_home()
     state_path = state_path or os.path.join(home, _STATE_BASENAME)
     history_path = history_path or os.path.join(home, _HISTORY_BASENAME)
     try:

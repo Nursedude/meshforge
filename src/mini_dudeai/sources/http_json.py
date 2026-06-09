@@ -8,13 +8,13 @@ turns the response into a list of dicts and a `kind` string.
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 from .._util import fetch_json
-from .base import Condition, Source
+from .base import ExtractorSource
 
 
-class HttpJsonSource(Source):
+class HttpJsonSource(ExtractorSource):
     """Fetch a URL each tick, emit one Condition per extracted item.
 
     Args:
@@ -40,36 +40,8 @@ class HttpJsonSource(Source):
         self.timeout = timeout
         self.name = name or f"http_json:{url}"
 
-    def collect(self) -> Iterable[Condition]:
+    def _read(self):
         data, err = fetch_json(self.url, timeout=self.timeout)
         if err:
-            yield Condition(
-                kind="source_error",
-                subject=self.name,
-                detail=f"{self.url} unreachable: {err}",
-                source=self.name,
-            )
-            return
-        if data is None:
-            return
-        try:
-            items = self.extractor(data) or []
-        except Exception as e:
-            yield Condition(
-                kind="source_error",
-                subject=self.name,
-                detail=f"extractor raised {type(e).__name__}: {e}",
-                source=self.name,
-            )
-            return
-        for item in items:
-            subject = str(item.get("subject", "?"))
-            detail = str(item.get("detail", ""))
-            extras = {k: v for k, v in item.items() if k not in ("subject", "detail")}
-            yield Condition(
-                kind=self.kind,
-                subject=subject,
-                detail=detail,
-                source=self.name,
-                extras=extras,
-            )
+            return None, f"{self.url} unreachable: {err}"
+        return data, None

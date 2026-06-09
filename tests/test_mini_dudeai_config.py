@@ -324,25 +324,49 @@ def _schema_required_by_kind(schema: dict, section: str) -> dict:
 
 
 def test_schema_source_kinds_match_builtins():
-    """Schema source-kind enum == the built-in kinds (_SOURCE_REQUIRED keys)."""
+    """Schema source-kind enum == the built-in kinds (BUILTIN_SOURCE_KINDS —
+    the snapshot taken after built-in registration; the live registry/required
+    tables legitimately grow with third-party register_source calls, including
+    the dummies other tests in this file register)."""
+    from mini_dudeai.config import BUILTIN_SOURCE_KINDS
     schema_kinds = _schema_kind_enum(_load_schema(), "sources")
-    code_kinds = set(_SOURCE_REQUIRED)
+    code_kinds = set(BUILTIN_SOURCE_KINDS)
     assert schema_kinds == code_kinds, (
-        "source-kind drift between schema and config._SOURCE_REQUIRED: "
+        "source-kind drift between schema and config.BUILTIN_SOURCE_KINDS: "
         f"only in schema={sorted(schema_kinds - code_kinds)}, "
         f"only in code={sorted(code_kinds - schema_kinds)}"
     )
 
 
 def test_schema_action_kinds_match_builtins():
-    """Schema action-kind enum == the built-in kinds (_ACTION_REQUIRED keys)."""
+    """Schema action-kind enum == the built-in kinds (BUILTIN_ACTION_KINDS)."""
+    from mini_dudeai.config import BUILTIN_ACTION_KINDS
     schema_kinds = _schema_kind_enum(_load_schema(), "actions")
-    code_kinds = set(_ACTION_REQUIRED)
+    code_kinds = set(BUILTIN_ACTION_KINDS)
     assert schema_kinds == code_kinds, (
-        "action-kind drift between schema and config._ACTION_REQUIRED: "
+        "action-kind drift between schema and config.BUILTIN_ACTION_KINDS: "
         f"only in schema={sorted(schema_kinds - code_kinds)}, "
         f"only in code={sorted(code_kinds - schema_kinds)}"
     )
+
+
+def test_register_source_required_fields_enforced():
+    """required= declared at registration flows into validate_config — the
+    single-registration-point fix for the max_age_s validator/builder drift."""
+    from mini_dudeai.config import (
+        _SOURCE_REGISTRY, _SOURCE_REQUIRED, register_source,
+    )
+    register_source("drift_test_kind", lambda spec: None,
+                    required=("dev_path",))
+    try:
+        errs = validate_config({
+            "rules_path": "~/r.json",
+            "sources": [{"kind": "drift_test_kind"}],
+        })
+        assert any("dev_path" in e for e in errs)
+    finally:
+        _SOURCE_REGISTRY.pop("drift_test_kind", None)
+        _SOURCE_REQUIRED.pop("drift_test_kind", None)
 
 
 def test_builtin_kinds_are_actually_registered():
@@ -363,9 +387,12 @@ def test_builtin_kinds_are_actually_registered():
 
 
 def test_schema_source_required_fields_match_code():
-    """Per-kind required source fields: schema allOf == _SOURCE_REQUIRED."""
+    """Per-kind required source fields: schema allOf == _SOURCE_REQUIRED,
+    scoped to the built-in kinds (third-party/test registrations now also
+    record required fields — by design — and the schema can't know them)."""
+    from mini_dudeai.config import BUILTIN_SOURCE_KINDS
     schema_req = _schema_required_by_kind(_load_schema(), "sources")
-    for kind in set(schema_req) | set(_SOURCE_REQUIRED):
+    for kind in set(schema_req) | set(BUILTIN_SOURCE_KINDS):
         code = set(_SOURCE_REQUIRED.get(kind, []))
         sch = schema_req.get(kind, set())
         assert code == sch, (
@@ -376,9 +403,11 @@ def test_schema_source_required_fields_match_code():
 
 
 def test_schema_action_required_fields_match_code():
-    """Per-kind required action fields: schema allOf == _ACTION_REQUIRED."""
+    """Per-kind required action fields: schema allOf == _ACTION_REQUIRED,
+    scoped to built-in kinds (see the source twin above)."""
+    from mini_dudeai.config import BUILTIN_ACTION_KINDS
     schema_req = _schema_required_by_kind(_load_schema(), "actions")
-    for kind in set(schema_req) | set(_ACTION_REQUIRED):
+    for kind in set(schema_req) | set(BUILTIN_ACTION_KINDS):
         code = set(_ACTION_REQUIRED.get(kind, []))
         sch = schema_req.get(kind, set())
         assert code == sch, (
