@@ -33,17 +33,19 @@ Write tests that:
 - Use `get_real_user_home()` not `Path.home()`
 - Add timeouts to all subprocess calls
 
-### Phase 4: Verify
+### Phase 4: Verify — capture real exit codes, never judge from truncated streams
 ```bash
-# Run specific tests
+# Specific tests, then full suite + lint (the blocking gate)
 python3 -m pytest tests/test_<module>.py -v
-
-# Run full suite
-python3 -m pytest tests/ -v
+python3 -m pytest tests/ -q 1>/tmp/pytest.log 2>&1; echo TEST_EXIT=$?
+python3 scripts/lint.py --all 1>/tmp/lint.log 2>&1; echo LINT_EXIT=$?
 
 # Run auto_review
 cd src && python3 -c "from utils.auto_review import ReviewOrchestrator; r=ReviewOrchestrator(); print(f'Issues: {r.run_full_review().total_issues}')"
 ```
+
+Also walk `.claude/rules/honest_failure_modes.md` over every error path in the
+diff (Issue #80 lesson — degraded state must never read as a valid value).
 
 ### Phase 5: Refactor
 - Clean up while keeping tests green
@@ -53,8 +55,10 @@ cd src && python3 -c "from utils.auto_review import ReviewOrchestrator; r=Review
 
 ### Phase 6: Commit
 ```bash
-git add -A
-git commit -m "feat: <description>"
+# Solo workflow: commit direct to main (PR flow retired 2026-04-19).
+# Stage the files you touched — not `git add -A` blind.
+git add <files>
+git commit -m "feat: <description>"   # pre-commit hook runs lint + guards
 ```
 
 ---

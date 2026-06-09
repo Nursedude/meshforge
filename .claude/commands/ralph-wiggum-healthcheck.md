@@ -75,10 +75,20 @@ find src -name "*.py" -exec wc -l {} \; | sort -rn | head -10
 
 ### 8. Skills & Commands Freshness
 Audit `.claude/skills/` and `.claude/commands/` for:
-- Version references that don't match `src/__version__.py`
+- Version references that don't match `src/__version__.py` (prefer NO hardcoded
+  version/counts in skills at all — point at the source of truth instead)
 - Architecture references that don't match current codebase
 - Hardcoded paths that may have changed
 - Stale handler/mixin references (project uses handler registry pattern now)
+- **Harness drift** (audited 2026-06-09): tool names that no longer exist in the
+  running Claude Code harness (`TodoWrite` → TaskCreate/TaskUpdate), retired
+  workflow references (feature-branch/PR flow ended 2026-04-19 — exit conditions
+  must say push to `main`), and exit-code-masking patterns
+  (`pytest | head`/`| tail` — must be file-redirect + `echo EXIT=$?`)
+- **Duplication of auto-loaded context**: CLAUDE.md, `.claude/rules/*.md`, and
+  `persistent_issues.md` load into every session — a skill restating them is
+  wasted context and a drift source (two consumers of one artifact). Skills
+  carry only what lives nowhere else.
 
 ### 9. Documentation Freshness Audit
 Audit `.claude/` markdown files for staleness and drift:

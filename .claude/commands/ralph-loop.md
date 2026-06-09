@@ -11,27 +11,26 @@ You are in a persistent development loop. Work autonomously until the task is 10
 ### Each Iteration:
 
 1. **Assess**
-   - Use TodoWrite to track subtasks
+   - Track subtasks with the task tools (TaskCreate/TaskUpdate — TodoWrite no longer exists)
    - Check current state: `git status`, test results
    - Identify what remains
 
 2. **Execute**
    - Do the next step
-   - Follow MeshForge rules (no shell=True, use get_real_user_home())
+   - Follow the auto-loaded MeshForge rules (CLAUDE.md + `.claude/rules/security.md`)
+   - Walk `.claude/rules/honest_failure_modes.md` over every error path you write
    - Write tests for new functionality
 
-3. **Verify**
+3. **Verify** — capture real exit codes; never judge from truncated streams
    ```bash
-   # Run tests
-   python3 -m pytest tests/ -v
-
-   # Run auto_review
-   cd src && python3 -c "from utils.auto_review import ReviewOrchestrator; r=ReviewOrchestrator(); print(f'Issues: {r.run_full_review().total_issues}')"
+   python3 scripts/lint.py --all 1>/tmp/lint.log 2>&1; echo LINT_EXIT=$?
+   python3 -m pytest tests/ -q 1>/tmp/pytest.log 2>&1; echo TEST_EXIT=$?
+   tail -5 /tmp/pytest.log
    ```
 
 4. **Continue**
    - If not done, loop back to Assess
-   - Mark completed todos as you go
+   - Mark completed tasks as you go
 
 ---
 
@@ -39,27 +38,19 @@ You are in a persistent development loop. Work autonomously until the task is 10
 
 ALL must be true:
 - [ ] Task is 100% complete
-- [ ] All tests pass
-- [ ] auto_review shows 0 issues (or documented exceptions)
-- [ ] Changes committed: `git add -A && git commit -m "..."`
-- [ ] Pushed to branch: `git push -u origin <branch>`
+- [ ] `scripts/lint.py --all` exits 0
+- [ ] All tests pass (exit code 0, not a "passed" line in a truncated stream)
+- [ ] Changes committed on `main` (solo workflow — PR/feature-branch flow retired 2026-04-19)
+- [ ] Pushed: `git push origin main` (then pull the fleet boxes)
 
 ---
 
 ## MeshForge Context
 
-Key paths:
-- Source: `src/`
-- Tests: `tests/`
-- Gateway: `src/gateway/`
-- TUI: `src/launcher_tui/`
-- Utils: `src/utils/`
+Key paths: `src/` (source) · `tests/` · `src/gateway/` · `src/launcher_tui/` · `src/utils/`
 
-Security rules:
-- No `shell=True` in subprocess
-- No bare `except:` clauses
-- Use `get_real_user_home()` not `Path.home()`
-- Add timeouts to subprocess calls
+Security rules are auto-loaded from `.claude/rules/security.md` — don't restate,
+just follow them (lint + pre-commit hook enforce).
 
 ---
 

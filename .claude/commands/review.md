@@ -17,6 +17,11 @@ for cat, result in report.agent_results.items():
 "
 ```
 
-2. Analyze findings for false positives (patterns in documentation/courses)
-3. Report actual issues that need fixing
-4. Suggest prioritized fixes
+2. Run the blocking gate (this is what CI and the pre-commit hook enforce):
+```bash
+python3 scripts/lint.py --all 1>/tmp/lint.log 2>&1; echo LINT_EXIT=$?
+```
+
+3. Analyze auto-review findings for false positives (patterns in documentation/courses)
+4. Report actual issues that need fixing, judged from LINT_EXIT plus confirmed findings
+5. Suggest prioritized fixes
