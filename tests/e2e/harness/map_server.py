@@ -81,8 +81,36 @@ class MapServerHarness:
             if config_dir is not None
             else Path(tempfile.mkdtemp(prefix="meshforge-e2e-config-"))
         )
+        self._write_hermetic_settings()
         self._server = None  # type: ignore[assignment]
         self._lock = threading.Lock()
+
+    def _write_hermetic_settings(self) -> None:
+        """Pin the collector to localhost-only sources for the test run.
+
+        Readiness (/healthz "is the warm-up collect done") must not depend on
+        third-party services: the default-ON AREDN worldmap CSV fetch (and the
+        public fallbacks it joins when local features are sparse — always true
+        in CI) made the fixture time out whenever worldmap.arednmesh.org had a
+        slow day, failing CI on commits that touched nothing map-related.
+        federation_peers=[] also blocks the None→bootstrap-from-REAL-fleet.json
+        path, which on a fleet box had the harness polling live LAN peers
+        mid-test. Localhost sources (meshtasticd/mosquitto/rnsd) stay enabled —
+        they fail fast and that's part of what the smoke test exercises.
+        Skipped if the caller's config_dir already carries a settings file.
+        """
+        settings_path = self.config_dir / "map_settings.json"
+        if settings_path.exists():
+            return  # caller-provided config wins
+        settings_path.write_text(json.dumps({
+            "enable_aredn_worldmap_fallback": False,
+            "federation_peers": [],
+            "periodic_refresh_seconds": 0,
+            # Already default-False; pinned against default drift:
+            "enable_meshcore_public": False,
+            "enable_meshmap_fallback": False,
+            "enable_rmap_fallback": False,
+        }, indent=2))
 
     @property
     def url(self) -> str:
