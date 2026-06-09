@@ -1,0 +1,567 @@
+"""Watchdog probes — RNS substrate failure shapes.
+
+Namespace collision (#69), main-thread / LXMF-process wedge (#68), shared
+instance unresponsive, RPC wedge (#72), interface-down-peer-reachable.
+Part of the ``watchdog_probes`` split (2026-06-09) — import via the
+``utils.watchdog_probes`` hub, not from here.
+"""
+from __future__ import annotations
+
+import os
+import re
+import socket
+import subprocess
+from typing import TYPE_CHECKING, List, Optional, Tuple
+
+from utils.watchdog_probe_core import Signal, _resolve_main_pid  # noqa: F401
+
+if TYPE_CHECKING:
+    from utils.rns_status_parser import RNSStatus
+
+# ─────────────────────────────────────────────────────────────────────
+# Probe: RNS namespace collision (Issue #69)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def probe_rns_namespace_collision(
+    instance_name: str,
+    *,
+    ss_path: str = "ss",
+    proc_root: str = "/proc",
+) -> Optional[Signal]:
+    """Verify ``@rns/<instance>`` LISTEN is owned by an rnsd-shaped process.
+
+    Mirrors ``utils/rns_init.py::check_rns_listener_owner``, but
+    callable from outside an RNS-using service so the watchdog can
+    detect a foreign daemon hijack even if no MeshForge RNS client
+    has tried (and failed) to start yet.
+
+    Returns:
+        Signal(severity=wedge, cls=rns_namespace_collision) when the
+        listener is owned by a process whose cmdline doesn't match
+        the narrow rnsd/reticulum allowlist.
+        None on pass (or when no listener exists, or ss is missing —
+        we don't false-alarm on indeterminate state).
+    """
+    if not instance_name:
+        return None
+
+    try:
+        proc = subprocess.run(
+            [ss_path, "-xnpl"], capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+
+    needle = f"@rns/{instance_name}"
+    pids: set = set()
+    for line in proc.stdout.splitlines():
+        if needle not in line:
+            continue
+        m = re.search(r'users:\(\("([^"]+)",pid=(\d+),', line)
+        if m:
+            pids.add(int(m.group(2)))
+
+    if not pids:
+        return None  # no listener → not a collision
+
+    allowed_patterns = ("rnsd", "reticulum")
+    suspicious: List[Tuple[int, str]] = []
+    owner_cmdlines: dict = {}
+    for pid in pids:
+        try:
+            with open(f"{proc_root}/{pid}/cmdline", "rb") as fh:
+                cmdline = fh.read().replace(b"\x00", b" ").decode(
+                    "utf-8", errors="replace").strip()
+        except OSError:
+            cmdline = ""
+        owner_cmdlines[pid] = cmdline
+        if not any(pat in cmdline.lower() for pat in allowed_patterns):
+            suspicious.append((pid, cmdline))
+
+    if not suspicious:
+        return None
+
+    pid, cmdline = suspicious[0]
+    cmdline_short = cmdline[:120] or "<process exited>"
+    return Signal(
+        cls="rns_namespace_collision",
+        subject=f"@rns/{instance_name}",
+        severity="wedge",
+        detail=(
+            f"foreign daemon owns @rns/{instance_name}: "
+            f"pid={pid} cmd={cmdline_short!r}. RNS clients will EOF on "
+            f"first RPC. Recovery: sudo kill {pid}; "
+            f"sudo systemctl restart rnsd.service"
+        ),
+        issue_ref=69,
+        extra={"pid": pid, "cmdline": cmdline_short},
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Probe: main-thread wedge (Issue #68)
+# ─────────────────────────────────────────────────────────────────────
+
+# Kernel-stack patterns that indicate the main thread is wedged in an
+# uninterruptible syscall waiting on a Unix socket. Specifically NOT
+# matching ``do_sys_poll`` — healthy HTTP servers spend most of their
+# main-thread time there.
+_WEDGE_PATTERNS = (
+    "unix_wait_for_peer",     # connect() blocked waiting for accept (Issue #68)
+    "unix_stream_connect",    # earlier in the same path
+    "do_unix_stream_connect",
+)
+
+
+def _scan_pid_task_stacks(pid: int, proc_root: str) -> Optional[Tuple[int, str, str]]:
+    """Walk every task under /proc/<pid>/task/*/stack for a wedge pattern.
+
+    Returns ``(tid, matched_pattern, stack_excerpt)`` on first match,
+    or None when no thread wedged. The main thread is checked first
+    (cheap, no race), then worker threads — today's 2026-05-21 moc1
+    investigation showed Issue #68's wedge can live in a WORKER thread
+    of meshforge-echo while the main thread sits idle in futex_wait.
+    """
+    main_stack_path = f"{proc_root}/{pid}/task/{pid}/stack"
+    try:
+        with open(main_stack_path, "r") as fh:
+            stack = fh.read()
+    except (OSError, PermissionError):
+        return None  # can't read at all — return None, no false clear
+
+    matched = next((p for p in _WEDGE_PATTERNS if p in stack), None)
+    if matched is not None:
+        return pid, matched, stack[:300]
+
+    # Walk worker threads. /proc/<pid>/task lists every TID.
+    task_dir = f"{proc_root}/{pid}/task"
+    try:
+        tids = [int(name) for name in os.listdir(task_dir) if name.isdigit()]
+    except OSError:
+        return None
+    for tid in tids:
+        if tid == pid:
+            continue  # already checked
+        try:
+            with open(f"{task_dir}/{tid}/stack", "r") as fh:
+                worker_stack = fh.read()
+        except (OSError, PermissionError):
+            continue
+        matched = next((p for p in _WEDGE_PATTERNS if p in worker_stack), None)
+        if matched is not None:
+            return tid, matched, worker_stack[:300]
+    return None
+
+
+def probe_main_thread_wedge(
+    service_name: str,
+    *,
+    pid: Optional[int] = None,
+    proc_root: str = "/proc",
+    systemctl_path: str = "systemctl",
+) -> Optional[Signal]:
+    """Read ``/proc/<pid>/task/*/stack`` and match wedge patterns.
+
+    Name kept for backwards compat with persistent_issues.md and
+    existing tests, but now scans ALL threads (main + workers).
+    Today's 2026-05-21 moc1 investigation showed the wedge can live in
+    a worker thread while the main thread sits in normal
+    ``futex_wait_queue``; the original main-thread-only probe missed it.
+
+    Requires CAP_SYS_PTRACE or root — the watchdog runs as root.
+
+    Falls back to ``systemctl show -p MainPID <service>`` to resolve
+    PID when not provided. If the service is inactive, returns None
+    (a different probe catches that).
+    """
+    if pid is None:
+        pid = _resolve_main_pid(service_name, systemctl_path=systemctl_path)
+        if pid is None or pid <= 1:
+            return None
+
+    found = _scan_pid_task_stacks(pid, proc_root)
+    if found is None:
+        return None
+    tid, matched, excerpt = found
+
+    thread_role = "main thread" if tid == pid else f"worker thread tid={tid}"
+    return Signal(
+        cls="main_thread_wedge",
+        subject=service_name,
+        severity="wedge",
+        detail=(
+            f"{thread_role} of pid={pid} blocked in kernel pattern "
+            f"{matched!r} — likely rnsd Unix socket wedge. "
+            f"Recovery: stop service, restart rnsd.service, then start "
+            f"service. See Issue #68."
+        ),
+        issue_ref=68,
+        extra={
+            "pid": pid,
+            "tid": tid,
+            "thread_role": "main" if tid == pid else "worker",
+            "pattern": matched,
+            "stack_excerpt": excerpt,
+        },
+    )
+
+
+# Process-name patterns for user-scope or non-systemd-known RNS-using
+# processes. Today's incident: meshforge-echo.service is a user-scope
+# unit; the watchdog runs as root and can't easily query systemctl
+# --user without DBUS env setup. Instead we walk /proc, match by
+# cmdline substring, and probe each match's task stacks.
+_LXMF_PROCESS_PATTERNS = (
+    "lab.lxmf_echo",
+    "lab.lxmf_tracer",
+    "lab.lxmf_multi_user_synth",
+)
+
+
+def probe_lxmf_process_wedge(
+    *,
+    proc_root: str = "/proc",
+    patterns: Tuple[str, ...] = _LXMF_PROCESS_PATTERNS,
+) -> List[Signal]:
+    """Walk /proc, find RNS-using processes by cmdline substring, probe
+    each one's task stacks for wedge patterns.
+
+    Catches the class of wedge that lives in a user-scope service the
+    watchdog can't reach via ``systemctl show -p MainPID`` from root.
+    Subject identifies the wedged process by cmdline pattern so the
+    operator knows which service to restart.
+
+    Returns 0..N signals (one per wedged process). Distinct from
+    ``probe_main_thread_wedge`` to keep the signal subjects clean:
+    main_thread_wedge subjects are systemd unit names (operator
+    actionable via systemctl restart <unit>); lxmf process subjects
+    are cmdline patterns (operator knows which service from there).
+    """
+    signals: List[Signal] = []
+    try:
+        entries = os.listdir(proc_root)
+    except OSError:
+        return signals
+
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        try:
+            with open(f"{proc_root}/{pid}/cmdline", "rb") as fh:
+                cmdline = fh.read().replace(b"\x00", b" ").decode(
+                    "utf-8", errors="replace",
+                ).strip()
+        except OSError:
+            continue
+        if not cmdline:
+            continue
+        matched_pat = next(
+            (p for p in patterns if p in cmdline),
+            None,
+        )
+        if matched_pat is None:
+            continue
+
+        found = _scan_pid_task_stacks(pid, proc_root)
+        if found is None:
+            continue
+        tid, kernel_pattern, excerpt = found
+
+        thread_role = "main thread" if tid == pid else f"worker thread tid={tid}"
+        signals.append(Signal(
+            cls="main_thread_wedge",
+            subject=matched_pat,
+            severity="wedge",
+            detail=(
+                f"{thread_role} of pid={pid} ({matched_pat}) blocked in "
+                f"kernel pattern {kernel_pattern!r} — likely rnsd Unix "
+                f"socket wedge. Recovery: restart rnsd.service, then "
+                f"restart the owning user service. See Issue #68."
+            ),
+            issue_ref=68,
+            extra={
+                "pid": pid,
+                "tid": tid,
+                "thread_role": "main" if tid == pid else "worker",
+                "pattern": kernel_pattern,
+                "cmdline": cmdline[:200],
+                "stack_excerpt": excerpt,
+            },
+        ))
+    return signals
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Probe: RNS shared-instance unresponsive
+# ─────────────────────────────────────────────────────────────────────
+
+
+def probe_rns_shared_instance_responsive(
+    instance_name: str,
+    *,
+    timeout_s: float = 2.0,
+) -> Optional[Signal]:
+    """Verify ``@rns/<instance>`` actually accepts new connect() attempts.
+
+    Catches the 2026-05-21 moc1 wedge class: rnsd is `active (running)`,
+    listener UP, no SYN-SENT pile-up, BUT new shared-instance connects
+    hang in ``unix_wait_for_peer`` and never complete. Symptoms:
+    ``rnstatus`` returns empty, new RNS-using services wedge during
+    init, peer PINGs to local LXMF destinations get silently dropped
+    because the destination registration never propagated through the
+    broken accept path.
+
+    Implementation: open an abstract Unix stream socket to
+    ``@rns/<instance_name>`` with a short timeout. If connect succeeds
+    quickly → healthy (return None). If it hangs past timeout → wedge.
+    If the socket address doesn't exist → return None (rnsd isn't
+    running; service_inactive probe owns that signal).
+
+    Distinct from rns_namespace_collision (which checks WHO owns the
+    listener) — this checks WHETHER the owner is actually serving.
+    Both fire on rnsd-side faults but at different layers.
+    """
+    if not instance_name:
+        return None
+
+    # Abstract Unix socket address: leading NUL byte then the name.
+    # `@rns/<name>` in `ss -xnpl` is the kernel's display form.
+    addr = "\x00rns/" + instance_name
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(timeout_s)
+    try:
+        sock.connect(addr)
+    except FileNotFoundError:
+        # No such socket — listener doesn't exist; service_inactive owns it.
+        sock.close()
+        return None
+    except ConnectionRefusedError:
+        # Listener exists but actively refused — rnsd may be shutting down.
+        # Not a wedge in the connect-hang sense; let service state catch it.
+        sock.close()
+        return None
+    except socket.timeout:
+        sock.close()
+        return Signal(
+            cls="rns_shared_instance_unresponsive",
+            subject=f"@rns/{instance_name}",
+            severity="wedge",
+            detail=(
+                f"connect to @rns/{instance_name} hung past "
+                f"{timeout_s:.1f}s. rnsd is running but not accepting "
+                f"new shared-instance clients — new RNS-using services "
+                f"will wedge during init, local LXMF destinations may "
+                f"not register, peer PINGs silently drop. Recovery: "
+                f"sudo systemctl restart rnsd.service then restart any "
+                f"RNS-using services (meshforge-map, meshforge-echo). "
+                f"See Issue #68 + 2026-05-21 moc1 investigation."
+            ),
+            issue_ref=68,
+            extra={"address": f"@rns/{instance_name}", "timeout_s": timeout_s},
+        )
+    except OSError:
+        sock.close()
+        return None
+    # Connected successfully — healthy. Close cleanly without sending
+    # any RNS protocol bytes (which would confuse rnsd's accept loop).
+    try:
+        sock.close()
+    except OSError:
+        pass
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Probe: RNS RPC unresponsive — rnstatus hangs though the socket accepts
+# ─────────────────────────────────────────────────────────────────────
+
+
+def probe_rns_rpc_responsive(
+    *,
+    rnstatus_status: "Optional[RNSStatus]" = None,
+    timeout_s: float = 8.0,
+) -> Optional[Signal]:
+    """Detect a wedged rnsd RPC: ``rnstatus`` itself hangs even though the
+    shared-instance socket accepts the connection.
+
+    This is the layer ``probe_rns_shared_instance_responsive`` cannot see.
+    That probe is a bare ``connect()`` timer — it catches a connect that
+    never completes (the SYN-SENT pile-up shape of #68), but returns
+    healthy the moment the socket *accepts*. The 2026-05-20 #69 family
+    (and the wedged-rnsd-RPC class the watchdog was missing) is the
+    opposite: connect succeeds, then the RPC round-trip
+    (``rpc_connection.recv()`` deep in ``RNS.Reticulum``) hangs or EOFs.
+    ``rnstatus`` is the canonical RPC client, so running it bounded and
+    observing a TIMEOUT is the direct test for "RPC wedged".
+
+    Distinguishing wedge from clean-down: a genuinely down rnsd has no
+    listener, so ``rnstatus`` fails FAST (binary-missing / "no shared
+    instance" / connection-refused) — ``RNSStatus.timed_out`` stays False
+    and we return None (``service_inactive`` owns rnsd-down). Only a
+    subprocess TIMEOUT sets ``timed_out=True`` → wedge. Binary missing
+    likewise returns None (no false alarm on RNS-less boxes).
+
+    Args:
+        rnstatus_status: a pre-fetched ``RNSStatus`` (the runner shares
+            one ``run_rnstatus`` call across the rnstatus-consuming
+            probes). When None, this probe runs ``rnstatus`` itself with
+            ``timeout_s``.
+        timeout_s: bounded rnstatus timeout when this probe runs it
+            directly. Kept well under the 30s watchdog tick.
+    """
+    if rnstatus_status is None:
+        from utils.rns_status_parser import run_rnstatus
+        status = run_rnstatus(timeout_s=timeout_s)
+    else:
+        status = rnstatus_status
+
+    if not status.timed_out:
+        return None
+
+    return Signal(
+        cls="rns_rpc_unresponsive",
+        subject="rnsd",
+        severity="wedge",
+        detail=(
+            "rnstatus did not return within its timeout — rnsd accepts "
+            "shared-instance connects but the RPC round-trip is wedged "
+            "(rpc_connection.recv hang/EOF). New RNS clients that get past "
+            "connect still stall in init and destination lookups silently "
+            "fail. Recovery: sudo systemctl restart rnsd.service, then "
+            "restart RNS-using services (meshforge-map, meshforge-echo, "
+            "tracer). See Issue #68/#69."
+        ),
+        issue_ref=68,
+        extra={"timed_out": True},
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Probe: RNS interface Down while peer reachable (2026-05-30)
+# ─────────────────────────────────────────────────────────────────────
+
+# A routable TCPInterface display_name embeds the peer host:port, e.g.
+#   "Regional RNS/192.168.86.38:4242"
+# RNodeInterface / AutoInterface / the Shared Instance line carry no
+# host:port and are correctly ignored — only a TCP peer can be probed
+# for reachability. The host group is an IPv4 dotted-quad; rnsd renders
+# the configured target_host:target_port verbatim.
+_TCP_PEER_RE = re.compile(r"(?P<host>[0-9.]+):(?P<port>\d+)\s*$")
+
+
+def _tcp_reachable(host: str, port: int, timeout: float = 3.0) -> bool:
+    """Bounded TCP-connect reachability test to ``(host, port)``.
+
+    Returns True when a TCP connection can be established within
+    ``timeout`` seconds, False on any ``OSError`` (refused, timed out,
+    no route, bad address). Factored out as a module-level function so
+    tests can monkeypatch it and do zero real network I/O.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def probe_rns_interface_down_peer_reachable(
+    *,
+    rnstatus_status: "Optional[RNSStatus]" = None,
+    rnstatus_text: Optional[str] = None,
+    reachable_timeout_s: float = 3.0,
+) -> Optional[Signal]:
+    """Detect a configured TCPInterface stuck ``Status: Down`` while its
+    peer host:port is still TCP-reachable — the 2026-05-30 incident shape.
+
+    The production incident: rnsd itself was healthy (Up, owned ``@rns``,
+    answered ``rnstatus``) and the peer host:port + L3 were reachable,
+    but the box's SOLE RNS uplink ``TCPInterface`` sat ``Status: Down``.
+    The fleet was islanded until rnsd was restarted. The existing
+    watchdog only caught this indirectly via ``tracer_peer_unreachable``;
+    this probe catches it DIRECTLY at the interface layer.
+
+    Logic:
+
+    * Resolve interfaces from ``rnstatus_status`` (a pre-parsed
+      ``RNSStatus`` — the runner shares one ``run_rnstatus`` call across
+      the rnstatus-consuming probes), else parse ``rnstatus_text``
+      (tests), else run ``rnstatus`` live — via ``utils.rns_status_parser``.
+    * For each TCPInterface whose status is Down AND whose display_name
+      embeds a ``host:port``, run a bounded TCP-connect reachability test.
+    * If the connect SUCCEEDS → peer is reachable but the interface is
+      stuck Down → emit a wedge signal (cure: restart rnsd).
+    * If the connect FAILS → genuine peer/network outage, already owned
+      by ``tracer_peer_unreachable``; do NOT emit here.
+
+    Returns the FIRST qualifying interface's signal (consistent with the
+    other single-return probes), with ``extra.down_reachable_count`` when
+    more than one interface qualifies. Returns None when no interface
+    qualifies, rnstatus is unreadable/errored, or rnsd is down (a
+    different probe owns those).
+    """
+    if rnstatus_status is not None:
+        status = rnstatus_status
+    elif rnstatus_text is not None:
+        from utils.rns_status_parser import parse_rnstatus
+        status = parse_rnstatus(rnstatus_text)
+    else:
+        from utils.rns_status_parser import run_rnstatus
+        status = run_rnstatus()
+
+    # rnstatus errored (rnsd unreachable, binary missing, timeout) →
+    # don't speculate. service_inactive owns rnsd-down; the
+    # rns_rpc_unresponsive probe owns the rnstatus-timeout (wedged-RPC)
+    # case (it keys on RNSStatus.timed_out, not on this parse_error).
+    if status.parse_error:
+        return None
+
+    from utils.rns_status_parser import InterfaceStatus
+
+    qualifying: List[Tuple[str, str, int]] = []  # (interface_label, host, port)
+    for iface in status.interfaces:
+        # Only TCP interfaces carry a routable peer host:port.
+        if "tcp" not in iface.type_name.lower():
+            continue
+        if iface.status != InterfaceStatus.DOWN:
+            continue
+        m = _TCP_PEER_RE.search(iface.display_name)
+        if not m:
+            continue
+        host = m.group("host")
+        try:
+            port = int(m.group("port"))
+        except (TypeError, ValueError):
+            continue
+        if _tcp_reachable(host, port, timeout=reachable_timeout_s):
+            qualifying.append((iface.full_name, host, port))
+
+    if not qualifying:
+        return None
+
+    label, host, port = qualifying[0]
+    extra = {
+        "interface": label,
+        "host": host,
+        "port": port,
+        "peer_reachable": True,
+    }
+    if len(qualifying) > 1:
+        extra["down_reachable_count"] = len(qualifying)
+
+    return Signal(
+        cls="rns_interface_down_peer_reachable",
+        subject=label,
+        severity="wedge",
+        detail=(
+            f"rnstatus shows {label} Status: Down but its peer "
+            f"{host}:{port} is TCP-reachable — stuck interface, not a "
+            f"peer outage. rnsd is up but this uplink is wedged; the box "
+            f"may be islanded. Recovery: sudo systemctl restart "
+            f"rnsd.service. See 2026-05-30 incident."
+        ),
+        extra=extra,
+    )
+
+

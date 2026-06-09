@@ -164,7 +164,7 @@ def test_rns_collision_returns_none_when_rnsd_owns_listener(tmp_path):
     )
     # Override pid in our test: rewrite SS output to use pid=1
     ss_out = _SS_RNSD_OWNED.replace("2286820", "1")
-    with patch("utils.watchdog_probes.subprocess.run",
+    with patch("utils.watchdog_probes_rns.subprocess.run",
                side_effect=_make_subprocess_mock(ss_out)):
         sig = probe_rns_namespace_collision(
             "volcano", proc_root=str(tmp_path),
@@ -181,7 +181,7 @@ def test_rns_collision_fires_on_foreign_daemon(tmp_path):
         b"--foreground\x00"
     )
     ss_out = _SS_FOREIGN_OWNED.replace("200825", "1")
-    with patch("utils.watchdog_probes.subprocess.run",
+    with patch("utils.watchdog_probes_rns.subprocess.run",
                side_effect=_make_subprocess_mock(ss_out)):
         sig = probe_rns_namespace_collision(
             "volcano", proc_root=str(tmp_path),
@@ -197,7 +197,7 @@ def test_rns_collision_fires_on_foreign_daemon(tmp_path):
 
 def test_rns_collision_returns_none_when_no_listener():
     """No ss output line matches @rns/<instance> → nothing to check."""
-    with patch("utils.watchdog_probes.subprocess.run",
+    with patch("utils.watchdog_probes_rns.subprocess.run",
                side_effect=_make_subprocess_mock(
                    "Netid State Local Address:Port\n")):
         sig = probe_rns_namespace_collision("volcano")
@@ -209,7 +209,7 @@ def test_rns_collision_returns_none_when_ss_unavailable():
     import subprocess as sp
     def _raise(*args, **kwargs):
         raise FileNotFoundError("ss")
-    with patch("utils.watchdog_probes.subprocess.run", side_effect=_raise):
+    with patch("utils.watchdog_probes_rns.subprocess.run", side_effect=_raise):
         sig = probe_rns_namespace_collision("volcano")
     assert sig is None
 
@@ -291,7 +291,7 @@ def test_main_thread_wedge_skips_when_pid_unresolved(tmp_path):
             stdout = "0\n"
             returncode = 0
         return _R()
-    with patch("utils.watchdog_probes.subprocess.run", side_effect=_runner):
+    with patch("utils.watchdog_probe_core.subprocess.run", side_effect=_runner):
         sig = probe_main_thread_wedge(
             "meshforge-map.service", proc_root=str(tmp_path),
         )
@@ -651,7 +651,7 @@ class TestRnsInterfaceDownPeerReachable:
         assert "rns_interface_down_peer_reachable" in SIGNAL_CLASSES
 
     def test_down_interface_peer_reachable_fires_wedge(self):
-        with patch("utils.watchdog_probes._tcp_reachable", return_value=True):
+        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=True):
             sig = probe_rns_interface_down_peer_reachable(
                 rnstatus_text=_RNSTATUS_DOWN_BLOCK,
             )
@@ -668,21 +668,21 @@ class TestRnsInterfaceDownPeerReachable:
     def test_down_interface_peer_unreachable_no_signal(self):
         """Genuine peer/network outage — owned by tracer_peer_unreachable,
         not this probe."""
-        with patch("utils.watchdog_probes._tcp_reachable", return_value=False):
+        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=False):
             sig = probe_rns_interface_down_peer_reachable(
                 rnstatus_text=_RNSTATUS_DOWN_BLOCK,
             )
         assert sig is None
 
     def test_up_interface_no_signal_even_if_reachable(self):
-        with patch("utils.watchdog_probes._tcp_reachable", return_value=True):
+        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=True):
             sig = probe_rns_interface_down_peer_reachable(
                 rnstatus_text=_RNSTATUS_UP_BLOCK,
             )
         assert sig is None
 
     def test_mixed_flags_only_the_down_reachable_interface(self):
-        with patch("utils.watchdog_probes._tcp_reachable", return_value=True):
+        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=True):
             sig = probe_rns_interface_down_peer_reachable(
                 rnstatus_text=_RNSTATUS_MIXED,
             )
@@ -693,7 +693,7 @@ class TestRnsInterfaceDownPeerReachable:
     def test_parser_pins_exact_incident_block(self):
         """The 192.168.86.38:4242 Regional RNS block must parse to
         host 192.168.86.38, port 4242."""
-        with patch("utils.watchdog_probes._tcp_reachable", return_value=True):
+        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=True):
             sig = probe_rns_interface_down_peer_reachable(
                 rnstatus_text=_RNSTATUS_DOWN_BLOCK,
             )
@@ -704,7 +704,7 @@ class TestRnsInterfaceDownPeerReachable:
     def test_non_tcp_interfaces_ignored(self):
         """RNodeInterface / Shared Instance / AutoInterface carry no
         host:port — never probed, never flagged."""
-        with patch("utils.watchdog_probes._tcp_reachable", return_value=True):
+        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=True):
             sig = probe_rns_interface_down_peer_reachable(
                 rnstatus_text=_RNSTATUS_NONTCP,
             )
@@ -713,7 +713,7 @@ class TestRnsInterfaceDownPeerReachable:
     def test_quiet_when_rnstatus_errored(self):
         """rnsd unreachable → rnstatus parse_error → no signal (a
         different probe owns 'rnsd is down')."""
-        with patch("utils.watchdog_probes._tcp_reachable", return_value=True):
+        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=True):
             sig = probe_rns_interface_down_peer_reachable(
                 rnstatus_text="Could not connect to local shared instance.",
             )
@@ -855,7 +855,7 @@ def test_http_local_no_signal_when_response_arrives():
             return self
         def __exit__(self, *args):
             return False
-    with patch("utils.watchdog_probes.urlopen", return_value=_Resp()):
+    with patch("utils.watchdog_probes_service.urlopen", return_value=_Resp()):
         sig = probe_http_local("meshforge-map.service")
     assert sig is None
 
@@ -866,7 +866,7 @@ def test_http_local_fires_on_timeout():
     import socket as sk
     def _raise(*args, **kwargs):
         raise sk.timeout("timed out")
-    with patch("utils.watchdog_probes.urlopen", side_effect=_raise):
+    with patch("utils.watchdog_probes_service.urlopen", side_effect=_raise):
         sig = probe_http_local("meshforge-map.service")
     assert sig is not None
     assert sig.cls == "http_local_unresponsive"
@@ -880,7 +880,7 @@ def test_http_local_skips_connection_refused():
     from urllib.error import URLError
     def _raise(*args, **kwargs):
         raise URLError("[Errno 111] Connection refused")
-    with patch("utils.watchdog_probes.urlopen", side_effect=_raise):
+    with patch("utils.watchdog_probes_service.urlopen", side_effect=_raise):
         sig = probe_http_local("meshforge-map.service")
     assert sig is None
 
@@ -1689,7 +1689,7 @@ def test_delivery_canary_fires_wedge_on_preflight_false():
         "last_write_error": "unable to open database file",
         "db_path": "/home/op/.local/share/meshforge/delivery_counters.db",
     }}
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
         sig = probe_delivery_write_canary()
     assert sig is not None
@@ -1708,7 +1708,7 @@ def test_delivery_canary_fires_degraded_above_error_threshold():
         "last_write_error": "database is locked",
         "db_path": "/x/y/z.db",
     }}
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
         sig = probe_delivery_write_canary(error_threshold=3)
     assert sig is not None
@@ -1723,7 +1723,7 @@ def test_delivery_canary_quiet_when_healthy():
         "last_write_error": None,
         "db_path": "/x/y/z.db",
     }}
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
         sig = probe_delivery_write_canary()
     assert sig is None
@@ -1735,7 +1735,7 @@ def test_delivery_canary_quiet_when_endpoint_unreachable():
     from urllib.error import URLError
     def _raise(*args, **kwargs):
         raise URLError("connection refused")
-    with patch("utils.watchdog_probes.urlopen", side_effect=_raise):
+    with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
         sig = probe_delivery_write_canary()
     assert sig is None
 
@@ -1751,7 +1751,7 @@ def test_service_inactive_fires_when_active_expected_but_failed():
             stdout = "failed\n"
             returncode = 3
         return _R()
-    with patch("utils.watchdog_probes.subprocess.run", side_effect=_runner):
+    with patch("utils.watchdog_probes_service.subprocess.run", side_effect=_runner):
         sig = probe_service_inactive("meshforge-map.service")
     assert sig is not None
     assert sig.severity == "wedge"
@@ -1764,7 +1764,7 @@ def test_service_inactive_quiet_when_active():
             stdout = "active\n"
             returncode = 0
         return _R()
-    with patch("utils.watchdog_probes.subprocess.run", side_effect=_runner):
+    with patch("utils.watchdog_probes_service.subprocess.run", side_effect=_runner):
         sig = probe_service_inactive("meshforge-map.service")
     assert sig is None
 
@@ -2202,7 +2202,7 @@ def test_queue_backlog_none_on_unreachable_endpoint(tmp_path):
     def _raise(*args, **kwargs):
         raise URLError("connection refused")
 
-    with patch("utils.watchdog_probes.urlopen", side_effect=_raise):
+    with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
         sig = probe_queue_backlog(state_path=str(tmp_path / "s.json"))
     assert sig is None
 
@@ -2211,7 +2211,7 @@ def test_queue_backlog_none_when_max_queue_size_unlimited(tmp_path):
     """max_queue_size=0 (unlimited) → no ceiling to judge the depth
     leg against. Mirrors the fd probe's 'unlimited' guard."""
     payload = _queue_payload(depth=50_000, max_size=0)
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
         sig = probe_queue_backlog(state_path=str(tmp_path / "s.json"))
     assert sig is None
@@ -2219,7 +2219,7 @@ def test_queue_backlog_none_when_max_queue_size_unlimited(tmp_path):
 
 def test_queue_backlog_degraded_at_80pct_depth(tmp_path):
     payload = _queue_payload(depth=820, max_size=1000)
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
         sig = probe_queue_backlog(state_path=str(tmp_path / "s.json"))
     assert sig is not None
@@ -2233,7 +2233,7 @@ def test_queue_backlog_wedge_at_95pct_depth(tmp_path):
     """At the shed threshold _shed_overflow drops LOW/NORMAL priority
     — active message loss, wedge."""
     payload = _queue_payload(depth=960, max_size=1000)
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
         sig = probe_queue_backlog(state_path=str(tmp_path / "s.json"))
     assert sig is not None
@@ -2247,7 +2247,7 @@ def test_queue_backlog_dead_letter_static_pile_never_fires(tmp_path):
     establishes the baseline."""
     sp = str(tmp_path / "s.json")
     payload = _queue_payload(depth=10, max_size=1000, dead_letter=500)
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
         # First tick: establishes baseline, no fire.
         assert probe_queue_backlog(state_path=sp) is None
@@ -2257,11 +2257,11 @@ def test_queue_backlog_dead_letter_static_pile_never_fires(tmp_path):
 
 def test_queue_backlog_fires_on_dead_letter_growth(tmp_path):
     sp = str(tmp_path / "s.json")
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(
                    _queue_payload(dead_letter=100))):
         assert probe_queue_backlog(state_path=sp) is None  # baseline
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(
                    _queue_payload(dead_letter=115))):
         sig = probe_queue_backlog(state_path=sp)
@@ -2272,11 +2272,11 @@ def test_queue_backlog_fires_on_dead_letter_growth(tmp_path):
 
 def test_queue_backlog_dead_letter_spike_is_wedge(tmp_path):
     sp = str(tmp_path / "s.json")
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(
                    _queue_payload(dead_letter=10))):
         assert probe_queue_backlog(state_path=sp) is None  # baseline
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(
                    _queue_payload(dead_letter=75))):
         sig = probe_queue_backlog(state_path=sp)
@@ -2288,11 +2288,11 @@ def test_queue_backlog_dead_letter_spike_is_wedge(tmp_path):
 def test_queue_backlog_takes_max_severity_across_legs(tmp_path):
     """Depth degraded + dead-letter wedge → wedge wins."""
     sp = str(tmp_path / "s.json")
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(
                    _queue_payload(depth=850, max_size=1000, dead_letter=0))):
         probe_queue_backlog(state_path=sp)  # baseline (fires degraded)
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(
                    _queue_payload(depth=850, max_size=1000,
                                   dead_letter=60))):
@@ -2306,7 +2306,7 @@ def test_queue_backlog_takes_max_severity_across_legs(tmp_path):
 def test_queue_backlog_none_on_unexpected_shape(tmp_path):
     """A 503/error JSON body (no queue_depth key) → None, not a
     KeyError-shaped false alarm."""
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(
                    {"error": "message_queue_unavailable"})):
         sig = probe_queue_backlog(state_path=str(tmp_path / "s.json"))
@@ -2352,7 +2352,7 @@ def test_confirmation_stall_none_on_unreachable_endpoint():
     def _raise(*args, **kwargs):
         raise URLError("connection refused")
 
-    with patch("utils.watchdog_probes.urlopen", side_effect=_raise):
+    with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
         assert probe_delivery_confirmation_stall() is None
 
 
@@ -2362,7 +2362,7 @@ def test_confirmation_stall_mesh_sends_do_not_false_alarm():
     the honest rate is 10/10 = 100% — None. (min low so the sample passes,
     proving it's the mesh-exclusion, not the min-gate, that silences it.)"""
     payload = _delivery_payload(confirmed=10, failed=0, mesh_sent=20)
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
         assert probe_delivery_confirmation_stall(min_terminal=5) is None
 
@@ -2371,7 +2371,7 @@ def test_confirmation_stall_no_confirmable_protocol_is_none():
     """No protocol records confirmations (RNS-less box; mesh has no ACK) →
     nothing to judge."""
     payload = _delivery_payload(mesh_sent=30, confirmable=())
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
         assert probe_delivery_confirmation_stall(min_terminal=5) is None
 
@@ -2380,14 +2380,14 @@ def test_confirmation_stall_below_min_terminal_is_none():
     """Few confirmable terminal events — one failure can't tank a tiny
     denominator (the mesh-heavy-box small-RNS-sample case)."""
     payload = _delivery_payload(confirmed=2, failed=1, mesh_sent=40)
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
         assert probe_delivery_confirmation_stall(min_terminal=20) is None
 
 
 def test_confirmation_stall_rns_healthy_is_quiet():
     payload = _delivery_payload(confirmed=24, failed=1)
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
         assert probe_delivery_confirmation_stall(min_terminal=20) is None
 
@@ -2396,7 +2396,7 @@ def test_confirmation_stall_dedup_drops_excluded():
     """Benign dedup drops are NOT delivery failures — a healthy RNS box with
     lots of dedup must stay quiet."""
     payload = _delivery_payload(confirmed=24, failed=0, dedup_drops=30)
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
         sig = probe_delivery_confirmation_stall(min_terminal=20)
     assert sig is None
@@ -2404,7 +2404,7 @@ def test_confirmation_stall_dedup_drops_excluded():
 
 def test_confirmation_stall_rns_collapse_degraded():
     payload = _delivery_payload(confirmed=10, failed=15)
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
         sig = probe_delivery_confirmation_stall(min_terminal=20)
     assert sig is not None
@@ -2419,7 +2419,7 @@ def test_confirmation_stall_rns_collapse_degraded():
 
 def test_confirmation_stall_rns_collapse_wedge():
     payload = _delivery_payload(confirmed=2, failed=23)
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
         sig = probe_delivery_confirmation_stall(min_terminal=20)
     assert sig is not None
@@ -2451,7 +2451,7 @@ def test_confirmation_stall_meshtastic_joins_confirmable_set():
     confirmable and the probe judges its REAL delivery rate — a mesh
     delivery collapse now fires (it never could before, mesh was excluded)."""
     payload = _mesh_delivery_payload(confirmed=2, failed=23)
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
         sig = probe_delivery_confirmation_stall(min_terminal=20)
     assert sig is not None
@@ -2466,7 +2466,7 @@ def test_confirmation_stall_meshtastic_healthy_is_quiet():
     """Honest Meshtastic confirmations (DMs that ACK) keep the probe
     silent — the desired steady state of step 4."""
     payload = _mesh_delivery_payload(confirmed=24, failed=1)
-    with patch("utils.watchdog_probes.urlopen",
+    with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
         assert probe_delivery_confirmation_stall(min_terminal=20) is None
 
@@ -2479,7 +2479,7 @@ def test_confirmation_stall_meshtastic_nak_reasons_count_as_failures():
     for dr in set(_NAK_DROP_REASON.values()):
         payload = _mesh_delivery_payload(confirmed=1, failed=24,
                                          drop_reason=dr.value)
-        with patch("utils.watchdog_probes.urlopen",
+        with patch("utils.watchdog_probes_gateway.urlopen",
                    return_value=_http_json_mock(payload)):
             sig = probe_delivery_confirmation_stall(min_terminal=20)
         assert sig is not None, f"{dr.value} did not count as a failure"
@@ -2877,7 +2877,7 @@ class TestHistoryWriteFailure:
 
     def test_missing_home_is_none(self, tmp_path):
         """No resolvable mini home and no injected docs → None (not this box)."""
-        with patch("utils.watchdog_probes._resolve_mini_home", return_value=None):
+        with patch("utils.watchdog_probes_mini._resolve_mini_home", return_value=None):
             sig = probe_history_write_failure(
                 now=self.NOW, state_path=str(tmp_path / "s.json"))
         assert sig is None
@@ -2917,7 +2917,7 @@ class TestRulesSeedDrift:
     def test_no_role_is_none(self):
         """Box declares no role → not applicable. _read_deployment_declaration
         returning (None, {}) short-circuits before any seed/home read."""
-        with patch("utils.watchdog_probes._read_deployment_declaration",
+        with patch("utils.watchdog_probes_mini._read_deployment_declaration",
                    return_value=(None, {})):
             sig = probe_rules_seed_drift()
         assert sig is None
@@ -3044,7 +3044,7 @@ class TestRulesSeedDrift:
         goes dark (honest) while the ID leg still works."""
         old_body = {**self.SEED_RULE, "cooldown_s": 60}
         live = [self._stamped_copy(old_body)]
-        with patch("utils.watchdog_probes._mini_rule_body_sha", None):
+        with patch("utils.watchdog_probes_mini._mini_rule_body_sha", None):
             stale_sig = probe_rules_seed_drift(
                 role="primary",
                 seed_rules=[self.SEED_RULE], live_rules=live)
@@ -3104,6 +3104,6 @@ class TestMemoryIndexOversize:
         assert sig.extra["size_bytes"] == MEMORY_INDEX_LIMIT_BYTES + 500
 
     def test_no_home_is_none(self):
-        with patch("utils.watchdog_probes._resolve_mini_home", return_value=None):
+        with patch("utils.watchdog_probes_mini._resolve_mini_home", return_value=None):
             sig = probe_memory_index_oversize()
         assert sig is None
