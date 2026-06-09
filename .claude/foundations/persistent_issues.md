@@ -279,7 +279,9 @@ operator recipe in `persistent_issues_archive.md`.
 Three watchdog probes added 2026-06-01 (audit-organ→Signal→mini pattern,
 [[project_mini_scales_via_watchdog_probes_2026_06_01]]; all `degraded`; **recurring
 trap: derive context from the SERVICE, not the root watchdog env**): `probe_foundation_drift`
-(`/etc/reticulum` root:root under a non-root rnsd; fix `fleet_foundation.py apply`),
+(`/etc/reticulum` root:root under a non-root rnsd; fix `fleet_foundation.py apply`;
+⚠️ INERT 06-01→06-09: `rns_tree_perms` hardcoded `sudo=True` stats, which NoNewPrivileges
+blocks → fields None → never fired; fixed `09bc14a`/MA `91663edb` — never sudo when euid==0),
 `probe_parity_drift` (MeshForge↔MeshAnchor `check_parity()` drift; self-guards if
 `/opt/meshanchor` absent), `probe_rns_version_drift` (rns/lxmf off the `+mf.N` pin —
 reads the rnsd user's `~/.local` site-packages directly, since the watchdog sandbox
