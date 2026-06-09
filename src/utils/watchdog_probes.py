@@ -1227,7 +1227,13 @@ def probe_parity_drift(
                 "parity_check",
                 os.path.join(meshforge_root, "scripts", "parity_check.py"),
             )
+            import sys
             mod = importlib.util.module_from_spec(spec)
+            # Register before exec: on py3.12+ @dataclass resolves field types via
+            # sys.modules[cls.__module__].__dict__ → AttributeError if absent. This
+            # silently killed parity_drift + role_drift on the 3.13 fleet (found
+            # 2026-06-08 inducing a live role_drift on moc1).
+            sys.modules[spec.name] = mod
             spec.loader.exec_module(mod)
             check_fn = mod.check_parity
         except Exception:
@@ -1337,7 +1343,9 @@ def probe_rns_version_drift(
             import importlib.util
             script = str(Path(__file__).resolve().parents[2] / "scripts" / "rns_version_check.py")
             spec = importlib.util.spec_from_file_location("rns_version_check", script)
+            import sys
             mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod  # register before exec (py3.12+ @dataclass eval; see probe_parity_drift)
             spec.loader.exec_module(mod)
             pins = mod.pinned_versions()
         except Exception:
@@ -1425,7 +1433,9 @@ def _plan_role_actions(role: str, overrides: dict, meshforge_root: str):
         import importlib.util
         script = os.path.join(meshforge_root, "scripts", "provision_role.py")
         spec = importlib.util.spec_from_file_location("provision_role", script)
+        import sys
         mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod  # register before exec (py3.12+ @dataclass eval; see probe_parity_drift)
         spec.loader.exec_module(mod)
         catalog = mod.load_roles(mod.DEFAULT_ROLES_FILE)
     except Exception:

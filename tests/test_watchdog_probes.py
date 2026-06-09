@@ -1576,6 +1576,29 @@ def test_role_drift_none_when_tool_indeterminate(tmp_path):
                             state_path=state) is None
 
 
+def test_plan_role_actions_real_importlib_load():
+    """Regression (2026-06-08): the DEFAULT plan_fn (`_plan_role_actions`)
+    importlib-loads scripts/provision_role.py. On py3.12+ the load died with
+    AttributeError unless the module is registered in sys.modules BEFORE
+    exec_module (the @dataclass field-type eval reads
+    sys.modules[cls.__module__].__dict__). That silently made probe_role_drift
+    (and probe_parity_drift) return None forever on the 3.13 fleet — the v3
+    trigger was dead. Every OTHER role_drift test injects plan_fn, so none
+    exercised the real load; this one does, against the live provision_role.py.
+    """
+    from utils.watchdog_probes import _plan_role_actions
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    actions = _plan_role_actions("primary", {}, repo_root)
+    assert actions is not None, (
+        "_plan_role_actions returned None — importlib load of provision_role.py "
+        "failed (sys.modules-before-exec registration regressed?)"
+    )
+    assert isinstance(actions, list) and actions
+    # And it actually reports a known drift: a role wanting a unit enabled while
+    # the plan would change it surfaces an enable/disable/mask verb.
+    assert all(hasattr(a, "verb") for a in actions)
+
+
 # ─────────────────────────────────────────────────────────────────────
 # 2026-06-01 — rns_version_drift (off the +mf.N fork pin, in the rnsd env)
 # ─────────────────────────────────────────────────────────────────────
