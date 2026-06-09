@@ -133,3 +133,77 @@ class TestParseUserFromUnitFiles:
 
     def test_missing_files_skipped(self, tmp_path):
         assert _parse_user_from_unit_files([str(tmp_path / "absent.service")]) is None
+
+
+class TestRootContextNoSudo:
+    """Root callers must stat DIRECTLY — sudo from the watchdog's
+    NoNewPrivileges sandbox always fails, which silently mapped every probe
+    field to None and left foundation_perms_drift inert (2026-06-09 finding;
+    the #79 never-escalate-from-the-sandbox lesson applied to this module)."""
+
+    def _no_subprocess(self, *a, **k):
+        raise AssertionError("root context must not spawn sudo/subprocess")
+
+    def test_stat_owner_root_direct_no_sudo(self, tmp_path):
+        from utils.rns_tree_perms import _stat_owner
+        p = tmp_path / "d"
+        p.mkdir()
+        with patch("utils.rns_tree_perms.os.geteuid", return_value=0), \
+             patch("utils.rns_tree_perms.subprocess.run", self._no_subprocess):
+            owner = _stat_owner(p, sudo=True)
+        assert owner is not None and ":" in owner
+
+    def test_stat_mode_root_direct_no_sudo(self, tmp_path):
+        from utils.rns_tree_perms import _stat_mode
+        p = tmp_path / "d"
+        p.mkdir(mode=0o755)
+        with patch("utils.rns_tree_perms.os.geteuid", return_value=0), \
+             patch("utils.rns_tree_perms.subprocess.run", self._no_subprocess):
+            mode = _stat_mode(p, sudo=True)
+        assert mode == "755"
+
+    def test_path_exists_root_direct_no_sudo(self, tmp_path):
+        from utils.rns_tree_perms import _path_exists
+        present = tmp_path / "f"
+        present.touch()
+        with patch("utils.rns_tree_perms.os.geteuid", return_value=0), \
+             patch("utils.rns_tree_perms.subprocess.run", self._no_subprocess):
+            assert _path_exists(present, sudo=True) is True
+            assert _path_exists(tmp_path / "absent", sudo=True) is False
+
+    def test_nonroot_still_escalates_via_sudo(self, tmp_path):
+        """The operator-CLI context (non-root, root-owned configdir) keeps the
+        sudo fallback — the fix must not regress it."""
+        from utils.rns_tree_perms import _stat_owner
+        seen = {}
+
+        def fake_run(cmd, **k):
+            seen["cmd"] = cmd
+
+            class R:
+                returncode = 0
+                stdout = "root:root\n"
+            return R()
+
+        with patch("utils.rns_tree_perms.os.geteuid", return_value=1000), \
+             patch("utils.rns_tree_perms.subprocess.run", fake_run):
+            owner = _stat_owner(tmp_path, sudo=True)
+        assert owner == "root:root"
+        assert seen["cmd"][:2] == ["sudo", "-n"]
+
+    def test_probe_as_root_yields_probed_fields(self, tmp_path):
+        """End-to-end: as root (mocked), the probe must return REAL fields for
+        an existing tree — the inert-probe regression case."""
+        from utils import rns_tree_perms as rtp
+        cd = tmp_path / "reticulum"
+        cd.mkdir()
+        (cd / "logfile").touch()
+        with patch.object(rtp, "CANONICAL_CONFIGDIR", cd), \
+             patch.object(rtp.os, "geteuid", return_value=0), \
+             patch.object(rtp, "_read_rnsd_user", return_value="someuser"), \
+             patch.object(rtp.subprocess, "run", self._no_subprocess):
+            perms = rtp.probe_rns_tree_perms()
+        assert perms.configdir_owner is not None
+        assert perms.configdir_mode is not None
+        assert perms.logfile_exists is True
+        assert perms.logfile_owner is not None

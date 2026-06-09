@@ -25,6 +25,7 @@ Consumers:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -180,9 +181,16 @@ def _read_rnsd_user() -> Optional[str]:
 
 
 def _stat_owner(path: Path, sudo: bool = False) -> Optional[str]:
-    """Return 'user:group' for path, or None if not accessible."""
+    """Return 'user:group' for path, or None if not accessible.
+
+    ``sudo=True`` means "escalate if needed" — when the caller is ALREADY root
+    we stat directly: sudo adds nothing, and inside a NoNewPrivileges sandbox
+    (the watchdog) every ``sudo -n`` FAILS, which silently mapped the whole
+    probe to None/"never guess" and left ``foundation_perms_drift`` inert
+    (the 2026-06-09 finding; same class as the #79 sandbox-sudo lesson).
+    """
     try:
-        if sudo:
+        if sudo and os.geteuid() != 0:
             res = subprocess.run(
                 ['sudo', '-n', 'stat', '-c', '%U:%G', str(path)],
                 capture_output=True, text=True, timeout=5,
@@ -202,9 +210,12 @@ def _stat_owner(path: Path, sudo: bool = False) -> Optional[str]:
 
 
 def _stat_mode(path: Path, sudo: bool = False) -> Optional[str]:
-    """Return the octal mode string (e.g. '1775') for path, or None."""
+    """Return the octal mode string (e.g. '1775') for path, or None.
+
+    Same root-direct rule as ``_stat_owner``: escalate only when not root.
+    """
     try:
-        if sudo:
+        if sudo and os.geteuid() != 0:
             res = subprocess.run(
                 ['sudo', '-n', 'stat', '-c', '%a', str(path)],
                 capture_output=True, text=True, timeout=5,
@@ -217,9 +228,27 @@ def _stat_mode(path: Path, sudo: bool = False) -> Optional[str]:
         return None
 
 
+def _path_exists(path: Path, sudo: bool = False) -> bool:
+    """True when path exists; escalates via sudo only when not already root."""
+    if sudo and os.geteuid() != 0:
+        try:
+            return subprocess.run(
+                ['sudo', '-n', 'test', '-e', str(path)],
+                capture_output=True, timeout=5,
+            ).returncode == 0
+        except subprocess.SubprocessError:
+            return False
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def probe_rns_tree_perms() -> RnsTreePerms:
     """Read-only probe of the RNS-tree perms facts (rnsd user + configdir owner/
-    mode + logfile owner/exists). Uses sudo stat for the root-owned configdir;
+    mode + logfile owner/exists). Stats directly when running as root (the
+    watchdog context — sudo is both pointless and sandbox-blocked there) and
+    falls back to sudo stat for a non-root caller on the root-owned configdir;
     leaves fields None when not probed/inaccessible so the drift detector never
     guesses. Cheap: no full RNS-config scan, no MeshForge-specific paths.
     """
@@ -228,13 +257,7 @@ def probe_rns_tree_perms() -> RnsTreePerms:
     perms.configdir_owner = _stat_owner(cd, sudo=True)
     perms.configdir_mode = _stat_mode(cd, sudo=True)
     logfile = cd / 'logfile'
-    try:
-        if subprocess.run(
-            ['sudo', '-n', 'test', '-e', str(logfile)],
-            capture_output=True, timeout=5,
-        ).returncode == 0:
-            perms.logfile_exists = True
-            perms.logfile_owner = _stat_owner(logfile, sudo=True)
-    except subprocess.SubprocessError:
-        pass
+    if _path_exists(logfile, sudo=True):
+        perms.logfile_exists = True
+        perms.logfile_owner = _stat_owner(logfile, sudo=True)
     return perms
