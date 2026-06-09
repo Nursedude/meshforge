@@ -54,6 +54,8 @@ Published at: https://wh6gxznursedude.substack.com/
   _A review of the gateway's safety machinery found it wasn't plugged in: a breaker with zero callers, a canary with a cut alarm wire, a test suite poisoning its own box — ending with every fleet cron required to leave a dated verdict, and a watchdog that had died doing exactly what it was built to detect._
 - **2026-06-07 — [Three Failures Wearing One Symptom](2026-06-07-three-failures-wearing-one-symptom.md)**
   _A dark web client was a missed re-key AND a connection leak AND a packet-stealing probe, hidden by an instrument that couldn't see half the traffic. Then our stakeout probe false-alarmed on its own assumption, an API we'd blamed on a firmware regression turned out never to have existed, and a brand-new drift probe caught a real drifted radio on its first fleet tick._
+- **2026-06-08 — [Make It Fire](2026-06-08-make-it-fire.md)**
+  _We built a loop that lets the fleet heal itself and shipped it rehearsal-only. Before trusting it, we broke a box on purpose to watch it fire — and found the trigger had been silently dead since the Python 3.13 upgrade, alongside a sibling probe, both reporting perfect health by losing the ability to report anything else. A detector that never false-alarms can also have lost its voice; you find out by making it fire._
 
 ---
 
