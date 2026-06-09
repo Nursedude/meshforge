@@ -2002,7 +2002,10 @@ class MapRequestHandler(
         # have a timer — manual-only tests show last_fire=None.
         timer_index = {}
         for scope in ("system", "user"):
-            for raw in _list_timers_scope(scope):
+            # _list_timers_scope now returns None on probe failure (M3);
+            # `or []` keeps the /fleet/tests index working (no timer data
+            # → manual-only display) without crashing on None.
+            for raw in (_list_timers_scope(scope) or []):
                 entry = _normalize_timer(raw, scope, now)
                 if entry is None:
                     continue

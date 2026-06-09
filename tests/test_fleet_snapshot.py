@@ -1156,3 +1156,175 @@ def test_overall_status_stays_ready_when_only_suspected_cascade(monkeypatch):
     assert snap["overall_status"] == "ready"
     # No cascade-related error message either.
     assert not any("cascade" in e for e in snap["errors"])
+
+
+# ─── M3 honest-signal: timer-probe failure ≠ no-timers (parity with MA) ──
+
+
+def test_list_timers_scope_none_on_probe_failure(monkeypatch):
+    """rc!=0 -> None (probe FAILED), distinct from [] (ran, no timers)."""
+    monkeypatch.setattr("utils.fleet_snapshot.os.geteuid", lambda: 1000)
+    fake, _ = _capture_subprocess_run(returncode=1, stdout="")
+    monkeypatch.setattr("utils.fleet_snapshot.subprocess.run", fake)
+    assert fleet_snapshot._list_timers_scope("system") is None
+
+
+def test_list_timers_scope_empty_stdout_is_empty_list(monkeypatch):
+    """rc==0 + no stdout -> [] (ran OK, genuinely no timers)."""
+    monkeypatch.setattr("utils.fleet_snapshot.os.geteuid", lambda: 1000)
+    fake, _ = _capture_subprocess_run(returncode=0, stdout="")
+    monkeypatch.setattr("utils.fleet_snapshot.subprocess.run", fake)
+    assert fleet_snapshot._list_timers_scope("system") == []
+
+
+def test_schedules_block_probe_failure_unhealthy_with_reason(monkeypatch):
+    """A failed timer probe renders unhealthy + reason — NOT clean green."""
+    monkeypatch.setattr(fleet_snapshot, "_list_timers_scope",
+                        lambda scope: None)
+    block = _schedules_block()
+    assert block["healthy"] is False
+    assert "reason" in block and "unavailable" in block["reason"]
+
+
+def test_schedules_block_no_timers_healthy_no_reason(monkeypatch):
+    """Genuinely-empty ([]) stays healthy with no reason (the M3 split)."""
+    monkeypatch.setattr(fleet_snapshot, "_list_timers_scope",
+                        lambda scope: [])
+    block = _schedules_block()
+    assert block["healthy"] is True
+    assert "reason" not in block
+
+
+# ─── Phase-1 sources: crontab / verdicts / loop_crons (honest-signal) ────
+
+
+def test_parse_crontab_skips_comments_env_and_malformed():
+    jobs = fleet_snapshot._parse_crontab(
+        "\n# comment\nMAILTO=root\nPATH=/usr/bin\n"
+        "*/5 * * * * /bin/true\n@reboot /opt/start\nbadline\n")
+    cmds = [j["command"] for j in jobs]
+    assert cmds == ["/bin/true", "/opt/start"]   # env/comment/malformed gone
+    assert jobs[0]["schedule"] == "*/5 * * * *"
+    assert jobs[1]["schedule"] == "@reboot"
+
+
+def test_read_crontab_no_crontab_is_empty_not_unavailable(monkeypatch):
+    """rc=1 + 'no crontab for' is genuinely EMPTY, available stays True."""
+    monkeypatch.setattr("utils.fleet_snapshot.os.geteuid", lambda: 1000)
+
+    def _fake(cmd, **kw):
+        return MagicMock(returncode=1, stdout="",
+                         stderr="no crontab for wh6gxz")
+    monkeypatch.setattr("utils.fleet_snapshot.subprocess.run", _fake)
+    r = fleet_snapshot._read_crontab()
+    assert r["available"] is True
+    assert r["jobs"] == [] and r["count"] == 0
+
+
+def test_read_crontab_error_is_unavailable(monkeypatch):
+    """A genuine error (other rc=1 stderr) must NOT read as 'no cron jobs'."""
+    monkeypatch.setattr("utils.fleet_snapshot.os.geteuid", lambda: 1000)
+
+    def _fake(cmd, **kw):
+        return MagicMock(returncode=1, stdout="",
+                         stderr="cannot connect to cron daemon")
+    monkeypatch.setattr("utils.fleet_snapshot.subprocess.run", _fake)
+    r = fleet_snapshot._read_crontab()
+    assert r["available"] is False
+    assert "unavailable" in r["reason"]
+
+
+def test_read_crontab_missing_binary_is_unavailable(monkeypatch):
+    monkeypatch.setattr("utils.fleet_snapshot.os.geteuid", lambda: 1000)
+
+    def _fake(cmd, **kw):
+        raise FileNotFoundError("crontab")
+    monkeypatch.setattr("utils.fleet_snapshot.subprocess.run", _fake)
+    r = fleet_snapshot._read_crontab()
+    assert r["available"] is False
+    assert "probe_error" in r["reason"]
+
+
+def test_read_crontab_success_parses(monkeypatch):
+    monkeypatch.setattr("utils.fleet_snapshot.os.geteuid", lambda: 1000)
+
+    def _fake(cmd, **kw):
+        return MagicMock(returncode=0, stderr="",
+                         stdout="*/5 * * * * /bin/true\n@daily /bin/backup\n")
+    monkeypatch.setattr("utils.fleet_snapshot.subprocess.run", _fake)
+    r = fleet_snapshot._read_crontab()
+    assert r["available"] is True and r["count"] == 2
+
+
+def test_parse_cron_verdicts_last_per_name_and_status():
+    now = 2_000_000_000.0
+    text = (
+        "2026-06-08T14:00:00+00:00 jobA OK first\n"
+        "2026-06-08T15:00:00+00:00 jobA FAIL second\n"
+        "2026-06-08T15:00:00+00:00 jobB CONCERN hmm\n"
+        "garbage line\n"
+    )
+    jobs = fleet_snapshot._parse_cron_verdicts(text, now)
+    by = {j["name"]: j for j in jobs}
+    assert by["jobA"]["status"] == "FAIL"
+    assert by["jobA"]["message"] == "second"
+    assert by["jobB"]["status"] == "CONCERN"
+    assert by["jobA"]["age_s"] > 0
+
+
+def test_read_cron_verdicts_missing_file_unavailable(monkeypatch, tmp_path):
+    monkeypatch.setattr(fleet_snapshot, "_operator_home", lambda: tmp_path)
+    r = fleet_snapshot._read_cron_verdicts()
+    assert r["available"] is False and r["reason"] == "no_file"
+
+
+def test_read_cron_verdicts_present_counts_fail(monkeypatch, tmp_path):
+    (tmp_path / "cron_verdicts.log").write_text(
+        "2026-06-08T15:00:00+00:00 jobA FAIL boom\n")
+    monkeypatch.setattr(fleet_snapshot, "_operator_home", lambda: tmp_path)
+    r = fleet_snapshot._read_cron_verdicts()
+    assert r["available"] is True and r["fail_count"] == 1
+
+
+def test_read_loop_crons_absent_is_unavailable_ephemeral(monkeypatch, tmp_path):
+    monkeypatch.setattr(fleet_snapshot, "_operator_home", lambda: tmp_path)
+    r = fleet_snapshot._read_loop_crons()
+    assert r["available"] is False
+    assert r["reason"] == "no_file"
+    assert r["ephemeral"] is True
+
+
+def test_read_loop_crons_malformed_json(monkeypatch, tmp_path):
+    (tmp_path / ".claude_loop_crons.json").write_text("{not json")
+    monkeypatch.setattr(fleet_snapshot, "_operator_home", lambda: tmp_path)
+    r = fleet_snapshot._read_loop_crons()
+    assert r["available"] is False and r["reason"] == "malformed_json"
+
+
+def test_read_loop_crons_present(monkeypatch, tmp_path):
+    import json as _json
+    (tmp_path / ".claude_loop_crons.json").write_text(_json.dumps(
+        [{"id": "3d4dee9a", "cron": "7,37 * * * *",
+          "prompt": "watch", "next_fire_unix": 123}]))
+    monkeypatch.setattr(fleet_snapshot, "_operator_home", lambda: tmp_path)
+    r = fleet_snapshot._read_loop_crons()
+    assert r["available"] is True and r["ephemeral"] is True
+    assert r["jobs"][0]["id"] == "3d4dee9a"
+
+
+def test_schedules_block_includes_new_subkeys(monkeypatch):
+    monkeypatch.setattr(fleet_snapshot, "_list_timers_scope",
+                        lambda scope: [])
+    block = _schedules_block()
+    assert {"crontab", "verdicts", "loop_crons"} <= set(block)
+
+
+def test_failing_crontab_does_not_flip_timer_health(monkeypatch):
+    """A broken crontab read is its OWN unavailable, never a timer fault."""
+    monkeypatch.setattr(fleet_snapshot, "_list_timers_scope",
+                        lambda scope: [])
+    monkeypatch.setattr(fleet_snapshot, "_read_crontab",
+                        lambda: {"available": False, "reason": "boom"})
+    block = _schedules_block()
+    assert block["healthy"] is True                 # timer health unaffected
+    assert block["crontab"]["available"] is False
