@@ -2937,10 +2937,15 @@ class TestRulesSeedDrift:
 
     def test_collector_and_cloud_publisher_are_watched(self, tmp_path):
         """collector (moc5) and cloud-publisher (moc1) run mini — the probe
-        must NOT self-guard None on them (the 2026-06-09 review gap)."""
+        must NOT self-guard None on them (the 2026-06-09 review gap).
+        meshforge_root is passed explicitly: CI checks the repo out somewhere
+        other than /opt/meshforge, so the default would read no seed and
+        self-guard None (the exact local-green/CI-red trap)."""
+        repo_root = os.path.join(os.path.dirname(__file__), "..")
         (tmp_path / "mini_dudeai_rules.json").write_text(json.dumps({"rules": []}))
         for role in ("collector", "cloud-publisher"):
-            sig = probe_rules_seed_drift(mini_home=str(tmp_path), role=role)
+            sig = probe_rules_seed_drift(mini_home=str(tmp_path), role=role,
+                                         meshforge_root=repo_root)
             assert sig is not None and sig.cls == "rules_seed_drift"
 
     def test_known_roles_map_to_seeds(self):
