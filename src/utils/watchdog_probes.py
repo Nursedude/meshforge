@@ -39,7 +39,7 @@ import subprocess
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple
 from urllib.request import urlopen
 from urllib.error import URLError
 
@@ -73,6 +73,7 @@ SIGNAL_CLASSES = (
     "delivery_confirmation_stall",  # Issue #74 (2026-06-06): sends flow but confirmations collapsed — bridge self-report reads HEALTHY while shouting into a void
     "phoneapi_tcp_leak",  # Issue #75 (2026-06-07): map service holds an unaccounted persistent TCP to meshtasticd :4403 — leaked TCPInterface silently starves the :9443 web client (#17 contention class, leak form)
     "mqtt_root_drift",  # Issue #77 (2026-06-07): radio's observed MQTT publish root prefix diverges from the box's declared mqtt_bridge.root_topic — a zero-config radio join silently reintroduces the msh/US split
+    "cron_verdict_stale",  # Issue #78 (2026-06-08): a cron WIRED to cron_verdict.sh reported FAIL/CONCERN or went silent past its schedule cadence — silence is the failure mode (cross-references the crontab so stale ORPHAN verdicts never false-alarm)
 )
 
 SEVERITIES = ("info", "degraded", "wedge")
@@ -2402,6 +2403,214 @@ def probe_mqtt_root_drift(
             "lookback": lookback,
         },
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Cron-verdict coverage (Issue #78) — a cron WIRED to cron_verdict.sh that
+# reported FAIL/CONCERN or went silent past its schedule cadence. Cross-
+# references the crontab so a stale ORPHAN verdict (a one-off verdict for a
+# cron that no longer exists, e.g. the diag24h_watchdog line) never fires.
+# Inert until crons are wired — the regime is opt-in.
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_CRON_VERDICT_DEBOUNCE_PATH = "/var/lib/meshforge/cron_verdict_debounce.json"
+CRON_VERDICT_STALE_FLOOR_S = 2 * 3600.0      # don't flag faster than this (anti-flap)
+CRON_VERDICT_CADENCE_MULT = 3.0              # stale if age > MULT × expected interval
+_CRON_VERDICT_FALLBACK_MAX_S = 26 * 3600.0   # unparseable schedule → panel's 26h
+_CRON_WIRED_RE = re.compile(r'cron_verdict\.sh\s+(\S+)')
+
+
+def _cron_max_interval(schedule: str) -> float:
+    """Coarse expected-max gap (seconds) for a 5-field cron schedule or
+    ``@keyword``. Intentionally approximate — catch gross silence, not exact
+    scheduling. Unparseable → the panel's 26h fallback. ``@reboot`` → inf
+    (only runs at boot, never stale-checkable)."""
+    if not isinstance(schedule, str):
+        return _CRON_VERDICT_FALLBACK_MAX_S
+    s = schedule.strip()
+    kw = {
+        "@hourly": 3600.0, "@daily": 86400.0, "@midnight": 86400.0,
+        "@weekly": 604800.0, "@monthly": 2592000.0,
+        "@yearly": 31536000.0, "@annually": 31536000.0,
+        "@reboot": float("inf"),
+    }
+    if s in kw:
+        return kw[s]
+    fields = s.split()
+    if len(fields) < 5:
+        return _CRON_VERDICT_FALLBACK_MAX_S
+    minute, hour, dom, mon, dow = fields[:5]
+    mm = re.match(r'^\*/(\d+)$', minute)
+    if mm:
+        try:
+            return max(60.0, int(mm.group(1)) * 60.0)
+        except ValueError:
+            return _CRON_VERDICT_FALLBACK_MAX_S
+    if minute == "*":
+        return 60.0
+    # specific minute from here → at most hourly granularity
+    if hour == "*":
+        return 3600.0
+    hm = re.match(r'^\*/(\d+)$', hour)
+    if hm:
+        try:
+            return max(3600.0, int(hm.group(1)) * 3600.0)
+        except ValueError:
+            return _CRON_VERDICT_FALLBACK_MAX_S
+    # specific minute + specific hour
+    if dow != "*":
+        return 604800.0    # weekly
+    if dom != "*" or mon != "*":
+        return 2592000.0   # monthly-ish
+    return 86400.0         # daily
+
+
+def _read_operator_crontab_spool(name: Optional[str]) -> Optional[str]:
+    """Read the operator's crontab from the spool — as root, in-process, no
+    sudo (the watchdog's NoNewPrivileges sandbox forbids privilege change).
+    Debian path first, then RHEL-style. None on missing/unreadable."""
+    if not name or name == "root":
+        return None
+    for path in (f"/var/spool/cron/crontabs/{name}", f"/var/spool/cron/{name}"):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                return fh.read()
+        except (FileNotFoundError, IsADirectoryError):
+            continue
+        except OSError:
+            return None
+    return None
+
+
+def _read_operator_verdicts_log(home: Optional[str]) -> Optional[str]:
+    """Read ``~/cron_verdicts.log`` as root, in-process. None on absent/unreadable."""
+    if not home:
+        return None
+    try:
+        with open(os.path.join(str(home), "cron_verdicts.log"),
+                  "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except (FileNotFoundError, IsADirectoryError):
+        return None
+    except OSError:
+        return None
+
+
+def probe_cron_verdict_stale(
+    *,
+    operator: Optional[Tuple[int, str]] = None,
+    crontab_text: Optional[str] = None,
+    verdicts_text: Optional[str] = None,
+    now: Optional[float] = None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """Fire when a cron WIRED to cron_verdict.sh reported FAIL/CONCERN or went
+    silent past its schedule cadence — "silence is the failure mode" for the
+    cron-verdict regime (Issue #78).
+
+    Reads the operator's crontab (spool) + ``~/cron_verdicts.log`` directly as
+    root (no sudo — watchdog sandbox). Only WIRED crons (a ``cron_verdict.sh
+    <name>`` in the crontab line) are judged, so a stale ORPHAN verdict for a
+    cron that no longer exists never false-alarms. INERT (None) on any box with
+    no wired crons — the regime is opt-in. 2-tick debounce rides a mid-run
+    window where a fresh run hasn't recorded yet. Never raises into the tick.
+    """
+    try:
+        now = time.time() if now is None else now
+        sp = state_path or DEFAULT_CRON_VERDICT_DEBOUNCE_PATH
+
+        # 1. Resolve operator (root-safe) — only when nothing is injected.
+        if operator is None and crontab_text is None and verdicts_text is None:
+            try:
+                from utils.fleet_test_runner import _find_operator_user
+                operator = _find_operator_user()
+            except Exception:
+                operator = None
+        op_name = operator[1] if operator else None
+
+        # 2. Wired crontab → {name: schedule}. No wired cron → inert.
+        if crontab_text is None:
+            crontab_text = _read_operator_crontab_spool(op_name)
+        wired: Dict[str, str] = {}
+        if crontab_text:
+            try:
+                from utils.fleet_snapshot import _parse_crontab
+                for job in _parse_crontab(crontab_text):
+                    m = _CRON_WIRED_RE.search(job.get("command", ""))
+                    if m:
+                        wired[m.group(1)] = job.get("schedule", "")
+            except Exception:
+                wired = {}
+        if not wired:
+            _save_parity_streak(sp, 0)   # nothing to watch — clear + inert
+            return None
+
+        # 3. Verdict log → latest verdict per name.
+        if verdicts_text is None and operator is not None:
+            home = None
+            try:
+                import pwd
+                home = pwd.getpwuid(operator[0]).pw_dir
+            except (KeyError, OSError):
+                home = None
+            verdicts_text = _read_operator_verdicts_log(home)
+        latest: Dict[str, dict] = {}
+        if verdicts_text:
+            try:
+                from utils.fleet_snapshot import _parse_cron_verdicts
+                for v in _parse_cron_verdicts(verdicts_text, now):
+                    latest[v["name"]] = v
+            except Exception:
+                latest = {}
+
+        # 4. Cross-reference — judge ONLY wired crons (orphans ignored).
+        failed: List[str] = []
+        stale: List[str] = []
+        for name, schedule in sorted(wired.items()):
+            v = latest.get(name)
+            if v is not None and v.get("status", "").upper().startswith(
+                    ("FAIL", "CONCERN")):
+                failed.append(f"{name}({v.get('status')})")
+                continue
+            max_age = _cron_max_interval(schedule)
+            if max_age == float("inf"):
+                continue   # @reboot — not stale-checkable
+            threshold = max(CRON_VERDICT_STALE_FLOOR_S,
+                            CRON_VERDICT_CADENCE_MULT * max_age)
+            if v is None:
+                stale.append(f"{name}(never)")
+            elif float(v.get("age_s", 0.0)) > threshold:
+                stale.append(f"{name}({int(float(v['age_s']) // 3600)}h)")
+
+        if not failed and not stale:
+            _save_parity_streak(sp, 0)
+            return None
+
+        # 5. Debounce — first sighting silent, fire on the 2nd consecutive tick.
+        streak = _load_parity_streak(sp) + 1
+        _save_parity_streak(sp, streak)
+        if streak < debounce_ticks:
+            return None
+
+        bits = []
+        if failed:
+            bits.append(f"{len(failed)} failing: " + ", ".join(failed[:5]))
+        if stale:
+            bits.append(f"{len(stale)} silent: " + ", ".join(stale[:5]))
+        return Signal(
+            cls="cron_verdict_stale",
+            subject="cron",
+            severity="degraded",
+            detail=("Wired cron(s) unhealthy — " + "; ".join(bits)
+                    + " (fix the job or re-run + re-verify; silence is the "
+                    "failure mode)"),
+            issue_ref=78,
+            extra={"failed": failed, "stale": stale, "streak": streak,
+                   "wired_count": len(wired)},
+        )
+    except Exception:
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────

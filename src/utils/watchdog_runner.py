@@ -49,6 +49,7 @@ from utils.watchdog_probes import (
     Signal,
     probe_channel_feed_dark,
     probe_mqtt_root_drift,
+    probe_cron_verdict_stale,
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
@@ -381,6 +382,15 @@ def run_all_probes(
     # None at zero/low traffic (silence is NOT failure here — the
     # explicit inversion of channel_feed_dark).
     sig = probe_delivery_confirmation_stall(port=http_port)
+    if sig is not None:
+        signals.append(sig)
+
+    # Cron-verdict coverage (Issue #78) — a cron WIRED to cron_verdict.sh
+    # that reported FAIL/CONCERN or went silent past its schedule cadence.
+    # Reads the operator's crontab spool + ~/cron_verdicts.log directly as
+    # root (no sudo — sandbox); cross-references the crontab so stale ORPHAN
+    # verdicts never false-alarm. INERT (None) until crons are wired — opt-in.
+    sig = probe_cron_verdict_stale()
     if sig is not None:
         signals.append(sig)
 

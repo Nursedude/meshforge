@@ -471,3 +471,38 @@ debounce (parity-style streak file) rides out an operator mid-rotation. Fix:
 gateway.json if the radio is the intended truth). Tests: 9
 (`test_mqtt_root_drift_*` + `test_read_declared_root_topic_*`) + closed-enum
 gate bump. Journal line shape pinned live on moc 2026-06-07 01:25 HST.
+
+
+---
+
+## Issue #78: cron_verdict_stale probe — the silent-cron guard (2026-06-08)
+
+The `/fleet` "Scheduled & Running" panel surfaced a stale `diag24h_watchdog`
+`FAIL` verdict on moc → investigating it found **7 dead crons firing into a
+deleted `routine-bin/` since ~May 21**, silently failing under `>/dev/null
+2>&1`. The cron-verdict regime (`scripts/cron_verdict.sh`, the "every cron
+leaves a dated verdict" recorder) existed but had **no active alerter** — the
+"silence is the failure mode" class with no watchdog. New
+`probe_cron_verdict_stale` (`cron_verdict_stale`, degraded, issue_ref 78) is
+that alerter, built as a probe (not the never-written
+`cron_verdict_freshness.sh`) so it flows to mini + the panel.
+
+**Load-bearing design — cross-references the crontab, not just the log:** a
+verdict-log-only probe would FALSE-ALARM on stale ORPHAN verdicts (the
+`diag24h_watchdog` line was a one-off test verdict for a cron that no longer
+exists). So the probe reads the operator's crontab spool
+(`/var/spool/cron/crontabs/<user>`) directly as root (no sudo — the watchdog
+NoNewPrivileges sandbox forbids it; same in-process-read pattern as
+`probe_rns_version_drift`/`probe_role_drift`), finds crons WIRED to
+`cron_verdict.sh <name>`, and judges ONLY those — a verdict whose name is not
+a currently-wired cron is ignored. Per-cron staleness cadence is derived coarse
+from the schedule (`_cron_max_interval`; `@reboot`→inf, unparseable→26h),
+`× CADENCE_MULT=3` with a 2h FLOOR. Fires on a wired cron whose latest verdict
+is FAIL/CONCERN, or that went silent past threshold, or never reported. **INERT
+(None) on any box with no wired crons — the regime is opt-in**, so it would NOT
+auto-catch *unwired* dead crons (the panel + per-box triage own those); it
+guarantees a WIRED cron can never silently fail again. 2-tick debounce. Reuses
+the `_parse_crontab`/`_parse_cron_verdicts` parsers from `fleet_snapshot`.
+Tests: `TestCronVerdictStale` (11) incl. the orphan-filter + inert-when-unwired
+cases, + closed-enum gate bump. Regime remainder (wire live crons; triage the
+7 dead) = per-box operator passes.

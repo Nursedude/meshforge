@@ -36,6 +36,8 @@ from utils.watchdog_probes import (  # noqa: E402
     Signal,
     probe_channel_feed_dark,
     probe_mqtt_root_drift,
+    probe_cron_verdict_stale,
+    _cron_max_interval,
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
@@ -95,6 +97,7 @@ def test_signal_classes_closed_enum_is_documented():
         "delivery_confirmation_stall",  # Issue #74
         "phoneapi_tcp_leak",            # Issue #75
         "mqtt_root_drift",              # Issue #77
+        "cron_verdict_stale",           # Issue #78
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -2587,3 +2590,112 @@ def test_read_declared_root_topic_none_when_file_missing(tmp_path):
         assert _read_declared_root_topic("testuser") is None
     finally:
         _pwd.getpwnam = orig
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Issue #78 — probe_cron_verdict_stale (wired-cron FAIL/silence; orphan filter)
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestCronVerdictStale:
+    """A cron WIRED to cron_verdict.sh that reported FAIL/CONCERN or went silent
+    past its schedule cadence. Cross-references the crontab so a stale ORPHAN
+    verdict (a one-off verdict for a cron that no longer exists — the
+    diag24h_watchdog shape) never false-alarms. Hermetic: inject text."""
+
+    NOW = 2_000_000_000.0
+    # A wired */5 cron: stale threshold = max(2h floor, 3×300s) = 2h.
+    WIRED = ("*/5 * * * * /opt/job.py >/dev/null 2>&1; "
+             "/opt/meshforge/scripts/cron_verdict.sh myjob $?\n")
+
+    def _v(self, name, status, age_s):
+        import datetime
+        ts = self.NOW - age_s
+        iso = datetime.datetime.fromtimestamp(
+            ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return f"{iso} {name} {status}\n"
+
+    def _fire(self, tmp_path, **kw):
+        """Run twice (2-tick debounce) and return the 2nd result."""
+        sp = str(tmp_path / "cron_debounce.json")
+        probe_cron_verdict_stale(state_path=sp, now=self.NOW, **kw)
+        return probe_cron_verdict_stale(state_path=sp, now=self.NOW, **kw)
+
+    def test_signal_class_registered(self):
+        assert "cron_verdict_stale" in SIGNAL_CLASSES
+
+    def test_no_wired_crons_is_inert(self, tmp_path):
+        """crontab with jobs but none cron_verdict.sh-wired → None (opt-in)."""
+        sig = self._fire(
+            tmp_path,
+            crontab_text="*/5 * * * * /opt/job.py >/dev/null 2>&1\n",
+            verdicts_text="")
+        assert sig is None
+
+    def test_orphan_verdict_ignored(self, tmp_path):
+        """A FAIL verdict whose name is NOT a wired cron (the diag24h_watchdog
+        shape) must not fire while the wired cron is healthy — orphan filter."""
+        verdicts = (self._v("myjob", "OK", 60)
+                    + "2026-06-06T20:09:40Z diag24h_watchdog FAIL(1)\n")
+        sig = self._fire(tmp_path, crontab_text=self.WIRED, verdicts_text=verdicts)
+        assert sig is None
+
+    def test_wired_fail_fires_degraded(self, tmp_path):
+        sig = self._fire(tmp_path, crontab_text=self.WIRED,
+                         verdicts_text=self._v("myjob", "FAIL(1)", 60))
+        assert sig is not None
+        assert sig.cls == "cron_verdict_stale"
+        assert sig.severity == "degraded"
+        assert any("myjob" in f for f in sig.extra["failed"])
+
+    def test_wired_stale_fires(self, tmp_path):
+        # */5 threshold is 2h; a 10000s-old OK verdict is silent.
+        sig = self._fire(tmp_path, crontab_text=self.WIRED,
+                         verdicts_text=self._v("myjob", "OK", 10000))
+        assert sig is not None
+        assert any("myjob" in s for s in sig.extra["stale"])
+
+    def test_wired_never_ran_fires(self, tmp_path):
+        sig = self._fire(tmp_path, crontab_text=self.WIRED, verdicts_text="")
+        assert sig is not None
+        assert any("never" in s for s in sig.extra["stale"])
+
+    def test_all_wired_fresh_ok_is_none(self, tmp_path):
+        sig = self._fire(tmp_path, crontab_text=self.WIRED,
+                         verdicts_text=self._v("myjob", "OK", 60))
+        assert sig is None
+
+    def test_unobservable_none(self, tmp_path):
+        sig = self._fire(tmp_path, crontab_text="", verdicts_text="")
+        assert sig is None
+
+    def test_debounce_first_tick_silent(self, tmp_path):
+        """First stale sighting is silent (streak 1 < 2); second fires."""
+        sp = str(tmp_path / "d.json")
+        first = probe_cron_verdict_stale(
+            crontab_text=self.WIRED, verdicts_text="", now=self.NOW, state_path=sp)
+        assert first is None
+        assert json.loads(Path(sp).read_text())["streak"] == 1
+        second = probe_cron_verdict_stale(
+            crontab_text=self.WIRED, verdicts_text="", now=self.NOW, state_path=sp)
+        assert second is not None
+
+    def test_heal_clears_streak(self, tmp_path):
+        """A clean tick resets the streak so a later lone stale is re-debounced."""
+        sp = str(tmp_path / "d.json")
+        probe_cron_verdict_stale(crontab_text=self.WIRED, verdicts_text="",
+                                 now=self.NOW, state_path=sp)            # streak 1
+        probe_cron_verdict_stale(crontab_text=self.WIRED,
+                                 verdicts_text=self._v("myjob", "OK", 60),
+                                 now=self.NOW, state_path=sp)            # heal → 0
+        assert json.loads(Path(sp).read_text())["streak"] == 0
+
+    def test_cron_max_interval(self):
+        assert _cron_max_interval("*/5 * * * *") == 300.0
+        assert _cron_max_interval("7 */2 * * *") == 7200.0
+        assert _cron_max_interval("23 * * * *") == 3600.0
+        assert _cron_max_interval("13 3 * * *") == 86400.0
+        assert _cron_max_interval("11 2 * * 0") == 604800.0
+        assert _cron_max_interval("@daily") == 86400.0
+        assert _cron_max_interval("@reboot") == float("inf")
+        assert _cron_max_interval("garbage") == 26 * 3600.0
