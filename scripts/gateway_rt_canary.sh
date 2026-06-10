@@ -6,8 +6,14 @@
 # meshtastic queue row) and records the outcome via cron_verdict.sh so a
 # silent canary is itself a caught failure (probe_cron_verdict_stale, #78).
 #
-# Crontab idiom (hourly, offset from other organs):
-#   23 * * * * /opt/meshforge/scripts/gateway_rt_canary.sh >/dev/null 2>&1
+# Crontab idiom (hourly, offset from other organs). The literal
+# `cron_verdict.sh gateway_rt_canary` MUST appear in the crontab line —
+# probe_cron_verdict_stale (#78) detects wiring by regex over the
+# crontab, not by what a wrapper does internally:
+#   23 * * * * /opt/meshforge/scripts/gateway_rt_canary.sh >/dev/null 2>&1 || /opt/meshforge/scripts/cron_verdict.sh gateway_rt_canary FAIL wrapper_crashed
+# This wrapper writes the detailed verdict itself on EVERY path and exits
+# 0 once written, so the crontab fallback fires only when the wrapper
+# never ran at all (deleted file, bad pull, set -u crash).
 #
 # Knobs (env):
 #   CANARY_PEER          lab_peers name of the echo target
@@ -56,4 +62,7 @@ case "$status" in
 esac
 
 "$REPO_ROOT/scripts/cron_verdict.sh" gateway_rt_canary "$status" "peer=$PEER $detail"
-exit "$rc"
+# Exit 0 — the verdict line above carries the truth; nonzero is reserved
+# for "wrapper never wrote a verdict" so the crontab `||` fallback can't
+# overwrite a detailed FAIL/CONCERN with a bare wrapper_crashed line.
+exit 0
