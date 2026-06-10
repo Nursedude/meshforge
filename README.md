@@ -13,7 +13,7 @@
   <a href="https://github.com/Nursedude/meshforge"><img src="https://img.shields.io/badge/version-0.6.1--beta-blue.svg" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green.svg" alt="License"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.9+-yellow.svg" alt="Python"></a>
-  <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-5839%20passing-brightgreen.svg" alt="Tests"></a>
+  <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-6318%20passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 <p align="center">
@@ -269,7 +269,7 @@ These features have been used in actual mesh deployments with physical radios an
 
 | Category | Capabilities |
 |----------|-------------|
-| **TUI Interface** | Installer, service control, device config wizard, gateway config, diagnostics — 93 handlers via registry pattern |
+| **TUI Interface** | Installer, service control, device config wizard, gateway config, diagnostics — 76 handlers via registry pattern |
 | **Radio Management** | Install/configure meshtasticd, LoRa presets, channels, SPI/USB auto-detect |
 | **RF Engineering** | Link budget, Fresnel zone, path loss, site planning, space weather (NOAA), Cython-optimized |
 | **AI Diagnostics** | Offline knowledge base (20+ topics), rule-based troubleshooting, confidence scoring |
@@ -289,7 +289,7 @@ Code works in testing but hasn't been validated in real-world deployments with a
 | Category | Capabilities | Notes |
 |----------|-------------|-------|
 | **Radio Failover** | Dual-radio state machine, automatic TX switchover at >25% channel utilization, anti-flap, HTTP health polling | Needs dual meshtasticd |
-| **Dual-radio mesh_bridge serial** | Cross-preset bridge (LF HAT + ST USB) via `connection_type: "serial"` on secondary — code merged + unit-tested, live-probed on moc's Heltec | Needs sustained cross-preset traffic to validate |
+| **Dual-radio mesh_bridge serial** | Cross-preset bridge (LF HAT + ST USB) via `connection_type: "serial"` on secondary — code merged + unit-tested, live-probed on a fleet box's Heltec | Needs sustained cross-preset traffic to validate |
 | **MQTT Monitoring** | Nodeless mesh observation, protobuf decode, telemetry tracking, congestion alerts | Needs real MQTT traffic |
 | **Coverage Maps** | Interactive Folium maps, SNR-based link quality, offline tile caching | **Priority QA target** — needs GPS position data |
 | **Live NOC Map** | Browser view with WebSocket updates, node markers, signal heatmap | **Priority QA target** — needs running bridge |
@@ -368,9 +368,20 @@ MeshForge retains MeshCore as an optional gateway handler.
 | Fleet-sync classifier | `scripts/fleet_sync.sh` skips daemon restarts on docs-only commits |
 | Memory persistence + mirror | Private GitHub backup of operator's Claude memory with secrets-grep gate |
 
-**Reliability arc (Issues #58-#69, 2026-05-18 → 2026-05-20)**
+**Reliability arc (Issues #58–#80, 2026-05-18 → 2026-06-09)**
 
 A class of "service running but not serving" failures was identified across the fleet — hardened systemd sandboxes failing silently, single-thread `socketserver` deadlocks during shutdown, default-value drift defeating bumps, rnsd RPC fragility wedging map server main thread, and foreign daemons claiming RNS shared-instance listeners. Each closed in code (preflight, audit, or refusal-to-start) with a regression-pinning test against the actual incident shape. Full ledger in `.claude/foundations/persistent_issues.md`.
+
+**Shipped since v0.6.0**
+
+| Feature | Notes |
+|---------|-------|
+| RNS/LXMF maintained forks | RNS and LXMF are MeshForge-maintained hard forks ([Nursedude/reticulum](https://github.com/Nursedude/reticulum), [Nursedude/lxmf](https://github.com/Nursedude/lxmf)) pinned by tag + SHA in `requirements/rns.txt` — rnsd RPC fragility now fixed at the source (wire format and crypto unchanged; fully interoperable with stock RNS) |
+| Watchdog probe layer | One probe per field-learned failure class (wedged RPC, fd leaks, permission/role/version drift, channel silence, stale cron verdicts…); signals flow to mini-dudeai briefs and pages |
+| mini-dudeai hardening (Issues #79/#80) | Deploy gap closed, memory guards + rotation, self-probes, hold-don't-lie edge semantics — see `.claude/rules/honest_failure_modes.md` |
+| Gateway delivery confirmation (Issue #74) | Meshtastic ROUTING_APP ACK consumption in both bridge modes (TCP + MQTT `/e/` ServiceEnvelope) — honest CONFIRMED/DROPPED instead of "sent"; gated off by default |
+| 1,500-line file-split arc complete | Every source file under the 1,500-line maintainability threshold (facade-hub/mixin splits across watchdog, gateway, and map modules) |
+| Dependabot auto-merge | Green dependency PRs land themselves; CI required-context gate enforced |
 
 **Currently Soaking**
 
@@ -389,8 +400,8 @@ MeshForge retains MeshCore as an optional gateway handler.
 
 | Feature | Target | Status |
 |---------|--------|--------|
-| Historical playback (Live Map) | v0.6.0 | Planned |
-| SDR spectrum analysis (RTL-SDR) | v0.6.0 | Planned — hardware dependent |
+| Historical playback (Live Map) | v0.6.x | Planned |
+| SDR spectrum analysis (RTL-SDR) | v0.6.x | Planned — hardware dependent |
 | Hardware support matrix | v0.7.0 | RAK, Heltec, uConsole AIO V2 |
 | GPS tracking + GPX export | v0.7.0 | Planned |
 | MeshForge ↔ MeshAnchor gateway | v0.8.0 | Inter-app bridging protocol |
@@ -403,7 +414,7 @@ MeshForge retains MeshCore as an optional gateway handler.
 |---------|-----------|------------|
 | **Coverage Maps** | Not yet validated with real GPS position data | Requires MQTT subscriber collecting positions |
 | **Live NOC Map** | Node trails require historical data | Enable MQTT subscriber for data collection |
-| **MeshCore** | Optional handler on main; full support moving to MeshAnchor | Field testing on alpha branch |
+| **MeshCore** | Optional handler on main; full support lives in MeshAnchor | Use [MeshAnchor](https://github.com/Nursedude/meshanchor) for MeshCore-primary |
 | **Grafana** | Dashboards require manual import | See `dashboards/README.md` for instructions |
 | **TCP:4403** | Only one client can connect | Gateway uses MQTT (v0.5.4+), TCP free for CLI |
 | **AREDN** | Correct API implemented, needs AREDN hardware | Code-ready, awaiting hardware |
@@ -411,7 +422,7 @@ MeshForge retains MeshCore as an optional gateway handler.
 
 ### Testing Reality Check
 
-MeshForge has **4,719 automated tests** across 143 files. However, automated tests
+MeshForge has **6,318 automated tests** across 193 files. However, automated tests
 validate code paths with mocks — they do not replace field testing. The following
 features have strong unit test coverage but have **not been run with real services
 and radios** in a live deployment:
@@ -776,7 +787,7 @@ src/
 │   ├── backend.py         # whiptail/dialog abstraction
 │   ├── startup_checks.py  # Environment checks + conflict resolution
 │   ├── status_bar.py      # Service status bar
-│   └── handlers/          # 93 registered command handlers
+│   └── handlers/          # 76 registered command handlers
 ├── commands/              # Command modules
 │   ├── propagation.py     # Space weather & HF propagation (NOAA primary)
 │   ├── rns.py             # RNS/Reticulum commands
@@ -785,7 +796,7 @@ src/
 │   └── ...                # gateway, hardware, messaging, diagnostics, service
 ├── plugins/               # Protocol plugins
 │   ├── eas_alerts.py      # NOAA/NWS/FEMA emergency alerts
-│   ├── meshcore.py        # MeshCore plugin (alpha branch)
+│   ├── meshcore.py        # MeshCore plugin (optional gateway handler)
 │   └── mqtt_bridge.py     # MQTT bridge plugin
 ├── gateway/               # Multi-mesh bridge
 │   ├── rns_bridge.py      # Meshtastic ↔ RNS transport
@@ -815,14 +826,18 @@ src/
 │   ├── uconsole.py        # uConsole AIO V2 hardware profile
 │   ├── aredn.py           # AREDN mesh client
 │   ├── paths.py           # Sudo-safe path resolution
+│   ├── watchdog_runner.py # Watchdog: one probe per field-learned failure class
 │   └── ...                # metrics, webhooks, topology, device_backup, wifi_ap, etc.
+├── mini_dudeai/           # Stdlib-only rule-loop agent (see AI Intelligence)
 ├── standalone.py          # Zero-dependency RF tools
 └── __version__.py         # Version tracking
 
 dashboards/                # Grafana monitoring dashboards
 ├── meshforge-overview.json  # Health, services, queues
 ├── meshforge-nodes.json     # Per-node RF metrics
-└── meshforge-gateway.json   # Gateway bridge status
+├── meshforge-gateway.json   # Gateway bridge status
+├── meshforge-infinity.json  # JSON API via Infinity plugin (no Prometheus required)
+└── meshforge-influxdb.json  # Node trends + signal quality via InfluxDB
 
 templates/
 └── gateway-pair/          # Multi-preset bridging templates
@@ -881,6 +896,14 @@ CLI (`--set lora.modem_preset`, `--set lora.channel_num`), not config.d.
 
 ### Reticulum
 
+RNS and LXMF are installed from MeshForge-maintained forks
+([Nursedude/reticulum](https://github.com/Nursedude/reticulum),
+[Nursedude/lxmf](https://github.com/Nursedude/lxmf)), pinned by tag + SHA in
+`requirements/rns.txt`. The forks carry reliability fixes for rnsd RPC
+fragility (bounded connects, RPC recv timeouts, bounded shutdown) found in
+fleet operation; the wire format and crypto are unchanged, so they
+interoperate fully with stock RNS networks.
+
 Auto-deploys a working config from `templates/reticulum.conf`:
 - AutoInterface (LAN discovery)
 - Meshtastic Interface on `127.0.0.1:4403`
@@ -914,6 +937,8 @@ Pre-built dashboards are available in `dashboards/`:
 | `meshforge-overview.json` | Health scores, service status, message queues |
 | `meshforge-nodes.json` | Per-node SNR, RSSI, battery metrics |
 | `meshforge-gateway.json` | Gateway connections, message flow |
+| `meshforge-infinity.json` | JSON API via Grafana Infinity plugin (no Prometheus required) |
+| `meshforge-influxdb.json` | Node trends, signal quality, message activity (InfluxDB) |
 
 **Setup Requirements**:
 1. Install Prometheus and Grafana separately
@@ -1002,28 +1027,28 @@ connection (port 4403):
 
 ### Test Coverage
 
-**4,719 tests** across 143 test files (selected high-volume files below):
+**6,318 tests** across 193 test files (selected high-volume files below):
 
 | Test File | Tests | Covers |
 |-----------|-------|--------|
-| `test_rns_bridge.py` | 140 | Core bridge: routing, circuit breaker, message processing, callbacks, lifecycle |
+| `test_rns_bridge.py` | 317 | Core bridge: routing, circuit breaker, message processing, callbacks, lifecycle |
 | `test_rns_transport.py` | 97 | Packet fragmentation, reassembly, transport stats, connection management |
 | `test_rns_status_parser.py` | 56 | RNS status output parsing, edge cases |
 | `test_meshtastic_protobuf.py` | 74 | Protobuf HTTP client, device config, channel management |
-| `test_meshtastic_handler.py` | 57 | Meshtastic connection, message handling, node tracking |
-| `test_message_queue.py` | 72 | Persistent SQLite queue, retry policy, dead letter, overflow shedding |
-| `test_node_tracker.py` | 68 | Unified node tracking, RNS + Meshtastic state management |
-| `test_status_bar.py` | 70 | TUI status bar rendering, health state display |
-| `test_mqtt_robustness.py` | 66 | MQTT reconnection, message loss recovery, broker failover |
-| `test_commands.py` | 61 | CLI command handlers, output parsing |
-| `test_bridge_health.py` | 55 | Gateway health monitoring, circuit breaker patterns |
+| `test_meshtastic_handler.py` | 78 | Meshtastic connection, message handling, node tracking |
+| `test_message_queue.py` | 111 | Persistent SQLite queue, retry policy, dead letter, overflow shedding |
+| `test_node_tracker.py` | 73 | Unified node tracking, RNS + Meshtastic state management |
+| `test_status_bar.py` | 76 | TUI status bar rendering, health state display |
+| `test_mqtt_robustness.py` | 68 | MQTT reconnection, message loss recovery, broker failover |
+| `test_commands.py` | 64 | CLI command handlers, output parsing |
+| `test_bridge_health.py` | 57 | Gateway health monitoring, circuit breaker patterns |
 | `test_reconnect.py` | 45 | Exponential backoff, jitter, slow start recovery, thread safety |
 | `test_rf.py` | 107 | RF calculations: haversine, FSPL, Fresnel, link budget, signal classification |
 | `test_deployment_profiles.py` | 31 | Deployment profile system (5 profiles: radio_maps, monitor, meshcore, gateway, full) |
 | `test_startup_health.py` | 20 | Startup health checks, service verification |
 | `test_compliance.py` | 13 | HAM compliance validation, encryption modes |
 
-*Note: Test suite was trimmed from 4,017 to 1,411 in v0.5.4 to focus on gateway-essential coverage. Since then it has grown to 4,719 across 143 files as new features and the Issues #58-#69 reliability arc shipped with regression-pinning tests. All tests use mocked external services — field validation with real hardware is a separate QA track.*
+*Note: Test suite was trimmed from 4,017 to 1,411 in v0.5.4 to focus on gateway-essential coverage. Since then it has grown to 6,318 across 193 files as new features and the Issues #58–#80 reliability arc shipped with regression-pinning tests. All tests use mocked external services — field validation with real hardware is a separate QA track.*
 
 ```bash
 python3 -m pytest tests/ -v            # Run all tests
@@ -1033,7 +1058,7 @@ python3 -m pytest tests/test_rns_bridge.py -v  # Gateway bridge tests only
 
 ### Auto-Review
 
-Auto-review system scans 285 files for security, reliability, and performance issues:
+Auto-review system scans the `src/` tree (~470 Python files) for security, reliability, and performance issues:
 
 ```bash
 cd src && python3 -c "
@@ -1058,6 +1083,11 @@ print(f'Issues: {report.total_issues}, Files scanned: {report.total_files_scanne
 | MF008 | No raw `systemctl` for service state — use `service_check` | Active monitoring |
 | MF009 | `RNS.Reticulum()` must include `configdir=` parameter | Active monitoring |
 | MF010 | No `time.sleep()` in daemon loops — use `_stop_event.wait()` | Active monitoring |
+| MF013 | No raw `sqlite3.connect()` — use `connect_tuned()` + `DBSpec` inventory | Active monitoring |
+| MF014/MF015 | No operator-specific values in source; no LAN IPs in published docs | Active monitoring |
+| MF017 | systemd `ReadWritePaths=` must cover every dir the service writes | Active monitoring |
+| MF019 | `RNS.Reticulum()` only via the `open_reticulum()` chokepoint | Active monitoring |
+| MF021 | mini-dudeai engine stays observation-only (no subprocess/systemctl) | Active monitoring |
 
 **Reliability patterns** (inspired by [Raspberry Pi systemd best practices](https://www.thedigitalpictureframe.com/ultimate-guide-systemd-autostart-scripts-raspberry-pi/)):
 - Services use `Restart=on-failure` with `RestartSec=5` for auto-recovery
@@ -1070,7 +1100,7 @@ print(f'Issues: {report.total_issues}, Files scanned: {report.total_files_scanne
 - Shared connection manager prevents TCP:4403 client contention
 - Exponential backoff reconnection (1s → 2s → 4s → ... → 30s max)
 - Canonical logging via `setup_logging()` — all 9 `basicConfig()` calls consolidated
-- Handler registry pattern: all 68 TUI handlers use registry dispatch (mixin inheritance fully replaced)
+- Handler registry pattern: all 76 TUI handlers use registry dispatch (mixin inheritance fully replaced)
 - Connection failure logs upgraded to WARNING level for visibility (cleanup errors stay DEBUG)
 
 ---
@@ -1096,7 +1126,7 @@ See [CLAUDE.md](CLAUDE.md) for details.
 
 | Branch | Version | Focus |
 |--------|---------|-------|
-| `main` | `0.5.5-beta` | Meshtastic-primary NOC, production use |
+| `main` | `0.6.1-beta` | Meshtastic-primary NOC, production use |
 
 **Sister project:** [MeshAnchor](https://github.com/Nursedude/meshanchor) is the
 MeshCore-primary NOC — extracted from this repo on 2026-04-01.
@@ -1111,7 +1141,9 @@ MeshCore-primary NOC — extracted from this repo on 2026-04-01.
 - **MeshForge** for Meshtastic + RNS operation
 - **[MeshAnchor](https://github.com/Nursedude/meshanchor)** if MeshCore is your primary radio
 
-Feature branches use `claude/` prefix, merged via PR to main.
+Development lands directly on `main` (solo-dev workflow); dependency bumps
+arrive as Dependabot PRs that auto-merge once CI is green. The old alpha
+branch is archived as tag `alpha-archived`.
 
 ```bash
 git clone https://github.com/Nursedude/meshforge.git
