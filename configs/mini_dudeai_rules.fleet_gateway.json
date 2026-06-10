@@ -444,6 +444,19 @@
       },
       "cooldown_s": 21600,
       "annotation": "Issue #79 \u2014 MEMORY.md crept over the ~24KB context-load limit; sessions silently partial-load the index. Remedy: demote older/shipped entries to MEMORY_ARCHIVE.md (mini_dudeai.memory_apply.demote_memory). Side-effect-free escalation; NO ntfy page."
+    },
+    {
+      "id": "kernel_reboot_pending_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "kernel_reboot_pending",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "2026-06-09 version-updates arc \u2014 a newer same-flavor kernel is installed under /lib/modules than the running one (or /var/run/reboot-required exists); moc1 ran 6.12.75 for days with 6.18.33 installed and nothing paged. Fix: schedule a clean reboot (planned reboots through clean shutdown record boot_health clean-exit). Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
     }
   ]
 }

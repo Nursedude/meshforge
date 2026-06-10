@@ -1,7 +1,8 @@
 """Watchdog probes — declared-state vs live-state drift failure shapes.
 
 Foundation perms drift, MeshForge<->MeshAnchor parity drift, RNS fork-pin
-version drift, role drift, MQTT root drift (#77), cron verdict stale (#78).
+version drift, role drift, MQTT root drift (#77), cron verdict stale (#78),
+kernel reboot pending (2026-06-09 version-updates arc).
 Part of the ``watchdog_probes`` split (2026-06-09) — import via the
 ``utils.watchdog_probes`` hub, not from here.
 """
@@ -835,5 +836,159 @@ def probe_cron_verdict_stale(
         )
     except Exception:
         return None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Probe: kernel reboot pending (2026-06-09 version-updates arc — the
+# 6.12.75-straggler guard: moc/moc1/moc3/meshanchor-server silently ran
+# an old kernel for days while a newer one sat installed; nothing paged)
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_KERNEL_REBOOT_DEBOUNCE_PATH = "/var/lib/meshforge/kernel_reboot_debounce.json"
+
+# "6.12.75+rpt-rpi-2712" → ("6.12.75", "+rpt-rpi-2712")
+# "6.8.0-1057-raspi"     → ("6.8.0", "-1057-raspi")
+_KERNEL_RELEASE_RE = re.compile(r"^(\d+(?:\.\d+)+)(.*)$")
+# Ubuntu/Debian build segment immediately after the dotted core: "-1057-raspi"
+# → build 1057, flavor remainder "-raspi". Trailing "(?:[-+.].*)?$" ensures the
+# digits form a whole segment ("-1057raspi" does NOT split).
+_KERNEL_BUILD_RE = re.compile(r"^-(\d+)((?:[-+.].*)?)$")
+
+
+def _parse_kernel_release(release) -> Optional[Tuple[Tuple[int, ...], str]]:
+    """Split a kernel release string into (comparable numeric tuple, flavor).
+
+    The numeric tuple is the dotted core plus any Ubuntu-style ``-NNN`` build
+    segments that follow it (``6.8.0-1057-raspi`` → ``(6, 8, 0, 1057)``); the
+    flavor is everything left over (``-raspi`` / ``+rpt-rpi-2712``). RPi boxes
+    install MULTIPLE flavors side by side (rpi-v8 AND rpi-2712), so ordering is
+    only meaningful between identical flavors — callers must never compare
+    across flavors. Returns None on anything unparseable (a module dir that
+    fails to parse is SKIPPED by the caller, never treated as newer or older).
+    """
+    if not isinstance(release, str):
+        return None
+    m = _KERNEL_RELEASE_RE.match(release.strip())
+    if m is None:
+        return None
+    try:
+        nums = [int(x) for x in m.group(1).split(".")]
+    except ValueError:
+        return None
+    rest = m.group(2)
+    while True:
+        bm = _KERNEL_BUILD_RE.match(rest)
+        if bm is None:
+            break
+        nums.append(int(bm.group(1)))
+        rest = bm.group(2)
+    return tuple(nums), rest
+
+
+def probe_kernel_reboot_pending(
+    *,
+    modules_dir: str = "/lib/modules",
+    reboot_required_path: str = "/var/run/reboot-required",
+    running_release: Optional[str] = None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """Fire when this box is running an older kernel than it has installed.
+
+    The 2026-06-09 version-updates arc found moc/moc1/moc3/meshanchor-server
+    silently running kernel 6.12.75 while 6.18.x was installed or available —
+    moc1 had 6.18.33 INSTALLED but not running for days, and nothing paged.
+    Reboot pending = EITHER ``/var/run/reboot-required`` exists (Ubuntu boxes)
+    OR a NEWER **same-flavor** kernel sits under ``/lib/modules`` than the one
+    in ``os.uname().release``. Flavor discipline is load-bearing: RPi boxes
+    install rpi-v8 AND rpi-2712 simultaneously, so the comparison runs ONLY
+    against same-flavor entries (see ``_parse_kernel_release``).
+
+    Read-only, sandbox-safe (no sudo — the watchdog's NoNewPrivileges sandbox
+    forbids it; ``/lib/modules`` and the flag file are world-readable anyway).
+
+    Honest failure modes: ``/lib/modules`` unreadable/empty, the running
+    release unparseable, or no same-flavor sibling entries → that leg is
+    indeterminate (never false-alarm) while the reboot-required-file leg still
+    works independently; unparseable module dirs are skipped. Observed-healthy
+    AND indeterminate paths both reset the debounce streak (mirrors
+    ``probe_role_drift``). 2-tick debounce rides out a tick that lands mid-
+    upgrade (dpkg unpacking the new modules tree). Severity ``degraded``: the
+    box serves fine — it is running known-stale code until a reboot.
+    """
+    sp = state_path or DEFAULT_KERNEL_REBOOT_DEBOUNCE_PATH
+
+    # Leg A — distro reboot-required flag (independent of kernel parsing).
+    try:
+        reboot_required = os.path.exists(reboot_required_path)
+    except OSError:
+        reboot_required = False
+
+    # Leg B — newer same-flavor kernel installed under /lib/modules.
+    if running_release is None:
+        running_release = os.uname().release
+    running_parsed = _parse_kernel_release(running_release)
+
+    newest_installed: Optional[str] = None
+    newer_found = False
+    if running_parsed is not None:
+        run_nums, run_flavor = running_parsed
+        try:
+            entries = [e.name for e in os.scandir(modules_dir) if e.is_dir()]
+        except OSError:
+            entries = []  # unreadable → leg indeterminate, never an alarm
+        best: Optional[Tuple[Tuple[int, ...], str]] = None
+        for name in entries:
+            parsed = _parse_kernel_release(name)
+            if parsed is None:
+                continue  # unparseable dir is skipped, not newer/older
+            nums, flavor = parsed
+            if flavor != run_flavor:
+                continue  # different flavor (rpi-v8 vs rpi-2712) — never compare
+            if best is None or nums > best[0]:
+                best = (nums, name)
+        if best is not None:
+            newest_installed = best[1]
+            newer_found = best[0] > run_nums
+
+    if not reboot_required and not newer_found:
+        # Observed-healthy (running == newest same-flavor, no flag) and the
+        # indeterminate shapes (unreadable/empty modules dir, unparseable
+        # release, no same-flavor sibling) all land here: reset, stay silent.
+        _save_parity_streak(sp, 0)
+        return None
+
+    streak = _load_parity_streak(sp) + 1
+    _save_parity_streak(sp, streak)
+    if streak < debounce_ticks:
+        return None  # pending seen, not yet confirmed across consecutive ticks
+
+    reasons = []
+    if newer_found and newest_installed:
+        reasons.append(
+            f"running {running_release} but {newest_installed} is installed "
+            f"under {modules_dir}"
+        )
+    if reboot_required:
+        reasons.append(f"{reboot_required_path} flag present")
+    detail = (
+        f"Kernel reboot pending — {'; '.join(reasons)} | confirmed over "
+        f"{streak} consecutive ticks | the 2026-06-09 version-updates arc "
+        f"found boxes silently running a stale kernel for days. Fix: schedule "
+        f"a clean reboot (planned reboots through clean shutdown record "
+        f"boot_health clean-exit)."
+    )
+    return Signal(
+        cls="kernel_reboot_pending",
+        subject=running_release,
+        severity="degraded",
+        detail=detail,
+        extra={
+            "running": running_release,
+            "newest_installed": newest_installed,
+            "reboot_required_file": reboot_required,
+            "debounce_streak": streak,
+        },
+    )
 
 

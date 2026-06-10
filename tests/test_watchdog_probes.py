@@ -37,7 +37,9 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_channel_feed_dark,
     probe_mqtt_root_drift,
     probe_cron_verdict_stale,
+    probe_kernel_reboot_pending,
     _cron_max_interval,
+    _parse_kernel_release,
     probe_history_write_failure,
     probe_rules_seed_drift,
     probe_memory_index_oversize,
@@ -105,6 +107,7 @@ def test_signal_classes_closed_enum_is_documented():
         "history_write_stalled",        # mini-dudeai audit #8
         "rules_seed_drift",             # mini-dudeai audit #6
         "memory_index_oversize",        # mini-dudeai audit #2
+        "kernel_reboot_pending",        # 2026-06-09 version-updates arc
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -1607,6 +1610,172 @@ def test_plan_role_actions_real_importlib_load():
     # And it actually reports a known drift: a role wanting a unit enabled while
     # the plan would change it surfaces an enable/disable/mask verb.
     assert all(hasattr(a, "verb") for a in actions)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-06-09 — kernel_reboot_pending (version-updates arc: the
+# 6.12.75-straggler guard — newer same-flavor kernel installed, not running)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _krb_setup(tmp_path, installed=()):
+    """Create a fake /lib/modules with the given release dirs; return common
+    kwargs (modules dir, absent reboot-required path, isolated streak file)."""
+    mods = tmp_path / "modules"
+    mods.mkdir()
+    for name in installed:
+        (mods / name).mkdir()
+    return {
+        "modules_dir": str(mods),
+        "reboot_required_path": str(tmp_path / "reboot-required"),
+        "state_path": str(tmp_path / "krb.json"),
+    }
+
+
+def test_parse_kernel_release_shapes():
+    """RPi flavor = the '+...' suffix wholesale (trailing 2712 is a NAME, not a
+    build number); Ubuntu '-NNN' build segments join the comparable tuple."""
+    assert _parse_kernel_release("6.12.75+rpt-rpi-2712") == (
+        (6, 12, 75), "+rpt-rpi-2712")
+    assert _parse_kernel_release("6.8.0-1057-raspi") == (
+        (6, 8, 0, 1057), "-raspi")
+    assert _parse_kernel_release("garbage") is None
+    assert _parse_kernel_release("") is None
+    assert _parse_kernel_release(None) is None
+
+
+def test_kernel_reboot_fires_on_newer_same_flavor_after_debounce(tmp_path):
+    """The moc1 shape: 6.18.33 installed, 6.12.75 running — silent on tick 1
+    (debounce), fires degraded on tick 2 with running vs newest in detail."""
+    kw = _krb_setup(tmp_path, ["6.12.75+rpt-rpi-2712", "6.18.33+rpt-rpi-2712"])
+    running = "6.12.75+rpt-rpi-2712"
+    assert probe_kernel_reboot_pending(running_release=running, **kw) is None
+    sig = probe_kernel_reboot_pending(running_release=running, **kw)
+    assert sig is not None
+    assert sig.cls == "kernel_reboot_pending"
+    assert sig.severity == "degraded"
+    assert sig.subject == running
+    assert sig.issue_ref is None
+    assert "6.12.75+rpt-rpi-2712" in sig.detail
+    assert "6.18.33+rpt-rpi-2712" in sig.detail
+    assert "clean reboot" in sig.detail
+    assert sig.extra == {
+        "running": running,
+        "newest_installed": "6.18.33+rpt-rpi-2712",
+        "reboot_required_file": False,
+        "debounce_streak": 2,
+    }
+
+
+def test_kernel_reboot_silent_when_running_is_newest(tmp_path):
+    """Running == newest same-flavor (older siblings still installed) →
+    observed-healthy: silent every tick, streak reset to 0."""
+    kw = _krb_setup(tmp_path, ["6.12.75+rpt-rpi-2712", "6.18.33+rpt-rpi-2712"])
+    for _ in range(3):
+        assert probe_kernel_reboot_pending(
+            running_release="6.18.33+rpt-rpi-2712", **kw) is None
+    assert json.loads(Path(kw["state_path"]).read_text())["streak"] == 0
+
+
+def test_kernel_reboot_none_when_modules_dir_empty_or_unreadable(tmp_path):
+    """Empty or missing /lib/modules → indeterminate (never false-alarm);
+    streak resets to 0 rather than accumulating."""
+    kw = _krb_setup(tmp_path)  # empty modules dir
+    assert probe_kernel_reboot_pending(
+        running_release="6.12.75+rpt-rpi-2712", **kw) is None
+    kw["modules_dir"] = str(tmp_path / "nonexistent")
+    for _ in range(3):
+        assert probe_kernel_reboot_pending(
+            running_release="6.12.75+rpt-rpi-2712", **kw) is None
+    assert json.loads(Path(kw["state_path"]).read_text())["streak"] == 0
+
+
+def test_kernel_reboot_no_false_alarm_on_different_flavor(tmp_path):
+    """The Pi multi-flavor trap: a numerically newer rpi-v8 entry must NEVER
+    fire against a running rpi-2712 kernel — flavors are not comparable."""
+    kw = _krb_setup(tmp_path, [
+        "6.12.75+rpt-rpi-2712",
+        "6.18.33+rpt-rpi-v8",  # newer, but the OTHER flavor
+    ])
+    for _ in range(3):
+        sig = probe_kernel_reboot_pending(
+            running_release="6.12.75+rpt-rpi-2712", **kw)
+        assert sig is None
+
+
+def test_kernel_reboot_none_when_no_same_flavor_sibling(tmp_path):
+    """Only foreign-flavor entries installed → no same-flavor population to
+    judge → indeterminate, silent (the running dir itself may be purged)."""
+    kw = _krb_setup(tmp_path, ["6.18.33+rpt-rpi-v8"])
+    assert probe_kernel_reboot_pending(
+        running_release="6.12.75+rpt-rpi-2712", **kw) is None
+    assert probe_kernel_reboot_pending(
+        running_release="6.12.75+rpt-rpi-2712", **kw) is None
+
+
+def test_kernel_reboot_fires_on_reboot_required_file_alone(tmp_path):
+    """The Ubuntu leg works independently of the modules comparison — even
+    with an empty (indeterminate) modules dir."""
+    kw = _krb_setup(tmp_path)  # empty modules dir
+    Path(kw["reboot_required_path"]).write_text("*** System restart required ***\n")
+    running = "6.8.0-1057-raspi"
+    assert probe_kernel_reboot_pending(running_release=running, **kw) is None
+    sig = probe_kernel_reboot_pending(running_release=running, **kw)
+    assert sig is not None
+    assert sig.cls == "kernel_reboot_pending"
+    assert sig.extra["reboot_required_file"] is True
+    assert sig.extra["newest_installed"] is None
+    assert kw["reboot_required_path"] in sig.detail
+
+
+def test_kernel_reboot_ubuntu_build_number_compared(tmp_path):
+    """Ubuntu-style: same dotted core, higher -NNN build → reboot pending."""
+    kw = _krb_setup(tmp_path, ["6.8.0-1057-raspi", "6.8.0-1063-raspi"])
+    running = "6.8.0-1057-raspi"
+    assert probe_kernel_reboot_pending(running_release=running, **kw) is None
+    sig = probe_kernel_reboot_pending(running_release=running, **kw)
+    assert sig is not None
+    assert sig.extra["newest_installed"] == "6.8.0-1063-raspi"
+
+
+def test_kernel_reboot_unparseable_entries_skipped(tmp_path):
+    """A module dir that fails to parse is skipped — neither newer nor older
+    (no fire from garbage, and garbage doesn't mask a real newer kernel)."""
+    kw = _krb_setup(tmp_path, [
+        "extramodules", "build-junk",       # unparseable → skipped
+        "6.12.75+rpt-rpi-2712",
+    ])
+    running = "6.12.75+rpt-rpi-2712"
+    for _ in range(2):
+        assert probe_kernel_reboot_pending(running_release=running, **kw) is None
+    # ...and garbage doesn't hide a genuine newer same-flavor entry.
+    (Path(kw["modules_dir"]) / "6.18.33+rpt-rpi-2712").mkdir()
+    assert probe_kernel_reboot_pending(running_release=running, **kw) is None
+    sig = probe_kernel_reboot_pending(running_release=running, **kw)
+    assert sig is not None
+    assert sig.extra["newest_installed"] == "6.18.33+rpt-rpi-2712"
+
+
+def test_kernel_reboot_unparseable_running_release_silent(tmp_path):
+    """Unparseable running release → modules leg indeterminate, silent (the
+    reboot-required-file leg, absent here, is the only other evidence)."""
+    kw = _krb_setup(tmp_path, ["6.18.33+rpt-rpi-2712"])
+    assert probe_kernel_reboot_pending(
+        running_release="not-a-kernel", **kw) is None
+
+
+def test_kernel_reboot_streak_resets_after_healed_tick(tmp_path):
+    """pending → healed (rebooted) → pending restarts the debounce; a fresh
+    sighting never fires off the stale streak (mirrors role_drift)."""
+    kw = _krb_setup(tmp_path, ["6.12.75+rpt-rpi-2712", "6.18.33+rpt-rpi-2712"])
+    old, new = "6.12.75+rpt-rpi-2712", "6.18.33+rpt-rpi-2712"
+    assert probe_kernel_reboot_pending(running_release=old, **kw) is None  # streak 1
+    assert probe_kernel_reboot_pending(running_release=new, **kw) is None  # reset
+    assert probe_kernel_reboot_pending(running_release=old, **kw) is None  # debounced
+
+
+def test_kernel_reboot_signal_class_registered():
+    assert "kernel_reboot_pending" in SIGNAL_CLASSES
 
 
 # ─────────────────────────────────────────────────────────────────────

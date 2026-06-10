@@ -78,11 +78,13 @@ from utils.watchdog_probes_service import (
 from utils.watchdog_probes_drift import (
     probe_cron_verdict_stale,
     probe_foundation_drift,
+    probe_kernel_reboot_pending,
     probe_mqtt_root_drift,
     probe_parity_drift,
     probe_rns_version_drift,
     probe_role_drift,
     _cron_max_interval,
+    _parse_kernel_release,
     _plan_role_actions,
     _read_declared_root_topic,
 )
@@ -127,6 +129,7 @@ __all__ = [
     "probe_service_inactive",
     "probe_tracer_peer_unreachable",
     "probe_cron_verdict_stale",
+    "probe_kernel_reboot_pending",
     "probe_history_write_failure",
     "probe_rules_seed_drift",
     "probe_memory_index_oversize",

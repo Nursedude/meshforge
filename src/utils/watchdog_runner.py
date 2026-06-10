@@ -54,6 +54,7 @@ from utils.watchdog_probes import (
     probe_delivery_write_canary,
     probe_fd_exhaustion,
     probe_history_write_failure,
+    probe_kernel_reboot_pending,
     probe_memory_index_oversize,
     probe_phoneapi_tcp_leak,
     probe_queue_backlog,
@@ -394,6 +395,15 @@ def run_all_probes(
     # root (no sudo — sandbox); cross-references the crontab so stale ORPHAN
     # verdicts never false-alarm. INERT (None) until crons are wired — opt-in.
     sig = probe_cron_verdict_stale()
+    if sig is not None:
+        signals.append(sig)
+
+    # Kernel reboot pending (2026-06-09 version-updates arc) — a newer
+    # same-flavor kernel installed under /lib/modules than the running one,
+    # or the distro reboot-required flag. Read-only, no sudo; flavor-aware
+    # (rpi-v8 vs rpi-2712 never compared); indeterminate shapes stay silent;
+    # 2-tick debounce rides out a tick landing mid-upgrade.
+    sig = probe_kernel_reboot_pending()
     if sig is not None:
         signals.append(sig)
 
