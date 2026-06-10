@@ -8,6 +8,7 @@
 #   ~/.claude/memory/                                 (cross-repo memory)
 #   ~/.claude/projects/-opt-meshforge/memory/         (meshforge repo memory)
 #   ~/.claude/projects/-opt-meshforge-maps/memory/    (meshforge-maps repo memory)
+#   ~/.claude/skills/                                 (user-level Claude skills)
 #
 # Each sync run starts with `git add -A && git commit && git push origin main`
 # on each memory repo (no-op when nothing changed; blocks on the secrets-grep
@@ -160,7 +161,8 @@ mirror_memory_to_host() {
     for pair in \
         "$HOME/.claude/memory/|.claude/memory/|memory-global" \
         "$HOME/.claude/projects/-opt-meshforge/memory/|.claude/projects/-opt-meshforge/memory/|memory-project" \
-        "$HOME/.claude/projects/-opt-meshforge-maps/memory/|.claude/projects/-opt-meshforge-maps/memory/|memory-project-maps"
+        "$HOME/.claude/projects/-opt-meshforge-maps/memory/|.claude/projects/-opt-meshforge-maps/memory/|memory-project-maps" \
+        "$HOME/.claude/skills/|.claude/skills/|claude-skills"
     do
         src="${pair%%|*}"
         rest="${pair#*|}"
