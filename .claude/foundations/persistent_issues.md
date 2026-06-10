@@ -16,26 +16,20 @@
 RNS and LXMF are now **hard forks owned by MeshForge** (`Nursedude/reticulum`,
 `Nursedude/lxmf`), pinned in `requirements/rns.txt` by tag **and** SHA with a
 `# MF-FORK-PIN` SSOT line; `scripts/rns_version_check.py` gates the fleet on the
-`+mf.N` marker. Fleet baseline: **rns `1.2.5+mf.3` / lxmf `0.9.4+mf.0`**. This is
+`+mf.N` marker. Fleet baseline: **rns `1.2.5+mf.4` / lxmf `0.9.4+mf.0`**. This is
 the meta-resolution for the entire **rnsd-RPC fragility class** (#58/#61/#63/#68/
 #69/#72): fragility that we used to work *around* in `utils/rns_init.py` can now be
-fixed *at the source*. Phase-2 source fixes shipped: `+mf.1` #68 connect-hang,
-`+mf.2` #72 RPC-hang (see "FIXED AT SOURCE" notes below), and **`+mf.3` the
-rnsd-SIGTERM graceful-shutdown hang** — `Transport.detach_interfaces()` is bounded
-to `DETACH_TIMEOUT` (default 5s, env `RNS_DETACH_TIMEOUT`) so a busy node's SIGTERM
-teardown reaches `RNS.exit()`/`os._exit()` gracefully instead of systemd waiting
-the full `TimeoutStopSec`. **mf.3 bounds ONLY the `detach_interfaces()` hang — it
-is NOT a complete fix.** An active proof on 2026-05-30 (deliberate rnsd restart
-cycles) caught moc1 hanging the **full 15s → SIGKILL** (`result=timeout`,
-`status=9/KILL`) WITH mf.3 loaded; the `DETACH_TIMEOUT` warning never fired, so the
-hang is in a SECOND shutdown-path location mf.3's detach bound does not cover
-(likely an uninterruptible main-thread wedge before/around the SIGTERM handler, or
-downstream in `exit_handler` — only SIGKILL ends it). **Therefore the
-`rnsd.service.d/10-stop-timeout.conf` 15s cap is REQUIRED — it is the genuine cure
-for that residual hang. DO NOT RETIRE IT** (this reverses the earlier
-retire-after-soak plan; commit `0cb935d` framing is superseded). Bounding the
-second hang path at the source is a candidate **mf.4** (needs controlled
-reproduction + a live main-thread stack capture). ⚠️ Also: do NOT rapid-cycle rnsd
+fixed *at the source*. Source fixes shipped: `+mf.1` #68 connect-hang, `+mf.2` #72
+RPC-hang (see "FIXED AT SOURCE" notes below), `+mf.3` bounds `detach_interfaces()`
+(`DETACH_TIMEOUT`, default 5s) — a PARTIAL fix: a 2026-05-30 active proof still
+caught moc1 hanging the full **15s → SIGKILL** via a SECOND shutdown-path wedge the
+detach bound does not cover. **`+mf.4` (2026-06-01) is the root-cause cure for that
+second path**: `logging_lock` Lock→RLock (a failed logfile write no longer
+self-deadlocks `log()`) + signal handlers defer detach off signal context (no
+signal-reentrancy deadlock). Reproduced deterministically; canary-verified ~1s
+clean stop on moc1. **The `rnsd.service.d/10-stop-timeout.conf` 15s cap + the mf.3
+bound STAY as defense-in-depth until mf.4 is fleet-soak-proven** (commit `0cb935d`
+retire-after-soak framing stays superseded). ⚠️ Also: do NOT rapid-cycle rnsd
 restarts fleet-wide — each 15s-hang+SIGKILL plus the slow rebind opens an `@rns`
 race window for periodic RNS clients (the lab tracer), stranding rnsd as a client
 (#69-adjacent); space restarts and verify host-binding before the next.
@@ -48,7 +42,10 @@ race window for periodic RNS clients (the lab tracer), stranding rnsd as a clien
   parity (version marker, rnsd ownership, gateway/map/tracer, **public-net interop
   proof**), canary one box, then fleet-roll. Full procedure in each fork's
   `FORK.md`; governance triggers (CVE-no-upstream / wire break / activity ceases)
-  in [[project_upstream_dependency_governance_2026_05_29]].
+  in [[project_upstream_dependency_governance_2026_05_29]]. **Checked 2026-06-09**:
+  GitHub mirror still receives releases — upstream at **1.3.5** (maintenance:
+  announce-dedup, shared-instance RPC, AutoInterface roaming; no CVE/wire change)
+  → DECISION: stay on 1.2.5+mf.4; a 1.3.5 merge eval is a future dedicated arc.
 - **MeshForge-side guards STAY** (`rns_init.py` probe, MF009/MF019 lint, watchdog
   `os._exit` backstop) as defense-in-depth — remove a backstop only after its
   in-library fix has held over a long soak.
