@@ -102,6 +102,46 @@ DEFAULT_WAIT_FOR_RNSD_TIMEOUT_S = float(
 _RNS_LISTENER_ALLOWED_PATTERNS = ("rnsd", "reticulum")
 
 
+def cmdline_is_rnsd_shaped(cmdline: str) -> bool:
+    """STRICT owner test: is this cmdline rnsd itself (the fleet's designated
+    @rns host)?
+
+    Substring-over-cmdline is NOT enough here — every RNS client on this
+    fleet is launched with ``--rnsconfig /etc/reticulum``, so the loose
+    ``"reticulum" in cmdline`` test allowlisted the 2026-06-09 nomadnet
+    hijacker and kept ``probe_rns_namespace_collision`` silent through a
+    real 5-minute inversion (3 boxes struck in one reboot pass). Only the
+    PROGRAM identity counts: argv[0]/argv[1] basename, the ``-m`` module
+    form, or an rnsd pipx venv path.
+    """
+    if not cmdline:
+        return False
+    tokens = cmdline.split()
+    for tok in tokens[:2]:
+        base = tok.rsplit("/", 1)[-1].lower()
+        if base == "rnsd" or base.startswith("rnsd"):
+            return True
+    if "RNS.Utilities.rnsd" in cmdline:
+        return True
+    if tokens and "/venvs/rnsd/" in tokens[0]:
+        return True
+    return False
+
+
+def cmdline_is_rns_family(cmdline: str) -> bool:
+    """LOOSE owner test: does this look like *some* RNS-protocol process
+    (rnsd, nomadnet, meshchat, a client that self-hosted)? Used by the
+    fail-loud preflight, whose job is only to catch NON-RNS squatters
+    (the EOFError-on-first-RPC class) — an RNS-family wrong host keeps
+    clients functional and is the PROBE's (paged) business, not a reason
+    to refuse startup. Preserves the historical allowlist semantics.
+    """
+    if cmdline_is_rnsd_shaped(cmdline):
+        return True
+    low = (cmdline or "").lower()
+    return any(pat in low for pat in _RNS_LISTENER_ALLOWED_PATTERNS)
+
+
 # ---------------------------------------------------------------- listener owner
 
 
@@ -205,7 +245,7 @@ def check_rns_listener_owner(instance_name: str) -> Optional[str]:
             # diagnostic possible.
             cmdline = ""
         full_cmdlines[pid] = cmdline
-        if not any(pat in cmdline.lower() for pat in _RNS_LISTENER_ALLOWED_PATTERNS):
+        if not cmdline_is_rns_family(cmdline):
             suspicious.append(pid)
 
     if suspicious:

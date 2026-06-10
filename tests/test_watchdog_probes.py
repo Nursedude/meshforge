@@ -207,6 +207,87 @@ def test_rns_collision_returns_none_when_no_listener():
     assert sig is None
 
 
+# The exact 2026-06-09 moc1 incident vector (genericized per MF014): the
+# nomadnet wrapper owned @rns/default for 5 real minutes and the old
+# substring allowlist kept the probe silent — "--rnsconfig /etc/reticulum"
+# contains "reticulum", so EVERY fleet RNS client was allowlisted.
+_NOMADNET_WRAPPER_CMDLINE = (
+    b"/home/user/.local/share/pipx/venvs/nomadnet/bin/python3\x00"
+    b"/home/user/.config/meshforge/nomadnet_wrapper.py\x00"
+    b"--rnsconfig\x00/etc/reticulum\x00"
+)
+
+
+def test_rns_collision_fires_degraded_on_inverted_rns_family_owner(tmp_path):
+    """2026-06-09 moc1 vector MUST fire: RNS-family owner that is not rnsd."""
+    fake_proc = tmp_path / "1"
+    fake_proc.mkdir()
+    (fake_proc / "cmdline").write_bytes(_NOMADNET_WRAPPER_CMDLINE)
+    ss_out = _SS_FOREIGN_OWNED.replace("200825", "1")
+    with patch("utils.watchdog_probes_rns.subprocess.run",
+               side_effect=_make_subprocess_mock(ss_out)):
+        sig = probe_rns_namespace_collision(
+            "volcano", proc_root=str(tmp_path), rnsd_enabled=True,
+        )
+    assert sig is not None
+    assert sig.cls == "rns_namespace_collision"
+    assert sig.severity == "degraded"
+    assert sig.issue_ref == 69
+    assert sig.extra["tier"] == "inverted"
+    assert "stranded" in sig.detail
+    assert "nomadnet_wrapper" in sig.detail
+
+
+def test_rns_collision_inverted_silent_when_rnsd_not_enabled(tmp_path):
+    """A standalone RNS-family host is legitimate where rnsd isn't enabled."""
+    fake_proc = tmp_path / "1"
+    fake_proc.mkdir()
+    (fake_proc / "cmdline").write_bytes(_NOMADNET_WRAPPER_CMDLINE)
+    ss_out = _SS_FOREIGN_OWNED.replace("200825", "1")
+    with patch("utils.watchdog_probes_rns.subprocess.run",
+               side_effect=_make_subprocess_mock(ss_out)):
+        sig = probe_rns_namespace_collision(
+            "volcano", proc_root=str(tmp_path), rnsd_enabled=False,
+        )
+    assert sig is None
+
+
+def test_rns_collision_comm_fast_path_allows_rnsd_without_cmdline(tmp_path):
+    """ss comm == rnsd passes even when /proc/<pid>/cmdline is unreadable
+    (process table churn) — absence of cmdline must not read as foreign."""
+    ss_out = _SS_RNSD_OWNED  # comm "rnsd", pid never materialized in tmp_path
+    with patch("utils.watchdog_probes_rns.subprocess.run",
+               side_effect=_make_subprocess_mock(ss_out)):
+        sig = probe_rns_namespace_collision(
+            "volcano", proc_root=str(tmp_path), rnsd_enabled=True,
+        )
+    assert sig is None
+
+
+def test_rnsd_shaped_predicate_tiers():
+    """Pin the two-tier owner predicates to live fleet shapes."""
+    from utils.rns_init import cmdline_is_rns_family, cmdline_is_rnsd_shaped
+
+    fleet_rnsd = "/usr/bin/python3 /usr/local/bin/rnsd --config /etc/reticulum --service"
+    module_rnsd = "/usr/bin/python3 -m RNS.Utilities.rnsd --config /etc/reticulum"
+    pipx_rnsd = "/home/user/.local/share/pipx/venvs/rnsd/bin/python3 /home/user/.local/bin/rnsd"
+    nomadnet = _NOMADNET_WRAPPER_CMDLINE.replace(b"\x00", b" ").decode().strip()
+    meshchat = "/usr/bin/python3 /opt/reticulum-meshchat/meshchat.py --rnsconfig /etc/reticulum"
+    ma_daemon = "/usr/bin/python3 /opt/meshanchor/src/daemon.py start --foreground"
+
+    assert cmdline_is_rnsd_shaped(fleet_rnsd)
+    assert cmdline_is_rnsd_shaped(module_rnsd)
+    assert cmdline_is_rnsd_shaped(pipx_rnsd)
+    assert not cmdline_is_rnsd_shaped(nomadnet)
+    assert not cmdline_is_rnsd_shaped(meshchat)
+    assert not cmdline_is_rnsd_shaped(ma_daemon)
+    assert not cmdline_is_rnsd_shaped("")
+
+    assert cmdline_is_rns_family(nomadnet)   # --rnsconfig /etc/reticulum
+    assert cmdline_is_rns_family(meshchat)
+    assert not cmdline_is_rns_family(ma_daemon)
+
+
 def test_rns_collision_returns_none_when_ss_unavailable():
     """Don't false-alarm when ss is missing or hangs."""
     import subprocess as sp

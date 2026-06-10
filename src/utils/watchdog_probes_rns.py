@@ -28,20 +28,28 @@ def probe_rns_namespace_collision(
     *,
     ss_path: str = "ss",
     proc_root: str = "/proc",
+    rnsd_enabled: Optional[bool] = None,
 ) -> Optional[Signal]:
-    """Verify ``@rns/<instance>`` LISTEN is owned by an rnsd-shaped process.
+    """Verify ``@rns/<instance>`` LISTEN is owned by rnsd ITSELF.
 
-    Mirrors ``utils/rns_init.py::check_rns_listener_owner``, but
-    callable from outside an RNS-using service so the watchdog can
-    detect a foreign daemon hijack even if no MeshForge RNS client
-    has tried (and failed) to start yet.
+    Two failure tiers (2026-06-09 rewrite — the old single-tier version
+    allowlisted any cmdline containing "reticulum", which is EVERY fleet
+    RNS client via ``--rnsconfig /etc/reticulum``; it stayed silent
+    through a real 5-minute nomadnet inversion on moc1 while 3 boxes
+    were struck in one reboot pass):
 
-    Returns:
-        Signal(severity=wedge, cls=rns_namespace_collision) when the
-        listener is owned by a process whose cmdline doesn't match
-        the narrow rnsd/reticulum allowlist.
-        None on pass (or when no listener exists, or ss is missing —
-        we don't false-alarm on indeterminate state).
+    - **wedge**: owner is not even RNS-family (the EOFError-on-first-RPC
+      squatter class — original #69).
+    - **degraded**: owner is RNS-family but NOT rnsd (nomadnet/meshchat/a
+      client that self-hosted) while rnsd.service is enabled — clients
+      work, but rnsd is STRANDED as a client; if the wrong host stops,
+      every RNS client on the box EOFs. Recovery: stop the owner,
+      restart rnsd, restart the owner (it rejoins as client).
+
+    Fires nothing when rnsd.service is not enabled and the owner is
+    RNS-family (a standalone host is a legitimate deployment), when no
+    listener exists, or when ss is unavailable (indeterminate ≠ alarm).
+    ``rnsd_enabled`` is injectable for tests; None → ask systemd.
     """
     if not instance_name:
         return None
@@ -54,49 +62,78 @@ def probe_rns_namespace_collision(
         return None
 
     needle = f"@rns/{instance_name}"
-    pids: set = set()
+    owners: dict = {}  # pid -> ss comm name
     for line in proc.stdout.splitlines():
         if needle not in line:
             continue
         m = re.search(r'users:\(\("([^"]+)",pid=(\d+),', line)
         if m:
-            pids.add(int(m.group(2)))
+            owners[int(m.group(2))] = m.group(1)
 
-    if not pids:
+    if not owners:
         return None  # no listener → not a collision
 
-    allowed_patterns = ("rnsd", "reticulum")
-    suspicious: List[Tuple[int, str]] = []
-    owner_cmdlines: dict = {}
-    for pid in pids:
+    from utils.rns_init import cmdline_is_rns_family, cmdline_is_rnsd_shaped
+
+    foreign: List[Tuple[int, str]] = []
+    inverted: List[Tuple[int, str]] = []
+    for pid, comm in owners.items():
+        if comm == "rnsd":
+            continue  # ss-level comm fast-path: the designated host
         try:
             with open(f"{proc_root}/{pid}/cmdline", "rb") as fh:
                 cmdline = fh.read().replace(b"\x00", b" ").decode(
                     "utf-8", errors="replace").strip()
         except OSError:
             cmdline = ""
-        owner_cmdlines[pid] = cmdline
-        if not any(pat in cmdline.lower() for pat in allowed_patterns):
-            suspicious.append((pid, cmdline))
+        if cmdline_is_rnsd_shaped(cmdline):
+            continue
+        if cmdline_is_rns_family(cmdline):
+            inverted.append((pid, cmdline))
+        else:
+            foreign.append((pid, cmdline))
 
-    if not suspicious:
-        return None
+    if foreign:
+        pid, cmdline = foreign[0]
+        cmdline_short = cmdline[:120] or "<process exited>"
+        return Signal(
+            cls="rns_namespace_collision",
+            subject=f"@rns/{instance_name}",
+            severity="wedge",
+            detail=(
+                f"foreign daemon owns @rns/{instance_name}: "
+                f"pid={pid} cmd={cmdline_short!r}. RNS clients will EOF on "
+                f"first RPC. Recovery: sudo kill {pid}; "
+                f"sudo systemctl restart rnsd.service"
+            ),
+            issue_ref=69,
+            extra={"pid": pid, "cmdline": cmdline_short, "tier": "foreign"},
+        )
 
-    pid, cmdline = suspicious[0]
-    cmdline_short = cmdline[:120] or "<process exited>"
-    return Signal(
-        cls="rns_namespace_collision",
-        subject=f"@rns/{instance_name}",
-        severity="wedge",
-        detail=(
-            f"foreign daemon owns @rns/{instance_name}: "
-            f"pid={pid} cmd={cmdline_short!r}. RNS clients will EOF on "
-            f"first RPC. Recovery: sudo kill {pid}; "
-            f"sudo systemctl restart rnsd.service"
-        ),
-        issue_ref=69,
-        extra={"pid": pid, "cmdline": cmdline_short},
-    )
+    if inverted:
+        if rnsd_enabled is None:
+            rnsd_enabled = _rnsd_unit_enabled()
+        if not rnsd_enabled:
+            return None  # standalone RNS-family host is a legitimate deployment
+        pid, cmdline = inverted[0]
+        cmdline_short = cmdline[:120] or "<process exited>"
+        return Signal(
+            cls="rns_namespace_collision",
+            subject=f"@rns/{instance_name}",
+            severity="degraded",
+            detail=(
+                f"@rns/{instance_name} is hosted by an RNS-family process "
+                f"that is NOT rnsd: pid={pid} cmd={cmdline_short!r} — rnsd "
+                f"is stranded as a client (#69 inversion; boot race). "
+                f"Clients work but die together if this host stops. "
+                f"Recovery: stop the owner, sudo systemctl restart rnsd, "
+                f"start the owner again (it rejoins as client)."
+            ),
+            issue_ref=69,
+            extra={"pid": pid, "cmdline": cmdline_short, "tier": "inverted"},
+        )
+
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────

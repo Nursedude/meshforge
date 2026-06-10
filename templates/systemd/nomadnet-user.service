@@ -76,7 +76,11 @@ ExecStartPre=-/usr/bin/tmux kill-session -t nomadnet
 # refuse-loud, never race. (ss reads /proc/net/unix; no root needed.
 # $$ is systemd's escape for a literal $; no nested quotes — systemd's
 # backslash handling mangles \" inside ExecStart* — proven on moc.)
-ExecStartPre=/bin/sh -c 'n=0; until ss -xl | grep -q @rns/default; do n=$$((n+1)); [ $$n -ge 45 ] && exit 75; sleep 2; done'
+# The `grep -v /rpc` leg is LOAD-BEARING: rnsd binds @rns/default/rpc
+# even when stranded as a client, and an unpinned match on that socket
+# false-passed this gate on moc1's 2026-06-09 boot — nomadnet launched
+# into a host-less instance and claimed it. Wait for the MAIN listener.
+ExecStartPre=/bin/sh -c 'n=0; until ss -xl | grep @rns/default | grep -qv /rpc; do n=$$((n+1)); [ $$n -ge 45 ] && exit 75; sleep 2; done'
 
 # Launch the real TUI wrapped in a detached tmux session. The ExecStart
 # line below contains a placeholder that the MeshForge TUI substitutes
