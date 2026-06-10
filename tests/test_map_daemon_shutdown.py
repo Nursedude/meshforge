@@ -89,9 +89,16 @@ class TestHandlerDoesNotBlockCaller(unittest.TestCase):
             "Shutdown thread never ran server.stop().",
         )
 
-        # Cleanup: release the fake stop so the shutdown thread exits.
+        # Cleanup: release the fake stop so the shutdown thread exits,
+        # then JOIN it. Leaking it poisoned the sibling thread-shape
+        # test under load: the leftover "map-shutdown" name landed in
+        # its before-snapshot and the new-thread filter saw nothing
+        # (false-fail caught during the 2026-06-09 split-arc suite runs).
         release_stop.set()
         caller.join(timeout=5.0)
+        for t in threading.enumerate():
+            if t.name == "map-shutdown":
+                t.join(timeout=5.0)
 
     def test_handler_spawns_daemon_thread_named_map_shutdown(self):
         """Lock the thread shape — name + daemon flag — so a future
@@ -104,7 +111,10 @@ class TestHandlerDoesNotBlockCaller(unittest.TestCase):
 
         handler = _build_daemon_signal_handler(server, "/tmp/nope.pid")
 
-        before = {t.name for t in threading.enumerate()}
+        # Snapshot by thread IDENTITY, not name — a leaked same-named
+        # thread from another test (or this one re-run) must not be able
+        # to mask the newly spawned thread from the filter below.
+        before = set(threading.enumerate())
         import signal
         handler(signal.SIGTERM, None)
 
@@ -113,7 +123,7 @@ class TestHandlerDoesNotBlockCaller(unittest.TestCase):
         new_threads = set()
         while time.monotonic() < deadline:
             new_threads = {
-                t for t in threading.enumerate() if t.name not in before
+                t for t in threading.enumerate() if t not in before
             }
             if new_threads:
                 break
