@@ -66,6 +66,18 @@ Environment=TERM=xterm-256color
 # `-` tells systemd to ignore failure when no session exists.
 ExecStartPre=-/usr/bin/tmux kill-session -t nomadnet
 
+# Boot-race gate (#69; moc reboot 2026-06-09): the After=rnsd.service
+# above is a NO-OP — user units cannot order against system units — so
+# on a fast boot this unit can win the race to @rns/default and strand
+# the restarted rnsd as a CLIENT of nomadnet (the moc 2026-06-09 and
+# moc5 meshchat incidents). Wait, bounded, for the system rnsd to bind
+# the shared-instance listener before launching. If rnsd never binds,
+# the gate times out, the unit fails, and StartLimitBurst parks it —
+# refuse-loud, never race. (ss reads /proc/net/unix; no root needed.
+# $$ is systemd's escape for a literal $; no nested quotes — systemd's
+# backslash handling mangles \" inside ExecStart* — proven on moc.)
+ExecStartPre=/bin/sh -c 'n=0; until ss -xl | grep -q @rns/default; do n=$$((n+1)); [ $$n -ge 45 ] && exit 75; sleep 2; done'
+
 # Launch the real TUI wrapped in a detached tmux session. The ExecStart
 # line below contains a placeholder that the MeshForge TUI substitutes
 # at install time — see handlers/_nomadnet_service_ops.py::_install_user_unit.
