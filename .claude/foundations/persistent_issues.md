@@ -16,23 +16,25 @@
 RNS and LXMF are now **hard forks owned by MeshForge** (`Nursedude/reticulum`,
 `Nursedude/lxmf`), pinned in `requirements/rns.txt` by tag **and** SHA with a
 `# MF-FORK-PIN` SSOT line; `scripts/rns_version_check.py` gates the fleet on the
-`+mf.N` marker. Fleet baseline: **rns `1.2.5+mf.4` / lxmf `0.9.4+mf.0`**. This is
-the meta-resolution for the entire **rnsd-RPC fragility class** (#58/#61/#63/#68/
-#69/#72): fragility that we used to work *around* in `utils/rns_init.py` can now be
-fixed *at the source*. Source fixes shipped: `+mf.1` #68 connect-hang, `+mf.2` #72
-RPC-hang (see "FIXED AT SOURCE" notes below), `+mf.3` bounds `detach_interfaces()`
-(`DETACH_TIMEOUT`, default 5s) — a PARTIAL fix: a 2026-05-30 active proof still
-caught moc1 hanging the full **15s → SIGKILL** via a SECOND shutdown-path wedge the
-detach bound does not cover. **`+mf.4` (2026-06-01) is the root-cause cure for that
-second path**: `logging_lock` Lock→RLock (a failed logfile write no longer
-self-deadlocks `log()`) + signal handlers defer detach off signal context (no
-signal-reentrancy deadlock). Reproduced deterministically; canary-verified ~1s
+`+mf.N` marker. Fleet baseline: **rns `1.2.5+mf.5` / lxmf `0.9.4+mf.0`** (rolled
+2026-06-09, all 7 rnsd hosts). This is the meta-resolution for the entire
+**rnsd-RPC fragility class** (#58/#61/#63/#68/#69/#72): fragility we used to work
+*around* in `utils/rns_init.py` is now fixed *at the source*. Shipped: `+mf.1` #68
+connect-hang, `+mf.2` #72 RPC-hang (see "FIXED AT SOURCE" notes below), `+mf.3`
+bounds `detach_interfaces()` (PARTIAL — a second shutdown-path wedge remained).
+**`+mf.4` (2026-06-01) root-cause cure for that second path**: `logging_lock`
+Lock→RLock + signal handlers defer detach off signal context; canary-verified ~1s
 clean stop on moc1. **The `rnsd.service.d/10-stop-timeout.conf` 15s cap + the mf.3
-bound STAY as defense-in-depth until mf.4 is fleet-soak-proven** (commit `0cb935d`
-retire-after-soak framing stays superseded). ⚠️ Also: do NOT rapid-cycle rnsd
-restarts fleet-wide — each 15s-hang+SIGKILL plus the slow rebind opens an `@rns`
-race window for periodic RNS clients (the lab tracer), stranding rnsd as a client
-(#69-adjacent); space restarts and verify host-binding before the next.
+bound STAY as defense-in-depth until mf.4 is fleet-soak-proven.**
+**`+mf.5` (2026-06-09) cures the #69 stranded-client class**: a wanted-host client
+(rnsd that lost the `@rns` bind race) exits **75** after ~24s when its host dies
+with NO listener remaining (`/proc/net/unix`; unknown ≠ absence) → systemd restarts
+it into the host role. OPT-IN via `RNS_EXIT_ON_HOST_LOSS=1` — rnsd unit drop-in
+`20-exit-on-host-loss.conf` ONLY, fleet-deployed; embedded clients keep stock
+reconnect-forever. Canary moc3: deliberate inversion self-healed in 29s. ⚠️ Still
+do NOT rapid-cycle rnsd restarts fleet-wide — a 15s-hang+SIGKILL plus slow rebind
+opens the `@rns` race window; mf.5 makes a stranding self-healing (~30s outage),
+but space restarts and verify host-binding before the next box anyway.
 
 - **Wire-compat invariant (non-negotiable)**: never change crypto primitives
   (Ed25519/X25519/AES-256-CBC/Fernet) or the packet/announce/path-table wire
@@ -45,7 +47,7 @@ race window for periodic RNS clients (the lab tracer), stranding rnsd as a clien
   in [[project_upstream_dependency_governance_2026_05_29]]. **Checked 2026-06-09**:
   GitHub mirror still receives releases — upstream at **1.3.5** (maintenance:
   announce-dedup, shared-instance RPC, AutoInterface roaming; no CVE/wire change)
-  → DECISION: stay on 1.2.5+mf.4; a 1.3.5 merge eval is a future dedicated arc.
+  → DECISION: stay on the 1.2.5+mf.N line; a 1.3.5 merge eval is a future arc.
 - **MeshForge-side guards STAY** (`rns_init.py` probe, MF009/MF019 lint, watchdog
   `os._exit` backstop) as defense-in-depth — remove a backstop only after its
   in-library fix has held over a long soak.
