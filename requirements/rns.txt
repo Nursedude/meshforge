@@ -24,7 +24,7 @@
 # See .claude/plans/rns_t2_isolate_arc.md and the project_rns_upstream_withdrawal memory.
 # FORKED 2026-05-30 (RNS fork arc): MeshForge now OWNS rns + lxmf via hard forks
 # of the field-proven 1.2.5 / 0.9.4 pair (upstream Carrier Switch, Dec 2025).
-#   forks: github.com/Nursedude/reticulum  (branch meshforge, tag 1.2.5+mf.4)
+#   forks: github.com/Nursedude/reticulum  (branch meshforge, tag 1.2.5+mf.5)
 #          github.com/Nursedude/lxmf        (branch meshforge, tag 0.9.4+mf.0)
 # +mf.1 (2026-05-30): #68 fix — bound LocalClientInterface connect (no thread hang).
 # +mf.2 (2026-05-30): #72 fix — bound shared-instance RPC recv (no rnstatus hang).
@@ -36,13 +36,19 @@
 #                     Reproduced deterministically + canary-verified clean ~1s stop on
 #                     moc1. 15s stop-cap + mf.3 bound STAY as defense-in-depth until
 #                     fleet soak-proven.
+# +mf.5 (2026-06-09): #69 host-loss cure — a wanted-host client (rnsd stuck as
+#                     client after losing the @rns bind race) exits 75 when its
+#                     host dies and no listener remains (~24s), so systemd
+#                     restarts it into the host role. OPT-IN via
+#                     RNS_EXIT_ON_HOST_LOSS=1 (rnsd unit drop-in only; embedded
+#                     clients unchanged). Canary-proven on moc3 (29s self-heal).
 # pip resolves by commit SHA (reproducible); the MF-FORK-PIN lines are the
 # version SSOT enforced by scripts/rns_version_check.py. The baseline is
 # IDENTICAL to stock 1.2.5/0.9.4 except the +mf.N marker + FORK.md/NOTICE, so
 # it stays wire-compatible with the public Reticulum net (NomadNet, Sideband).
-# MF-FORK-PIN rns 1.2.5+mf.4
+# MF-FORK-PIN rns 1.2.5+mf.5
 # MF-FORK-PIN lxmf 0.9.4+mf.0
-rns @ git+https://github.com/Nursedude/reticulum.git@b6fb65220e82ecba5a910b40eef250ba1257b85e
+rns @ git+https://github.com/Nursedude/reticulum.git@83f4be330f434336b7f9dd1ad80c02969b6b8a87
 lxmf @ git+https://github.com/Nursedude/lxmf.git@66c48cfff65bce78e645bc79930bbc6b6fd6802a
 
 # Cryptography / PyOpenSSL version alignment:
