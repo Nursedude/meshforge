@@ -121,6 +121,7 @@ Full history in `persistent_issues_archive.md`.
 | #70 (2026-05-22) | `meshforge-map` steady-state `http_local_unresponsive` wedges every few hours. Root cause: `/api/nodes/directory` 35 MB body's `json.dumps`+`gzip.compress` are C extensions that hold GIL ~6-10 s; concurrent federation polls pile up under it, `/healthz` stalls past the watchdog's 2 s probe. Fix: short-TTL response cache (`DirectoryResponseCache`, 5 s) with single-flight rebuild on `MapDataCollector`; cache hits skip json.dumps+gzip entirely. 18 tests including 8-thread/1-build single-flight race + 6-thread handler coalescing. Cache stats surface in `/api/status.directory.cache`. Pattern-audit found `/api/nodes/geojson` is the next instance (47 MB, ~35 s wedge under cold collect+gzip); deferred to Issue #71. Commits `1a52aab` (cache) + handler cache-stats surface. | `tests/test_directory_response_cache.py` (13) + `TestDirectoryHandlerCacheIssue70` (5) + `TestStatusExposesDirectoryCache` (2) |
 | #71 (2026-05-22, GitHub #1168) | Pattern extended to the two remaining instances of the same GIL-bound serialization wedge class. `DirectoryResponseCache` promoted to `ResponseByteCache` (key widened to `Hashable` for tuple keys). New `_geojson_response_cache` (TTL=2s, keyed by `(bbox, region, preset)` since each materially alters the response) wraps `/api/nodes/geojson` (47 MB, ~35 s cold). New `_topology_response_cache` (TTL=5s, single `None` key — no query params) wraps `/api/network/topology` (24 MB, 1.4 s every request). Both surface stats blocks at `/api/status.geojson.cache` and `/api/status.topology.cache` matching the directory shape. Closes the last two known instances of the wedge class — any future `http_local_unresponsive` signal is now a NEW class. Commits `7d0b8e5` (class promotion + alias) + `000201f` (wire both endpoints). | `tests/test_response_byte_cache.py` (32: 19 mirrored + 7 new + 6 alias) + `TestGeojsonHandlerCacheIssue71` (5) + `TestTopologyHandlerCacheIssue71` (5) + `TestStatusExposesGeojsonCache` (2) + `TestStatusExposesTopologyCache` (2) |
 | #68 (2026-05-20) | rnsd hard-wedge → map main thread silent-stuck in `unix_stream_connect`; bg threads kept logging, `:5000` never bound. Cure: bounded AF_UNIX probe in `open_reticulum()` chokepoint (MF019) + FIXED AT SOURCE in fork `rns 1.2.5+mf.1` (`LocalClientInterface.connect` settimeout). Detection/recovery recipes + body in archive. | `TestRNSReticulumChokepoint` + fork test `meshforge_local_connect.py` (4) |
+| #74 (2026-06-06, stall-probe fix 06-09) | Gateway health core: circuit breaker was write-only (sends never gated), wall-clock recovery froze OPEN circuits on NTP backsteps (→`time.monotonic()`), delivery_write_canary degraded branch dead (writer-local counter → persisted `meta.*`), 2 probes added (`queue_backlog`, `delivery_confirmation_stall`). 06-09: stall probe compared disjoint protocol populations (RNS-confirmed ÷ mesh-sent ≈ false 50%) — now judges only confirmable protocols' real terminal outcomes. ⚠️ residual: `/api/gateway/delivery.confirmation_rate` DISPLAY still cross-population; real completeness = Meshtastic ACK consumption (Thread-2 step 4). Body in archive. | `TestCircuitBreakerWiringIssue74` (8) + `TestMonotonicClockIssue74` (6) + `TestCrossProcessWriteErrorTruthIssue74` (3) + probe tests (16) |
 
 ---
 
@@ -300,46 +301,6 @@ for a missed PSK re-key
 (decode gate = hash(name,psk)), deaf radio (`channel_utilization=0.0`), or dead uplink.
 Self-guards None on boxes with no json uplink at all (unobservable ≠ dark — e.g. moc5);
 busy gateways (moc) canary the channel for the whole fleet via mini's signal_class flow.
-
-
----
-
-## Issue #74: gateway health-check review — decorative breaker, dead canary branch, 2 new probes (2026-06-06)
-
-Code review of the gateway health core found and fixed four honest-signal defects:
-(1) **circuit breaker was write-only** — `can_send_to`/`record_send_*` had ZERO
-callers; sends never gated, organic failures never fed threshold-OPEN; only
-`trip_open` from the wedge hook touched it. Now both RNS send paths gate + record;
-`_queue_send_rns` raises a retriable-pattern error ("temporarily unavailable") on
-open circuit so RetryPolicy backs off; reconnect success `reset_all()`s stale OPEN
-state. (2) **wall-clock recovery math** — `time.time()` froze OPEN circuits on
-post-boot NTP backsteps; now `time.monotonic()` (+ HALF_OPEN off-by-one fixed: the
-transitioning caller now takes the trial slot; `half_open_max_calls` clamped 1).
-(3) **delivery_write_canary degraded branch was dead** — `consecutive_write_errors`
-was writer-local; the map daemon serving `snapshot()` always read 0. Now persisted
-to `meta.*` keys + merged `max(local, db)`. (4) Two probe-layer blind spots closed:
-`probe_queue_backlog` (`queue_backlog`; depth ≥80%/95% of max + dead-letter GROWTH
-per tick via new `/api/gateway/queue`; static piles never fire) and
-`probe_delivery_confirmation_stall` (`delivery_confirmation_stall`; recent-ring
-confirm rate ≤50%/≤10% with ≥20 ring sends; None at low/zero traffic — silence is
-NOT failure here, inversion of `channel_feed_dark`). Also fixed: map handler
-imported nonexistent `MessageQueue` symbol (queue endpoint was dead code) →
-`PersistentMessageQueue`. Tests: `TestCircuitBreakerWiringIssue74` (8),
-`TestMonotonicClockIssue74` (6), `TestCrossProcessWriteErrorTruthIssue74` (3),
-probe tests (16) + closed-enum gate bump.
-
-**FIX 2026-06-09: `probe_delivery_confirmation_stall` was measuring disjoint protocol
-populations (false-alarmed on moc).** delivery_counters uses different lifecycle states
-per protocol — RNS `queued→confirmed` (never `sent`), Meshtastic `queued→sent` (never
-`confirmed`; no ACK consumption). So `confirmed/sent` was (RNS-confirmed ÷ Meshtastic-sent),
-two different populations → ~50% on any mesh-heavy box (cumulative 181%). Rewrote to judge
-ONLY confirmable protocols (those in `state_by_protocol.confirmed`; RNS today, Meshtastic
-once step-4 ACK lands) comparing their REAL terminal outcomes — `confirmed` vs failed-delivery
-`dropped` (`_DELIVERY_FAILURE_REASONS`; benign `dedup` excluded); `min_sent`→`min_terminal`;
-no-confirmable / small-sample → None. Ported to MeshAnchor `check_delivery_confirmation_stall`
-(same bug). ⚠️ residual: the `/api/gateway/delivery.confirmation_rate` DISPLAY metric is still
-the cross-population ratio (181%) — operator-facing only, not a pager; separate slice. Real
-completeness = Meshtastic ACK consumption (Thread-2 step 4). No new signal class.
 
 
 ---
@@ -528,3 +489,30 @@ empty modules dir, unparseable release, no same-flavor sibling) stay silent
 while the flag-file leg works independently; 2-tick debounce. Fix: schedule a
 clean reboot (planned reboots through clean shutdown record boot_health
 clean-exit). Routed in both role seeds; 12 tests (`test_kernel_reboot_*`).
+
+
+---
+
+## Issue #81: mini paging honesty — failed-send retry + per-boot crash identity (2026-06-11)
+
+Both real 06-11 crash pages were lost to one engine defect pair. (1) **A
+failed action send was recorded honestly then never tried again**: crash #4's
+[RED] ntfy died in the boot+15s DNS race (URLError; 2-for-2 on real crashes),
+and the operator later received the priority=min "cleared" notice for an alert
+that never arrived. Cure: the engine queues undelivered sends in the rule
+state (`pending_sends`) and retries once per tick until delivered
+(`send_retry_delivered`) or exhausted at 10 total attempts
+(`send_retry_exhausted`, loud); retries bypass cooldown and never touch fire
+bookkeeping; the queue survives daemon restarts (a page queued seconds before
+a SECOND crash still delivers from the next boot); per-state cap 4 drops the
+OLDEST loudly (`send_retry_dropped`); unknown-action-kind config errors are
+not queued; undelivered sends surface in the warm brief. (2) **Back-to-back
+crashes coalesced**: edge state + cooldown key on (rule_id, subject) and the
+subject was the bare hostname — crash #5 (18.5 min after #4, inside
+`cooldown_s=3600`) produced no edge, no page, no digest record.
+Cure: BootHealthSource subject is now `host@boot_id[:8]` from the LATCHED
+assessment (fallback latched boot_time) — each crash boot is a fresh state
+key, so neither `currently_active` nor cooldown can carry across boots. Seeds
+and live rules all match `subject_glob "*"` — no rule changes needed. Tests:
+10 send-retry + 5 per-boot identity incl. the end-to-end 06-11 double-crash
+timeline (`test_back_to_back_crash_boots_both_fire`).

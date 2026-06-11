@@ -156,6 +156,21 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
             lines.append(f"- **{rs.get('rule_id')}** · {rs.get('subject')} · "
                          f"{str(rs.get('last_detail', ''))[:120]}")
 
+    # Undelivered sends still retrying — a fire whose action (page/annotate)
+    # failed and is being re-attempted each tick. Surfaced so an operator or
+    # warm-start session knows a page exists that nobody has received yet.
+    pending_sends = [
+        (rs, ent)
+        for rs in rules.values() if isinstance(rs, dict)
+        for ent in (rs.get("pending_sends") or []) if isinstance(ent, dict)
+    ]
+    if pending_sends:
+        lines.append(f"\n## 📨 {len(pending_sends)} undelivered send(s) — retrying each tick")
+        for rs, ent in pending_sends[:6]:
+            lines.append(f"- **{rs.get('rule_id')}** · {rs.get('subject')} · "
+                         f"{ent.get('transition')} attempt {ent.get('attempts')} · "
+                         f"last error: {str(ent.get('error', ''))[:80]}")
+
     # B3 — memory-deltas the nightly dream pass proposed and that no session has
     # ratified yet. The dream log (mini_dudeai_dreams.md) holds the reasoning.
     if pending_deltas:

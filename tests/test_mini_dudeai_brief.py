@@ -43,6 +43,25 @@ def test_active_rules_listed():
     assert "moc3" in out and "backoff mult=60" in out
 
 
+def test_undelivered_sends_surface():
+    """A queued send (fire whose page failed, retrying each tick) must be
+    visible — the operator-facing witness that a page exists nobody got."""
+    rules = {"r::foo": {"rule_id": "r", "subject": "foo",
+                        "currently_active": True, "last_detail": "d",
+                        "pending_sends": [{
+                            "transition": "edge_up", "attempts": 3,
+                            "error": "URLError: name resolution"}]}}
+    out = build_brief(_state(rules=rules), [], NOW)
+    assert "undelivered send(s)" in out
+    assert "edge_up attempt 3" in out
+    assert "URLError" in out
+
+
+def test_no_undelivered_section_when_queue_empty():
+    out = build_brief(_state(), [], NOW)
+    assert "undelivered" not in out
+
+
 def test_escalations_surface_look_here_first():
     hist = [{
         "transition": "edge_up", "iso": "2026-05-28T19:00:00", "rule_id": "boom",

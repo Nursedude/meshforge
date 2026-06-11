@@ -289,6 +289,17 @@ class RuleEngine:
     # Per-source hold cap — bounds the state-file footprint of the hold cache.
     SOURCE_HOLD_CAP = 200
 
+    # Failed-send retry bounds. A fire whose action failed (e.g. the [RED]
+    # crash page dying in the boot+15s DNS race — 2-for-2 on real crashes,
+    # 2026-06-11) is queued in the rule state and re-attempted once per tick
+    # until delivered or exhausted. 10 total attempts at the 30s fleet
+    # interval covers ~5 minutes of network outage; exhaustion leaves a loud
+    # history record (every swallow gets a witness).
+    SEND_RETRY_MAX_ATTEMPTS = 10
+    # Per rule-state queue bound — an edge flapping while the network is down
+    # is the only way this grows; overflow drops the OLDEST entry loudly.
+    PENDING_SENDS_CAP = 4
+
     @staticmethod
     def _cond_to_dict(c: Condition) -> dict:
         return {"kind": c.kind, "subject": c.subject, "detail": c.detail,
@@ -452,6 +463,8 @@ class RuleEngine:
                 history_entries.append(self._history_entry(
                     now_ts, rule["id"], cond.subject, "edge_up", cond.detail, outcome,
                 ))
+                self._queue_failed_send(rs, "edge_up", cond.detail, outcome,
+                                        now_ts, history_entries)
                 fire_count += 1
 
         # Edge-DOWN: was active, no longer matched this tick. SKIPPED entirely
@@ -502,7 +515,18 @@ class RuleEngine:
                     now_ts, rule["id"], rs.get("subject", "?"), "edge_down",
                     rs.get("last_detail", ""), outcome,
                 ))
+                self._queue_failed_send(rs, "edge_down", rs.get("last_detail", ""),
+                                        outcome, now_ts, history_entries)
                 fire_count += 1
+
+            # Send-retry phase: fires whose action failed on a PRIOR tick get
+            # re-attempted until delivered or exhausted. A failed page used to
+            # be recorded honestly (outcome.ok=false) and then never tried
+            # again — the operator was never paged for exactly the events the
+            # detectors were built for. Runs only when a ruleset is available
+            # (the action config lives in the rule); under _rules_unavailable
+            # the queue holds, consistent with hold-all-edge-state semantics.
+            self._retry_pending_sends(rules, state, now_ts, history_entries)
 
         state["last_tick_ts"] = now_ts
         state["last_tick_iso"] = datetime.datetime.fromtimestamp(now_ts).isoformat()
@@ -541,6 +565,127 @@ class RuleEngine:
                 action=kind, ok=False,
                 error=f"action raised {type(e).__name__}: {e}",
             )
+
+    # --- failed-send retry ---------------------------------------------
+
+    def _queue_failed_send(self, rs: dict, transition: str, detail: str,
+                           outcome: Outcome, now_ts: float,
+                           history_entries: list[dict]) -> None:
+        """Queue an undelivered action for retry on subsequent ticks.
+
+        The fire itself is already on the history record with ok=False; what
+        never existed was any path that tried again. Config errors (unknown
+        action kind) are not queued — retrying cannot fix the ruleset and the
+        ok=False record already flags it. Queue overflow drops the OLDEST
+        entry with a history record: a silently-vanished undelivered page is
+        the exact defect class this exists to close.
+        """
+        if outcome.ok:
+            return
+        if str(outcome.error or "").startswith("unknown action kind"):
+            return
+        pend = rs.setdefault("pending_sends", [])
+        pend.append({
+            "transition": transition,
+            "detail": str(detail or ""),
+            "attempts": 1,                # the original fire was attempt 1
+            "first_failed_ts": now_ts,
+            "attempted_at_ts": now_ts,    # retry phase skips this tick's own failures
+            "error": outcome.error,
+        })
+        if len(pend) > self.PENDING_SENDS_CAP:
+            dropped = pend.pop(0)
+            msg = (f"pending-send queue full (cap {self.PENDING_SENDS_CAP}); "
+                   f"dropped undelivered {dropped.get('transition')} after "
+                   f"{int(dropped.get('attempts', 1) or 1)} attempt(s)")
+            log_warning(f"send-retry: {rs.get('rule_id')!r} "
+                        f"({rs.get('subject')}): {msg}")
+            history_entries.append(self._history_entry(
+                now_ts, rs.get("rule_id", "?"), rs.get("subject", "?"),
+                "send_retry_dropped", msg,
+                Outcome(action="none", ok=False, error="pending_sends overflow"),
+            ))
+
+    def _retry_pending_sends(self, rules: list[dict], state: dict,
+                             now_ts: float,
+                             history_entries: list[dict]) -> None:
+        """Re-attempt every queued undelivered send, once per tick.
+
+        Retries are deliveries of already-recorded fires, not new fires: they
+        bypass cooldown, never touch edge state, and never call record_fire.
+        Resolution (delivered / exhausted / rule-removed drop) goes on the
+        history record; intermediate failures only update the queue entry —
+        the entry itself is the witness while it waits. The queue lives in
+        the persisted rule state, so retries survive a daemon restart — a
+        crash page queued seconds before a SECOND crash still delivers from
+        the next boot.
+        """
+        for rs in list(state.get("rules", {}).values()):
+            if not isinstance(rs, dict):
+                continue
+            pend = rs.get("pending_sends")
+            if not isinstance(pend, list) or not pend:
+                continue
+            rule = next((r for r in rules
+                         if r["id"] == rs.get("rule_id")), None)
+            keep: list[dict] = []
+            for ent in pend:
+                if not isinstance(ent, dict):
+                    log_warning(f"send-retry: {rs.get('rule_id')!r} "
+                                f"({rs.get('subject')}): dropping corrupt "
+                                f"pending-send entry ({type(ent).__name__})")
+                    continue
+                if ent.get("attempted_at_ts") == now_ts:
+                    keep.append(ent)  # queued THIS tick — first retry next tick
+                    continue
+                if rule is None:
+                    # Rule removed with a send still undelivered: the action
+                    # config lived in the rule, so the send is dead — loudly.
+                    history_entries.append(self._history_entry(
+                        now_ts, rs.get("rule_id", "?"), rs.get("subject", "?"),
+                        "send_retry_dropped",
+                        f"rule removed from ruleset with {ent.get('transition')} "
+                        f"send still undelivered "
+                        f"({int(ent.get('attempts', 1) or 1)} attempt(s))",
+                        Outcome(action="none", ok=False, error="rule removed"),
+                    ))
+                    continue
+                synth = Condition(
+                    kind=rule.get("match", {}).get("kind", "?"),
+                    subject=rs.get("subject", "?"),
+                    detail=str(ent.get("detail", "")),
+                )
+                outcome = self._execute(
+                    rule, synth, str(ent.get("transition", "edge_up")))
+                ent["attempts"] = int(ent.get("attempts", 1) or 1) + 1
+                ent["attempted_at_ts"] = now_ts
+                if outcome.ok:
+                    age = int(now_ts - float(
+                        ent.get("first_failed_ts", now_ts) or now_ts))
+                    detail = (f"{ent.get('transition')} delivered on attempt "
+                              f"{ent['attempts']}, ~{age}s after first failure "
+                              f"({str(ent.get('error', ''))[:120]})")
+                    log_info(f"send-retry: {rs.get('rule_id')!r} "
+                             f"({rs.get('subject')}): {detail}")
+                    history_entries.append(self._history_entry(
+                        now_ts, rs.get("rule_id", "?"), rs.get("subject", "?"),
+                        "send_retry_delivered", detail, outcome))
+                elif ent["attempts"] >= self.SEND_RETRY_MAX_ATTEMPTS:
+                    detail = (f"{ent.get('transition')} NEVER delivered after "
+                              f"{ent['attempts']} attempts; giving up "
+                              f"(last error: {outcome.error})")
+                    log_error(f"send-retry: {rs.get('rule_id')!r} "
+                              f"({rs.get('subject')}): {detail}")
+                    history_entries.append(self._history_entry(
+                        now_ts, rs.get("rule_id", "?"), rs.get("subject", "?"),
+                        "send_retry_exhausted", detail, outcome))
+                else:
+                    ent["error"] = outcome.error
+                    keep.append(ent)
+            if keep:
+                rs["pending_sends"] = keep
+            else:
+                rs.pop("pending_sends", None)
 
     @staticmethod
     def _history_entry(ts: float, rule_id: str, subject: str, transition: str,

@@ -77,8 +77,9 @@ class StateStore:
             fires = rs.get("fires_window", []) or []
             rs["fires_window"] = [t for t in fires if t >= cutoff]
             rs["fire_count_24h"] = len(rs["fires_window"])
-            if rs.get("currently_active") or rs.get("pending_since_ts"):
-                continue  # live edge or building streak — never retire
+            if (rs.get("currently_active") or rs.get("pending_since_ts")
+                    or rs.get("pending_sends")):
+                continue  # live edge, building streak, or undelivered send — never retire
             if rs["fires_window"]:
                 continue  # fired within 24h
             last = float(rs.get("last_fired_ts", 0) or 0)

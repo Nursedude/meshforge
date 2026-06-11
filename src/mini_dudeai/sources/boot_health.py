@@ -26,10 +26,12 @@ cloud session can immediately see whether a brownout preceded the reset
 (under-voltage sticky bit 0x10000) WITHOUT running anything. See memory
 project_volcanoai_hard_reset_2026_05_28 for the full forensic method.
 
-Emits kind="unexpected_reboot" (subject = hostname) when the prior shutdown
-was unclean and we're still inside the fresh-boot window. Clean reboots,
-first-ever runs, and steady state stay silent. Unreadable /proc/uptime →
-source_error (so mini can flag going blind on its own boot signal).
+Emits kind="unexpected_reboot" (subject = hostname@boot_id-prefix, so each
+crash boot is a distinct condition identity — see _boot_subject) when the
+prior shutdown was unclean and we're still inside the fresh-boot window.
+Clean reboots, first-ever runs, and steady state stay silent. Unreadable
+/proc/uptime → source_error (so mini can flag going blind on its own boot
+signal).
 """
 from __future__ import annotations
 
@@ -106,7 +108,7 @@ class BootHealthSource(Source):
         power_tail = verdict.get("power_tail")
         yield Condition(
             kind="unexpected_reboot",
-            subject=os.uname().nodename,
+            subject=self._boot_subject(verdict),
             detail=(
                 f"unclean shutdown: box reset ~{verdict.get('down_gap_s')}s after "
                 f"mini's last tick (up {int(uptime)}s, no clean-exit marker). "
@@ -117,6 +119,26 @@ class BootHealthSource(Source):
         )
 
     # --- internals ----------------------------------------------------
+
+    @staticmethod
+    def _boot_subject(verdict: dict) -> str:
+        """Per-boot condition identity: hostname@boot_id-prefix.
+
+        The engine keys edge state AND cooldowns by (rule_id, subject). With a
+        bare-hostname subject, a second crash arriving inside the first
+        crash's cooldown window produced no new edge — on 2026-06-11 crash #5
+        (18.5 min after crash #4) never paged and never reached the digest,
+        because the alert rule's cooldown_s=3600 carried across boots. Each
+        crash is a distinct event: suffixing the LATCHED boot identity gives
+        every crash boot a fresh state key, so neither currently_active nor
+        last_fired_ts from the previous boot can suppress it. Derived from the
+        latched assessment (not a live read) so the subject is stable across
+        every tick of the fresh-boot window; falls back to the latched
+        boot_time when boot_id is unreadable.
+        """
+        boot_key = (verdict.get("boot_id") or "")[:8] or str(
+            verdict.get("boot_time_ts") or "?")
+        return f"{os.uname().nodename}@{boot_key}"
 
     def _assess(self, boot_time: float, now: float) -> dict:
         """Compute and latch the per-boot clean/unclean verdict.

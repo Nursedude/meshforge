@@ -711,3 +711,228 @@ def test_marker_write_failure_does_not_raise(tmp_path):
     engine = _engine(tmp_path, [StaticSource()], [])
     engine.clean_exit_path = str(tmp_path)    # a directory — os.replace fails
     engine._write_clean_exit_marker()         # must not raise
+
+
+# === failed-send retry (paging defect, 2026-06-11) =================
+#
+# Crash #4's [RED] page died in the boot+15s DNS race (URLError, name
+# resolution) — recorded honestly (outcome.ok=false) and never tried again,
+# 2-for-2 on real crashes. The engine now queues undelivered sends in the
+# rule state and retries once per tick until delivered or exhausted.
+
+
+class FlakyAction(Action):
+    """Fail the first `fail_n` executes, succeed afterwards — the DNS-race shape."""
+
+    name = "flaky"
+
+    def __init__(self, fail_n):
+        self.fail_n = fail_n
+        self.calls = []  # (rule_id, subject, transition)
+
+    def execute(self, rule, cond, transition):
+        self.calls.append((rule["id"], cond.subject, transition))
+        if len(self.calls) <= self.fail_n:
+            return Outcome(action="flaky", ok=False,
+                           error="URLError: Temporary failure in name resolution")
+        return Outcome(action="flaky", ok=True)
+
+
+def _hist(tmp_path):
+    return [json.loads(line)
+            for line in (tmp_path / "history.jsonl").read_text().splitlines()]
+
+
+def _retry_engine(tmp_path, src, action, cooldown_s=3600):
+    """Engine with one rule wired to `action` — cooldown ON by default so a
+    delivered retry can't be confused with a cooldown-expired re-fire."""
+    return _engine(
+        tmp_path, [src],
+        [{"id": "r1", "match": {"kind": "x"}, "action": {"kind": "flaky"},
+          "cooldown_s": cooldown_s}],
+        actions={"flaky": action},
+    )
+
+
+def test_failed_send_retries_next_tick_and_delivers(tmp_path, monkeypatch):
+    import mini_dudeai.engine as eng
+    clock = {"t": 1_000_000.0}  # realistic epoch scale: last_fired_ts=0 must read as "never", not "recently"
+    monkeypatch.setattr(eng.time, "time", lambda: clock["t"])
+
+    act = FlakyAction(fail_n=1)
+    src = StaticSource([Condition(kind="x", subject="foo", detail="d")])
+    engine = _retry_engine(tmp_path, src, act)
+    engine.tick()                       # edge_up — send FAILS, queued
+    assert [c[2] for c in act.calls] == ["edge_up"]
+    clock["t"] = 1_000_030.0
+    engine.tick()                       # no new edge; retry phase delivers
+    assert [c[2] for c in act.calls] == ["edge_up", "edge_up"]
+    hist = _hist(tmp_path)
+    assert [h["transition"] for h in hist] == ["edge_up", "send_retry_delivered"]
+    assert hist[0]["outcome"]["ok"] is False
+    assert hist[1]["outcome"]["ok"] is True
+    # queue drained
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert "pending_sends" not in state["rules"]["r1::foo"]
+
+
+def test_retry_not_attempted_in_failure_tick(tmp_path):
+    """The retry phase must skip entries queued THIS tick — one attempt per
+    tick, so a hard-down network costs one call per tick, not two."""
+    act = FlakyAction(fail_n=99)
+    src = StaticSource([Condition(kind="x", subject="foo", detail="d")])
+    engine = _retry_engine(tmp_path, src, act)
+    engine.tick()
+    assert len(act.calls) == 1          # the fire only — no same-tick retry
+
+
+def test_retry_delivery_bypasses_cooldown(tmp_path, monkeypatch):
+    """A retry is delivery of an already-recorded fire, not a new fire: it
+    runs inside the cooldown window and never touches fire bookkeeping."""
+    import mini_dudeai.engine as eng
+    clock = {"t": 1_000_000.0}  # realistic epoch scale: last_fired_ts=0 must read as "never", not "recently"
+    monkeypatch.setattr(eng.time, "time", lambda: clock["t"])
+
+    act = FlakyAction(fail_n=1)
+    src = StaticSource([Condition(kind="x", subject="foo", detail="d")])
+    engine = _retry_engine(tmp_path, src, act, cooldown_s=3600)
+    engine.tick()
+    clock["t"] = 1_000_030.0                 # 30s — deep inside cooldown
+    engine.tick()
+    assert [h["transition"] for h in _hist(tmp_path)][-1] == "send_retry_delivered"
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert state["rules"]["r1::foo"]["fire_count"] == 1   # retry ≠ new fire
+
+
+def test_retry_exhausts_loudly_after_cap(tmp_path, monkeypatch):
+    import mini_dudeai.engine as eng
+    clock = {"t": 1_000_000.0}  # realistic epoch scale: last_fired_ts=0 must read as "never", not "recently"
+    monkeypatch.setattr(eng.time, "time", lambda: clock["t"])
+
+    act = FlakyAction(fail_n=999)       # network never comes back
+    src = StaticSource([Condition(kind="x", subject="foo", detail="d")])
+    engine = _retry_engine(tmp_path, src, act)
+    for i in range(engine.SEND_RETRY_MAX_ATTEMPTS + 3):
+        engine.tick()
+        clock["t"] += 30.0
+    hist = _hist(tmp_path)
+    assert hist[-1]["transition"] == "send_retry_exhausted"
+    assert hist[-1]["outcome"]["ok"] is False
+    # exactly MAX attempts total (original + retries), then silence
+    assert len(act.calls) == engine.SEND_RETRY_MAX_ATTEMPTS
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert "pending_sends" not in state["rules"]["r1::foo"]
+
+
+def test_retry_survives_daemon_restart(tmp_path, monkeypatch):
+    """The queue lives in persisted rule state: a crash page queued seconds
+    before a SECOND crash still delivers from the next boot's daemon."""
+    import mini_dudeai.engine as eng
+    clock = {"t": 1_000_000.0}  # realistic epoch scale: last_fired_ts=0 must read as "never", not "recently"
+    monkeypatch.setattr(eng.time, "time", lambda: clock["t"])
+
+    src = StaticSource([Condition(kind="x", subject="foo", detail="d")])
+    engine = _retry_engine(tmp_path, src, FlakyAction(fail_n=999))
+    engine.tick()                       # queued, then "the box dies"
+
+    clock["t"] = 1_000_100.0
+    act2 = FlakyAction(fail_n=0)        # next boot — network up
+    engine2 = _retry_engine(tmp_path, src, act2)
+    engine2.tick()
+    assert ("r1", "foo", "edge_up") in act2.calls
+    assert any(h["transition"] == "send_retry_delivered" for h in _hist(tmp_path))
+
+
+def test_edge_down_clear_does_not_drop_pending_edge_up(tmp_path, monkeypatch):
+    """The 08:53:39 lesson: the operator got 'cleared' for an alert they never
+    received. A delivered cleared-notice must NOT cancel the undelivered
+    alert — it still retries and lands."""
+    import mini_dudeai.engine as eng
+    clock = {"t": 1_000_000.0}  # realistic epoch scale: last_fired_ts=0 must read as "never", not "recently"
+    monkeypatch.setattr(eng.time, "time", lambda: clock["t"])
+
+    act = FlakyAction(fail_n=1)         # only the first send (the alert) fails
+    src = StaticSource([Condition(kind="x", subject="foo", detail="d")])
+    engine = _retry_engine(tmp_path, src, act)
+    engine.tick()                       # edge_up FAILS, queued
+    src.conditions = []                 # condition clears
+    clock["t"] = 1_000_030.0
+    engine.tick()                       # edge_down delivers; retry delivers the alert
+    transitions = [c[2] for c in act.calls]
+    assert transitions == ["edge_up", "edge_down", "edge_up"]
+    assert any(h["transition"] == "send_retry_delivered" for h in _hist(tmp_path))
+
+
+def test_unknown_action_kind_not_queued(tmp_path):
+    """Config errors are not transient — retrying can't fix the ruleset, and
+    the ok=False record already flags it."""
+    src = StaticSource([Condition(kind="x", subject="foo", detail="d")])
+    engine = _engine(
+        tmp_path, [src],
+        [{"id": "r1", "match": {"kind": "x"}, "action": {"kind": "nonsense"}}],
+        actions={"none": NoopAction()},
+    )
+    engine.tick()
+    engine.tick()
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert "pending_sends" not in state["rules"]["r1::foo"]
+    assert len(_hist(tmp_path)) == 1    # the one ok=False fire, no retry records
+
+
+def test_pending_queue_cap_drops_oldest_loudly(tmp_path, monkeypatch):
+    """An edge flapping while the network is down is bounded: overflow drops
+    the OLDEST entry with a history record (a silently-vanished undelivered
+    page is the defect class this whole mechanism closes)."""
+    import mini_dudeai.engine as eng
+    clock = {"t": 1_000_000.0}  # realistic epoch scale: last_fired_ts=0 must read as "never", not "recently"
+    monkeypatch.setattr(eng.time, "time", lambda: clock["t"])
+
+    act = FlakyAction(fail_n=999)
+    cond = Condition(kind="x", subject="foo", detail="d")
+    src = StaticSource([cond])
+    engine = _retry_engine(tmp_path, src, act, cooldown_s=0)
+    for i in range(engine.PENDING_SENDS_CAP + 2):   # flap: up,down,up,down,...
+        engine.tick()
+        src.conditions = [] if src.conditions else [cond]
+        clock["t"] += 30.0
+    hist = _hist(tmp_path)
+    assert any(h["transition"] == "send_retry_dropped" for h in hist)
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert len(state["rules"]["r1::foo"]["pending_sends"]) <= engine.PENDING_SENDS_CAP
+
+
+def test_rule_removed_drops_pending_loudly(tmp_path, monkeypatch):
+    import mini_dudeai.engine as eng
+    clock = {"t": 1_000_000.0}  # realistic epoch scale: last_fired_ts=0 must read as "never", not "recently"
+    monkeypatch.setattr(eng.time, "time", lambda: clock["t"])
+
+    act = FlakyAction(fail_n=999)
+    src = StaticSource([Condition(kind="x", subject="foo", detail="d")])
+    engine = _retry_engine(tmp_path, src, act)
+    engine.tick()                       # queued
+    # rule vanishes from the ruleset while its send is pending
+    rules_path = tmp_path / "rules.json"
+    rules_path.write_text(json.dumps({"rules": [
+        {"id": "other", "match": {"kind": "y"}, "action": {"kind": "flaky"}}]}))
+    os.utime(rules_path, (1, 1))        # force the mtime gate to re-read
+    clock["t"] = 1_000_030.0
+    engine.tick()
+    hist = _hist(tmp_path)
+    dropped = [h for h in hist if h["transition"] == "send_retry_dropped"]
+    assert len(dropped) == 1
+    assert "rule removed" in dropped[0]["detail"]
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert "pending_sends" not in state["rules"]["r1::foo"]
+
+
+def test_pending_send_blocks_state_retirement(tmp_path):
+    """prune_24h must never retire a state key carrying an undelivered send."""
+    from mini_dudeai.state import StateStore
+    state = {"rules": {"r1::foo": {
+        "rule_id": "r1", "subject": "foo", "currently_active": False,
+        "last_fired_ts": 1.0, "fires_window": [], "fire_count_24h": 0,
+        "pending_since_ts": 0.0,
+        "pending_sends": [{"transition": "edge_up", "attempts": 2}],
+    }}}
+    StateStore.prune_24h(state, now_ts=1.0 + StateStore.STALE_KEY_RETENTION_S + 10)
+    assert "r1::foo" in state["rules"]
