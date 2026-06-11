@@ -16,14 +16,15 @@
 
 ---
 
-## ✅ PHASE 1 — CLEARED 2026-06-11 (feasibility + RX packet bridge PROVEN)
+## ✅ PHASE 1 — CLEARED 2026-06-11 (feasibility + BOTH bridge directions PROVEN)
 
-**Raven runs on moc5 via its undocumented `platforms/debian` port, AND a real
-packet bridged + decrypted end to end** (see the functional-verification section
-below). The entire dependency chain is built and working on Ubuntu 24.04 aarch64;
-Raven initializes fully, generates + persists its node identity, runs its event
-loop, and decodes encrypted Meshtastic traffic off the UDP-LAN multicast. The
-zero-router-risk pilot is real and the bridge decode direction is verified.
+**Raven runs on moc5 via its undocumented `platforms/debian` port, and the bridge
+works BOTH ways with real RF.** RX: meshtasticd→Raven decode of an encrypted
+meshforge text. TX: Raven→meshtasticd→LoRa, **received by moc over the air
+(hops_away 1, SNR 6.25)**. The entire ucode/usign dependency chain is built on
+Ubuntu 24.04 aarch64; Raven inits fully, persists identity, runs its event loop.
+Two architectural findings for the real (cross-host) topology are in the reverse-
+direction section. The zero-router-risk pilot is real and fully bidirectional.
 
 ### What was proven (live on moc5)
 - meshtasticd 2.7.24 on moc5 **already** owns the UDP-over-LAN multicast socket
@@ -110,16 +111,48 @@ Proven path: **meshtasticd (RF/local TX on encrypted ch2) → UDP multicast
 224.0.0.69:4403 → Raven decode with the PSK.** The decode direction of the bridge
 is real.
 
+## ✅ PHASE 1 REVERSE DIRECTION — PASSED 2026-06-11 (real over-the-air RF)
+
+**Raven → Meshtastic → LoRa RF, received by a third node over the air.** With role
+`client`, Raven originates onto the Meshtastic transport (auto nodeinfo/telemetry,
+or an injected native broadcast on meship UDP 4404). Injected a tagged text on the
+encrypted **meshforge** channel; **moc received it over the air**:
+```
+[Router] Received text msg from=0x5fb23c3d, msg=RAVEN-RF-PROOF
+{"channel":2,"from":1605516349,"hops_away":1,"snr":6.25,"type":"text"}
+```
+`hops_away:1` + **`snr:6.25`** = a real physical-layer RF reception. Full chain:
+Raven encode+encrypt → multicast `224.0.0.69:4403` → moc5 meshtasticd relay → LoRa
+→ moc RX. Both directions of the bridge are now proven.
+
+### TWO architectural findings (load-bearing for Phase 2 topology)
+1. **Same-host multicast loopback**: Raven's `meshtastic.uc` sets
+   `IP_MULTICAST_LOOP, 0`, so when Raven and meshtasticd share a box (the pilot),
+   meshtasticd never receives Raven's TX. The **real topology has them on separate
+   hosts** (Raven on the hAP, meshtasticd on moc5) where LOOP=0 is correct and the
+   packet crosses the wire. Proven here by a temporary `0→1` patch (reverted).
+2. **The meshtasticd serving as Raven's radio must RELAY** (role CLIENT/ROUTER),
+   NOT `CLIENT_MUTE`. moc5's node is **`device.role: 1` = CLIENT_MUTE** (deliberate
+   collector — receives+decrypts but never rebroadcasts to RF). So Raven's text
+   reached meshtasticd's router but didn't key the radio until moc5 was temporarily
+   flipped to CLIENT (reverted). **⚠️ Phase-2 design constraint**: the bridge's
+   reverse leg (AREDN→RF) only reaches the RF mesh if Raven's radio node relays —
+   which conflicts with moc5's collector-mute role. Resolution options: (a) give
+   moc5's meshtasticd a relaying role (more RF airtime, changes collector behavior),
+   (b) a dedicated relay meshtasticd node (Phase 3 hardware) as Raven's radio, or
+   (c) accept reverse reaches only the local meshtasticd, not the RF mesh.
+   NB: a `device.role` change **reboots the radio node** (not the meshtasticd
+   daemon) — a brief collector RX gap; verified moc5 recovered (healthz 200).
+
 ### ▶ NEXT (remaining Phase 1 / Phase 2 prep)
-1. **Reverse direction (Raven→Meshtastic TX)**: needs a transmitting `role` (not
-   client_mute) so Raven injects onto the Meshtastic channel. Deliberately NOT done
-   — TXing onto the fleet RF channel is an operator-go decision (and on the Debian
-   stub, AREDN-side relay is stubbed anyway). Decide scope first.
-2. **RSS/stability soak**: `ps -o rss` on the ucode process over hours; confirm
+1. **RSS/stability soak**: `ps -o rss` on the ucode process over hours; confirm
    footprint + no leak before daemonizing.
-3. **Daemonize** (if moc5 is to host the bridge persistently): adapt
+2. **Daemonize** (if moc5 is to host the bridge persistently): adapt
    `platforms/debian/raven.service` (execs `/root/raven/raven.uc`) to moc5's layout
    (user unit, or `/root/raven`); linger already on. Until then, run bounded by hand.
+   ⚠️ ucode **block-buffers stdout to a file** — use `stdbuf -oL ucode raven.uc`
+   (or a tty) or the journal looks empty until exit.
+3. **Resolve the reverse-leg radio role** (finding 2) before Phase 2.
 4. **DHCP→reservation** for moc5 eth0 before anything depends on its address.
 
 ## Phase 0 (parallel, zero-risk repo work) — MeshForge AREDN organ
