@@ -201,6 +201,13 @@ WantedBy=default.target
 ### ▶ NEXT (Phase 2 prep)
 1. **Soak the live bridge** over hours/days — watch ucode RSS (leak), NRestarts,
    and that moc5's relay role doesn't congest the local RF.
+   **✅ AUTOMATED 2026-06-11**: `~/raven_soak_watch.sh` on VolcanoAI (cron `17 */3
+   * * *`, wired to `cron_verdict.sh raven_soak` so #78 + freshness cover it). It
+   pages via the cron-verdict regime if raven crash-loops (NRestarts≥3) / leaks
+   (RSS≥30 MB) / goes inactive, and fires a **ONE-TIME "Phase 2 ready" ntfy when
+   the 24h soak is clean** (`~/.raven_phase2_pinged` marker; soak started
+   2026-06-11 12:33 HST → pings ~06-12 12:33+). This is the Phase-2 follow-up
+   anchor — the arc resurfaces itself instead of being forgotten.
 2. **Optional**: set the meshforge channel `telemetry: true` so Raven self-announces
    (appears as node "Raven 3c3d" on the fleet) — adds periodic RF; operator choice.
 3. **Phase 2**: move Raven to the production hAP (cross-host → revert LOOP patch);
