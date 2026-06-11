@@ -16,12 +16,14 @@
 
 ---
 
-## ✅ PHASE 1 FEASIBILITY GATE — CLEARED 2026-06-11
+## ✅ PHASE 1 — CLEARED 2026-06-11 (feasibility + RX packet bridge PROVEN)
 
-**Raven runs on moc5 via its undocumented `platforms/debian` port.** The entire
-dependency chain is built and working on Ubuntu 24.04 aarch64; Raven initializes
-fully, generates + persists its node identity, and runs its event loop. The
-zero-router-risk pilot is real.
+**Raven runs on moc5 via its undocumented `platforms/debian` port, AND a real
+packet bridged + decrypted end to end** (see the functional-verification section
+below). The entire dependency chain is built and working on Ubuntu 24.04 aarch64;
+Raven initializes fully, generates + persists its node identity, runs its event
+loop, and decodes encrypted Meshtastic traffic off the UDP-LAN multicast. The
+zero-router-risk pilot is real and the bridge decode direction is verified.
 
 ### What was proven (live on moc5)
 - meshtasticd 2.7.24 on moc5 **already** owns the UDP-over-LAN multicast socket
@@ -83,28 +85,42 @@ cd ~/Raven && ucode raven.uc
 
 ---
 
-## ▶ NEXT: Phase 1 functional verification (next session)
+## ✅ PHASE 1 FUNCTIONAL VERIFICATION — PASSED 2026-06-11 (RX direction)
 
-The feasibility gate is cleared; what remains is proving a **packet actually
-bridges**. Blocked only on live traffic + channel config, no unknowns.
+**A packet bridged end to end, decrypted with the fleet PSK.** Configured
+`~/Raven/raven.conf` (chmod 600) with two channels marked `"meshtastic": true`:
+LongFast default + the fleet **"meshforge"** channel (moc5 slot index 2; namekey =
+`meshforge <b64psk>` — the live PSK lives ONLY in the on-box config, never in repo
+or memory). Ran Raven observe-only (`role client_mute`), sent a tagged text
+`RAVENTEST7` on the meshforge channel via `meshtastic --host localhost --sendtext
+... --ch-index 2`. Raven received it over the UDP-LAN multicast and **decrypted it
+with the configured PSK**:
+```json
+{ "from": ..., "channel": 162, "transport": "meshtastic",
+  "data": { "portnum": 1, "text_message": "RAVENTEST7" } }
+```
+`channel: 162` = the meshforge channel hash; the plaintext came out only because
+the PSK matched. **Observe-only confirmed**: exactly ONE `transport:"meshtastic"`
+frame in the log (the received one) — Raven did NOT TX onto RF; its own nodeinfo
+went out on the `native` meship transport (UDP 4404), not Meshtastic. moc5
+services healthy throughout (map healthz 200). Process stopped cleanly; the
+`/tmp` debug log (held the PSK in namekey lines) was scrubbed.
 
-1. **Configure real channels** in `~/Raven/raven.conf` so Raven can decode:
-   - LongFast default (`"namekey": "LongFast AQ=="`) + moc5's ch2 **"meshforge"**
-     with its **rotated base64 PSK** (read from moc5 meshtasticd config /
-     `config.d`; see [[project_ch2_psk_consumer_checklist]]). namekey = `Name<sp>b64key`.
-   - The multicast snoop showed **0 packets in 15 s** → the mesh was simply quiet;
-     meshtasticd only rebroadcasts onto `224.0.0.69:4403` when it has RF packets
-     to forward. Verification needs ambient traffic OR a deliberate test message.
-2. **Controlled round-trip test**: send a text on a channel (via a second device,
-   or carefully — `meshtastic` CLI opens a PhoneAPI connection, mind #17) and watch
-   Raven receive+decode it (`debug:2`, grep the meshtastic leg). Prove RF→UDP-LAN→
-   Raven decode. Then the reverse (Raven→meshtastic) only with `role` that TXes and
-   a channel `"meshtastic": true` — deliberately NOT enabled yet (observe-only).
-3. **RSS/stability gate**: `ps -o rss` on the ucode process over a soak; confirm
-   acceptable footprint and no leak.
-4. **Daemonize** ONLY after 1–3 pass: adapt `platforms/debian/raven.service`
-   (it execs `/root/raven/raven.uc`) to moc5's layout (user unit or `/root/raven`),
-   linger already on. Until then, run bounded by hand.
+Proven path: **meshtasticd (RF/local TX on encrypted ch2) → UDP multicast
+224.0.0.69:4403 → Raven decode with the PSK.** The decode direction of the bridge
+is real.
+
+### ▶ NEXT (remaining Phase 1 / Phase 2 prep)
+1. **Reverse direction (Raven→Meshtastic TX)**: needs a transmitting `role` (not
+   client_mute) so Raven injects onto the Meshtastic channel. Deliberately NOT done
+   — TXing onto the fleet RF channel is an operator-go decision (and on the Debian
+   stub, AREDN-side relay is stubbed anyway). Decide scope first.
+2. **RSS/stability soak**: `ps -o rss` on the ucode process over hours; confirm
+   footprint + no leak before daemonizing.
+3. **Daemonize** (if moc5 is to host the bridge persistently): adapt
+   `platforms/debian/raven.service` (execs `/root/raven/raven.uc`) to moc5's layout
+   (user unit, or `/root/raven`); linger already on. Until then, run bounded by hand.
+4. **DHCP→reservation** for moc5 eth0 before anything depends on its address.
 
 ## Phase 0 (parallel, zero-risk repo work) — MeshForge AREDN organ
 Deepen the existing AREDN footprint (`utils/aredn.py` `AREDNClient`,
