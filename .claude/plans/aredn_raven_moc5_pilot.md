@@ -144,16 +144,68 @@ Raven encode+encrypt → multicast `224.0.0.69:4403` → moc5 meshtasticd relay 
    NB: a `device.role` change **reboots the radio node** (not the meshtasticd
    daemon) — a brief collector RX gap; verified moc5 recovered (healthz 200).
 
-### ▶ NEXT (remaining Phase 1 / Phase 2 prep)
-1. **RSS/stability soak**: `ps -o rss` on the ucode process over hours; confirm
-   footprint + no leak before daemonizing.
-2. **Daemonize** (if moc5 is to host the bridge persistently): adapt
-   `platforms/debian/raven.service` (execs `/root/raven/raven.uc`) to moc5's layout
-   (user unit, or `/root/raven`); linger already on. Until then, run bounded by hand.
-   ⚠️ ucode **block-buffers stdout to a file** — use `stdbuf -oL ucode raven.uc`
-   (or a tty) or the journal looks empty until exit.
-3. **Resolve the reverse-leg radio role** (finding 2) before Phase 2.
-4. **DHCP→reservation** for moc5 eth0 before anything depends on its address.
+## ✅ PERSISTENT BIDIRECTIONAL BRIDGE — LIVE on moc5 2026-06-11
+
+Operator decision taken: moc5 flipped to a relaying role + Raven run as a service.
+Both directions verified on the **persistent service**: reverse `RAVEN-PERSIST-OK`
+reached moc over RF (`hops_away:1 snr:6`); forward — Raven's store grows (nodedb +
+received-messages file on meshforge). ucode RSS ~4 MB, ~0.1% CPU, 0 restarts.
+
+**What changed on moc5 (all on-box; PSK never leaves the box):**
+- **`device.role`: CLIENT_MUTE(1) → CLIENT(0)** — PERMANENT. moc5 now relays RF
+  (more airtime; this is what lets the reverse leg reach the RF mesh). Collector
+  function (federation/map) unaffected — meshtasticd still RXes everything.
+- **`raven.service`** — systemd USER unit (`~/.config/systemd/user/raven.service`),
+  active + **enabled** (linger already on). `ExecStart=/usr/bin/stdbuf -oL
+  /usr/local/bin/ucode /home/wh6gxz/Raven/raven.uc`, `Restart=always`.
+  (⚠️ ucode **block-buffers stdout to a pipe/file** — the `stdbuf -oL` is REQUIRED
+  or the journal stays empty until exit.)
+- **`raven.conf`** (chmod 600): `role: client`, `debug: 0`, **meshforge-only**
+  (no public-channel bridging), `location` = QTH fuzzed (precision 15).
+- **`meshtastic.uc`: `IP_MULTICAST_LOOP` 0→1** — same-host-pilot requirement
+  (Raven + meshtasticd share moc5; LOOP=0 would suppress same-host delivery).
+  Raven's `recent`-id dedup makes the loopback safe (no self-loop — verified).
+  Stock backup at `~/Raven/meshtastic.uc.orig-stock-loop0`. **In the real
+  cross-host topology (Raven on hAP) this patch is NOT needed — revert it.**
+- **`~/raven-store` chmod 700** — Raven names message files by namekey, so the
+  **PSK appears in store filenames**; the dir was group/world-readable by default.
+
+**Crash-loop fix (learned):** `nodeinfo.uc:createAdvertMessage` unconditionally
+reads `loc.lat`, so Raven **requires a `location` in raven.conf** or it crashes
+(status 254) on its advert timer every ~60s → systemd restart loop. Adding the
+location fixed it (0 restarts since).
+
+**Revert path (rollback to collector-only):**
+```bash
+ssh moc5
+systemctl --user disable --now raven.service
+meshtastic --host localhost --set device.role CLIENT_MUTE   # reboots radio node
+cp ~/Raven/meshtastic.uc.orig-stock-loop0 ~/Raven/meshtastic.uc
+```
+
+### Reusable user unit (secret-free)
+```ini
+[Unit]
+Description=Raven AREDN<->Meshtastic bridge (moc5 same-host pilot)
+After=default.target
+[Service]
+Type=simple
+WorkingDirectory=/home/wh6gxz/Raven
+ExecStart=/usr/bin/stdbuf -oL /usr/local/bin/ucode /home/wh6gxz/Raven/raven.uc
+Restart=always
+RestartSec=10
+[Install]
+WantedBy=default.target
+```
+
+### ▶ NEXT (Phase 2 prep)
+1. **Soak the live bridge** over hours/days — watch ucode RSS (leak), NRestarts,
+   and that moc5's relay role doesn't congest the local RF.
+2. **Optional**: set the meshforge channel `telemetry: true` so Raven self-announces
+   (appears as node "Raven 3c3d" on the fleet) — adds periodic RF; operator choice.
+3. **Phase 2**: move Raven to the production hAP (cross-host → revert LOOP patch);
+   moc5 stays the radio (already relaying).
+4. **DHCP→reservation** for moc5 eth0 before Phase 2 depends on its address.
 
 ## Phase 0 (parallel, zero-risk repo work) — MeshForge AREDN organ
 Deepen the existing AREDN footprint (`utils/aredn.py` `AREDNClient`,
