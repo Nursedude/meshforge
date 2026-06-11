@@ -206,8 +206,18 @@ WantedBy=default.target
    pages via the cron-verdict regime if raven crash-loops (NRestarts≥3) / leaks
    (RSS≥30 MB) / goes inactive, and fires a **ONE-TIME "Phase 2 ready" ntfy when
    the 24h soak is clean** (`~/.raven_phase2_pinged` marker; soak started
-   2026-06-11 12:33 HST → pings ~06-12 12:33+). This is the Phase-2 follow-up
-   anchor — the arc resurfaces itself instead of being forgotten.
+   2026-06-11 12:33 HST → pings ~06-12 12:33+). This is the milestone anchor —
+   the arc resurfaces itself instead of being forgotten. **The ping = "soak
+   passed, milestone earned", and triggers THREE finalizations** (all named in
+   the ntfy body): (1) finalize the HELD substack draft; (2) **mark the
+   milestone in code** — bump `src/__version__.py` → `0.6.2-beta` + a changelog
+   entry (the changelog records deployment milestones / PoCs, so a field-proven
+   AREDN-bridge pilot fits) + a 1-line README touch shifting AREDN from
+   *monitor-only* toward *bridge-via-Raven (pilot)*; (3) the next BUILD = Phase 2
+   (Raven→hAP). The honest sequencing — earned by the soak ("with some testing a
+   hardened reality") — keeps "version-bumped" meaning "field-proven", not "ran
+   once". Reserve a `0.7.0` for when the bridge is hardened on the hAP AND the
+   MeshForge-native AREDN organ (Phase 0) ships.
 2. **Optional**: set the meshforge channel `telemetry: true` so Raven self-announces
    (appears as node "Raven 3c3d" on the fleet) — adds periodic RF; operator choice.
 3. **Phase 2**: move Raven to the production hAP (cross-host → revert LOOP patch);
