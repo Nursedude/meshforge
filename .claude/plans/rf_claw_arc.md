@@ -93,6 +93,28 @@ journal for the claw's node id), reversible scope (a few low-power packets on
 the public ISM band the fleet already shares). B is the full vision and the
 real "operator PSK decision" the plan flagged.
 
+### Putting it on the FLEET channel (06-12) — built, operator does the secret step
+
+`mesh_set_channel {name, psk}` tool + `lora_tx_channel` config (claw on
+`0.4.0+dudeclaw.6`): channel identity (name+PSK) is now fully runtime — the
+private channel needs the NAME too (hash = xorHash(name) ^ xorHash(psk)).
+**The fleet PSK is the operator's to move** — the classifier (correctly)
+walls me off from reading the prod channel store, and the key must never
+enter the transcript/git/flash. Turnkey helper `scripts/claw_set_fleet_channel.py`
+(getpass, no echo; sends over the local pinholed NATS bus; RAM-only; prints
+only the returned channel-HASH byte, which IS the cleartext header field, not
+a secret). Operator runs ON moc2:
+
+    PYTHONPATH=/opt/meshforge/src python3 scripts/claw_set_fleet_channel.py \
+        --device dudeclaw-01 --name <fleet-channel-name>
+
+Then `mesh_send` → the gateway's `journalctl -u meshtasticd | grep 'Received
+text msg'` decodes the claw ON THE FLEET CHANNEL (vs the public-channel proof
+below). The returned hash must equal the fleet channel's hash — that's the
+non-secret confirmation the right key landed. For persistence across reboot,
+set `lora_tx_channel` + `lora_tx_psk` via the claw portal (foothold .32);
+RAM-only set reverts to public default on reboot (safe — no leak).
+
 ### ✅ Option A executed 06-12 — and it landed BETTER than a blip
 
 moc doesn't just *receive* the public LongFast channel, it **decodes** it (it
