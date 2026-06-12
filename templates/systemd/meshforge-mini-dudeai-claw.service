@@ -1,0 +1,36 @@
+[Unit]
+Description=mini-dudeai claw — standalone dude-claw brain (WireClaw edge over NATS)
+# The brain talks to the local NATS bus; After= orders startup when nats-server
+# runs on the same box (no hard Requires= — a brain that outlives a bus restart
+# reports source_error honestly instead of dying).
+After=network-online.target nats-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Second mini-dudeai instance beside the fleet daemon: the standalone preset
+# claw-suffixes every artifact path, so the #80 single-instance flock (keyed
+# on the state file) never collides with meshforge-mini-dudeai.service.
+Environment=PYTHONPATH=/opt/meshforge/src
+# WorkingDirectory MUST NOT be the operator home: `python3 -m mini_dudeai`
+# searches the cwd FIRST, so a stray ~/mini_dudeai.py would SHADOW the
+# package (same guard as the fleet unit). Pin cwd to the repo root.
+WorkingDirectory=/opt/meshforge
+# Operator-specific values (NATS server/token, claw device name, ntfy topic)
+# live in this env file, NOT in the repo (MF014). Leading `-` makes it
+# optional so first-boot doesn't fail before the file exists; the standalone
+# preset fails loud on each missing required value.
+EnvironmentFile=-%h/.config/meshforge/mini_dudeai_claw.env
+ExecStart=/usr/bin/python3 -m mini_dudeai --preset standalone --interval 30
+Restart=on-failure
+RestartSec=10
+ProtectSystem=strict
+ReadWritePaths=%h
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

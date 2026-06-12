@@ -435,6 +435,10 @@ sync_repo meshforge-watchdog /opt/meshforge   meshforge-watchdog "$MF_PRE_HEAD" 
 # (Recipe rule: this body must stay single-quote-free — an apostrophe here
 # terminates the outer REMOTE_SCRIPT string, see the note ~line 451.)
 sync_user_unit meshforge-mini-dudeai /opt/meshforge meshforge-mini-dudeai "$MF_PRE_HEAD" || rc1d=$?
+# Standalone dude-claw instance (second mini-dudeai daemon, claw-suffixed
+# state). Only the claw-brain box (moc1) runs it; everywhere else this is a
+# clean no_unit/not_running PASS (try-restart honors absent/disabled).
+sync_user_unit meshforge-mini-dudeai-claw /opt/meshforge meshforge-mini-dudeai-claw "$MF_PRE_HEAD" || rc1e=$?
 sync_repo meshforge-maps  /opt/meshforge-maps  meshforge-maps    "$MFMAPS_PRE_HEAD" || rc2=$?
 
 # Smoke: catch rollup self-loopback in ~/.config/meshanchor/fleet.json.
@@ -817,6 +821,8 @@ sync_local_unit meshforge-watchdog /opt/meshforge
 sync_local_unit meshforge-maps    /opt/meshforge-maps
 # mini-dudeai is a USER unit — restart it on the user bus when its code changed.
 sync_local_user_unit meshforge-mini-dudeai /opt/meshforge
+# Standalone dude-claw sibling (no-op on boxes without the unit).
+sync_local_user_unit meshforge-mini-dudeai-claw /opt/meshforge
 
 # Self-side fleet-config smokes. Mirrors the remote checks so the
 # canonical box (which fleet_hosts deliberately excludes) gets the same

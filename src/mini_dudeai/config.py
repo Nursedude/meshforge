@@ -37,11 +37,13 @@ from typing import Any, Callable
 
 from ._util import read_json
 from .actions import (
-    Action, FileAnnotateAction, NoopAction, NtfyAction, ProposeEscalationAction,
+    Action, FileAnnotateAction, NatsAction, NoopAction, NtfyAction,
+    ProposeEscalationAction,
 )
 from .engine import RuleEngine
 from .sources import (
-    BootHealthSource, FileMtimeSource, HttpJsonSource, JsonFileSource, Source,
+    BootHealthSource, FileMtimeSource, HttpJsonSource, JsonFileSource,
+    NatsSensorSource, Source,
 )
 
 # Registries: config `kind` string -> builder callable that takes the spec dict
@@ -191,6 +193,43 @@ def _seed_ntfy(spec: dict) -> Action:
     )
 
 
+def _resolve_nats_token(spec: dict) -> str | None:
+    """Token from spec: `token_env` (env var NAME — preferred, keeps the
+    secret out of the config file) wins over literal `token`. A named-but-
+    missing env var is a loud config error, not a silent unauthenticated
+    connect."""
+    env_name = spec.get("token_env")
+    if env_name:
+        token = os.environ.get(env_name)
+        if not token:
+            raise ValueError(
+                f"token_env names {env_name!r} but that env var is unset/empty")
+        return token
+    return spec.get("token") or None
+
+
+def _seed_nats_sensor(spec: dict) -> Source:
+    return NatsSensorSource(
+        server=spec["server"],
+        sensors=spec["sensors"],
+        kind=spec.get("condition_kind", "sensor_breach"),
+        token=_resolve_nats_token(spec),
+        timeout_s=float(spec.get("timeout_s", 5)),
+        name=spec.get("name"),
+    )
+
+
+def _seed_nats_action(spec: dict) -> Action:
+    return NatsAction(
+        server=spec["server"],
+        device=spec.get("device"),
+        payload=spec.get("payload"),
+        payload_down=spec.get("payload_down"),
+        token=_resolve_nats_token(spec),
+        timeout_s=float(spec.get("timeout_s", 5)),
+    )
+
+
 # Built-in kinds register through the same API third parties use; required
 # fields travel WITH the registration (mirrored in
 # mini_dudeai_config.schema.json — the drift test pins the two together).
@@ -202,7 +241,10 @@ register_source("http_json", _seed_http_json,
                 required=("url", "condition_kind"))
 register_source("boot_health", _seed_boot_health,
                 required=("state_path", "clean_exit_path", "assessment_path"))
+register_source("nats_sensor", _seed_nats_sensor,
+                required=("server", "sensors"))
 register_action("ntfy", _seed_ntfy, required=("topic",))
+register_action("nats", _seed_nats_action, required=("server",))
 register_action("annotate",
                 lambda spec: FileAnnotateAction(path=os.path.expanduser(spec["path"])),
                 required=("path",))

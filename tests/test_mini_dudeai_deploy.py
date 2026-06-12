@@ -268,3 +268,60 @@ class TestSelfSyncRestartsWatchdog:
             "federator — it carries the mini probes; otherwise a watchdog code "
             "change silently never reaches THIS box (the #79 deploy gap)."
         )
+
+
+# ─────────────────────────────────────────────────────────────────
+# (h) Standalone dude-claw unit (Phase A, 2026-06-11): same deploy-gap class
+# as (a)-(d) — a template with no copy/restart wiring is a daemon that runs
+# OLD code forever. The claw unit also lacks the -user.service suffix, so it
+# needs the same explicit enumeration.
+# ─────────────────────────────────────────────────────────────────
+
+MINI_CLAW_SERVICE = "meshforge-mini-dudeai-claw.service"
+
+
+class TestClawDeployEnrollment:
+    def test_claw_template_exists(self):
+        assert (TEMPLATE_DIR / MINI_CLAW_SERVICE).is_file()
+
+    def test_claw_template_uses_standalone_preset(self):
+        text = (TEMPLATE_DIR / MINI_CLAW_SERVICE).read_text()
+        assert "--preset standalone" in text
+        # claw env file, NOT the fleet daemon's (separate operator values)
+        assert "mini_dudeai_claw.env" in text
+
+    def test_claw_template_keeps_cwd_shadowing_guard(self):
+        # same guard as the fleet unit: a stray ~/mini_dudeai.py must not
+        # shadow the package
+        text = (TEMPLATE_DIR / MINI_CLAW_SERVICE).read_text()
+        assert "WorkingDirectory=/opt/meshforge" in text
+
+    def test_update_sh_copies_claw_template(self):
+        assert MINI_CLAW_SERVICE in UPDATE_SH.read_text()
+
+    def test_update_sh_restarts_claw_on_user_bus(self):
+        assert re.search(
+            r"try-restart\s+meshforge-mini-dudeai-claw\.service",
+            UPDATE_SH.read_text(),
+        ), "update.sh must try-restart the claw daemon after a code pull"
+
+    def test_fleet_sync_remote_syncs_claw(self):
+        assert re.search(
+            r"sync_user_unit\s+meshforge-mini-dudeai-claw", FLEET_SYNC_SH.read_text()
+        ), "fleet_sync.sh must run sync_user_unit for the claw daemon (remote)"
+
+    def test_fleet_sync_local_syncs_claw(self):
+        assert re.search(
+            r"sync_local_user_unit\s+meshforge-mini-dudeai-claw",
+            FLEET_SYNC_SH.read_text(),
+        ), "fleet_sync.sh must self-sync the claw daemon on this box"
+
+    def test_nats_server_template_exists_and_is_hardened(self):
+        # the claw bus: OpenClaw v1 has no auth, the server layer is the
+        # trust boundary — the canonical unit ships in the repo (pre-push
+        # rule 4) and must not run as root
+        tmpl = TEMPLATE_DIR / "nats-server.service"
+        assert tmpl.is_file()
+        text = tmpl.read_text()
+        assert "User=nats" in text
+        assert "NoNewPrivileges=true" in text

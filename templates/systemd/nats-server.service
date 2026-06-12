@@ -1,0 +1,30 @@
+[Unit]
+Description=NATS server — dude-claw message bus (WireClaw edge nodes <-> mini-dudeai brain)
+Documentation=https://docs.nats.io
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Static binary from the official linux-arm64 release (no apt package on
+# Raspberry Pi OS). Config carries the LAN bind + authorization token —
+# OpenClaw v1 has NO subject-level auth, so the server layer is the entire
+# trust boundary. /etc/nats/nats.conf is root:nats 640; the token never
+# lands in the repo (MF014 / the ch2-PSK lesson).
+ExecStart=/usr/local/bin/nats-server -c /etc/nats/nats.conf
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+User=nats
+Group=nats
+# Hardening: nats-server needs nothing but its config and the network.
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

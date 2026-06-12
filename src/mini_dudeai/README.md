@@ -105,6 +105,7 @@ error at once.
 | `json_file` | `path`, `condition_kind` | one Condition per item in a JSON file (`items_path` digs nested) |
 | `http_json` | `url`, `condition_kind` | one Condition per item from a JSON HTTP endpoint |
 | `boot_health` | `state_path`, `clean_exit_path`, `assessment_path` | the box rebooted uncleanly (stdlib-only crash detector) |
+| `nats_sensor` | `server`, `sensors` | a WireClaw/OpenClaw sensor reading breaches its threshold (per-tick `tool_exec` polls; stdlib NATS client, no nats-py dep). Errors/blindness emit `source_error`, never a value |
 
 ### Built-in actions
 
@@ -114,6 +115,21 @@ error at once.
 | `annotate` | `path` | append a markdown line to a file |
 | `propose_escalation` | — | record a structured "look at this" marker in history (side-effect-free) |
 | `none` | — | no-op; just records the fire in history |
+| `nats` | `server` | drive a WireClaw node over OpenClaw `tool_exec` (`rule.action.payload` on edge-up, `payload_down` on edge-down; idempotent state-set tools only — safe under the send-retry queue) |
+
+### Standalone ("dude-claw") preset
+
+`python3 -m mini_dudeai --preset standalone` wires `nats_sensor` + `nats` +
+`ntfy`/`annotate` for the Pi-brain + WireClaw-edge personal agent
+(`.claude/plans/standalone_wireclaw_variant.md`). Operator values come from
+`~/.config/meshforge/mini_dudeai_claw.env` (`MINI_DUDEAI_NATS_SERVER`,
+`MINI_DUDEAI_NTFY_TOPIC`, `MINI_DUDEAI_CLAW_DEVICE`, optional
+`MINI_DUDEAI_NATS_TOKEN` / `MINI_DUDEAI_CLAW_SENSORS` /
+`MINI_DUDEAI_CLAW_TEMP_THRESHOLD`). All artifact paths are claw-suffixed so it
+coexists with the fleet daemon on the same box (separate instance lock).
+First boot seeds `~/mini_dudeai_claw_rules.json` from
+`configs/mini_dudeai_rules.claw.json`. Bring-up helper:
+`python3 -m mini_dudeai.nats_client req _ion.discover '' --many`.
 
 ## Rules
 

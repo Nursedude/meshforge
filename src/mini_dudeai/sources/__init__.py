@@ -3,6 +3,7 @@ from .boot_health import BootHealthSource
 from .file_mtime import FileMtimeSource
 from .http_json import HttpJsonSource
 from .json_file import JsonFileSource
+from .nats_sensor import NatsSensorSource
 
 __all__ = [
     "BootHealthSource",
@@ -11,5 +12,6 @@ __all__ = [
     "FileMtimeSource",
     "HttpJsonSource",
     "JsonFileSource",
+    "NatsSensorSource",
     "Source",
 ]

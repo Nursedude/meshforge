@@ -1,0 +1,54 @@
+{
+  "_comment": "mini-dudeai standalone (dude-claw) rules seed. Copied to ~/mini_dudeai_claw_rules.json on first boot by presets/standalone.py (only when absent); the daemon promotes ~/mini_dudeai_claw_rules.json.candidate over it afterwards. The chip-temp pair is the Phase A end-to-end demo: breach held grace_s -> LED red + page; recovery -> LED off + quiet cleared notice. No operator-specific values here (MF014) — device/topic/thresholds live in the claw env file.",
+  "rules": [
+    {
+      "id": "chip_temp_hot_led",
+      "match": {
+        "kind": "sensor_breach",
+        "subject_glob": "*.chip_temp"
+      },
+      "action": {
+        "kind": "nats",
+        "payload": {"tool": "led_set", "r": 255, "g": 0, "b": 0},
+        "payload_down": {"tool": "led_set", "r": 0, "g": 0, "b": 0}
+      },
+      "grace_s": 60,
+      "cooldown_s": 600,
+      "annotation": "Phase A demo actuator leg: chip temp held over threshold for a minute turns the claw's RGB LED red; recovery turns it off. State-set payloads only — safe under the #81 retry queue."
+    },
+    {
+      "id": "chip_temp_hot_page",
+      "match": {
+        "kind": "sensor_breach",
+        "subject_glob": "*.chip_temp"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[claw] chip temp over threshold",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": ["thermometer", "claw"]
+      },
+      "grace_s": 60,
+      "cooldown_s": 1800,
+      "annotation": "Phase A demo page leg: same breach as chip_temp_hot_led, paged to the operator. Threshold lives in MINI_DUDEAI_CLAW_TEMP_THRESHOLD (default 55C)."
+    },
+    {
+      "id": "claw_blind_any",
+      "match": {
+        "kind": "source_error",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[claw] sensor feed dark",
+        "message": "{subject}: {detail}",
+        "priority": "default",
+        "tags": ["eyes", "claw"]
+      },
+      "grace_s": 300,
+      "cooldown_s": 3600,
+      "annotation": "Blindness is its own signal (unobservable != healthy): NATS bus down, device off WiFi, or unparseable readings. grace_s rides out transient WiFi blips; sustained darkness pages. While dark, the engine HOLDS last-good breach conditions, so a hot claw cannot read as 'recovered' by going silent."
+    }
+  ]
+}

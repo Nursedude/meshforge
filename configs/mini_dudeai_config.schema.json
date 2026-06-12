@@ -17,7 +17,7 @@
         "type": "object",
         "required": ["kind"],
         "properties": {
-          "kind": {"enum": ["file_mtime", "json_file", "http_json", "boot_health"]},
+          "kind": {"enum": ["file_mtime", "json_file", "http_json", "boot_health", "nats_sensor"]},
           "name": {"type": "string"},
           "condition_kind": {"type": "string"},
           "path": {"type": "string"},
@@ -33,13 +33,32 @@
           "power_log_path": {"type": "string", "description": "boot_health: optional power_history.log for evidence."},
           "boot_window_s": {"type": "number", "default": 900},
           "clean_slack_s": {"type": "number", "default": 180},
-          "uptime_path": {"type": "string", "default": "/proc/uptime"}
+          "uptime_path": {"type": "string", "default": "/proc/uptime"},
+          "server": {"type": "string", "description": "nats_sensor: NATS server ('host', 'host:port', or 'nats://host:port')."},
+          "sensors": {
+            "type": "array",
+            "description": "nats_sensor: OpenClaw sensors to poll each tick; Condition emitted only while breaching.",
+            "items": {
+              "type": "object",
+              "required": ["device", "sensor", "threshold"],
+              "properties": {
+                "device": {"type": "string", "description": "WireClaw device name (NATS subject prefix)."},
+                "sensor": {"type": "string", "description": "Sensor label (Condition subject; the name sent to sensor_read)."},
+                "threshold": {"type": "number"},
+                "op": {"enum": ["gt", "ge", "lt", "le"], "default": "gt"},
+                "tool": {"type": "string", "default": "sensor_read", "description": "tool_exec tool; 'temperature_read' reads chip temp with no device-side registration."}
+              }
+            }
+          },
+          "token": {"type": "string", "description": "nats_sensor: literal NATS auth token (prefer token_env)."},
+          "token_env": {"type": "string", "description": "nats_sensor: env var NAME holding the NATS auth token (keeps the secret out of this file)."}
         },
         "allOf": [
           {"if": {"properties": {"kind": {"const": "file_mtime"}}}, "then": {"required": ["path"]}},
           {"if": {"properties": {"kind": {"const": "json_file"}}}, "then": {"required": ["path", "condition_kind"]}},
           {"if": {"properties": {"kind": {"const": "http_json"}}}, "then": {"required": ["url", "condition_kind"]}},
-          {"if": {"properties": {"kind": {"const": "boot_health"}}}, "then": {"required": ["state_path", "clean_exit_path", "assessment_path"]}}
+          {"if": {"properties": {"kind": {"const": "boot_health"}}}, "then": {"required": ["state_path", "clean_exit_path", "assessment_path"]}},
+          {"if": {"properties": {"kind": {"const": "nats_sensor"}}}, "then": {"required": ["server", "sensors"]}}
         ]
       }
     },
@@ -50,16 +69,24 @@
         "type": "object",
         "required": ["kind"],
         "properties": {
-          "kind": {"enum": ["ntfy", "annotate", "propose_escalation", "none"]},
+          "kind": {"enum": ["ntfy", "annotate", "propose_escalation", "none", "nats"]},
           "topic": {"type": "string", "description": "ntfy: required topic."},
           "base_url": {"type": "string", "default": "https://ntfy.sh"},
           "default_priority": {"type": "string", "default": "default"},
           "default_tags": {"type": "array", "items": {"type": "string"}},
-          "path": {"type": "string", "description": "annotate: file to append to."}
+          "path": {"type": "string", "description": "annotate: file to append to."},
+          "server": {"type": "string", "description": "nats: NATS server ('host', 'host:port', or 'nats://host:port')."},
+          "device": {"type": "string", "description": "nats: default WireClaw device name (rule.action.device overrides)."},
+          "payload": {"type": "object", "description": "nats: default edge-up tool call; idempotent state-set tools only (gpio_write/led_set/actuator_set)."},
+          "payload_down": {"type": "object", "description": "nats: default edge-down tool call (e.g. relay off on recovery)."},
+          "token": {"type": "string", "description": "nats: literal NATS auth token (prefer token_env)."},
+          "token_env": {"type": "string", "description": "nats: env var NAME holding the NATS auth token."},
+          "timeout_s": {"type": "number", "default": 5}
         },
         "allOf": [
           {"if": {"properties": {"kind": {"const": "ntfy"}}}, "then": {"required": ["topic"]}},
-          {"if": {"properties": {"kind": {"const": "annotate"}}}, "then": {"required": ["path"]}}
+          {"if": {"properties": {"kind": {"const": "annotate"}}}, "then": {"required": ["path"]}},
+          {"if": {"properties": {"kind": {"const": "nats"}}}, "then": {"required": ["server"]}}
         ]
       }
     }

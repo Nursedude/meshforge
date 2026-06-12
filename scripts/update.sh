@@ -303,7 +303,8 @@ if [[ -d "$INSTALL_DIR/templates/systemd" ]]; then
     for mini_tmpl in \
         "$INSTALL_DIR/templates/systemd/meshforge-mini-dudeai.service" \
         "$INSTALL_DIR/templates/systemd/meshforge-mini-dudeai-dream.service" \
-        "$INSTALL_DIR/templates/systemd/meshforge-mini-dudeai-dream.timer"; do
+        "$INSTALL_DIR/templates/systemd/meshforge-mini-dudeai-dream.timer" \
+        "$INSTALL_DIR/templates/systemd/meshforge-mini-dudeai-claw.service"; do
         if [[ -f "$mini_tmpl" ]]; then
             cp "$mini_tmpl" "$USER_SYSTEMD_DIR/$(basename "$mini_tmpl")" 2>/dev/null || true
         fi
@@ -330,7 +331,10 @@ if $USER_SVC_UPDATED; then
         # .timer pulls a fresh oneshot at its next fire, so it needs no
         # restart here.
         run_user_systemctl try-restart meshforge-mini-dudeai.service 2>/dev/null || true
-        echo -e "  ${GREEN}✓ mini-dudeai user unit refreshed (try-restart)${NC}"
+        # standalone dude-claw sibling — try-restart is a no-op on boxes
+        # that don't run it (only the claw-brain box does)
+        run_user_systemctl try-restart meshforge-mini-dudeai-claw.service 2>/dev/null || true
+        echo -e "  ${GREEN}✓ mini-dudeai user units refreshed (try-restart)${NC}"
     else
         echo -e "  ${YELLOW}⚠ Could not reach the operator user bus to restart mini-dudeai.${NC}"
         echo -e "  ${YELLOW}  As ${REAL_USER}: systemctl --user restart meshforge-mini-dudeai.service${NC}"
