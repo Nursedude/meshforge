@@ -9,7 +9,7 @@
 | Phase | Shape | Status |
 |-------|-------|--------|
 | 1 | **Mesh ears** — RX-only Meshtastic leg: the claw hears the fleet mesh | ✅ **LIVE 06-12** — first light: 9 pkts / 2 min, 2 distinct nodes, 0 crc_err, RSSI −103..−106, incl. channel-hash 0x08 traffic moc's own journal logs as undecodable — the RF witness corroborates the fleet radio view. Fork branch `pr/lora-mesh-ears` (stacked on vbat), claw flashed `0.4.0+dudeclaw.4` (operator-ratified), tag `dudeclaw.3` = prior tip. moc2: `claw_sensors.with_ears.json` STAGED (mesh_heard_age_s gt 1800) — SOAK heard-rate incl. overnight before enabling. |
-| 2 | **Mesh voice** — TX leg: claw broadcasts onto the mesh | ✅ **BUILT + VERIFIED 06-12** — `mesh_send` tool, fork branch `pr/lora-mesh-voice` (stacked on ears), `dudeclaw` rebuilt → `0.4.0+dudeclaw.5` (tag `dudeclaw.4`=prior), both envs green. Protocol byte-verified on the host (`scripts/verify_mesh_packet.py` / fork `tools/`): public LongFast hash=0x08, AES-128+256 round-trip recover text+TEXT portnum. ⏸️ NOT yet flashed/transmitted — the first on-air TX is the operator's call (channel/PSK/power). |
+| 2 | **Mesh voice** — TX leg: claw broadcasts onto the mesh | ✅ **LIVE ON AIR 06-12** — claw flashed `0.4.0+dudeclaw.5` (operator-ratified, Option A public-channel low-power), `mesh_send` fired, and **moc's radio DECODED the full text**: `Received text msg from=0xb29faaa0, id=0x5284794c, msg=dude-claw first voice de WH6GXZ` — node id + pkt id match the claw's report exactly. Because moc listens on public LongFast, the claw appears as a real DECODED node in the NOC, not just an undecodable blip. Airtime guard verified (rapid sends refused, 0 RF). The whole stack (header/hash/AES-CTR/protobuf) proven on air. |
 | 3 | **BLE ingestion** — beacons/tags as virtual sensors | future; independent radio, parallel-able |
 
 **Why ears first**: Meshtastic packet HEADERS are plaintext (to/from/id/
@@ -92,6 +92,19 @@ A is the recommended first light — no secret touched, unambiguous (grep moc's
 journal for the claw's node id), reversible scope (a few low-power packets on
 the public ISM band the fleet already shares). B is the full vision and the
 real "operator PSK decision" the plan flagged.
+
+### ✅ Option A executed 06-12 — and it landed BETTER than a blip
+
+moc doesn't just *receive* the public LongFast channel, it **decodes** it (it
+has the default public key configured alongside the fleet channel). So the
+claw's first transmission showed up fully decoded in moc's journal:
+`Received text msg from=0xb29faaa0, id=0x5284794c, msg=dude-claw first voice
+de WH6GXZ`. The claw is now a real, decoded node on the public mesh — the
+"real NOC node" outcome (Option B's goal) reached on the PUBLIC channel with
+no fleet secret. To put it on the FLEET channel specifically (so it rides the
+fleet's custom-PSK traffic), set `lora_tx_psk` to the fleet PSK and reflash —
+that remains a clean later step, now de-risked. Node id `!b29faaa0` = low-4 of
+the claw MAC `80:f1:b2:9f:aa:a0` ✓.
 
 ## Regulatory note
 
